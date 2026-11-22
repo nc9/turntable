@@ -61,6 +61,7 @@ const USAGE = `longshore ${VERSION}
 
 Usage:
   longshore serve [--roles web,worker,poller|all|release] [--port 8080] [--host 127.0.0.1] [--data-dir ./data]
+                  [--database-url postgres://...]
                   [--allowed-origin <origin>]
                   [--public-url <base url>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
@@ -113,6 +114,8 @@ Environment:
   LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control: plain-http requests it
                     forwards get a 301 to https (GET and HEAD; 400 otherwise), and secret values
                     sent over x-forwarded-proto: https are accepted
+  LONGSHORE_DATABASE_URL  Postgres connection URL (default for --database-url); every subcommand that opens
+                    the database uses it. Without it the database is SQLite in the data dir
   LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   LONGSHORE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
@@ -412,6 +415,8 @@ async function serve(args: string[]): Promise<void> {
       port: { type: "string", default: d.port },
       host: { type: "string", default: d.host },
       "data-dir": { type: "string", default: d.dataDir },
+      // Read before anything else loads (db/dialect.ts); declared so strict parsing accepts it.
+      "database-url": { type: "string" },
       "allowed-origin": { type: "string", multiple: true },
       "public-url": { type: "string" },
       roles: { type: "string" },
