@@ -139,7 +139,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             const verdict = readiness(
               c.job,
               depStates(c.job, siblings, await latestReasons(tx, scope, c.job.runId)),
-            );
+            ).decision;
             if (verdict === "wait") continue;
             if (verdict === "skip" || verdict === "cancel") {
               await resolveDependents(tx, scope, c.job.runId, readiness);

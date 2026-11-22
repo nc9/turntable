@@ -853,3 +853,61 @@ test("ingest refuses unknown needs, cycles, self-dependencies and more than 256 
     ]),
   ).toMatch(/duplicate/);
 });
+
+test("ingest_status narrows to the project for a project-scoped token", async () => {
+  resetIngestStatus();
+  const { dispatch, registry } = await import("../src/ops");
+  const { mintToken } = await import("./ops-helpers");
+  const { createProject, getOrgById } = await import("../src/db");
+  const org = (await getOrgById(db, scope.orgId))!;
+  const second = await createProject(
+    db,
+    { orgId: scope.orgId },
+    { slug: "second", name: "Second" },
+  );
+  const cfg = pollConfigSchema.parse({
+    allowUnauthenticated: true,
+    repos: [
+      { repo: "acme/web", workflow: ".github/workflows/ci.yml", defaultBranch: "main" },
+      {
+        repo: "acme/other",
+        org: org.slug,
+        project: "second",
+        workflow: "w.yml",
+        defaultBranch: "main",
+      },
+    ],
+  });
+  const poller = new Poller({ db, config: cfg, fetch: makeGithub().fetch });
+  await poller.pollAll(); // acme/other errors (the stub has no such repo); both are tracked
+  const call = async (secret: string, input: object = {}) => {
+    const res = await dispatch(
+      { registry, db },
+      { kind: "bearer", token: secret },
+      "ingest_status",
+      input,
+    );
+    if (!res.ok) throw new Error(res.error.message);
+    return res.output as { repos: { repo: string }[]; rate_limit: unknown };
+  };
+  const orgWide = (await mintToken(db, { orgId: scope.orgId }, "reader")).secret;
+  expect((await call(orgWide)).repos.map((r) => r.repo).toSorted()).toEqual([
+    "acme/other",
+    "acme/web",
+  ]);
+  expect((await call(orgWide, { project: "second" })).repos.map((r) => r.repo)).toEqual([
+    "acme/other",
+  ]);
+
+  const pinnedLocal = (await mintToken(db, scope, "reader")).secret;
+  expect((await call(pinnedLocal)).repos.map((r) => r.repo)).toEqual(["acme/web"]);
+
+  // a token pinned to a project nothing polls sees nothing, and no budget
+  const quiet = await createProject(db, { orgId: scope.orgId }, { slug: "quiet", name: "Quiet" });
+  const pinnedQuiet = (await mintToken(db, { orgId: scope.orgId, projectId: quiet.id }, "reader"))
+    .secret;
+  const none = await call(pinnedQuiet);
+  expect(none.repos).toEqual([]);
+  expect(none.rate_limit).toBeNull();
+  void second;
+});

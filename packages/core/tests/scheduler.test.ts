@@ -31,6 +31,7 @@ import {
 } from "../src/db";
 import { readLog } from "../src/db";
 import { reconcileExpired, Scheduler, type AttemptRunner } from "../src/scheduler";
+import type { Readiness } from "../src/db";
 
 let db: Db;
 const T0 = 1_800_000_000_000;
@@ -80,6 +81,8 @@ async function queueRun(
     | "docs"
     | "lint"
     | "extra"
+    | "p"
+    | "q"
     | "root"
     | "cleanup"
     | "x"
@@ -809,47 +812,65 @@ test("a job a filter skipped satisfies its dependents; one skipped for a depende
   expect((await claim("w"))?.job.jobKey).toBe("b");
 });
 
-test("the readiness interface is pluggable: always(), and a cancel policy", async () => {
+test("the readiness interface is pluggable: always(), a cancel policy, and the jobReadiness shape", async () => {
+  const { adaptNeedsReadiness } = await import("../src/db");
   const s = await seedOrg("a");
+  const TERMINAL = ["success", "failure", "skipped", "cancelled", "infra_error"];
   // always(): run after any outcome of the dependencies
-  const alwaysRun = (job: { needs: string }, deps: { state: string }[]) =>
-    deps.every((d) =>
-      ["success", "failure", "skipped", "cancelled", "infra_error"].includes(d.state),
-    )
-      ? "ready"
-      : "wait";
+  const alwaysRun: Readiness = (_job, deps) =>
+    deps.every((d) => TERMINAL.includes(d.state)) ? { decision: "ready" } : { decision: "wait" };
   const q = await queueRun(s, ["build", "cleanup"], { cleanup: ["build"] });
-  await claim("w", { readiness: alwaysRun as never });
+  await claim("w", { readiness: alwaysRun });
   expect(
     await finishAttempt(db, s, {
       attemptId: q.build.attemptId,
       owner: "w",
       state: "failure",
       exitCode: 1,
-      readiness: alwaysRun as never,
+      readiness: alwaysRun,
     }),
   ).toBe(true);
   expect((await getJob(db, s, q.cleanup.jobId))?.state).toBe("queued"); // not skipped
-  expect((await claim("w", { readiness: alwaysRun as never }))?.job.jobKey).toBe("cleanup");
+  expect((await claim("w", { readiness: alwaysRun }))?.job.jobKey).toBe("cleanup");
 
   // a policy that cancels instead of skipping
-  const cancelPolicy = (job: { needs: string }, deps: { state: string }[]) =>
+  const cancelPolicy: Readiness = (_job, deps) =>
     deps.some((d) => d.state === "failure")
-      ? "cancel"
+      ? { decision: "cancel", reason: "a dependency failed" }
       : deps.every((d) => d.state === "success")
-        ? "ready"
-        : "wait";
+        ? { decision: "ready" }
+        : { decision: "wait" };
   const q2 = await queueRun(s, ["x", "y"], { y: ["x"] });
-  const c2 = (await claim("w", { readiness: cancelPolicy as never }))!;
+  const c2 = (await claim("w", { readiness: cancelPolicy }))!;
   expect(c2.job.jobKey).toBe("x");
   await finishAttempt(db, s, {
     attemptId: q2.x.attemptId,
     owner: "w",
     state: "failure",
     exitCode: 1,
-    readiness: cancelPolicy as never,
+    readiness: cancelPolicy,
   });
   expect((await getJob(db, s, q2.y.jobId))?.state).toBe("cancelled");
+
+  // a function shaped like act-runner's jobReadiness(plannedJob, needs) plugs in via one adapter
+  type Planned = { key: string };
+  const needsStyle = (planned: Planned, needs: Record<string, { state: string }>) =>
+    Object.values(needs).some((n) => n.state === "failure")
+      ? ({ decision: "skip", reason: `${planned.key}: a need failed` } as const)
+      : Object.values(needs).every((n) => n.state === "success")
+        ? ({ decision: "ready" } as const)
+        : ({ decision: "wait" } as const);
+  const plugged = adaptNeedsReadiness(needsStyle, (job) => ({ key: job.jobKey }));
+  const q3 = await queueRun(s, ["p", "q"], { q: ["p"] });
+  expect((await claim("w", { readiness: plugged }))?.job.jobKey).toBe("p");
+  await finishAttempt(db, s, {
+    attemptId: q3.p.attemptId,
+    owner: "w",
+    state: "failure",
+    exitCode: 1,
+    readiness: plugged,
+  });
+  expect((await getJob(db, s, q3.q.jobId))?.state).toBe("skipped");
 });
 
 test("rerunning a failed job brings back the dependents that were skipped because of it", async () => {

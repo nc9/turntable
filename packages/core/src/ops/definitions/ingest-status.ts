@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getOrgById } from "../../db/repos";
+import { getOrgById, getProject } from "../../db/repos";
 import { ingestStatus } from "../../poll/status";
 import { iso } from "../common";
 import { defineOp } from "../define";
@@ -47,8 +47,15 @@ export const ingestStatusOp = defineOp({
   http: { method: "GET", path: "/ingest/status" },
   async handler(ctx) {
     const org = await getOrgById(ctx.db, ctx.scope.orgId);
-    // Only this org's repos. The budget is the instance's token budget: shown when the org polls.
-    const repos = [...ingestStatus.repos.values()].filter((r) => r.org === org?.slug);
+    // Only this org's repos, and for a project-scoped caller only that project's. The budget is
+    // the instance's token budget: shown only when the narrowed list is not empty.
+    const project =
+      ctx.scope.projectId === undefined
+        ? undefined
+        : await getProject(ctx.db, { orgId: ctx.scope.orgId }, ctx.scope.projectId);
+    const repos = [...ingestStatus.repos.values()].filter(
+      (r) => r.org === org?.slug && (project === undefined || r.project === project.slug),
+    );
     const rate = ingestStatus.rateLimit;
     return {
       running: ingestStatus.running,
