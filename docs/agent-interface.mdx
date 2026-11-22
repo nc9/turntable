@@ -72,6 +72,9 @@ No token role reaches `admin`, so a token can never create tokens.
 | `cancel` | destructive | operator | Cancel the queued, running and waiting jobs of a run. Audited. |
 | `list_secrets` | read | release_operator | The org's (or one project's) secrets: names, scopes, allowed trust classes, destination hosts, versions, last use. Never values. Cursor paging. |
 | `delete_secret` | destructive | release_operator | Delete a secret and every version. Audited. |
+| `approval_status` | read | reader | For a run: the sha and workflow hash an approval binds, each environment waiting on a human, the people required and who has approved. |
+| `approvers_overview` | read | reader | Enrolled approver keys, enrolments waiting for a quorum, and the per-environment approval policy. |
+| `submit_approval` | write | operator | Relay an approval statement a human already signed. It cannot create or alter one. |
 | `incident_freeze` | destructive | release_operator | Incident response: stop scheduling for the org or a project, kill running jobs, drop cached tokens, flag secret names for rotation. Audited. See [Incident response](/security#incident-response). |
 | `incident_unfreeze` | write | release_operator | Resume scheduling. Clears the pause only; rotation flags stay. Audited. |
 | `incident_status` | read | reader | Whether the scope is frozen, why, and how many secrets still need rotation. Their names are listed only for release_operator and above. |
@@ -79,6 +82,8 @@ No token role reaches `admin`, so a token can never create tokens.
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
 Secret values are set only through the REST API (over https) or `longshore secret set`, never through MCP or the OpenAPI agent description: see [Secrets vault](/secrets-vault).
+
+Two more operations are signature operations: `approve_environment` (`POST /api/v1/approvals`) and `approve_enrolment` (`POST /api/v1/approvers/approve`). They take no bearer token and are never MCP tools. The request carries a statement an enrolled approver signed, and the signature is the credential. See [Human approvals](/security#human-approvals).
 
 `checks_for_sha` takes the latest run of each workflow for the full commit sha. Any failure, infrastructure error or cancellation is `RED`. Anything queued, running or waiting for approval is `PENDING`. Every workflow counts as required until required-check configuration exists.
 

@@ -175,3 +175,40 @@ describe("local actions outside the repository", () => {
     expect(reads.every((p) => p.startsWith(".github/actions/ok/"))).toBe(true);
   });
 });
+
+describe("job environment", () => {
+  const wf = (env: string) => `
+name: Release
+on: push
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    ${env}
+    steps:
+      - run: echo deploy
+  plain:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+  const plan = (env: string) =>
+    planWorkflow(wf(env), push, { readFile }).jobs.find((j) => j.id === "deploy")!;
+
+  test("a literal name, or the name of a mapping, is recorded", () => {
+    expect(plan("environment: production").environment).toBe("production");
+    expect(plan("environment:\n      name: release\n      url: https://x").environment).toBe(
+      "release",
+    );
+    expect(
+      planWorkflow(wf("environment: production"), push, { readFile }).jobs.find(
+        (j) => j.id === "plain",
+      )?.environment,
+    ).toBeUndefined();
+  });
+
+  test("an environment built from an expression cannot be gated, so the job is refused", () => {
+    const j = plan("environment: ${{ github.ref_name }}");
+    expect(j.environment).toBeUndefined();
+    expect(j.unsupported).toContain("environment");
+  });
+});

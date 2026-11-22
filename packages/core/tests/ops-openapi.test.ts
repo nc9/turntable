@@ -43,7 +43,10 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
       expect(ids.has(op.operationId)).toBe(false);
       ids.add(op.operationId);
       expect(op.responses["200"].content["application/json"].schema.type).toBe("object");
-      expect(op.security).toEqual([{ bearerAuth: [] }]);
+      // Signature ops take a signed statement, not a bearer token.
+      expect(op.security).toEqual(
+        registry.get(op.operationId)?.auth.type === "signature" ? [] : [{ bearerAuth: [] }],
+      );
       // every {param} in the path is declared, required, and in: path
       for (const m of path.matchAll(/\{(\w+)\}/g)) {
         const p = (op.parameters ?? []).find((x: any) => x.name === m[1]);
@@ -61,8 +64,10 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
     expect(target).toBeDefined();
   }
   expect([...ids].toSorted()).toEqual(
-    registry
-      .mcpOps()
+    [
+      ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
+      ...registry.signatureOps(),
+    ]
       .map((o) => o.name)
       .toSorted(),
   );
@@ -89,8 +94,22 @@ test("MCP tool list equals the registry minus signature ops", () => {
   expect(mcpTools(registry).map((t) => t.name)).toEqual(registry.mcpOps().map((o) => o.name));
   // Ops that carry a secret value are REST and CLI only: never in an agent's tool list.
   const hiddenFromMcp = registry.documentedOps().filter((o) => !o.mcp);
-  expect(hiddenFromMcp.map((o) => o.name).toSorted()).toEqual(["rotate_secret", "set_secret"]);
-  expect(hiddenFromMcp.every((o) => o.secretInputFields.length > 0)).toBe(true);
+  // Secret values never reach an agent's context; the approval ops that build a statement to be
+  // signed are REST, UI and CLI only too (an agent may relay a signed one, never make one).
+  expect(hiddenFromMcp.map((o) => o.name).toSorted()).toEqual([
+    "approval_challenge",
+    "enrolment_challenge",
+    "register_challenge",
+    "request_enrolment",
+    "rotate_secret",
+    "set_secret",
+  ]);
+  expect(
+    hiddenFromMcp
+      .filter((o) => o.secretInputFields.length > 0)
+      .map((o) => o.name)
+      .toSorted(),
+  ).toEqual(["rotate_secret", "set_secret"]);
 
   for (const tool of mcpTools(registry)) {
     expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
@@ -177,9 +196,12 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   );
   for (const op of registry.ops.filter((o) => o.auth.type !== "signature")) {
     const documented = registry.mcpOps().includes(op);
+    // OpenAPI lists every REST route that carries no secret value, MCP only the agent-safe ones.
+    const inOpenApi =
+      registry.documentedOps().includes(op) && (op.mcp || op.secretInputFields.length === 0);
     expect(tools.has(op.name)).toBe(documented);
-    expect(operationIds.has(op.name)).toBe(documented);
-    if (documented) {
+    expect(operationIds.has(op.name)).toBe(inOpenApi);
+    if (inOpenApi) {
       expect(doc.paths[op.http.path]?.[op.http.method.toLowerCase()]?.operationId).toBe(op.name);
     }
     // REST: the route exists. Unauthenticated, it answers 401, not 404 (no route) or 405.
@@ -195,8 +217,10 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
       .toSorted(),
   );
   expect([...operationIds].toSorted()).toEqual(
-    registry
-      .mcpOps()
+    [
+      ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
+      ...registry.signatureOps(),
+    ]
       .map((o) => o.name)
       .toSorted(),
   );

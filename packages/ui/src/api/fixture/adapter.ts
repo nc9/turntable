@@ -71,7 +71,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
   }, options.tickMs ?? 1000);
 
   const api: LongshoreApi = {
-    capabilities: { rerun: true, approve: true },
+    capabilities: { rerun: true, approve: true, humanApproval: true, simulatedCeremony: true },
     listOrgs: () => delay(() => world.orgs.map((o) => ({ ...o }))),
     listProjects: (orgId) =>
       delay(() => world.projects.filter((p) => p.orgId === orgId).map((p) => ({ ...p }))),
@@ -152,6 +152,28 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         }),
       ),
     ingestStatus: () => delay(() => world.ingestStatus()),
+    approvalStatus: ({ runId }) => delay(() => world.approvalStatus(runId)),
+    approversOverview: () => delay(() => world.approversOverview()),
+    approvalChallenge: ({ runId, environment, approver }) =>
+      delay(() => world.approvalChallenge(runId, environment, approver)),
+    approveEnvironment: ({ statement, signature }) =>
+      delay(() => world.approveEnvironment(statement, signature)),
+    registerChallenge: () =>
+      delay(() => ({
+        challenge: "cmVnaXN0ZXItY2hhbGxlbmdl",
+        rpId: "localhost",
+        expiresAt: Date.now() + 600_000,
+      })),
+    requestEnrolment: ({ person }) =>
+      delay(() => ({
+        enrolmentId: "en_new",
+        keyFingerprint: "c0".repeat(32),
+        required: 2,
+        expiresAt: Date.now() + 7 * 86_400_000,
+      })).then((r) => ({ ...r, person }) as typeof r),
+    enrolmentChallenge: ({ enrolmentId, approver }) =>
+      delay(() => world.enrolmentChallenge(enrolmentId, approver)),
+    approveEnrolment: ({ statement }) => delay(() => world.approveEnrolment(statement)),
     incidentStatus: () => delay(() => world.incidentStatus()),
     cancel: ({ runId }) => delay(() => void world.cancel(runId)),
     events: ({ cursor, limit }) =>

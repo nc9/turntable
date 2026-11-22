@@ -158,6 +158,43 @@ Longshore acts as an OIDC issuer so jobs can authenticate to cloud providers wit
 
 A signing service signs release artifacts and emits provenance, so signing keys never enter a sandbox. It is the planned substitute for GitHub artifact attestations.
 
+## Human approvals
+
+Unlike the sections around it, this one is implemented. A job in a protected environment waits for people, and only people can release it: no bearer token, session, agent or MCP call can approve. Issue [#46](https://github.com/nc9/turntable/issues/46).
+
+### What is signed
+
+A job whose workflow names `environment: production` (or `release`, or any environment with a configured policy) is created waiting in `awaiting_approval`. Approvers sign an **approval statement**: canonical JSON (sorted keys, no whitespace) of
+
+```json
+{ "type": "longshore.approve_environment.v1", "org": "acme", "project": "api",
+  "run_id": "...", "head_sha": "...", "workflow_hash": "...", "environment": "production",
+  "approver": "<approver key id>", "expires_at": 1767225600000, "nonce": "..." }
+```
+
+The signature is bound to that exact commit, workflow and environment. If any of them changes (a new push is a new run), or the statement expires (at most 7 days; 24 hours by default), the signature approves nothing. A statement is accepted once. The `type` field keeps a signature for one kind of statement from being replayed as another.
+
+### Two ways to sign
+
+- **WebAuthn (passkey or security key).** The UI calls `approval_challenge`; the server issues the statement and a single-use challenge equal to the hash of the statement. The browser signs it with the approver's passkey. The server checks the challenge, the origin, the relying party id, that the authenticator verified the person (PIN or biometric), the signature, and that the sign counter moved forward. Registration uses attestation "none": a key is trusted because existing approvers enrolled it, not because a vendor certified it. Set `LONGSHORE_PUBLIC_URL` (or `LONGSHORE_WEBAUTHN_RP_ID` and `LONGSHORE_WEBAUTHN_ORIGINS`) so the relying party is known; a passkey is bound to the relying party id, so changing it orphans every enrolled passkey. WebAuthn needs no change to the page's content security policy.
+- **Offline ed25519.** An approver key held off the machine signs the canonical statement text. `longshore approvals keygen` makes a key on the approver's own machine (the private key never leaves it) and `longshore approvals sign` signs a statement. The signature is uploaded to `POST /api/v1/approvals`, which takes no token: the signature is the credential.
+
+An agent may relay a statement a human already signed (the `submit_approval` tool). It cannot create a statement for signing, and a token without a human's valid signature approves nothing. `approval_challenge` is not an MCP tool.
+
+### Two-person rule
+
+Each environment needs a number of distinct people. The default is 2 for `production` and `release`, and 1 for any other environment you configure. Distinct means different people, not different keys: one person with two keys counts once. Set it with `longshore approvals policy --org acme --environment production --required 3`.
+
+**The author of a run cannot approve it.** The rule uses the approver's forge login (set it when enrolling), compared with the run's author. `--allow-author-approval` turns the rule off for an environment. That is for a solo setup only, and it removes the guarantee that a second person looked: with it, the person who pushed the change can release it alone. Leave it off wherever more than one person can push. An approver enrolled without a forge login cannot be recognised as an author, so give every approver one.
+
+### Enrolling approvers
+
+The first approver of an org comes from the server's CLI, the local trust root: `longshore approvals bootstrap --org acme --person alice --forge-login alice-gh --public-key alice.pub`. After that the CLI refuses, and the API refuses to enrol the first one. Every further key needs a quorum of existing approvers: someone requests an enrolment (`request_enrolment`, with a passkey registration or an ed25519 public key), and existing approvers sign it with `approve_enrolment` (the UI's Approvers page does this). The quorum is the production policy's count, capped by how many other people could sign, and a person cannot approve their own new key. Revoke a key with `longshore approvals revoke`.
+
+### For the signing service
+
+`ApprovalVerifier.verify(subject, environment)` (in `approvals/verifier.ts`) is what the release lane calls before it acts. It never trusts a stored flag: it re-verifies each stored statement against the approver keys (the org's, or the caller's own key store), checks the statement binds exactly this run, sha, workflow and environment, drops expired, revoked and self-approved ones, and requires the policy's number of distinct people.
+
 ## Incident response
 
 Unlike the sections above, this one is implemented. When a secret may have leaked or a runner is compromised, one operation stops the bleeding and a second tells you how far it reached.

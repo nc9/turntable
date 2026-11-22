@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type {
+  WireApprovalStatus,
+  WireApprovers,
+  WireChallenge,
+  WireEnrolmentApproval,
+  WireEnrolmentRequest,
+  WireEnvironmentApproval,
+  WireRegisterChallenge,
   WireApprove,
   WireAttempt,
   WireChecks,
@@ -360,6 +367,130 @@ test("run and job metadata from #66 are in the spec", () => {
   }
   const jobs = (run.jobs as { items: { properties: Record<string, unknown> } }).items.properties;
   for (const key of ["needs", "matrix", "approval_kind"]) expect(jobs).toHaveProperty(key);
+});
+
+test("human approvals: status, approvers, challenges, enrolment and the signature routes", () => {
+  const status = ok(op("/approvals/status", "get"));
+  expectKeys(
+    status,
+    keysOf<WireApprovalStatus>({
+      run_id: true,
+      head_sha: true,
+      workflow_hash: true,
+      author: true,
+      environments: true,
+    }),
+  );
+  expectKeys(status.properties!.environments!.items!, [
+    "environment",
+    "required",
+    "allow_author_approval",
+    "waiting",
+    "approvals",
+  ]);
+  const approvers = ok(op("/approvers", "get"));
+  expectKeys(
+    approvers,
+    keysOf<WireApprovers>({ approvers: true, pending_enrolments: true, policies: true }),
+  );
+  expectKeys(approvers.properties!.approvers!.items!, [
+    "id",
+    "person",
+    "forge_login",
+    "kind",
+    "passkey_id",
+    "created_at",
+  ]);
+  expectKeys(approvers.properties!.pending_enrolments!.items!, [
+    "id",
+    "person",
+    "kind",
+    "key_fingerprint",
+    "approvals",
+    "required",
+    "expires_at",
+  ]);
+  for (const path of ["/approvals/challenge", "/approvers/challenge"]) {
+    expectKeys(
+      ok(op(path, "post")),
+      keysOf<WireChallenge>({
+        statement: true,
+        canonical: true,
+        statement_hash: true,
+        challenge: true,
+        rp_id: true,
+        passkey_id: true,
+        challenge_expires_at: true,
+      }),
+    );
+  }
+  expect(
+    Object.keys(
+      op("/approvals/challenge", "post").requestBody!.content["application/json"].schema
+        .properties!,
+    ),
+  ).toEqual(expect.arrayContaining(["run_id", "environment", "approver", "project", "org"]));
+  expectKeys(
+    ok(op("/approvers/register-challenge", "post")),
+    keysOf<WireRegisterChallenge>({ challenge: true, rp_id: true, expires_at: true }),
+  );
+  expectKeys(
+    ok(op("/approvers/enrolments", "post")),
+    keysOf<WireEnrolmentRequest>({
+      enrolment_id: true,
+      kind: true,
+      key_fingerprint: true,
+      required: true,
+      expires_at: true,
+    }),
+  );
+  // The signature routes take no bearer token: the document says so (security: []).
+  for (const [path, keys] of [
+    [
+      "/approvals",
+      keysOf<WireEnvironmentApproval>({
+        run_id: true,
+        environment: true,
+        approvals: true,
+        required: true,
+        released_jobs: true,
+        state: true,
+      }),
+    ],
+    [
+      "/approvers/approve",
+      keysOf<WireEnrolmentApproval>({
+        enrolment_id: true,
+        approvals: true,
+        required: true,
+        activated: true,
+        approver_id: true,
+      }),
+    ],
+  ] as const) {
+    const o = op(path, "post") as Op & { security?: unknown[] };
+    expect(o.security).toEqual([]);
+    expectKeys(ok(o), keys);
+    const req = o.requestBody!.content["application/json"].schema.properties!;
+    expect(Object.keys(req)).toEqual(expect.arrayContaining(["statement", "signature"]));
+  }
+  // The environment statement binds exactly these fields.
+  const stmt = (
+    op("/approvals", "post").requestBody!.content["application/json"].schema.properties!
+      .statement as Schema
+  ).properties!;
+  expect(Object.keys(stmt).toSorted()).toEqual([
+    "approver",
+    "environment",
+    "expires_at",
+    "head_sha",
+    "nonce",
+    "org",
+    "project",
+    "run_id",
+    "type",
+    "workflow_hash",
+  ]);
 });
 
 test("incident_status", () => {

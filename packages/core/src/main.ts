@@ -15,6 +15,7 @@ import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/e
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
 import { SecretStore } from "./secrets/store";
+import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { SecretVault } from "./secrets/vault";
@@ -62,6 +63,7 @@ Usage:
   longshore policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
   longshore policy set --checks-mode <off|shadow|live> [--org local] [--project <slug>]
   longshore mcp [--token-file <path>] [--data-dir ./data]
+  longshore approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
@@ -84,6 +86,7 @@ Environment:
   LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control, so secret values
                     sent through it over x-forwarded-proto: https are accepted
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
+  LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
   LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
@@ -369,6 +372,9 @@ async function serve(args: string[]): Promise<void> {
     sinks.push(webhookSink(exportUrl, secret ? { secret } : {}));
   }
   if (sinks.length > 0) auditStops.push(startExporter(db, sinks));
+  const webauthn = relyingPartyFromEnv(
+    values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
+  );
   const server = startServer({
     port,
     host: values.host,
@@ -376,6 +382,7 @@ async function serve(args: string[]): Promise<void> {
     allowedOrigins,
     ...(webhooks ? { webhooks } : {}),
     ...(vault ? { vault } : {}),
+    ...(webauthn ? { webauthn } : {}),
     ...(oidc ? { oidc } : {}),
     trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
   });
@@ -523,6 +530,10 @@ async function main(argv: string[]): Promise<void> {
     case "mcp": {
       const { mcpCommand } = await import("./mcp/cli");
       return await mcpCommand(rest);
+    }
+    case "approvals": {
+      const { approvalsCommand } = await import("./approvals/cli");
+      process.exit(await approvalsCommand(rest));
     }
     case "incident": {
       const { incidentCommand } = await import("./incident/cli");

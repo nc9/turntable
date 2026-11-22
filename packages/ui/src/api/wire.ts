@@ -197,6 +197,86 @@ export type WireIngestStatus = {
   }[];
 };
 
+export type WireApprovalStatus = {
+  run_id: string;
+  head_sha: string | null;
+  workflow_hash: string | null;
+  author: string | null;
+  environments: {
+    environment: string;
+    required: number;
+    allow_author_approval: boolean;
+    waiting: boolean;
+    approvals: {
+      person: string;
+      method: "webauthn" | "ed25519";
+      approved_at: string;
+      expires_at: string;
+    }[];
+  }[];
+};
+
+export type WireApprovers = {
+  approvers: {
+    id: string;
+    person: string;
+    forge_login: string | null;
+    kind: "webauthn" | "ed25519";
+    passkey_id: string | null;
+    created_at: string;
+  }[];
+  pending_enrolments: {
+    id: string;
+    person: string;
+    kind: "webauthn" | "ed25519";
+    key_fingerprint: string;
+    approvals: number;
+    required: number;
+    expires_at: string;
+  }[];
+  policies: {
+    environment: string;
+    required: number;
+    allow_author_approval: boolean;
+    source: "configured" | "default";
+  }[];
+};
+
+export type WireChallenge = {
+  statement: Record<string, unknown>;
+  canonical: string;
+  statement_hash: string;
+  challenge: string;
+  rp_id: string | null;
+  passkey_id: string | null;
+  challenge_expires_at: string;
+};
+
+export type WireEnvironmentApproval = {
+  run_id: string;
+  environment: string;
+  approvals: number;
+  required: number;
+  released_jobs: number;
+  state: string;
+};
+
+export type WireRegisterChallenge = { challenge: string; rp_id: string; expires_at: string };
+export type WireEnrolmentRequest = {
+  enrolment_id: string;
+  kind: "webauthn" | "ed25519";
+  key_fingerprint: string;
+  required: number;
+  expires_at: string;
+};
+export type WireEnrolmentApproval = {
+  enrolment_id: string;
+  approvals: number;
+  required: number;
+  activated: boolean;
+  approver_id: string | null;
+};
+
 export type WireIncident = {
   frozen: boolean;
   level: "org" | "project" | null;

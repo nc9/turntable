@@ -12,8 +12,10 @@ import {
   touchApiToken,
 } from "../db/repos";
 import type { Op, OpContext } from "./define";
+import type { RelyingParty } from "../approvals/webauthn";
 import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
+import { authenticateSigned } from "./signed";
 import type { Credential, Principal } from "./principal";
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
@@ -25,6 +27,8 @@ export type DispatchEnv = {
   now?: () => number;
   /** Set when the server has a master key; the vault ops need it. */
   vault?: SecretVault | undefined;
+  /** WebAuthn relying party for human approvals (LONGSHORE_PUBLIC_URL or the WEBAUTHN vars). */
+  webauthn?: RelyingParty | undefined;
 };
 
 export type DispatchResult =
@@ -67,6 +71,8 @@ const unknownTokenSource = (c: Credential): string =>
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(env: DispatchEnv, credential: Credential): Promise<Principal> {
   if (credential.kind === "principal") return credential.principal;
+  // A signed request is authenticated against its input, by authenticateSigned.
+  if (credential.kind === "signed") throw new AuthFailure();
   const token = credential.token;
   // One message for every failure, so a caller cannot tell a wrong token from a revoked one.
   if (!looksLikeToken(token)) throw new AuthFailure();
@@ -191,7 +197,17 @@ export async function dispatch(
   try {
     let principal: Principal;
     try {
-      principal = await authenticate(env, credential);
+      if (credential.kind === "signed") {
+        const signedOp = env.registry.get(name);
+        if (!signedOp) throw new OpError("not_found", `unknown operation: ${name}`);
+        if (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput))
+          throw new OpError("invalid_input", "input must be a JSON object");
+        const r = await authenticateSigned(env, signedOp, rawInput as Record<string, unknown>);
+        principal = r.principal;
+        rawInput = r.raw;
+      } else {
+        principal = await authenticate(env, credential);
+      }
     } catch (err) {
       // An authentication failure has no scope yet; it is audited in the token's org, or in the
       // system chain when the token names none (throttled either way).
@@ -213,8 +229,12 @@ export async function dispatch(
     if (!op) throw new OpError("not_found", `unknown operation: ${name}`);
     // Signature ops need a human-signed assertion. No bearer token or in-process principal
     // carries one, so they are refused here, not just left out of adapters.
-    if (op.auth.type === "signature") {
+    if (op.auth.type === "signature" && credential.kind !== "signed") {
       throw new OpError("signature_required", `${op.name} requires a human signature`);
+    }
+    // An approver principal is proof of one signed statement, good for signature ops only.
+    if (principal.kind === "approver" && op.auth.type !== "signature") {
+      throw new OpError("forbidden", `${op.name} does not take a signed request`);
     }
     if (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput)) {
       throw new OpError("invalid_input", "input must be a JSON object");
@@ -232,7 +252,7 @@ export async function dispatch(
         input: redactInput(op!, input),
       }).catch(() => {});
 
-    if (!roleSatisfies(principal.role, op.auth.minRole)) {
+    if (op.auth.type !== "signature" && !roleSatisfies(principal.role, op.auth.minRole)) {
       if (audited) await audit("error:forbidden", raw);
       throw new OpError("forbidden", `${op.name} requires role ${op.auth.minRole}`);
     }
@@ -249,6 +269,7 @@ export async function dispatch(
       principal,
       now: env.now ?? Date.now,
       vault: env.vault,
+      webauthn: env.webauthn,
     });
     const target = op;
     if (!audited) {

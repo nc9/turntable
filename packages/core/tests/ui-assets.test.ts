@@ -61,3 +61,16 @@ test("without a registered UI the placeholder remains", async () => {
   expect(await res.text()).toContain("web UI is not built yet");
   expect((await get("/some/route")).status).toBe(404);
 });
+
+test("the policy leaves WebAuthn working: no permissions policy blocks it, and the CSP needs no WebAuthn source", async () => {
+  fixture();
+  const res = await get("/");
+  // WebAuthn (navigator.credentials) is allowed on a top-level page unless a Permissions-Policy
+  // turns publickey-credentials-get/create off; none is sent. The CSP has no directive that
+  // gates it, so it needs no change for the approval pages.
+  expect(res.headers.get("permissions-policy")).toBeNull();
+  const csp = uiCsp("localhost");
+  expect(csp).not.toMatch(/publickey|webauthn/i);
+  expect(csp).toContain("script-src 'self'");
+  expect(csp).toContain("frame-ancestors 'none'");
+});

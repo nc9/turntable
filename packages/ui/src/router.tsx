@@ -7,6 +7,8 @@ import { RunsPage } from "@/features/runs/runs-page";
 import { RunPage } from "@/features/runs/run-page";
 import { JobPage } from "@/features/runs/job-page";
 import { IngestPage } from "@/features/runs/ingest-page";
+import { ApproveEnvironmentPage } from "@/features/runs/approve-environment-page";
+import { ApproversPage } from "@/features/runs/approvers-page";
 import { SettingsPage } from "@/features/runs/settings-page";
 
 export type RunsSearch = {
@@ -66,6 +68,20 @@ const jobRoute = createRoute({
   },
 });
 
+const approveRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/$project/runs/$runId/approve",
+  component: ApproveEnvironmentPage,
+  validateSearch: (s: Record<string, unknown>): { environment?: string } =>
+    typeof s.environment === "string" && s.environment ? { environment: s.environment } : {},
+});
+
+const approversRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/approvers",
+  component: ApproversPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$org/$project/settings",
@@ -79,6 +95,8 @@ const routeTree = rootRoute.addChildren([
   runsRoute,
   runRoute,
   jobRoute,
+  approveRoute,
+  approversRoute,
   settingsRoute,
 ]);
 

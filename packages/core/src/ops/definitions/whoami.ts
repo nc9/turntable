@@ -34,6 +34,8 @@ export const whoami = defineOp({
   http: { method: "GET", path: "/whoami" },
   async handler(ctx) {
     const p = ctx.principal;
+    // whoami is a token op: the dispatcher never gives it an approver principal.
+    if (p.kind === "approver") throw new OpError("forbidden", "not available to an approver key");
     const org = await getOrgById(ctx.db, p.orgId);
     if (!org) throw new OpError("not_found", "org not found");
     const grantProjectId = p.kind === "token" ? p.projectId : null;

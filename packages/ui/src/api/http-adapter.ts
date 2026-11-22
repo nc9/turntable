@@ -1,7 +1,13 @@
 import type { ApiCapabilities, LongshoreApi } from "./client";
 import { stepEvents } from "./step-events";
 import type {
+  ApprovalChallenge,
+  ApprovalStatement,
+  ApprovalStatus,
+  ApproversOverview,
   ApproveResult,
+  EnrolStatement,
+  EnvironmentApprovalResult,
   CheckSummary,
   CutRecord,
   GrepHit,
@@ -22,6 +28,13 @@ import type {
   StepEvent,
 } from "./types";
 import type {
+  WireApprovalStatus,
+  WireApprovers,
+  WireChallenge,
+  WireEnrolmentApproval,
+  WireEnrolmentRequest,
+  WireEnvironmentApproval,
+  WireRegisterChallenge,
   WireAttempt,
   WireChecks,
   WireApprove,
@@ -94,6 +107,18 @@ export function parseGrep(text: string): GrepHit[] {
 
 function branchOf(ref: string): string {
   return ref.replace(/^refs\/(heads|tags)\//, "");
+}
+
+function challengeOf<S>(w: WireChallenge): ApprovalChallenge<S> {
+  return {
+    statement: w.statement as S,
+    canonical: w.canonical,
+    statementHash: w.statement_hash,
+    challenge: w.challenge,
+    rpId: w.rp_id,
+    passkeyId: w.passkey_id,
+    challengeExpiresAt: ms(w.challenge_expires_at) ?? 0,
+  };
 }
 
 export function mapRun(w: WireRun, org: string): Run {
@@ -229,7 +254,12 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
   };
 
   const api: LongshoreApi = {
-    capabilities: { rerun: true, approve: true } satisfies ApiCapabilities,
+    capabilities: {
+      rerun: true,
+      approve: true,
+      humanApproval: true,
+      simulatedCeremony: false,
+    } satisfies ApiCapabilities,
 
     async listOrgs(): Promise<Org[]> {
       const w = await call<WireOrgs>("GET", "/orgs", { limit: 100 });
@@ -474,6 +504,147 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
           flaggedBy: r.flagged_by,
           flaggedAt: r.flagged_at,
         })),
+      };
+    },
+
+    async approvalStatus({ runId }): Promise<ApprovalStatus> {
+      const w = await call<WireApprovalStatus>("GET", "/approvals/status", {
+        org: org(),
+        run_id: runId,
+      });
+      return {
+        runId: w.run_id,
+        headSha: w.head_sha,
+        workflowHash: w.workflow_hash,
+        author: w.author,
+        environments: w.environments.map((e) => ({
+          environment: e.environment,
+          required: e.required,
+          allowAuthorApproval: e.allow_author_approval,
+          waiting: e.waiting,
+          approvals: e.approvals.map((a) => ({
+            person: a.person,
+            method: a.method,
+            approvedAt: ms(a.approved_at) ?? 0,
+            expiresAt: ms(a.expires_at) ?? 0,
+          })),
+        })),
+      };
+    },
+
+    async approversOverview(): Promise<ApproversOverview> {
+      const w = await call<WireApprovers>("GET", "/approvers", { org: org() });
+      return {
+        approvers: w.approvers.map((a) => ({
+          id: a.id,
+          person: a.person,
+          forgeLogin: a.forge_login,
+          kind: a.kind,
+          passkeyId: a.passkey_id,
+          createdAt: ms(a.created_at) ?? 0,
+        })),
+        pendingEnrolments: w.pending_enrolments.map((e) => ({
+          id: e.id,
+          person: e.person,
+          kind: e.kind,
+          keyFingerprint: e.key_fingerprint,
+          approvals: e.approvals,
+          required: e.required,
+          expiresAt: ms(e.expires_at) ?? 0,
+        })),
+        policies: w.policies.map((p) => ({
+          environment: p.environment,
+          required: p.required,
+          allowAuthorApproval: p.allow_author_approval,
+          source: p.source,
+        })),
+      };
+    },
+
+    async approvalChallenge({ runId, environment, approver, project }) {
+      const w = await call<WireChallenge>(
+        "POST",
+        "/approvals/challenge",
+        {},
+        { run_id: runId, environment, approver, org: org(), project },
+      );
+      return challengeOf<ApprovalStatement>(w);
+    },
+
+    async approveEnvironment({ statement, signature }): Promise<EnvironmentApprovalResult> {
+      // The signature is the credential; the server ignores the bearer token on this route.
+      const w = await call<WireEnvironmentApproval>(
+        "POST",
+        "/approvals",
+        {},
+        { statement, signature },
+      );
+      return {
+        runId: w.run_id,
+        environment: w.environment,
+        approvals: w.approvals,
+        required: w.required,
+        releasedJobs: w.released_jobs,
+        state: w.state,
+      };
+    },
+
+    async registerChallenge() {
+      const w = await call<WireRegisterChallenge>(
+        "POST",
+        "/approvers/register-challenge",
+        {},
+        { org: org() },
+      );
+      return { challenge: w.challenge, rpId: w.rp_id, expiresAt: ms(w.expires_at) ?? 0 };
+    },
+
+    async requestEnrolment({ person, forgeLogin, webauthn }) {
+      const w = await call<WireEnrolmentRequest>(
+        "POST",
+        "/approvers/enrolments",
+        {},
+        {
+          person,
+          ...(forgeLogin ? { forge_login: forgeLogin } : {}),
+          webauthn: {
+            challenge: webauthn.challenge,
+            client_data_json: webauthn.clientDataJson,
+            attestation_object: webauthn.attestationObject,
+          },
+          org: org(),
+        },
+      );
+      return {
+        enrolmentId: w.enrolment_id,
+        keyFingerprint: w.key_fingerprint,
+        required: w.required,
+        expiresAt: ms(w.expires_at) ?? 0,
+      };
+    },
+
+    async enrolmentChallenge({ enrolmentId, approver }) {
+      const w = await call<WireChallenge>(
+        "POST",
+        "/approvers/challenge",
+        {},
+        { enrolment_id: enrolmentId, approver, org: org() },
+      );
+      return challengeOf<EnrolStatement>(w);
+    },
+
+    async approveEnrolment({ statement, signature }) {
+      const w = await call<WireEnrolmentApproval>(
+        "POST",
+        "/approvers/approve",
+        {},
+        { statement, signature },
+      );
+      return {
+        enrolmentId: w.enrolment_id,
+        approvals: w.approvals,
+        required: w.required,
+        activated: w.activated,
       };
     },
 

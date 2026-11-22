@@ -13,6 +13,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { getEnvPolicy, plannedEnvironment } from "./approvals";
 import { requireProject, type Scope, scoped } from "./scope";
 
 const SEEN_COLS = { orgId: s.pollSeen.orgId, projectId: s.pollSeen.projectId };
@@ -94,6 +95,14 @@ async function insertPlannedRun(
 ): Promise<Run> {
   const run = await createRun(tx, scope, input.run);
   for (const job of input.jobs) {
+    // A job in a protected environment waits for human approval from the moment it exists (an
+    // untrusted run is already held whole). A local run is the developer's own and is not gated.
+    const environment = plannedEnvironment(job.planned);
+    const gated =
+      !input.hold &&
+      !input.run.local &&
+      environment !== undefined &&
+      (await getEnvPolicy(tx, scope.orgId, environment)).gated;
     const created = await createJob(tx, scope, {
       runId: run.id,
       jobKey: job.key,
@@ -104,10 +113,11 @@ async function insertPlannedRun(
       // A held run's jobs wait for a human, from the moment they exist: in this same transaction,
       // so no scheduler tick can claim one in between.
       ...(input.hold ? { approvalKind: "untrusted_author" as const } : {}),
+      ...(gated ? { approvalKind: "environment" as const } : {}),
     });
     if (!created) continue;
     const attempt = await createAttempt(tx, scope, { jobId: created.id, provider: input.provider });
-    if (input.hold && attempt) {
+    if ((input.hold || gated) && attempt) {
       await transitionJob(tx, scope, created.id, "awaiting_approval");
       await updateAttempt(tx, scope, attempt.id, { state: "awaiting_approval" });
     }
