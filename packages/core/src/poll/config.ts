@@ -100,12 +100,14 @@ export const pollConfigSchema = z
 /**
  * What a project stores to have a repo ingested from its installation binding, with no entry in
  * the poll config. The same knobs as a poll repo, minus where it lands (the project) and which
- * repo (the binding). `defaultBranch` unset: the repo's default branch on GitHub.
+ * repo (the binding). `defaultBranch` is required and fixed when the settings are made: the
+ * poller never asks GitHub which branch is default, because a repo admin changing it would move
+ * the branch that counts as protected.
  */
 export const ingestSettingsSchema = z
   .object({
     workflow: z.string().min(1).default(".github/workflows/ci.yml"),
-    defaultBranch: z.string().min(1).optional(),
+    defaultBranch: z.string().min(1),
     prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
     authors: z.array(z.string().min(1)).default([]),
     protectedRefs: z.array(z.string().min(1)).default([]),

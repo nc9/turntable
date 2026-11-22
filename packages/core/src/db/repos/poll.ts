@@ -577,14 +577,22 @@ export function setProjectIngest(db: Db, scope: Scope, json: string | null): Pro
  * the poller targets. Intentionally unscoped (the poller serves every tenant); a project without
  * settings contributes nothing, so binding a repo never makes it ingested by itself.
  */
-export function listIngestBindings(
-  db: Db,
-): Promise<
-  { orgSlug: string; projectSlug: string; owner: string; repo: string; config: string }[]
+export function listIngestBindings(db: Db): Promise<
+  {
+    orgId: string;
+    projectId: string;
+    orgSlug: string;
+    projectSlug: string;
+    owner: string;
+    repo: string;
+    config: string;
+  }[]
 > {
   return db.run(async (h) => {
     const rows = await h.orm
       .select({
+        orgId: s.orgs.id,
+        projectId: s.projects.id,
         orgSlug: s.orgs.slug,
         projectSlug: s.projects.slug,
         owner: s.projectRepos.owner,
@@ -605,6 +613,8 @@ export function listIngestBindings(
       r.forge === "github" && r.config !== null
         ? [
             {
+              orgId: r.orgId,
+              projectId: r.projectId,
               orgSlug: r.orgSlug,
               projectSlug: r.projectSlug,
               owner: r.owner,

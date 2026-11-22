@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
+import { GithubClient } from "../poll/github";
 import { policyCommand as actionPolicyCommand } from "../pins/cli";
 import {
   POLICY_USAGE,
@@ -93,6 +94,12 @@ async function ownPolicy(args: string[]): Promise<void> {
           .map((x) => x.trim())
           .filter(Boolean),
         mergeQueue: values["merge-queue"],
+        // Asked once, now; the token (optional, for private repos) comes from the environment.
+        resolveDefaultBranch: (repo) =>
+          new GithubClient({
+            baseUrl: "https://api.github.com",
+            token: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+          }).repoDefaultBranch(repo),
       });
       console.error(`ingest ${r.project}: ${r.from ? "on" : "off"} -> ${r.to ? "on" : "off"}`);
     } else if (values["checks-mode"] !== undefined) {

@@ -59,7 +59,7 @@ longshore policy set --ingest on --org acme --project web \
 longshore policy set --ingest off --org acme --project web
 ```
 
-The settings are the poll knobs that belong to a repo: `--workflow`, `--default-branch` (unset: asked from GitHub at each poll), `--pr-mode`, `--authors`, `--merge-queue`. The poller reads the bindings at start, every minute, and when a signed webhook names a repo it does not know (it looks once, then polls). A repo in the static poll config wins over its binding. A repo bound to several projects is ingested into the first only. The poll config still needs at least one repo entry to run the poller at all, plus the token (`tokenEnv`) and limits, which the bound repos share.
+The settings are the poll knobs that belong to a repo: `--workflow`, `--default-branch` (fixed when ingest is turned on: given, or asked from GitHub once for the bound repository, and stored; the poller never asks again to decide it, so a repo admin changing GitHub's default branch cannot move what counts as protected. If GitHub later reports another branch, that is logged and audited as `ingest_default_branch_drift` and the stored one stays in use), `--pr-mode`, `--authors`, `--merge-queue`. The poller reads the bindings at start, every minute, and when a signed webhook names a repo it does not know (it looks once, then polls). A repo in the static poll config wins over its binding. A repo bound to several projects is ingested into the first only. The poll config still needs at least one repo entry to run the poller at all, plus the token (`tokenEnv`) and limits, which the bound repos share.
 
 ## Trusted proxies
 

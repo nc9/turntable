@@ -22,6 +22,7 @@ import {
   setApproveRunMinRole,
   setProjectEgress,
   getProjectIngest,
+  listRepos,
   setProjectIngest,
 } from "../db/repos";
 
@@ -145,6 +146,8 @@ export async function setIngestPolicy(
     prMode?: string | undefined;
     authors?: string[] | undefined;
     mergeQueue?: boolean | undefined;
+    /** Asks GitHub for a repo's default branch, once, when `defaultBranch` is not given. */
+    resolveDefaultBranch?: ((repo: string) => Promise<string>) | undefined;
   } = {},
 ): Promise<{ project: string; from: IngestSettings | null; to: IngestSettings | null }> {
   if (mode !== "on" && mode !== "off") throw new Error("--ingest must be on or off");
@@ -158,9 +161,20 @@ export async function setIngestPolicy(
     stored === null ? null : (ingestSettingsSchema.safeParse(JSON.parse(stored)).data ?? null);
   let to: IngestSettings | null = null;
   if (mode === "on") {
+    // The default branch is fixed here and never re-resolved by the poller (see ingestSettingsSchema).
+    let defaultBranch = opts.defaultBranch;
+    if (!defaultBranch) {
+      const bound = (await listRepos(db, scope)).find((r) => r.forge === "github");
+      if (!bound || !opts.resolveDefaultBranch) {
+        throw new Error(
+          "give --default-branch: it is fixed when ingest is turned on and no bound repository could be asked",
+        );
+      }
+      defaultBranch = await opts.resolveDefaultBranch(`${bound.owner}/${bound.repo}`);
+    }
     const parsed = ingestSettingsSchema.safeParse({
+      defaultBranch,
       ...(opts.workflow ? { workflow: opts.workflow } : {}),
-      ...(opts.defaultBranch ? { defaultBranch: opts.defaultBranch } : {}),
       ...(opts.prMode ? { prMode: opts.prMode } : {}),
       ...(opts.authors ? { authors: opts.authors } : {}),
       ...(opts.mergeQueue ? { mergeQueue: true } : {}),

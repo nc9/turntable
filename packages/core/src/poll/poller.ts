@@ -1,5 +1,5 @@
 import type { Db } from "../db";
-import { listIngestBindings } from "../db/repos";
+import { appendAudit, listIngestBindings } from "../db/repos";
 import { backoffMs } from "./backoff";
 import {
   ingestSettingsSchema,
@@ -56,6 +56,10 @@ export class Poller {
   readonly #lastStart = new Map<string, number>();
   /** Repos from installation bindings with ingest settings, by lower-case `owner/name`. */
   readonly #bound = new Map<string, PollRepoConfig>();
+  /** Ids of bound repos' projects, for auditing drift in the right chain. */
+  readonly #boundIds = new Map<string, { orgId: string; projectId: string }>();
+  /** The GitHub default branch last reported as drifted, per repo, so each change is said once. */
+  readonly #drift = new Map<string, string>();
   #refreshing: Promise<void> | undefined;
   #lastRefresh = 0;
   #refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -102,7 +106,8 @@ export class Poller {
   async #refresh(): Promise<void> {
     const log = this.#o.log ?? (() => {});
     const next = new Map<string, PollRepoConfig>();
-    for (const b of await listIngestBindings(this.#o.db)) {
+    const rows = await listIngestBindings(this.#o.db);
+    for (const b of rows) {
       const name = `${b.owner}/${b.repo}`;
       const key = name.toLowerCase();
       if (this.#o.config.repos.some((r) => r.repo.toLowerCase() === key)) continue;
@@ -122,14 +127,11 @@ export class Poller {
         log(`ingest ${name}: invalid settings; skipped`);
         continue;
       }
-      const { defaultBranch, ...rest } = parsed.data;
       next.set(key, {
         repo: name,
         org: b.orgSlug,
         project: b.projectSlug,
-        ...rest,
-        // Unset: resolved from GitHub at each poll.
-        defaultBranch: defaultBranch ?? "",
+        ...parsed.data,
         untrustedEgress: "none",
         maxNewPrsPerPoll: 5,
         maxWaitingRuns: 20,
@@ -137,6 +139,13 @@ export class Poller {
       });
     }
     for (const key of this.#bound.keys()) if (!next.has(key)) this.#bound.delete(key);
+    this.#boundIds.clear();
+    for (const b of rows) {
+      const key = `${b.owner}/${b.repo}`.toLowerCase();
+      // Only the project the repo is actually ingested into (a static entry or a second binding is not).
+      if (next.get(key)?.project === b.projectSlug && next.get(key)?.org === b.orgSlug)
+        this.#boundIds.set(key, { orgId: b.orgId, projectId: b.projectId });
+    }
     for (const [key, cfg] of next) {
       const fresh = !this.#bound.has(key);
       this.#bound.set(key, cfg);
@@ -236,11 +245,7 @@ export class Poller {
     }
 
     try {
-      // A repo ingested from its binding may not name a branch: ask GitHub (ETag-cached).
-      const defaultBranch =
-        cfg.defaultBranch === ""
-          ? await this.#github.repoDefaultBranch(cfg.repo)
-          : cfg.defaultBranch;
+      await this.#checkDrift(cfg);
       const res = await pollRepo(
         {
           db: this.#o.db,
@@ -250,7 +255,7 @@ export class Poller {
           ...(this.#o.now ? { now: this.#o.now } : {}),
           log,
         },
-        { ...cfg, defaultBranch },
+        cfg,
       );
       this.#failures.delete(repo);
       status.runsCreated += res.created.length;
@@ -276,6 +281,42 @@ export class Poller {
       log(`poll ${repo} failed: ${message}`);
       return finish("error", message, wait);
     }
+  }
+
+  /**
+   * A repo ingested from its binding keeps the default branch stored when its settings were made;
+   * it is never re-resolved, because a repo admin changing GitHub's default branch would move the
+   * branch that counts as protected. If GitHub now says another branch, that is logged and
+   * audited once per change and the stored one stays in use. Best effort: a failed look is not a
+   * failed poll.
+   */
+  async #checkDrift(cfg: PollRepoConfig): Promise<void> {
+    const key = cfg.repo.toLowerCase();
+    const ids = this.#boundIds.get(key);
+    if (!ids) return; // a static-config repo names its own branch
+    let live: string;
+    try {
+      live = await this.#github.repoDefaultBranch(cfg.repo);
+    } catch {
+      return;
+    }
+    if (live === cfg.defaultBranch) {
+      this.#drift.delete(key);
+      return;
+    }
+    if (this.#drift.get(key) === live) return;
+    this.#drift.set(key, live);
+    this.#o.log?.(
+      `ingest ${cfg.repo}: GitHub's default branch is now ${live}; still using the stored ${cfg.defaultBranch}`,
+    );
+    await appendAudit(this.#o.db, ids, {
+      principalKind: "system",
+      principalId: "poller",
+      op: "ingest_default_branch_drift",
+      effect: "read",
+      outcome: "ok",
+      input: { repo: cfg.repo, stored: cfg.defaultBranch, github: live },
+    }).catch(() => {});
   }
 
   /**
