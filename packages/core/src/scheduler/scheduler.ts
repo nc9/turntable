@@ -115,6 +115,7 @@ export class Scheduler {
         now: this.#o.now(),
         globalCap: this.#o.globalCap,
         perOrgCap: this.#o.perOrgCap,
+        quotaCacheMs: 5_000,
         readiness: this.#o.readiness,
         ...(this.#o.onlyRun ? { onlyRun: this.#o.onlyRun } : {}),
       });

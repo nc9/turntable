@@ -62,7 +62,9 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `maxLive` | `2` | Live sandboxes of ours at once. At most `3`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
-| `ownerCiPreflight` | `true` | Waiting while the account owner's own CI is busy cannot be turned off; `false` is refused. |
+| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
+| `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
+| `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
 The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
 
@@ -113,3 +115,15 @@ With `--worker` and with `longshore run`:
 Only `GET` and `HEAD` are accepted today. Responses carry a strict content security policy.
 
 More settings arrive with each feature, and this page ships with them.
+
+## Per-org quotas
+
+An org can live under limits. Quotas limit tenants, so the **instance operator** sets them, on the host: `longshore quotas set --org <slug> --max-concurrent 3 ... [--data-dir ./data]` (`none` removes a limit; `longshore quotas show --org <slug>` prints them with usage). There is no API operation that sets them, so an org's own tokens, operators and agents cannot raise their limits. They are read with `get_quotas` (REST and MCP, an org-level token; a project-scoped token is refused), which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
+
+- `max_concurrent`: attempts running at once. It can only lower this org's cap: the effective cap is the smaller of it and the instance's per-org cap (`--org-cap`), whatever a stored row says. Raise `--org-cap` to raise everyone's.
+- `max_runs_per_hour`: runs that start in a rolling hour. A run that has already started finishes its jobs; new runs wait.
+- `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, from attempt start and finish times (a running attempt counts up to now).
+- `max_log_bytes`: stored job log bytes.
+- `max_stored_bytes`: recorded artifact bytes plus control-plane cache bytes. (The cache also keeps its own per-class shares inside the org's cache quota; this is the org-wide total.)
+
+A reached limit holds new claims only: running attempts finish, queued ones wait until the window moves or the limit is raised. Null means no limit. Each metric emits an event when it first crosses 80% and when it is reached, once per window: an `infra.error` event whose `error_class` is `quota_warning` or `quota_reached`, with the metric, used and limit. (The event type list is a database constraint, so a dedicated type needs a table rebuild migration; this reuses the existing type.)

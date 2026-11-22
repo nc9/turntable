@@ -2,7 +2,7 @@
 // and finding abandoned work. Claim and reconcile are instance-level (a worker has no tenant
 // until it has claimed something), so they are intentionally unscoped; everything they return
 // carries the tenant scope the caller then uses.
-import { and, asc, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -19,6 +19,15 @@ import {
   updateAttempt,
 } from "./index";
 import { notFrozen } from "./incident";
+import {
+  emitQuotaNotices,
+  HOUR_MS,
+  orgsWithQuotas,
+  quotaStatuses,
+  quotaUsage,
+  type QuotaStatus,
+  type QuotaUsage,
+} from "./quotas";
 import { groupBlocked } from "./poll";
 import {
   defaultReadiness,
@@ -46,6 +55,11 @@ export type ClaimOptions = {
   globalCap: number;
   /** Most attempts running at once per org, so one tenant cannot take every slot. */
   perOrgCap: number;
+  /**
+   * How long a per-org quota reading may be reused (the byte gauges are sums over big tables).
+   * Default 0: every claim reads fresh. The scheduler passes a few seconds.
+   */
+  quotaCacheMs?: number;
   /** Decides whether a queued job may run. Default: plain `needs` (see defaultReadiness). */
   readiness?: Readiness;
   /** Queued rows examined per org per round. Default 25. */
@@ -59,6 +73,49 @@ export type ClaimOptions = {
    */
   onlyRun?: string;
 };
+
+const usageCache = new WeakMap<Db, Map<string, { at: number; usage: QuotaUsage }>>();
+async function cachedUsage(db: Db, orgId: string, now: number, ttl: number): Promise<QuotaUsage> {
+  let m = usageCache.get(db);
+  if (!m) usageCache.set(db, (m = new Map()));
+  const hit = m.get(orgId);
+  if (ttl > 0 && hit && Math.abs(now - hit.at) < ttl) return hit.usage;
+  const usage = await quotaUsage(db, orgId, now);
+  m.set(orgId, { at: now, usage });
+  return usage;
+}
+
+const noticeAt = new WeakMap<Db, Map<string, number>>();
+async function noticesOnce(
+  db: Db,
+  orgId: string,
+  statuses: readonly QuotaStatus[],
+  now: number,
+  ttl: number,
+): Promise<void> {
+  let m = noticeAt.get(db);
+  if (!m) noticeAt.set(db, (m = new Map()));
+  const last = m.get(orgId);
+  if (ttl > 0 && last !== undefined && Math.abs(now - last) < ttl) return;
+  m.set(orgId, now);
+  await emitQuotaNotices(db, orgId, statuses, now);
+}
+
+/** Runs that have an attempt started at or after `since`. */
+async function runsStartedSince(db: Db, orgId: string, since: number): Promise<Set<string>> {
+  const rows = await db.orm
+    .selectDistinct({ runId: s.jobs.runId })
+    .from(s.jobAttempts)
+    .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+    .where(
+      and(
+        eq(s.jobAttempts.orgId, orgId),
+        isNotNull(s.jobAttempts.startedAt),
+        gte(s.jobAttempts.startedAt, since),
+      ),
+    );
+  return new Set(rows.map((r) => r.runId));
+}
 
 /**
  * Claims the next runnable queued attempt, or returns undefined. Runnable means: its job is
@@ -113,8 +170,36 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
         ),
       )
       .groupBy(s.jobAttempts.orgId);
+    // Per-org quotas (#52). Only orgs with a limit set are looked at. A stored concurrency limit
+    // lowers the instance's per-org cap for the org; the other limits hold new work when reached, and say
+    // why in `get_quotas` and in an event at 80% and 100%.
+    const quotas = await orgsWithQuotas(tx);
+    // Quotas limit tenants: a stored limit can lower an org's cap, never lift it above the
+    // instance's per-org cap (whatever a row says).
+    const capOf = (orgId: string) =>
+      Math.min(quotas.get(orgId)?.maxConcurrent ?? Infinity, o.perOrgCap);
+    const heldOrgs = new Set<string>();
+    const runsFull = new Map<string, Set<string>>();
+    for (const w of waiting) {
+      const q = quotas.get(w.orgId);
+      if (!q) continue;
+      const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0);
+      const statuses = quotaStatuses(q, { ...usage, concurrent: perOrg.get(w.orgId) ?? 0 });
+      await noticesOnce(tx, w.orgId, statuses, o.now, o.quotaCacheMs ?? 0);
+      if (
+        statuses.some(
+          (st) => st.metric !== "runs_per_hour" && st.metric !== "concurrent" && st.held,
+        )
+      )
+        heldOrgs.add(w.orgId);
+      if (statuses.find((st) => st.metric === "runs_per_hour")?.held) {
+        // New runs wait; runs that already started this hour finish their jobs.
+        runsFull.set(w.orgId, await runsStartedSince(tx, w.orgId, o.now - HOUR_MS));
+      }
+    }
     const orgs = waiting
-      .filter((w) => (perOrg.get(w.orgId) ?? 0) < o.perOrgCap)
+      .filter((w) => !heldOrgs.has(w.orgId))
+      .filter((w) => (perOrg.get(w.orgId) ?? 0) < capOf(w.orgId))
       .toSorted(
         (x, y) =>
           (perOrg.get(x.orgId) ?? 0) - (perOrg.get(y.orgId) ?? 0) ||
@@ -158,6 +243,8 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           // nothing yet.
           const candRun = await getRun(tx, scope, c.job.runId);
           if (candRun && (await groupBlocked(tx, candRun))) continue;
+          const started = runsFull.get(orgId);
+          if (started && !started.has(c.job.runId)) continue;
           if (needsDecision(c.job)) {
             const siblings = await listJobs(tx, scope, c.job.runId);
             // Resolved earlier in this scan: no longer queued.

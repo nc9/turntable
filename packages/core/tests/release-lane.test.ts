@@ -325,6 +325,11 @@ describe("what is signed is exactly what the lane verified", () => {
           }),
         })
         .where(eq(s.runs.id, a.runId));
+      // The attempt ran as release too: an artifact is only as trusted as the attempt that wrote it.
+      await db.orm
+        .update(s.jobAttempts)
+        .set({ trustClass: "release" })
+        .where(eq(s.jobAttempts.id, a.attemptId));
       await recordArtifact(db, a.scope, {
         runId: a.runId,
         attemptId: a.attemptId,
