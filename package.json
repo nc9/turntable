@@ -38,7 +38,7 @@
     "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts packages/core/tests/run-workflow.test.ts packages/core/tests/safe-read.test.ts",
     "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts",
     "test:act2": "bun test packages/act-runner/tests/workflow-plan.test.ts packages/act-runner/tests/split.test.ts packages/act-runner/tests/readiness.test.ts packages/act-runner/tests/squirrelscan-plan.test.ts",
-    "test:sched": "bun test packages/core/tests/scheduler.test.ts packages/core/tests/poll.test.ts packages/core/tests/reattach.test.ts packages/core/tests/worker-workflow.test.ts packages/core/tests/providers.test.ts",
+    "test:sched": "bun test packages/core/tests/scheduler.test.ts packages/core/tests/poll.test.ts packages/core/tests/reattach.test.ts packages/core/tests/worker-workflow.test.ts packages/core/tests/providers.test.ts packages/core/tests/isolation.test.ts",
     "test:scripts": "bun test scripts/rcodesign.test.ts",
     "test:prereqs": "bun test packages/core/tests/release-prereqs.test.ts packages/core/tests/legacy-names.test.ts",
     "test:github": "bun test packages/core/tests/secrets.test.ts packages/core/tests/github-installations.test.ts packages/core/tests/github-webhook.test.ts packages/core/tests/github-app.test.ts packages/core/tests/github-serve.test.ts",
