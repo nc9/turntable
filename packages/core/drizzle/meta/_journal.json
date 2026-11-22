@@ -85,6 +85,13 @@
       "when": 1795366300821,
       "tag": "0011_low_praxagora",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795367282434,
+      "tag": "0012_redundant_newton_destine",
+      "breakpoints": true
     }
   ]
 }

@@ -168,5 +168,17 @@ export const migrations: Migration[] = [
       "ALTER TABLE `job_attempts` ADD `check_run_id` text;",
       "ALTER TABLE `projects` ADD `checks_mode` text DEFAULT 'off' NOT NULL;"
     ]
+  },
+  {
+    "tag": "0012_redundant_newton_destine",
+    "when": 1795367282434,
+    "statements": [
+      "CREATE TABLE `audit_checkpoints` (\n\t`org_id` text NOT NULL,\n\t`seq` integer NOT NULL,\n\t`hash` text NOT NULL,\n\t`signed_at` integer NOT NULL,\n\t`key_id` text NOT NULL,\n\t`signature` text NOT NULL,\n\tPRIMARY KEY(`org_id`, `seq`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `audit_export_cursors` (\n\t`org_id` text NOT NULL,\n\t`sink` text NOT NULL,\n\t`last_seq` integer DEFAULT 0 NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`org_id`, `sink`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "ALTER TABLE `audit_log` ADD `seq` integer;",
+      "ALTER TABLE `audit_log` ADD `prev_hash` text;",
+      "ALTER TABLE `audit_log` ADD `hash` text;",
+      "CREATE UNIQUE INDEX `audit_log_org_seq_unique` ON `audit_log` (`org_id`,`seq`);"
+    ]
   }
 ];

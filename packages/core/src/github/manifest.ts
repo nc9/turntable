@@ -5,7 +5,7 @@
 import { type SafeFetch, safeFetch } from "@longshore/net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db";
-import { setGithubApp } from "../db/repos";
+import { appendAudit, setGithubApp } from "../db/repos";
 import type { SecretStore } from "../secrets/store";
 import { SECRET_APP_ID, SECRET_CLIENT, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "./app-auth";
 import { WEBHOOK_PATH } from "./webhook";
@@ -133,6 +133,18 @@ export async function storeApp(
       ownerLogin: c.owner.login,
       htmlUrl: c.html_url,
       clientId: c.client_id,
+    },
+  );
+  await appendAudit(
+    db,
+    { orgId },
+    {
+      principalKind: "cli",
+      principalId: "local",
+      op: "github_app_create",
+      effect: "write",
+      outcome: "ok",
+      input: { app_id: String(c.id), slug: c.slug, owner: c.owner.login },
     },
   );
   return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url };

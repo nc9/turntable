@@ -122,48 +122,6 @@ export function getOrgById(db: Db, id: string) {
 
 // ---- audit ----
 
-const AUDIT_INPUT_MAX = 2048;
-
-export function appendAudit(
-  db: Db,
-  scope: Scope,
-  entry: {
-    principalKind: string;
-    principalId: string;
-    op: string;
-    effect: string;
-    outcome: string;
-    input: unknown;
-  },
-): Promise<void> {
-  return db.run(async (h) => {
-    let input = JSON.stringify(entry.input ?? null);
-    if (input.length > AUDIT_INPUT_MAX) input = `${input.slice(0, AUDIT_INPUT_MAX)}...(truncated)`;
-    await h.orm.insert(s.auditLog).values({
-      id: ulid(),
-      orgId: scope.orgId,
-      projectId: scope.projectId ?? null,
-      principalKind: entry.principalKind,
-      principalId: entry.principalId,
-      op: entry.op,
-      effect: entry.effect,
-      outcome: entry.outcome,
-      input,
-    });
-  });
-}
-
-export function listAudit(db: Db, scope: Scope, opts: { limit?: number } = {}) {
-  return db.run((h) =>
-    h.orm
-      .select()
-      .from(s.auditLog)
-      .where(scoped(scope, { orgId: s.auditLog.orgId, projectId: s.auditLog.projectId }))
-      .orderBy(desc(s.auditLog.id))
-      .limit(opts.limit ?? 50),
-  );
-}
-
 // ---- read queries for operations ----
 
 const RUN_COLS = { orgId: s.runs.orgId, projectId: s.runs.projectId };

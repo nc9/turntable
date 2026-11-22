@@ -1,5 +1,6 @@
 // The single enforcement point for operations. Authentication, scope, role, validation and audit
 // all happen here; adapters (REST, MCP, CLI) only translate transport and never decide access.
+import { auditFailure } from "../audit/failures";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -32,16 +33,30 @@ const TOUCH_INTERVAL_MS = 60_000;
 
 const BAD_TOKEN = "invalid, expired or revoked token";
 
+/**
+ * An `unauthenticated` OpError that remembers which org's token it was, when it was one, so the
+ * failure can be audited in that org's chain.
+ */
+export class AuthFailure extends OpError {
+  readonly orgId: string | undefined;
+  readonly tokenId: string | undefined;
+  constructor(orgId?: string, tokenId?: string) {
+    super("unauthenticated", BAD_TOKEN);
+    this.orgId = orgId;
+    this.tokenId = tokenId;
+  }
+}
+
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(env: DispatchEnv, credential: Credential): Promise<Principal> {
   if (credential.kind === "principal") return credential.principal;
   const token = credential.token;
   // One message for every failure, so a caller cannot tell a wrong token from a revoked one.
-  if (!looksLikeToken(token)) throw new OpError("unauthenticated", BAD_TOKEN);
+  if (!looksLikeToken(token)) throw new AuthFailure();
   const row = await findApiTokenByHash(env.db, hashToken(token));
   const now = (env.now ?? Date.now)();
   if (!row || row.revokedAt !== null || (row.expiresAt !== null && row.expiresAt <= now)) {
-    throw new OpError("unauthenticated", BAD_TOKEN);
+    throw new AuthFailure(row?.orgId, row?.id);
   }
   if (row.lastUsedAt === null || now - row.lastUsedAt > TOUCH_INTERVAL_MS) {
     // Best effort: a failed touch must not fail the call.
@@ -157,7 +172,24 @@ export async function dispatch(
 ): Promise<DispatchResult> {
   let op: Op | undefined;
   try {
-    const principal = await authenticate(env, credential);
+    let principal: Principal;
+    try {
+      principal = await authenticate(env, credential);
+    } catch (err) {
+      // An authentication failure has no scope yet; it is audited in the token's org, or in the
+      // system chain when the token names none (throttled either way).
+      if (err instanceof AuthFailure) {
+        await auditFailure(env.db, {
+          orgId: err.orgId,
+          principalKind: "token",
+          principalId: err.tokenId ?? "unknown",
+          op: name,
+          outcome: "error:unauthenticated",
+          detail: { reason: err.orgId ? "revoked_or_expired" : "unknown_or_malformed" },
+        });
+      }
+      throw err;
+    }
     op = env.registry.get(name);
     if (!op) throw new OpError("not_found", `unknown operation: ${name}`);
     // Signature ops need a human-signed assertion. No bearer token or in-process principal
