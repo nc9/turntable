@@ -80,7 +80,22 @@ export function recordVersion(record: string): "v1" | "v2" | "v3" | undefined {
  * an org is known. Set it once `keys reseal` has run for every org: it stops a stale copy of an
  * old record from being accepted.
  */
-const requireOrgKeys = (): boolean => process.env.LONGSHORE_REQUIRE_ORG_KEYS === "1";
+export const requireOrgKeys = (): boolean => process.env.LONGSHORE_REQUIRE_ORG_KEYS === "1";
+
+/** `keys reseal` was asked to run while LONGSHORE_REQUIRE_ORG_KEYS=1, which forbids old records. */
+export class ResealRefused extends Error {
+  constructor() {
+    super(
+      "reseal is refused while LONGSHORE_REQUIRE_ORG_KEYS=1: in strict mode an old record is not accepted, so it cannot be re-sealed. Unset it, run `keys reseal`, then set it again.",
+    );
+    this.name = "ResealRefused";
+  }
+}
+
+/** Throws ResealRefused in strict mode. Every reseal path calls this before it opens anything. */
+export function assertResealAllowed(): void {
+  if (requireOrgKeys()) throw new ResealRefused();
+}
 
 const withDomain = (aad: Buffer, domain: KeyDomain, orgId?: string): Buffer =>
   Buffer.concat([
@@ -149,9 +164,13 @@ export function open(
   aad: Buffer,
   domain: KeyDomain = "system",
   orgId?: string,
+  opts: { allowLegacy?: boolean } = {},
 ): string {
   assertKey(masterKey);
   const parts = record.split(".");
+  // Strict mode refuses an old (v1, v2) record wherever the org is known. Only a reseal, which has
+  // already refused to run in strict mode, passes allowLegacy to read one in order to replace it.
+  const strict = orgId !== undefined && requireOrgKeys() && opts.allowLegacy !== true;
   if (parts.length !== 7) throw new SecretDecryptError();
   const version = parts[0];
   let wrapKey: Buffer;
@@ -161,14 +180,10 @@ export function open(
     if (orgId === undefined) throw new SecretDecryptError();
     wrapKey = domainKey(masterKey, domain, orgId);
     fullAad = withDomain(aad, domain, orgId);
-  } else if (version === VERSION_DOMAIN && !(orgId !== undefined && requireOrgKeys())) {
+  } else if (version === VERSION_DOMAIN && !strict) {
     wrapKey = domainKey(masterKey, domain);
     fullAad = withDomain(aad, domain);
-  } else if (
-    version === VERSION &&
-    domain === "system" &&
-    !(orgId !== undefined && requireOrgKeys())
-  ) {
+  } else if (version === VERSION && domain === "system" && !strict) {
     wrapKey = Buffer.from(masterKey);
     fullAad = aad;
   } else {
