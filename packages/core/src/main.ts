@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureInstance, openDatabase } from "./db";
+import { createTokenFromCli } from "./ops/token-cli";
 import { startServer } from "./server";
 import { VERSION } from "./version";
 
@@ -8,6 +9,8 @@ const USAGE = `turntable ${VERSION}
 
 Usage:
   turntable serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data]
+  turntable token create --org <slug> [--project <slug>] --role <reader|operator> --name <name>
+                         [--expires-in-days 90] [--data-dir ./data]
   turntable version
 
 Environment:
@@ -45,11 +48,51 @@ async function serve(args: string[]): Promise<void> {
   process.on("SIGTERM", stop);
 }
 
+async function token(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub !== "create") throw new Error(`usage: turntable token create --org <slug> --role <role> --name <name>`);
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      org: { type: "string" },
+      project: { type: "string" },
+      role: { type: "string" },
+      name: { type: "string" },
+      "expires-in-days": { type: "string" },
+      "data-dir": { type: "string", default: "./data" },
+    },
+    strict: true,
+  });
+  if (!values.org || !values.role || !values.name) {
+    throw new Error("--org, --role and --name are required");
+  }
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
+  try {
+    const created = await createTokenFromCli(db, {
+      org: values.org,
+      project: values.project,
+      role: values.role,
+      name: values.name,
+      expiresInDays:
+        values["expires-in-days"] === undefined ? undefined : Number(values["expires-in-days"]),
+    });
+    // Details to stderr, the secret alone to stdout, so `TOKEN=$(turntable token create ...)` works.
+    console.error(
+      `created ${created.role} token ${created.id} for ${created.org}${created.project ? `/${created.project}` : ""}, expires ${new Date(created.expiresAt).toISOString()}. It is shown once.`,
+    );
+    console.log(created.secret);
+  } finally {
+    db.close();
+  }
+}
+
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   switch (command) {
     case "serve":
       return await serve(rest);
+    case "token":
+      return await token(rest);
     case "version":
     case "--version":
       console.log(VERSION);

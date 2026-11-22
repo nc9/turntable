@@ -32,6 +32,10 @@ export type JobState = (typeof JOB_STATES)[number];
 export const MEMBER_ROLES = ["owner", "admin", "member", "viewer"] as const;
 export type MemberRole = (typeof MEMBER_ROLES)[number];
 
+/** Roles an agent token can hold. Org roles (MEMBER_ROLES) belong to people, never to tokens. */
+export const AGENT_ROLES = ["reader", "operator", "release_operator"] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
 export const FORGES = ["github"] as const;
 export type Forge = (typeof FORGES)[number];
 
@@ -144,6 +148,7 @@ export const runs = sqliteTable(
     unique("runs_id_org_project_unique").on(t.id, t.orgId, t.projectId),
     check("runs_status_check", inList("status", JOB_STATES)),
     index("runs_project_created_idx").on(t.orgId, t.projectId, t.createdAt),
+    index("runs_sha_idx").on(t.orgId, t.sha),
   ],
 );
 
@@ -221,4 +226,60 @@ export const logChunks = sqliteTable(
       foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
     }),
   ],
+);
+
+// ---- agent access ----
+
+/**
+ * Bearer tokens for agents and scripts. Only the sha256 of the secret is stored; the secret is
+ * shown once at creation. `project_id` null means the whole org.
+ */
+export const apiTokens = sqliteTable(
+  "api_tokens",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id"),
+    name: text("name").notNull(),
+    role: text("role").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    /** Who minted it (`kind:id`), for audit and the "never exceeds its creator" rule. */
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: integer("last_used_at", { mode: "number" }),
+    expiresAt: integer("expires_at", { mode: "number" }),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [
+    // NULL project_id is not checked by the composite FK (MATCH SIMPLE), as intended.
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    unique("api_tokens_hash_unique").on(t.tokenHash),
+    check("api_tokens_role_check", inList("role", AGENT_ROLES)),
+    index("api_tokens_org_idx").on(t.orgId),
+  ],
+);
+
+/** Append-only record of write and destructive operations, including denied attempts. */
+export const auditLog = sqliteTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id"),
+    /** `token` or `member`. */
+    principalKind: text("principal_kind").notNull(),
+    principalId: text("principal_id").notNull(),
+    op: text("op").notNull(),
+    effect: text("effect").notNull(),
+    /** `ok` or `error:<code>`. */
+    outcome: text("outcome").notNull(),
+    /** Input as JSON, truncated; never output. */
+    input: text("input").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("audit_log_org_created_idx").on(t.orgId, t.createdAt)],
 );
