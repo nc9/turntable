@@ -147,7 +147,7 @@ test("GET /openapi.json is served without auth and matches the registry", async 
   const doc = await res.json();
   expect(doc.openapi).toBe("3.1.0");
   expect(Object.keys(doc.paths).toSorted()).toEqual(
-    [...new Set(registry.documentedOps().map((o) => o.http.path))].toSorted(),
+    [...new Set(registry.mcpOps().map((o) => o.http.path))].toSorted(),
   );
 });
 

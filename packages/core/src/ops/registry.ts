@@ -13,6 +13,8 @@ export type OpRegistry = {
    * listing it in the MCP tools or the OpenAPI document is noise and an invitation.
    */
   documentedOps(): Op[];
+  /** documentedOps minus ops that must not reach an agent's context (those that carry a value). */
+  mcpOps(): Op[];
 };
 
 /** Builds a registry. A value, not a global, so tests can add ops the shipped one never has. */
@@ -26,8 +28,14 @@ export function createRegistry(ops: readonly Op[]): OpRegistry {
     if (routes.has(route)) throw new Error(`duplicate route: ${route}`);
     routes.add(route);
   }
+  const documented = (): Op[] =>
+    ops.filter(
+      (op) =>
+        op.auth.type === "token" && AGENT_ROLES.some((r) => roleSatisfies(r, op.auth.minRole)),
+    );
   return {
     ops,
+    mcpOps: () => documented().filter((op) => op.mcp),
     get: (name) => byName.get(name),
     tokenOps: () => ops.filter((op) => op.auth.type === "token"),
     documentedOps: () =>

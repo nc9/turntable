@@ -4,11 +4,15 @@
 // under the DEK, and the DEK is sealed with AES-256-GCM under the master key. Both seals bind
 // the same AAD (org id and secret name), so a record cannot be replayed under another name or
 // org, and any flipped bit, wrong AAD or wrong master key makes `open` throw. Fail closed.
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const VERSION = "v1";
+const VERSION_DOMAIN = "v2";
+
+/** Key domains: a record sealed for one domain cannot be opened as another. */
+export type KeyDomain = "system" | "job";
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -49,15 +53,38 @@ function gcmOpen(key: Buffer, iv: Buffer, ct: Buffer, tag: Buffer, aad: Buffer):
 const b64 = (b: Buffer): string => b.toString("base64url");
 const unb64 = (s: string): Buffer => Buffer.from(s, "base64url");
 
-/** Seals `plaintext`. The result is one string: `v1.<wrap iv>.<wrapped dek>.<wrap tag>.<iv>.<ct>.<tag>`. */
-export function seal(masterKey: Buffer, plaintext: string, aad: Buffer): string {
+/** The wrapping key for a domain: HKDF-SHA256 over the master key, domain in the info string. */
+export function domainKey(masterKey: Buffer, domain: KeyDomain): Buffer {
   assertKey(masterKey);
+  return Buffer.from(
+    hkdfSync("sha256", masterKey, Buffer.alloc(0), `longshore:domain:${domain}`, KEY_BYTES),
+  );
+}
+
+const withDomain = (aad: Buffer, domain: KeyDomain): Buffer =>
+  Buffer.concat([aad, Buffer.from(`|domain:${domain}`, "utf8")]);
+
+/**
+ * Seals `plaintext` for a key domain. The wrapping key is derived for that domain and the domain
+ * is bound into the AAD, so the record opens only as that domain. The result is one string:
+ * `v2.<wrap iv>.<wrapped dek>.<wrap tag>.<iv>.<ct>.<tag>`.
+ */
+export function seal(
+  masterKey: Buffer,
+  plaintext: string,
+  aad: Buffer,
+  domain: KeyDomain = "system",
+): string {
+  return sealWith(domainKey(masterKey, domain), VERSION_DOMAIN, plaintext, withDomain(aad, domain));
+}
+
+function sealWith(wrapKey: Buffer, version: string, plaintext: string, aad: Buffer): string {
   const dek = randomBytes(KEY_BYTES);
   try {
-    const wrapped = gcmSeal(masterKey, dek, aad);
+    const wrapped = gcmSeal(wrapKey, dek, aad);
     const body = gcmSeal(dek, Buffer.from(plaintext, "utf8"), aad);
     return [
-      VERSION,
+      version,
       b64(wrapped.iv),
       b64(wrapped.ct),
       b64(wrapped.tag),
@@ -67,14 +94,45 @@ export function seal(masterKey: Buffer, plaintext: string, aad: Buffer): string 
     ].join(".");
   } finally {
     dek.fill(0);
+    wrapKey.fill(0);
   }
 }
 
-/** Opens a sealed record. Throws SecretDecryptError for anything wrong, with no detail. */
-export function open(masterKey: Buffer, record: string, aad: Buffer): string {
+/** Seals in the legacy v1 format (master key wraps directly). Only for tests of old records. */
+export function sealLegacyV1(masterKey: Buffer, plaintext: string, aad: Buffer): string {
+  assertKey(masterKey);
+  return sealWith(Buffer.from(masterKey), VERSION, plaintext, aad);
+}
+
+/** True for a record written before key domains existed. */
+export const isLegacyRecord = (record: string): boolean => record.startsWith(`${VERSION}.`);
+
+/**
+ * Opens a sealed record for `domain`. Legacy v1 records (no domain) still open, for the system
+ * store only; a vault record is v2 by construction. Throws SecretDecryptError for anything
+ * wrong, with no detail.
+ */
+export function open(
+  masterKey: Buffer,
+  record: string,
+  aad: Buffer,
+  domain: KeyDomain = "system",
+): string {
   assertKey(masterKey);
   const parts = record.split(".");
-  if (parts.length !== 7 || parts[0] !== VERSION) throw new SecretDecryptError();
+  if (parts.length !== 7) throw new SecretDecryptError();
+  const version = parts[0];
+  let wrapKey: Buffer;
+  let fullAad: Buffer;
+  if (version === VERSION_DOMAIN) {
+    wrapKey = domainKey(masterKey, domain);
+    fullAad = withDomain(aad, domain);
+  } else if (version === VERSION && domain === "system") {
+    wrapKey = Buffer.from(masterKey);
+    fullAad = aad;
+  } else {
+    throw new SecretDecryptError();
+  }
   const [, wIv, wCt, wTag, iv, ct, tag] = parts as [
     string,
     string,
@@ -86,14 +144,24 @@ export function open(masterKey: Buffer, record: string, aad: Buffer): string {
   ];
   let dek: Buffer | undefined;
   try {
-    dek = gcmOpen(masterKey, unb64(wIv), unb64(wCt), unb64(wTag), aad);
+    dek = gcmOpen(wrapKey, unb64(wIv), unb64(wCt), unb64(wTag), fullAad);
     if (dek.length !== KEY_BYTES) throw new SecretDecryptError();
-    return gcmOpen(dek, unb64(iv), unb64(ct), unb64(tag), aad).toString("utf8");
+    return gcmOpen(dek, unb64(iv), unb64(ct), unb64(tag), fullAad).toString("utf8");
   } catch {
     throw new SecretDecryptError();
   } finally {
     dek?.fill(0);
+    wrapKey.fill(0);
   }
+}
+
+/**
+ * AAD for a vault version: domain-independent fields, length-prefixed so no two tuples collide.
+ * Binds the org, the secret id, the version number and the name.
+ */
+export function vaultAad(orgId: string, secretId: string, version: number, name: string): Buffer {
+  const f = [orgId, secretId, String(version), name].map((x) => `${x.length}:${x}`).join("|");
+  return Buffer.from(`longshore:vault:${f}`, "utf8");
 }
 
 function assertKey(key: Buffer): void {

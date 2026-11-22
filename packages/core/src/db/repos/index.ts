@@ -18,6 +18,7 @@ export * from "./api";
 export * from "./approve";
 export * from "./github";
 export * from "./audit";
+export * from "./vault";
 export * from "./cancel";
 export * from "./pins";
 export * from "./verdicts";
