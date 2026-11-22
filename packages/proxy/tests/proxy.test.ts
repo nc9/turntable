@@ -271,6 +271,11 @@ describe("injection scope", () => {
     ["an encoded slash", "/v1/a%2fb"],
     ["a backslash", "/v1/a%5cb"],
     ["an empty segment", "/v1//a"],
+    ["a matrix parameter that makes a dot segment upstream", "/v1/..;/admin"],
+    ["a matrix parameter after a single dot", "/v1/.;x/admin"],
+    ["any matrix parameter", "/v1/a;b=c"],
+    ["an upper-case encoded dot", "/v1/%2E%2E/admin"],
+    ["an upper-case encoded slash", "/v1/a%2Fb"],
   ])("a path that is not canonical is refused, never normalised: %s", async (_name, path) => {
     const { cred } = newAttempt();
     const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
@@ -684,6 +689,108 @@ describe("scanning covers the whole attempt", () => {
     expect(r.status).toBe(400);
     expect(seen).toHaveLength(0);
     expect(reasons()).toContain("bad_request_bad_trailer");
+  });
+});
+
+describe("the tunnel cap holds under a burst", () => {
+  test("concurrent CONNECTs cannot pass the check while the audit write is pending", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let failTunnels = false;
+    const slow: AuditSink = {
+      async record(e) {
+        if (e.kind === "tunnel") {
+          await gate;
+          if (failTunnels) throw new Error("audit down");
+        }
+        events.push(e);
+      },
+    };
+    const capped = await startProxy({
+      registry,
+      source,
+      audit: slow,
+      upstream,
+      now: () => clock,
+      limits: { tunnelsPerAttempt: 3, idleMs: 5000 },
+    });
+    const dial = async (cred: { username: string; password: string }): Promise<string> => {
+      const raw = net.connect(capped.port, capped.host);
+      await new Promise<void>((r) => raw.once("connect", () => r()));
+      raw.write(
+        `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+      );
+      const head = await new Promise<string>((r) => {
+        raw.once("data", (d) => r(d.toString("latin1")));
+        raw.once("close", () => r(""));
+      });
+      if (!head.startsWith("HTTP/1.1 200")) raw.destroy();
+      sockets.push(raw);
+      return head.slice(0, 12);
+    };
+    const sockets: net.Socket[] = [];
+    try {
+      const { cred } = newAttempt();
+      // Ten at once; every audit write waits on the gate.
+      const all = Array.from({ length: 10 }, () => dial(cred));
+      await Bun.sleep(300);
+      release();
+      const heads = await Promise.all(all);
+      expect(heads.filter((h) => h === "HTTP/1.1 200")).toHaveLength(3);
+      expect(heads.filter((h) => h === "HTTP/1.1 429")).toHaveLength(7);
+      for (const s of sockets) s.destroy();
+      await Bun.sleep(100);
+
+      // A failed audit write gives its slot back.
+      failTunnels = true;
+      const second = newAttempt();
+      const failed = await Promise.all(Array.from({ length: 3 }, () => dial(second.cred)));
+      expect(failed.every((h) => h === "HTTP/1.1 502")).toBe(true);
+      failTunnels = false;
+      expect(await dial(second.cred)).toBe("HTTP/1.1 200");
+    } finally {
+      for (const s of sockets) s.destroy();
+      release();
+      await capped.close();
+    }
+  });
+});
+
+describe("an attempt revoked while its tunnel is being audited", () => {
+  test("gets no tunnel", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const slow: AuditSink = {
+      async record(e) {
+        if (e.kind === "tunnel") await gate;
+        events.push(e);
+      },
+    };
+    const p2 = await startProxy({ registry, source, audit: slow, upstream, now: () => clock });
+    try {
+      const { attemptId, cred } = newAttempt();
+      const raw = net.connect(p2.port, p2.host);
+      await new Promise<void>((r) => raw.once("connect", () => r()));
+      raw.write(
+        `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+      );
+      await Bun.sleep(200);
+      registry.revoke(attemptId);
+      release();
+      const got = await new Promise<string>((r) => {
+        raw.once("data", (d) => r(d.toString("latin1")));
+        raw.once("close", () => r(""));
+      });
+      expect(got.startsWith("HTTP/1.1 200")).toBe(false);
+      raw.destroy();
+    } finally {
+      release();
+      await p2.close();
+    }
   });
 });
 
