@@ -134,7 +134,6 @@ export async function runCommand(args: string[]): Promise<number> {
         egress: values.egress,
         // Same behaviour as the server worker: prove a `none` sandbox has no way out first.
         canary: true,
-        resolver: githubResolver(),
         signal: ac.signal,
         maxParallel: Math.max(1, Number(values["max-parallel"]) || 2),
       });

@@ -381,7 +381,9 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           token,
           ownRepo: dbRun.repo,
           allowedOwners: policy.allowedOwners,
-          untrusted: klass === "untrusted_pr",
+          // A local run is the operator's own checkout: trusted, whatever event it simulates.
+          untrusted: klass === "untrusted_pr" && !dbRun.local,
+          local: dbRun.local,
           backoff,
           ...(o.fetch ? { fetch: o.fetch } : {}),
         });

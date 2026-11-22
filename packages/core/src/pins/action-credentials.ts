@@ -29,6 +29,12 @@ export interface ActionCredentialOptions {
   allowedOwners: readonly string[] | null;
   /** An untrusted run never uses a token, not even for its own repository. */
   untrusted: boolean;
+  /**
+   * A local run (`longshore run`, the operator's own checkout and own token): the token is used
+   * for any action that passes the public check below, since the operator chose to run this
+   * workflow. A server run keeps the strict per-action rule.
+   */
+  local?: boolean;
   backoff: Backoff;
   fetch?: SafeFetch;
   apiBase?: string;
@@ -42,6 +48,8 @@ export interface ActionCredentials {
   assertPublic(owner: string, repo: string): Promise<void>;
 }
 
+const notAvailable = (key: string): string => `action not available: ${key}`;
+
 export function actionCredentials(o: ActionCredentialOptions): ActionCredentials {
   const own = o.ownRepo?.toLowerCase() ?? null;
   const f = o.fetch ?? safeFetch;
@@ -51,7 +59,7 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
     own !== null && `${owner}/${repo}`.toLowerCase() === own;
   const tokenFor = (owner: string, repo: string): string | undefined => {
     if (!o.token || o.untrusted) return undefined;
-    if (isOwn(owner, repo)) return o.token;
+    if (isOwn(owner, repo) || o.local === true) return o.token;
     return o.allowedOwners?.includes(owner.toLowerCase()) ? o.token : undefined;
   };
   const assertPublic = (owner: string, repo: string): Promise<void> => {
@@ -84,9 +92,9 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
           throw new InfraError(`checking whether ${key} is public: ${why}`, e);
         }
         // Fail closed: proceed only on a 200 that says `private: false` in so many words.
-        if (res.status === 404) {
-          throw new PlanError("action ref", `cannot resolve ${key}: HTTP 404`);
-        }
+        // A private repo and one that does not exist answer with the SAME words, so a workflow
+        // cannot use this check to learn which private repositories exist.
+        if (res.status === 404) throw new PlanError("action-unavailable", notAvailable(key));
         if (!res.ok) {
           // 401, 403, 5xx and the rest: GitHub's state, not an answer. Retryable, never a pass.
           throw new InfraError(`checking whether ${key} is public: HTTP ${res.status}`);
@@ -98,10 +106,7 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
           throw new InfraError(`checking whether ${key} is public: unreadable response`, e);
         }
         if (info.private === true) {
-          throw new PlanError(
-            "private-action",
-            `${key} is a private repository; actions from private repositories are not allowed`,
-          );
+          throw new PlanError("action-unavailable", notAvailable(key));
         }
         if (info.private !== false) {
           throw new InfraError(`checking whether ${key} is public: no visibility in the response`);

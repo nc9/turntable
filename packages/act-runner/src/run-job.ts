@@ -17,6 +17,7 @@ import {
 import { checkoutStubAction } from "./checkout-stub";
 import { createActParser, summarize, type ActEvent } from "./events";
 import { PlanError, assertNoDockerAccess, assertPinned, type JobPlan } from "./plan";
+import { INSTALL_SHIMS_SH, launcherArgv, SHIM_NAMES, STEP_ENV, STEP_SHIM } from "./step-env";
 
 export type JobState = "success" | "failure" | "skipped" | "infra_error";
 
@@ -60,15 +61,8 @@ export interface RunOptions {
   onExec?: (info: { sandboxId: string; execId: string }) => void | Promise<void>;
 }
 
-/**
- * Environment set INSIDE the sandbox for act itself (constants, never controller env). act gives
- * run steps a pty, so without these a `git log` would block in a pager until the timeout.
- */
-export const SANDBOX_ENV: readonly string[] = [
-  "GIT_PAGER=cat",
-  "PAGER=cat",
-  "GIT_TERMINAL_PROMPT=0",
-];
+/** @deprecated The step environment lives in step-env.ts; kept for importers of the old name. */
+export const SANDBOX_ENV: readonly string[] = STEP_ENV;
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -183,6 +177,15 @@ export async function* runJob(
       retry,
     );
     if (inst.exitCode !== 0) return fail(`act install failed: ${inst.output.trim()}`);
+    // Steps must see no terminal, as on GitHub's runner: shim the interpreters (see step-env.ts).
+    const shims = await execShort(
+      provider,
+      sandboxId,
+      INSTALL_SHIMS_SH,
+      [L.shims, STEP_SHIM, ...SHIM_NAMES],
+      retry,
+    );
+    if (shims.exitCode !== 0) return fail(`cannot install step shims: ${shims.output.trim()}`);
 
     // Pin every `uses:` to its sha in the files act will read.
     for (const [i, f] of plan.files.entries()) {
@@ -206,7 +209,7 @@ export async function* runJob(
     const { execId } = await withRetry(
       () =>
         provider.exec.start(sandboxId, {
-          argv: ["env", ...SANDBOX_ENV, ...plan.argv],
+          argv: launcherArgv(L.shims, plan.argv),
           cwd: plan.cwd,
           timeoutSeconds: opts.timeoutSeconds ?? 3600,
         }),

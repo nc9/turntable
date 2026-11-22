@@ -1,6 +1,5 @@
 import {
   githubContext,
-  githubResolver,
   planWorkflow,
   type ActTarball,
   type ActionFetcher,
@@ -8,6 +7,7 @@ import {
   type Value,
   type WorkflowEvent,
 } from "@longshore/act-runner";
+import type { SafeFetch } from "@longshore/net";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db } from "../db";
 import {
@@ -21,6 +21,8 @@ import {
   type PolledJob,
   type Scope,
 } from "../db/repos";
+import { createForgeToken } from "../pins/forge-token";
+import type { ReachabilityChecker } from "../pins/reachability";
 import { createActRunner, localRepoSource } from "../scheduler/act-runner";
 import { Scheduler } from "../scheduler/scheduler";
 import type { AttemptRunner } from "../scheduler/types";
@@ -45,6 +47,15 @@ export interface RunWorkflowOptions {
   out: (text: string) => void;
   readFile: (path: string) => string | undefined;
   resolver?: ActionRefResolver;
+  /**
+   * The operator's GitHub token (default: LONGSHORE_GITHUB_TOKEN) for resolving and verifying
+   * actions. A local run is the operator's own checkout, so it is used for any action that
+   * passes the public check (a private or missing repo is refused with the same words).
+   */
+  githubToken?: string;
+  /** Test seams for action verification. */
+  reachable?: ReachabilityChecker;
+  fetch?: SafeFetch;
   egress?: "none" | "open";
   /** Probe each `none` sandbox for a real network path before its job runs. */
   canary?: boolean;
@@ -100,6 +111,9 @@ async function storedReason(db: Db, scope: Required<Scope>, jobId: string): Prom
   if (!attempt) return "";
   const log = Buffer.concat((await readLog(db, scope, attempt.id)).map((c) => c.bytes)).toString();
   const line = log.split("\n", 1)[0] ?? "";
+  // An infrastructure error that left no log (a crash before the job ran) is kept as the
+  // attempt's error class.
+  if (line === "" && attempt.errorClass) return attempt.errorClass;
   return line.replace(/^(skipped|cancelled): /, "");
 }
 
@@ -140,18 +154,23 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
   for (const w of wp.warnings) o.out(`warning: ${w.message}\n`);
   if (wp.trigger.pathsUnknown) o.out(`note: ${wp.trigger.reason}\n`);
 
-  // Action refs resolve once per run, however many jobs use them.
-  const resolverBase = o.resolver ?? githubResolver();
-  const memo = new Map<string, Promise<string>>();
-  const resolver: ActionRefResolver = (owner, repo, ref) => {
-    const k = `${owner}/${repo}@${ref}`;
-    let p = memo.get(k);
-    if (!p) {
-      p = resolverBase(owner, repo, ref);
-      memo.set(k, p);
-    }
-    return p;
-  };
+  // A supplied resolver (a test seam) is used as is, with refs memoised per run. Otherwise the
+  // runner resolves with the operator's token and keeps verdicts in the database.
+  const resolver: ActionRefResolver | undefined = o.resolver
+    ? (() => {
+        const base = o.resolver;
+        const memo = new Map<string, Promise<string>>();
+        return (owner: string, repo: string, ref: string): Promise<string> => {
+          const k = `${owner}/${repo}@${ref}`;
+          let p = memo.get(k);
+          if (!p) {
+            p = base(owner, repo, ref);
+            memo.set(k, p);
+          }
+          return p;
+        };
+      })()
+    : undefined;
 
   const jobs: PolledJob[] = wp.jobs.map((n) => ({
     key: n.key,
@@ -207,7 +226,14 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
       readFile: o.readFile,
     }),
     image: o.image,
-    resolver,
+    ...(resolver ? { resolver } : {}),
+    forgeToken: createForgeToken({
+      db: o.db,
+      envToken: o.githubToken ?? (process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined),
+      log: (m) => o.out(`warning: ${m}\n`),
+    }),
+    ...(o.reachable ? { reachable: o.reachable } : {}),
+    ...(o.fetch ? { fetch: o.fetch } : {}),
     ...(o.egress ? { egress: o.egress } : {}),
     ...(o.canary ? { canary: true } : {}),
     ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
@@ -220,9 +246,18 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
   // What each job's runner reported, for the summary (the database keeps only infra reasons).
   const reasons = new Map<string, string>();
   const runner: AttemptRunner = async (ctx) => {
-    const outcome = await inner(ctx);
-    reasons.set(ctx.job.jobKey, outcome.reason);
-    return outcome;
+    try {
+      const outcome = await inner(ctx);
+      reasons.set(ctx.job.jobKey, outcome.reason);
+      return outcome;
+    } catch (err) {
+      // The scheduler records a thrown error as an infrastructure error with its message; the
+      // summary and the terminal must say the same, never an empty reason.
+      const reason = err instanceof Error ? err.message : String(err);
+      reasons.set(ctx.job.jobKey, reason);
+      o.out(`[${ctx.job.jobKey}] ${reason}\n`);
+      throw err;
+    }
   };
 
   const cap = Math.max(1, o.maxParallel ?? 2);

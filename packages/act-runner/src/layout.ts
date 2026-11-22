@@ -9,6 +9,8 @@ export interface Layout {
   /** The delivered repo (with .git). act runs here and the checkout stub copies from here. */
   repo: string;
   stubs: string;
+  /** Shims for the interpreters act launches (see step-env.ts), first on the steps' PATH. */
+  shims: string;
   /** Where the generated export step writes job outputs, one file per output name. */
   outputsDir: string;
 }
@@ -21,6 +23,7 @@ export function layoutFor(root: string = DEFAULT_ROOT): Layout {
     repoTarball: `${root}/repo.tgz`,
     repo: `${root}/repo`,
     stubs: `${root}/stubs`,
+    shims: `${root}/shims`,
     outputsDir: `${root}/outputs`,
   };
 }

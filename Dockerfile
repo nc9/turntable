@@ -34,6 +34,7 @@ COPY --from=build --chmod=0755 /longshore /longshore
 COPY --from=build --chown=nonroot:nonroot /data /data
 ENV LONGSHORE_HOST=0.0.0.0
 USER nonroot:nonroot
-VOLUME ["/data"]
+# Data lives in /data. Mount a volume there (docker run -v ..., or your platform's volume feature).
+# No VOLUME directive: some platforms (Railway) reject it, and an anonymous volume hides data loss.
 EXPOSE 8080
 ENTRYPOINT ["/longshore","serve","--data-dir","/data"]
