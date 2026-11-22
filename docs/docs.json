@@ -20,7 +20,8 @@
           "secrets-proxy",
           "signing",
           "release-lane",
-          "github-app"
+          "github-app",
+          "hosted"
         ]
       },
       {

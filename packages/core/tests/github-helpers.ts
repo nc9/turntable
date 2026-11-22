@@ -74,3 +74,43 @@ export const repo = (id: string, name: string, owner = "acme"): GithubRepoFacts 
   owner,
   fullName: `${owner}/${name}`,
 });
+
+/** A fake GitHub user behind an OAuth code, for the installation claim flow. */
+export interface FakeClaimUser {
+  id: string;
+  login: string;
+  installations: { id: string; accountId: string; accountLogin: string; accountType: string }[];
+  /** Organizations where this user is an active admin. */
+  adminOf: string[];
+}
+
+/** Codes map to users; an unknown code is refused like GitHub refuses a bad code. */
+export function fakeUserVerifier(users: Map<string, FakeClaimUser>): {
+  verify(code: string): Promise<{
+    id: string;
+    login: string;
+    installations: FakeClaimUser["installations"];
+    isOrgAdmin(org: string): Promise<boolean>;
+  }>;
+} {
+  return {
+    async verify(code) {
+      const u = users.get(code);
+      if (!u) throw new Error("bad code");
+      return {
+        id: u.id,
+        login: u.login,
+        installations: u.installations,
+        isOrgAdmin: async (org) => u.adminOf.includes(org),
+      };
+    },
+  };
+}
+
+/** The owner of installation 100 on org `acme` (the default `inst` account). */
+export const ownerOf100: FakeClaimUser = {
+  id: "9",
+  login: "owner-b",
+  installations: [{ id: "100", accountId: "7", accountLogin: "acme", accountType: "Organization" }],
+  adminOf: ["acme"],
+};

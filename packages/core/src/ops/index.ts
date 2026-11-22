@@ -21,6 +21,7 @@ import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
 import { signRelease } from "./definitions/sign-release";
 import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
+import { startInstallationClaim } from "./definitions/installation-claim";
 import { whoami } from "./definitions/whoami";
 import {
   addPassthroughHostOp,
@@ -95,4 +96,5 @@ export const registry = createRegistry([
   secretUsage,
   requestReleaseOp,
   getReleaseRequestOp,
+  startInstallationClaim,
 ]);

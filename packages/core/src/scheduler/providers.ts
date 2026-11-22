@@ -15,20 +15,32 @@ export function isProviderName(name: string): name is ProviderName {
  * Reads a provider config file: a JSON object of provider options. Secrets do not go in it:
  * a provider that needs an API key reads it from a file named here (never inline).
  */
-export function loadProviderConfig(path: string | undefined): Record<string, unknown> {
-  if (path === undefined) return {};
+export function parseProviderConfig(text: string, source: string): Record<string, unknown> {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `cannot read provider config ${source}: ${err instanceof Error ? err.message : "error"}`,
+    );
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`provider config ${source} must be a JSON object`);
+  }
+  return raw as Record<string, unknown>;
+}
+
+export function loadProviderConfig(path: string | undefined): Record<string, unknown> {
+  if (path === undefined) return {};
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
   } catch (err) {
     throw new Error(
       `cannot read provider config ${path}: ${err instanceof Error ? err.message : "error"}`,
     );
   }
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`provider config ${path} must be a JSON object`);
-  }
-  return raw as Record<string, unknown>;
+  return parseProviderConfig(text, path);
 }
 
 const DOCKER_KEYS = new Set(["docker", "maxFileBytes", "runtime"]);

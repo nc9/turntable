@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Db } from "../db";
 import type { Scope } from "../db/repos";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
@@ -30,6 +31,8 @@ export type OpContext = {
   now: () => number;
   /** The secrets vault; absent when the server has no master key. Vault ops refuse without it. */
   vault?: SecretVault | undefined;
+  /** Starts installation claims (hosted); absent without a master key. */
+  claims?: InstallationClaims | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */
   webauthn?: RelyingParty | undefined;
 };

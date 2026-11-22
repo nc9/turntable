@@ -1082,3 +1082,33 @@ export const releaseRequests = sqliteTable(
     index("release_requests_status_idx").on(t.status, t.createdAt),
   ],
 );
+
+// ---- hosted installation claims (#86) ----
+
+/**
+ * One pending claim of a GitHub App installation by an org. Started by a signed-in principal of
+ * the org; the `state` GitHub sends back to the setup URL is an HMAC over (org, principal, nonce,
+ * expiry), and the nonce here makes it single use.
+ */
+export const installationClaims = sqliteTable(
+  "installation_claims",
+  {
+    nonce: text("nonce").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    /** `kind:id` of whoever started it. */
+    startedBy: text("started_by").notNull(),
+    createdAt: createdAt(),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    /** Set when the claim was consumed, and the installation it bound. */
+    usedAt: integer("used_at", { mode: "number" }),
+    installationId: text("installation_id"),
+    /** If the starter named the GitHub login that will claim, only that user may. */
+    expectedLogin: text("expected_login"),
+    /** The GitHub user who completed the claim (id and login at the time). */
+    githubUserId: text("github_user_id"),
+    githubLogin: text("github_login"),
+  },
+  (t) => [index("installation_claims_org_idx").on(t.orgId, t.createdAt)],
+);
