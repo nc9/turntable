@@ -3,6 +3,7 @@ import {
   MAX_PATTERN_LENGTH,
   PEM_BEGIN,
   PEM_END,
+  KEY_GAP_MAX,
   KEY_LINE_END,
   KEY_LINE_SPAN,
   KEY_NAMES,
@@ -19,12 +20,27 @@ const PEM_TAILS = ["PRIVATE KEY-----", "PRIVATE KEY BLOCK-----"];
 
 const isKeyLine = (line: string): boolean => KEY_LINE_END.test(line.slice(-KEY_LINE_SPAN));
 
-/** Start of the complete line before the partial line, if it ends with a key name. */
+/**
+ * Start of the key line (a line ending in a key name) that precedes the partial line with only
+ * whitespace-only lines between them, if the gap is within what the patterns accept. That key
+ * line must stay buffered: its value may still arrive.
+ */
 function prevKeyLineStart(text: string, partialStart: number): number {
-  if (partialStart < 2) return Number.POSITIVE_INFINITY;
-  const prevEnd = partialStart - 1;
-  const prevStart = text.lastIndexOf("\n", prevEnd - 1) + 1;
-  return isKeyLine(text.slice(prevStart, prevEnd)) ? prevStart : Number.POSITIVE_INFINITY;
+  let lineEnd = partialStart - 1; // index of the "\n" ending the line above the partial line
+  let gap = 0;
+  while (lineEnd >= 0) {
+    const lineStart = lineEnd === 0 ? 0 : text.lastIndexOf("\n", lineEnd - 1) + 1;
+    const line = text.slice(lineStart, lineEnd);
+    if (/^\s*$/.test(line)) {
+      // Conservative: twice the pattern's gap, since the key line's own trailing blanks count too.
+      gap += line.length + 1;
+      if (gap > 2 * KEY_GAP_MAX + 2) return Number.POSITIVE_INFINITY;
+      lineEnd = lineStart - 1;
+      continue;
+    }
+    return isKeyLine(line) ? lineStart : Number.POSITIVE_INFINITY;
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 /** Could `rest` (text after a PEM marker prefix) still grow into a private key BEGIN marker? */
@@ -73,6 +89,40 @@ function overlap(text: string, form: string): number {
   return Math.min(pi.at(-1) ?? 0, form.length - 1);
 }
 
+/** Enough characters past a run to see a whole key name or PEM marker start. */
+const CONTEXT_LOOKAHEAD = 32;
+
+/**
+ * First index in `text` where a PEM BEGIN marker or a key name starts, at or before `limit`;
+ * -1 if none.
+ */
+function contextStart(text: string, limit: number): number {
+  const low = text.toLowerCase();
+  const consider = (form: string, hay: string): number => {
+    const full = hay.indexOf(form);
+    // A start still being spelled at the very end of the text counts too: it may complete
+    // in the next chunk, and then the run must not have swallowed its first letters.
+    // (When the run itself reaches the end of the text, `contextHold` keeps that tail instead.)
+    const k = hay.length > limit ? overlap(hay, form) : 0;
+    const partial = k > 0 ? hay.length - k : -1;
+    return full >= 0 && (partial < 0 || full < partial) ? full : partial;
+  };
+  let at = consider("-----BEGIN", text);
+  for (const name of KEY_NAMES) {
+    const i = consider(name, low);
+    if (i >= 0 && (at < 0 || i < at)) at = i;
+  }
+  return at >= 0 && at <= limit ? at : -1;
+}
+
+/** Length of the tail of `text` that could still become the start of such a context. */
+function contextHold(text: string): number {
+  const low = text.slice(-24).toLowerCase();
+  let hold = overlap(text, PEM_MARKER);
+  for (const name of KEY_NAMES) hold = Math.max(hold, overlap(low, name));
+  return hold;
+}
+
 /** Earliest index of `text` that must stay buffered when flushing on idle. */
 function idleHoldStart(text: string, registry: SecretRegistry | undefined): number {
   const partialStart = text.lastIndexOf("\n") + 1;
@@ -100,7 +150,13 @@ function idleHoldStart(text: string, registry: SecretRegistry | undefined): numb
  * so the stream is never cut inside a match. `open` is set when a token's run reached the end
  * of the buffer and may continue in the next chunk.
  */
-type Interval = { start: number; end: number; full: number; open?: RegExp };
+type Interval = {
+  start: number;
+  end: number;
+  full: number;
+  /** The token's run reached the end of the buffer; `hold` trailing chars stay raw (see below). */
+  open?: { re: RegExp; hold: number };
+};
 
 /** Finds redaction intervals in `text`. `open` is the start of an unterminated PEM block. */
 function findIntervals(
@@ -120,15 +176,31 @@ function findIntervals(
       }
       const keep = p.keepPrefix ? (m[1]?.length ?? 0) : 0;
       let end = m.index + m[0].length;
-      let open: RegExp | undefined;
+      let open: Interval["open"];
       // The match hit its upper bound if the next character still belongs to the token: carry
       // the redaction through the rest of the run. Resume matching after it (linear overall).
       if (p.runRe && p.triggerRe && end < text.length && p.triggerRe.test(text.charAt(end))) {
         p.runRe.lastIndex = end;
         const run = p.runRe.exec(text);
-        if (run) end += run[0].length;
-        if (end === text.length) open = new RegExp(`^[${p.run}]*`);
-        p.re.lastIndex = end;
+        const runEnd = end + (run ? run[0].length : 0);
+        const ext = text.slice(end, runEnd);
+        // A run never swallows context that starts something else (a PEM BEGIN marker, a key
+        // name): stop there, so that it is scanned in its own right. The name may extend past
+        // the run's character class (`aws` | `_secret_access_key`), so look a little beyond it.
+        const cut = contextStart(text.slice(end, runEnd + CONTEXT_LOOKAHEAD), ext.length);
+        if (cut >= 0) {
+          end += cut;
+        } else {
+          end = runEnd;
+          if (end === text.length) {
+            // Keep a tail that could still grow into such a start raw; the rest is replaced now
+            // and the continuation of the run is dropped as it arrives.
+            const hold = contextHold(ext);
+            end -= hold;
+            open = { re: new RegExp(`^[${p.run}]*`), hold };
+          }
+        }
+        p.re.lastIndex = Math.max(p.re.lastIndex, end);
       }
       intervals.push({ start: m.index + keep, end, full: m.index, ...(open ? { open } : {}) });
     }
@@ -286,9 +358,23 @@ export class Redactor {
     // An over-long token was already replaced by `***`: drop the rest of its run.
     if (this.#tokenRun) {
       const run = this.#tokenRun.exec(this.#buf);
-      this.#buf = this.#buf.slice(run ? run[0].length : 0);
-      if (this.#buf.length === 0) return out;
-      this.#tokenRun = undefined;
+      const n = run ? run[0].length : 0;
+      const consumed = this.#buf.slice(0, n);
+      // The dropped tail must not hide context that starts something else: a PEM BEGIN marker
+      // or a key name inside the run. Stop dropping there and scan from that point.
+      const cut = contextStart(this.#buf.slice(0, n + CONTEXT_LOOKAHEAD), n);
+      if (cut >= 0) {
+        this.#buf = this.#buf.slice(cut);
+        this.#tokenRun = undefined;
+      } else if (n === this.#buf.length && !final) {
+        // The run reaches the end: keep only a tail that could still grow into such a start.
+        const keep = contextHold(consumed);
+        this.#buf = this.#buf.slice(n - keep);
+        return out;
+      } else {
+        this.#buf = this.#buf.slice(n);
+        this.#tokenRun = undefined;
+      }
     }
     // Swallow mode: drop everything until the END marker of an oversized PEM block.
     if (this.#swallowing) {
@@ -325,10 +411,10 @@ export class Redactor {
     // A token whose run reaches the end of the buffer may go on in the next chunk: emit the
     // replacement now and drop the continuation as it arrives (bounded memory).
     const last = merged.at(-1);
-    if (last?.open && last.end === text.length) {
-      this.#tokenRun = last.open;
-      this.#buf = "";
-      return out + apply(text, merged, text.length);
+    if (last?.open && last.end + last.open.hold === text.length) {
+      this.#tokenRun = last.open.re;
+      this.#buf = text.slice(last.end);
+      return out + apply(text, merged, last.end);
     }
 
     if (mode === "idle") {
