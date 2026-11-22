@@ -17,6 +17,7 @@
           "security",
           "secrets-vault",
           "oidc",
+          "secrets-proxy",
           "github-app"
         ]
       },
