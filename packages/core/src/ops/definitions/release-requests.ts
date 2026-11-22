@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   createReleaseRequest,
+  getFreeze,
   getReleaseRequest,
   getRun,
   type ReleaseRequest,
@@ -55,6 +56,9 @@ export const requestReleaseOp = defineOp({
   http: { method: "POST", path: "/release-requests" },
   mcp: false,
   async handler(ctx, i) {
+    if ((await getFreeze(ctx.db, ctx.scope)).frozen) {
+      throw new OpError("conflict", "this org or project is frozen; releases are paused");
+    }
     const run = await getRun(ctx.db, ctx.scope, i.run_id);
     if (!run) throw new OpError("not_found", "no such run in this project");
     const row = await createReleaseRequest(ctx.db, ctx.scope, {

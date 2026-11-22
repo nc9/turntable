@@ -11,6 +11,7 @@ import {
   appendAudit,
   claimNextReleaseRequest,
   finishReleaseRequest,
+  getFreeze,
   getRun,
   type ReleaseRequest,
 } from "../db/repos";
@@ -29,6 +30,8 @@ export interface ReleaseSigner {
       verified: {
         sha: string;
         repo: string;
+        /** `refs/tags/<tag>`: the run must have been built from exactly this ref. */
+        ref: string;
         subjects: readonly { name: string; sha256: string }[];
       };
     },
@@ -51,6 +54,7 @@ export type LaneDenial =
   | "bad_tag"
   | "unknown_run"
   | "no_repo"
+  | "frozen"
   | "repo_not_pinned"
   | "repo_mismatch"
   | "signed_subjects_differ"
@@ -149,6 +153,9 @@ export class ReleaseLane {
       ...(detail ? { detail } : {}),
       facts,
     });
+    // An incident freeze stops releases, checked here as well as at claim time, and again just
+    // before signing.
+    if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
     if (!TAG.test(req.tag) || req.tag.includes("..")) return refuse("bad_tag");
     const run = await getRun(this.#o.db, scope, req.runId);
     if (!run) return refuse("unknown_run");
@@ -191,13 +198,17 @@ export class ReleaseLane {
       facts.digests = digests;
       // The bytes must be what the build recorded...
       if (actual !== byName.get(name)) return refuse("digest_mismatch", name);
-      // ...and what this lane attested before, in a store the main process cannot write.
-      const c = this.#o.attest.check(scope.orgId, req.runId, name, actual);
-      if (c.state === "mismatch") return refuse("attestation_mismatch", name);
     }
+    // ...and what this lane attested for this TAG before, in a store the main process cannot
+    // write. Keyed by the release identity, not the run: a new run for an attested tag gets no
+    // fresh first sight, and a tag is never signed twice with different digests.
+    const identity = { orgId: scope.orgId, projectId: scope.projectId, repo: pinned, tag: req.tag };
+    const c = this.#o.attest.checkRelease(identity, digests);
+    if (c.state === "mismatch") return refuse("attestation_mismatch", c.why);
     const now = (this.#o.now ?? Date.now)();
-    for (const name of names)
-      this.#o.attest.attest(scope.orgId, req.runId, name, digests[name]!, now);
+    this.#o.attest.attestRelease(identity, digests, now);
+
+    if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
 
     // The service signs exactly what was verified here: the commit the forge confirmed, the
     // pinned repository and the digests computed from the bytes. If a row changed since, it
@@ -206,7 +217,7 @@ export class ReleaseLane {
     const out = await this.#o.signer.signRelease(scope, {
       runId: req.runId,
       artifacts: names,
-      verified: { sha: tag.sha, repo: pinned, subjects },
+      verified: { sha: tag.sha, repo: pinned, ref: `refs/tags/${req.tag}`, subjects },
     });
     if (!out.ok) return refuse(`signer:${out.reason}`, out.detail);
     const got = [...out.subjects].toSorted((x, y) => x.name.localeCompare(y.name));

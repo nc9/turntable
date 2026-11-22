@@ -5,6 +5,7 @@ import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { ulid } from "../ulid";
+import { notFrozen } from "./incident";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type ReleaseRequest = typeof s.releaseRequests.$inferSelect;
@@ -79,7 +80,13 @@ export function claimNextReleaseRequest(
     const [next] = await tx.orm
       .select()
       .from(s.releaseRequests)
-      .where(eq(s.releaseRequests.status, "pending"))
+      // A frozen org or project's requests are not taken: they wait for the freeze to clear.
+      .where(
+        and(
+          eq(s.releaseRequests.status, "pending"),
+          notFrozen(s.releaseRequests.orgId, s.releaseRequests.projectId),
+        ),
+      )
       .orderBy(asc(s.releaseRequests.createdAt), asc(s.releaseRequests.id))
       .limit(1);
     if (!next) return undefined;

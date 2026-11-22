@@ -13,6 +13,9 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { eq } from "drizzle-orm";
 import {
+  clearFreeze,
+  createRun,
+  setFreeze,
   setProjectSigning,
   chainedAudit,
   createReleaseRequest,
@@ -146,6 +149,7 @@ describe("the lane signs only what it has checked itself", () => {
         verified: {
           sha: SHA,
           repo: "acme/web",
+          ref: "refs/tags/v1.0.0",
           subjects: [{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }],
         },
       },
@@ -379,6 +383,47 @@ describe("what is signed is exactly what the lane verified", () => {
       expect(row.detail).toContain("artifact digests");
     });
 
+    test("the run's ref edited between the check and the sign is refused too", async () => {
+      const l = await realLane(async () => {
+        await db.orm.update(s.runs).set({ ref: "refs/tags/v9.9.9" }).where(eq(s.runs.id, a.runId));
+      });
+      const r = await request();
+      await l.processNext();
+      const row = (await getReleaseRequest(db, a.scope, r.id))!;
+      // still a release ref, so the service's own policy passes; only the lane's tag binding catches it
+      expect(row).toMatchObject({ status: "refused", reason: "signer:verification_mismatch" });
+      expect(row.detail).toContain("ref");
+    });
+
+    test("a lane-signed statement carries no unverified byproducts or actions", async () => {
+      const l = await realLane();
+      await recordArtifact(db, a.scope, {
+        runId: a.runId,
+        attemptId: a.attemptId,
+        name: "unverified-extra",
+        sha256: digest("extra"),
+        size: 5,
+      });
+      await db.orm
+        .update(s.jobAttempts)
+        .set({
+          plan: JSON.stringify({
+            actions: [
+              { uses: "evil/action@v1", repo: "evil/action", ref: "v1", sha: "e".repeat(40) },
+            ],
+          }),
+        })
+        .where(eq(s.jobAttempts.id, a.attemptId));
+      const r = await request();
+      await l.processNext();
+      const row = (await getReleaseRequest(db, a.scope, r.id))!;
+      expect(row.status).toBe("signed");
+      const payload = Buffer.from(JSON.parse(row.result!).envelope.payload, "base64").toString();
+      expect(payload).not.toContain("unverified-extra");
+      expect(payload).not.toContain("evil/action");
+      expect(payload).toContain(digest("binary-bytes"));
+    });
+
     test("the run's sha edited between the check and the sign is refused too", async () => {
       const l = await realLane(async () => {
         await db.orm
@@ -392,6 +437,136 @@ describe("what is signed is exactly what the lane verified", () => {
       expect(row).toMatchObject({ status: "refused", reason: "signer:verification_mismatch" });
       expect(row.detail).toContain("sha");
     });
+  });
+});
+
+describe("a release is attested by its identity, not by its run", () => {
+  const newRun = async () => {
+    const run = await createRun(db, a.scope, {
+      workflowPath: ".github/workflows/release.yml",
+      event: "push",
+      ref: "refs/tags/v1.0.0",
+      sha: SHA,
+      repo: "acme/web",
+    });
+    return run.id;
+  };
+  const id = (tag: string) => ({ orgId: a.orgId, projectId: a.projectId, repo: "acme/web", tag });
+
+  test("a second run for the same tag with other bytes is refused, even with fresh recorded digests", async () => {
+    expect((await process1()).status).toBe("signed");
+    const run2 = await newRun();
+    blobs.set(`${run2}/longshore-linux-x64`, "other-bytes");
+    recorded.set(`${run2}/longshore-linux-x64`, digest("other-bytes"));
+    const row = await process1(request({ runId: run2 }));
+    expect(row).toMatchObject({ status: "refused", reason: "attestation_mismatch" });
+    expect(row.detail).toContain("v1.0.0");
+    expect(signed.length).toBe(1);
+  });
+
+  test("signing the same tag again with identical digests is fine (idempotent)", async () => {
+    expect((await process1()).status).toBe("signed");
+    const run2 = await newRun();
+    blobs.set(`${run2}/longshore-linux-x64`, "binary-bytes");
+    recorded.set(`${run2}/longshore-linux-x64`, digest("binary-bytes"));
+    expect((await process1(request({ runId: run2 }))).status).toBe("signed");
+    expect(signed.length).toBe(2);
+  });
+
+  test("a different set of artifacts for an attested tag is refused: one added, one missing", async () => {
+    expect((await process1()).status).toBe("signed");
+    const run2 = await newRun();
+    for (const [n, b] of [
+      ["longshore-linux-x64", "binary-bytes"],
+      ["extra", "x"],
+    ] as const) {
+      blobs.set(`${run2}/${n}`, b);
+      recorded.set(`${run2}/${n}`, digest(b));
+    }
+    const added = await process1(
+      request({ runId: run2, artifacts: ["longshore-linux-x64", "extra"] }),
+    );
+    expect(added).toMatchObject({ status: "refused", reason: "attestation_mismatch" });
+    expect(added.detail).toContain("different set");
+    attest.attestRelease(id("v2.0.0"), { a: digest("1"), b: digest("2") }, 0);
+    expect(attest.checkRelease(id("v2.0.0"), { a: digest("1") }).state).toBe("mismatch");
+  });
+
+  test("another tag, another project or another repo is its own release", () => {
+    attest.attestRelease(id("v1.0.0"), { x: digest("1") }, 0);
+    expect(attest.checkRelease(id("v1.0.1"), { x: digest("2") }).state).toBe("new");
+    expect(
+      attest.checkRelease({ ...id("v1.0.0"), projectId: "other" }, { x: digest("2") }).state,
+    ).toBe("new");
+    expect(
+      attest.checkRelease({ ...id("v1.0.0"), repo: "acme/other" }, { x: digest("2") }).state,
+    ).toBe("new");
+    expect(
+      attest.checkRelease({ ...id("v1.0.0"), repo: "ACME/Web" }, { x: digest("1") }).state,
+    ).toBe("same");
+  });
+});
+
+describe("an incident freeze stops releases", () => {
+  const freeze = (level: "project" | "org") =>
+    setFreeze(db, level === "project" ? a.scope : { orgId: a.orgId }, {
+      reason: "incident",
+      by: "test",
+      now: 1,
+    });
+
+  test("a request for a frozen project or org is not claimed, and is processed when the freeze clears", async () => {
+    for (const level of ["project", "org"] as const) {
+      await freeze(level);
+      const r = await request();
+      expect(await lane.processNext()).toBe(false);
+      expect((await getReleaseRequest(db, a.scope, r.id))!.status).toBe("pending");
+      await clearFreeze(db, level === "project" ? a.scope : { orgId: a.orgId });
+      expect(await lane.processNext()).toBe(true);
+      expect((await getReleaseRequest(db, a.scope, r.id))!.status).toBe("signed");
+    }
+    expect(signed.length).toBe(2);
+  });
+
+  test("a freeze that lands after the claim refuses the request, and the signer is never called", async () => {
+    const r = await request();
+    const freezing: ForgeFacts = {
+      async tagCommit(repo, tag) {
+        await freeze("project"); // during the lane's checks
+        return forge.tagCommit(repo, tag);
+      },
+    };
+    const l = new ReleaseLane({
+      db,
+      forge: freezing,
+      bytes,
+      records,
+      attest,
+      signer,
+      owner: "lane-f",
+      now: () => 1_800_000_000_000,
+    });
+    expect(await l.processNext()).toBe(true);
+    const row = (await getReleaseRequest(db, a.scope, r.id))!;
+    expect(row).toMatchObject({ status: "refused", reason: "frozen" });
+    expect(signed).toEqual([]);
+  });
+
+  test("request_release is refused while frozen", async () => {
+    await freeze("project");
+    const relop = (await mintToken(db, a.scope, "release_operator")).secret;
+    const res = await dispatch(
+      { registry, db },
+      { kind: "bearer", token: relop },
+      "request_release",
+      {
+        run_id: a.runId,
+        tag: "v1.0.0",
+        artifacts: ["longshore-linux-x64"],
+      },
+    );
+    expect(res.ok).toBe(false);
+    expect((res as { error: { message: string } }).error.message).toContain("frozen");
   });
 });
 
@@ -574,7 +749,7 @@ describe("roles", () => {
       const out = await wired.signer.signRelease(a.scope, {
         runId: a.runId,
         artifacts: ["x"],
-        verified: { sha: SHA, repo: "acme/web", subjects: [] },
+        verified: { sha: SHA, repo: "acme/web", ref: "refs/tags/v1.0.0", subjects: [] },
       });
       expect(out).toMatchObject({ ok: false, reason: "not_release_class" });
       // recorded digests come from the main database's artifact table

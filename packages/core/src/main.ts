@@ -451,26 +451,36 @@ async function serve(args: string[]): Promise<void> {
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
   );
-  const server = startServer({
-    port,
-    host: values.host,
-    db,
-    allowedOrigins,
-    ...(webhooks ? { webhooks } : {}),
-    ...(vault ? { vault } : {}),
-    ...(webauthn ? { webauthn } : {}),
-    ...(oidc ? { oidc } : {}),
-    trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
-    transport: transportOptionsFromEnv(process.env),
-  });
-  console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  const server = roles.has("web")
+    ? startServer({
+        port,
+        host: values.host,
+        db,
+        allowedOrigins,
+        ...(webhooks ? { webhooks } : {}),
+        ...(vault ? { vault } : {}),
+        ...(webauthn ? { webauthn } : {}),
+        ...(oidc ? { oidc } : {}),
+        trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
+        transport: transportOptionsFromEnv(process.env),
+      })
+    : undefined;
+  if (server)
+    console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
-  const background = await startBackground(db, values, checks, {
-    ...(appAuth ? { auth: appAuth } : {}),
-    ...(vault ? { vault } : {}),
-  });
-  LONGSHORE_RELEASE_*  belong to "serve --roles release" alone (its own master key file, data dir, forge
-                    token, artifact dir): the release lane runs as its own process and no other role reads them
+  const background = await startBackground(
+    db,
+    {
+      ...values,
+      worker: roles.has("worker"),
+      poll: roles.has("poller") ? values.poll : undefined,
+    },
+    checks,
+    {
+      ...(appAuth ? { auth: appAuth } : {}),
+      ...(vault ? { vault } : {}),
+    },
+  );
 
   const stop = () => {
     for (const s of auditStops) s();

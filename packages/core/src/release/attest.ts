@@ -7,10 +7,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type AttestCheck =
-  | { state: "new" }
-  | { state: "same" }
-  | { state: "mismatch"; attested: string };
+export type AttestCheck = { state: "new" } | { state: "same" } | { state: "mismatch"; why: string };
 
 export class AttestationStore {
   readonly #db: Database;
@@ -19,11 +16,13 @@ export class AttestationStore {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.#db = new Database(path, { create: true, strict: true });
     this.#db.run("PRAGMA journal_mode = WAL");
+    // Keyed by the release identity, not by the run: a second run for the same tag does not get a
+    // fresh first sight of its artifacts.
     this.#db.run(
-      `CREATE TABLE IF NOT EXISTS attested_artifacts (
-         org_id TEXT NOT NULL, run_id TEXT NOT NULL, name TEXT NOT NULL,
-         sha256 TEXT NOT NULL, first_seen INTEGER NOT NULL,
-         PRIMARY KEY (org_id, run_id, name))`,
+      `CREATE TABLE IF NOT EXISTS attested_releases (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL, tag TEXT NOT NULL,
+         name TEXT NOT NULL, sha256 TEXT NOT NULL, first_seen INTEGER NOT NULL,
+         PRIMARY KEY (org_id, project_id, repo, tag, name))`,
     );
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS pinned_repos (
@@ -32,21 +31,46 @@ export class AttestationStore {
     );
   }
 
-  check(orgId: string, runId: string, name: string, sha256: string): AttestCheck {
-    const row = this.#db
-      .query<{ sha256: string }, [string, string, string]>(
-        "SELECT sha256 FROM attested_artifacts WHERE org_id = ? AND run_id = ? AND name = ?",
+  /**
+   * Compares the digests of a release (a tag of the pinned repository) with what this lane
+   * attested for it before. A tag already attested must come back with exactly the same set of
+   * (name, digest) pairs: a different digest, an added artifact or a missing one is a mismatch.
+   * Signing the same tag again with identical digests is fine.
+   */
+  checkRelease(
+    id: { orgId: string; projectId: string; repo: string; tag: string },
+    digests: Readonly<Record<string, string>>,
+  ): AttestCheck {
+    const rows = this.#db
+      .query<{ name: string; sha256: string }, [string, string, string, string]>(
+        "SELECT name, sha256 FROM attested_releases WHERE org_id = ? AND project_id = ? AND repo = ? AND tag = ?",
       )
-      .get(orgId, runId, name);
-    if (!row) return { state: "new" };
-    return row.sha256 === sha256 ? { state: "same" } : { state: "mismatch", attested: row.sha256 };
+      .all(id.orgId, id.projectId, id.repo.toLowerCase(), id.tag);
+    if (rows.length === 0) return { state: "new" };
+    const have = new Map(rows.map((r) => [r.name, r.sha256]));
+    const names = Object.keys(digests);
+    if (have.size !== names.length) {
+      return { state: "mismatch", why: `${id.tag} was attested with a different set of artifacts` };
+    }
+    for (const n of names) {
+      if (have.get(n) !== digests[n]) {
+        return { state: "mismatch", why: `${n} differs from what was attested for ${id.tag}` };
+      }
+    }
+    return { state: "same" };
   }
 
-  /** Records a digest the first time; never overwrites. */
-  attest(orgId: string, runId: string, name: string, sha256: string, now: number): void {
-    this.#db
-      .query("INSERT OR IGNORE INTO attested_artifacts VALUES (?, ?, ?, ?, ?)")
-      .run(orgId, runId, name, sha256, now);
+  /** Records the digests of a release the first time; never overwrites. */
+  attestRelease(
+    id: { orgId: string; projectId: string; repo: string; tag: string },
+    digests: Readonly<Record<string, string>>,
+    now: number,
+  ): void {
+    for (const [name, sha] of Object.entries(digests)) {
+      this.#db
+        .query("INSERT OR IGNORE INTO attested_releases VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(id.orgId, id.projectId, id.repo.toLowerCase(), id.tag, name, sha, now);
+    }
   }
 
   /**
