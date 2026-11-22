@@ -153,7 +153,6 @@ const service = (
 const req = (runId: string, artifacts = ["longshore-linux-x64"]) => ({
   runId,
   artifacts,
-  environment: "production",
 });
 const denials = async (): Promise<string[]> =>
   (await listAudit(db, a.scope)).filter((x) => x.op === "sign_release").map((x) => x.outcome);
@@ -249,6 +248,49 @@ describe("policy refusals (nothing reaches the signer)", () => {
     expect(await denials()).toContain(`denied:${reason}`);
   });
 
+  test("the approval environment is the project's, the provenance and audit row record it", async () => {
+    const run = await releaseRun();
+    await setProjectSigning(db, a.scope, { environment: "production" });
+    const asked: string[] = [];
+    const out = await service({
+      verify: async (subject, env) => {
+        asked.push(env);
+        return approve.verify(subject, env);
+      },
+    }).signRelease(a.scope, req(run.id));
+    expect(out.ok).toBe(true);
+    expect(asked).toEqual(["production"]);
+    if (!out.ok) return;
+    const payload = JSON.parse(Buffer.from(out.envelope.payload, "base64").toString());
+    expect(payload.predicate.buildDefinition.internalParameters).toEqual({
+      environment: "production",
+    });
+    const rows = (await listAudit(db, a.scope)).filter((x) => x.op === "sign_release");
+    expect(JSON.stringify(rows)).toContain("production");
+  });
+
+  test("a caller that names another environment is refused, the verifier is not asked, nothing is signed", async () => {
+    const run = await releaseRun();
+    let asked = 0;
+    const counting: ApprovalVerifier = {
+      verify: async (subject, env) => {
+        asked++;
+        return approve.verify(subject, env);
+      },
+    };
+    for (const environment of ["staging", "", "Release", "none"]) {
+      expect(
+        await service(counting).signRelease(a.scope, { ...req(run.id), environment }),
+      ).toMatchObject({ ok: false, reason: "environment_mismatch" });
+    }
+    // The project's own name is accepted.
+    expect(
+      (await service(counting).signRelease(a.scope, { ...req(run.id), environment: "release" })).ok,
+    ).toBe(true);
+    expect(asked).toBe(1);
+    expect(signCalls).toBe(1);
+  });
+
   test("no approval: the default verifier denies, so nothing is signed", async () => {
     const run = await releaseRun();
     expect(await service(denyAllApprovals).signRelease(a.scope, req(run.id))).toMatchObject({
@@ -281,7 +323,7 @@ describe("policy refusals (nothing reaches the signer)", () => {
         runId: run.id,
         headSha: SHA,
         workflowHash: "h",
-        env: "production",
+        env: "release",
       },
     ]);
     expect(signCalls).toBe(0);

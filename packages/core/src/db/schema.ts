@@ -120,6 +120,11 @@ export const projects = sqliteTable(
      */
     signingKey: text("signing_key"),
     /**
+     * The environment whose approval a release signature needs, set here and never by the caller.
+     * Null: `release`.
+     */
+    signingEnvironment: text("signing_environment"),
+    /**
      * Whether the server reports job results to the forge as check runs: `off` (default),
      * `shadow` (always neutral, the real result in the text) or `live` (real conclusions). Set
      * only from the CLI (`longshore policy set --checks-mode`).
