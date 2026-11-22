@@ -1,6 +1,6 @@
 // Recorded artifacts and the project's signing settings. Part of the only code allowed to name
 // tenant tables.
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { ulid } from "../ulid";
@@ -181,5 +181,21 @@ export function setProjectSigning(
         ...(patch.environment === undefined ? {} : { signingEnvironment: patch.environment }),
       })
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+  });
+}
+
+/**
+ * True when a project of ANOTHER org names this exact signing key setting. Used to keep a key
+ * reference (a KMS key, say) from being shared between orgs: whichever org names it second is
+ * refused, at policy time and again at signing time. Intentionally across orgs.
+ */
+export function signingKeyUsedByOtherOrg(db: Db, orgId: string, setting: string): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ id: s.projects.id })
+      .from(s.projects)
+      .where(and(eq(s.projects.signingKey, setting), ne(s.projects.orgId, orgId)))
+      .limit(1);
+    return rows.length > 0;
   });
 }

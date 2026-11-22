@@ -13,6 +13,7 @@ export {
 } from "./policy";
 export {
   type Backend,
+  builtinKeyRef,
   parseKeyRef,
   type SignOutcome,
   type SignRequest,

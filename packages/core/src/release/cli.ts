@@ -7,6 +7,7 @@ import { LocalSigner } from "@longshore/signer";
 import { getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
 import { loadMasterKey } from "../secrets/crypto";
 import { releaseConfigFromEnv } from "../roles";
+import { builtinKeyRef } from "../signing/service";
 import { AttestationStore } from "./attest";
 import { fileKeyVault } from "./key-vault";
 import { keysDir } from "./serve";
@@ -16,19 +17,33 @@ export async function releaseCommand(args: string[]): Promise<number> {
   if (sub === "pin-repo") return pinRepo(rest);
   if (sub !== "init-key") {
     console.error(
-      "usage:\n  longshore release init-key --name <key>\n  longshore release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\nRuns with the release role's environment (LONGSHORE_RELEASE_*).",
+      "usage:\n  longshore release init-key --org <slug> --name <key> [--data-dir ./data]\n  longshore release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\nRuns with the release role's environment (LONGSHORE_RELEASE_*).",
     );
     return 2;
   }
-  const { values } = parseArgs({ args: rest, options: { name: { type: "string" } }, strict: true });
-  if (!values.name) throw new Error("--name <key> is required");
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      org: { type: "string" },
+      name: { type: "string" },
+      "data-dir": { type: "string", default: "./data" },
+    },
+    strict: true,
+  });
+  if (!values.name || !values.org) throw new Error("--org <slug> and --name <key> are required");
+  // The key is stored under the org's id: another org's project naming the same `builtin:<name>`
+  // reaches its own key, never this one.
+  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const org = await getOrgBySlug(db, values.org);
+  db.close();
+  if (!org) throw new Error(`no org with slug ${values.org}`);
   const cfg = releaseConfigFromEnv(process.env);
   const signer = new LocalSigner(
     fileKeyVault(keysDir(cfg.dataDir), loadMasterKey(cfg.masterKeyFile)),
   );
-  const pub = await signer.ensureKey(values.name);
+  const pub = await signer.ensureKey(builtinKeyRef(org.id, values.name));
   console.error(
-    `key ${values.name}: keyid ${pub.keyid}. Pin this public key; it is not stored anywhere else you control.`,
+    `key ${values.org}/${values.name}: keyid ${pub.keyid}. Pin this public key; it is not stored anywhere else you control.`,
   );
   console.log(pub.publicKeyPem.trim());
   return 0;

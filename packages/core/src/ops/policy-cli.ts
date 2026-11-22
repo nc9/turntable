@@ -17,6 +17,7 @@ import {
   getProjectBySlug,
   getProjectSigning,
   setProjectSigning,
+  signingKeyUsedByOtherOrg,
   getProjectEgress,
   listProjects,
   setApproveRunMinRole,
@@ -312,6 +313,12 @@ export async function setSigningPolicy(
   if (patch.signingKey !== undefined && patch.signingKey !== "" && !parseKeyRef(patch.signingKey)) {
     throw new Error("--signing-key must be builtin:<name>, aws-kms:<key> or gcp-kms:<key version>");
   }
+  if (
+    patch.signingKey?.startsWith("builtin:") &&
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(patch.signingKey.slice(8))
+  ) {
+    throw new Error("a builtin key name is 1 to 64 letters, digits, dots, dashes or underscores");
+  }
   if (patch.environment !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(patch.environment)) {
     throw new Error(
       "--signing-environment must be 1 to 64 letters, digits, dots, dashes or underscores",
@@ -337,6 +344,16 @@ export async function setSigningPolicy(
     signingKey: string | null;
     environment: string;
   }[] = [];
+  // A builtin key is looked up inside the org (its id is part of the stored name), so the same
+  // `builtin:<name>` in two orgs is two keys. Any other reference (a KMS key) names one key
+  // outside Longshore: an org may not name one that another org already does.
+  if (
+    patch.signingKey &&
+    !patch.signingKey.startsWith("builtin:") &&
+    (await signingKeyUsedByOtherOrg(db, org.id, patch.signingKey))
+  ) {
+    throw new Error("that signing key is already used by another org; a key belongs to one org");
+  }
   for (const p of projects) {
     const scope = { orgId: org.id, projectId: p!.id };
     await db.transaction(async (tx) => {
