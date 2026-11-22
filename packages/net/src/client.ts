@@ -72,6 +72,11 @@ export interface HttpClientOptions {
   allowHosts?: readonly string[];
   /** DNS. Default: the system resolver, all answers. */
   resolve?: Resolver;
+  /**
+   * How long one address may take to connect before the next one is tried, when a name has more
+   * than one. The last address gets whatever is left of the overall deadline. Default 3000.
+   */
+  connectAttemptMs?: number;
   maxRedirects?: number;
   maxBytes?: number;
   timeoutMs?: number;
@@ -88,8 +93,45 @@ const defaultResolve: Resolver = async (h) =>
 interface Target {
   url: URL;
   host: string;
-  /** The validated address the connection is pinned to. */
-  ip: string;
+  /**
+   * Every validated address, in the order to try them. Each attempt is pinned to its own
+   * address: DNS is never consulted again.
+   */
+  ips: string[];
+}
+
+/**
+ * Orders addresses for connecting: the two families interleaved, starting with the family the
+ * resolver listed first, each family keeping its own order. A host with an IPv6 answer and no
+ * IPv6 route then reaches its IPv4 address after one failed attempt, and the reverse.
+ */
+export function interleaveFamilies(addresses: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const v6: string[] = [];
+  const v4: string[] = [];
+  let firstIs6 = false;
+  for (const a of addresses) {
+    if (seen.has(a)) continue;
+    if (seen.size === 0) firstIs6 = isIP(a) === 6;
+    seen.add(a);
+    (isIP(a) === 6 ? v6 : v4).push(a);
+  }
+  const [first, second] = firstIs6 ? [v6, v4] : [v4, v6];
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(first.length, second.length); i += 1) {
+    if (i < first.length) out.push(first[i] as string);
+    if (i < second.length) out.push(second[i] as string);
+  }
+  return out;
+}
+
+/** A failure before the TCP connection was made: nothing was sent, so another address may be tried. */
+class ConnectFailure extends Error {
+  readonly underlying: Error;
+  constructor(underlying: Error) {
+    super(underlying.message);
+    this.underlying = underlying;
+  }
 }
 
 export interface HttpClient {
@@ -102,6 +144,7 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
   const maxRedirects = o.maxRedirects ?? 5;
   const defaultMax = o.maxBytes ?? 32 * 1024 * 1024;
   const defaultTimeout = o.timeoutMs ?? 30_000;
+  const attemptMs = o.connectAttemptMs ?? 3000;
   const ua = o.userAgent ?? "longshore";
 
   const hostOf = (u: URL): string => {
@@ -110,7 +153,7 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
     return h.endsWith(".") ? h.slice(0, -1) : h;
   };
 
-  /** Validates a URL and resolves its host to the one address the connection will use. */
+  /** Validates a URL and resolves its host to the addresses the connection may use. */
   async function target(url: URL): Promise<Target> {
     const host = hostOf(url);
     const allowed = allow.has(host);
@@ -136,16 +179,55 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
         if (why) throw new SsrfError(host, `${a} is ${why}`);
       }
     }
-    return { url, host, ip: addresses[0] as string };
+    return { url, host, ips: interleaveFamilies(addresses) };
   }
 
-  async function once(
+  /**
+   * Tries each validated address in turn. Only a failure to connect moves on to the next one (no
+   * byte was sent, so a retry is safe for any method); anything after the connection was made,
+   * or the overall deadline, ends the attempt. Every attempt is pinned to its own address.
+   */
+  async function exchange(
     t: Target,
     method: string,
     headers: Record<string, string>,
     body: Uint8Array | undefined,
     deadline: AbortSignal,
     maxBytes: number,
+  ): Promise<{ status: number; statusText: string; headers: Headers; bytes: Uint8Array }> {
+    let last: Error | undefined;
+    for (let i = 0; i < t.ips.length; i += 1) {
+      const isLast = i === t.ips.length - 1;
+      try {
+        return await once(
+          t,
+          t.ips[i] as string,
+          method,
+          headers,
+          body,
+          deadline,
+          maxBytes,
+          isLast ? undefined : attemptMs,
+        );
+      } catch (err) {
+        if (!(err instanceof ConnectFailure) || deadline.aborted) {
+          throw err instanceof ConnectFailure ? err.underlying : err;
+        }
+        last = err.underlying;
+      }
+    }
+    throw last ?? new Error("no address to connect to");
+  }
+
+  async function once(
+    t: Target,
+    ip: string,
+    method: string,
+    headers: Record<string, string>,
+    body: Uint8Array | undefined,
+    deadline: AbortSignal,
+    maxBytes: number,
+    connectTimeoutMs?: number,
   ): Promise<{ status: number; statusText: string; headers: Headers; bytes: Uint8Array }> {
     const isHttps = t.url.protocol === "https:";
     const lib = isHttps ? https : http;
@@ -161,7 +243,7 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
           // The connection goes to the address validated above. DNS is not consulted again, so a
           // record that changes after the check cannot redirect the connection.
           lookup: ((_h: string, opts: { all?: boolean }, cb: (...a: unknown[]) => void) => {
-            const entry = { address: t.ip, family: isIP(t.ip) };
+            const entry = { address: ip, family: isIP(ip) };
             if (opts?.all) cb(null, [entry]);
             else cb(null, entry.address, entry.family);
           }) as unknown as http.RequestOptions["lookup"],
@@ -202,7 +284,33 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
           res.on("error", rejectP);
         },
       );
-      req.on("error", rejectP);
+      // Until the TCP connection is made, a failure (refused, unreachable, too slow) is a
+      // ConnectFailure: the caller may try the next address.
+      let connected = false;
+      let connectTimer: ReturnType<typeof setTimeout> | undefined;
+      req.on("socket", (socket) => {
+        const made = (): void => {
+          connected = true;
+          clearTimeout(connectTimer);
+        };
+        if (!socket.connecting) {
+          made();
+          return;
+        }
+        socket.once("connect", made);
+        if (connectTimeoutMs !== undefined) {
+          connectTimer = setTimeout(() => {
+            if (connected) return;
+            const e = new Error(`connect to ${ip} timed out`);
+            (e as NodeJS.ErrnoException).code = "ETIMEDOUT";
+            req.destroy(e);
+          }, connectTimeoutMs);
+        }
+      });
+      req.on("error", (e) => {
+        clearTimeout(connectTimer);
+        rejectP(connected || deadline.aborted ? e : new ConnectFailure(e));
+      });
       const onAbort = (): void => {
         req.destroy();
         rejectP(deadline.reason instanceof Error ? deadline.reason : new Error("aborted"));
@@ -253,7 +361,7 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
         const t = await target(url);
         const send: Record<string, string> = {};
         hdrs.forEach((v, k) => (send[k] = v));
-        const res = await once(
+        const res = await exchange(
           t,
           method,
           send,
