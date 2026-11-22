@@ -8,5 +8,33 @@ export const migrations: Migration[] = [
     "statements": [
       "CREATE TABLE `instance` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL\n);"
     ]
+  },
+  {
+    "tag": "0001_steep_makkari",
+    "when": 1795343288129,
+    "statements": [
+      "CREATE TABLE `job_attempts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`job_id` text NOT NULL,\n\t`attempt` integer NOT NULL,\n\t`state` text DEFAULT 'queued' NOT NULL,\n\t`provider` text NOT NULL,\n\t`sandbox_id` text,\n\t`exit_code` integer,\n\t`error_class` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`started_at` integer,\n\t`finished_at` integer,\n\tFOREIGN KEY (`job_id`,`org_id`,`project_id`) REFERENCES `jobs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"job_attempts_state_check\" CHECK(state IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled'))\n);",
+      "CREATE UNIQUE INDEX `job_attempts_id_org_project_unique` ON `job_attempts` (`id`,`org_id`,`project_id`);",
+      "CREATE UNIQUE INDEX `job_attempts_job_attempt_unique` ON `job_attempts` (`job_id`,`attempt`);",
+      "CREATE TABLE `jobs` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`job_key` text NOT NULL,\n\t`name` text NOT NULL,\n\t`state` text DEFAULT 'queued' NOT NULL,\n\t`exit_code` integer,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`started_at` integer,\n\t`finished_at` integer,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`run_id`,`org_id`,`project_id`) REFERENCES `runs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"jobs_state_check\" CHECK(state IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled'))\n);",
+      "CREATE INDEX `jobs_run_idx` ON `jobs` (`org_id`,`run_id`);",
+      "CREATE UNIQUE INDEX `jobs_id_org_project_unique` ON `jobs` (`id`,`org_id`,`project_id`);",
+      "CREATE UNIQUE INDEX `jobs_run_key_unique` ON `jobs` (`run_id`,`job_key`);",
+      "CREATE TABLE `log_chunks` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`attempt_id` text NOT NULL,\n\t`offset` integer NOT NULL,\n\t`bytes` blob NOT NULL,\n\tPRIMARY KEY(`attempt_id`, `offset`),\n\tFOREIGN KEY (`attempt_id`,`org_id`,`project_id`) REFERENCES `job_attempts`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `org_members` (\n\t`org_id` text NOT NULL,\n\t`user_id` text NOT NULL,\n\t`role` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`org_id`, `user_id`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"org_members_role_check\" CHECK(role IN ('owner', 'admin', 'member', 'viewer'))\n);",
+      "CREATE TABLE `orgs` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`slug` text NOT NULL,\n\t`name` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL\n);",
+      "CREATE UNIQUE INDEX `orgs_slug_unique` ON `orgs` (`slug`);",
+      "CREATE TABLE `project_repos` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`forge` text NOT NULL,\n\t`installation_id` text,\n\t`forge_repo_id` text,\n\t`owner` text NOT NULL,\n\t`repo` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"project_repos_forge_check\" CHECK(forge IN ('github'))\n);",
+      "CREATE UNIQUE INDEX `project_repos_forge_owner_repo_unique` ON `project_repos` (`forge`,`owner`,`repo`);",
+      "CREATE UNIQUE INDEX `project_repos_forge_repo_id_unique` ON `project_repos` (`forge`,`forge_repo_id`);",
+      "CREATE TABLE `projects` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`slug` text NOT NULL,\n\t`name` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE UNIQUE INDEX `projects_org_slug_unique` ON `projects` (`org_id`,`slug`);",
+      "CREATE UNIQUE INDEX `projects_id_org_unique` ON `projects` (`id`,`org_id`);",
+      "CREATE TABLE `runs` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`workflow_path` text NOT NULL,\n\t`event` text NOT NULL,\n\t`ref` text NOT NULL,\n\t`sha` text,\n\t`status` text DEFAULT 'queued' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`started_at` integer,\n\t`finished_at` integer,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"runs_status_check\" CHECK(status IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled'))\n);",
+      "CREATE INDEX `runs_project_created_idx` ON `runs` (`org_id`,`project_id`,`created_at`);",
+      "CREATE UNIQUE INDEX `runs_id_org_project_unique` ON `runs` (`id`,`org_id`,`project_id`);",
+      "CREATE TABLE `users` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`email` text,\n\t`display_name` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL\n);",
+      "CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);"
+    ]
   }
 ];

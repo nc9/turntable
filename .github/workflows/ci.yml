@@ -27,10 +27,15 @@ jobs:
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
-      - name: Embedded migrations are current
+      - name: Migrations match schema and embedded module is current
+        timeout-minutes: 5
         run: |
-          bun run --cwd packages/core db:embed
-          git diff --exit-code -- packages/core/src/db/migrations.generated.ts
+          bun run --cwd packages/core db:generate
+          if [ -n "$(git status --porcelain packages/core/drizzle packages/core/src/db/migrations.generated.ts)" ]; then
+            echo "schema.ts changed without committed migrations; run: bun run --cwd packages/core db:generate"
+            git status --porcelain packages/core/drizzle packages/core/src/db/migrations.generated.ts
+            exit 1
+          fi
       - run: bun test packages/core/tests
       - run: bun run build
       - name: Smoke the linux-x64 binary
