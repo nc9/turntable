@@ -35,7 +35,16 @@ function compile(op: Op): Route {
     })
     .join("");
   const props = inputJsonSchema(op).properties ?? {};
-  const types = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, v.type]));
+  const types = Object.fromEntries(
+    Object.entries(props).map(([k, v]) => [
+      k,
+      v.type ??
+        // A union of integer and a literal string (events `after`): numbers stay numbers.
+        (Array.isArray(v.anyOf) && v.anyOf.some((a: { type?: string }) => a.type === "integer")
+          ? "integer_or_string"
+          : undefined),
+    ]),
+  );
   return { op, pattern: new RegExp(`^${source}$`), params, types };
 }
 
@@ -43,6 +52,7 @@ function compile(op: Op): Route {
 function coerce(value: string, type: string | undefined): unknown {
   // Arrays travel comma-separated in a query string: ?types=run.queued,job.state_changed
   if (type === "array") return value === "" ? [] : value.split(",");
+  if (type === "integer_or_string") return /^\d+$/.test(value) ? Number(value) : value;
   if (type === "integer" || type === "number") {
     return value.trim() === "" ? value : Number(value);
   }

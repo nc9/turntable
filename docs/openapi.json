@@ -1587,12 +1587,20 @@
             "name": "after",
             "in": "query",
             "required": false,
-            "description": "Cursor: only events after this one.",
+            "description": "Cursor: only events after this one. \"now\" returns no events and sets next_after to the newest event, so a new subscriber starts at the tip.",
             "schema": {
               "default": 0,
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "string",
+                  "const": "now"
+                }
+              ]
             }
           },
           {

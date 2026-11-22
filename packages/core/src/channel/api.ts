@@ -45,7 +45,7 @@ export type StepInfo = { job_id: string; job_key: string; state: string; step_na
 
 export type ChannelApi = {
   events(o: {
-    after: number;
+    after: number | "now";
     types?: string[];
     limit: number;
     waitMs: number;
