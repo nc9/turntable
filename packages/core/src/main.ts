@@ -154,7 +154,9 @@ async function startBackground(
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
-    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]));
+    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]), {
+      hosted: v.hosted === true || process.env.LONGSHORE_HOSTED === "1",
+    });
     workerProvider = provider;
     // Fail at startup, with the provider named, instead of at the first job.
     try {
