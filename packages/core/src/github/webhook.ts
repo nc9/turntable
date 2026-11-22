@@ -9,6 +9,7 @@
 //  4. Handlers re-fetch facts from the API (see installations.ts) and are idempotent.
 //  5. Events nobody handles are stored as ignored and acknowledged.
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readCapped } from "@longshore/net";
 import type { Db } from "../db";
 import {
   finishDelivery,
@@ -66,25 +67,8 @@ export function signatureMatches(secret: string, raw: Uint8Array, header: string
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-async function readCapped(req: Request): Promise<Uint8Array | "too-large"> {
-  const declared = Number(req.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return "too-large";
-  if (!req.body) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const reader = req.body.getReader();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > MAX_BODY_BYTES) {
-      await reader.cancel();
-      return "too-large";
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
+const readBody = (req: Request): Promise<Uint8Array | "too-large"> =>
+  readCapped(req.body, MAX_BODY_BYTES, Number(req.headers.get("content-length")));
 
 export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
   const now = o.now ?? Date.now;
@@ -163,7 +147,7 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
       const app = await getGithubApp(o.db);
       if (!app) return json(503, { error: "no GitHub App is configured" });
 
-      const raw = await readCapped(req);
+      const raw = await readBody(req);
       if (raw === "too-large") return json(413, { error: "payload too large" });
 
       // Authenticate BEFORE parsing anything.

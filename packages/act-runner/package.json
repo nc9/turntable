@@ -10,6 +10,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@longshore/net": "workspace:*",
     "@longshore/provider-sdk": "workspace:*",
     "yaml": "2.9.1"
   },

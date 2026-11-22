@@ -7,6 +7,7 @@
 //   bun run scripts/rcodesign.ts sign   <binary> [identifier]
 //   bun run scripts/rcodesign.ts verify <binary> [identifier]
 import { createHash } from "node:crypto";
+import { safeFetch } from "../packages/net/src/index";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +39,7 @@ export async function ensureRcodesign(): Promise<string> {
   if (existsSync(bin)) return bin;
   mkdirSync(dir, { recursive: true });
   const url = `https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/${rel.asset}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  const res = await safeFetch(url, { timeoutMs: 120_000, maxBytes: 64 * 1024 * 1024 });
   if (!res.ok) throw new Error(`download ${url} failed: HTTP ${res.status}`);
   const bytes = new Uint8Array(await res.arrayBuffer());
   const got = sha256(bytes);

@@ -1,3 +1,4 @@
+import { type SafeFetch, safeFetch } from "@longshore/net";
 import {
   FileTooLargeError,
   InfraError,
@@ -36,7 +37,7 @@ export type DaytonaSandbox = {
 export type ApiOptions = {
   baseUrl?: string;
   apiKey: ApiKeySource;
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
 };
 
 type ReqInit = {
@@ -54,13 +55,13 @@ type ReqInit = {
  */
 export class DaytonaApi {
   readonly baseUrl: string;
-  private readonly doFetch: typeof fetch;
+  private readonly doFetch: SafeFetch;
   private readonly keySource: ApiKeySource;
   private key: Promise<string> | null = null;
 
   constructor(o: ApiOptions) {
     this.baseUrl = (o.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    this.doFetch = o.fetch ?? fetch;
+    this.doFetch = o.fetch ?? safeFetch;
     this.keySource = o.apiKey;
   }
 

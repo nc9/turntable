@@ -10,12 +10,15 @@ let mock: ReturnType<typeof startMock>;
 let dir: string;
 beforeEach(() => {
   mock = startMock();
+  // The mock Daytona listens on loopback: allow exactly that host for the outbound client.
+  process.env.LONGSHORE_NET_ALLOW_HOSTS = "127.0.0.1";
   dir = mkdtempSync(join(tmpdir(), "ls-prov-"));
 });
 afterEach(async () => {
   await mock.stop();
   rmSync(dir, { recursive: true, force: true });
   delete process.env.LS_TEST_DAYTONA_KEY;
+  delete process.env.LONGSHORE_NET_ALLOW_HOSTS;
 });
 
 test("daytona is selectable and its options are validated strictly", () => {

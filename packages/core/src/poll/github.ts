@@ -5,6 +5,7 @@
 import type { ForgePermission } from "../trust";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+import { safeFetch } from "@longshore/net";
 
 /** What GitHub last said about the rate limit, from the `x-ratelimit-*` headers. */
 export type RateLimitInfo = {
@@ -83,7 +84,7 @@ export class GithubClient {
     token?: string | undefined;
     now?: () => number;
   }) {
-    this.#fetch = o.fetch ?? ((url, init) => fetch(url, init));
+    this.#fetch = o.fetch ?? ((url, init) => safeFetch(url, init));
     this.#base = o.baseUrl.replace(/\/$/, "");
     this.#token = o.token;
     this.#now = o.now ?? Date.now;
