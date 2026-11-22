@@ -25,6 +25,51 @@ Sandboxes get an egress policy: outbound traffic is denied by default and allowe
 
 Runs are classified by trust, for example a push to a protected branch versus a pull request from a fork. Untrusted runs get no secrets, and fork PRs wait in `awaiting_approval` until a maintainer approves. Issue [#17](https://github.com/nc9/turntable/issues/17).
 
+## Workflow source and workspace taint
+
+Two questions decide whether a run can be hijacked: whose workflow file does it run, and whose code does it check out? Longshore answers both from the event, never from the payload alone, and enforces the answer structurally.
+
+### Which ref the workflow definition comes from
+
+| Event | Workflow definition from | Class |
+| --- | --- | --- |
+| `push` to a protected branch | the pushed commit (the protected ref itself) | protected |
+| `push` of a release tag | the tagged commit | release |
+| `push` to any other branch | the pushed commit (a push needs write access) | trusted |
+| `pull_request` | the PR head, like GitHub's own event | untrusted unless a same-repo, trusted author |
+| `pull_request_target`, `workflow_run`, `issue_comment`, `issues`, review and discussion events | the BASE branch (the default branch), never the head that triggered it | untrusted unless proven otherwise, and demoted when handed a non-protected ref |
+| `schedule` | the default branch | protected |
+| `workflow_dispatch` | the dispatched ref | by that ref |
+| `merge_group` | the merge queue commit | trusted |
+
+Protected branches and release tags are configured per project; until trust classes land, the defaults are `main`, `master`, `release/**` and `v*` tags. Anything not positively trusted is untrusted: an unknown event, an unknown author, an unknown fork status.
+
+### Credentials follow the class
+
+Only protected and release runs may be given secrets or a token that can write to the forge. Trusted and untrusted classes never get either. This holds whatever the workflow says: a workflow cannot ask for more than its class allows.
+
+### The demotion rule
+
+A job on a privileged trigger (`pull_request_target`, `workflow_run`, `issue_comment`, `issues`, `pull_request_review`, `pull_request_review_comment`, `discussion`, `discussion_comment`) that **receives a non-protected ref** is demoted to untrusted **before it starts**. It receives one in two ways:
+
+- the delivered workspace is at a non-protected ref (for example `refs/pull/9/head`), or
+- one of its own steps asks for the PR head: a `with.ref` or `with.repository` that names `github.event.pull_request.head.*`, `github.head_ref`, `github.event.workflow_run.head_*`, or a `refs/pull/` ref (the classic "pwn request": check out the PR head, then run its code with the base repo's secrets).
+
+Demotion is a property of the plan, so it happens before any sandbox exists. A same-repo author with a trusted history does not escape it.
+
+### Lint
+
+Two findings are lint:
+
+- **Outside text in a script.** A `${{ }}` that reads attacker-controlled data (`github.head_ref`, PR and issue titles and bodies, comment and review bodies, branch labels and refs, commit messages and author names) inside a `run:` block or a `with.script:`. The safe form passes the value through `env:` and reads it as a shell variable.
+- **A privileged job taking the PR head**, as above.
+
+For **protected and release** runs a finding fails planning with the list of findings. For trusted and untrusted runs it is a warning. Fix it by moving the expression into `env:`, or by not checking out the head.
+
+### No job-initiated forge fetches
+
+The workspace is a tarball the controller delivered at one sha. The checkout stand-in only copies it and never touches the network, and a sandbox has no network unless an operator opts in. A job therefore cannot fetch a different ref, a fork, or the PR head on its own. Remote actions are fetched by sha by the controller, not the job.
+
 ## Scoped per-job GitHub token
 
 Each job gets a short-lived GitHub token limited to its repository and the permissions its workflow declares. Issue [#18](https://github.com/nc9/turntable/issues/18).

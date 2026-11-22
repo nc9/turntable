@@ -844,4 +844,41 @@ describe("manual cancel stops the worker at once", () => {
     expect((await listJobs(db, scope, run!.id))[0]?.state).toBe("cancelled");
     expect((await getRun(db, scope, run!.id))?.status).toBe("cancelled");
   }, 20_000);
+
+  const INJECT = `on:
+  push:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "\${{ github.event.pull_request.title }}"
+`;
+
+  test("the server path: a protected run fails lint on outside text in a script", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", INJECT);
+    expect((await ingest(gh)).created).toHaveLength(1);
+    await drain(await makeScheduler(gh));
+    const [run] = await listRuns(db, scope);
+    const [job] = await listJobs(db, scope, run!.id);
+    expect(job?.state).toBe("infra_error");
+    const [att] = await listAttempts(db, scope, job!.id);
+    expect(att?.errorClass).toContain("workflow lint failed");
+    expect(att?.errorClass).toContain("github.event.pull_request.title");
+  });
+
+  test("the server path: an untrusted pull request run only warns and holds no credentials", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", INJECT);
+    gh.state.pulls = [{ number: 5, user: "octocat", headSha: SHA("d"), baseRef: "main" }];
+    gh.state.head = { sha: SHA("a"), message: "x", login: "octocat" };
+    const res = await ingest(gh);
+    const prRun = (await listRuns(db, scope)).find((r) => r.event === "pull_request");
+    expect(res.created.length).toBeGreaterThan(0);
+    expect(prRun).toBeDefined();
+    await drain(await makeScheduler(gh));
+    const jobs = await listJobs(db, scope, prRun!.id);
+    expect(jobs.map((j) => j.state)).toEqual(["success"]);
+  });
 });

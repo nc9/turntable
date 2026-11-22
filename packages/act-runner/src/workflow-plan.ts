@@ -8,7 +8,8 @@ import {
   type ExprContext,
   type Value,
 } from "./expr";
-import { localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
+import { lintError, localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
+import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers";
 
 type Obj = Record<string, unknown>;
@@ -60,6 +61,8 @@ export interface PlanWorkflowOptions {
   inputs?: Record<string, Value>;
   /** Reads repo files so local composite actions can be checked for docker. */
   readFile: (path: string) => string | undefined;
+  /** Fail the plan on lint findings (outside text in a script, a privileged job taking the PR head). */
+  failOnLint?: boolean;
 }
 
 export function githubContext(
@@ -369,13 +372,14 @@ export function planWorkflow(
           else throw e;
         }
       }
-      for (const w of untrustedStepWarnings(job, id)) warnings.push(w);
+      for (const w of untrustedStepWarnings(job, id, event.name)) warnings.push(w);
       nodes.push(node);
     }
     legsOf.set(id, keys);
   }
 
   for (const n of nodes) n.needs = n.needsIds.flatMap((i) => legsOf.get(i) ?? []);
+  if (opts.failOnLint && warnings.length > 0) throw lintError(warnings);
   return {
     ...(typeof doc.name === "string" ? { name: doc.name } : {}),
     event,
@@ -387,13 +391,23 @@ export function planWorkflow(
   };
 }
 
-function untrustedStepWarnings(job: Obj, id: string): PlanWarning[] {
+function untrustedStepWarnings(job: Obj, id: string, event: string): PlanWarning[] {
   const out: PlanWarning[] = [];
   const steps = Array.isArray(job.steps) ? job.steps : [];
   for (const [i, s] of steps.entries()) {
     if (!isObj(s)) continue;
     const name = typeof s.name === "string" ? s.name : `step ${i + 1}`;
     if (typeof s.run === "string") out.push(...untrustedIn(`${id}: ${name}`, s.run));
+  }
+  if (isPrivilegedEvent(event)) {
+    for (const h of findHeadCheckouts(steps)) {
+      out.push({
+        code: "privileged-head-checkout",
+        step: `${id}: ${h.step}`,
+        expression: h.expression,
+        message: `step "${id}: ${h.step}" takes ${h.field} from the pull request head (${h.expression}) in a ${event} job; a privileged job must work from a protected ref`,
+      });
+    }
   }
   return out;
 }
