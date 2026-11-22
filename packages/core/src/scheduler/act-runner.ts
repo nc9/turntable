@@ -27,7 +27,7 @@ import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
-import { pinClassForEvent, resolvePlanActions } from "../pins";
+import { resolvePlanActions } from "../pins";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { assessJob, lintFailsFor } from "../trust";
@@ -307,7 +307,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         plan = await resolvePlanActions(jobPlan, {
           db: o.db,
           scope: ctx.scope,
-          klass: pinClassForEvent(dbRun.event),
+          klass: trust.klass,
           base: o.resolver ?? githubResolver(),
           ...(o.reachable ? { reachable: o.reachable } : {}),
           ...(o.fetchAction ? { fetchTarball: o.fetchAction } : {}),

@@ -64,4 +64,18 @@ describe("fake scripted failures", () => {
     await Bun.sleep(1100);
     expect((await p.list({ labels: { a: "b" } })).map((s) => s.id)).not.toContain(id);
   });
+
+  test("a finished exec leaves no timeout watcher behind", async () => {
+    const p = world.provider();
+    const { id } = await p.create(spec);
+    const { execId } = await p.exec.start(id, { argv: ["true"], timeoutSeconds: 7777 });
+    for (let i = 0; i < 100; i += 1) {
+      if ((await p.exec.status(id, execId)).state !== "running") break;
+      await Bun.sleep(50);
+    }
+    await Bun.sleep(300);
+    const ps = Bun.spawnSync(["ps", "-A", "-o", "command="]).stdout.toString();
+    expect(ps).not.toContain("sleep 7777");
+    await p.destroy(id);
+  });
 });
