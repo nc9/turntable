@@ -1,6 +1,7 @@
 // Reports each job's result to the forge as a check run, from the scheduler's attempt events.
 // A GitHub outage never blocks a run: reporting is queued per attempt, retried with backoff, and
 // its failures are logged, never thrown into the scheduler.
+import { redactString } from "@longshore/redact";
 import type { Db } from "../db";
 import {
   getAttemptCheckRunId,
@@ -19,6 +20,7 @@ import { type CheckRunBody, type CheckRunsApi, CheckRunsError } from "./client";
 import {
   type AttemptResult,
   checkName,
+  classifyInfra,
   conclusionFor,
   RUNNING_TITLE,
   summaryFor,
@@ -155,11 +157,14 @@ export class CheckReporter {
     const result = outcome.state as AttemptResult;
     let failingStep: string | undefined;
     let excerpt: string | undefined;
-    if (result === "failure" || result === "infra_error") {
+    // An infrastructure error publishes only its classified reason: the excerpt of a sandbox that
+    // failed says nothing about the code and may carry hosts and paths.
+    if (result === "failure") {
       try {
         const d = await digestJob({ db, scope }, { id: job.id, jobKey: job.jobKey, state: result });
-        failingStep = d.step?.name;
-        if (d.excerpt) excerpt = capExcerpt(d.excerpt, SUMMARY_EXCERPT_BYTES).text;
+        // Redacted again here (the digest already did) and then capped: nothing leaves unchecked.
+        failingStep = d.step?.name === undefined ? undefined : redactString(d.step.name);
+        if (d.excerpt) excerpt = capExcerpt(redactString(d.excerpt), SUMMARY_EXCERPT_BYTES).text;
       } catch (err) {
         this.#log(`failure digest for ${job.id} unavailable: ${msg(err)}`);
       }
@@ -177,7 +182,7 @@ export class CheckReporter {
           runUrl,
           failingStep,
           excerpt,
-          infraReason: result === "infra_error" ? outcome.reason : undefined,
+          infraClass: result === "infra_error" ? classifyInfra(outcome.reason) : undefined,
         }),
       },
     };

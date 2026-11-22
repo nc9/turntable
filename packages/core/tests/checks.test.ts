@@ -14,7 +14,7 @@ import {
   CheckRunsError,
   githubCheckRunsApi,
 } from "../src/checks/client";
-import { checkName, conclusionFor, fenced, summaryFor } from "../src/checks/mapping";
+import { checkName, classifyInfra, conclusionFor, fenced, summaryFor } from "../src/checks/mapping";
 import { AppAuth } from "../src/github/app-auth";
 import { Scheduler } from "../src/scheduler";
 import { setupChecksWorld } from "./checks-helpers";
@@ -176,14 +176,16 @@ describe("reporter", () => {
       const { api, runs } = fakeApi();
       const rep = reporterFor(api, minter().auth);
       rep.started(c);
-      rep.finished(c, { state, reason: "the sandbox did not start" });
+      rep.finished(c, { state, reason: "cannot prepare sandbox: the sandbox did not start" });
       await rep.idle();
       const run = [...runs.values()][0]!;
       expect(run.name).toBe("longshore / build");
       expect(run).toMatchObject({ status: "completed", conclusion, output: { title } });
       if (state === "infra_error") {
         expect(run.output!.summary).toContain("Infrastructure error");
-        expect(run.output!.summary).toContain("the sandbox did not start");
+        expect(run.output!.summary).toContain("Reason: sandbox_create_failed.");
+        expect(run.output!.summary).toContain("See the Longshore run for details.");
+        expect(run.output!.summary).not.toContain("the sandbox did not start");
       }
     }
   });
@@ -202,6 +204,73 @@ describe("reporter", () => {
     expect(summary).not.toContain(secret);
     const excerpt = /```text\n([\s\S]*)\n```/.exec(summary)![1]!;
     expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(1024);
+  });
+
+  test("an infra_error publishes a classified reason only, never the raw text", async () => {
+    for (const mode of ["shadow", "live"] as const) {
+      await setProjectChecksMode(db, world.scope, mode);
+      const secret = `ghp_${"q9z8".repeat(9)}`;
+      const raw = `ECONNREFUSED db.internal.corp.example:5432 at /home/runner/work/app/src/x.ts using ${secret}`;
+      const c = await claim();
+      // The sandbox's own log has hostnames and paths too; an infra_error must not post it.
+      await world.addFailingLog(
+        c,
+        "setup",
+        `connect failed to db.internal.corp.example /etc/secret-path ${secret}\n`,
+      );
+      const { api, calls } = fakeApi();
+      const rep = reporterFor(api, minter().auth);
+      rep.started(c);
+      rep.finished(c, { state: "infra_error", reason: raw });
+      await rep.idle();
+      const payload = JSON.stringify(calls.map((x) => x.body));
+      for (const leak of [
+        secret,
+        "db.internal.corp.example",
+        "/home/runner",
+        "/etc/secret-path",
+        "ECONNREFUSED",
+      ]) {
+        expect(payload).not.toContain(leak);
+      }
+      expect(payload).toContain("Reason: provider_unavailable.");
+      expect(payload).toContain("See the Longshore run for details.");
+    }
+  });
+
+  test("infra reasons classify to a fixed enum", () => {
+    const cases: [string, string][] = [
+      ["cannot prepare sandbox: tt: fork failed", "sandbox_create_failed"],
+      ["act process lost", "exec_lost"],
+      ["controller_lost (probe failed)", "exec_lost"],
+      [
+        "isolation: provider x is container; untrusted runs need gvisor or stronger",
+        "isolation_policy",
+      ],
+      ["egress: provider p cannot enforce egress none", "egress_policy"],
+      ["untrusted run has no approval", "approval_required"],
+      ["plan rejected: step uses docker", "plan_rejected"],
+      ["workflow .github/workflows/ci.yml not found at abc", "workflow_missing"],
+      ["job timed out after 3600s", "timeout"],
+      ["act exited 128 without a job result", "runner_error"],
+      ["getaddrinfo ENOTFOUND api.example", "provider_unavailable"],
+      ["something nobody planned for at /srv/x", "internal"],
+      ["", "internal"],
+    ];
+    for (const [raw, want] of cases) expect(classifyInfra(raw) as string).toBe(want);
+  });
+
+  test("a failing step name is redacted and the excerpt capped, with a secret in the step name", async () => {
+    await setProjectChecksMode(db, world.scope, "shadow");
+    const secret = `ghp_${"m3n4".repeat(9)}`;
+    const c = await claim();
+    await world.addFailingLog(c, `deploy with ${secret}`, "error: nope\n");
+    const { api, runs } = fakeApi();
+    const rep = reporterFor(api, minter().auth);
+    rep.started(c);
+    rep.finished(c, { state: "failure", reason: "exit 1" });
+    await rep.idle();
+    expect(JSON.stringify([...runs.values()])).not.toContain(secret);
   });
 
   test("off posts nothing and mints nothing", async () => {
