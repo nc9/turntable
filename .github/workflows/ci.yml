@@ -49,6 +49,26 @@ jobs:
       - name: Smoke the linux-x64 binary
         run: scripts/smoke.sh dist/longshore-linux-x64
 
+  # New dependency versions in bun.lock must be at least 14 days old (scripts/dep-age.ts).
+  dep-age:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - name: Compare bun.lock with the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git show "origin/${BASE_REF}:bun.lock" > "${RUNNER_TEMP}/base.bun.lock"
+          bun run scripts/dep-age.ts --base "${RUNNER_TEMP}/base.bun.lock"
+
   provider-docker:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
