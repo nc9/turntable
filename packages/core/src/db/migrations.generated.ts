@@ -214,5 +214,16 @@ export const migrations: Migration[] = [
       "ALTER TABLE `projects` ADD `frozen_reason` text;",
       "ALTER TABLE `projects` ADD `frozen_by` text;"
     ]
+  },
+  {
+    "tag": "0016_tranquil_susan_delgado",
+    "when": 1795371701102,
+    "statements": [
+      "CREATE TABLE `artifacts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`attempt_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`sha256` text NOT NULL,\n\t`size` integer NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"artifacts_sha256_check\" CHECK(length(\"artifacts\".\"sha256\") = 64)\n);",
+      "CREATE INDEX `artifacts_sha256_idx` ON `artifacts` (`org_id`,`sha256`);",
+      "CREATE UNIQUE INDEX `artifacts_run_name_unique` ON `artifacts` (`run_id`,`name`);",
+      "ALTER TABLE `projects` ADD `release_refs` text;",
+      "ALTER TABLE `projects` ADD `signing_key` text;"
+    ]
   }
 ];
