@@ -16,7 +16,7 @@ import {
 } from "./act-install";
 import { checkoutStubAction } from "./checkout-stub";
 import { createActParser, summarize, type ActEvent } from "./events";
-import type { JobPlan } from "./plan";
+import { assertNoDockerAccess, type JobPlan } from "./plan";
 
 export type JobState = "success" | "failure" | "skipped" | "infra_error";
 
@@ -138,10 +138,11 @@ export async function* runJob(
 
   try {
     // Every remote action must be pinned to a commit before anything runs.
-    const unresolved = plan.actions.filter((a) => a.kind === "remote" && !a.sha);
+    assertNoDockerAccess(plan.argv);
+    const unresolved = plan.actions.filter((a) => !a.sha);
     if (unresolved.length > 0) {
       return fail(
-        `actions not resolved to a commit sha: ${unresolved.map((a) => a.uses).join(", ")}`,
+        `actions not resolved to a commit sha (run resolveActions first): ${unresolved.map((a) => a.uses).join(", ")}`,
       );
     }
     yield { kind: "phase", phase: "preparing" };
@@ -176,6 +177,15 @@ export async function* runJob(
     );
     if (inst.exitCode !== 0) return fail(`act install failed: ${inst.output.trim()}`);
 
+    // Pin every `uses:` to its sha in the files act will read.
+    for (const f of plan.files) {
+      if (f.text === f.source) continue;
+      await withRetry(
+        () => provider.files.put(sandboxId, `${L.repo}/${f.path}`, enc.encode(f.text)),
+        maxErr,
+        pollMs,
+      );
+    }
     // Deliver remote actions by commit sha. The checkout stub only copies the delivered repo.
     for (const [i, a] of plan.actions.filter((x) => x.kind === "remote").entries()) {
       const tgz = await (input.fetchAction ?? fetchActionTarball)(a.repo, a.sha ?? "");

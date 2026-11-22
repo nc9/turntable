@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { checkoutStubAction } from "../src/checkout-stub";
-import { PlanError, planJob, resolveActions, untrustedIn } from "../src/plan";
+import {
+  PlanError,
+  assertNoDockerAccess,
+  planJob,
+  resolveActions,
+  rewriteUses,
+  staticResolver,
+  untrustedIn,
+} from "../src/plan";
 
 const CO = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 const wf = (job: string): string => `name: t\non: push\njobs:\n  j:\n${job}`;
@@ -27,6 +35,8 @@ describe("planJob accepts", () => {
     expect(p.argv).toContain("--concurrent-jobs");
     expect(p.argv).toContain("--json");
     expect(p.argv).toContain("--no-skip-checkout");
+    expect(p.argv[p.argv.indexOf("--artifact-server-addr") + 1]).toBe("127.0.0.1");
+    expect(p.argv[p.argv.indexOf("--cache-server-addr") + 1]).toBe("127.0.0.1");
     expect(p.argv).toContain("ubuntu-latest=-self-hosted");
     for (const bad of ["-n", "--dryrun"]) expect(p.argv).not.toContain(bad);
     expect(p.checkoutRefs).toEqual([CO]);
@@ -88,8 +98,9 @@ describe("security requirements", () => {
       ["acme/pinned", "", SHA, SHA, "remote"],
     ]);
     expect(p.argv).toContain("acme/tool@v1=/tmp/tt-act/stubs/action-1");
-    const r = await resolveActions(p, async (repo, ref) => `${repo.length}${ref}`.padEnd(40, "b"));
-    expect(r.actions[1]?.sha).toBe("9v1".padEnd(40, "b"));
+    const r = await resolveActions(p, staticResolver({ "acme/tool@v1": "d".repeat(40) }));
+    expect(r.actions[1]?.sha).toBe("d".repeat(40));
+    expect(r.argv).toContain(`acme/tool@${"d".repeat(40)}=/tmp/tt-act/stubs/action-1`);
     expect(r.actions[2]?.sha).toBe(SHA);
     expect(p.actions[1]?.sha).toBeUndefined();
   });
@@ -104,17 +115,69 @@ describe("security requirements", () => {
     ]);
   });
 
-  test("untrustedIn covers the usual injection sources", () => {
-    for (const e of [
-      "github.event.issue.body",
-      "github.event.comment.body",
-      "github.event.pull_request.head.ref",
-      "github.event.head_commit.message",
-      "github.event.commits[0].message",
-    ]) {
-      expect(untrustedIn("s", `echo \${{ ${e} }}`).length).toBe(e.includes("[") ? 0 : 1);
-    }
-    expect(untrustedIn("s", "echo ${{ github.sha }} ${{ secrets.X }}")).toEqual([]);
+  test.each([
+    "github.event.pull_request.title",
+    "github.event.pull_request.body",
+    "github.event.pull_request.head.ref",
+    "github.event.pull_request.head.label",
+    "github.event.issue.title",
+    "github.event.issue.body",
+    "github.event.comment.body",
+    "github.event.review.body",
+    "github.head_ref",
+    "github.event.commits.*.message",
+    "github.event.commits[0].message",
+    "github.event.commits[1].author.name",
+    "github.event.head_commit.message",
+  ])("untrusted: %s", (e) => {
+    expect(untrustedIn("s", `echo "\${{ ${e} }}"`)).toHaveLength(1);
+  });
+
+  test("trusted expressions do not warn", () => {
+    expect(
+      untrustedIn("s", "echo ${{ github.sha }} ${{ secrets.X }} ${{ steps.a.outputs.b }}"),
+    ).toEqual([]);
+  });
+
+  test("a job's argv and a checked command never expose docker", () => {
+    expect(() => assertNoDockerAccess(["act", "-v", "/var/run/docker.sock:/x"])).toThrow(PlanError);
+    expect(() => assertNoDockerAccess(["act", "--privileged"])).toThrow(PlanError);
+    expect(() => assertNoDockerAccess(["act", "--container-daemon-socket", "/var/run/x"])).toThrow(
+      PlanError,
+    );
+    expect(() => assertNoDockerAccess(["act", "-b"])).toThrow(PlanError);
+    const p = plan("    runs-on: ubuntu-latest\n    steps: []\n");
+    expect(() => assertNoDockerAccess(p.argv)).not.toThrow();
+  });
+
+  test("rewriteUses pins tags to shas, keeps comments, passes shas through", () => {
+    const sha = "e".repeat(40);
+    const text = `steps:\n  - uses: acme/tool/sub@v1 # keep\n  - uses: "acme/other@main"\n  - uses: acme/pinned@${SHA}\n`;
+    const p = plan(
+      `    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/tool/sub@v1\n      - uses: acme/other@main\n      - uses: acme/pinned@${SHA}\n`,
+    );
+    const actions = p.actions.map((a) => (a.sha ? a : { ...a, sha }));
+    expect(rewriteUses(text, actions)).toBe(
+      `steps:\n  - uses: acme/tool/sub@${sha} # keep\n  - uses: "acme/other@${sha}" # main\n  - uses: acme/pinned@${SHA}\n`,
+    );
+  });
+
+  test("local composite actions are scanned and rewritten too", async () => {
+    const files: Record<string, string> = {
+      ".github/actions/x/action.yml":
+        'name: x\nruns:\n  using: composite\n  steps:\n    - uses: acme/inner@v2\n    - shell: bash\n      run: echo "${{ github.head_ref }}"\n',
+    };
+    const p = planJob(
+      wf("    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/x\n"),
+      "j",
+      { workflowPath: ".github/workflows/ci.yml", readFile: (f) => files[f] },
+    );
+    expect(p.actions.map((a) => a.uses)).toEqual(["acme/inner@v2"]);
+    expect(p.warnings).toHaveLength(1);
+    expect(p.warnings[0]?.file).toBe(".github/actions/x/action.yml");
+    const r = await resolveActions(p, staticResolver({ "acme/inner@v2": "f".repeat(40) }));
+    const f = r.files.find((x) => x.path.endsWith("action.yml"));
+    expect(f?.text).toContain(`acme/inner@${"f".repeat(40)} # v2`);
   });
 
   test("checkout stub only copies the delivered workspace, never touches the network", () => {

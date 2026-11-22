@@ -1,9 +1,17 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DockerProvider } from "@turntable/provider-docker";
-import { drain, planJob, runJob, tarDirectory, type RunEvent } from "../src/index";
+import {
+  drain,
+  planJob,
+  resolveActions,
+  runJob,
+  staticResolver,
+  tarDirectory,
+  type RunEvent,
+} from "../src/index";
 
 // CI only (TT_ACT_E2E=1): needs a Docker daemon, network for the pinned act download, and an
 // image with bash, git and node (host mode runs steps on the sandbox itself). The pinned image
@@ -23,23 +31,28 @@ async function git(dir: string, ...args: string[]): Promise<void> {
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
-async function runExample(workflow: string, jobId: string) {
-  const repo = join(tmp, `${jobId}-repo`);
+async function runExample(workflow: string, jobId: string, egress: "open" | "none" = "open") {
+  const repo = join(tmp, `${jobId}-${egress}-repo`);
   cpSync(join(import.meta.dir, "../../../examples/hello"), repo, { recursive: true });
   await git(repo, "init", "-q", "-b", "main");
   await git(repo, "add", "-A");
   await git(repo, "commit", "-q", "-m", "initial example commit");
   const repoTarball = await tarDirectory(repo);
   const yaml = await Bun.file(join(repo, ".github/workflows", workflow)).text();
-  const plan = planJob(yaml, jobId, { workflowPath: `.github/workflows/${workflow}` });
+  const planned = planJob(yaml, jobId, {
+    workflowPath: `.github/workflows/${workflow}`,
+    readFile: (f) => (existsSync(join(repo, f)) ? readFileSync(join(repo, f), "utf8") : undefined),
+  });
+  // Everything in the example is already sha-pinned, so the resolver is never consulted.
+  const plan = await resolveActions(planned, staticResolver({}));
 
   const provider = new DockerProvider();
   const { id } = await provider.create({
-    name: `tt-act-e2e-${jobId}-${Date.now()}`,
+    name: `tt-act-e2e-${jobId}-${egress}-${Date.now()}`,
     labels: { tt_act_e2e: jobId },
     image: IMAGE,
     ttlSeconds: 1800,
-    network: { egress: "open" },
+    network: { egress },
   });
   try {
     const events: RunEvent[] = [];
@@ -90,5 +103,14 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(result.state).toBe("failure");
     expect(result.exitCode).not.toBe(0);
     expect(log).toContain("about to fail");
+  }, 600_000);
+
+  // act is fetched controller-side and the checkout stub copies a local dir, so the job itself
+  // should not need the network. This variant proves it (it matters for locked-down sandboxes).
+  test("hello job also succeeds with egress none", async () => {
+    const { result, log } = await runExample("ci.yml", "hello", "none");
+    if (result.state !== "success") console.log(JSON.stringify(result), "\n" + log);
+    expect(result).toMatchObject({ state: "success", exitCode: 0 });
+    expect(log).toContain("output-check=hello-output");
   }, 600_000);
 });

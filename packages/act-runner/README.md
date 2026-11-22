@@ -41,13 +41,22 @@ ends as `infra_error`.
 ## Security rules
 
 - No container socket reaches a job: host mode mounts nothing, and act is started with
-  `--container-daemon-socket -`. A test pins this.
-- Every remote `uses:` is resolved to a commit sha before the run. `plan.actions` carries the
+  `--container-daemon-socket -`. `assertNoDockerAccess` runs on every act command (in `planJob`
+  and again in `runJob`) and rejects `docker.sock`, `--privileged`, a container-daemon socket
+  other than `-`, and bind mounts. Tests pin this, and the Docker provider's run args are
+  checked for volumes, mounts and privileged mode.
+- `resolveActions(plan, resolver)` takes an `ActionRefResolver` `(owner, repo, ref) => sha`
+  (default: the GitHub API; `staticResolver` is the test stub; core will plug in the forge API).
+  Pass `readFile` to `planJob` and local composite actions are scanned too, so remote actions
+  nested inside them are pinned and delivered the same way. Without it, nested remote actions
+  are invisible to the plan and act would fetch them by ref.
+- Every `uses:` is resolved to a commit sha before the run, and the files act reads are
+  rewritten (`uses: owner/repo@v4` becomes `@<sha> # v4`) in the delivered repo. `plan.actions` carries the
   tag-to-sha mapping (`repo`, `ref`, `sha`). `runJob` refuses a plan with an unresolved remote
   action. Remote actions are fetched by sha (`codeload.github.com/<repo>/tar.gz/<sha>`),
   uploaded, and served to act with `--local-repository`, so a moved tag cannot change what runs.
   Detecting tag moves over time is a later issue.
-- `plan.warnings` flags untrusted context interpolated straight into `run:` or
+- `plan.warnings` (with the `file` and step) flags untrusted context interpolated straight into `run:` or
   `with.script` (`github.event.pull_request.title`, `head_ref`, issue and comment bodies, commit
   messages and so on). Pass such values through `env:` instead. A failing lint comes later.
 - The checkout stub only copies the repository the controller delivered. It never fetches, and a
@@ -86,6 +95,14 @@ ends as `infra_error`.
 Rejections throw `PlanError` with a `feature` field naming what was refused, at plan time, before
 any sandbox exists. Docker actions inside local composite actions cannot be seen from the
 workflow file alone and fail when act runs them.
+
+## Limits
+
+- The repo tarball goes through `files.put`, so it is bounded by the provider's file cap (the
+  Docker provider allows 64 MiB). That is fine for M0. A git-bundle path for large repos is a
+  follow-up.
+- The checkout stub copies the delivered repo. `ref`, `path` (beyond a subdirectory) and
+  `fetch-depth` inputs are accepted and ignored.
 
 ## Tests
 
