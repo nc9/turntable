@@ -237,6 +237,18 @@ Attestation is only trusted when the device certificate carries the FIDO AAGUID 
 
 `ApprovalVerifier.verify(subject, environment)` (in `approvals/verifier.ts`) is what the release lane calls before it acts. It never trusts a stored flag: it re-verifies each stored statement against the approver keys (the org's, or the caller's own key store), checks the statement binds exactly this run, sha, workflow and environment, drops expired, revoked and self-approved ones, and requires the policy's number of distinct people.
 
+## Artifact provenance and quarantine
+
+The core invariant: a release build consumes nothing a lower trust class could write. Every recorded artifact carries its provenance, and consumption checks the class.
+
+- **Provenance.** When an artifact is recorded, the control plane stores the trust class of the producing attempt, capped by its run's class (an attempt can run lower than its run, for example a re-run under another decision; either class missing means `untrusted_pr`), the commit it ran at, the digest and how it was obtained (`reported` by the recorder, or `computed` when the control plane hashed the bytes itself and they matched). The caller cannot name a class. Rows are only inserted, and a name is recorded once per run. `get_artifacts` shows it.
+- **Classes are ordered** `untrusted_pr`, `trusted_pr`, `protected`, `release`. A consumer may always take an artifact of its own class or a higher one. A lower-class artifact reaches a higher-class consumer only when the request names it, and then it arrives as quarantine: never executable, never an input to a build. A **release** consumer is denied anything below the release class, however it asks. `check_artifact_consumption` decides per artifact and does not move bytes.
+- **Signing.** The signing service refuses to sign an artifact whose recorded class is not `release` (`artifact_not_release_class`), on top of the existing run-class, ref and approval checks.
+- **Upgrading.** Artifacts recorded before this change have no stored class, so they default to `untrusted_pr` and must be re-recorded to be signable. This is in the release notes.
+- Everything is tenant scoped: another org's run or artifact is "no such".
+
+Not built yet: the transport that delivers a quarantined artifact into a job (no job consumes another run's artifacts today). When it exists it must call the same decision, mount quarantined files non-executable, and never mount any into a release job.
+
 ## Incident response
 
 Unlike the sections above, this one is implemented. When a secret may have leaked or a runner is compromised, one operation stops the bleeding and a second tells you how far it reached.

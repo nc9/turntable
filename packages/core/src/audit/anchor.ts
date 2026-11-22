@@ -15,7 +15,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { open, recordVersion, seal, SecretDecryptError } from "../secrets/crypto";
+import {
+  assertResealAllowed,
+  open,
+  recordVersion,
+  seal,
+  SecretDecryptError,
+} from "../secrets/crypto";
 
 export interface AnchorState {
   v: 1;
@@ -74,6 +80,7 @@ export class AuditAnchor {
 
   /** Re-seals an org's state file under the org's own key. False when there is none or it is already. */
   reseal(orgId: string): boolean {
+    assertResealAllowed();
     const f = this.#file(orgId);
     if (!existsSync(f) || recordVersion(readFileSync(f, "utf8")) === "v3") return false;
     const st = this.read(orgId);

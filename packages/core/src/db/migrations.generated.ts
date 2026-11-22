@@ -319,5 +319,22 @@ export const migrations: Migration[] = [
       "CREATE INDEX `cache_entries_used_idx` ON `cache_entries` (`org_id`,`klass`,`used_at`);",
       "ALTER TABLE `projects` ADD `cache_release_restore` integer DEFAULT 0 NOT NULL;"
     ]
+  },
+  {
+    "tag": "0027_damp_sir_ram",
+    "when": 1795385063502,
+    "statements": [
+      "ALTER TABLE `artifacts` ADD `klass` text DEFAULT 'untrusted_pr' NOT NULL;",
+      "ALTER TABLE `artifacts` ADD `run_sha` text;",
+      "ALTER TABLE `artifacts` ADD `digest_source` text DEFAULT 'reported' NOT NULL;"
+    ]
+  },
+  {
+    "tag": "0028_cooing_texas_twister",
+    "when": 1795387443172,
+    "statements": [
+      "CREATE TABLE `org_quotas` (\n\t`org_id` text PRIMARY KEY NOT NULL,\n\t`max_concurrent` integer,\n\t`max_runs_per_hour` integer,\n\t`max_sandbox_minutes_per_day` integer,\n\t`max_log_bytes` integer,\n\t`max_stored_bytes` integer,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `quota_notices` (\n\t`org_id` text NOT NULL,\n\t`metric` text NOT NULL,\n\t`level` text NOT NULL,\n\t`window` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`org_id`, `metric`, `level`, `window`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);"
+    ]
   }
 ];

@@ -87,6 +87,7 @@ Usage:
   longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
+  longshore quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
@@ -500,6 +501,7 @@ async function serve(args: string[]): Promise<void> {
       orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
       baseUrl: cacheUrl,
+      onNotice: (g, m) => console.log(`[longshore] ${m} (attempt ${g.attemptId})`),
       // A grant works only while its attempt is running, whatever else the token says.
       isActive: async (g) =>
         (await getAttempt(db, { orgId: g.own.orgId, projectId: g.own.projectId }, g.attemptId))
@@ -810,6 +812,10 @@ async function main(argv: string[]): Promise<void> {
     case "incident": {
       const { incidentCommand } = await import("./incident/cli");
       process.exit(await incidentCommand(rest));
+    }
+    case "quotas": {
+      const { quotasCommand } = await import("./quotas/cli");
+      process.exit(await quotasCommand(rest));
     }
     case "channel": {
       const { channelCommand } = await import("./channel/cli");
