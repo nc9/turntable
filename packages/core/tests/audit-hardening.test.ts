@@ -308,30 +308,32 @@ describe("the last signed position is kept outside the database", () => {
   });
 });
 
-describe("verify: a key that postdates the chain", () => {
-  test("fails without a pinned key, passes with one", async () => {
-    await add(a, 3); // the chain began before any key
+describe("verify without a pinned key never vouches for the chain", () => {
+  test("with checkpoints and no pinned key it fails, however the chain describes its own key", async () => {
+    await add(a, 3);
     const key = await initAuditKey(db, store, anchor, a.orgId);
     await sign(a);
     const keys = new Map([[key.keyId, key.publicKeyPem]]);
     const loose = await verifyAudit(db, a.orgId, keys);
     expect(loose.ok).toBe(false);
-    expect(loose.problems.join("\n")).toMatch(/created at entry 4.*--pubkey/);
+    expect(loose.keyPinned).toBe(false);
+    expect(loose.problems.join("\n")).toMatch(/unanchored.*--pubkey/);
     expect((await verifyAudit(db, a.orgId, keys, { keyPinned: true })).ok).toBe(true);
   });
 
-  test("an org whose very first entry is the key passes unpinned", async () => {
-    const key = await initAuditKey(db, store, anchor, a.orgId);
+  test("a forged key-creation row at the head of the chain does not make unpinned verify pass", async () => {
+    // The attacker writes the row the secret store would write for the key, first in the chain.
+    await appendAudit(db, a.scope, {
+      principalKind: "system",
+      principalId: "secret-store",
+      op: "secret_set",
+      effect: "write",
+      outcome: "ok",
+      input: { name: AUDIT_KEY_SECRET },
+    });
     await add(a, 3);
-    await sign(a);
-    const keys = new Map([[key.keyId, key.publicKeyPem]]);
-    expect((await verifyAudit(db, a.orgId, keys)).ok).toBe(true);
-  });
-
-  test("checkpoints with no record of the key being created fail unpinned", async () => {
     const { privateKey } = generateKeyPairSync("ed25519");
     const key = keyFromPrivatePem(privateKey.export({ type: "pkcs8", format: "pem" }).toString());
-    await add(a, 3);
     const head = (await chainedAudit(db, a.orgId, 0, 100)).at(-1)!;
     await putCheckpoint(
       db,
@@ -342,9 +344,25 @@ describe("verify: a key that postdates the chain", () => {
         signedAt: Date.now(),
       }),
     );
+    const r = await verifyAudit(db, a.orgId, new Map([[key.keyId, key.publicKeyPem]]));
+    expect(r.ok).toBe(false);
+    expect(r.keyPinned).toBe(false);
+  });
+
+  test("an org whose own first entry is the key also needs the pinned key", async () => {
+    const key = await initAuditKey(db, store, anchor, a.orgId);
+    await add(a, 3);
+    await sign(a);
     const keys = new Map([[key.keyId, key.publicKeyPem]]);
     expect((await verifyAudit(db, a.orgId, keys)).ok).toBe(false);
     expect((await verifyAudit(db, a.orgId, keys, { keyPinned: true })).ok).toBe(true);
+  });
+
+  test("with no checkpoints at all there is nothing to vouch for and it is not reported as pinned", async () => {
+    await add(a, 3);
+    const r = await verifyAudit(db, a.orgId, new Map());
+    expect(r.keyPinned).toBe(false);
+    expect(r.anchored).toBe(false);
   });
 });
 

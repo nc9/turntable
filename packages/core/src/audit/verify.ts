@@ -1,7 +1,7 @@
 import type { Db } from "../db";
 import { chainedAudit, listCheckpoints, type AuditCheckpoint, type AuditRow } from "../db/repos";
 import { entryHash, GENESIS_HASH, type ChainFields } from "./chain";
-import { AUDIT_KEY_SECRET, CHECKPOINT_EVERY_MS, checkpointSignatureValid } from "./checkpoint";
+import { CHECKPOINT_EVERY_MS, checkpointSignatureValid } from "./checkpoint";
 
 export interface VerifyReport {
   orgId: string;
@@ -40,15 +40,6 @@ export interface AnchorCheckpoint {
 
 const PAGE = 500;
 
-/** The audit row the secret store writes when the signing key is set (by name only). */
-const isKeyCreation = (input: string): boolean => {
-  try {
-    return (JSON.parse(input) as { name?: unknown }).name === AUDIT_KEY_SECRET;
-  } catch {
-    return false;
-  }
-};
-
 const fieldsOf = (r: AuditRow): ChainFields => ({
   id: r.id,
   orgId: r.orgId,
@@ -83,7 +74,6 @@ export async function verifyAudit(
   let expectedSeq = 1;
   let entries = 0;
   let broken = false;
-  let keyCreatedAt: number | undefined;
   for (let after = 0; ;) {
     const page = await chainedAudit(db, orgId, after, PAGE);
     if (page.length === 0) break;
@@ -103,9 +93,6 @@ export async function verifyAudit(
           problems.push(`entry ${seq} was modified (its hash does not match its contents)`);
           broken = true;
         }
-      }
-      if (keyCreatedAt === undefined && r.op === "secret_set" && isKeyCreation(r.input)) {
-        keyCreatedAt = seq;
       }
       hashes.set(seq, r.hash as string);
       prev = r.hash as string;
@@ -132,20 +119,14 @@ export async function verifyAudit(
       problems.push(`checkpoint ${cp.seq} has an invalid signature`);
   }
   const lastCheckpointSeq = cps.at(-1)?.seq ?? 0;
-  // A signing key that came into being after the chain began cannot vouch for what came before
-  // it: whoever made it could have rewritten that stretch first. Only a public key pinned
-  // outside this database settles that, so without one this is a failure, not a note.
+  // Without a public key pinned outside this database, nothing here is vouched for. The only
+  // evidence about when a key came to exist, or who made it, is rows an attacker who can rewrite
+  // the database can also write, so no row is ever allowed to settle it: with checkpoints
+  // present and no pinned key, verification fails, whatever the chain says about its own key.
   if (!opts.keyPinned && cps.length > 0) {
-    if (keyCreatedAt === undefined) {
-      problems.push(
-        "the chain has checkpoints but no record of the signing key being created; pin the public key (--pubkey)",
-      );
-    } else if (keyCreatedAt > 1) {
-      problems.push(
-        `the signing key was created at entry ${keyCreatedAt}, after entries 1 to ${keyCreatedAt - 1}; ` +
-          "without a pinned public key (--pubkey) those entries are not vouched for",
-      );
-    }
+    problems.push(
+      "unanchored: the checkpoints are not vouched for without a public key pinned outside this database (--pubkey)",
+    );
   }
   const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
   for (const an of anchors) {
