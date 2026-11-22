@@ -53,6 +53,12 @@ export const pollConfigSchema = z
              * pull request. For targeted parity runs without picking up every open PR.
              */
             prNumbers: z.array(z.int().positive()).max(100).optional(),
+            /**
+             * Ingest merge queue runs (`merge_group`). Each poll lists the repo's
+             * `gh-readonly-queue/<defaultBranch>/` branches and runs one only when it is a verified
+             * GitHub-made commit for an open same-repo PR by a listed author. Off by default.
+             */
+            mergeQueue: z.boolean().default(false),
             /** GitHub logins trusted without asking the forge. Compared case-insensitively. */
             authors: z.array(z.string().min(1)).default([]),
             /** Extra protected ref patterns (refs/heads/release/**). The default branch always is. */

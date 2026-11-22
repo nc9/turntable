@@ -32,7 +32,7 @@ export const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const RETENTION_MS = 30 * 86_400_000;
 const HANDLED = new Set(["installation", "installation_repositories"]);
 /** Events that only wake the poller for the repo they name. */
-const WAKE = new Set(["push", "pull_request"]);
+const WAKE = new Set(["push", "pull_request", "merge_group"]);
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const GUID = /^[A-Za-z0-9-]{8,100}$/;
 

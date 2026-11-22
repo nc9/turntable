@@ -117,3 +117,44 @@ export function clampMaxLive(requested: number | undefined): number {
   }
   return n;
 }
+
+/**
+ * The org-wide check before a create. The account's quota is shared with other users of the same
+ * org, whose sandboxes carry no label we know, so the label count above cannot see them. The org's
+ * usage endpoint can: before creating one of ours we read the CPU in use in one region and sandbox
+ * class and wait while ours would push it past `cpuLimit`.
+ */
+export interface OwnerCiPreflight {
+  /** Wait while current usage plus this sandbox's vCPU is above this. Default 200 (the quota is 250). */
+  cpuLimit?: number;
+  /** Default `us`. */
+  region?: string;
+  /** Default `container`. */
+  sandboxClass?: string;
+}
+
+export const DEFAULT_ORG_CPU_LIMIT = 200;
+export const DEFAULT_ORG_REGION = "us";
+export const DEFAULT_ORG_CLASS = "container";
+
+/** One row of the usage reply we read. */
+export interface RegionUsageRow {
+  regionId?: string;
+  sandboxClass?: string;
+  currentCpuUsage?: number;
+}
+
+/**
+ * The vCPU in use in the region and class, from the usage reply. No row means nothing is running
+ * there (0). A row without a number is not a reading: undefined, which the caller treats as an
+ * error rather than as room.
+ */
+export function cpuInUse(
+  rows: readonly RegionUsageRow[] | undefined,
+  region: string,
+  sandboxClass: string,
+): number | undefined {
+  const row = rows?.find((r) => r.regionId === region && r.sandboxClass === sandboxClass);
+  if (row === undefined) return 0;
+  return typeof row.currentCpuUsage === "number" ? row.currentCpuUsage : undefined;
+}

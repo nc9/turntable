@@ -48,6 +48,12 @@ export function startMock(
   let seq = 0;
   /** Extra sandboxes that belong to someone else; the provider must never touch them. */
   const failNext: { createStatus?: number | undefined } = {};
+  /** What the org usage endpoint answers. `status` other than 200 makes it fail. */
+  const usage: { rows: unknown[]; status: number; calls: number } = {
+    rows: [],
+    status: 200,
+    calls: 0,
+  };
 
   const server = Bun.serve({
     port: 0,
@@ -62,6 +68,11 @@ export function startMock(
         return Response.json({ message: "bad key" }, { status: 401 });
       }
       const origin = url.origin;
+      if (/^\/api\/organizations\/[^/]+\/usage$/.test(url.pathname)) {
+        usage.calls += 1;
+        if (usage.status !== 200) return Response.json({ message: "no" }, { status: usage.status });
+        return Response.json({ regionUsage: usage.rows });
+      }
       const m = /^\/api\/sandbox(?:\/([^/]+))?$/.exec(url.pathname);
       if (m) {
         const id = m[1];
@@ -227,6 +238,7 @@ export function startMock(
     createdAt: s.createdAt,
     toolboxProxyUrl: `${origin}/toolbox`,
     networkBlockAll: s.networkBlockAll,
+    organizationId: "org-mock",
   });
 
   return {
@@ -234,6 +246,7 @@ export function startMock(
     sandboxes,
     requests,
     failNext,
+    usage,
     stats,
     setHugeList(v: boolean) {
       hugeList = v;
