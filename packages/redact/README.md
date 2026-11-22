@@ -38,9 +38,13 @@ last newline and holds only the current incomplete line, capped at `window - 1` 
 where `window` is the longest possible match (the built-in patterns top out near 5.6 KiB;
 registered values can raise it). A match that straddles the boundary pulls the boundary back
 to its start. The carry stays raw and is rescanned with the next chunk, so a secret split at
-any offset is found, and none is emitted partially. Built-in patterns never match across a
-newline, so complete lines go out at once. A registered value that contains a newline switches
+any offset is found, and none is emitted partially. Only the aws-secret and bearer
+patterns can span a newline (a value on the next line); every other pattern is single-line, so
+complete lines go out at once. A registered value that contains a newline switches
 emission back to the plain window rule.
+
+A key line (`aws_secret_access_key:` or `Authorization: Bearer` at the end of a line) is held
+until the next line arrives, so a YAML-style value on the following line is still redacted.
 
 Latency: `flushIdle()` emits the held partial line, redacted. Call it after about a second
 without input so the last line of a slow or hung job becomes visible.
@@ -50,6 +54,10 @@ Trade-offs:
 - **Output length is not preserved.** Every secret becomes `***`, whatever its length.
 - **The incomplete last line is held** until a newline, `flushIdle()` or `end()`. Call `end()`
   when the stream closes.
+- **`flushIdle()` keeps back what could still be completed:** a partial PEM BEGIN marker, a
+  partial or complete key line, a partial key name, and the tail of any registered value that
+  is a prefix of one. Those wait for more input (a trailing `-` or a line ending `Authorization`
+  stays held until the next chunk or `end()`).
 - **`flushIdle()` can leak a token prefix.** A token split across the idle gap has its first
   part already emitted, and that part alone matches no pattern. Use a gap long enough that
   mid-token pauses are rare.

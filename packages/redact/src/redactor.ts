@@ -3,6 +3,8 @@ import {
   PATTERNS,
   PEM_BEGIN,
   PEM_END,
+  KEY_LINE_END,
+  KEY_NAMES,
   PEM_END_MAX,
   REPLACEMENT,
 } from "./patterns";
@@ -10,6 +12,87 @@ import { SecretRegistry } from "./registry";
 
 /** A PEM block with no END marker after this many characters is swallowed to its END (or EOF). */
 export const MAX_OPEN_PEM = 256 * 1024;
+
+const PEM_MARKER = "-----BEGIN ";
+const PEM_TAILS = ["PRIVATE KEY-----", "PRIVATE KEY BLOCK-----"];
+
+const isKeyLine = (line: string): boolean => KEY_LINE_END.test(line.slice(-160));
+
+/** Start of the complete line before the partial line, if it ends with a key name. */
+function prevKeyLineStart(text: string, partialStart: number): number {
+  if (partialStart < 2) return Number.POSITIVE_INFINITY;
+  const prevEnd = partialStart - 1;
+  const prevStart = text.lastIndexOf("\n", prevEnd - 1) + 1;
+  return isKeyLine(text.slice(prevStart, prevEnd)) ? prevStart : Number.POSITIVE_INFINITY;
+}
+
+/** Could `rest` (text after a PEM marker prefix) still grow into a private key BEGIN marker? */
+function couldBecomeMarker(rest: string): boolean {
+  if (rest.includes("\n")) return false;
+  for (let j = 0; j <= rest.length; j++) {
+    const label = rest.slice(0, j);
+    if (label.length <= 40 && /^[A-Z0-9 ]*$/.test(label)) {
+      const tail = rest.slice(j);
+      if (PEM_TAILS.some((t) => t.startsWith(tail))) return true;
+    }
+  }
+  return false;
+}
+
+/** Index from which a PEM BEGIN marker could still be forming at the end of `text`. */
+function pemHoldStart(text: string): number {
+  const len = text.length;
+  let hold = Number.POSITIVE_INFINITY;
+  // The marker itself cut short at the end of the text ("-----BE").
+  for (let k = Math.min(PEM_MARKER.length - 1, len); k >= 1; k--) {
+    if (text.endsWith(PEM_MARKER.slice(0, k))) {
+      hold = len - k;
+      break;
+    }
+  }
+  // The marker complete, but the key label or the dashes after it still to come.
+  const idx = text.lastIndexOf(PEM_MARKER);
+  if (idx >= 0 && len - idx <= 130 && couldBecomeMarker(text.slice(idx + PEM_MARKER.length))) {
+    hold = Math.min(hold, idx);
+  }
+  return hold;
+}
+
+/** Length of the longest proper prefix of `form` that is a suffix of `text` (KMP, linear). */
+function overlap(text: string, form: string): number {
+  const need = form.length - 1;
+  const s = `${form}\u0000${need > 0 ? text.slice(-need) : ""}`;
+  const pi = Array.from({ length: s.length }, () => 0);
+  for (let i = 1; i < s.length; i++) {
+    let k = pi[i - 1] ?? 0;
+    while (k > 0 && s[i] !== s[k]) k = pi[k - 1] ?? 0;
+    if (s[i] === s[k]) k++;
+    pi[i] = k;
+  }
+  return Math.min(pi.at(-1) ?? 0, form.length - 1);
+}
+
+/** Earliest index of `text` that must stay buffered when flushing on idle. */
+function idleHoldStart(text: string, registry: SecretRegistry | undefined): number {
+  const partialStart = text.lastIndexOf("\n") + 1;
+  let hold = Math.min(text.length, prevKeyLineStart(text, partialStart));
+  // The partial line itself ends with a key name: its value has not arrived.
+  if (isKeyLine(text.slice(partialStart))) hold = Math.min(hold, partialStart);
+  hold = Math.min(hold, pemHoldStart(text));
+  // A key name cut mid-word: "aws_secr" + "et_access_key:" would otherwise slip through.
+  const lowTail = text.slice(-24).toLowerCase();
+  for (const name of KEY_NAMES) {
+    const k = overlap(lowTail, name);
+    if (k > 0) hold = Math.min(hold, text.length - k);
+  }
+  if (registry) {
+    for (const form of registry.forms()) {
+      const k = overlap(text, form);
+      if (k > 0) hold = Math.min(hold, text.length - k);
+    }
+  }
+  return hold;
+}
 
 type Interval = { start: number; end: number };
 
@@ -185,14 +268,22 @@ export class Redactor {
     }
 
     if (mode === "idle") {
-      this.#buf = "";
-      return out + apply(text, merged, text.length);
+      let boundary = idleHoldStart(text, this.#registry);
+      for (const iv of merged) {
+        if (iv.start < boundary && iv.end > boundary) boundary = iv.start;
+      }
+      this.#buf = text.slice(boundary);
+      return out + apply(text, merged, boundary);
     }
 
     // Hold at most the window, but only the current incomplete line: complete lines go out now.
     // Registered values with newlines can span lines, so they fall back to the window rule.
     const windowStart = Math.max(0, text.length - (this.#window() - 1));
-    const lineStart = this.#registry?.hasNewline ? 0 : text.lastIndexOf("\n") + 1;
+    // A complete line ending in a key name (value on the next line) is held with the partial one.
+    const partialStart = text.lastIndexOf("\n") + 1;
+    const lineStart = this.#registry?.hasNewline
+      ? 0
+      : Math.min(partialStart, prevKeyLineStart(text, partialStart));
     let boundary = Math.max(windowStart, lineStart);
     // Do not split a match, or a surrogate pair.
     for (const iv of merged) {

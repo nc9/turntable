@@ -4,8 +4,10 @@
  * upper bounds also give each pattern a maximum match length, which sizes the streaming
  * carry-over window. A token longer than its bound is only redacted up to the bound.
  *
- * No built-in pattern can match across a newline (PEM blocks are handled separately), which is
- * what lets the redactor emit complete lines immediately.
+ * Only the key/value patterns (aws secret, bearer) may span a newline, so a YAML-style value on
+ * the line after its key is still found; the redactor holds a trailing key line for that (see
+ * KEY_LINE_END). Every other pattern is single-line (PEM blocks are handled separately), which
+ * is what lets the redactor emit complete lines immediately.
  *
  * `keep` is the number of leading characters of the match to leave in place (a key name or
  * header prefix), taken from capture group 1; `keepTail` the same for trailing text.
@@ -43,8 +45,8 @@ export const PATTERNS: readonly Pattern[] = [
   { name: "aws-access-key-id", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, maxLength: 21 },
   {
     name: "aws-secret-access-key",
-    re: /(aws_secret_access_key["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)[A-Za-z0-9/+=]{40}/gi,
-    maxLength: 21 + 1 + 8 + 1 + 8 + 1 + 40,
+    re: /(aws_secret_access_key["']?\s{0,64}[:=]\s{0,64}["']?)[A-Za-z0-9/+=]{40}/gi,
+    maxLength: 21 + 1 + 64 + 1 + 64 + 1 + 40,
     keepPrefix: true,
   },
   { name: "slack-token", re: /\bxox[abprs]-[A-Za-z0-9-]{10,250}/g, maxLength: 5 + 250 + 1 },
@@ -56,8 +58,8 @@ export const PATTERNS: readonly Pattern[] = [
   {
     // Only inside an Authorization header, so prose like "Bearer authentication" is untouched.
     name: "bearer-token",
-    re: /(Authorization["']?[ \t]{0,16}[:=][ \t]{0,16}["']?Bearer[ \t]{1,16})[A-Za-z0-9._~+/=-]{8,4096}/gi,
-    maxLength: 13 + 1 + 16 + 1 + 16 + 1 + 6 + 16 + 4096,
+    re: /(Authorization["']?\s{0,16}[:=]\s{0,16}["']?Bearer\s{1,64})[A-Za-z0-9._~+/=-]{8,4096}/gi,
+    maxLength: 13 + 1 + 16 + 1 + 16 + 1 + 6 + 64 + 4096,
     keepPrefix: true,
   },
   {
@@ -74,3 +76,13 @@ export const MAX_PATTERN_LENGTH: number = Math.max(
   ...PATTERNS.map((p) => p.maxLength),
   PEM_END_MAX,
 );
+
+/**
+ * End of a line that names a key whose value may follow on the next line. Test it against the
+ * last 160 characters of one line, never the whole line.
+ */
+export const KEY_LINE_END =
+  /(?:aws_secret_access_key["']?[^\S\n]{0,16}[:=]?[^\S\n]{0,16}["']?|Authorization["']?[^\S\n]{0,16}[:=]?[^\S\n]{0,16}["']?(?:B(?:e(?:a(?:r(?:e(?:r[^\S\n]{0,16})?)?)?)?)?)?)$/i;
+
+/** Key names whose partial spelling at the end of the text must survive an idle flush. */
+export const KEY_NAMES: readonly string[] = ["aws_secret_access_key", "authorization"];

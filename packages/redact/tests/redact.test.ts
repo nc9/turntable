@@ -281,6 +281,9 @@ describe("redos safety", () => {
     ["userinfo colons", `http://${"a:".repeat(200_000)}`],
     ["url repeated", "http://u:".repeat(100_000)],
     ["aws secret key repeated", "aws_secret_access_key=".repeat(50_000)],
+    ["key lines repeated", "aws_secret_access_key:\n".repeat(50_000)],
+    ["authorization lines repeated", "Authorization: Bearer\n  \n".repeat(40_000)],
+    ["key then huge whitespace", `aws_secret_access_key${" ".repeat(1_000_000)}`],
     ["pem begins without end", `-----BE${SPLIT}GIN PRIVATE KEY-----\n`.repeat(30_000)],
     ["pem begin fragments", `-----BE${SPLIT}GIN `.repeat(80_000)],
     ["github prefixes", `gh${SPLIT}p_`.repeat(250_000)],
@@ -385,5 +388,94 @@ describe("registry: base64 alignments", () => {
     reg.register(s);
     const blob = Buffer.from(`ab${s}cd`).toString("base64url");
     expect(redactString(blob, reg)).toContain(R);
+  });
+});
+
+/** Pushes `text` in two chunks split at `i`, with an idle flush between them. */
+function withIdle(text: string, i: number, registry?: SecretRegistry): string {
+  const r = new Redactor({ registry });
+  return r.push(text.slice(0, i)) + r.flushIdle() + r.push(text.slice(i)) + r.end();
+}
+
+describe("idle flush never splits a marker or a key", () => {
+  test("pem BEGIN marker split at every offset with an idle flush between", () => {
+    const begin = `-----BE${SPLIT}GIN RSA PRIVATE KEY-----`;
+    const body = "MIIEowIBAAKCAQEAdummybody0123\nZmFrZWtleQ==\n";
+    const text = `x\n${begin}\n${body}-----EN${SPLIT}D RSA PRIVATE KEY-----\nafter`;
+    const start = text.indexOf("\n") + 1;
+    for (let i = start; i <= start + begin.length + 1; i++) {
+      const out = withIdle(text, i);
+      if (out !== `x\n${R}\nafter`) throw new Error(`split ${i}: ${JSON.stringify(out)}`);
+    }
+  });
+
+  test("a partial marker prefix is held, a certificate header is not held forever", () => {
+    const r = new Redactor();
+    expect(r.push("log line -----BE")).toBe("");
+    expect(r.flushIdle()).toBe("log line ");
+    const r2 = new Redactor();
+    r2.push(`${"-----"}BEGIN CERTIFICATE-----`);
+    expect(r2.flushIdle()).toBe(`${"-----"}BEGIN CERTIFICATE`); // only the trailing dashes wait
+    expect(r2.end()).toBe("-----");
+  });
+
+  test("a registered value split across an idle flush is held, not leaked", () => {
+    const reg = new SecretRegistry();
+    const secret = "registered-value-1234";
+    reg.register(secret);
+    const text = `x ${secret} y`;
+    for (let i = 2; i <= 2 + secret.length; i++) {
+      expect(withIdle(text, i, reg)).toBe(`x ${R} y`);
+    }
+  });
+});
+
+describe("whitespace and cross-line key/value", () => {
+  test("any non-newline whitespace (CR, FF, VT) is allowed in header and key patterns", () => {
+    const ws = "\r\u000b\u000c";
+    expect(redactString(`Authorization:${ws}Bearer${ws}abcdef123456`)).toBe(
+      `Authorization:${ws}Bearer${ws}${R}`,
+    );
+    expect(redactString(`aws_secret_access_key=${AWS_SECRET}\r\nnext\r\n`)).toBe(
+      `aws_secret_access_key=${R}\r\nnext\r\n`,
+    );
+  });
+
+  const aws = `a\naws_secret_access_key:\n  ${AWS_SECRET}\nz\n`;
+  const bearer = `a\nAuthorization: Bearer\n  abcdef1234567890\nz\n`;
+  const cases: [string, string, string, number][] = [
+    ["aws yaml", aws, `a\naws_secret_access_key:\n  ${R}\nz\n`, aws.indexOf("  ")],
+    ["bearer", bearer, `a\nAuthorization: Bearer\n  ${R}\nz\n`, bearer.indexOf("  ")],
+  ];
+  for (const [name, text, expected, valueAt] of cases) {
+    test(`${name}: value on the next line is redacted at every split`, () => {
+      splitEverywhere(text, expected);
+    });
+    test(`${name}: idle flush before the value keeps the key line held`, () => {
+      for (let i = 2; i <= valueAt; i++) {
+        const out = withIdle(text, i);
+        if (out !== expected) throw new Error(`split ${i}: ${JSON.stringify(out)}`);
+      }
+    });
+  }
+
+  test("a key line alone is not flushed by idle, and is released once the next line shows", () => {
+    const r = new Redactor();
+    expect(r.push("aws_secret_access_key:\n")).toBe("");
+    expect(r.flushIdle()).toBe("");
+    expect(r.push(`${AWS_SECRET}\nmore\n`)).toBe(`aws_secret_access_key:\n${R}\nmore\n`);
+    const r2 = new Redactor();
+    expect(r2.push("Authorization: Bearer")).toBe("");
+    expect(r2.flushIdle()).toBe("");
+    expect(r2.end()).toBe("Authorization: Bearer");
+  });
+
+  test("an ordinary line after a key line is emitted unchanged, and releases the key line", () => {
+    const r = new Redactor();
+    expect(r.push("aws_secret_access_key:\n")).toBe("");
+    expect(r.push("nothing secret here\nnext\n")).toBe(
+      "aws_secret_access_key:\nnothing secret here\nnext\n",
+    );
+    expect(r.end()).toBe("");
   });
 });
