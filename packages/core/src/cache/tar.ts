@@ -115,8 +115,16 @@ function checkSymlink(
   links: ReadonlySet<string>,
 ): void {
   if (target.includes("\0") || target === "") throw new ArchiveError("link target is invalid");
+  // An absolute entry sits under one of the allowed roots, and its link may not leave that root:
+  // not by an absolute target elsewhere, and not by climbing out with `..`.
+  const root = entryPath.startsWith("/")
+    ? rules.absoluteRoots.find((r) => entryPath.startsWith(r))
+    : undefined;
+  const within = (resolved: string): boolean =>
+    root === undefined || `${resolved}/`.startsWith(root);
   if (target.startsWith("/")) {
     const norm = checkPath(target, rules);
+    if (!within(norm)) throw new ArchiveError("link target leaves the root its entry is under");
     if (runsThroughLink(norm, links))
       throw new ArchiveError("link target runs through a link the archive made");
     return;
@@ -132,6 +140,8 @@ function checkSymlink(
         throw new ArchiveError(`link escapes its root: ${target.slice(0, 120)}`);
       stack.pop();
     } else stack.push(part);
+    if (!within(here()))
+      throw new ArchiveError(`link escapes the root its entry is under: ${target.slice(0, 120)}`);
     if (links.has(here()))
       throw new ArchiveError("link target runs through a link the archive made");
     if (deniedPath(stack)) throw new ArchiveError("link points at a path not allowed in a cache");

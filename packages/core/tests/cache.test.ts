@@ -1430,3 +1430,40 @@ describe("entries at denied paths are dropped, not the whole archive", () => {
     expect(r).toMatchObject({ entries: 1, skipped: 1 });
   });
 });
+
+describe("an absolute link entry stays inside its own root", () => {
+  test("climbing out with .. or pointing at another root is refused; staying inside is fine", async () => {
+    const ok = [
+      ["/home/runner/.cache/x", "../y"], // inside /home/
+      ["/home/runner/.cache/x", "../../z"], // up to /home/ itself is still the root
+      ["/home/runner/.cache/x", "/home/runner/other"], // absolute, same root
+      ["/tmp/a/b", "../c"],
+    ] as const;
+    for (const [name, link] of ok)
+      expect(
+        await check(tar(tarEntry(name, { type: "2", link }))),
+        `${name} -> ${link}`,
+      ).toBeNull();
+    const bad = [
+      ["/home/runner/.cache/x", "../../.."], // out to /
+      ["/home/runner/.cache/x", "../../../etc"], // out to /etc
+      ["/home/runner/x", "../../tmp/y"], // across into another allowed root via ..
+      ["/home/runner/x", "/tmp/y"], // an absolute target in another root
+      ["/home/runner/x", "/etc/passwd"], // outside every root
+    ] as const;
+    for (const [name, link] of bad)
+      expect(
+        (await check(tar(tarEntry(name, { type: "2", link }))))?.message,
+        `${name} -> ${link}`,
+      ).toMatch(/escapes|leaves the root|allowed roots/);
+    // A hardlink is resolved from the archive root and checked as a path of its own already.
+    expect(
+      (await check(tar(tarEntry("/home/runner/h", { type: "1", link: "/etc/passwd" }))))?.message,
+    ).toMatch(/allowed roots/);
+    // Relative entries are unchanged: ../ above their directory is refused only at the top.
+    expect(await check(tar(tarEntry("a/b/l", { type: "2", link: "../../c" })))).toBeNull();
+    expect((await check(tar(tarEntry("a/l", { type: "2", link: "../../c" }))))?.message).toMatch(
+      /escapes/,
+    );
+  });
+});
