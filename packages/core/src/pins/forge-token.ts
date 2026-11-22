@@ -6,7 +6,7 @@
 //   3. LONGSHORE_GITHUB_TOKEN, only when neither exists.
 // Nothing here is logged, and no token is returned by any operation.
 import type { Run } from "../db/repos";
-import { listRepos, type Scope } from "../db/repos";
+import { getOrgById, listProjects, listRepos, type Scope } from "../db/repos";
 import type { Db } from "../db";
 import { readToken } from "../poll/config";
 
@@ -23,7 +23,13 @@ export interface TokenMinter {
 export interface ForgeTokenOptions {
   db: Db;
   /** The poll config: its token file serves the repos it lists. */
-  poll?: { tokenFile?: string | undefined; repos: readonly { repo: string }[] } | undefined;
+  poll?:
+    | {
+        tokenFile?: string | undefined;
+        /** Each entry lands runs in `org`/`project` (default `local`); the token serves only those. */
+        repos: readonly { repo: string; org?: string | undefined; project?: string | undefined }[];
+      }
+    | undefined;
   /** The GitHub App, when configured. */
   auth?: TokenMinter | undefined;
   /** LONGSHORE_GITHUB_TOKEN, last resort. */
@@ -51,7 +57,19 @@ export function createForgeToken(o: ForgeTokenOptions): ForgeToken {
   return async ({ run, scope }) => {
     const repo = run.repo?.toLowerCase();
     if (!run.local && repo) {
-      const watched = o.poll?.repos.some((r) => r.repo.toLowerCase() === repo);
+      // The poll token serves a run only when the poll entry for that repo lands runs in this
+      // very org and project: the same repo bound in another tenant must not borrow it.
+      let watched = false;
+      if (o.poll?.tokenFile && o.poll.repos.some((r) => r.repo.toLowerCase() === repo)) {
+        const org = await getOrgById(o.db, scope.orgId);
+        const project = (await listProjects(o.db, scope)).find((p) => p.id === scope.projectId);
+        watched = o.poll.repos.some(
+          (r) =>
+            r.repo.toLowerCase() === repo &&
+            (r.org ?? "local") === org?.slug &&
+            (r.project ?? "local") === project?.slug,
+        );
+      }
       if (watched && o.poll?.tokenFile) {
         try {
           return readToken(o.poll.tokenFile);

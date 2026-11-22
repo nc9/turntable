@@ -6,7 +6,7 @@ import { PlanError, tarDirectory } from "@longshore/act-runner";
 import type { SafeFetch } from "@longshore/net";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { InfraError } from "@longshore/provider-sdk";
-import { bindRepo, type Db, getVerdict, listRepos } from "../src/db";
+import { bindRepo, type Db, getVerdict, listRepos, setActionPolicy } from "../src/db";
 import { createForgeToken } from "../src/pins/forge-token";
 import { cachedReachability, cachedResolver } from "../src/pins/verdict-cache";
 import { createActRunner } from "../src/scheduler";
@@ -50,7 +50,10 @@ describe("which credential the worker uses", () => {
     });
     const get = createForgeToken({
       db,
-      poll: { tokenFile: tokenFile("poll-token-value\n"), repos: [{ repo: "Acme/Web" }] },
+      poll: {
+        tokenFile: tokenFile("poll-token-value\n"),
+        repos: [{ repo: "Acme/Web", org: "org-a", project: "app" }],
+      },
       auth,
       envToken: "env-token-value",
     });
@@ -66,6 +69,31 @@ describe("which credential the worker uses", () => {
     expect(await get(ctx(run("other/thing")))).toBe("env-token-value");
     expect(await get(ctx(run("acme/web", true)))).toBe("env-token-value");
     expect(await get(ctx(run(null)))).toBe("env-token-value");
+  });
+
+  test("the poll token serves only the org and project the poll entry lands runs in", async () => {
+    // seedWorld's tenant a is org "org-a", project "app".
+    const file = tokenFile("poll-token-value");
+    const get = (org: string | undefined, project: string | undefined) =>
+      createForgeToken({
+        db,
+        poll: { tokenFile: file, repos: [{ repo: "acme/web", org, project }] },
+        envToken: "env-token-value",
+      });
+    expect(
+      await get("org-a", "app")({ run: { repo: "acme/web", local: false }, scope: a.scope }),
+    ).toBe("poll-token-value");
+    // The same repo bound in another org, or another project, does not borrow the token.
+    expect(
+      await get("org-b", "app")({ run: { repo: "acme/web", local: false }, scope: a.scope }),
+    ).toBe("env-token-value");
+    expect(
+      await get("org-a", "other")({ run: { repo: "acme/web", local: false }, scope: a.scope }),
+    ).toBe("env-token-value");
+    // The defaults are the local org and project, which this tenant is not.
+    expect(
+      await get(undefined, undefined)({ run: { repo: "acme/web", local: false }, scope: a.scope }),
+    ).toBe("env-token-value");
   });
 
   test("with nothing it is unauthenticated, and says so once", async () => {
@@ -193,7 +221,11 @@ jobs:
 
   /** A GitHub API that records the Authorization of every call and can rate-limit. */
   function github(
-    over: { limit?: { path: RegExp; times: number; headers: Record<string, string> } } = {},
+    over: {
+      limit?: { path: RegExp; times: number; headers: Record<string, string> };
+      /** `owner/repo` names that are private: invisible (404) without a token, `private: true` with one. */
+      priv?: string[];
+    } = {},
   ) {
     const calls: { path: string; auth: string | null }[] = [];
     let limited = 0;
@@ -204,17 +236,25 @@ jobs:
         limited++;
         return new Response("rate limited", { status: 403, headers: over.limit.headers });
       }
+      const repoName = /^\/repos\/([^/]+\/[^/]+)/.exec(url.pathname)?.[1]?.toLowerCase();
+      const isPrivate = repoName !== undefined && (over.priv ?? []).includes(repoName);
+      const authed = new Headers(init?.headers).get("authorization") !== null;
+      if (isPrivate && !authed) return new Response("not found", { status: 404 });
       if (url.pathname.endsWith("/commits/v1")) return new Response(SHA("c"));
       if (/\/compare\//.test(url.pathname)) return Response.json({ status: "identical" });
-      if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname))
-        return Response.json({ default_branch: "main" });
+      if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) {
+        return Response.json({ default_branch: "main", private: isPrivate });
+      }
       return new Response("unexpected", { status: 500 });
     };
     return { impl, calls };
   }
 
   /** Plans the job with the given runner options; the sandbox is made to fail right after. */
-  async function plan(opts: Partial<Parameters<typeof createActRunner>[0]>) {
+  async function plan(
+    opts: Partial<Parameters<typeof createActRunner>[0]>,
+    extra: { workflow?: string; run?: Record<string, unknown> } = {},
+  ) {
     // The worker needs the project bound to the repo it fetches.
     if (!(await listRepos(db, a.scope)).some((r) => r.owner === "acme" && r.repo === "web")) {
       await bindRepo(db, a.scope, { forge: "github", owner: "acme", repo: "web" });
@@ -230,7 +270,8 @@ jobs:
       source: {
         checkout: async () => ({
           tarball: new Uint8Array(),
-          readFile: (p: string) => (p === ".github/workflows/ci.yml" ? WORKFLOW : undefined),
+          readFile: (p: string) =>
+            p === ".github/workflows/ci.yml" ? (extra.workflow ?? WORKFLOW) : undefined,
         }),
       },
       fetchAction: nodeTarball,
@@ -252,6 +293,7 @@ jobs:
         trust: null,
         plan: null,
         approval: null,
+        ...extra.run,
       },
       scope: a.scope,
       provider,
@@ -267,13 +309,16 @@ jobs:
     } as unknown as AttemptContext);
   }
 
-  test("resolution and the reachability check use the poll token", async () => {
+  test("resolution and the reachability check use the poll token, for the run's own repo", async () => {
     const gh = github();
     const forgeToken = createForgeToken({
       db,
-      poll: { tokenFile: tokenFile("poll-token-value"), repos: [{ repo: "acme/web" }] },
+      poll: {
+        tokenFile: tokenFile("poll-token-value"),
+        repos: [{ repo: "acme/web", org: "org-a", project: "app" }],
+      },
     });
-    await plan({ fetch: gh.impl, forgeToken });
+    await plan({ fetch: gh.impl, forgeToken }, { workflow: wf("acme/web@v1") });
     expect(gh.calls.length).toBeGreaterThanOrEqual(3);
     for (const c of gh.calls) expect(c.auth).toBe("Bearer poll-token-value");
   });
@@ -347,5 +392,98 @@ jobs:
     expect(String(err.message)).toContain("wait budget");
     // A PlanError would have been a deterministic failure; a rate limit is not one.
     expect(err).not.toBeInstanceOf(PlanError);
+  });
+
+  const wf = (uses: string) => `name: ci
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${uses}
+`;
+  const withToken = (token: string) => ({
+    forgeToken: async () => token,
+  });
+  const tarballs: string[] = [];
+  const spyTarball = async (repo: string) => {
+    tarballs.push(repo);
+    return nodeTarball();
+  };
+  const authedPaths = (calls: { path: string; auth: string | null }[]) =>
+    calls.filter((c) => c.auth !== null).map((c) => c.path);
+
+  test("a private action a workflow names is resolved without any token and is just not found", async () => {
+    const gh = github({ priv: ["secret-org/private-thing"] });
+    // Even with a poll token AND an env-style token in hand, nothing is sent for it.
+    const out = await plan(
+      { fetch: gh.impl, ...withToken("poll-token-value"), fetchAction: spyTarball },
+      { workflow: wf("secret-org/private-thing@v1") },
+    );
+    expect(out).toMatchObject({ state: "failure" });
+    expect(out.reason).toContain("policy:");
+    expect(out.reason).toContain("HTTP 404");
+    expect(gh.calls.length).toBeGreaterThan(0);
+    for (const c of gh.calls) expect(c.auth).toBeNull();
+    expect(tarballs).toHaveLength(0);
+  });
+
+  test("the run's own repo uses the token", async () => {
+    const gh = github();
+    const out = await plan(
+      { fetch: gh.impl, ...withToken("poll-token-value") },
+      { workflow: wf("acme/web@v1") },
+    );
+    expect(out.reason).toContain("stop after planning");
+    expect(gh.calls.length).toBeGreaterThanOrEqual(3);
+    for (const c of gh.calls) expect(c.auth).toBe("Bearer poll-token-value");
+  });
+
+  test("an untrusted run never uses a token, not even for its own repo", async () => {
+    const gh = github();
+    // A pull_request run with no stored class is assessed untrusted_pr.
+    const out = await plan(
+      { fetch: gh.impl, ...withToken("poll-token-value") },
+      { workflow: wf("acme/web@v1"), run: { event: "pull_request", ref: "refs/pull/1/head" } },
+    );
+    expect(out.reason).toContain("stop after planning");
+    expect(gh.calls.length).toBeGreaterThanOrEqual(3);
+    for (const c of gh.calls) expect(c.auth).toBeNull();
+  });
+
+  test("an allowlisted owner uses the token; a private repo of one is still refused", async () => {
+    await setActionPolicy(db, a.scope, { allowedOwners: ["trusted-org"] });
+    const open = github();
+    const ok = await plan(
+      { fetch: open.impl, ...withToken("poll-token-value") },
+      { workflow: wf("trusted-org/tool@v1") },
+    );
+    expect(ok.reason).toContain("stop after planning");
+    expect(authedPaths(open.calls).length).toBe(open.calls.length);
+    // The privacy check itself ran with the token and found it public.
+    expect(open.calls.some((c) => c.path === "/repos/trusted-org/tool")).toBe(true);
+
+    const closed = github({ priv: ["trusted-org/hidden"] });
+    tarballs.length = 0;
+    const refused = await plan(
+      { fetch: closed.impl, ...withToken("poll-token-value"), fetchAction: spyTarball },
+      { workflow: wf("trusted-org/hidden@v1") },
+    );
+    expect(refused).toMatchObject({ state: "failure" });
+    expect(refused.reason).toContain("private repository");
+    expect(tarballs).toHaveLength(0);
+    // A repo owned by anyone else is never given the token, allowlist or not.
+    const other = github();
+    await plan(
+      { fetch: other.impl, ...withToken("poll-token-value") },
+      { workflow: wf("stranger/tool@v1") },
+    ).catch(() => {});
+    expect(authedPaths(other.calls)).toEqual([]);
+  });
+
+  test("an unauthenticated run still resolves public actions of any owner", async () => {
+    const gh = github();
+    const out = await plan({ fetch: gh.impl }, { workflow: wf("stranger/tool@v1") });
+    expect(out.reason).toContain("stop after planning");
   });
 });

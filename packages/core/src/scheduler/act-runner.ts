@@ -29,13 +29,18 @@ import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
 import { resolvePlanActions } from "../pins";
 import type { ForgeToken } from "../pins/forge-token";
+import {
+  actionCredentials,
+  credentialedReachability,
+  credentialedResolver,
+} from "../pins/action-credentials";
 import { githubReachability } from "../pins/reachability";
 import { cachedReachability, cachedResolver, type VerdictTtl } from "../pins/verdict-cache";
 import { createBackoff, type SafeFetch } from "@longshore/net";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
-import { parseTrust } from "../db/repos";
+import { getActionPolicy, parseTrust } from "../db/repos";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -370,6 +375,19 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           ...(o.verdictTtl ? { ttl: o.verdictTtl } : {}),
           ...(o.now ? { now: o.now } : {}),
         };
+        // The credential is for the run's own repo and the org's allowlisted owners only, and
+        // never for an untrusted run (see pins/action-credentials); every other action is
+        // resolved anonymously, so a private repo a workflow names just looks not found.
+        const policy = await getActionPolicy(o.db, ctx.scope);
+        const creds = actionCredentials({
+          token,
+          ownRepo: dbRun.repo,
+          allowedOwners: policy.allowedOwners,
+          untrusted: klass === "untrusted_pr",
+          backoff,
+          ...(o.fetch ? { fetch: o.fetch } : {}),
+        });
+        const fetchOpt = o.fetch ? { fetch: o.fetch } : {};
         plan = await resolvePlanActions(jobPlan, {
           db: o.db,
           scope: ctx.scope,
@@ -378,18 +396,18 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
             o.resolver ??
             cachedResolver({
               ...cacheOpts,
-              base: githubResolver(token, { backoff, ...(o.fetch ? { fetch: o.fetch } : {}) }),
+              base: credentialedResolver(creds, (tk) =>
+                githubResolver(tk, { backoff, ...fetchOpt }),
+              ),
             }),
           readFile: checkout.readFile,
           reachable:
             o.reachable ??
             cachedReachability({
               ...cacheOpts,
-              base: githubReachability({
-                ...(token ? { token } : {}),
-                backoff,
-                ...(o.fetch ? { fetch: o.fetch } : {}),
-              }),
+              base: credentialedReachability(creds, (tk) =>
+                githubReachability({ ...(tk ? { token: tk } : {}), backoff, ...fetchOpt }),
+              ),
             }),
           ...(o.fetchAction ? { fetchTarball: o.fetchAction } : {}),
           warn: (m) => console.warn(`action pins: ${m}`),
