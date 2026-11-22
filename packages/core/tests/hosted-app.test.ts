@@ -6,6 +6,7 @@ import {
   InstallationClaims,
   CLAIM_COOKIE,
   CLAIM_START_PATH,
+  CSRF_COOKIE,
   createClaimHandler,
   githubUserVerifier,
 } from "../src/github/claim";
@@ -153,8 +154,33 @@ describe("the installation claim flow", () => {
         }),
       ))!;
     };
+    // Opens the confirmation page and returns what a browser would hold, then submits it.
+    const open = async (url: string) => {
+      const res = (await handler.handle(new Request(`http://x${url}`)))!;
+      const html = res.status === 200 ? await res.clone().text() : "";
+      const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1] ?? "";
+      const token = /ls_claim_csrf=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+      return { res, csrf, token };
+    };
+    const submit = async (
+      state: string,
+      o: { csrf?: string; token?: string; headers?: Record<string, string> } = {},
+    ): Promise<Response> =>
+      (await handler.handle(
+        new Request(`http://x${CLAIM_START_PATH}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            ...(o.token ? { cookie: `${CSRF_COOKIE}=${o.token}` } : {}),
+            ...(o.headers ?? { "sec-fetch-site": "same-origin" }),
+          },
+          body: new URLSearchParams({ state, csrf: o.csrf ?? "" }),
+        }),
+      ))!;
     return {
       ...s,
+      open,
+      submit,
       tenantB,
       f,
       claims,
@@ -173,29 +199,26 @@ describe("the installation claim flow", () => {
     expect(url.startsWith(`${CLAIM_START_PATH}?state=`)).toBe(true);
     const state = h.stateOf(url);
     // the page names the org that will receive the installation, and asks for a click
-    const page = await h.handler.handle(new Request(`http://x${url}`));
-    expect(page?.status).toBe(200);
-    const html = await page!.text();
+    const { res: page, csrf, token } = await h.open(url);
+    expect(page.status).toBe(200);
+    const html = await page.text();
     expect(html).toContain("tenant-b");
     expect(html).toContain('method="post"');
-    expect(page!.headers.get("content-security-policy")).toContain(
+    expect(page.headers.get("content-security-policy")).toContain(
       "form-action 'self' https://github.com",
     );
+    const csrfCookie = page.headers.get("set-cookie")!;
+    for (const attr of ["HttpOnly", "Secure", "SameSite=Strict"])
+      expect(csrfCookie).toContain(attr);
     // the click: cookie + redirect to GitHub
-    const go = await h.handler.handle(
-      new Request(`http://x${CLAIM_START_PATH}`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ state }),
-      }),
-    );
-    expect(go?.status).toBe(303);
+    const go = await h.submit(state, { csrf, token });
+    expect(go.status).toBe(303);
     expect(
-      go!.headers
+      go.headers
         .get("location")!
         .startsWith("https://github.com/apps/longshore-test/installations/new?state="),
     ).toBe(true);
-    const cookie = go!.headers.get("set-cookie")!;
+    const cookie = go.headers.getSetCookie().find((c) => c.startsWith(`${CLAIM_COOKIE}=`))!;
     expect(cookie).toContain(`${CLAIM_COOKIE}=${h.nonceOf(state)}`);
     for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Max-Age=900"]) {
       expect(cookie).toContain(attr);
@@ -208,6 +231,14 @@ describe("the installation claim flow", () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
+    // both cookies are cleared once the callback has used them
+    const cleared = res.headers.getSetCookie();
+    expect(cleared.some((c) => c.startsWith(`${CLAIM_COOKIE}=;`) && c.includes("Max-Age=0"))).toBe(
+      true,
+    );
+    expect(cleared.some((c) => c.startsWith(`${CSRF_COOKIE}=;`) && c.includes("Max-Age=0"))).toBe(
+      true,
+    );
     const row = await getInstallation(h.db, "100");
     expect(row?.orgId).toBe(h.tenantB.id); // the claiming org, not the org that owns the App
     expect((await listProjects(h.db, { orgId: h.tenantB.id })).length).toBe(1);
@@ -229,20 +260,64 @@ describe("the installation claim flow", () => {
     const h = await harness();
     const bad = await h.handler.handle(new Request(`http://x${CLAIM_START_PATH}?state=garbage`));
     expect(bad?.status).toBe(400);
-    const post = await h.handler.handle(
-      new Request(`http://x${CLAIM_START_PATH}`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ state: "garbage" }),
-      }),
-    );
-    expect(post?.status).toBe(400);
-    expect(post!.headers.get("set-cookie")).toBeNull();
+    const post = await h.submit("garbage");
+    expect(post.status).toBe(400);
+    expect(post.headers.get("set-cookie")).toBeNull();
     // used state: the page is gone
     const { url } = await h.claims.start(h.tenantB.id, "token:t1");
     const state = h.stateOf(url);
     await h.callback({ installation_id: "100", setup_action: "install", state, code: "code-b" });
     expect((await h.handler.handle(new Request(`http://x${url}`)))?.status).toBe(400);
+  });
+
+  test("CSRF on the confirm POST: a cross-site POST is refused and sets no cookie", async () => {
+    const h = await harness();
+    const { url } = await h.claims.start(h.tenantB.id, "token:t1");
+    const state = h.stateOf(url);
+    const { csrf, token } = await h.open(url);
+    const refusedHeaders = [
+      { "sec-fetch-site": "cross-site" },
+      { "sec-fetch-site": "same-site" },
+      { "sec-fetch-site": "none" },
+      { origin: "https://evil.example" },
+      {}, // neither header: refuse
+    ];
+    for (const headers of refusedHeaders) {
+      const r = await h.submit(state, { csrf, token, headers });
+      expect(r.status).toBe(403);
+      expect(r.headers.get("set-cookie")).toBeNull();
+    }
+    // an Origin equal to the instance origin is accepted when Sec-Fetch-Site is absent
+    expect((await h.submit(state, { csrf, token, headers: { origin: "http://x" } })).status).toBe(
+      303,
+    );
+  });
+
+  test("CSRF on the confirm POST: a missing, forged or mismatched token is refused", async () => {
+    const h = await harness();
+    const a = await h.claims.start(h.tenantB.id, "token:t1");
+    const b = await h.claims.start(h.tenantB.id, "token:t1");
+    const sa = h.stateOf(a.url);
+    const sb = h.stateOf(b.url);
+    const pa = await h.open(a.url);
+    const pb = await h.open(b.url);
+    const same = { "sec-fetch-site": "same-origin" };
+    expect((await h.submit(sa, { csrf: pa.csrf, headers: same })).status).toBe(403); // no cookie
+    expect((await h.submit(sa, { token: pa.token, headers: same })).status).toBe(403); // no form value
+    expect((await h.submit(sa, { csrf: "forged", token: pa.token, headers: same })).status).toBe(
+      403,
+    );
+    // a token and mac minted for another claim's nonce do not work here
+    expect((await h.submit(sa, { csrf: pb.csrf, token: pb.token, headers: same })).status).toBe(
+      403,
+    );
+    expect((await h.submit(sa, { csrf: pa.csrf, token: pb.token, headers: same })).status).toBe(
+      403,
+    );
+    expect((await h.submit(sa, { csrf: pa.csrf, token: pa.token, headers: same })).status).toBe(
+      303,
+    );
+    expect(sb).not.toBe(sa);
   });
 
   test("CSRF: the callback needs the cookie of the browser that confirmed, and the right one", async () => {

@@ -43,6 +43,9 @@ export const CLAIM_PATH = "/api/v1/github/setup";
 /** Where `start` points: the confirmation page (GET) and its form (POST). */
 export const CLAIM_START_PATH = "/api/v1/github/claim";
 export const CLAIM_COOKIE = "ls_claim";
+/** The double-submit token for the confirmation form. */
+export const CSRF_COOKIE = "ls_claim_csrf";
+const COOKIE_PATH = "/api/v1/github";
 export const SECRET_CLAIM_KEY = "github-app/claim-state-key";
 export const CLAIM_TTL_MS = 15 * 60_000;
 
@@ -150,6 +153,27 @@ export class InstallationClaims {
     const state = `v1.${body}.${b64u(sig)}`;
     const base = this.#o.publicUrl?.trim().replace(/\/+$/, "") ?? "";
     return { url: `${base}${CLAIM_START_PATH}?state=${encodeURIComponent(state)}`, expiresAt };
+  }
+
+  /** The origin the confirmation form must be submitted from (the public URL's, when set). */
+  origin(req: Request): string {
+    const base = this.#o.publicUrl?.trim();
+    try {
+      return new URL(base || req.url).origin;
+    } catch {
+      return new URL(req.url).origin;
+    }
+  }
+
+  /** The form's anti-CSRF value: an HMAC of the cookie token and the claim's nonce. */
+  async csrfMac(token: string, nonce: string): Promise<string> {
+    const app = await getGithubApp(this.#o.db);
+    if (!app) throw new ClaimError(503, "no GitHub App is configured");
+    return b64u(
+      createHmac("sha256", await this.#key(app.orgId))
+        .update(`csrf.${token}.${nonce}`)
+        .digest(),
+    );
   }
 
   /** GitHub's install page for a verified state. */
@@ -417,19 +441,22 @@ const esc = (v: string): string =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
-const shell = (
-  status: number,
-  title: string,
-  inner: string,
-  extra: Record<string, string> = {},
-): Response =>
-  new Response(
+const shell = (status: number, title: string, inner: string, cookies: string[] = []): Response => {
+  const headers = new Headers(HEADERS);
+  for (const c of cookies) headers.append("set-cookie", c);
+  return new Response(
     `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><body style="font-family:system-ui;max-width:32rem;margin:4rem auto"><h1>${esc(title)}</h1>${inner}</body>`,
-    { status, headers: { ...HEADERS, ...extra } },
+    { status, headers },
   );
+};
 
-const page = (status: number, title: string, message: string): Response =>
-  shell(status, title, `<p>${esc(message)}</p>`);
+const page = (status: number, title: string, message: string, cookies: string[] = []): Response =>
+  shell(status, title, `<p>${esc(message)}</p>`, cookies);
+
+const CLEAR = [
+  `${CLAIM_COOKIE}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`,
+  `${CSRF_COOKIE}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`,
+];
 
 export interface ClaimHandler {
   handle(req: Request): Promise<Response | undefined>;
@@ -473,6 +500,7 @@ export function createClaimHandler(o: {
           200,
           "Installation connected",
           `The installation is connected${r.bound.length > 0 ? ` (${r.bound.length} repositories)` : ""}. You can close this page.`,
+          CLEAR,
         );
       } catch (e) {
         if (e instanceof ClaimError) {
@@ -486,13 +514,15 @@ export function createClaimHandler(o: {
   };
 }
 
-function cookieNonce(req: Request): string | undefined {
+function cookieValue(req: Request, name: string): string | undefined {
   for (const part of (req.headers.get("cookie") ?? "").split(";")) {
     const i = part.indexOf("=");
-    if (i > 0 && part.slice(0, i).trim() === CLAIM_COOKIE) return part.slice(i + 1).trim();
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
   }
   return undefined;
 }
+
+const cookieNonce = (req: Request): string | undefined => cookieValue(req, CLAIM_COOKIE);
 
 /**
  * The confirmation page and its form. GET names the org that will receive the installation and
@@ -510,26 +540,51 @@ async function startPage(claims: InstallationClaims, req: Request, url: URL): Pr
     const state = url.searchParams.get("state") ?? "";
     const d = await claims.describe(state);
     if (!d) return gone();
+    // Double submit: a random token in a Strict cookie, and its HMAC (with the nonce) in the form.
+    const token = randomBytes(24).toString("base64url");
+    const mac = await claims.csrfMac(token, d.nonce);
     return shell(
       200,
       "Connect a GitHub installation",
       `<p>You are about to connect a GitHub installation to the Longshore org <strong>${esc(d.orgName)}</strong>.</p>` +
         `<p>Only continue if you started this from that org. You will sign in to GitHub next, and only an owner of the GitHub account can complete it.</p>` +
-        `<form method="post" action="${CLAIM_START_PATH}"><input type="hidden" name="state" value="${esc(state)}"><button type="submit">Continue to GitHub</button></form>`,
+        `<form method="post" action="${CLAIM_START_PATH}"><input type="hidden" name="state" value="${esc(state)}"><input type="hidden" name="csrf" value="${esc(mac)}"><button type="submit">Continue to GitHub</button></form>`,
+      [
+        `${CSRF_COOKIE}=${token}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`,
+      ],
     );
   }
   if (req.method !== "POST") return page(405, "Method not allowed", "Use the link you were given.");
+  // Only a form served by this instance may submit: another site's page can POST here, but the
+  // browser says so (Sec-Fetch-Site, Origin). With neither header, refuse.
+  const site = req.headers.get("sec-fetch-site");
+  const origin = req.headers.get("origin");
+  const sameOrigin =
+    site !== null ? site === "same-origin" : origin !== null && origin === claims.origin(req);
+  if (!sameOrigin)
+    return page(403, "Request refused", "Open the claim link on this instance and confirm there.");
   const form = await req.formData().catch(() => undefined);
   const state = typeof form?.get("state") === "string" ? (form.get("state") as string) : "";
+  const csrf = typeof form?.get("csrf") === "string" ? (form.get("csrf") as string) : "";
   const d = await claims.describe(state);
   if (!d) return gone();
+  const token = cookieValue(req, CSRF_COOKIE);
+  if (!token || !csrf || !safeEqual(csrf, await claims.csrfMac(token, d.nonce))) {
+    return page(
+      403,
+      "Request refused",
+      "The confirmation expired or did not come from this page. Open the link again.",
+    );
+  }
   const target = await claims.githubUrl(state);
-  return new Response(null, {
-    status: 303,
-    headers: {
-      location: target,
-      "cache-control": "no-store",
-      "set-cookie": `${CLAIM_COOKIE}=${d.nonce}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=/api/v1/github; HttpOnly; Secure; SameSite=Lax`,
-    },
-  });
+  const headers = new Headers({ location: target, "cache-control": "no-store" });
+  // The binding cookie must reach the callback, a navigation that starts on github.com, so it is
+  // Lax: Strict cookies are not sent on a cross-site-initiated navigation and the flow would never
+  // complete. The CSRF token above is Strict because it only travels same-site.
+  headers.append(
+    "set-cookie",
+    `${CLAIM_COOKIE}=${d.nonce}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`,
+  );
+  headers.append("set-cookie", CLEAR[1] as string);
+  return new Response(null, { status: 303, headers });
 }
