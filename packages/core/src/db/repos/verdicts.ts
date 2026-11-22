@@ -5,13 +5,16 @@ import type { Db } from "..";
 import * as s from "../schema";
 import { requireProject, type Scope, scoped } from "./scope";
 
+/** `_auth` verdicts were learned with a credential and are kept apart from anonymous ones. */
+export type VerdictKind = "resolve" | "resolve_auth" | "reach" | "reach_auth";
+
 const COLS = { orgId: s.actionVerdicts.orgId, projectId: s.actionVerdicts.projectId };
 
 /** A verdict younger than `maxAgeMs`, or undefined. For `resolve`, `sha` is the result. */
 export function getVerdict(
   db: Db,
   scope: Scope,
-  key: { kind: "resolve" | "reach"; repo: string; ref?: string; sha?: string },
+  key: { kind: VerdictKind; repo: string; ref?: string; sha?: string },
   maxAgeMs: number,
   now: number = Date.now(),
 ): Promise<{ verdict: boolean; sha: string; checkedAt: number } | undefined> {
@@ -43,7 +46,7 @@ export function getVerdict(
 export function putVerdict(
   db: Db,
   scope: Scope,
-  v: { kind: "resolve" | "reach"; repo: string; ref?: string; sha: string; verdict: boolean },
+  v: { kind: VerdictKind; repo: string; ref?: string; sha: string; verdict: boolean },
   opts: { now?: number; keepMs?: number } = {},
 ): Promise<void> {
   return db.transaction(async (tx) => {

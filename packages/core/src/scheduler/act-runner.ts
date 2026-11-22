@@ -392,23 +392,27 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           db: o.db,
           scope: ctx.scope,
           klass,
+          // The credential and privacy decision is OUTSIDE the cache, so a cache hit can never
+          // skip it, and verdicts learned with a token are kept apart from anonymous ones.
           base:
             o.resolver ??
-            cachedResolver({
-              ...cacheOpts,
-              base: credentialedResolver(creds, (tk) =>
-                githubResolver(tk, { backoff, ...fetchOpt }),
-              ),
-            }),
+            credentialedResolver(creds, (tk) =>
+              cachedResolver({
+                ...cacheOpts,
+                credentialed: tk !== undefined,
+                base: githubResolver(tk, { backoff, ...fetchOpt }),
+              }),
+            ),
           readFile: checkout.readFile,
           reachable:
             o.reachable ??
-            cachedReachability({
-              ...cacheOpts,
-              base: credentialedReachability(creds, (tk) =>
-                githubReachability({ ...(tk ? { token: tk } : {}), backoff, ...fetchOpt }),
-              ),
-            }),
+            credentialedReachability(creds, (tk) =>
+              cachedReachability({
+                ...cacheOpts,
+                credentialed: tk !== undefined,
+                base: githubReachability({ ...(tk ? { token: tk } : {}), backoff, ...fetchOpt }),
+              }),
+            ),
           ...(o.fetchAction ? { fetchTarball: o.fetchAction } : {}),
           warn: (m) => console.warn(`action pins: ${m}`),
         });

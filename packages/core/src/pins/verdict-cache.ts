@@ -24,45 +24,47 @@ export const DEFAULT_VERDICT_TTL: VerdictTtl = {
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
-export function cachedResolver(o: {
-  db: Db;
-  scope: Required<Scope>;
-  base: ActionRefResolver;
-  ttl?: Partial<VerdictTtl>;
-  now?: () => number;
-}): ActionRefResolver {
+/**
+ * What the base was asked with. A verdict learned with a credential (which can see more than an
+ * anonymous request) is kept apart from one learned without, so it is never served to a caller
+ * that must not have used one.
+ */
+type Cred = { credentialed?: boolean };
+
+export function cachedResolver(
+  o: {
+    db: Db;
+    scope: Required<Scope>;
+    base: ActionRefResolver;
+    ttl?: Partial<VerdictTtl>;
+    now?: () => number;
+  } & Cred,
+): ActionRefResolver {
+  const kind = o.credentialed ? "resolve_auth" : "resolve";
   const ttl = { ...DEFAULT_VERDICT_TTL, ...o.ttl };
   const now = o.now ?? Date.now;
   return async (owner, repo, ref) => {
     const full = `${owner}/${repo}`;
     // A full sha needs no resolving, and is not worth a row.
     if (FULL_SHA.test(ref)) return o.base(owner, repo, ref);
-    const hit = await getVerdict(
-      o.db,
-      o.scope,
-      { kind: "resolve", repo: full, ref },
-      ttl.resolveMs,
-      now(),
-    );
+    const hit = await getVerdict(o.db, o.scope, { kind, repo: full, ref }, ttl.resolveMs, now());
     if (hit?.verdict) return hit.sha;
     const sha = await o.base(owner, repo, ref);
-    await putVerdict(
-      o.db,
-      o.scope,
-      { kind: "resolve", repo: full, ref, sha, verdict: true },
-      { now: now() },
-    );
+    await putVerdict(o.db, o.scope, { kind, repo: full, ref, sha, verdict: true }, { now: now() });
     return sha;
   };
 }
 
-export function cachedReachability(o: {
-  db: Db;
-  scope: Required<Scope>;
-  base: ReachabilityChecker;
-  ttl?: Partial<VerdictTtl>;
-  now?: () => number;
-}): ReachabilityChecker {
+export function cachedReachability(
+  o: {
+    db: Db;
+    scope: Required<Scope>;
+    base: ReachabilityChecker;
+    ttl?: Partial<VerdictTtl>;
+    now?: () => number;
+  } & Cred,
+): ReachabilityChecker {
+  const kind = o.credentialed ? "reach_auth" : "reach";
   const ttl = { ...DEFAULT_VERDICT_TTL, ...o.ttl };
   const now = o.now ?? Date.now;
   return async (owner, repo, sha) => {
@@ -70,7 +72,7 @@ export function cachedReachability(o: {
     const hit = await getVerdict(
       o.db,
       o.scope,
-      { kind: "reach", repo: full, sha },
+      { kind, repo: full, sha },
       Math.max(ttl.reachYesMs, ttl.reachNoMs),
       now(),
     );
@@ -78,7 +80,7 @@ export function cachedReachability(o: {
       return hit.verdict;
     }
     const verdict = await o.base(owner, repo, sha);
-    await putVerdict(o.db, o.scope, { kind: "reach", repo: full, sha, verdict }, { now: now() });
+    await putVerdict(o.db, o.scope, { kind, repo: full, sha, verdict }, { now: now() });
     return verdict;
   };
 }

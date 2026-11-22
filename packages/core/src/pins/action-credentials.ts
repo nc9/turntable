@@ -83,16 +83,32 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
           const why = e instanceof RateLimitedError ? e.message : "cannot reach GitHub";
           throw new InfraError(`checking whether ${key} is public: ${why}`, e);
         }
-        if (!res.ok) return; // 404 and the rest surface from the resolution itself
-        const info = (await res.json()) as { private?: boolean };
+        // Fail closed: proceed only on a 200 that says `private: false` in so many words.
+        if (res.status === 404) {
+          throw new PlanError("action ref", `cannot resolve ${key}: HTTP 404`);
+        }
+        if (!res.ok) {
+          // 401, 403, 5xx and the rest: GitHub's state, not an answer. Retryable, never a pass.
+          throw new InfraError(`checking whether ${key} is public: HTTP ${res.status}`);
+        }
+        let info: { private?: unknown };
+        try {
+          info = (await res.json()) as { private?: unknown };
+        } catch (e) {
+          throw new InfraError(`checking whether ${key} is public: unreadable response`, e);
+        }
         if (info.private === true) {
           throw new PlanError(
             "private-action",
             `${key} is a private repository; actions from private repositories are not allowed`,
           );
         }
+        if (info.private !== false) {
+          throw new InfraError(`checking whether ${key} is public: no visibility in the response`);
+        }
       })();
       checked.set(key, p);
+      // Recorded only when the check passed: a refusal or a failure is asked again next time.
       p.catch(() => checked.delete(key));
     }
     return p;

@@ -3,10 +3,11 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PlanError, tarDirectory } from "@longshore/act-runner";
-import type { SafeFetch } from "@longshore/net";
+import { createBackoff, type SafeFetch } from "@longshore/net";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { InfraError } from "@longshore/provider-sdk";
 import { bindRepo, type Db, getVerdict, listRepos, setActionPolicy } from "../src/db";
+import { actionCredentials } from "../src/pins/action-credentials";
 import { createForgeToken } from "../src/pins/forge-token";
 import { cachedReachability, cachedResolver } from "../src/pins/verdict-cache";
 import { createActRunner } from "../src/scheduler";
@@ -183,6 +184,32 @@ describe("verdicts kept in the database", () => {
     answer = true;
     expect(await make()("acme", "tool", SHA("f"))).toBe(true);
     expect(calls).toBe(4);
+  });
+
+  test("verdicts learned with a credential are kept apart from anonymous ones", async () => {
+    let calls = 0;
+    const base = async () => (calls++, SHA("1"));
+    const anon = cachedResolver({ db, scope: a.scope, base });
+    const authed = cachedResolver({ db, scope: a.scope, base, credentialed: true });
+    await authed("acme", "tool", "v1");
+    await authed("acme", "tool", "v1");
+    expect(calls).toBe(1);
+    // The anonymous path does not see it.
+    await anon("acme", "tool", "v1");
+    expect(calls).toBe(2);
+    const reachAuthed = cachedReachability({
+      db,
+      scope: a.scope,
+      base: async () => true,
+      credentialed: true,
+    });
+    await reachAuthed("acme", "tool", SHA("1"));
+    expect(
+      await getVerdict(db, a.scope, { kind: "reach", repo: "acme/tool", sha: SHA("1") }, 1e15),
+    ).toBeUndefined();
+    expect(
+      await getVerdict(db, a.scope, { kind: "reach_auth", repo: "acme/tool", sha: SHA("1") }, 1e15),
+    ).toBeDefined();
   });
 
   test("verdicts are per project and per repo", async () => {
@@ -485,5 +512,115 @@ jobs:
     const gh = github();
     const out = await plan({ fetch: gh.impl }, { workflow: wf("stranger/tool@v1") });
     expect(out.reason).toContain("stop after planning");
+  });
+
+  test("a cache hit cannot skip the privacy check, and an anonymous path never sees a credentialed verdict", async () => {
+    await setActionPolicy(db, a.scope, { allowedOwners: ["trusted-org"] });
+    const priv: string[] = [];
+    const gh = github({ priv });
+    // A trusted run resolves a public action of an allowlisted owner with the token: cached.
+    const first = await plan(
+      { fetch: gh.impl, ...withToken("poll-token-value") },
+      { workflow: wf("trusted-org/tool@v1") },
+    );
+    expect(first.reason).toContain("stop after planning");
+    expect(
+      await getVerdict(
+        db,
+        a.scope,
+        { kind: "resolve_auth", repo: "trusted-org/tool", ref: "v1" },
+        1e15,
+      ),
+    ).toBeDefined();
+    expect(
+      await getVerdict(db, a.scope, { kind: "resolve", repo: "trusted-org/tool", ref: "v1" }, 1e15),
+    ).toBeUndefined();
+
+    // The repo is made private. The same trusted run again: the cache is warm, and it is
+    // still refused, because the privacy check sits outside the cache.
+    priv.push("trusted-org/tool");
+    const second = await plan(
+      { fetch: gh.impl, ...withToken("poll-token-value") },
+      { workflow: wf("trusted-org/tool@v1") },
+    );
+    expect(second).toMatchObject({ state: "failure" });
+    expect(second.reason).toContain("private repository");
+
+    // An untrusted run takes the anonymous path: it does not see the credentialed verdict, asks
+    // GitHub with no token, and gets a plain not-found.
+    const before = gh.calls.length;
+    const untrusted = await plan(
+      { fetch: gh.impl, ...withToken("poll-token-value") },
+      {
+        workflow: wf("trusted-org/tool@v1"),
+        run: { event: "pull_request", ref: "refs/pull/1/head" },
+      },
+    );
+    expect(untrusted).toMatchObject({ state: "failure" });
+    expect(untrusted.reason).toContain("HTTP 404");
+    const fresh = gh.calls.slice(before);
+    expect(fresh.length).toBeGreaterThan(0);
+    for (const c of fresh) expect(c.auth).toBeNull();
+  });
+});
+
+describe("the privacy check fails closed", () => {
+  const owner = { token: "poll-token-value", ownRepo: "acme/web", allowedOwners: ["trusted-org"] };
+  const make = (respond: () => Response | Promise<Response>) => {
+    let calls = 0;
+    const creds = actionCredentials({
+      ...owner,
+      untrusted: false,
+      backoff: createBackoff({ sleep: async () => {} }),
+      fetch: async () => (calls++, respond()),
+    });
+    return { creds, calls: () => calls };
+  };
+  const ask = (c: ReturnType<typeof make>) => c.creds.assertPublic("trusted-org", "tool");
+
+  test("only a 200 that says private: false passes", async () => {
+    const ok = make(() => Response.json({ private: false }));
+    await ask(ok);
+    // Recorded as checked: not asked again.
+    await ask(ok);
+    expect(ok.calls()).toBe(1);
+  });
+
+  test("private, missing, malformed and every error status refuse; 404 is not-found", async () => {
+    const policy = make(() => Response.json({ private: true }));
+    await expect(ask(policy)).rejects.toBeInstanceOf(PlanError);
+    const notFound = make(() => new Response("no", { status: 404 }));
+    const nf = await ask(notFound).catch((e) => e);
+    expect(nf).toBeInstanceOf(PlanError);
+    expect(nf.message).toContain("HTTP 404");
+    for (const body of [{}, { private: "false" }, { private: null }, []]) {
+      const c = make(() => Response.json(body));
+      expect(await ask(c).catch((e) => e)).toBeInstanceOf(InfraError);
+    }
+    const garbled = make(() => new Response("<html>", { status: 200 }));
+    expect(await ask(garbled).catch((e) => e)).toBeInstanceOf(InfraError);
+    for (const status of [401, 403, 500, 502, 503]) {
+      const c = make(() => new Response("x", { status }));
+      expect(await ask(c).catch((e) => e)).toBeInstanceOf(InfraError);
+    }
+  });
+
+  test("a failed check is not recorded: the next call asks again", async () => {
+    let n = 0;
+    const c = make(() =>
+      ++n === 1 ? new Response("x", { status: 503 }) : Response.json({ private: false }),
+    );
+    await expect(ask(c)).rejects.toBeInstanceOf(InfraError);
+    await ask(c);
+    expect(c.calls()).toBe(2);
+    await ask(c);
+    expect(c.calls()).toBe(2);
+  });
+
+  test("the run's own repo and a repo with no token need no check", async () => {
+    const c = make(() => new Response("x", { status: 500 }));
+    await c.creds.assertPublic("acme", "web");
+    await c.creds.assertPublic("stranger", "tool");
+    expect(c.calls()).toBe(0);
   });
 });
