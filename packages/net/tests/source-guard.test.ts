@@ -14,6 +14,7 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/github-app.test.ts", // the manifest loopback page
   "packages/core/tests/mcp.test.ts", // the MCP transport, on 127.0.0.1
   "packages/core/tests/realtime.test.ts", // the realtime server, on 127.0.0.1
+  "packages/core/tests/transport.test.ts", // the real server, on 127.0.0.1
   "packages/provider-daytona/tests/provider.test.ts", // a mock Daytona, on 127.0.0.1
   "packages/proxy/tests/proxy.test.ts", // the proxy under test, dialled on 127.0.0.1
   "packages/core/tests/proxy-wiring.test.ts", // the same proxy, dialled on 127.0.0.1
