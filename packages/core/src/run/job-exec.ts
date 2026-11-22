@@ -1,4 +1,5 @@
-import { probeEgress } from "./egress-canary";
+import type { AttemptCredential } from "@longshore/proxy";
+import { probeEgress, probeProxy } from "./egress-canary";
 import {
   EXPORT_STEP_NAME,
   missingTool,
@@ -61,6 +62,13 @@ export interface JobEnv {
   secretBearing?: boolean;
   /** Lines written to the top of the log before anything else (a fresh run, not a re-attach). */
   notices?: readonly string[];
+  /**
+   * Run the job behind the secrets proxy: the sandbox gets no route but to the proxy (the
+   * provider must enforce `deny-all-except-proxy`), and its env points everything at it. Verified
+   * before the job runs: the direct path must be closed and the proxy open, or the job is not
+   * run. `listen` is the proxy as the provider's host reaches it.
+   */
+  proxy?: { listen: { host: string; port: number }; credential: AttemptCredential };
 }
 
 export interface JobOutcome {
@@ -209,16 +217,83 @@ export async function executeJob(
       if (!plan || !env.image || !env.repoTarball) {
         throw new Error("plan, image and repoTarball are required to start a job");
       }
+      const proxied = env.proxy;
+      if (proxied && !env.provider.info.network.egressPolicy.includes("deny-all-except-proxy")) {
+        return await settle(
+          "infra_error",
+          `provider ${env.provider.info.name} cannot confine a sandbox to the secrets proxy; the job was not run`,
+        );
+      }
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
         labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
         image: env.image,
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
-        network: { egress: env.egress ?? "none" },
+        network: proxied
+          ? { egress: "deny-all-except-proxy", proxy: proxied.listen }
+          : { egress: env.egress ?? "none" },
       });
       sandboxId = sb.id;
       await env.store.setSandbox(ids.attemptId, sb.id);
-      if (env.canary && (env.egress ?? "none") === "none") {
+      let proxyUrl: string | undefined;
+      if (proxied) {
+        if (!sb.proxy) {
+          return await settle(
+            "infra_error",
+            "the provider did not say how the sandbox reaches the proxy; the job was not run",
+          );
+        }
+        proxyUrl = proxied.credential.proxyUrl(sb.proxy.host, sb.proxy.port);
+        // The credential is the job's own, but it is not for the log.
+        env.registry.register(proxied.credential.password);
+        // Direct path closed, proxy path open, verified from inside; anything else is no run.
+        const direct = await probeEgress(env.provider, sb.id, {
+          ...(env.pollMs ? { pollMs: env.pollMs } : {}),
+          signal: env.signal,
+        });
+        if (direct.kind !== "blocked") {
+          return await settle(
+            "infra_error",
+            direct.kind === "reachable"
+              ? `proxy canary: the sandbox reached ${direct.target} without the proxy; the job was not run`
+              : `proxy canary could not verify isolation (${direct.why}); the job was not run`,
+          );
+        }
+        // The host's address on the sandbox's own network must be closed too: a listener on the
+        // host (the proxy's own port included) is not a way around the proxy's rules.
+        // Fail closed: a provider that cannot name what must be closed cannot be trusted to have
+        // closed it.
+        if (!sb.mustNotReach || sb.mustNotReach.length === 0) {
+          return await settle(
+            "infra_error",
+            "the provider did not name the host addresses to verify closed; the job was not run",
+          );
+        }
+        const host = await probeEgress(env.provider, sb.id, {
+          targets: sb.mustNotReach,
+          ...(env.pollMs ? { pollMs: env.pollMs } : {}),
+          signal: env.signal,
+        });
+        if (host.kind !== "blocked") {
+          return await settle(
+            "infra_error",
+            host.kind === "reachable"
+              ? `proxy canary: the sandbox reached the host at ${host.target}; the job was not run`
+              : `proxy canary could not verify host isolation (${host.why}); the job was not run`,
+          );
+        }
+        const via = await probeProxy(env.provider, sb.id, sb.proxy, {
+          ...(env.pollMs ? { pollMs: env.pollMs } : {}),
+          signal: env.signal,
+        });
+        if (via.kind !== "open") {
+          return await settle(
+            "infra_error",
+            `proxy canary: the sandbox cannot reach the proxy (${via.why}); the job was not run`,
+          );
+        }
+      }
+      if (!proxied && env.canary && (env.egress ?? "none") === "none") {
         const v = await probeEgress(env.provider, sb.id, {
           ...(env.pollMs ? { pollMs: env.pollMs } : {}),
           signal: env.signal,
@@ -247,6 +322,9 @@ export async function executeJob(
         plan,
         {
           repoTarball: env.repoTarball,
+          ...(proxied && proxyUrl
+            ? { proxy: { url: proxyUrl, caPem: proxied.credential.caPem } }
+            : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },

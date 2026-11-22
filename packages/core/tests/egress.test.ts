@@ -257,3 +257,58 @@ test("a secret-bearing job is not run when the canary cannot verify isolation", 
     world.dispose();
   }
 });
+
+// ---- a proxied job fails closed when the provider does not name what must be closed ----
+
+for (const [label, mustNotReach] of [
+  ["a missing list", undefined],
+  ["an empty list", []],
+] as const) {
+  test(`a proxied job is not run when the provider returns ${label} of host addresses to verify`, async () => {
+    const world = new FakeWorld({ hostPaths: [tmp] });
+    try {
+      const prov = world.provider() as unknown as {
+        info: { network: { egressPolicy: string[] } };
+        create: (spec: unknown) => Promise<Record<string, unknown>>;
+        exec: Provider["exec"];
+      };
+      prov.info = {
+        ...prov.info,
+        network: { ...prov.info.network, egressPolicy: ["none", "deny-all-except-proxy"] },
+      };
+      const made = prov.create.bind(prov);
+      prov.create = async (spec) => ({
+        ...(await made(spec)),
+        proxy: { host: "10.0.0.2", port: 3128 },
+        ...(mustNotReach ? { mustNotReach } : {}),
+      });
+      // Every probe reports success: the only thing wrong is the missing list.
+      const orig = prov.exec.start.bind(prov.exec);
+      prov.exec.start = (id, o) => orig(id, { ...o, argv: ["sh", "-c", "exit 0"] });
+      const { SecretRegistry } = await import("@longshore/redact");
+      const { env } = jobEnv(world, {
+        provider: prov,
+        registry: new SecretRegistry(),
+        proxy: {
+          listen: { host: "host.docker.internal", port: 1 },
+          credential: {
+            username: "u",
+            password: "p-not-a-real-credential",
+            caPem: "ca",
+            expiresAt: 0,
+            proxyUrl: () => "http://u:p@10.0.0.2:3128",
+          },
+        },
+      });
+      const out = await executeJob(
+        env as never,
+        { runId: "r", jobId: "j", attemptId: "a" },
+        {} as never,
+      );
+      expect(out.state).toBe("infra_error");
+      expect(out.reason).toContain("did not name the host addresses to verify closed");
+    } finally {
+      world.dispose();
+    }
+  });
+}

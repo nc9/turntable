@@ -69,6 +69,12 @@ export interface SandboxResources {
 
 export interface SandboxNetworkSpec {
   egress: EgressPolicy;
+  /**
+   * For `deny-all-except-proxy`: where the controller's secrets proxy listens, as the provider's
+   * own host sees it (for Docker, `host.docker.internal` and the port). The sandbox can reach the
+   * proxy and nothing else; `SandboxHandle.proxy` says how.
+   */
+  proxy?: { host: string; port: number };
   /** Hostnames for the `allowlist` policy. */
   allowHosts?: readonly string[];
 }
@@ -92,6 +98,13 @@ export interface SandboxSpec {
 export interface SandboxHandle {
   id: string;
   startedAt: number;
+  /** Set for `deny-all-except-proxy`: the proxy address as the sandbox sees it. */
+  proxy?: { host: string; port: number };
+  /**
+   * Set for `deny-all-except-proxy`: `host:port` targets the sandbox must NOT be able to reach (for
+   * Docker, the host's address on the sandbox's network), for the caller to verify from inside.
+   */
+  mustNotReach?: readonly string[];
 }
 
 export interface SandboxInfo {

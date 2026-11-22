@@ -1,0 +1,23 @@
+name: proxy
+on: push
+jobs:
+  proxy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the API through the proxy
+        run: |
+          # Everything goes through the secrets proxy; the step never holds the credential.
+          echo "proxy-env-set=$([ -n "$HTTPS_PROXY" ] && echo yes || echo no)"
+          code=$(curl -sS -o body.txt -w '%{http_code}' https://api.example.test/v1/ping)
+          echo "api-status=$code"
+          echo "api-body=$(cat body.txt)"
+      - name: Nothing in the environment holds the secret
+        run: |
+          env > env.txt
+          if grep -q 'e2e-secret-value' env.txt; then echo "env-leak=yes"; else echo "env-leak=no"; fi
+      - name: There is no way around the proxy
+        run: |
+          if curl -sS --noproxy '*' -m 5 -o /dev/null https://1.1.1.1/; then echo "direct=reachable"; else echo "direct=blocked"; fi
+      - name: A host with no rule is refused
+        run: |
+          if curl -sS -m 10 -o /dev/null https://other.example.test/; then echo "other=reachable"; else echo "other=refused"; fi

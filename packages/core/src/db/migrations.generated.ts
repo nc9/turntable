@@ -258,5 +258,15 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `projects` ADD `signing_environment` text;"
     ]
+  },
+  {
+    "tag": "0020_medical_shen",
+    "when": 1795375645191,
+    "statements": [
+      "CREATE TABLE `proxy_passthrough_hosts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`host` text NOT NULL,\n\t`ports` text DEFAULT '[443]' NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE UNIQUE INDEX `proxy_passthrough_hosts_unique` ON `proxy_passthrough_hosts` (`org_id`,`project_id`,`host`);",
+      "CREATE TABLE `proxy_rules` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`secret` text NOT NULL,\n\t`host` text NOT NULL,\n\t`port` integer DEFAULT 443 NOT NULL,\n\t`methods` text NOT NULL,\n\t`path_prefix` text NOT NULL,\n\t`inject_type` text NOT NULL,\n\t`inject_header` text,\n\t`inject_format` text,\n\t`inject_username` text,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"proxy_rules_inject_check\" CHECK(\"proxy_rules\".\"inject_type\" in ('header', 'basic'))\n);",
+      "CREATE UNIQUE INDEX `proxy_rules_name_unique` ON `proxy_rules` (`org_id`,`project_id`,`name`);"
+    ]
   }
 ];

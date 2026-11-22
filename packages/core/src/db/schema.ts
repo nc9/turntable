@@ -597,6 +597,64 @@ export const secrets = sqliteTable(
   (t) => [primaryKey({ columns: [t.orgId, t.name] })],
 );
 
+/**
+ * Where a project's job may have a secret injected by the secrets proxy: one row per rule. The
+ * host must satisfy the secret's destination patterns, at write time and again at registration.
+ * Never derived from a workflow file.
+ */
+export const proxyRules = sqliteTable(
+  "proxy_rules",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    /** The rule's own name, unique in the project. */
+    name: text("name").notNull(),
+    /** The vault secret's name. */
+    secret: text("secret").notNull(),
+    host: text("host").notNull(),
+    port: integer("port", { mode: "number" }).notNull().default(443),
+    /** JSON array of upper-case methods. */
+    methods: text("methods").notNull(),
+    pathPrefix: text("path_prefix").notNull(),
+    /** `header` or `basic`. */
+    injectType: text("inject_type").notNull(),
+    injectHeader: text("inject_header"),
+    injectFormat: text("inject_format"),
+    injectUsername: text("inject_username"),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    unique("proxy_rules_name_unique").on(t.orgId, t.projectId, t.name),
+    check("proxy_rules_inject_check", sql`${t.injectType} in ('header', 'basic')`),
+  ],
+);
+
+/**
+ * Hosts a secret-bearing job may open a plain tunnel to (checkout, package registries): exact
+ * hosts or `*.suffix`. Nothing is injected there. No row, no passthrough.
+ */
+export const proxyPassthroughHosts = sqliteTable(
+  "proxy_passthrough_hosts",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    host: text("host").notNull(),
+    /** JSON array of the ports a tunnel may go to. Default 443. */
+    ports: text("ports").notNull().default("[443]"),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    unique("proxy_passthrough_hosts_unique").on(t.orgId, t.projectId, t.host),
+  ],
+);
+
 /** The GitHub App this instance runs as. One per instance; its secrets live in `secrets`. */
 export const githubApps = sqliteTable("github_apps", {
   /** The numeric GitHub App id, as text. */

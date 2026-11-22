@@ -867,3 +867,119 @@ describe("what the proxy says and forwards", () => {
     expect(seen[0]!.headers.get("x-http-method-override")).toBeNull();
   });
 });
+
+describe("passthrough tunnels", () => {
+  test("a host with no rule gets a plain tunnel only when the attempt lists it", async () => {
+    // A TCP echo server stands in for the destination.
+    const echo = net.createServer((c) => c.on("data", (d) => c.write(`echo:${d}`)));
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", () => r()));
+    const port = (echo.address() as net.AddressInfo).port;
+    const p2 = await startProxy({
+      registry,
+      source,
+      audit,
+      upstream,
+      tunnel: async (_h, pt) => net.connect(pt, "127.0.0.1"),
+      now: () => clock,
+    });
+    const dial = async (cred: { username: string; password: string }, authority: string) => {
+      const raw = net.connect(p2.port, p2.host);
+      await new Promise<void>((r) => raw.once("connect", () => r()));
+      raw.write(
+        `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+      );
+      const head = await new Promise<string>((r) => {
+        raw.once("data", (d) => r(d.toString("latin1")));
+        raw.once("close", () => r(""));
+      });
+      return { raw, head };
+    };
+    try {
+      // Refused without passthrough.
+      const closed = newAttempt();
+      const a = await dial(closed.cred, `other.example.test:${port}`);
+      expect(a.head.startsWith("HTTP/1.1 403")).toBe(true);
+      a.raw.destroy();
+      expect(reasons()).toContain("no_rule_for_host");
+
+      // Allowed with it: bytes flow, no certificate is minted, and the audit says passthrough.
+      const attemptId = `att${++n}`;
+      const cred = registry.register({
+        attemptId,
+        orgId: "org",
+        projectId: "proj",
+        runId: "run",
+        jobId: "job",
+        rules: rules(),
+        passthroughHosts: [
+          { host: "other.example.test", ports: [port] },
+          { host: "*.cdn.example.test", ports: [port] },
+        ],
+        ttlMs: 60_000,
+      });
+      const b = await dial(cred, `other.example.test:${port}`);
+      expect(b.head.startsWith("HTTP/1.1 200")).toBe(true);
+      const echoed = await new Promise<string>((r) => {
+        b.raw.once("data", (d) => r(d.toString()));
+        b.raw.write("hello");
+      });
+      expect(echoed).toBe("echo:hello");
+      expect(events.some((e) => e.kind === "tunnel" && e.reason === "passthrough")).toBe(true);
+      // Revoking the attempt cuts the tunnel.
+      const gone = new Promise<void>((r) => b.raw.once("close", () => r()));
+      registry.revoke(attemptId);
+      await gone;
+      // Only the listed hosts: another host, or the bare suffix of a wildcard, is still refused.
+      const other = registry.register({
+        attemptId: `att${++n}`,
+        orgId: "org",
+        projectId: "proj",
+        runId: "run",
+        jobId: "job",
+        rules: rules(),
+        passthroughHosts: [
+          { host: "other.example.test", ports: [port] },
+          { host: "*.cdn.example.test", ports: [port] },
+        ],
+        ttlMs: 60_000,
+      });
+      for (const host of [
+        "third.example.test",
+        "cdn.example.test",
+        "other.example.test.evil.test",
+      ]) {
+        const d = await dial(other, `${host}:${port}`);
+        expect(d.head.startsWith("HTTP/1.1 403")).toBe(true);
+        d.raw.destroy();
+      }
+      // Only the listed ports: the same host on another port is refused, and nothing is dialled.
+      for (const wrong of [port + 1, 443, 22]) {
+        const d = await dial(other, `other.example.test:${wrong}`);
+        expect(d.head.startsWith("HTTP/1.1 403")).toBe(true);
+        d.raw.destroy();
+      }
+      const wild = await dial(other, `a.cdn.example.test:${port}`);
+      expect(wild.head.startsWith("HTTP/1.1 200")).toBe(true);
+      wild.raw.destroy();
+      // A host WITH a rule is still intercepted, never passed through.
+      const c = await dial(
+        registry.register({
+          attemptId: `att${++n}`,
+          orgId: "org",
+          projectId: "proj",
+          runId: "run",
+          jobId: "job",
+          rules: rules(),
+          passthroughHosts: [{ host: "other.example.test", ports: [port] }],
+          ttlMs: 60_000,
+        }),
+        `${HOST}:443`,
+      );
+      expect(c.head.startsWith("HTTP/1.1 200")).toBe(true);
+      c.raw.destroy();
+    } finally {
+      await p2.close();
+      echo.close();
+    }
+  });
+});

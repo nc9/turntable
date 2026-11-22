@@ -3,7 +3,11 @@ import { SpecError, type SandboxSpec } from "@longshore/provider-sdk";
 import {
   buildExecArgs,
   buildInspectArgs,
+  buildNetworkCreateArgs,
+  firstAddress,
   buildPsArgs,
+  buildRelayRunArgs,
+  RELAY_PORT,
   buildRmArgs,
   buildRunArgs,
   sanitizeName,
@@ -130,5 +134,70 @@ describe("other commands", () => {
   test("sanitizeName", () => {
     expect(sanitizeName("--a b")).toBe("a-b");
     expect(() => sanitizeName("///")).toThrow(SpecError);
+  });
+});
+
+describe("deny-all-except-proxy", () => {
+  const proxied: SandboxSpec = {
+    ...spec,
+    network: {
+      egress: "deny-all-except-proxy",
+      proxy: { host: "host.docker.internal", port: 4000 },
+    },
+  };
+
+  test("the sandbox joins only its internal network, linked to its relay, with no env", () => {
+    const a = buildRunArgs(proxied, 1000);
+    expect(a[a.indexOf("--network") + 1]).toBe("job-1-a-net");
+    expect(a.filter((x) => x === "--network")).toHaveLength(1);
+    expect(a).toContain("longshore.net=job-1-a-net");
+    expect(a).toContain("longshore.relay=job-1-a-relay");
+    expect(a).not.toContain("--add-host");
+    for (const bad of ["-e", "--env", "--env-file", "-p", "--publish", "--network=host"]) {
+      expect(a).not.toContain(bad);
+    }
+  });
+
+  test("it needs a proxy address", () => {
+    expect(() =>
+      buildRunArgs({ ...proxied, network: { egress: "deny-all-except-proxy" } }, 1),
+    ).toThrow(SpecError);
+  });
+
+  test("the internal network has no route out", () => {
+    const a = buildNetworkCreateArgs("job-1-a-net", 1000, 600);
+    expect(a.slice(0, 3)).toEqual(["network", "create", "--internal"]);
+    expect(a).toContain("longshore.expires-at=601000");
+  });
+
+  test("the host gets no address on the network (isolated gateway), so its listeners are unreachable", () => {
+    const a = buildNetworkCreateArgs("job-1-a-net", 1000, 600);
+    expect(a[a.indexOf("-o") + 1]).toBe("com.docker.network.bridge.gateway_mode_ipv4=isolated");
+  });
+
+  test("firstAddress gives the would-be gateway of a subnet", () => {
+    expect(firstAddress("172.20.0.0/16")).toBe("172.20.0.1");
+    expect(firstAddress("10.1.2.0/24")).toBe("10.1.2.1");
+    expect(firstAddress("fd00::/64")).toBeUndefined();
+    expect(firstAddress("garbage")).toBeUndefined();
+    expect(firstAddress("10.0.0.0/31")).toBeUndefined();
+  });
+
+  test("the relay is locked down, forwards to the proxy, and is not a managed sandbox", () => {
+    const a = buildRelayRunArgs(proxied, 1000);
+    expect(a).toContain("--read-only");
+    expect(a[a.indexOf("--cap-drop") + 1]).toBe("ALL");
+    expect(a[a.indexOf("--name") + 1]).toBe("job-1-a-relay");
+    expect(a).not.toContain("longshore.managed=1");
+    expect(a.slice(-4)).toEqual([String(RELAY_PORT), "host.docker.internal", "4000", "600"]);
+    expect(() =>
+      buildRelayRunArgs(
+        {
+          ...proxied,
+          network: { egress: "deny-all-except-proxy", proxy: { host: "a b", port: 1 } },
+        },
+        1,
+      ),
+    ).toThrow(SpecError);
   });
 });

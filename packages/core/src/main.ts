@@ -18,6 +18,7 @@ import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
+import { SecretsProxy, withSecretsProxy } from "./proxy";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
@@ -27,12 +28,14 @@ import {
   gitRepoSource,
   loadProviderConfig,
   reconcileExpired,
+  type AttemptRunner,
   Scheduler,
   withEgressPolicy,
   withIsolationPolicy,
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { startServer } from "./server";
+import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
 
 const USAGE = `longshore ${VERSION}
@@ -83,8 +86,11 @@ Environment:
                     is <base>/<org slug>. Needs LONGSHORE_MASTER_KEY_FILE
   LONGSHORE_OIDC_ALLOW_CLASSES  trust classes that may get an OIDC token (default protected,release;
                     untrusted_pr is refused unless you list it, which you should not)
-  LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control, so secret values
-                    sent through it over x-forwarded-proto: https are accepted
+  LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control: plain-http requests it
+                    forwards get a 301 to https (GET and HEAD; 400 otherwise), and secret values
+                    sent over x-forwarded-proto: https are accepted
+  LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
+                    0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
@@ -108,7 +114,7 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
-  extras: { auth?: AppAuth } = {},
+  extras: { auth?: AppAuth; vault?: SecretVault } = {},
 ): Promise<{ stop(): Promise<void> }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -117,6 +123,7 @@ async function startBackground(
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   let poller: Poller | undefined;
   let workerProvider: Provider | undefined;
+  let secretsProxy: SecretsProxy | undefined;
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
@@ -146,6 +153,29 @@ async function startBackground(
       if (!Number.isInteger(n) || n < 1) throw new Error(`invalid --${name}: ${value}`);
       return n;
     };
+    // The secrets proxy (#15): opt in, and only with a vault. A job whose project has proxy rules
+    // runs with no route but the proxy; see docs/secrets-proxy.mdx.
+    if (process.env.LONGSHORE_SECRETS_PROXY === "1") {
+      if (!extras.vault) {
+        throw new Error("LONGSHORE_SECRETS_PROXY=1 needs the vault (LONGSHORE_MASTER_KEY_FILE)");
+      }
+      const port = process.env.LONGSHORE_PROXY_PORT?.trim();
+      secretsProxy = await SecretsProxy.start({
+        db,
+        vault: extras.vault,
+        ...(port ? { port: Number(port) } : {}),
+        ...(process.env.LONGSHORE_PROXY_BIND?.trim()
+          ? { bindHost: process.env.LONGSHORE_PROXY_BIND.trim() }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()
+          ? { advertiseHost: process.env.LONGSHORE_PROXY_ADVERTISE_HOST.trim() }
+          : {}),
+        log,
+      });
+      log(`secrets proxy listening on port ${secretsProxy.port}`);
+    }
+    const proxied = (r: AttemptRunner): AttemptRunner =>
+      secretsProxy ? withSecretsProxy(r, { proxy: secretsProxy }) : r;
     scheduler = new Scheduler({
       db,
       providers,
@@ -153,22 +183,26 @@ async function startBackground(
       runner: withIsolationPolicy(
         // Egress is none by default and refused where it cannot be enforced; each `none`
         // sandbox is probed for a real way out before the job starts.
-        withEgressPolicy(
-          createActRunner({
-            db,
-            source: gitRepoSource(),
-            // Actions are resolved and verified with the run's own GitHub credential: the poll
-            // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
-            forgeToken: createForgeToken({
+        proxied(
+          withEgressPolicy(
+            createActRunner({
               db,
-              poll: pollConfig,
-              auth: extras.auth,
-              envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
-              log: (m) => console.warn(`[longshore] ${m}`),
+              source: gitRepoSource(),
+              // Actions are resolved and verified with the run's own GitHub credential: the poll
+              // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
+              forgeToken: createForgeToken({
+                db,
+                poll: pollConfig,
+                auth: extras.auth,
+                envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+                log: (m) => console.warn(`[longshore] ${m}`),
+              }),
+              canary: true,
+              ...(v.image ? { image: v.image } : {}),
             }),
-            canary: true,
-            ...(v.image ? { image: v.image } : {}),
-          }),
+            // A job behind the proxy holds secrets: it never runs with open egress.
+            { secretBearing: (ctx) => ctx.proxy !== undefined },
+          ),
         ),
         {
           db,
@@ -246,6 +280,7 @@ async function startBackground(
         // here, which would record a user cancel that never happened.
         await Promise.race([scheduler.stop(), Bun.sleep(10_000)]);
       }
+      await secretsProxy?.stop();
     },
   };
 }
@@ -385,10 +420,14 @@ async function serve(args: string[]): Promise<void> {
     ...(webauthn ? { webauthn } : {}),
     ...(oidc ? { oidc } : {}),
     trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
+    transport: transportOptionsFromEnv(process.env),
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
-  const background = await startBackground(db, values, checks, appAuth ? { auth: appAuth } : {});
+  const background = await startBackground(db, values, checks, {
+    ...(appAuth ? { auth: appAuth } : {}),
+    ...(vault ? { vault } : {}),
+  });
 
   const stop = () => {
     for (const s of auditStops) s();

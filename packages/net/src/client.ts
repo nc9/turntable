@@ -15,7 +15,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
-import { isIP } from "node:net";
+import net, { isIP } from "node:net";
 import { blockedReason } from "./ip";
 
 export class SsrfError extends Error {
@@ -136,6 +136,12 @@ class ConnectFailure extends Error {
 
 export interface HttpClient {
   fetch: SafeFetch;
+  /**
+   * A raw TCP connection to host:port for a CONNECT passthrough: the host is resolved here, every
+   * answer must be public, and the socket goes to a validated address, never to a second lookup.
+   * The caller owns the socket.
+   */
+  tunnel(host: string, port: number, signal?: AbortSignal): Promise<net.Socket>;
 }
 
 export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
@@ -399,7 +405,52 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
     }
   };
 
-  return { fetch: doFetch };
+  /** Connects to the first validated address that answers. */
+  async function tunnel(host: string, port: number, signal?: AbortSignal): Promise<net.Socket> {
+    const h = host.toLowerCase().replace(/\.$/, "");
+    if (h === "" || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new SsrfError(host, "bad destination");
+    }
+    const allowed = allow.has(h);
+    if (!allowed && (h === "localhost" || h.endsWith(".localhost"))) {
+      throw new SsrfError(h, "localhost is not allowed");
+    }
+    const addresses = isIP(h) ? [h] : await resolve(h);
+    if (addresses.length === 0) throw new SsrfError(h, "the name did not resolve");
+    if (!allowed) {
+      for (const a of addresses) {
+        const why = blockedReason(a);
+        if (why) throw new SsrfError(h, `${a} is ${why}`);
+      }
+    }
+    let last: Error = new Error("no address");
+    for (const ip of interleaveFamilies(addresses)) {
+      if (signal?.aborted) throw new Error("aborted");
+      try {
+        return await new Promise<net.Socket>((resolveSocket, reject) => {
+          const s = net.connect({ host: ip, port });
+          const t = setTimeout(() => {
+            s.destroy();
+            reject(new Error("connect timed out"));
+          }, attemptMs);
+          s.once("connect", () => {
+            clearTimeout(t);
+            s.removeAllListeners("error");
+            resolveSocket(s);
+          });
+          s.once("error", (e) => {
+            clearTimeout(t);
+            reject(e);
+          });
+        });
+      } catch (e) {
+        last = e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    throw last;
+  }
+
+  return { fetch: doFetch, tunnel };
 }
 
 /** Parses `LONGSHORE_NET_ALLOW_HOSTS`: comma-separated hostnames or IP literals. */
@@ -417,6 +468,17 @@ let shared: { key: string; client: HttpClient } | undefined;
  * be private (for example a local Daytona). This is what callers use unless a test injects its own.
  * The allowlist is read from the environment on each call, so a changed value takes effect.
  */
+export const safeTunnel = (
+  host: string,
+  port: number,
+  signal?: AbortSignal,
+): Promise<net.Socket> => {
+  const key = process.env.LONGSHORE_NET_ALLOW_HOSTS ?? "";
+  if (shared?.key !== key)
+    shared = { key, client: createHttpClient({ allowHosts: allowHostsFromEnv() }) };
+  return shared.client.tunnel(host, port, signal);
+};
+
 export const safeFetch: SafeFetch = (input, init) => {
   const key = process.env.LONGSHORE_NET_ALLOW_HOSTS ?? "";
   if (shared?.key !== key)

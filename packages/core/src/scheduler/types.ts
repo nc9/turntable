@@ -1,4 +1,6 @@
 import type { Provider } from "@longshore/provider-sdk";
+import type { SecretRegistry } from "@longshore/redact";
+import type { ProxyAccess } from "../proxy";
 import type { Claim, Job, JobAttempt, Run, Scope } from "../db/repos";
 import type { StepInput } from "../db/repos";
 
@@ -44,6 +46,13 @@ export interface AttemptContext {
    * the people reading the run should see (for example an isolation override).
    */
   notices?: readonly string[];
+  /**
+   * Set when the secrets proxy fronts this attempt: the job's sandbox reaches only the proxy, and
+   * its env points there. Never set for `untrusted_pr`.
+   */
+  proxy?: ProxyAccess;
+  /** The attempt's redaction set: the proxy adds every value it injects. */
+  redact?: SecretRegistry;
   /** Aborted when the lease is lost (cancelled, reconciled) or the scheduler stops hard. */
   signal: AbortSignal;
   store: AttemptStore;

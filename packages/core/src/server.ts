@@ -2,6 +2,14 @@ import type { Db } from "./db";
 import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
+import {
+  decideTransport,
+  redirectResponse,
+  rejectResponse,
+  transportOptionsFromEnv,
+  withHsts,
+  type TransportOptions,
+} from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
 import type { SecretVault } from "./secrets/vault";
@@ -65,6 +73,8 @@ export async function handleRequest(
 }
 
 export type ServeOptions = {
+  /** Plain-http redirect and HSTS. Default: no proxy trusted, HSTS on over https. */
+  transport?: TransportOptions;
   port: number;
   host: string;
   db: Db;
@@ -84,29 +94,40 @@ export type ServeOptions = {
 
 export function startServer(options: ServeOptions) {
   const env = { registry, db: options.db, vault: options.vault, webauthn: options.webauthn };
-  const api = createRestApi(env, { trustForwardedProto: options.trustForwardedProto === true });
+  const api = createRestApi(env, {
+    trustForwardedProto:
+      options.trustForwardedProto ?? options.transport?.trustForwardedProto === true,
+  });
   const mcp = createMcpHttp(env);
   const realtime = createRealtime({
     env,
     ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
   });
+  const transport = options.transport ?? transportOptionsFromEnv({});
   const server = Bun.serve<WsData>({
     port: options.port,
     hostname: options.host,
     async fetch(req, srv) {
-      const hook = await options.webhooks?.handle(req);
-      if (hook) return hook;
-      const idp = await options.oidc?.handle(req);
-      if (idp) return idp;
-      const upgraded = await realtime.handle(req, srv);
-      if (upgraded === "upgraded") return undefined;
-      if (upgraded) return upgraded;
-      const mcpResponse = await mcp(req);
-      if (mcpResponse) return mcpResponse;
-      return handleRequest(req, api, srv.requestIP(req)?.address);
+      const t = decideTransport(req, transport);
+      if (t.action === "redirect") return redirectResponse(t.location);
+      if (t.action === "reject") return rejectResponse();
+      const res = await route(req, srv);
+      return res !== undefined && t.secure ? withHsts(res, transport) : res;
     },
     websocket: realtime.websocket,
   });
+  async function route(req: Request, srv: Bun.Server<WsData>): Promise<Response | undefined> {
+    const hook = await options.webhooks?.handle(req);
+    if (hook) return hook;
+    const idp = await options.oidc?.handle(req);
+    if (idp) return idp;
+    const upgraded = await realtime.handle(req, srv);
+    if (upgraded === "upgraded") return undefined;
+    if (upgraded) return upgraded;
+    const mcpResponse = await mcp(req);
+    if (mcpResponse) return mcpResponse;
+    return handleRequest(req, api, srv.requestIP(req)?.address);
+  }
   const stop = server.stop.bind(server);
   server.stop = (force?: boolean) => {
     realtime.stop();
