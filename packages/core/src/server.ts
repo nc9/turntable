@@ -63,6 +63,8 @@ export type ServeOptions = {
   db: Db;
   /** Origins besides the page's own that may open a realtime socket. */
   allowedOrigins?: readonly string[];
+  /** GitHub webhook endpoint, when a master key is configured. */
+  webhooks?: { handle(req: Request): Promise<Response | undefined> };
 };
 
 export function startServer(options: ServeOptions) {
@@ -76,6 +78,8 @@ export function startServer(options: ServeOptions) {
     port: options.port,
     hostname: options.host,
     async fetch(req, srv) {
+      const hook = await options.webhooks?.handle(req);
+      if (hook) return hook;
       const upgraded = await realtime.handle(req, srv);
       if (upgraded === "upgraded") return undefined;
       if (upgraded) return upgraded;

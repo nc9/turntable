@@ -461,3 +461,95 @@ export const pollSeen = sqliteTable(
     index("poll_seen_repo_created_idx").on(t.projectId, t.repo, t.createdAt),
   ],
 );
+
+// ---- GitHub App, secrets, webhooks ----
+
+/**
+ * Built-in encrypted secrets (envelope encryption, see src/secrets). `ciphertext` is the whole
+ * sealed record; the (org, name) pair is bound into its AAD, so a row cannot be moved to another
+ * name or org. Values are never selected into any API response.
+ */
+export const secrets = sqliteTable(
+  "secrets",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    name: text("name").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.name] })],
+);
+
+/** The GitHub App this instance runs as. One per instance; its secrets live in `secrets`. */
+export const githubApps = sqliteTable("github_apps", {
+  /** The numeric GitHub App id, as text. */
+  appId: text("app_id").primaryKey(),
+  /** The org that owns the App and, with it, every installation of it. */
+  orgId: text("org_id")
+    .notNull()
+    .references(() => orgs.id),
+  slug: text("slug").notNull(),
+  name: text("name").notNull(),
+  ownerLogin: text("owner_login").notNull(),
+  htmlUrl: text("html_url").notNull(),
+  clientId: text("client_id").notNull(),
+  /** Set while the previous webhook secret is still accepted after a rotation. */
+  previousSecretExpiresAt: integer("previous_secret_expires_at", { mode: "number" }),
+  createdAt: createdAt(),
+});
+
+export const INSTALLATION_STATUSES = ["active", "suspended", "deleted"] as const;
+export type InstallationStatus = (typeof INSTALLATION_STATUSES)[number];
+
+/** Installations of the App, mapped to the org that owns it. Facts come from the API. */
+export const githubInstallations = sqliteTable(
+  "github_installations",
+  {
+    installationId: text("installation_id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    appId: text("app_id").notNull(),
+    accountLogin: text("account_login").notNull(),
+    accountId: text("account_id").notNull(),
+    accountType: text("account_type").notNull(),
+    repositorySelection: text("repository_selection").notNull(),
+    status: text("status").notNull().default("active"),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  () => [check("github_installations_status_check", inList("status", INSTALLATION_STATUSES))],
+);
+
+export const DELIVERY_STATUSES = ["received", "processed", "ignored", "failed"] as const;
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
+/**
+ * Every accepted webhook delivery, keyed by GitHub's delivery GUID: the dedupe key and the
+ * audit trail. Written BEFORE the 202, tagged with the App's org.
+ * `payload` is kept only for events a handler acts on, so an interrupted one can be retried.
+ */
+export const webhookDeliveries = sqliteTable(
+  "webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    /** The org that owns the App the delivery was addressed to. */
+    orgId: text("org_id").references(() => orgs.id),
+    forge: text("forge").notNull().default("github"),
+    event: text("event").notNull(),
+    action: text("action"),
+    installationId: text("installation_id"),
+    status: text("status").notNull().default("received"),
+    error: text("error"),
+    payload: text("payload"),
+    receivedAt: integer("received_at", { mode: "number" }).notNull().default(nowMs),
+    processedAt: integer("processed_at", { mode: "number" }),
+  },
+  (t) => [
+    index("webhook_deliveries_received_idx").on(t.receivedAt),
+    check("webhook_deliveries_status_check", inList("status", DELIVERY_STATUSES)),
+  ],
+);
