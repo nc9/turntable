@@ -2,6 +2,8 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DockerProvider } from "@turntable/provider-docker";
 import { type Db, ensureInstance, openDatabase } from "./db";
+import { bootstrapToken } from "./ops/bootstrap";
+import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
 import { createActRunner, gitRepoSource, reconcileExpired, Scheduler } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
@@ -16,12 +18,17 @@ Usage:
                   [--poll <config.json>]
   turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
+  turntable token generate
   turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
   turntable token revoke <id> [--data-dir ./data]
   turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
   turntable version
 
 Environment:
+  PORT  default for --port (Railway and similar hosts set it)
+  TURNTABLE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "turntable token generate"; on boot, an
+                    org with no tokens gets one operator token with this hash
+  TURNTABLE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
   TURNTABLE_HOST  default for --host (the container image sets 0.0.0.0)
   TURNTABLE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
@@ -110,7 +117,7 @@ async function serve(args: string[]): Promise<void> {
   const { values } = parseArgs({
     args,
     options: {
-      port: { type: "string", default: "8080" },
+      port: { type: "string", default: process.env.PORT?.trim() || "8080" },
       host: { type: "string", default: process.env.TURNTABLE_HOST ?? "127.0.0.1" },
       "data-dir": { type: "string", default: "./data" },
       "allowed-origin": { type: "string", multiple: true },
@@ -130,6 +137,20 @@ async function serve(args: string[]): Promise<void> {
   const dataDir = resolve(values["data-dir"]);
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
+
+  // First-boot access without a shell: see ops/bootstrap.ts.
+  const bootstrapHash = process.env.TURNTABLE_BOOTSTRAP_TOKEN_SHA256?.trim();
+  if (bootstrapHash) {
+    const r = await bootstrapToken(db, {
+      sha256: bootstrapHash,
+      org: process.env.TURNTABLE_BOOTSTRAP_ORG,
+    });
+    console.log(
+      r.status === "created"
+        ? `bootstrap: created an operator token for org ${r.org} (expires ${iso(r.expiresAt)})`
+        : `bootstrap: org ${r.org} already has tokens, nothing created`,
+    );
+  }
 
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
@@ -174,6 +195,16 @@ async function token(args: string[]): Promise<void> {
     strict: true,
   });
   const open = () => openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
+  if (sub === "generate") {
+    // No database: the token goes to stdout, its hash to stderr. Keep the token; set only the
+    // hash (TURNTABLE_BOOTSTRAP_TOKEN_SHA256) on the server.
+    const secret = generateToken();
+    console.error(
+      `sha256: ${hashToken(secret)}\nSet TURNTABLE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
+    );
+    console.log(secret);
+    return;
+  }
   if (sub === "create") {
     if (!values.org || !values.role || !values.name) {
       throw new Error("--org, --role and --name are required");
@@ -229,7 +260,7 @@ async function token(args: string[]): Promise<void> {
       db.close();
     }
   } else {
-    throw new Error("usage: turntable token <create|list|revoke> ...");
+    throw new Error("usage: turntable token <generate|create|list|revoke> ...");
   }
 }
 
