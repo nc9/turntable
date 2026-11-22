@@ -1,5 +1,6 @@
 import { parse } from "yaml";
 import { layoutFor, type Layout } from "./layout";
+import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 
 /** A workflow feature that M0 refuses, named so the user can see why. */
 export class PlanError extends Error {
@@ -29,6 +30,11 @@ export interface PlanOptions {
    * and `strategy.matrix` is a single literal leg. Never set for a user's own workflow file.
    */
   split?: boolean;
+  /**
+   * Turn the lint warnings (outside text in a script, a privileged job asking for the PR head)
+   * into a PlanError. Set it for protected and release runs.
+   */
+  failOnLint?: boolean;
 }
 
 export interface PlannedAction {
@@ -60,7 +66,9 @@ export interface PlanFile {
 
 /** A step that interpolates attacker-controllable context straight into a script. */
 export interface PlanWarning {
-  code: "untrusted-expression";
+  /** `untrusted-expression`: outside text interpolated into a script. `privileged-head-checkout`:
+   * a job on a privileged trigger asks for the PR head. */
+  code: "untrusted-expression" | "privileged-head-checkout";
   /** File the step is in. */
   file?: string;
   step: string;
@@ -254,6 +262,19 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   };
 
   scan(opts.workflowPath, Array.isArray(job.steps) ? job.steps : [], 0);
+  const event = opts.event ?? "push";
+  if (isPrivilegedEvent(event)) {
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    for (const h of findHeadCheckouts(steps)) {
+      warnings.push({
+        code: "privileged-head-checkout",
+        step: h.step,
+        expression: h.expression,
+        message: `step "${h.step}" takes ${h.field} from the pull request head (${h.expression}) in a ${event} job; a privileged job must work from a protected ref`,
+      });
+    }
+  }
+  if (opts.failOnLint && warnings.length > 0) throw lintError(warnings);
   const plan: JobPlan = {
     jobId,
     workflowPath: opts.workflowPath,
@@ -489,4 +510,12 @@ export function assertPinned(plan: JobPlan): void {
       }
     }
   }
+}
+
+/** The error for failing lint: every finding, in one message. */
+export function lintError(warnings: readonly PlanWarning[]): PlanError {
+  return new PlanError(
+    "lint",
+    `workflow lint failed for this run class: ${warnings.map((w) => w.message).join("; ")}`,
+  );
 }

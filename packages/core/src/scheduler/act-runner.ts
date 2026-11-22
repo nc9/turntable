@@ -18,6 +18,7 @@ import {
   planJob,
   resolveActions,
   splitJob,
+  workflowHeadCheckouts,
 } from "@longshore/act-runner";
 import type { Db } from "../db";
 import { listJobs, listRepos, type Run } from "../db/repos";
@@ -27,6 +28,7 @@ import { prefixedOut } from "../run/prefixed-out";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
 import { type RunStore, stepInputOf } from "../run/store";
+import { assessJob, lintFailsFor } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
 /** The source of a run: a tarball to deliver and the files the planner reads. */
@@ -262,6 +264,11 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       try {
         const root = o.planRoot ? { root: o.planRoot } : {};
         const planned = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+        // The class this job runs as: the demotion rule applies before anything starts, and
+        // protected and release runs fail lint instead of warning.
+        const headCheckouts = workflowHeadCheckouts(workflowYaml)[planned?.id ?? job.jobKey] ?? [];
+        const trust = assessJob({ event: dbRun.event, ref: dbRun.ref }, headCheckouts.length > 0);
+        const failOnLint = lintFailsFor(trust.klass);
         const jobPlan = planned
           ? // A whole-workflow job: a generated single-job workflow whose stub need jobs carry the
             // real results and outputs of its dependencies.
@@ -276,6 +283,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
                 event: dbRun.event,
                 readFile: checkout.readFile,
                 split: true,
+                failOnLint,
                 ...root,
               },
             )
@@ -283,6 +291,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               workflowPath: dbRun.workflowPath,
               event: dbRun.event,
               readFile: checkout.readFile,
+              failOnLint,
               ...root,
             });
         plan = await resolveActions(jobPlan, o.resolver ?? githubResolver());
