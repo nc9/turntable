@@ -3,6 +3,7 @@ import { checkoutStubAction } from "../src/checkout-stub";
 import {
   PlanError,
   assertNoDockerAccess,
+  assertPinned,
   planJob,
   resolveActions,
   rewriteUses,
@@ -194,5 +195,48 @@ describe("security requirements", () => {
       expect(s).not.toContain(net);
     }
     expect(s).toContain("cp -a '/tmp/tt-act/repo'/.");
+  });
+});
+
+describe("pinning fails closed whatever the YAML looks like", () => {
+  const SHA2 = "d".repeat(40);
+  const head = "    runs-on: ubuntu-latest\n    steps:\n";
+  const forms: [string, string][] = [
+    ["plain list item", "      - uses: acme/tool@v1\n"],
+    ["flow mapping", "      - { uses: acme/tool@v1, with: { a: b } }\n"],
+    ["quoted key", '      - "uses": acme/tool@v1\n'],
+    ["quoted value", "      - uses: 'acme/tool@v1'\n"],
+    ["block scalar", "      - uses: >-\n          acme/tool@v1\n"],
+    ["name on same line", "      - name: x\n        uses: acme/tool@v1\n"],
+    ["anchor and alias", "      - &s\n        uses: acme/tool@v1\n      - *s\n"],
+    ["merge key", "      - <<: { uses: acme/tool@v1 }\n"],
+  ];
+  test.each(forms)("%s is delivered locally by sha (never fetched)", async (_n, steps) => {
+    const p = plan(head + steps);
+    const r = await resolveActions(p, staticResolver({ "acme/tool@v1": SHA2 }));
+    // Both the written ref and the sha point at the same sha-delivered dir.
+    const keys = r.argv.filter((_a, i) => r.argv[i - 1] === "--local-repository");
+    expect(keys).toContain("acme/tool@v1=/tmp/tt-act/stubs/action-0");
+    expect(keys).toContain(`acme/tool@${SHA2}=/tmp/tt-act/stubs/action-0`);
+    expect(() => assertPinned(r)).not.toThrow();
+  });
+
+  const stripMappings = (argv: string[]): string[] =>
+    argv.filter((a, i) => a !== "--local-repository" && argv[i - 1] !== "--local-repository");
+
+  test.each([
+    ["a tag", "acme/tool@v1"],
+    ["a sha", `acme/tool@${SHA}`],
+  ])("%s with no local mapping throws unpinned-action", async (_n, uses) => {
+    const p = plan(head + `      - { uses: ${uses} }\n`);
+    const r = await resolveActions(p, staticResolver({ "acme/tool@v1": SHA2 }));
+    expect(() => assertPinned(r)).not.toThrow();
+    try {
+      assertPinned({ ...r, argv: stripMappings(r.argv) });
+      throw new Error("expected PlanError");
+    } catch (e) {
+      expect(e).toBeInstanceOf(PlanError);
+      expect((e as PlanError).feature).toBe("unpinned-action");
+    }
   });
 });
