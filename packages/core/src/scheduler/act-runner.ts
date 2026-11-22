@@ -221,6 +221,7 @@ function workerStore(ctx: AttemptContext): RunStore {
     setExec: (_id, execId) => ctx.store.setExec({ execId }),
     resetOutput: () => ctx.store.reset(),
     appendLog: (_id, offset, bytes) => ctx.store.appendLog(offset, bytes),
+    addCut: (_id, cut) => ctx.store.addCut(cut),
     recordStep: (_id, step) => {
       const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);
       return ctx.store.recordStep(rest);

@@ -56,6 +56,16 @@ case "$ARGS" in *ACTIONS_CACHE_URL*)
 esac
 ev "$J" "ok" "Set up job" ',"stepResult":"success"'
 case "$J" in
+  noisy)
+    i=0
+    while [ $i -lt 400 ]; do
+      printf '{"jobID":"noisy","raw_output":true,"msg":"line %s of noisy output padded to be long enough\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' "$i"
+      i=$((i+1))
+    done ;;
+  forger)
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[longshore: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+esac
+case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
   slow) sleep 1 ;;
 esac
@@ -1576,5 +1586,79 @@ describe("the job cache credential", () => {
     expect(echoed).toBeGreaterThanOrEqual(1);
     // The credentials died with their attempts.
     for (const g of issued) expect(service.grants.verify(g.secret)).toBeUndefined();
+  });
+});
+
+describe("cut markers are metadata, never text in the log (#56)", () => {
+  const NOISE = `name: cuts
+on:
+  push:
+    branches: [main]
+jobs:
+  noisy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo noisy
+  forger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo forger
+`;
+  test("a capped job records its cut as metadata with no marker in the log, and a job printing the marker text records none", async () => {
+    // Small head and tail so the cut is cheap to provoke.
+    const small = new FakeWorld({
+      hostPaths: [tmp],
+      exec: { tickSeconds: 1, head: 2000, tail: 3000, slack: 500 },
+    });
+    try {
+      const gh = makeGithub();
+      gh.state.files.set("*", NOISE);
+      await ingest(gh);
+      const sched = await makeScheduler(gh, small.provider());
+      await drain(sched);
+      const [run] = await listRuns(db, scope);
+      const jobs = await listJobs(db, scope, run!.id);
+      const text = async (key: string) => {
+        const job = jobs.find((j) => j.jobKey === key)!;
+        const [a] = await listAttempts(db, scope, job.id);
+        const log = Buffer.concat((await readLog(db, scope, a!.id)).map((c) => c.bytes)).toString();
+        return { job, attempt: a!, log };
+      };
+
+      const noisy = await text("noisy");
+      expect(noisy.job.state).toBe("success");
+      // The log is the head and the tail with nothing between them in the text.
+      expect(noisy.log).not.toMatch(/bytes of output omitted/);
+      expect(noisy.log).toContain("line 0 of noisy output");
+      expect(noisy.log).toContain("line 399 of noisy output");
+      expect(noisy.log).not.toContain("line 200 of noisy output");
+      // The omission is a record, delivered out of band by the API.
+      const token = (await mintToken(db, { orgId: scope.orgId }, "reader")).secret;
+      const res = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: noisy.job.id,
+        attempt: 1,
+      });
+      expect(res.ok).toBe(true);
+      const cuts = (res.ok ? res.output : { cuts: [] }) as {
+        cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+      };
+      expect(cuts.cuts).toHaveLength(1);
+      expect(cuts.cuts[0]!.omitted_bytes).toBeGreaterThan(0);
+      expect(cuts.cuts[0]!.at_offset).toBeGreaterThan(0);
+      expect(cuts.cuts[0]!.at_offset).toBeLessThanOrEqual(Buffer.byteLength(noisy.log));
+      expect(cuts.cuts[0]!.reason).toBe("output cap");
+
+      // A job that prints the old marker text gets ordinary text and no cut.
+      const forger = await text("forger");
+      expect(forger.job.state).toBe("success");
+      expect(forger.log).toContain("[longshore: 99999 bytes of output omitted]");
+      const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: forger.job.id,
+        attempt: 1,
+      });
+      expect(none.ok ? (none.output as { cuts: unknown[] }).cuts : [1]).toEqual([]);
+    } finally {
+      small.dispose();
+    }
   });
 });
