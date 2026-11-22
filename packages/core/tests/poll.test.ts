@@ -621,6 +621,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "queueBranches",
     "queueCommit",
     "rateLimit",
+    "repoDefaultBranch",
   ]);
   for (const m of methods)
     expect(m).not.toMatch(/post|put|patch|delete|create|update|merge|comment|dispatch/i);

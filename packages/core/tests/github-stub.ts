@@ -44,6 +44,7 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     state.calls.push({ path: path + u.search, method: init?.method });
     const json = (body: unknown): Response =>
       new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    if (path === `/repos/${repo}`) return json({ default_branch: "main" });
     if (path === `/repos/${repo}/commits/main`) {
       return json({
         sha: state.head.sha,

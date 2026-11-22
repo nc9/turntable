@@ -284,5 +284,12 @@ export const migrations: Migration[] = [
       "CREATE TABLE `installation_claims` (\n\t`nonce` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`started_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer,\n\t`installation_id` text,\n\t`expected_login` text,\n\t`github_user_id` text,\n\t`github_login` text,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `installation_claims_org_idx` ON `installation_claims` (`org_id`,`created_at`);"
     ]
+  },
+  {
+    "tag": "0023_numerous_emma_frost",
+    "when": 1795379194595,
+    "statements": [
+      "ALTER TABLE `projects` ADD `ingest_config` text;"
+    ]
   }
 ];

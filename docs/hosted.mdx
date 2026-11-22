@@ -49,11 +49,22 @@ By default every installation of the App maps to the org that owns the App. On a
 4. The state names the org but does not prove the installation id, which is only a query parameter, and access is not ownership (every member of an organization can see its installations). So the callback exchanges the code for the user's token and requires that the user can reach the installation **and owns it**: for an organization account, `GET /user/memberships/orgs/{org}` with the user's token must say `role: admin` and `state: active`; for a personal account, the account must be the user. If `github_login` was given, it must match. It then re-fetches the installation with the App's own credentials (it must be our App) and only then maps it, and its repositories as projects, to the org in the state, consuming the nonce. A failed attempt does not burn the link. Every outcome is written to the org's audit chain as `claim_installation`, with the GitHub user id and login who claimed it.
 5. An installation another org already holds is never taken. An installation nobody has claimed is ignored by the webhook handler (stored as ignored), not mapped to the App's org.
 
+## Ingesting a bound repo without a poll entry
+
+An installation binds its repositories to a project, but binding alone ingests nothing. A project is ingested from its binding only after an operator gives it ingest settings, locally and audited, because the settings decide who is trusted:
+
+```sh
+longshore policy set --ingest on --org acme --project web \
+  --workflow .github/workflows/ci.yml --pr-mode allowlist --authors octocat --merge-queue
+longshore policy set --ingest off --org acme --project web
+```
+
+The settings are the poll knobs that belong to a repo: `--workflow`, `--default-branch` (unset: asked from GitHub at each poll), `--pr-mode`, `--authors`, `--merge-queue`. The poller reads the bindings at start, every minute, and when a signed webhook names a repo it does not know (it looks once, then polls). A repo in the static poll config wins over its binding. A repo bound to several projects is ingested into the first only. The poll config still needs at least one repo entry to run the poller at all, plus the token (`tokenEnv`) and limits, which the bound repos share.
+
 ## Trusted proxies
 
 The webhook failure rate limit is keyed on the real client address. Name the proxies in front of the server, as addresses and CIDR ranges, in `LONGSHORE_TRUSTED_PROXIES` (for example `10.0.0.0/8,fd00::/8`). The client is the right-most `X-Forwarded-For` hop that is not one of them, and the header is read only when the socket peer is itself trusted. With none configured the limiter keys on the socket peer, so a spoofed header gains nothing. A correctly signed delivery is never rate limited. `LONGSHORE_TRUST_FORWARDED_FOR` is no longer read.
 
 ## Known gaps
 
-- Repositories are ingested only if they are in the poll config. An installation binds a repo to a project, but a webhook for a bound repo that has no poll entry (no allowlist, workflow path or default branch) is ignored. Ingest straight from installation bindings is future work.
 - The manifest flow, the claim flow's OAuth exchange and secret rotation have been exercised against a fake GitHub only. Each needs one run against live GitHub.

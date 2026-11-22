@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `ingest_config` text;

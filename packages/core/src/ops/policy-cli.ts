@@ -2,6 +2,7 @@
 // directory is the trust root (like `longshore token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
   APPROVE_RUN_ROLES,
   appendAudit,
@@ -20,6 +21,8 @@ import {
   listProjects,
   setApproveRunMinRole,
   setProjectEgress,
+  getProjectIngest,
+  setProjectIngest,
 } from "../db/repos";
 
 export const POLICY_USAGE = `Usage:
@@ -27,6 +30,9 @@ export const POLICY_USAGE = `Usage:
   longshore policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
   longshore policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
   longshore policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
+  longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
+      [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
+      [--merge-queue] [--data-dir ./data]
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
 Default release_operator. operator lets any operator token approve, including an agent that has
@@ -119,6 +125,80 @@ export async function setEgressPolicy(
       });
     });
     out.push({ project: p!.slug, from, to: value as EgressMode });
+  }
+  return out;
+}
+
+/**
+ * Turns ingest from the project's installation binding on or off, with the knobs a poll repo has.
+ * `on` replaces the stored settings. Nothing is ingested for a bound repo until this is set, and
+ * it decides who is trusted (`authors`), so it is a local, audited, CLI-only change.
+ */
+export async function setIngestPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  mode: string,
+  opts: {
+    workflow?: string | undefined;
+    defaultBranch?: string | undefined;
+    prMode?: string | undefined;
+    authors?: string[] | undefined;
+    mergeQueue?: boolean | undefined;
+  } = {},
+): Promise<{ project: string; from: IngestSettings | null; to: IngestSettings | null }> {
+  if (mode !== "on" && mode !== "off") throw new Error("--ingest must be on or off");
+  if (!projectSlug) throw new Error("--ingest needs --project");
+  const org = await orgOf(db, orgSlug);
+  const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
+  if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+  const scope = { orgId: org.id, projectId: project.id };
+  const stored = await getProjectIngest(db, scope);
+  const from =
+    stored === null ? null : (ingestSettingsSchema.safeParse(JSON.parse(stored)).data ?? null);
+  let to: IngestSettings | null = null;
+  if (mode === "on") {
+    const parsed = ingestSettingsSchema.safeParse({
+      ...(opts.workflow ? { workflow: opts.workflow } : {}),
+      ...(opts.defaultBranch ? { defaultBranch: opts.defaultBranch } : {}),
+      ...(opts.prMode ? { prMode: opts.prMode } : {}),
+      ...(opts.authors ? { authors: opts.authors } : {}),
+      ...(opts.mergeQueue ? { mergeQueue: true } : {}),
+    });
+    if (!parsed.success) {
+      throw new Error(
+        `invalid ingest settings: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+      );
+    }
+    to = parsed.data;
+  }
+  await db.transaction(async (tx) => {
+    await setProjectIngest(tx, scope, to === null ? null : JSON.stringify(to));
+    await appendAudit(tx, scope, {
+      principalKind: "cli",
+      principalId: "local",
+      op: "policy_set",
+      effect: "write",
+      outcome: "ok",
+      input: { key: "ingest", project: project.slug, from, to },
+    });
+  });
+  return { project: project.slug, from, to };
+}
+
+/** Each project's ingest settings, for `policy show`. */
+export async function showIngest(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; ingest: IngestSettings | null }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; ingest: IngestSettings | null }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    const v = await getProjectIngest(db, { orgId: org.id, projectId: p.id });
+    out.push({
+      project: p.slug,
+      ingest: v === null ? null : (ingestSettingsSchema.safeParse(JSON.parse(v)).data ?? null),
+    });
   }
   return out;
 }

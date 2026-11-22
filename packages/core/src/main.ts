@@ -288,6 +288,8 @@ async function startBackground(
     poller = new Poller({
       db,
       config: pollConfig,
+      // Repos bound by an installation are ingested once their project has ingest settings.
+      bindings: true,
       log,
       onQueued: () => scheduler?.nudge(),
       // A newer cancel-in-progress run took over running attempts: stop their workers now and
