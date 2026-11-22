@@ -22,7 +22,10 @@
           "github-app"
         ]
       },
-      { "group": "Project", "pages": ["releases", "contributing", "internals/bun-notes"] }
+      {
+        "group": "Project",
+        "pages": ["releases", "contributing", "internals/bun-notes", "design/daytona-proxy"]
+      }
     ]
   }
 }
