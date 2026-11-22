@@ -4,9 +4,9 @@ import {
   type ActTarball,
   type ActionFetcher,
   type ActionRefResolver,
-} from "@turntable/act-runner";
-import type { Provider } from "@turntable/provider-sdk";
-import { SecretRegistry } from "@turntable/redact";
+} from "@longshore/act-runner";
+import type { Provider } from "@longshore/provider-sdk";
+import { SecretRegistry } from "@longshore/redact";
 import { parse } from "yaml";
 import { DEFAULT_IMAGE, EXIT, executeJob, type ExitCode, type Verdict } from "./job-exec";
 import type { RunStore } from "./store";

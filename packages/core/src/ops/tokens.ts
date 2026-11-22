@@ -1,9 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 
-/** Prefix of every Turntable API token, so scanners and humans can recognise one. */
-export const TOKEN_PREFIX = "tt_";
+/** Prefix of every Longshore API token, so scanners and humans can recognise one. */
+export const TOKEN_PREFIX = "ls_";
 
-/** A new random token: `tt_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
+/** Tokens minted before the rename. Still accepted: they are stored as hashes, nothing else changes. */
+const LEGACY_TOKEN_PREFIX = "tt_";
+
+/** A new random token: `ls_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
 export function generateToken(): string {
   return `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 }
@@ -15,7 +18,12 @@ export function hashToken(token: string): string {
 
 /** Cheap shape check before hitting the database. */
 export function looksLikeToken(value: string): boolean {
-  return value.startsWith(TOKEN_PREFIX) && value.length === TOKEN_PREFIX.length + 43;
+  const prefix = value.startsWith(TOKEN_PREFIX)
+    ? TOKEN_PREFIX
+    : value.startsWith(LEGACY_TOKEN_PREFIX)
+      ? LEGACY_TOKEN_PREFIX
+      : undefined;
+  return prefix !== undefined && value.length === prefix.length + 43;
 }
 
 import type { AgentRole } from "../db/schema";

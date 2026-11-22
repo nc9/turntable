@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SpecError, type SandboxSpec } from "@turntable/provider-sdk";
+import { SpecError, type SandboxSpec } from "@longshore/provider-sdk";
 import {
   buildExecArgs,
   buildInspectArgs,
@@ -26,7 +26,7 @@ describe("buildRunArgs", () => {
     expect(a[a.indexOf("--cpus") + 1]).toBe("1.5");
     expect(a[a.indexOf("--memory") + 1]).toBe("512m");
     expect(a).toContain("run=r1");
-    expect(a).toContain("turntable.expires-at=601000");
+    expect(a).toContain("longshore.expires-at=601000");
     expect(a.slice(-4)).toEqual(["--", "alpine:3.22", "sleep", "600"]);
     expect(a).toContain("--network");
     expect(a[a.indexOf("--network") + 1]).toBe("none");
@@ -113,7 +113,7 @@ describe("other commands", () => {
       "--filter",
       "label=a=b",
       "--filter",
-      "label=turntable.managed=1",
+      "label=longshore.managed=1",
     ]);
   });
   test("exec args", () => {

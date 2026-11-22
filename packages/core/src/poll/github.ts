@@ -110,7 +110,7 @@ export class GithubClient {
     const headers: Record<string, string> = {
       accept,
       "x-github-api-version": "2022-11-28",
-      "user-agent": "turntable-poller",
+      "user-agent": "longshore-poller",
       ...(this.#token ? { authorization: `Bearer ${this.#token}` } : {}),
       ...(cached ? { "if-none-match": cached.etag } : {}),
     };

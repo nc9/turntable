@@ -4,7 +4,7 @@
  * this composite action instead (`--no-skip-checkout --local-repository <ref>=<dir>`).
  */
 export function checkoutStubAction(repoDir: string): string {
-  return `name: turntable checkout stub
+  return `name: longshore checkout stub
 description: Copies the repository the controller delivered into the workspace.
 inputs:
   repository: { required: false }

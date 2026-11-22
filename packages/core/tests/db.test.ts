@@ -10,9 +10,9 @@ afterEach(() => {
 });
 
 test("migrations apply on a fresh database and are idempotent on reopen", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "turntable-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "longshore-test-"));
   dirs.push(dir);
-  const path = join(dir, "nested", "turntable.db");
+  const path = join(dir, "nested", "longshore.db");
 
   const first = openDatabase(path);
   const id = await ensureInstance(first);

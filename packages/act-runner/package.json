@@ -1,5 +1,5 @@
 {
-  "name": "@turntable/act-runner",
+  "name": "@longshore/act-runner",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,11 +10,11 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@turntable/provider-sdk": "workspace:*",
+    "@longshore/provider-sdk": "workspace:*",
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@turntable/provider-docker": "workspace:*",
+    "@longshore/provider-docker": "workspace:*",
     "@types/bun": "1.4.4"
   }
 }

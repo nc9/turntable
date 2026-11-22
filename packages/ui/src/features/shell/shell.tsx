@@ -52,7 +52,7 @@ function Logo() {
         <circle cx="16" cy="16" r="9" fill="none" className="stroke-background" strokeWidth="2.5" />
         <circle cx="16" cy="16" r="2.5" className="fill-background" />
       </svg>
-      <span className="hidden sm:inline">Turntable</span>
+      <span className="hidden sm:inline">Longshore</span>
     </span>
   );
 }
@@ -416,7 +416,7 @@ function ShellInner() {
         <Link
           to="/"
           className="mr-1 flex items-center rounded-md px-1 py-1"
-          aria-label="Turntable home"
+          aria-label="Longshore home"
         >
           <Logo />
         </Link>

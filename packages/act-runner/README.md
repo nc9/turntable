@@ -1,4 +1,4 @@
-# @turntable/act-runner
+# @longshore/act-runner
 
 Runs one GitHub Actions job inside a sandbox using [nektos/act](https://github.com/nektos/act)
 (MIT) in host mode. It talks to the sandbox only through the provider SDK: detached exec, status

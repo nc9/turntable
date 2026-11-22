@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts a compiled binary in an empty directory, waits for /healthz, then stops it.
-# Usage: scripts/smoke.sh dist/turntable-linux-x64
+# Usage: scripts/smoke.sh dist/longshore-linux-x64
 set -euo pipefail
 bin="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 port="${PORT:-18080}"
@@ -15,7 +15,7 @@ for _ in $(seq 1 100); do
     end=$(date +%s%N 2>/dev/null || python3 -c 'import time;print(int(time.time()*1e9))')
     echo "healthz: $body"
     echo "cold start to healthy: $(( (end - start) / 1000000 )) ms"
-    test -f "$work/data/turntable.db" || { echo "database file missing"; exit 1; }
+    test -f "$work/data/longshore.db" || { echo "database file missing"; exit 1; }
     # The embedded UI: the app shell, its CSP, an asset, and the SPA fallback for a deep route.
     headers=$(curl -fsS -D - -o "$work/index.html" "http://127.0.0.1:$port/")
     echo "$headers" | grep -iq '^content-security-policy:.*script-src .self.' || { echo "missing UI CSP on /"; echo "$headers"; exit 1; }

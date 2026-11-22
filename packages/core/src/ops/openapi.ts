@@ -89,7 +89,7 @@ function operation(op: Op): Json {
         ...(op.untrustedOutput
           ? {
               headers: {
-                "X-Turntable-Untrusted-Content": {
+                "X-Longshore-Untrusted-Content": {
                   description: "Always `true` on this operation: the body carries untrusted text.",
                   schema: { type: "string", enum: ["true"] },
                 },
@@ -104,9 +104,9 @@ function operation(op: Op): Json {
       "404": { $ref: "#/components/responses/NotFound" },
     },
     security: [{ bearerAuth: [] }],
-    "x-turntable-effect": op.effect,
-    "x-turntable-min-role": op.auth.minRole,
-    "x-turntable-untrusted-output": op.untrustedOutput,
+    "x-longshore-effect": op.effect,
+    "x-longshore-min-role": op.auth.minRole,
+    "x-longshore-untrusted-output": op.untrustedOutput,
   };
 }
 
@@ -119,11 +119,11 @@ export function buildOpenApi(registry: OpRegistry, version: string): Json {
   return {
     openapi: "3.1.0",
     info: {
-      title: "Turntable API",
+      title: "Longshore API",
       version,
       description:
         "Generated from the operations registry; the same operations are MCP tools. " +
-        "Authenticate with `Authorization: Bearer tt_...`.",
+        "Authenticate with `Authorization: Bearer ls_...`.",
     },
     servers: [{ url: "/api/v1" }],
     security: [{ bearerAuth: [] }],
@@ -133,7 +133,7 @@ export function buildOpenApi(registry: OpRegistry, version: string): Json {
         bearerAuth: {
           type: "http",
           scheme: "bearer",
-          description: "An agent token (`tt_...`) scoped to an org or project.",
+          description: "An agent token (`ls_...`) scoped to an org or project.",
         },
       },
       schemas: { Error: ERROR_SCHEMA },

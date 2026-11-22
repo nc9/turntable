@@ -1,9 +1,9 @@
 ---
 title: Quickstart
-description: Run the Turntable server from a binary or a container.
+description: Run the Longshore server from a binary or a container.
 ---
 
-Only what works today is listed here. You can run one job of a workflow locally with `turntable run`; the server does not schedule runs yet.
+Only what works today is listed here. You can run one job of a workflow locally with `longshore run`; the server does not schedule runs yet.
 
 ## Binary
 
@@ -17,8 +17,8 @@ bun run build
 Then run one:
 
 ```sh
-./dist/turntable-darwin-arm64 version
-./dist/turntable-darwin-arm64 serve --port 8080 --data-dir ./data
+./dist/longshore-darwin-arm64 version
+./dist/longshore-darwin-arm64 serve --port 8080 --data-dir ./data
 ```
 
 The binary works from an empty directory. Migrations and assets are embedded.
@@ -31,10 +31,10 @@ bun run dev
 
 ## Run a job
 
-`turntable run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
+`longshore run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
 
 ```sh
-./dist/turntable-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
+./dist/longshore-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
   --repo path/to/repo --data-dir ./data
 ```
 
@@ -52,11 +52,11 @@ Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the re
 Build and run the image:
 
 ```sh
-docker build -t turntable .
-docker run --rm -p 8080:8080 -v turntable-data:/data turntable
+docker build -t longshore .
+docker run --rm -p 8080:8080 -v longshore-data:/data longshore
 ```
 
-The image is distroless and runs as a non-root user. It stores data in `/data` and sets `TURNTABLE_HOST=0.0.0.0` so the published port is reachable.
+The image is distroless and runs as a non-root user. It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
 
 ## Check that it is up
 
@@ -72,29 +72,29 @@ On a host where you cannot run commands in the container (Railway, Fly, a distro
 
 ```sh
 # On your own machine: prints the token (stdout) and its sha256 (stderr).
-./dist/turntable-darwin-arm64 token generate
+./dist/longshore-darwin-arm64 token generate
 ```
 
 Keep the token. Set only the hash on the server:
 
 | Variable | Value |
 | --- | --- |
-| `TURNTABLE_BOOTSTRAP_TOKEN_SHA256` | the `sha256:` value printed above |
-| `TURNTABLE_BOOTSTRAP_ORG` | optional, default `local` |
+| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | the `sha256:` value printed above |
+| `LONGSHORE_BOOTSTRAP_ORG` | optional, default `local` |
 | `PORT` | set by the host; `serve` uses it as the default port |
 
 On boot, if the org has no tokens yet, the server creates one `operator` token with that hash (valid 365 days). It does nothing when the org already has tokens, so the variable is safe to leave set. The token is never stored on the server or in its environment or logs; only its hash is. Use it as `Authorization: Bearer <token>`.
 
 ## Network binding
 
-`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `TURNTABLE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
+`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `LONGSHORE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
 
 ## Create your first API token
 
 Agents and scripts call the [REST API](/agent-interface) with a bearer token. Create the first one from the command line, because creating tokens over the network needs an org admin and sessions do not exist yet. Local access to the data directory is the trust root.
 
 ```sh
-TOKEN=$(./dist/turntable-darwin-arm64 token create \
+TOKEN=$(./dist/longshore-darwin-arm64 token create \
   --org local --project local --role reader --name my-agent --data-dir ./data)
 ```
 
@@ -109,8 +109,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/runs
 List and revoke tokens the same way:
 
 ```sh
-./dist/turntable-darwin-arm64 token list --org local --data-dir ./data
-./dist/turntable-darwin-arm64 token revoke <id> --data-dir ./data
+./dist/longshore-darwin-arm64 token list --org local --data-dir ./data
+./dist/longshore-darwin-arm64 token revoke <id> --data-dir ./data
 ```
 
 A revoked or expired token stops working at once. The OpenAPI document is at `/openapi.json`.
@@ -120,7 +120,7 @@ A revoked or expired token stops working at once. The OpenAPI document is at `/o
 `serve` can also run jobs. Start it with `--worker` and it claims queued attempts, runs each one with act in a sandbox, and records the logs, steps and result. Reruns queued with the `rerun` operation are picked up the same way.
 
 ```sh
-./dist/turntable-darwin-arm64 serve --worker --data-dir ./data
+./dist/longshore-darwin-arm64 serve --worker --data-dir ./data
 ```
 
 | Flag | Default | Meaning |
@@ -136,7 +136,7 @@ Each claim is a lease that the worker extends with heartbeats, and everything a 
 - **The exec still exists** (running, or finished while nobody watched): the server takes the lease over and re-attaches. The job runs in a detached exec that outlives the server, so a job that finished meanwhile keeps its real result. The worker replays the exec's whole log by offset, rewrites the stored log and steps, and records the real verdict (success, failure, or infra_error if act itself failed).
 - **The exec is lost, the sandbox is gone, or the provider cannot be reached**: whatever still runs is killed, the sandbox is destroyed, and the attempt is marked `infra_error` with the probe result. It never guesses a verdict.
 
-Attempts started by `turntable run` have no lease and are never touched. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
+Attempts started by `longshore run` have no lease and are never touched. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
 
 ## Poll a GitHub repo
 
@@ -144,7 +144,7 @@ Attempts started by `turntable run` have no lease and are never touched. On shut
 
 ```json
 {
-  "tokenFile": "/etc/turntable/github-token",
+  "tokenFile": "/etc/longshore/github-token",
   "repos": [
     {
       "repo": "acme/web",

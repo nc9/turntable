@@ -132,7 +132,7 @@ function validateOutput(op: Op, output: unknown): unknown {
   if (!parsed.success) {
     // Never echo the offending value: it may be exactly what the schema exists to keep out.
     console.error(
-      `turntable: op ${op.name} returned output that violates its schema`,
+      `longshore: op ${op.name} returned output that violates its schema`,
       parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
     );
     throw new OpError("internal", "operation produced an invalid response");
@@ -224,7 +224,7 @@ export async function dispatch(
     }
   } catch (err) {
     if (err instanceof OpError) return { ok: false, error: err, ...(op ? { op } : {}) };
-    console.error("turntable: unexpected error in operation dispatch", err);
+    console.error("longshore: unexpected error in operation dispatch", err);
     return { ok: false, error: new OpError("internal", "internal error"), ...(op ? { op } : {}) };
   }
 }

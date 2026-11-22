@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeWorld } from "@turntable/provider-sdk/testing";
-import type { Provider } from "@turntable/provider-sdk";
+import { FakeWorld } from "@longshore/provider-sdk/testing";
+import type { Provider } from "@longshore/provider-sdk";
 import {
   appendLogFenced,
   bindRepo,
@@ -25,7 +25,7 @@ import {
 import { claimNextAttempt } from "../src/db";
 import { executeJob } from "../src/run/job-exec";
 import type { RunStore } from "../src/run/store";
-import { SecretRegistry } from "@turntable/redact";
+import { SecretRegistry } from "@longshore/redact";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
 
 const FIXTURE = join(import.meta.dir, "../../act-runner/tests/fixtures");
@@ -281,7 +281,7 @@ test("after takeover the dead worker is fenced out of the log", async () => {
 
 test("kill -9 the worker while the job runs, let the job finish, reboot: success with the full log", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tt-kill9-attach-"));
-  const path = join(dir, "turntable.db");
+  const path = join(dir, "longshore.db");
   try {
     db = openDatabase(path);
     const org = await createOrg(db, { slug: "k", name: "k" });

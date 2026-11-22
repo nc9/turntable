@@ -11,7 +11,7 @@ import {
   type SandboxSpec,
   type ShellRunner,
   type WrappedExecOptions,
-} from "@turntable/provider-sdk";
+} from "@longshore/provider-sdk";
 import {
   EXPIRES_LABEL,
   GET_SH,

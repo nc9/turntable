@@ -1,5 +1,5 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
-// it with act in a provider sandbox. It shares executeJob with `turntable run`, so a job behaves
+// it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
 // the same from the CLI and from the worker.
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,10 +12,10 @@ import {
   PlanError,
   planJob,
   resolveActions,
-} from "@turntable/act-runner";
+} from "@longshore/act-runner";
 import type { Db } from "../db";
 import { listRepos, type Run } from "../db/repos";
-import { SecretRegistry } from "@turntable/redact";
+import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { snapshotRepo } from "../run/repo-archive";
 import { type RunStore, stepInputOf } from "../run/store";
@@ -53,7 +53,7 @@ async function git(cwd: string, argv: string[]): Promise<void> {
 
 /**
  * Fetches exactly the run's commit from a public repo with git (a depth-1 fetch by sha) and packs
- * it the way `turntable run` does: the committed tree plus .git.
+ * it the way `longshore run` does: the committed tree plus .git.
  */
 export function gitRepoSource(
   o: { cloneUrl?: (owner: string, repo: string) => string } = {},

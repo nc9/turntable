@@ -1,5 +1,5 @@
 import { afterAll } from "bun:test";
-import { FakeWorld } from "@turntable/provider-sdk/testing";
+import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { runConformance } from "../src/index";
 
 // FAKE_SHELL=/bin/dash exercises the wrapper under dash locally and in CI.

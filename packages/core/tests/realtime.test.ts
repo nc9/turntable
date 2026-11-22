@@ -73,7 +73,7 @@ async function connect(
   token: string,
   opts: { origin?: string; protocols?: string[] } = {},
 ): Promise<Client> {
-  const protocols = opts.protocols ?? ["turntable.v1", `bearer.${token}`];
+  const protocols = opts.protocols ?? ["longshore.v1", `bearer.${token}`];
   const ws = new WebSocket(`ws://${base}/api/v1/realtime`, {
     protocols,
     ...(opts.origin ? { headers: { Origin: opts.origin } } : {}),
@@ -134,13 +134,13 @@ const events = (c: Client) =>
 
 test("a valid token connects and only the protocol name is echoed back, never the token", async () => {
   const c = await connect(reader);
-  expect(c.ws.protocol).toBe("turntable.v1");
+  expect(c.ws.protocol).toBe("longshore.v1");
   c.close();
 });
 
 test("bad tokens, missing subprotocol and tokens in the query string are refused before upgrade", async () => {
   const bad = await upgrade("/api/v1/realtime", {
-    "sec-websocket-protocol": "turntable.v1, bearer.tt_wrong",
+    "sec-websocket-protocol": "longshore.v1, bearer.tt_wrong",
   });
   expect(bad.status).toBe(401);
   const none = await upgrade("/api/v1/realtime", {});
@@ -150,7 +150,7 @@ test("bad tokens, missing subprotocol and tokens in the query string are refused
   });
   expect(noName.status).toBe(401);
   const query = await upgrade(`/api/v1/realtime?token=${reader}`, {
-    "sec-websocket-protocol": `turntable.v1, bearer.${reader}`,
+    "sec-websocket-protocol": `longshore.v1, bearer.${reader}`,
   });
   expect(query.status).toBe(400);
   expect(await query.text()).not.toContain(reader);
@@ -162,14 +162,14 @@ test("a revoked or expired token cannot connect", async () => {
   const revoked = await mintToken(db, { orgId: a.orgId }, "reader");
   expect(await revokeApiToken(db, { orgId: a.orgId }, revoked.id, Date.now())).toBe(true);
   const r = await upgrade("/api/v1/realtime", {
-    "sec-websocket-protocol": `turntable.v1, bearer.${revoked.secret}`,
+    "sec-websocket-protocol": `longshore.v1, bearer.${revoked.secret}`,
   });
   expect(r.status).toBe(401);
   const expired = await mintToken(db, { orgId: a.orgId }, "reader", {
     expiresAt: Date.now() - 1000,
   });
   const e = await upgrade("/api/v1/realtime", {
-    "sec-websocket-protocol": `turntable.v1, bearer.${expired.secret}`,
+    "sec-websocket-protocol": `longshore.v1, bearer.${expired.secret}`,
   });
   expect(e.status).toBe(401);
 });
@@ -178,7 +178,7 @@ test("origin: same-origin and allowlisted origins pass, others are refused, no O
   rt.stop();
   await server.stop(true);
   start({}, ["https://ci.example.com"]);
-  const proto = { "sec-websocket-protocol": `turntable.v1, bearer.${reader}` };
+  const proto = { "sec-websocket-protocol": `longshore.v1, bearer.${reader}` };
   expect(
     (await upgrade("/api/v1/realtime", { ...proto, origin: "https://evil.example" })).status,
   ).toBe(403);
@@ -480,7 +480,7 @@ test("a slow client is dropped with the slow-client code instead of buffering wi
       "Connection: Upgrade",
       `Sec-WebSocket-Key: ${key}`,
       "Sec-WebSocket-Version: 13",
-      `Sec-WebSocket-Protocol: turntable.v1, bearer.${reader}`,
+      `Sec-WebSocket-Protocol: longshore.v1, bearer.${reader}`,
       "",
       "",
     ].join("\r\n"),
@@ -520,7 +520,7 @@ test("per-org connection and per-connection subscription caps", async () => {
   start({ maxConnectionsPerOrg: 1, maxSubscriptionsPerConnection: 1 });
   const first = await connect(reader);
   const second = await upgrade("/api/v1/realtime", {
-    "sec-websocket-protocol": `turntable.v1, bearer.${reader}`,
+    "sec-websocket-protocol": `longshore.v1, bearer.${reader}`,
   });
   expect(second.status).toBe(429);
   first.send({ op: "subscribe", id: "one", topic: "org" });
@@ -551,7 +551,7 @@ test("concurrent upgrades cannot exceed the per-org connection cap", async () =>
         upgrade: "websocket",
         connection: "Upgrade",
         host: base,
-        "sec-websocket-protocol": `turntable.v1, bearer.${reader}`,
+        "sec-websocket-protocol": `longshore.v1, bearer.${reader}`,
       },
     });
   const results = await Promise.all(Array.from({ length: 12 }, () => rt.handle(mk(), fake)));

@@ -1,6 +1,6 @@
 // Child process for the kill -9 test: claims one attempt, tells the parent, then hangs forever
 // (a runner that never finishes), so the parent can kill -9 it mid-run.
-import { FakeWorld } from "@turntable/provider-sdk/testing";
+import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { openDatabase } from "../../src/db";
 import { Scheduler } from "../../src/scheduler";
 

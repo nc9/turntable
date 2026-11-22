@@ -80,10 +80,10 @@ test("bad input is refused before anything is written", async () => {
 });
 
 test("the CLI binary prints only the secret on stdout", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "turntable-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
   try {
     const { openDatabase, createOrg } = await import("../src/db");
-    const cliDb = openDatabase(join(dir, "turntable.db"));
+    const cliDb = openDatabase(join(dir, "longshore.db"));
     await createOrg(cliDb, { slug: "acme", name: "Acme" });
     cliDb.close();
     const proc = Bun.spawn(
@@ -110,7 +110,7 @@ test("the CLI binary prints only the secret on stdout", async () => {
       proc.exited,
     ]);
     expect(code).toBe(0);
-    expect(out.trim()).toMatch(/^tt_[A-Za-z0-9_-]{43}$/);
+    expect(out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
     expect(err).toContain("shown once");
     expect(err).not.toContain(out.trim());
     const bad = Bun.spawn(
@@ -227,10 +227,10 @@ test("token revoke cuts access at once, is audited, and refuses unknown or repea
 });
 
 test("token list and revoke run through the binary", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "turntable-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
   try {
     const { openDatabase, createOrg } = await import("../src/db");
-    const cliDb = openDatabase(join(dir, "turntable.db"));
+    const cliDb = openDatabase(join(dir, "longshore.db"));
     await createOrg(cliDb, { slug: "acme", name: "Acme" });
     cliDb.close();
     const main = join(import.meta.dir, "../src/main.ts");

@@ -29,7 +29,7 @@ export type JobAttempt = typeof s.jobAttempts.$inferSelect;
 
 const now = () => Date.now();
 
-/** Metadata `turntable run` or the forge supplies with a run. Free text is length-capped. */
+/** Metadata `longshore run` or the forge supplies with a run. Free text is length-capped. */
 export type RunInput = {
   workflowPath: string;
   event: string;

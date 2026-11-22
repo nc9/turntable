@@ -228,7 +228,7 @@ describe("splitJob and planJob for every supported job", () => {
     );
     const yaml = splitJob(ci, node, needs, { event: "pull_request" });
     const plan = planJob(yaml, id, {
-      workflowPath: `.turntable/jobs/${id}.yml`,
+      workflowPath: `.longshore/jobs/${id}.yml`,
       event: "pull_request",
       readFile,
       split: true,
@@ -254,7 +254,7 @@ describe("splitJob and planJob for every supported job", () => {
       { event: "pull_request" },
     );
     const plan = planJob(yaml, "quality", {
-      workflowPath: ".turntable/jobs/q.yml",
+      workflowPath: ".longshore/jobs/q.yml",
       readFile,
       split: true,
     });
