@@ -147,20 +147,30 @@ test("checks_for_sha and cancel", () => {
   );
 });
 
-test("the spec has no operation the UI expects but cannot find (rerun, orgs, projects are known gaps)", () => {
+test("the spec has every operation the UI uses or will wire up next", () => {
   const ids = Object.values(spec.paths).flatMap((p) => Object.values(p).map((o) => o.operationId));
-  // events, job_steps and job_cuts exist now; the adapter wires them in #30.
-  for (const known of [
-    "list_runs",
-    "get_run",
-    "job_log",
-    "checks_for_sha",
-    "cancel",
+  for (const known of ["list_runs", "get_run", "job_log", "checks_for_sha", "cancel"]) {
+    expect(ids).toContain(known);
+  }
+  // Present since #66; the adapter flips the matching capabilities when it wires them in.
+  for (const added of [
+    "rerun",
     "events",
+    "whoami",
+    "list_orgs",
+    "list_projects",
     "job_steps",
     "job_cuts",
-  ])
-    expect(ids).toContain(known);
-  // When these appear, wire them into the adapter and flip the matching capability.
-  for (const gap of ["rerun", "list_orgs", "list_projects"]) expect(ids).not.toContain(gap);
+  ]) {
+    expect(ids).toContain(added);
+  }
+});
+
+test("run and job metadata from #66 are in the spec", () => {
+  const run = ok(op("/runs/{run_id}", "get")).properties!;
+  for (const key of ["workflow_name", "commit_message", "actor", "head_branch", "pr_number"]) {
+    expect(run).toHaveProperty(key);
+  }
+  const jobs = (run.jobs as { items: { properties: Record<string, unknown> } }).items.properties;
+  for (const key of ["needs", "matrix", "approval_kind"]) expect(jobs).toHaveProperty(key);
 });

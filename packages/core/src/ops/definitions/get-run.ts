@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getRunRow, listJobs, listRunAttempts } from "../../db/repos";
+import { APPROVAL_KINDS } from "../../db/schema";
 import { durationMs, iso, jobStateSchema, runSummarySchema, toRunSummary } from "../common";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
@@ -21,6 +22,15 @@ const jobSchema = z.object({
   job_key: z.string(),
   name: z.string(),
   state: jobStateSchema,
+  needs: z.array(z.string()).describe("Keys of the jobs this job waits for."),
+  matrix: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .describe("This leg's matrix values; null when the job has no matrix."),
+  approval_kind: z
+    .enum(APPROVAL_KINDS)
+    .nullable()
+    .describe("Why the job waits for a human, if it does."),
   exit_code: z.int().nullable(),
   started_at: z.string().nullable(),
   finished_at: z.string().nullable(),
@@ -68,6 +78,9 @@ export const getRun = defineOp({
           job_key: job.jobKey,
           name: job.name,
           state: job.state as z.infer<typeof jobStateSchema>,
+          needs: JSON.parse(job.needs) as string[],
+          matrix: job.matrix === null ? null : (JSON.parse(job.matrix) as Record<string, unknown>),
+          approval_kind: job.approvalKind as (typeof APPROVAL_KINDS)[number] | null,
           exit_code: job.exitCode,
           started_at: iso(job.startedAt),
           finished_at: iso(job.finishedAt),

@@ -35,6 +35,10 @@ export function decodeCursor(cursor: string): string {
   throw new OpError("invalid_input", "invalid cursor");
 }
 
+/** Cursor over any ascending ULID: used where the id is not a run id. */
+export const encodeCursorRaw = encodeCursor;
+export const decodeProjectCursor = decodeCursor;
+
 /** Cursor paging inputs shared by every list operation. */
 export const pageInput = {
   limit: z.int().min(1).max(100).default(20).describe("Page size, 1 to 100."),
@@ -57,6 +61,11 @@ export const runSummarySchema = z.object({
   event: z.string(),
   ref: z.string().describe("Branch or tag ref as the forge reported it."),
   sha: z.string().nullable(),
+  workflow_name: z.string().nullable().describe("Workflow display name, from the forge."),
+  commit_message: z.string().nullable().describe("Head commit message (capped), from the forge."),
+  actor: z.string().nullable().describe("Forge login of whoever triggered the run."),
+  head_branch: z.string().nullable(),
+  pr_number: z.int().nullable().describe("Pull request number, when the run is for one."),
   state: jobStateSchema,
   created_at: z.string(),
   started_at: z.string().nullable(),
@@ -73,6 +82,11 @@ export function toRunSummary(row: Run & { projectSlug: string }): RunSummary {
     event: row.event,
     ref: row.ref,
     sha: row.sha,
+    workflow_name: row.workflowName,
+    commit_message: row.commitMessage,
+    actor: row.actor,
+    head_branch: row.headBranch,
+    pr_number: row.prNumber,
     state: row.status as RunSummary["state"],
     created_at: iso(row.createdAt)!,
     started_at: iso(row.startedAt),
