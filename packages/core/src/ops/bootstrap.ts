@@ -1,6 +1,6 @@
 // First-boot access without a shell. The image is distroless, so `token create` cannot run
-// inside it. The operator generates a token locally (`turntable token generate`), keeps it, and
-// sets only its sha256 as TURNTABLE_BOOTSTRAP_TOKEN_SHA256. On boot, an org with no tokens gets
+// inside it. The operator generates a token locally (`longshore token generate`), keeps it, and
+// sets only its sha256 as LONGSHORE_BOOTSTRAP_TOKEN_SHA256. On boot, an org with no tokens gets
 // one operator token row with that hash. The secret never touches the environment or the logs.
 import type { Db } from "../db";
 import {
@@ -26,7 +26,7 @@ export async function bootstrapToken(
 ): Promise<BootstrapResult> {
   const hash = opts.sha256.trim().toLowerCase();
   if (!SHA256_HEX.test(hash)) {
-    throw new Error("TURNTABLE_BOOTSTRAP_TOKEN_SHA256 must be 64 hex characters (a sha256)");
+    throw new Error("LONGSHORE_BOOTSTRAP_TOKEN_SHA256 must be 64 hex characters (a sha256)");
   }
   const slug = (opts.org ?? "local").trim() || "local";
   if (!ORG_SLUG.test(slug)) throw new Error(`invalid bootstrap org slug: ${JSON.stringify(slug)}`);
@@ -61,7 +61,7 @@ export async function bootstrapToken(
         name: "bootstrap",
         role: "operator",
         org: slug,
-        source: "TURNTABLE_BOOTSTRAP_TOKEN_SHA256",
+        source: "LONGSHORE_BOOTSTRAP_TOKEN_SHA256",
       },
     });
     return created;

@@ -259,7 +259,7 @@ test("REST: events query string carries types as a comma list and long-polls", a
   await transitionJob(db, a.scope, a.jobId, "running");
   const res = (await get("/events?types=run.queued,job.state_changed&limit=10"))!;
   expect(res.status).toBe(200);
-  expect(res.headers.get("x-turntable-untrusted-content")).toBe("true");
+  expect(res.headers.get("x-longshore-untrusted-content")).toBe("true");
   const body = (await res.json()) as { events: { type: string }[]; next_after: number };
   expect(body.events.map((e) => e.type)).toEqual(["run.queued", "job.state_changed"]);
   const bad = (await get("/events?types=nope"))!;

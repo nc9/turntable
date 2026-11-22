@@ -1,4 +1,4 @@
-import type { TurntableApi } from "./client";
+import type { LongshoreApi } from "./client";
 import {
   type ChangeEvent,
   type ConnectionStatus,
@@ -26,7 +26,7 @@ export type PollingOptions = {
  * adapter (refresh when the server says something happened, and after a reconnect).
  */
 export function createSnapshotSource(
-  api: TurntableApi,
+  api: LongshoreApi,
   topic: Topic,
   emit: (m: RealtimeMessage) => void,
   nextCursor: () => string,
@@ -57,7 +57,7 @@ export function createSnapshotSource(
   };
 }
 
-export function createPollingRealtime(api: TurntableApi, options: PollingOptions = {}): Realtime {
+export function createPollingRealtime(api: LongshoreApi, options: PollingOptions = {}): Realtime {
   const interval = options.intervalMs ?? 3000;
   const logInterval = options.logIntervalMs ?? 1000;
   let status: ConnectionStatus = "polling";

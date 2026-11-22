@@ -41,7 +41,7 @@ export interface WrappedExecOptions {
   commandTimeoutMs?: number;
 }
 
-export const DEFAULT_EXEC_BASE_DIR = "/tmp/.turntable";
+export const DEFAULT_EXEC_BASE_DIR = "/tmp/.longshore";
 const EXEC_ID_RE = /^tt1-[0-9a-f]{24}$/;
 
 /**

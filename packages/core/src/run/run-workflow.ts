@@ -15,9 +15,9 @@ import {
   type PlannedJob,
   type Value,
   type WorkflowEvent,
-} from "@turntable/act-runner";
-import type { Provider } from "@turntable/provider-sdk";
-import { SecretRegistry } from "@turntable/redact";
+} from "@longshore/act-runner";
+import type { Provider } from "@longshore/provider-sdk";
+import { SecretRegistry } from "@longshore/redact";
 import { aggregateRunStatus } from "../db/job-state";
 import { EXIT, executeJob, type ExitCode, type JobEnv, type Verdict } from "./job-exec";
 import { workflowNameOf } from "./run-local";
@@ -266,7 +266,7 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
           ...(o.planRoot ? { root: o.planRoot } : {}),
         });
         const planned = planJob(split, node.id, {
-          workflowPath: `.turntable/jobs/${node.key.replaceAll(/[^A-Za-z0-9_.-]/g, "_")}.yml`,
+          workflowPath: `.longshore/jobs/${node.key.replaceAll(/[^A-Za-z0-9_.-]/g, "_")}.yml`,
           event: o.event.name,
           ...(o.planRoot ? { root: o.planRoot } : {}),
           readFile: o.readFile,

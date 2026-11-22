@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { InfraError } from "@turntable/provider-sdk";
-import { FakeWorld } from "@turntable/provider-sdk/testing";
+import { InfraError } from "@longshore/provider-sdk";
+import { FakeWorld } from "@longshore/provider-sdk/testing";
 
 const world = new FakeWorld({ exec: { tickSeconds: 1 } });
 afterAll(() => world.dispose());

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DockerProvider } from "@turntable/provider-docker";
+import { DockerProvider } from "@longshore/provider-docker";
 import {
   drain,
   planJob,
@@ -93,7 +93,7 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(act.at(-1)).toMatchObject({ type: "job-end", result: "success" });
     expect(log).toContain("output-check=hello-output");
     expect(log).toContain("env-check=propagated-env");
-    expect(log).toContain("composite-check=hello turntable");
+    expect(log).toContain("composite-check=hello longshore");
     expect(log).toContain("initial example commit");
   }, 600_000);
 

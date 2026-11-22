@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the built (distroless) image and proves it works at runtime: libc fit, healthz, the UI
 # and its CSP, PORT as the default port, and first-boot access via a bootstrap token hash.
-# Usage: scripts/smoke-image.sh turntable:smoke
+# Usage: scripts/smoke-image.sh longshore:smoke
 set -euo pipefail
 image="$1"
 port="${PORT:-18081}"
@@ -23,8 +23,8 @@ wait_healthy() { # port
   echo "server did not become healthy on $1"; return 1
 }
 
-# 1. Defaults: TURNTABLE_HOST=0.0.0.0 and a mapped port.
-cid=$(docker run -d --rm -p "$port:8080" -e TURNTABLE_HOST=0.0.0.0 "$image")
+# 1. Defaults: LONGSHORE_HOST=0.0.0.0 and a mapped port.
+cid=$(docker run -d --rm -p "$port:8080" -e LONGSHORE_HOST=0.0.0.0 "$image")
 cids+=("$cid")
 wait_healthy "$port"
 echo "healthz: $(curl -fsS "http://127.0.0.1:$port/healthz")"
@@ -38,10 +38,10 @@ docker stop "$cid" >/dev/null
 echo "image: healthz, ui, csp, nonroot ok"
 
 # 2. PORT is the default for --port, and a bootstrap token hash gives first-boot access.
-token="tt_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+token="ls_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 hash=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
-cid=$(docker run -d --rm -p "$port:9090" -e PORT=9090 -e TURNTABLE_HOST=0.0.0.0 \
-  -e TURNTABLE_BOOTSTRAP_TOKEN_SHA256="$hash" "$image")
+cid=$(docker run -d --rm -p "$port:9090" -e PORT=9090 -e LONGSHORE_HOST=0.0.0.0 \
+  -e LONGSHORE_BOOTSTRAP_TOKEN_SHA256="$hash" "$image")
 cids+=("$cid")
 wait_healthy "$port"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/api/v1/runs")

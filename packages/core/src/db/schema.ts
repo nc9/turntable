@@ -161,7 +161,7 @@ export const runs = sqliteTable(
     event: text("event").notNull(),
     ref: text("ref").notNull(),
     sha: text("sha"),
-    /** Metadata the forge (or `turntable run`) supplies. All forge text: untrusted when shown. */
+    /** Metadata the forge (or `longshore run`) supplies. All forge text: untrusted when shown. */
     workflowName: text("workflow_name"),
     commitMessage: text("commit_message"),
     /** Forge login of whoever triggered it. */

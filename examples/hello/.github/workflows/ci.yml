@@ -13,7 +13,7 @@ jobs:
       - name: Set an output
         id: say
         run: |
-          echo "hello from turntable"
+          echo "hello from longshore"
           echo "greeting=hello-output" >> "$GITHUB_OUTPUT"
       - name: Export an env var
         run: echo "TT_FROM_STEP=propagated-env" >> "$GITHUB_ENV"
@@ -26,7 +26,7 @@ jobs:
         id: greet
         uses: ./.github/actions/greet
         with:
-          who: turntable
+          who: longshore
       - name: Write a summary
         run: |
           echo "### Hello summary" >> "$GITHUB_STEP_SUMMARY"

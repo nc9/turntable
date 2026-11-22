@@ -85,13 +85,13 @@ jobs:
       { event: "push" },
     );
     const plan = planJob(yaml, "quality", {
-      workflowPath: ".turntable/jobs/quality.yml",
+      workflowPath: ".longshore/jobs/quality.yml",
       readFile,
       split: true,
     });
     expect(plan.stubIds).toEqual(["changes"]);
     expect(plan.outputNames).toEqual([]);
-    expect(plan.files[0]?.path).toBe(".turntable/jobs/quality.yml");
+    expect(plan.files[0]?.path).toBe(".longshore/jobs/quality.yml");
     // Without the split flag the same file is refused: needs is not allowed in a user workflow.
     expect(() => planJob(yaml, "quality", { workflowPath: "x.yml", readFile })).toThrow(/needs/);
   });

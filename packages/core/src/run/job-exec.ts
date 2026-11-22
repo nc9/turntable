@@ -6,9 +6,9 @@ import {
   type ActTarball,
   type ActionFetcher,
   type JobPlan,
-} from "@turntable/act-runner";
-import type { Provider } from "@turntable/provider-sdk";
-import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
+} from "@longshore/act-runner";
+import type { Provider } from "@longshore/provider-sdk";
+import { Redactor, SecretRegistry, redactString } from "@longshore/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
 
@@ -180,7 +180,7 @@ export async function executeJob(
       }
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
-        labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
+        labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
         image: env.image,
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
         network: { egress: env.egress ?? "none" },

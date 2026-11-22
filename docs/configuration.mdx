@@ -7,19 +7,19 @@ description: Flags and environment variables supported today.
 
 | Command | Description |
 | --- | --- |
-| `turntable serve` | Start the server. |
-| `turntable token generate` | Print a new token (stdout) and its sha256 (stderr). Touches no database. |
-| `turntable token create \| list \| revoke` | Manage tokens in a data directory. See the quickstart. |
-| `turntable version` | Print the version. `--version` also works. |
-| `turntable help` | Print usage. |
+| `longshore serve` | Start the server. |
+| `longshore token generate` | Print a new token (stdout) and its sha256 (stderr). Touches no database. |
+| `longshore token create \| list \| revoke` | Manage tokens in a data directory. See the quickstart. |
+| `longshore version` | Print the version. `--version` also works. |
+| `longshore help` | Print usage. |
 
 ## `serve` flags
 
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--port` | `8080` | TCP port, 0 to 65535. Defaults to the `PORT` environment variable when set. |
-| `--host` | `127.0.0.1` | Interface to bind. Defaults to `TURNTABLE_HOST` when set. |
-| `--data-dir` | `./data` | Directory that holds `turntable.db`. |
+| `--host` | `127.0.0.1` | Interface to bind. Defaults to `LONGSHORE_HOST` when set. |
+| `--data-dir` | `./data` | Directory that holds `longshore.db`. |
 | `--allowed-origin` | none | An extra origin allowed to open the realtime WebSocket. Repeatable. The page's own origin is always allowed. |
 
 ## Environment variables
@@ -27,10 +27,10 @@ description: Flags and environment variables supported today.
 | Variable | Description |
 | --- | --- |
 | `PORT` | Default for `--port`. Hosts such as Railway set it. An invalid value is refused at startup. |
-| `TURNTABLE_BOOTSTRAP_TOKEN_SHA256` | sha256 (64 hex characters) of a token made by `turntable token generate`. On boot, if the bootstrap org has no tokens, one operator token with this hash is created (365 days). The token itself is never in the environment or the logs. |
-| `TURNTABLE_BOOTSTRAP_ORG` | Org slug for the bootstrap token. Default `local`. The org is created when missing. |
-| `TURNTABLE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
-| `TURNTABLE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
+| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | sha256 (64 hex characters) of a token made by `longshore token generate`. On boot, if the bootstrap org has no tokens, one operator token with this hash is created (365 days). The token itself is never in the environment or the logs. |
+| `LONGSHORE_BOOTSTRAP_ORG` | Org slug for the bootstrap token. Default `local`. The org is created when missing. |
+| `LONGSHORE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
+| `LONGSHORE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
 
 ## Endpoints
 

@@ -9,7 +9,7 @@ import {
   type Labels,
   type Provider,
   type SandboxSpec,
-} from "@turntable/provider-sdk";
+} from "@longshore/provider-sdk";
 
 export interface ConformanceOptions {
   /** Suite name shown in test output. */

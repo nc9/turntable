@@ -7,7 +7,7 @@ import { connect, useAuth } from "@/lib/auth";
 import { resetDirectory } from "@/lib/directory";
 
 /**
- * Temporary sign-in until session auth (#13): paste an agent token (`turntable token create`).
+ * Temporary sign-in until session auth (#13): paste an agent token (`longshore token create`).
  * It is checked with one cheap request, kept in memory and sessionStorage, and never put in a URL.
  */
 export function ConnectScreen() {
@@ -71,7 +71,7 @@ export function ConnectScreen() {
             />
             <circle cx="16" cy="16" r="2.5" className="fill-background" />
           </svg>
-          <h1 className="text-xl font-semibold tracking-tight">Connect to Turntable</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Connect to Longshore</h1>
         </div>
         {auth.notice ? (
           <p
@@ -83,7 +83,7 @@ export function ConnectScreen() {
         ) : null}
         <p className="mb-5 text-sm text-dim">
           Paste an agent token. Create one with{" "}
-          <code className="font-mono text-[13px] text-foreground">turntable token create</code>. It
+          <code className="font-mono text-[13px] text-foreground">longshore token create</code>. It
           stays in this tab only and is never put in a URL.
         </p>
         <label htmlFor="connect-org" className="mb-1.5 block text-sm font-medium">
@@ -110,7 +110,7 @@ export function ConnectScreen() {
           type="password"
           value={token}
           onChange={(e) => setToken(e.target.value)}
-          placeholder="tt_..."
+          placeholder="ls_..."
           autoComplete="off"
           spellCheck={false}
           autoCapitalize="none"

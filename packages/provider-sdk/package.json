@@ -1,5 +1,5 @@
 {
-  "name": "@turntable/provider-sdk",
+  "name": "@longshore/provider-sdk",
   "version": "0.0.0",
   "private": true,
   "type": "module",
