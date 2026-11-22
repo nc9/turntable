@@ -65,6 +65,9 @@ export type RegisterRefusal =
   | "draft_unavailable"
   | "artifact_unverified"
   | "already_registered"
+  | "approval_expired"
+  | "already_finalized"
+  | "superseded"
   | "no_compat_targets";
 
 export type RegisterResult =
@@ -154,6 +157,14 @@ export class ReleaseProxy {
     if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
     const approved = this.#o.attest.approvedRelease({ ...scope, runId: a.runId });
     if (!approved) return refuse("not_approved");
+    // A signed release is not a standing permission: it lasts a while, ends when it is finalized,
+    // and a newer approved release replaces it. Otherwise an old approval could be re-registered
+    // later to publish old bytes under a name that has moved on (rolling `latest` back).
+    const nowMs = (this.#o.now ?? Date.now)();
+    if (approved.finalizedAt !== undefined) return refuse("already_finalized");
+    if (nowMs >= approved.expiresAt) return refuse("approval_expired");
+    const newest = this.#o.attest.isNewestApproved({ ...scope, runId: a.runId });
+    if (!newest) return refuse("superseded");
     if (this.#o.attest.pinnedRepo(a.orgId, a.projectId) !== approved.repo)
       return refuse("repo_mismatch");
     const tag = await this.#o.forge.tagCommit(approved.repo, approved.tag);
@@ -207,6 +218,7 @@ export class ReleaseProxy {
         npmManifests,
         npmReadmes,
         sha: approved.sha,
+        newest,
       }),
     );
     if (rules.length === 0) return refuse("no_compat_targets");
@@ -216,6 +228,8 @@ export class ReleaseProxy {
       runId: a.runId,
       tag: approved.tag,
     });
+    // The registration never outlives its approval.
+    const ttlMs = Math.min(a.ttlMs, approved.expiresAt - (this.#o.now ?? Date.now)());
     const credential = this.#registry.register({
       attemptId: a.attemptId,
       orgId: a.orgId,
@@ -223,7 +237,7 @@ export class ReleaseProxy {
       runId: a.runId,
       jobId: a.jobId,
       rules,
-      ttlMs: a.ttlMs,
+      ttlMs,
     });
     await appendAudit(this.#o.db, scope, {
       principalKind: "system",
@@ -283,11 +297,65 @@ export class ReleaseProxy {
     return n;
   }
 
+  /**
+   * Why an approval no longer backs a live registration, or undefined while it does: the release
+   * was finalized, its window ended, or a newer release of the project was approved.
+   */
+  #approvalGone(live: Live): "release_finalized" | "approval_expired" | "superseded" | undefined {
+    const id = { orgId: live.orgId, projectId: live.projectId, runId: live.runId };
+    const approved = this.#o.attest.approvedRelease(id);
+    if (!approved) return "approval_expired";
+    if (approved.finalizedAt !== undefined) return "release_finalized";
+    if ((this.#o.now ?? Date.now)() >= approved.expiresAt) return "approval_expired";
+    if (!this.#o.attest.isNewestApproved(id)) return "superseded";
+    return undefined;
+  }
+
+  /**
+   * Revokes every live registration whose approval is gone (finalized, expired or superseded).
+   * Returns how many. Run on a timer beside `sweepFrozen`; each request also checks, so this is
+   * what ends a credential that is not being used.
+   */
+  async sweepApprovals(): Promise<number> {
+    let n = 0;
+    for (const [id, l] of this.#live) {
+      const why = this.#approvalGone(l);
+      if (!why) continue;
+      this.release(id);
+      await this.#revokedAudit(id, l, why);
+      n++;
+    }
+    return n;
+  }
+
+  async #revokedAudit(attemptId: string, l: Live, outcome: string): Promise<void> {
+    await appendAudit(
+      this.#o.db,
+      { orgId: l.orgId, projectId: l.projectId },
+      {
+        principalKind: "system",
+        principalId: "release-lane",
+        op: "release_proxy_revoke",
+        effect: "write",
+        outcome,
+        input: { run: l.runId, attempt: attemptId },
+      },
+    );
+  }
+
   async #resolve(scope: SecretScope, rule: Rule): Promise<ResolvedSecret> {
     const live = this.#live.get(scope.attemptId);
     if (!live || !rule.secret) return { ok: false, reason: "no_attempt" };
-    // Checked on every request, not only at registration.
+    // Checked on every request, not only at registration: a freeze, and the approval itself. A
+    // release finalized, expired or replaced by a newer one gets nothing more, and its
+    // registration ends.
     if ((await getFreeze(this.#o.db, live)).frozen) return { ok: false, reason: "frozen" };
+    const gone = this.#approvalGone(live);
+    if (gone) {
+      this.release(scope.attemptId);
+      await this.#revokedAudit(scope.attemptId, live, gone);
+      return { ok: false, reason: gone };
+    }
     if (rule.secret === RELEASE_GITHUB_SECRET) {
       const token = await this.#o.githubToken();
       return token ? { ok: true, value: token } : { ok: false, reason: "no_github_credential" };

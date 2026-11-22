@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { tarDirectory } from "@longshore/act-runner";
 import { controlPost, type SafeFetch } from "@longshore/net";
-import { checkBody, compileRules } from "@longshore/proxy";
+import { checkBody, compileRules, matchRule } from "@longshore/proxy";
 import { chainedAudit, createReleaseRequest, setFreeze, clearFreeze, type Db } from "../src/db";
 import * as s from "../src/db/schema";
 import { resetFailureThrottle } from "../src/audit/failures";
@@ -156,8 +156,9 @@ describe("rules for compat targets", () => {
     expect(compatRules("gh", GH, rel)).toEqual([]);
   });
 
-  test("oci: ping, blobs, manifest reads, and a manifest write only for the attested digest under the approved references", () => {
-    const rules = compatRules("img", OCI, rel);
+  test("oci: ping, anchored blob and manifest endpoints, and a manifest write only for the attested digest under the approved references", () => {
+    // A mutable tag (latest) is only for the project's newest approved release.
+    const rules = compatRules("img", OCI, { ...rel, newest: true });
     expect(() => compileRules(rules)).not.toThrow();
     const writes = rules.filter((r) => r.methods.includes("PUT") && r.id.includes("manifest-"));
     expect(writes.map((r) => r.pathPrefix)).toEqual([
@@ -170,12 +171,61 @@ describe("rules for compat targets", () => {
       expect(w.bodyCheck).toEqual({ type: "sha256", digests: [rel.digests["manifest.json"]] });
     }
     expect(rules.every((r) => r.pathPrefix.startsWith("/v2/"))).toBe(true);
-    expect(rules.find((r) => r.id === "img:blobs")!.methods).not.toContain("DELETE");
+    expect(rules.some((r) => r.methods.includes("DELETE"))).toBe(false);
+  });
+
+  test("oci: a release that is not the newest may not move a mutable tag", () => {
+    for (const newest of [false, undefined]) {
+      const rules = compatRules("img", OCI, { ...rel, newest });
+      const writes = rules.filter((r) => r.methods.includes("PUT") && r.id.includes("manifest-"));
+      expect(writes.map((r) => r.pathPrefix)).toEqual([
+        "/v2/acme/web/manifests/v1.0.0",
+        `/v2/acme/web/manifests/sha256:${rel.digests["manifest.json"]}`,
+      ]);
+    }
+  });
+
+  test("oci: the rules match the registry endpoints and not a longer path that merely starts like one", () => {
+    const rules = compileRules(compatRules("img", OCI, { ...rel, newest: true }));
+    const allowed = (method: string, path: string) =>
+      matchRule(rules, OCI.registry, 443, method, path).ok;
+    const D = `sha256:${"a".repeat(64)}`;
+    // the real endpoints
+    expect(allowed("GET", "/v2/")).toBe(true);
+    expect(allowed("POST", "/v2/acme/web/blobs/uploads/")).toBe(true);
+    expect(allowed("PATCH", "/v2/acme/web/blobs/uploads/0b9d2f")).toBe(true);
+    expect(allowed("PUT", "/v2/acme/web/blobs/uploads/0b9d2f")).toBe(true);
+    expect(allowed("GET", `/v2/acme/web/blobs/${D}`)).toBe(true);
+    expect(allowed("HEAD", `/v2/acme/web/blobs/${D}`)).toBe(true);
+    expect(allowed("GET", "/v2/acme/web/manifests/latest")).toBe(true);
+    expect(allowed("HEAD", `/v2/acme/web/manifests/${D}`)).toBe(true);
+    // a repository whose name only starts with the approved one: <repo>/blobs/x is another repo
+    expect(allowed("GET", "/v2/acme/web/blobs/x/manifests/latest")).toBe(false);
+    expect(allowed("PUT", "/v2/acme/web/blobs/x/manifests/latest")).toBe(false);
+    expect(allowed("PUT", "/v2/acme/web/blobs/x/blobs/uploads/abc")).toBe(false);
+    expect(allowed("POST", "/v2/acme/web/blobs/x/blobs/uploads/")).toBe(false);
+    expect(allowed("GET", `/v2/acme/web/blobs/x/blobs/${D}`)).toBe(false);
+    expect(allowed("GET", "/v2/acme/web/manifests/x/manifests/latest")).toBe(false);
+    // shapes: the upload session is one segment, a blob read is a digest, a manifest is one segment
+    expect(allowed("PATCH", "/v2/acme/web/blobs/uploads/a/b")).toBe(false);
+    expect(allowed("PUT", "/v2/acme/web/blobs/uploads/")).toBe(false);
+    expect(allowed("POST", "/v2/acme/web/blobs/uploads/0b9d2f")).toBe(false);
+    expect(allowed("GET", "/v2/acme/web/blobs/latest")).toBe(false);
+    expect(allowed("GET", `/v2/acme/web/blobs/sha256:${"a".repeat(63)}`)).toBe(false);
+    expect(allowed("GET", `/v2/acme/web/blobs/${D}/extra`)).toBe(false);
+    expect(allowed("GET", "/v2/acme/web/manifests/a/b")).toBe(false);
+    expect(allowed("GET", "/v2/acme/web/manifests/")).toBe(false);
+    // methods stay narrow
+    expect(allowed("DELETE", `/v2/acme/web/blobs/${D}`)).toBe(false);
+    expect(allowed("PUT", `/v2/acme/web/blobs/${D}`)).toBe(false);
+    expect(allowed("PUT", "/v2/acme/web/manifests/other")).toBe(false);
   });
 
   test("oci: a named token host is carried into the rules, and only then", () => {
-    const plain = compatRules("img", OCI, rel).find((r) => r.id === "img:blobs")!;
-    expect(plain.inject).not.toHaveProperty("realmHost");
+    // without realmHost no rule carries one; with it, every rule does, including the anchored ones
+    const plain = compatRules("img", OCI, rel);
+    expect(plain.length).toBeGreaterThan(5);
+    for (const r of plain) expect(r.inject).not.toHaveProperty("realmHost");
     const hub = compatRules("img", { ...OCI, realmHost: "auth.docker.io" } as PublishTarget, rel);
     expect(
       hub.every((r) => r.inject.type === "oci-bearer" && r.inject.realmHost === "auth.docker.io"),
@@ -480,7 +530,7 @@ describe("the release proxy", () => {
       attest,
       signer,
       owner: "lane-1",
-      now: () => 1_800_000_000_000,
+      now: () => Date.now(),
     });
   const startProxy = async () =>
     ReleaseProxy.start({
@@ -575,6 +625,164 @@ describe("the release proxy", () => {
     );
     expect(await reg("a4")).toEqual({ ok: false, reason: "no_compat_targets" });
     expect(proxy!.active).toBe(0);
+  });
+
+  test("an approval expires: inside its window it registers, after it does not", async () => {
+    await sign();
+    expect((await reg("w1")).ok).toBe(true);
+    // the same run approved long ago, with the default window: over
+    const id = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    attest.approveRelease(
+      id,
+      { repo: "acme/web", tag: "v1.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now() - 7 * 3_600_000,
+    );
+    expect(await reg("w2")).toEqual({ ok: false, reason: "approval_expired" });
+    expect(await outcomes()).toContain("release_proxy_register:refused:approval_expired");
+    // a short window set at approval time ends sooner
+    attest.approveRelease(
+      id,
+      { repo: "acme/web", tag: "v1.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now() - 2_000,
+      1_000,
+    );
+    expect(await reg("w3")).toEqual({ ok: false, reason: "approval_expired" });
+  });
+
+  test("a finalized release cannot be registered again, even inside its window", async () => {
+    await sign();
+    const lane = makeLane();
+    expect((await reg("f1")).ok).toBe(true);
+    const done = await lane.finalize({ orgId: a.orgId, projectId: a.projectId, runId: a.runId });
+    // nothing was published by the job in this fixture, so finalize may have had work to do;
+    // what matters is that a finished release is closed
+    attest.markFinalized({ orgId: a.orgId, projectId: a.projectId, runId: a.runId }, Date.now());
+    expect(await reg("f2")).toEqual({ ok: false, reason: "already_finalized" });
+    expect(done).toBeDefined();
+    // signing the same run again does not reopen it
+    attest.approveRelease(
+      { orgId: a.orgId, projectId: a.projectId, runId: a.runId },
+      { repo: "acme/web", tag: "v1.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now() + 1000,
+    );
+    expect(await reg("f3")).toEqual({ ok: false, reason: "already_finalized" });
+  });
+
+  test("an older approved release cannot be registered once a newer one exists (no rolling a name back)", async () => {
+    await sign();
+    const mine = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    expect(attest.isNewestApproved(mine)).toBe(true);
+    // a later approval of another run of the same project
+    attest.approveRelease(
+      { orgId: a.orgId, projectId: a.projectId, runId: "later-run" },
+      { repo: "acme/web", tag: "v2.0.0", sha: "d".repeat(40), artifacts: ["web-2.0.0.tgz"] },
+      Date.now() + 5_000,
+    );
+    expect(attest.isNewestApproved(mine)).toBe(false);
+    expect(await reg("s1")).toEqual({ ok: false, reason: "superseded" });
+    // another project's approvals are not in the order
+    attest.approveRelease(
+      { orgId: a.orgId, projectId: "other-project", runId: "x" },
+      { repo: "acme/x", tag: "v9", sha: "e".repeat(40), artifacts: ["x"] },
+      Date.now() + 9_000,
+    );
+    expect(
+      attest.isNewestApproved({ orgId: a.orgId, projectId: "other-project", runId: "x" }),
+    ).toBe(true);
+  });
+
+  test("re-signing an older release does not make it newest again: its mutable tag stays refused", async () => {
+    await sign();
+    const A = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    const B = { orgId: a.orgId, projectId: a.projectId, runId: "run-b" };
+    const info = { repo: "acme/web", sha: SHA, artifacts: ["web-1.0.0.tgz"] };
+    attest.approveRelease(B, { ...info, tag: "v2.0.0" }, Date.now() + 1_000);
+    expect(attest.isNewestApproved(A)).toBe(false);
+    const before = attest.approvedRelease(A)!;
+    // sign A again, later: nothing about A moves, B stays newest
+    expect(attest.approveRelease(A, { ...info, tag: "v1.0.0" }, Date.now() + 60_000)).toBe(false);
+    const after = attest.approvedRelease(A)!;
+    expect(after.approvedAt).toBe(before.approvedAt);
+    expect(after.expiresAt).toBe(before.expiresAt); // the window is not extended either
+    expect(attest.isNewestApproved(A)).toBe(false);
+    expect(attest.isNewestApproved(B)).toBe(true);
+    expect(await reg("r1")).toEqual({ ok: false, reason: "superseded" });
+    // the lane signing A again through the real path changes nothing either
+    await sign();
+    expect(attest.isNewestApproved(A)).toBe(false);
+    expect(await reg("r2")).toEqual({ ok: false, reason: "superseded" });
+    // and the rules it would have got carry no mutable tag
+    const rules = compatRules("img", OCI, { ...rel, newest: attest.isNewestApproved(A) });
+    expect(rules.some((r) => r.pathPrefix.endsWith("/manifests/latest"))).toBe(false);
+  });
+
+  test("a registration never outlives its approval", async () => {
+    await sign();
+    const id = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    attest.approveRelease(
+      id,
+      { repo: "acme/web", tag: "v1.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now(),
+      30_000,
+    );
+    // approveRelease on an open, newest, unfinalized run refreshes the window to 30 s
+    const approvedUntil = attest.approvedRelease(id)!.expiresAt;
+    const r = await reg("t1");
+    if (!r.ok) throw new Error("not registered");
+    expect(r.credential.expiresAt).toBeLessThanOrEqual(approvedUntil + 50); // not the 60 s asked for
+    expect(r.credential.expiresAt).toBeLessThan(Date.now() + 31_000);
+  });
+
+  test("finalizing a release, or approving a newer one, ends the live registration at once and on the next request", async () => {
+    // finalized
+    await sign();
+    const r = await reg("g1");
+    if (!r.ok) throw new Error("not registered");
+    const viaProxy = (cred: typeof r, b: string) =>
+      fetch("https://registry.npmjs.org/@acme%2Fweb", {
+        method: "PUT",
+        body: b,
+        headers: { "content-type": "application/json" },
+        proxy: cred.credential.proxyUrl(cred.listen.host, cred.listen.port),
+        tls: { ca: cred.credential.caPem },
+      });
+    const id = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    attest.markFinalized(id, Date.now());
+    // the next request is refused and sends nothing upstream, even before any sweep
+    const denied = await viaProxy(r, publishDoc(npmTar));
+    expect(denied.status).not.toBe(201);
+    expect(seen).toHaveLength(0);
+    expect(proxy!.active).toBe(0); // the request ended the registration
+    expect(await outcomes()).toContain("release_proxy_revoke:release_finalized");
+  });
+
+  test("a newer approval revokes live registrations: by sweep, and on the next request", async () => {
+    await sign();
+    const r1 = await reg("n1");
+    const r2 = await reg("n2");
+    if (!r1.ok || !r2.ok) throw new Error("not registered");
+    expect(proxy!.active).toBe(2);
+    attest.approveRelease(
+      { orgId: a.orgId, projectId: a.projectId, runId: "newer" },
+      { repo: "acme/web", tag: "v2.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now() + 1_000,
+    );
+    // a request on one is refused and ends that one
+    const viaProxy = (cred: typeof r1) =>
+      fetch("https://registry.npmjs.org/@acme%2Fweb", {
+        method: "PUT",
+        body: publishDoc(npmTar),
+        headers: { "content-type": "application/json" },
+        proxy: cred.credential.proxyUrl(cred.listen.host, cred.listen.port),
+        tls: { ca: cred.credential.caPem },
+      });
+    expect((await viaProxy(r1)).status).not.toBe(201);
+    expect(seen).toHaveLength(0);
+    expect(proxy!.active).toBe(1);
+    // the sweep ends the one nobody used
+    expect(await proxy!.sweepApprovals()).toBe(1);
+    expect(proxy!.active).toBe(0);
+    expect(await outcomes()).toContain("release_proxy_revoke:superseded");
   });
 
   test("a job publishes the approved tarball through the proxy and never holds the token", async () => {
@@ -809,6 +1017,8 @@ describe("finishing a compat release", () => {
       { target: "npm", state: "already" },
     ]);
     expect(puts).toBe(0);
+    // every target done: the release is closed to the proxy
+    expect(attest.approvedRelease({ ...a.scope, runId: a.runId })?.finalizedAt).toBeDefined();
 
     attest.setPublishState(
       { ...a.scope, repo: "acme/web", tag: "v1.0.0" },
@@ -822,6 +1032,15 @@ describe("finishing a compat release", () => {
       { target: "npm", state: "published" },
     ]);
     expect(puts).toBe(1);
+  });
+
+  test("a target that failed leaves the release open so finalize can resume it", async () => {
+    const l = lane();
+    await l.processNext();
+    versions.set("1.0.0", "sha512-other");
+    const r = await l.finalize({ ...a.scope, runId: a.runId });
+    expect(r.some((x) => x.state === "refused" || x.state === "failed")).toBe(true);
+    expect(attest.approvedRelease({ ...a.scope, runId: a.runId })?.finalizedAt).toBeUndefined();
   });
 
   test("a version with other bytes under the name is refused, never accepted", async () => {

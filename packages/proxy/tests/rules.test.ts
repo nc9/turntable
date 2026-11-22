@@ -196,6 +196,43 @@ describe("publish rules: npm package paths, exact paths, body checks", () => {
     expect(matchRule([r!], base.host, 443, "GET", "/v2/other/").ok).toBe(false);
   });
 
+  test("pathShape matches segment by segment: * is one segment, {sha256} one digest", () => {
+    const shape = (pathShape: string, pathPrefix: string) =>
+      compileRules([{ ...base, pathPrefix, pathShape }]);
+    const blob = shape("/v2/acme/blobs/{sha256}", "/v2/acme/blobs");
+    const D = `sha256:${"a".repeat(64)}`;
+    const ok = (rs: ReturnType<typeof compileRules>, path: string) =>
+      matchRule(rs, base.host, 443, "GET", path).ok;
+    expect(ok(blob, `/v2/acme/blobs/${D}`)).toBe(true);
+    expect(ok(blob, `/v2/acme/blobs/${D}/x`)).toBe(false); // not a longer path
+    expect(ok(blob, "/v2/acme/blobs/x")).toBe(false);
+    expect(ok(blob, `/v2/acme/blobs/sha256:${"a".repeat(65)}`)).toBe(false);
+    expect(ok(blob, `/v2/acme/blobs/x/blobs/${D}`)).toBe(false);
+    const one = shape("/v2/acme/manifests/*", "/v2/acme/manifests");
+    expect(ok(one, "/v2/acme/manifests/latest")).toBe(true);
+    expect(ok(one, "/v2/acme/manifests/a/b")).toBe(false);
+    expect(ok(one, "/v2/acme/manifests/")).toBe(false); // empty segment
+    expect(ok(one, "/v2/acme/manifests")).toBe(false);
+    // a shape beats nothing: a rule with a shape never matches by prefix alone
+    expect(ok(one, "/v2/acme/manifests/latest/extra")).toBe(false);
+  });
+
+  test("pathShape is validated: whole-segment wildcards, a wildcard at all, a matching prefix", () => {
+    const mk = (pathShape: string, pathPrefix: string) => () =>
+      compileRule({ ...base, pathPrefix, pathShape });
+    expect(mk("/v2/a/*", "/v2/a")).not.toThrow();
+    expect(mk("/v2/a/*", "/v2/a/")).not.toThrow();
+    expect(mk("/v2/a/pre*", "/v2/a")).toThrow(RuleError); // partial wildcard
+    expect(mk("/v2/a/{sha256}x", "/v2/a")).toThrow(RuleError);
+    expect(mk("/v2/a/b", "/v2/a/b")).toThrow(RuleError); // no wildcard: use pathExact
+    expect(mk("/v2/a/*", "/v2/other")).toThrow(RuleError); // prefix is not the literal part
+    expect(mk("v2/a/*", "/v2/a")).toThrow(RuleError);
+    expect(mk("/v2/../a/*", "/v2/../a")).toThrow(RuleError);
+    expect(() =>
+      compileRule({ ...npmRule, pathShape: "/@acme%2Fweb/*", pathPrefix: "/@acme%2Fweb" }),
+    ).toThrow(RuleError);
+  });
+
   test("bodyCheck digests must be sha256 hex", () => {
     for (const digests of [[], ["abc"], ["A".repeat(64)]]) {
       expect(() => compileRule({ ...base, bodyCheck: { type: "sha256", digests } })).toThrow(
