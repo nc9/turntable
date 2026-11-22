@@ -190,7 +190,7 @@ describe("security requirements", () => {
     expect(f?.text).toContain(`acme/inner@${"f".repeat(40)} # v2`);
   });
 
-  test("checkout stub only copies the delivered workspace, never touches the network", () => {
+  test("checkout stub works from the delivered repository, never touches the network", () => {
     const s = checkoutStubAction("/tmp/tt-act/repo");
     for (const net of [
       "git fetch",
@@ -203,7 +203,10 @@ describe("security requirements", () => {
     ]) {
       expect(s).not.toContain(net);
     }
-    expect(s).toContain("cp -a '/tmp/tt-act/repo'/.");
+    expect(s).toContain("src='/tmp/tt-act/repo'");
+    expect(s).toContain('cp -a "$src/.git" "$dest/.git"');
+    // Submodules come from what was delivered: a module that is missing fails, it is not fetched.
+    expect(s).toContain("--no-fetch");
   });
 });
 
