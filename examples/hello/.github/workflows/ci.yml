@@ -1,0 +1,33 @@
+name: hello
+on: push
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout delivered the repo with git history
+        run: |
+          test -d .git
+          test -f README.md
+          git log -1 --format=%s
+      - name: Set an output
+        id: say
+        run: |
+          echo "hello from turntable"
+          echo "greeting=hello-output" >> "$GITHUB_OUTPUT"
+      - name: Export an env var
+        run: echo "TT_FROM_STEP=propagated-env" >> "$GITHUB_ENV"
+      - name: Read output and env
+        run: |
+          echo "env-check=$TT_FROM_STEP"
+          echo "output-check=${{ steps.say.outputs.greeting }}"
+          test "$TT_FROM_STEP" = propagated-env
+      - name: Local composite action
+        id: greet
+        uses: ./.github/actions/greet
+        with:
+          who: turntable
+      - name: Write a summary
+        run: |
+          echo "### Hello summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "composite-check=${{ steps.greet.outputs.message }}"

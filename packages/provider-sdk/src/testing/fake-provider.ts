@@ -89,6 +89,11 @@ export class FakeWorld {
     rmSync(join(sb.dir, "x", execId), { recursive: true, force: true });
   }
 
+  /** Absolute dir of a sandbox on the host. Paths under it pass through files.put/get as-is. */
+  sandboxDir(id: string): string {
+    return this.get(id).dir;
+  }
+
   setLatency(ms: number): void {
     this.opts.latencyMs = ms;
   }
@@ -257,6 +262,7 @@ class FakeProvider implements Provider {
     };
     const resolveIn = (id: string, path: string): string => {
       const sb = world.get(id);
+      if (path.startsWith(sb.dir + sep)) path = path.slice(sb.dir.length);
       const full = resolve(sb.dir, "." + (path.startsWith("/") ? path : "/" + path));
       if (!full.startsWith(sb.dir + sep)) throw new SpecError(`path escapes sandbox: ${path}`);
       return full;
