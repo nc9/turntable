@@ -1689,7 +1689,7 @@
       "post": {
         "operationId": "rerun",
         "summary": "Rerun failed jobs of a run, or named jobs, with a reason. Capped per commit.",
-        "description": "Puts jobs of a finished run back in the queue with a new attempt. jobs='failed' (default) reruns every job that failed or hit an infrastructure error; a list of job keys reruns exactly those (they must be finished). A reason is required and is recorded with the attempt and in the audit log. Each job may be rerun at most 2 times per commit; past that the call is refused with a 409, so do not loop on it: look at the failure instead (get_run, job_log). All or nothing: if any job is refused, nothing changes. This queues the work only; the scheduler picks the queued attempts up, so poll get_run or follow events to watch it. Operator role. Writes and is audited.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Puts jobs of a finished run back in the queue with a new attempt. jobs='failed' (default) reruns every job that failed or hit an infrastructure error; a list of job keys reruns exactly those (they must be finished). A reason is required and is recorded with the attempt and in the audit log. Each job may be rerun at most 2 times per commit; past that the call is refused with a 409, so do not loop on it: look at the failure instead (get_run, job_log). All or nothing: if any job is refused, nothing changes. A rerun never bypasses approval: a job that needs approval goes back to awaiting_approval (see state in the result), and one that never ran and needs approval is refused. This queues the work only; the scheduler picks the queued attempts up, so poll get_run or follow events to watch it. Operator role. Writes and is audited.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [
           {
             "name": "run_id",
@@ -1809,6 +1809,20 @@
                               "skipped"
                             ]
                           },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "running",
+                              "success",
+                              "failure",
+                              "infra_error",
+                              "awaiting_approval",
+                              "cancelled",
+                              "skipped"
+                            ],
+                            "description": "queued, or awaiting_approval when the job needs a human before it may run."
+                          },
                           "reruns_used": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -1821,6 +1835,7 @@
                           "job_key",
                           "attempt",
                           "previous_state",
+                          "state",
                           "reruns_used"
                         ],
                         "additionalProperties": false

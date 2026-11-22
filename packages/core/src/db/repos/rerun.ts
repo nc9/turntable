@@ -14,7 +14,13 @@ import { type Scope, scoped } from "./scope";
 export const MAX_RERUNS_PER_JOB_PER_SHA = 2;
 
 export class RerunError extends Error {
-  readonly code: "unknown_job" | "not_finished" | "limit" | "nothing_to_rerun" | "conflict";
+  readonly code:
+    | "unknown_job"
+    | "not_finished"
+    | "never_ran"
+    | "limit"
+    | "nothing_to_rerun"
+    | "conflict";
   constructor(code: RerunError["code"], message: string) {
     super(message);
     this.code = code;
@@ -27,6 +33,8 @@ export type RerunResult = {
     job: Job;
     attempt: number;
     previousState: JobState;
+    /** `queued`, or `awaiting_approval` when the job needs a human before it may run. */
+    state: JobState;
     /** Reruns used for this job key on this commit, including this one. */
     rerunsUsed: number;
   }[];
@@ -54,7 +62,12 @@ async function rerunsUsed(db: Db, scope: Scope, run: Run, jobKey: string): Promi
 /**
  * Reruns `jobs` of a run: `"failed"` means every job in failure or infra_error. Each selected
  * job goes back to `queued` with a new attempt carrying `reason`. All or nothing: any refusal
- * (unknown key, job still active, cap reached) changes nothing. Returns undefined when the run
+ * (unknown key, job still active, a job that never ran and needs approval, cap reached) changes
+ * nothing.
+ *
+ * A rerun never bypasses approval: a job with an `approval_kind` goes to `awaiting_approval`
+ * whatever its previous state (approval is per attempt), and one that never started (skipped, or
+ * cancelled before it started) is refused if it needs approval at all. Returns undefined when the run
  * is not in scope. Executing the queued attempts is the scheduler's job, not this function's.
  */
 export function rerunJobs(
@@ -86,6 +99,16 @@ export function rerunJobs(
         throw new RerunError("not_finished", `job ${job.jobKey} is ${job.state}, not finished`);
       }
     }
+    for (const job of selected) {
+      const neverRan =
+        (job.state === "skipped" || job.state === "cancelled") && job.startedAt === null;
+      if (neverRan && job.approvalKind !== null) {
+        throw new RerunError(
+          "never_ran",
+          `job ${job.jobKey} never ran and needs approval (${job.approvalKind}); it cannot be rerun`,
+        );
+      }
+    }
     const used = new Map<string, number>();
     for (const job of selected) {
       const n = await rerunsUsed(h, scope, run, job.jobKey);
@@ -102,9 +125,11 @@ export function rerunJobs(
     const evScope = { orgId: run.orgId, projectId: run.projectId };
     const reruns: RerunResult["reruns"] = [];
     for (const job of selected) {
+      // Approval is per attempt: a gated job waits for a human again, never straight to queued.
+      const target: JobState = job.approvalKind === null ? "queued" : "awaiting_approval";
       const rows = await h.orm
         .update(s.jobs)
-        .set({ state: "queued", exitCode: null, startedAt: null, finishedAt: null })
+        .set({ state: target, exitCode: null, startedAt: null, finishedAt: null })
         .where(
           scoped(
             scope,
@@ -123,15 +148,37 @@ export function rerunJobs(
         provider: previous?.provider ?? "unscheduled",
         rerunReason: input.reason,
       });
+      if (attempt && target === "awaiting_approval") {
+        await h.orm
+          .update(s.jobAttempts)
+          .set({ state: "awaiting_approval" })
+          .where(
+            scoped(
+              scope,
+              { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+              eq(s.jobAttempts.id, attempt.id),
+            ),
+          );
+      }
       await appendEvent(h, evScope, {
         type: "job.state_changed",
         runId: run.id,
         jobId: job.id,
         attemptId: attempt?.id,
-        payload: { from: job.state, to: "queued", rerun: true, reason: input.reason },
+        payload: { from: job.state, to: target, rerun: true, reason: input.reason },
       });
+      if (target === "awaiting_approval") {
+        await appendEvent(h, evScope, {
+          type: "approval.required",
+          runId: run.id,
+          jobId: job.id,
+          attemptId: attempt?.id,
+          payload: { approval_kind: job.approvalKind, rerun: true },
+        });
+      }
       reruns.push({
-        job: { ...job, state: "queued", exitCode: null, startedAt: null, finishedAt: null },
+        state: target,
+        job: { ...job, state: target, exitCode: null, startedAt: null, finishedAt: null },
         attempt: attempt?.attempt ?? 0,
         previousState: job.state as JobState,
         rerunsUsed: used.get(job.id)!,

@@ -73,7 +73,7 @@ No token role reaches `admin`, so a token can never create tokens.
 
 `get_run` and `list_runs` also return run metadata (`workflow_name`, `commit_message`, `actor`, `head_branch`, `pr_number`) and, per job, `needs`, `matrix` and `approval_kind` (`untrusted_author`, `environment` or null). The forge supplies them; `turntable run` fills them for local runs. They are forge text, so untrusted.
 
-`rerun` only queues work. It puts the jobs back in `queued` with a new attempt that carries the reason, and reopens the run. Starting the queued attempts is the scheduler's job, which comes later, so until then a reran job stays queued. The cap is per job key per commit across all runs of that sha (per run when it has none); past it the call is refused with `409 conflict`, and the right response is to read the failure, not to retry. The call is all or nothing.
+`rerun` only queues work. It puts the jobs back in `queued` with a new attempt that carries the reason, and reopens the run. Starting the queued attempts is the scheduler's job, which comes later, so until then a reran job stays queued. The cap is per job key per commit across all runs of that sha (per run when it has none); past it the call is refused with `409 conflict`, and the right response is to read the failure, not to retry. The call is all or nothing. A rerun never bypasses approval: a job with an `approval_kind` goes back to `awaiting_approval` (and emits `approval.required`) whatever its previous state, and a job that never ran (skipped, or cancelled before it started) and needs approval is refused.
 
 `cancel` updates state only for now. Stopping the running sandbox comes with the controller.
 

@@ -393,3 +393,115 @@ test("events long-poll: a per-org cap keeps one org from using every slot", asyn
   }
   void seedTenant;
 });
+
+async function gatedRun(sha: string) {
+  const r = await createRun(db, a.scope, {
+    workflowPath: "w.yml",
+    event: "pull_request",
+    ref: "main",
+    sha,
+  });
+  const mk = async (key: string, approvalKind?: "untrusted_author" | "environment") => {
+    const job = (await createJob(db, a.scope, {
+      runId: r.id,
+      jobKey: key,
+      name: key,
+      approvalKind,
+    }))!;
+    await createAttempt(db, a.scope, { jobId: job.id, provider: "docker" });
+    return job.id;
+  };
+  return { run: r, mk };
+}
+
+test("rerun never bypasses approval: a gated job goes back to awaiting_approval, never queued", async () => {
+  const { run: r, mk } = await gatedRun("a1".repeat(20));
+  const started = await mk("ran-then-cancelled", "untrusted_author");
+  const failedGated = await mk("failed-gated", "environment");
+  const plain = await mk("plain-failure");
+  // started jobs: run, then end as cancelled / failure
+  for (const id of [started, failedGated, plain]) {
+    await transitionJob(db, a.scope, id, "running");
+    const at = (await listAttempts(db, a.scope, id)).at(-1)!;
+    await updateAttempt(db, a.scope, at.id, { state: "running" });
+  }
+  await transitionJob(db, a.scope, started, "cancelled");
+  for (const id of [failedGated, plain]) {
+    const at = (await listAttempts(db, a.scope, id)).at(-1)!;
+    await updateAttempt(db, a.scope, at.id, { state: "failure", exitCode: 1 });
+    await transitionJob(db, a.scope, id, "failure", { exitCode: 1 });
+  }
+  await setRunStatus(db, a.scope, r.id, "failure");
+
+  const out = await run(operator, "rerun", {
+    run_id: r.id,
+    jobs: ["ran-then-cancelled", "failed-gated", "plain-failure"],
+    reason: "again",
+  });
+  const byKey = Object.fromEntries(out.reruns.map((x: { job_key: string }) => [x.job_key, x]));
+  expect(byKey["ran-then-cancelled"]).toMatchObject({
+    state: "awaiting_approval",
+    previous_state: "cancelled",
+  });
+  expect(byKey["failed-gated"]).toMatchObject({
+    state: "awaiting_approval",
+    previous_state: "failure",
+  });
+  expect(byKey["plain-failure"]).toMatchObject({ state: "queued" });
+  expect((await getJob(db, a.scope, started))?.state).toBe("awaiting_approval");
+  expect((await getJob(db, a.scope, failedGated))?.state).toBe("awaiting_approval");
+  expect((await getJob(db, a.scope, plain))?.state).toBe("queued");
+  // the new attempts wait too
+  expect((await listAttempts(db, a.scope, started)).at(-1)).toMatchObject({
+    attempt: 2,
+    state: "awaiting_approval",
+    rerunReason: "again",
+  });
+  expect((await listAttempts(db, a.scope, plain)).at(-1)).toMatchObject({
+    attempt: 2,
+    state: "queued",
+  });
+  // approval.required is emitted for each gated job, none for the plain one
+  const events = await listEvents(db, a.scope, {
+    after: 0,
+    limit: 500,
+    types: ["approval.required"],
+  });
+  const rerunApprovals = events.filter((e) => e.payload.includes('"rerun":true'));
+  expect(rerunApprovals.map((e) => e.jobId).toSorted()).toEqual([started, failedGated].toSorted());
+  expect(JSON.parse(rerunApprovals[0]!.payload).approval_kind).toBeString();
+  // the run is waiting on a human, not finished
+  expect((await getRun(db, a.scope, r.id))?.status).toBe("running");
+});
+
+test("rerun refuses a gated job that never ran: cancelled while awaiting approval, or skipped", async () => {
+  const { run: r, mk } = await gatedRun("b2".repeat(20));
+  const waiting = await mk("cancelled-while-waiting", "untrusted_author");
+  const skippedGated = await mk("skipped-gated", "environment");
+  const skippedPlain = await mk("skipped-plain");
+  await transitionJob(db, a.scope, waiting, "awaiting_approval");
+  await transitionJob(db, a.scope, waiting, "cancelled");
+  await transitionJob(db, a.scope, skippedGated, "skipped");
+  await transitionJob(db, a.scope, skippedPlain, "skipped");
+
+  for (const key of ["cancelled-while-waiting", "skipped-gated"]) {
+    const res = await call(operator, "rerun", { run_id: r.id, jobs: [key], reason: "try" });
+    expect(!res.ok && res.error.code).toBe("conflict");
+    expect(!res.ok && res.error.message).toContain("never ran and needs approval");
+  }
+  expect((await getJob(db, a.scope, waiting))?.state).toBe("cancelled"); // not queued, not awaiting
+  expect((await getJob(db, a.scope, skippedGated))?.state).toBe("skipped");
+  expect(await listAttempts(db, a.scope, waiting)).toHaveLength(1);
+  // all or nothing: one refusable job in the list blocks the rest
+  const mixed = await call(operator, "rerun", {
+    run_id: r.id,
+    jobs: ["skipped-plain", "skipped-gated"],
+    reason: "try",
+  });
+  expect(!mixed.ok && mixed.error.code).toBe("conflict");
+  expect((await getJob(db, a.scope, skippedPlain))?.state).toBe("skipped");
+  // a never-started job with no approval kind may be rerun, and goes to queued
+  const ok = await run(operator, "rerun", { run_id: r.id, jobs: ["skipped-plain"], reason: "now" });
+  expect(ok.reruns[0]).toMatchObject({ state: "queued", previous_state: "skipped" });
+  expect((await getJob(db, a.scope, skippedPlain))?.state).toBe("queued");
+});

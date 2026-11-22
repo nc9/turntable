@@ -13,7 +13,9 @@ export const rerun = defineOp({
     "exactly those (they must be finished). A reason is required and is recorded with the " +
     "attempt and in the audit log. Each job may be rerun at most 2 times per commit; past that " +
     "the call is refused with a 409, so do not loop on it: look at the failure instead " +
-    "(get_run, job_log). All or nothing: if any job is refused, nothing changes. This queues " +
+    "(get_run, job_log). All or nothing: if any job is refused, nothing changes. A rerun never " +
+    "bypasses approval: a job that needs approval goes back to awaiting_approval (see state in " +
+    "the result), and one that never ran and needs approval is refused. This queues " +
     "the work only; the scheduler picks the queued attempts up, so poll get_run or follow " +
     "events to watch it. Operator role. Writes and is audited.",
   input: z.object({
@@ -33,6 +35,9 @@ export const rerun = defineOp({
         job_key: z.string(),
         attempt: z.int().describe("The new, queued attempt number."),
         previous_state: z.enum(JOB_STATES),
+        state: z
+          .enum(JOB_STATES)
+          .describe("queued, or awaiting_approval when the job needs a human before it may run."),
         reruns_used: z
           .int()
           .describe(`Reruns of this job on this commit so far, of ${MAX_RERUNS_PER_JOB_PER_SHA}.`),
@@ -60,6 +65,7 @@ export const rerun = defineOp({
           job_key: r.job.jobKey,
           attempt: r.attempt,
           previous_state: r.previousState,
+          state: r.state,
           reruns_used: r.rerunsUsed,
         })),
       };
