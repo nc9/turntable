@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_OPEN_PEM, Redactor, redactString, SecretRegistry } from "../src";
+import { MAX_OPEN_PEM, MAX_PATTERN_LENGTH, Redactor, redactString, SecretRegistry } from "../src";
 
 // Secret-shaped fixtures are assembled at runtime: SPLIT breaks each literal so secret scanners
 // do not flag this file. It is the empty string.
 const SPLIT = "";
 const R = "***";
+const urlOf = (userinfo: string, rest: string): string =>
+  ["https:/", "/", userinfo, "@", rest].join("");
 const url = (user: string, pass: string, rest: string): string =>
   ["https:/", "/", user, ":", pass, "@", rest].join("");
 const GH = `gh${SPLIT}p_${"a1B2c3D4e5".repeat(4)}`; // 40 chars after the prefix
@@ -52,7 +54,7 @@ describe("patterns", () => {
     [
       "url password",
       `git clone ${url("user", "hunter2pass", "github.com/o/r.git")}`,
-      `git clone ${url("user", R, "github.com/o/r.git")}`,
+      `git clone ${urlOf(R, "github.com/o/r.git")}`,
     ],
     ["pem", `before\n${PEM}\nafter`, `before\n${R}\nafter`],
     [
@@ -116,7 +118,7 @@ describe("split across chunks", () => {
     splitEverywhere("x Authorization: Bearer abcdef123456789 y", `x Authorization: Bearer ${R} y`);
   });
   test("url password at every offset", () => {
-    splitEverywhere(url("u", "supersecretpw", "h.io/x"), url("u", R, "h.io/x"));
+    splitEverywhere(url("u", "supersecretpw", "h.io/x"), urlOf(R, "h.io/x"));
   });
   test("pem at every offset", () => {
     splitEverywhere(`a\n${PEM}\nb`, `a\n${R}\nb`);
@@ -477,5 +479,129 @@ describe("whitespace and cross-line key/value", () => {
       "aws_secret_access_key:\nnothing secret here\nnext\n",
     );
     expect(r.end()).toBe("");
+  });
+});
+
+/** Pushes `text` in two chunks, the first `i` characters then the rest. */
+function twoChunks(text: string, i: number): string {
+  const r = new Redactor();
+  return r.push(text.slice(0, i)) + r.push(text.slice(i)) + r.end();
+}
+
+/** Streams `text` in fixed-size chunks. */
+function chunked(text: string, size: number): string {
+  const r = new Redactor();
+  let out = "";
+  for (let i = 0; i < text.length; i += size) out += r.push(text.slice(i, i + size));
+  return out + r.end();
+}
+
+describe("a cut never lands inside a match prefix", () => {
+  const filler = "x".repeat(50);
+  const aws = `aws_secret_access_key = ${AWS_SECRET}`;
+  const bearer = "Authorization: Bearer abcdef1234567890XYZ";
+  const cases: [string, string, string][] = [
+    ["aws", aws, "aws_secret_access_key = ***"],
+    ["bearer", bearer, "Authorization: Bearer ***"],
+    ["userinfo", urlOf("user:hunter2pass", "host.io/p"), urlOf(R, "host.io/p")],
+  ];
+  for (const [name, secret, expected] of cases) {
+    test(`${name} on a line longer than the window, cut at every offset of the match`, () => {
+      const text = `${filler}${secret} tail ${"y".repeat(MAX_PATTERN_LENGTH)}`;
+      // The first push cuts `window - 1` characters before the end of what it has seen.
+      for (let k = 0; k <= secret.length + 1; k++) {
+        const i = filler.length + k + MAX_PATTERN_LENGTH - 1;
+        const out = twoChunks(text, i);
+        if (out !== `${filler}${expected} tail ${"y".repeat(MAX_PATTERN_LENGTH)}`) {
+          throw new Error(`cut at match offset ${k}: ${JSON.stringify(out.slice(0, 200))}`);
+        }
+      }
+    });
+  }
+});
+
+describe("exceeding a bound never means not redacted", () => {
+  const b64 = (n: number): string => "aB3_-".repeat(Math.ceil(n / 5)).slice(0, n);
+  const seg = (n: number): string => b64(n).replaceAll("-", "x");
+  const tokens: [string, string, string][] = [
+    ["jwt payload over 4096", `ey${SPLIT}J${seg(30)}.ey${SPLIT}J${seg(6000)}.${seg(40)}`, R],
+    ["jwt signature over 4096", `ey${SPLIT}J${seg(30)}.ey${SPLIT}J${seg(30)}.${seg(6000)}`, R],
+    ["jwt header over 1024", `ey${SPLIT}J${seg(3000)}.ey${SPLIT}J${seg(30)}.${seg(40)}`, R],
+    ["github token over 255", `gh${SPLIT}p_${"a1B2".repeat(200)}`, R],
+    ["fine-grained token over 255", `github${SPLIT}_pat_${"a1B_".repeat(200)}`, R],
+    ["npm token over 255", `np${SPLIT}m_${"a1B2".repeat(200)}`, R],
+    ["slack token over 250", `xo${SPLIT}xb-${"1a-".repeat(200)}`, R],
+    [
+      "bearer over 4096",
+      `Authorization: Bearer ${"Ab1.".repeat(2000)}`,
+      `Authorization: Bearer ${R}`,
+    ],
+    [
+      "aws secret over 40",
+      `aws_secret_access_key=${AWS_SECRET}${"Q".repeat(30)}`,
+      `aws_secret_access_key=${R}`,
+    ],
+  ];
+  for (const [name, token, expected] of tokens) {
+    test(`${name}: one shot and chunked`, () => {
+      expect(redactString(`x ${token} y`)).toBe(`x ${expected} y`);
+      for (const size of [1000, 4096, 777]) {
+        expect(chunked(`x ${token} y`, size)).toBe(`x ${expected} y`);
+      }
+    });
+    test(`${name}: cut at sampled offsets`, () => {
+      const text = `x ${token} y`;
+      for (let i = 0; i <= text.length; i += 53) {
+        const out = twoChunks(text, i);
+        if (out !== `x ${expected} y`)
+          throw new Error(`cut ${i}: ${JSON.stringify(out.slice(0, 120))}`);
+      }
+    });
+  }
+
+  test("the swallowed continuation stops at the first character outside the token", () => {
+    const r = new Redactor();
+    let out = r.push(`k gh${SPLIT}p_${"a1B2".repeat(100)}`); // past the bound, run reaches the end
+    out += r.push("a1B2a1B2");
+    out += r.push(` tail\nnext`);
+    out += r.end();
+    expect(out).toBe(`k ${R} tail\nnext`);
+  });
+
+  test("a bounded jwt keeps its trailing punctuation", () => {
+    expect(redactString(`jwt ${JWT}. ok`)).toBe(`jwt ${R}. ok`);
+  });
+});
+
+describe("url userinfo", () => {
+  test("empty username", () => {
+    expect(redactString(urlOf(":pass1234word", "host.io/"))).toBe(urlOf(R, "host.io/"));
+  });
+  test("slash in the password, up to the last @ of the token", () => {
+    expect(redactString(urlOf("user:pa/ss/word99", "host.io/x"))).toBe(urlOf(R, "host.io/x"));
+    expect(redactString(urlOf("user:pa@ss@word", "host.io/x"))).toBe(urlOf(R, "host.io/x"));
+  });
+  test("the whole userinfo is redacted, username included", () => {
+    expect(redactString(urlOf("deploy-bot:s3cret-value", "git.io/r.git"))).toBe(
+      urlOf(R, "git.io/r.git"),
+    );
+  });
+  test("over-long passwords are truncated, never dropped", () => {
+    for (const n of [300, 3000]) {
+      const u = urlOf(`user:${"p4ss".repeat(n / 4)}`, "host.io/x");
+      const out = redactString(`a ${u} b`);
+      expect(out).not.toContain("p4ssp4ss");
+      expect(out.startsWith(`a ${urlOf("", "").slice(0, 8)}`)).toBe(true);
+      expect(out.endsWith(" b") || out.endsWith("***")).toBe(true);
+      expect(chunked(`a ${u} b`, 500)).toBe(out);
+    }
+  });
+  test("a port or a scoped npm path is not userinfo", () => {
+    const clean = [
+      "http://localhost:4873/@scope/pkg",
+      "https://example.com:8080/a@b",
+      "https://user@example.com/path",
+    ];
+    for (const c of clean) expect(redactString(c)).toBe(c);
   });
 });

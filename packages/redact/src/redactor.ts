@@ -1,6 +1,6 @@
 import {
+  COMPILED,
   MAX_PATTERN_LENGTH,
-  PATTERNS,
   PEM_BEGIN,
   PEM_END,
   KEY_LINE_END,
@@ -94,7 +94,12 @@ function idleHoldStart(text: string, registry: SecretRegistry | undefined): numb
   return hold;
 }
 
-type Interval = { start: number; end: number };
+/**
+ * `start`..`end` is replaced; `full` is where the whole match begins (a kept prefix included),
+ * so the stream is never cut inside a match. `open` is set when a token's run reached the end
+ * of the buffer and may continue in the next chunk.
+ */
+type Interval = { start: number; end: number; full: number; open?: RegExp };
 
 /** Finds redaction intervals in `text`. `open` is the start of an unterminated PEM block. */
 function findIntervals(
@@ -104,12 +109,27 @@ function findIntervals(
   const intervals: Interval[] = [];
   let openPemStart: number | undefined;
 
-  for (const p of PATTERNS) {
+  for (const p of COMPILED) {
     if (p.needs !== undefined && !text.includes(p.needs)) continue;
     p.re.lastIndex = 0;
-    for (const m of text.matchAll(p.re)) {
+    for (let m = p.re.exec(text); m; m = p.re.exec(text)) {
+      if (m[0].length === 0) {
+        p.re.lastIndex++;
+        continue;
+      }
       const keep = p.keepPrefix ? (m[1]?.length ?? 0) : 0;
-      intervals.push({ start: m.index + keep, end: m.index + m[0].length });
+      let end = m.index + m[0].length;
+      let open: RegExp | undefined;
+      // The match hit its upper bound if the next character still belongs to the token: carry
+      // the redaction through the rest of the run. Resume matching after it (linear overall).
+      if (p.runRe && p.triggerRe && end < text.length && p.triggerRe.test(text.charAt(end))) {
+        p.runRe.lastIndex = end;
+        const run = p.runRe.exec(text);
+        if (run) end += run[0].length;
+        if (end === text.length) open = new RegExp(`^[${p.run}]*`);
+        p.re.lastIndex = end;
+      }
+      intervals.push({ start: m.index + keep, end, full: m.index, ...(open ? { open } : {}) });
     }
   }
 
@@ -124,11 +144,15 @@ function findIntervals(
     if (!end) {
       // Everything after an unterminated BEGIN is held (or swallowed) until the END shows up.
       openPemStart = begin.index;
-      intervals.push({ start: begin.index, end: Number.POSITIVE_INFINITY });
+      intervals.push({
+        start: begin.index,
+        end: Number.POSITIVE_INFINITY,
+        full: begin.index,
+      });
       break;
     }
     const endIdx = end.index + end[0].length;
-    intervals.push({ start: begin.index, end: endIdx });
+    intervals.push({ start: begin.index, end: endIdx, full: begin.index });
     from = endIdx;
   }
 
@@ -136,7 +160,7 @@ function findIntervals(
     for (const form of registry.forms()) {
       let at = text.indexOf(form);
       while (at !== -1) {
-        intervals.push({ start: at, end: at + form.length });
+        intervals.push({ start: at, end: at + form.length, full: at });
         at = text.indexOf(form, at + 1);
       }
     }
@@ -149,10 +173,31 @@ function merge(intervals: Interval[]): Interval[] {
   const out: Interval[] = [];
   for (const iv of sorted) {
     const last = out.at(-1);
-    if (last && iv.start <= last.end) last.end = Math.max(last.end, iv.end);
-    else out.push({ ...iv });
+    if (last && iv.start <= last.end) {
+      last.full = Math.min(last.full, iv.full);
+      if (iv.end > last.end) {
+        last.end = iv.end;
+        if (iv.open) last.open = iv.open;
+        else delete last.open;
+      } else if (iv.end === last.end && iv.open) last.open = iv.open;
+    } else out.push({ ...iv });
   }
   return out;
+}
+
+/** Moves `boundary` back until no match (from its first character, prefix included) straddles it. */
+function settle(boundary: number, merged: Interval[]): number {
+  let b = boundary;
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const iv of merged) {
+      if (iv.full < b && iv.end > b) {
+        b = iv.full;
+        moved = true;
+      }
+    }
+  }
+  return b;
 }
 
 function apply(text: string, merged: Interval[], limit: number): string {
@@ -197,6 +242,8 @@ export class Redactor {
   #decoder = new TextDecoder("utf-8");
   #buf = "";
   #swallowing = false;
+  /** Set while an over-long token continues across chunks: its characters are dropped. */
+  #tokenRun: RegExp | undefined;
   #ended = false;
 
   constructor(opts: { registry?: SecretRegistry | undefined } = {}) {
@@ -235,6 +282,13 @@ export class Redactor {
   #drain(mode: "push" | "idle" | "end"): string {
     const final = mode === "end";
     let out = "";
+    // An over-long token was already replaced by `***`: drop the rest of its run.
+    if (this.#tokenRun) {
+      const run = this.#tokenRun.exec(this.#buf);
+      this.#buf = this.#buf.slice(run ? run[0].length : 0);
+      if (this.#buf.length === 0) return out;
+      this.#tokenRun = undefined;
+    }
     // Swallow mode: drop everything until the END marker of an oversized PEM block.
     if (this.#swallowing) {
       PEM_END.lastIndex = 0;
@@ -267,11 +321,17 @@ export class Redactor {
       return out;
     }
 
+    // A token whose run reaches the end of the buffer may go on in the next chunk: emit the
+    // replacement now and drop the continuation as it arrives (bounded memory).
+    const last = merged.at(-1);
+    if (last?.open && last.end === text.length) {
+      this.#tokenRun = last.open;
+      this.#buf = "";
+      return out + apply(text, merged, text.length);
+    }
+
     if (mode === "idle") {
-      let boundary = idleHoldStart(text, this.#registry);
-      for (const iv of merged) {
-        if (iv.start < boundary && iv.end > boundary) boundary = iv.start;
-      }
+      const boundary = settle(idleHoldStart(text, this.#registry), merged);
       this.#buf = text.slice(boundary);
       return out + apply(text, merged, boundary);
     }
@@ -284,11 +344,8 @@ export class Redactor {
     const lineStart = this.#registry?.hasNewline
       ? 0
       : Math.min(partialStart, prevKeyLineStart(text, partialStart));
-    let boundary = Math.max(windowStart, lineStart);
-    // Do not split a match, or a surrogate pair.
-    for (const iv of merged) {
-      if (iv.start < boundary && iv.end > boundary) boundary = iv.start;
-    }
+    // Do not split a match (its prefix included), or a surrogate pair.
+    let boundary = settle(Math.max(windowStart, lineStart), merged);
     if (boundary > 0 && /[\uDC00-\uDFFF]/.test(text.charAt(boundary))) boundary--;
     if (boundary <= 0) return out;
     this.#buf = text.slice(boundary);

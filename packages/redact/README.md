@@ -23,7 +23,9 @@ const rest = redactor.end(); // flush once at end of stream
 - Slack tokens (`xox[abprs]-`)
 - JWTs (three base64url segments, the first two starting `eyJ`)
 - Bearer tokens in `Authorization` headers (the `Bearer` prefix stays)
-- Passwords in URL userinfo (`scheme://user:pass@host`; the user and host stay)
+- URL userinfo (`scheme://user:pass@host`): everything between `://` and the last `@` of the
+  token, so an empty username and a `/` in the password are covered. A first segment that looks
+  like a port (`host:8080/`) is not userinfo
 - Registered exact values, plus their base64 (padded and unpadded), base64url and URL-encoded
   forms, and the base64 core of the value as embedded at each of the 3 byte alignments inside a
   larger base64 blob
@@ -64,8 +66,14 @@ Trade-offs:
 - **Cost is O(held line) per push**, at most the window. Chunks of a few KiB are fine.
 - **Unterminated PEM blocks** are held until their `END` marker, up to 256 KiB, then swallowed
   (one `***`) until the marker or `end()`.
-- **Over-long tokens** (past a pattern's upper bound, for example 255 characters after `ghp_`)
-  are redacted only up to the bound; the remainder is emitted as is.
+- **Over-long tokens are still redacted in full.** When a token hits a pattern's upper bound and
+  the next character still belongs to it, the redaction extends through the rest of the run. In
+  a stream the replacement is emitted at once and the continuation is dropped as it arrives
+  (bounded memory). A JWT over-long in any segment, a `ghp_` token over 255 characters and a
+  URL password over 256 characters are all covered. An over-long URL password takes the rest of
+  its whitespace-delimited token with it.
+- **The stream is never cut inside a match, prefix included.** A cut that would fall between
+  `Authorization: Bearer ` and its value steps back to the start of the prefix.
 - **Base64 image data and git SHAs** are untouched: no built-in pattern matches bare hex or
   bare base64. A secret embedded in another base64 blob is found only if registered (the three
   alignments above); an unregistered one is not.
