@@ -8,6 +8,7 @@ import {
   listAttempts,
   listJobs,
   listRuns,
+  listSteps,
   openDatabase,
   readLog,
 } from "../src/db";
