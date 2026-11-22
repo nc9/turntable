@@ -10,10 +10,18 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
-    "typecheck": "bun run --cwd packages/core typecheck",
-    "test": "bun test packages/core/tests",
+    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker",
+    "test": "bun run --sequential test:core test:core2 test:provider",
     "build": "bun run scripts/build.ts",
-    "dev": "bun run packages/core/src/main.ts serve"
+    "dev": "bun run packages/core/src/main.ts serve",
+    "typecheck:core": "bun run --cwd packages/core typecheck",
+    "typecheck:provider-sdk": "bun run --cwd packages/provider-sdk typecheck",
+    "typecheck:provider-conformance": "bun run --cwd packages/provider-conformance typecheck",
+    "test:core": "bun test packages/core/tests/db.test.ts packages/core/tests/server.test.ts packages/core/tests/job-state.test.ts",
+    "test:provider": "bun test packages/provider-sdk/tests/sdk.test.ts packages/provider-conformance/tests/fake.test.ts packages/provider-conformance/tests/fake-faults.test.ts packages/provider-docker/tests/commands.test.ts",
+    "typecheck:provider-docker": "bun run --cwd packages/provider-docker typecheck",
+    "test:docker": "TT_DOCKER_CONFORMANCE=1 bun test packages/provider-docker/tests/conformance.test.ts",
+    "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",

@@ -21,6 +21,34 @@
         "drizzle-kit": "0.31.11",
       },
     },
+    "packages/provider-conformance": {
+      "name": "@turntable/provider-conformance",
+      "version": "0.0.0",
+      "dependencies": {
+        "@turntable/provider-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+      },
+    },
+    "packages/provider-docker": {
+      "name": "@turntable/provider-docker",
+      "version": "0.0.0",
+      "dependencies": {
+        "@turntable/provider-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@turntable/provider-conformance": "workspace:*",
+        "@types/bun": "1.4.4",
+      },
+    },
+    "packages/provider-sdk": {
+      "name": "@turntable/provider-sdk",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+      },
+    },
   },
   "packages": {
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.10.2", "", {}, "sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w=="],
@@ -158,6 +186,12 @@
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.92.0", "", { "os": "win32", "cpu": "x64" }, "sha512-0AyhqX0ciFuEnHIL+B4PIMMX3s/IpGHNEbbUqwsNhSrzWUSlEOPw/q7qFnRsEJfiKedcqVfUE/aXYuSMtpiFyw=="],
 
     "@turntable/core": ["@turntable/core@workspace:packages/core"],
+
+    "@turntable/provider-conformance": ["@turntable/provider-conformance@workspace:packages/provider-conformance"],
+
+    "@turntable/provider-docker": ["@turntable/provider-docker@workspace:packages/provider-docker"],
+
+    "@turntable/provider-sdk": ["@turntable/provider-sdk@workspace:packages/provider-sdk"],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
