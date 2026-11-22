@@ -916,6 +916,8 @@ export const approvalChallenges = sqliteTable(
     kind: text("kind").notNull(),
     /** The statement hash the challenge was issued for (sha256 hex); empty for `register`. */
     statementHash: text("statement_hash").notNull(),
+    /** The principal that asked for it (`kind:id`), so the open-challenge cap is per caller. */
+    principal: text("principal"),
     expiresAt: integer("expires_at", { mode: "number" }).notNull(),
     usedAt: integer("used_at", { mode: "number" }),
   },

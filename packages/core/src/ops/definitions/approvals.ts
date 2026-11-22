@@ -19,6 +19,7 @@ import {
   MAX_STATEMENT_TTL_MS,
   statementHash,
 } from "../../approvals/statement";
+import { approverIdentity, normalizeLogin, notCountingReason } from "../../approvals/identity";
 import { parseEd25519PublicKey } from "../../approvals/keys";
 import { dbKeyStore } from "../../approvals/store";
 import { signatureSchema, verifySignature, VerifyError } from "../../approvals/verify";
@@ -27,6 +28,8 @@ import {
   ApprovalConflict,
   consumeChallenge,
   countOpenChallenges,
+  purgeExpiredChallenges,
+  recordIdentities,
   getApprover,
   getEnrolment,
   getEnvPolicy,
@@ -51,7 +54,7 @@ import { OpError } from "../errors";
 import { principalLabel } from "../principal";
 
 const nonce = () => randomBytes(24).toString("base64url");
-const MAX_OPEN_CHALLENGES = 500;
+const MAX_OPEN_CHALLENGES = 50;
 const DEFAULT_APPROVAL_TTL_MS = 24 * 3600_000;
 const ENROLMENT_TTL_MS = 7 * 24 * 3600_000;
 
@@ -177,12 +180,17 @@ export const approversOverview = defineOp({
         kind: z.enum(APPROVER_KINDS),
         passkey_id: z.string().nullable(),
         created_at: z.string(),
+        not_counting: z
+          .string()
+          .nullable()
+          .describe("Why this key counts toward no approval or quorum; null when it does."),
       }),
     ),
     pending_enrolments: z.array(
       z.object({
         id: z.string(),
         person: z.string(),
+        forge_login: z.string().nullable(),
         kind: z.enum(APPROVER_KINDS),
         key_fingerprint: z.string(),
         approvals: z.int(),
@@ -219,10 +227,11 @@ export const approversOverview = defineOp({
       pending.push({
         id: e.id,
         person: e.person,
+        forge_login: e.forgeLogin,
         kind: e.kind as "webauthn" | "ed25519",
         key_fingerprint: keyFingerprint(e),
-        approvals: new Set(recs.map((r) => r.person)).size,
-        required: await enrolmentQuorum(ctx.db, orgId, e.person),
+        approvals: (await recordIdentities(ctx.db, orgId, recs)).size,
+        required: await enrolmentQuorum(ctx.db, orgId, approverIdentity(e)),
         expires_at: iso(e.expiresAt)!,
       });
     }
@@ -246,6 +255,7 @@ export const approversOverview = defineOp({
         kind: a.kind as "webauthn" | "ed25519",
         passkey_id: a.credentialId,
         created_at: iso(a.createdAt)!,
+        not_counting: notCountingReason(a),
       })),
       pending_enrolments: pending,
       policies,
@@ -273,19 +283,34 @@ async function openChallenge(
   hash: string,
   approverId: string,
 ) {
-  const now = ctx.now();
   const approver = await getApprover(ctx.db, ctx.scope.orgId, approverId);
   if (!approver || approver.revokedAt !== null) throw new OpError("not_found", "no such approver");
-  // A cap on open challenges, so a reader token cannot fill the table.
-  if ((await countOpenChallenges(ctx.db, ctx.scope.orgId, now)) >= MAX_OPEN_CHALLENGES)
+  await storeChallenge(ctx, kind, statement.nonce, hash);
+  return approver;
+}
+
+/**
+ * Stores a challenge under a cap on what one principal may hold open, so one token cannot fill
+ * the table or crowd out another caller's challenges. Expired rows are purged on the way.
+ */
+async function storeChallenge(
+  ctx: OpContext,
+  kind: "approve" | "enrol" | "register",
+  id: string,
+  hash: string,
+): Promise<void> {
+  const now = ctx.now();
+  const principal = principalLabel(ctx.principal);
+  await purgeExpiredChallenges(ctx.db, ctx.scope.orgId, now);
+  if ((await countOpenChallenges(ctx.db, ctx.scope.orgId, principal, now)) >= MAX_OPEN_CHALLENGES)
     throw new OpError("conflict", "too many open challenges: wait for some to expire");
   await insertChallenge(ctx.db, ctx.scope.orgId, {
-    id: statement.nonce,
+    id,
     kind,
     statementHash: hash,
+    principal,
     expiresAt: now + CHALLENGE_TTL_MS,
   });
-  return approver;
 }
 
 export const approvalChallenge = defineOp({
@@ -382,6 +407,7 @@ export const enrolmentChallenge = defineOp({
       org: org!.slug,
       enrolment_id: e.id,
       person: e.person,
+      forge_login: e.forgeLogin === null ? "" : normalizeLogin(e.forgeLogin),
       key_fingerprint: keyFingerprint(e),
       approver: input.approver,
       expires_at: Math.min(e.expiresAt, now + DEFAULT_APPROVAL_TTL_MS),
@@ -426,12 +452,7 @@ export const registerChallenge = defineOp({
     const rpv = rp(ctx);
     const now = ctx.now();
     const id = nonce();
-    await insertChallenge(ctx.db, ctx.scope.orgId, {
-      id,
-      kind: "register",
-      statementHash: "",
-      expiresAt: now + CHALLENGE_TTL_MS,
-    });
+    await storeChallenge(ctx, "register", id, "");
     return { challenge: id, rp_id: rpv.rpId, expires_at: iso(now + CHALLENGE_TTL_MS)! };
   },
 });
@@ -551,7 +572,7 @@ export const requestEnrolment = defineOp({
         enrolment_id: e.id,
         kind: key.kind,
         key_fingerprint: keyFingerprint(key),
-        required: await enrolmentQuorum(ctx.db, orgId, e.person),
+        required: await enrolmentQuorum(ctx.db, orgId, approverIdentity(e)),
         expires_at: iso(e.expiresAt)!,
       };
     } catch (e) {
@@ -566,7 +587,9 @@ export const requestEnrolment = defineOp({
 const environmentOutput = z.object({
   run_id: z.string(),
   environment: z.string(),
-  approvals: z.int().describe("Distinct people with a valid approval now."),
+  approvals: z
+    .int()
+    .describe("Distinct approvers (by verified forge login) with a valid approval now."),
   required: z.int(),
   released_jobs: z.int(),
   state: z.string(),

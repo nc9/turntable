@@ -224,10 +224,12 @@ export type WireApprovers = {
     kind: "webauthn" | "ed25519";
     passkey_id: string | null;
     created_at: string;
+    not_counting: string | null;
   }[];
   pending_enrolments: {
     id: string;
     person: string;
+    forge_login: string | null;
     kind: "webauthn" | "ed25519";
     key_fingerprint: string;
     approvals: number;

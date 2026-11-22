@@ -39,6 +39,8 @@ export const enrolStatementSchema = z.strictObject({
   org: slug,
   enrolment_id: z.string().min(1).max(64),
   person: z.string().min(1).max(200),
+  /** The forge login the key is enrolled under, lower-cased: what the approvers sign off on. */
+  forge_login: z.string().min(1).max(100),
   /** sha256 hex over the key being enrolled (see keyFingerprint). */
   key_fingerprint: hex(64, 64),
   approver: z.string().min(1).max(64),

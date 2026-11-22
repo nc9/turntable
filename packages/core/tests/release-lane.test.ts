@@ -283,6 +283,7 @@ describe("what is signed is exactly what the lane verified", () => {
   describe("against the real signing service", () => {
     const person = {
       approverId: "ap",
+      identity: "login:ap-gh",
       person: "alice",
       method: "ed25519" as const,
       statementHash: "s".repeat(64),

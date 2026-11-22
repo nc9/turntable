@@ -291,5 +291,12 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `projects` ADD `ingest_config` text;"
     ]
+  },
+  {
+    "tag": "0024_minor_warstar",
+    "when": 1795381960988,
+    "statements": [
+      "ALTER TABLE `approval_challenges` ADD `principal` text;"
+    ]
   }
 ];
