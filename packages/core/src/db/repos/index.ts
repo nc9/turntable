@@ -20,6 +20,7 @@ export * from "./github";
 export * from "./audit";
 export * from "./cancel";
 export * from "./pins";
+export * from "./verdicts";
 export * from "./events";
 export * from "./lease";
 export * from "./poll";

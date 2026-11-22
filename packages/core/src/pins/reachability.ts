@@ -3,7 +3,13 @@
 // fork. An allowlist or a sha pin passes it, and the code is not owner/repo's. So every sha must
 // be reachable from a branch or tag of the named repository itself.
 import { PlanError } from "@longshore/act-runner";
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import {
+  type Backoff,
+  fetchWithBackoff,
+  RateLimitedError,
+  type SafeFetch,
+  safeFetch,
+} from "@longshore/net";
 import { InfraError } from "@longshore/provider-sdk";
 
 /** True when `sha` is reachable from a branch or tag of owner/repo. Throws InfraError if GitHub is unreachable. */
@@ -14,6 +20,8 @@ export interface GithubReachabilityOptions {
   /** Raises the unauthenticated rate limit. Read-only access is enough. */
   token?: string;
   apiBase?: string;
+  /** Waits out a rate limit within a shared budget before failing (see fetchWithBackoff). */
+  backoff?: Backoff;
 }
 
 const MAX_TAG_PAGES = 10;
@@ -28,7 +36,7 @@ export function githubReachability(o: GithubReachabilityOptions = {}): Reachabil
   const get = async (path: string): Promise<Response> => {
     let res: Response;
     try {
-      res = await f(`${base}${path}`, {
+      const init = {
         headers: {
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
@@ -36,8 +44,14 @@ export function githubReachability(o: GithubReachabilityOptions = {}): Reachabil
           ...(o.token ? { authorization: `Bearer ${o.token}` } : {}),
         },
         signal: AbortSignal.timeout(30_000),
-      });
+      };
+      res = o.backoff
+        ? await fetchWithBackoff(f, `${base}${path}`, init, o.backoff)
+        : await f(`${base}${path}`, init);
     } catch (e) {
+      if (e instanceof RateLimitedError) {
+        throw new InfraError(`verifying an action commit: ${e.message}`);
+      }
       throw new InfraError(`cannot reach GitHub to verify an action commit`, e);
     }
     return res;
