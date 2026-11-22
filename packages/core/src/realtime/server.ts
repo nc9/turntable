@@ -87,6 +87,8 @@ export type WsData = {
   orgId: string;
   subs: Map<string, Sub>;
   closed: boolean;
+  /** True once `open` ran, i.e. the pending slot became a real one. */
+  opened: boolean;
   noSubsSince: number;
 };
 
@@ -120,6 +122,16 @@ export function createRealtime(options: RealtimeOptions) {
   const allowed = options.allowedOrigins ?? [];
   const byOrg = new Map<string, Set<Ws>>();
   const subCount = new Map<string, number>();
+  /** Upgrades accepted but not yet open, per org: they hold a slot so the cap cannot be raced. */
+  const pending = new Map<string, number>();
+  const hold = (orgId: string) => pending.set(orgId, (pending.get(orgId) ?? 0) + 1);
+  const release = (orgId: string) => {
+    const n = (pending.get(orgId) ?? 1) - 1;
+    if (n <= 0) pending.delete(orgId);
+    else pending.set(orgId, n);
+  };
+  const connectionsFor = (orgId: string) =>
+    (byOrg.get(orgId)?.size ?? 0) + (pending.get(orgId) ?? 0);
 
   const cred = (ws: Ws) => ({ kind: "bearer" as const, token: ws.data.token });
 
@@ -467,6 +479,14 @@ export function createRealtime(options: RealtimeOptions) {
     backpressureLimit: limits.maxBufferedBytes * 4,
     closeOnBackpressureLimit: false,
     open(ws) {
+      // The slot reserved at upgrade becomes a real one; re-check, and never exceed the cap.
+      ws.data.opened = true;
+      release(ws.data.orgId);
+      if ((byOrg.get(ws.data.orgId)?.size ?? 0) >= limits.maxConnectionsPerOrg) {
+        ws.data.closed = true;
+        ws.close(CLOSE.limit, "too many realtime connections for this org");
+        return;
+      }
       let set = byOrg.get(ws.data.orgId);
       if (!set) byOrg.set(ws.data.orgId, (set = new Set()));
       set.add(ws);
@@ -485,6 +505,7 @@ export function createRealtime(options: RealtimeOptions) {
     },
     close(ws) {
       ws.data.closed = true;
+      if (!ws.data.opened) release(ws.data.orgId); // dropped between upgrade and open
       cleanup(ws);
     },
   };
@@ -523,20 +544,28 @@ export function createRealtime(options: RealtimeOptions) {
         "www-authenticate": 'Bearer realm="turntable"',
       });
     }
-    if ((byOrg.get(orgId)?.size ?? 0) >= limits.maxConnectionsPerOrg) {
+    // Check and reserve with no await in between, so concurrent upgrades cannot all pass.
+    if (connectionsFor(orgId) >= limits.maxConnectionsPerOrg) {
       return refuse(429, "too many realtime connections for this org", { "retry-after": "5" });
     }
-    const ok = server.upgrade(req, {
-      // Echo only the protocol name, never the token.
-      headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL },
-      data: {
-        token,
-        orgId,
-        subs: new Map(),
-        closed: false,
-        noSubsSince: Date.now(),
-      } satisfies WsData,
-    });
+    hold(orgId);
+    let ok = false;
+    try {
+      ok = server.upgrade(req, {
+        // Echo only the protocol name, never the token.
+        headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL },
+        data: {
+          token,
+          orgId,
+          subs: new Map(),
+          closed: false,
+          opened: false,
+          noSubsSince: Date.now(),
+        } satisfies WsData,
+      });
+    } finally {
+      if (!ok) release(orgId);
+    }
     return ok ? "upgraded" : refuse(400, "websocket upgrade failed");
   }
 

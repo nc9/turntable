@@ -537,6 +537,55 @@ test("per-org connection and per-connection subscription caps", async () => {
   first.close();
 });
 
+test("concurrent upgrades cannot exceed the per-org connection cap", async () => {
+  rt.stop();
+  await server.stop(true);
+  start({ maxConnectionsPerOrg: 3 });
+  // Drive handle() directly with a server whose upgrade() accepts but never opens, so every
+  // upgrade is "pending": only the reservation made before upgrade() can enforce the cap.
+  let accept = true;
+  const fake = { upgrade: () => accept } as unknown as Parameters<typeof rt.handle>[1];
+  const mk = () =>
+    new Request(`http://${base}/api/v1/realtime`, {
+      headers: {
+        upgrade: "websocket",
+        connection: "Upgrade",
+        host: base,
+        "sec-websocket-protocol": `turntable.v1, bearer.${reader}`,
+      },
+    });
+  const results = await Promise.all(Array.from({ length: 12 }, () => rt.handle(mk(), fake)));
+  expect(results.filter((r) => r === "upgraded").length).toBe(3);
+  expect(results.filter((r) => r instanceof Response && r.status === 429).length).toBe(9);
+  // a failed upgrade gives its slot back
+  accept = false;
+  expect((await rt.handle(mk(), fake)) instanceof Response).toBe(true); // still full: refused with 429
+  rt.stop();
+  await server.stop(true);
+  start({ maxConnectionsPerOrg: 1 });
+  const refused = await rt.handle(mk(), fake);
+  expect(refused instanceof Response && refused.status).toBe(400); // upgrade failed, not capped
+  accept = true;
+  expect(await rt.handle(mk(), fake)).toBe("upgraded"); // the failed attempt released its slot
+  expect(await rt.handle(mk(), fake)).toBeInstanceOf(Response); // and now it is full
+});
+
+test("real concurrent connections still stop at the cap, and a freed slot is reusable", async () => {
+  rt.stop();
+  await server.stop(true);
+  start({ maxConnectionsPerOrg: 3 });
+  const attempts = await Promise.allSettled(Array.from({ length: 12 }, () => connect(reader)));
+  const ok = attempts.filter((r): r is PromiseFulfilledResult<Client> => r.status === "fulfilled");
+  expect(ok.length).toBe(3);
+  expect(rt.stats().connections).toBe(3);
+  ok[0]!.value.close();
+  await ok[0]!.value.closed;
+  const again = await connect(reader);
+  expect(rt.stats().connections).toBe(3);
+  again.close();
+  for (const r of ok) r.value.close();
+});
+
 test("malformed and binary messages close the connection with the protocol code", async () => {
   const bad = await connect(reader);
   bad.ws.send("not json");
