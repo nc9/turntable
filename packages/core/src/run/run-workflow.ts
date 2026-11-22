@@ -1,7 +1,8 @@
 import {
-  evaluateCondition,
+  aggregateNeed,
   githubContext,
   githubResolver,
+  jobReadiness,
   planJob,
   planWorkflow,
   resolveActions,
@@ -10,6 +11,7 @@ import {
   type ActionFetcher,
   type ActionRefResolver,
   type NeedResult,
+  type NeedStatus,
   type PlannedJob,
   type Value,
   type WorkflowEvent,
@@ -208,24 +210,19 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
   const legsOf = (id: string): PlannedJob[] => wp.jobs.filter((j) => j.id === id);
   const aborted = (): boolean => o.signal?.aborted ?? false;
 
-  const aggregateNeed = (id: string): NeedResult => {
-    const legs = legsOf(id);
-    const rs = legs.map((l) => needView.get(l.key) ?? "skipped");
-    const result: NeedResult["result"] = rs.includes("failure")
-      ? "failure"
-      : rs.includes("cancelled")
-        ? "cancelled"
-        : rs.every((r) => r === "skipped")
-          ? "skipped"
-          : "success";
-    const outputs: Record<string, string> = {};
-    for (const l of legs) {
-      for (const [k, v] of Object.entries(results.get(l.key)?.outputs ?? {})) {
-        if (v !== "" || !(k in outputs)) outputs[k] = v;
-      }
-    }
-    return { result, outputs };
+  const statusOf = (key: string): NeedStatus => {
+    const r = results.get(key);
+    if (!r) return { state: running.has(key) ? "running" : "queued" };
+    return {
+      state: r.state,
+      ...(r.outputs ? { outputs: r.outputs } : {}),
+      continueOnError: entries.get(key)?.node.continueOnError ?? false,
+    };
   };
+  const needsById = (node: PlannedJob): Record<string, NeedResult> =>
+    Object.fromEntries(
+      node.needsIds.map((id) => [id, aggregateNeed(legsOf(id).map((l) => statusOf(l.key)))]),
+    );
 
   const record = (
     node: PlannedJob,
@@ -293,27 +290,11 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
     }
   };
 
-  const ifContext = (node: PlannedJob, needs: Record<string, NeedResult>) => ({
-    contexts: {
-      github: githubContext(o.event, {
-        ...(o.sha ? { sha: o.sha } : {}),
-        ...(o.actor ? { actor: o.actor } : {}),
-        ...(workflowName ? { workflow: workflowName } : {}),
-        event: eventPayload(o),
-      }),
-      needs: Object.fromEntries(
-        Object.entries(needs).map(([id, n]) => [id, { result: n.result, outputs: n.outputs }]),
-      ),
-      matrix: node.matrix ?? {},
-      vars: o.vars ?? {},
-      inputs: {},
-      env: wp.env,
-      secrets: {},
-    } as Record<string, Value>,
-    status: {
-      needs: Object.values(needs).map((n) => n.result),
-      cancelled: aborted(),
-    },
+  const ifGithub = githubContext(o.event, {
+    ...(o.sha ? { sha: o.sha } : {}),
+    ...(o.actor ? { actor: o.actor } : {}),
+    ...(workflowName ? { workflow: workflowName } : {}),
+    event: eventPayload(o),
   });
 
   const cap = o.maxParallel ?? 2;
@@ -324,11 +305,22 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
   const settleReady = async (): Promise<boolean> => {
     let progressed = false;
     for (const [key, e] of pending) {
-      if (!e.node.needs.every((n) => results.has(n))) continue;
-      if (aborted()) {
+      const needStatuses = Object.fromEntries(e.node.needs.map((k) => [k, statusOf(k)]));
+      const verdict = jobReadiness(e.node, needStatuses, {
+        contexts: {
+          github: ifGithub,
+          vars: o.vars ?? {},
+          inputs: {},
+          env: wp.env,
+          secrets: {},
+        },
+        cancelled: aborted(),
+      });
+      if (verdict.decision === "wait") continue;
+      if (verdict.decision === "cancel") {
         pending.delete(key);
         await o.store.cancelQueuedJob(e.jobId);
-        record(e.node, "cancelled", "run cancelled");
+        record(e.node, "cancelled", verdict.reason);
         progressed = true;
         continue;
       }
@@ -339,34 +331,13 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
         progressed = true;
         continue;
       }
-      const needs = Object.fromEntries(e.node.needsIds.map((id) => [id, aggregateNeed(id)]));
-      if (e.node.unsupported) {
+      if (verdict.decision === "skip") {
         pending.delete(key);
-        await skip(e, `unsupported: ${e.node.unsupported}`);
+        await skip(e, verdict.reason);
         progressed = true;
         continue;
       }
-      if (e.node.staticSkip) {
-        pending.delete(key);
-        await skip(e, e.node.staticSkip.reason);
-        progressed = true;
-        continue;
-      }
-      let go: boolean;
-      try {
-        go = evaluateCondition(e.node.ifExpr, ifContext(e.node, needs));
-      } catch (err) {
-        pending.delete(key);
-        await skip(e, `cannot evaluate if: ${err instanceof Error ? err.message : String(err)}`);
-        progressed = true;
-        continue;
-      }
-      if (!go) {
-        pending.delete(key);
-        await skip(e, `if: ${String(e.node.ifExpr ?? "success()").trim()} is false`);
-        progressed = true;
-        continue;
-      }
+      const needs = needsById(e.node);
       if (running.size >= cap) continue;
       const mp = e.node.maxParallel;
       if (mp !== undefined && groupRunning(e.node.id) >= mp) continue;
