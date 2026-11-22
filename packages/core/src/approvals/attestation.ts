@@ -6,6 +6,7 @@
 // nothing about the device, so it never counts as verified.
 import { verify, X509Certificate } from "node:crypto";
 import { type Cbor } from "./cbor";
+import { basicConstraints, fidoAaguid, parseCertInfo } from "./x509-info";
 import { VENDOR_INTERMEDIATES, VENDOR_ROOTS } from "./vendor-roots";
 
 export class AttestationError extends Error {}
@@ -35,23 +36,6 @@ export const formatAaguid = (b: Uint8Array): string => {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 };
 
-/** id-fido-gen-ce-aaguid, 1.3.6.1.4.1.45724.1.1.4, DER-encoded as an OID. */
-const AAGUID_OID = Buffer.from("060b2b06010401" + "82e51c" + "010104", "hex");
-
-/** The AAGUID the attestation certificate asserts, or null when it has none. */
-function certAaguid(cert: X509Certificate): Buffer | null {
-  const raw = cert.raw;
-  const at = raw.indexOf(AAGUID_OID);
-  if (at < 0) return null;
-  let i = at + AAGUID_OID.length;
-  // An optional `critical` BOOLEAN, then OCTET STRING { OCTET STRING (16 bytes) }.
-  if (raw[i] === 0x01 && raw[i + 1] === 0x01) i += 3;
-  if (raw[i] !== 0x04) return null;
-  i += 2; // the outer length is short form (<= 0x12)
-  if (raw[i] !== 0x04 || raw[i + 1] !== 0x10) return null;
-  return Buffer.from(raw.subarray(i + 2, i + 18));
-}
-
 const within = (c: X509Certificate, now: number): boolean =>
   Date.parse(c.validFrom) <= now && now <= Date.parse(c.validTo);
 
@@ -63,7 +47,18 @@ const issuedBy = (c: X509Certificate, issuer: X509Certificate): boolean => {
   }
 };
 
-/** Builds leaf -> ... -> root through `pool`, requiring every issuer to be a valid CA. */
+const caInfo = (c: X509Certificate): { ca: boolean; pathLen?: number } | null => {
+  try {
+    return basicConstraints(parseCertInfo(c.raw));
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Builds leaf -> ... -> root through `pool`. Every issuer must be a CA by its own basicConstraints
+ * (read from the extension, not guessed) and must allow the number of CAs below it (pathLen).
+ */
 function chainsToRoot(
   leaf: X509Certificate,
   pool: X509Certificate[],
@@ -71,15 +66,22 @@ function chainsToRoot(
   now: number,
 ): boolean {
   let cur = leaf;
+  // CAs already passed between the leaf and the issuer being considered.
+  let below = 0;
+  const allows = (c: X509Certificate): boolean => {
+    const bc = caInfo(c);
+    return !!bc && bc.ca && (bc.pathLen === undefined || below <= bc.pathLen);
+  };
   for (let depth = 0; depth < 5; depth++) {
     if (!within(cur, now)) return false;
-    const root = anchors.roots.find((r) => within(r, now) && issuedBy(cur, r));
+    const root = anchors.roots.find((r) => within(r, now) && allows(r) && issuedBy(cur, r));
     if (root) return true;
     const next = [...pool, ...anchors.intermediates].find(
-      (p) => p !== cur && p.ca && issuedBy(cur, p),
+      (p) => p !== cur && allows(p) && issuedBy(cur, p),
     );
     if (!next) return false;
     cur = next;
+    below++;
   }
   return false;
 }
@@ -139,8 +141,27 @@ export function verifyAttestation(
     ok = false;
   }
   if (!ok) throw new AttestationError("attestation signature does not verify");
-  if (leaf.ca) throw new AttestationError("the attestation certificate must not be a CA");
-  const certId = certAaguid(leaf);
+  // The packed-attestation requirements on the leaf (WebAuthn 8.2.1), read from its structure.
+  let info;
+  try {
+    info = parseCertInfo(leaf.raw);
+  } catch {
+    throw new AttestationError("attestation certificate is malformed");
+  }
+  if (info.version !== 3)
+    throw new AttestationError("the attestation certificate must be X.509 v3");
+  const bc = basicConstraints(info);
+  if (!bc || bc.ca) throw new AttestationError("the attestation certificate must not be a CA");
+  if (!info.subjectOu.includes("Authenticator Attestation"))
+    throw new AttestationError(
+      'the attestation certificate subject must have OU="Authenticator Attestation"',
+    );
+  let certId: Buffer | null;
+  try {
+    certId = fidoAaguid(info);
+  } catch (e) {
+    throw new AttestationError(e instanceof Error ? e.message : "bad AAGUID extension");
+  }
   if (certId !== null && !certId.equals(Buffer.from(authData.subarray(37, 53))))
     throw new AttestationError(
       "the attestation certificate's AAGUID does not match the credential",

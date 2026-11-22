@@ -6,6 +6,7 @@ import {
   verifyAttestation,
   type TrustAnchors,
 } from "../src/approvals/attestation";
+import { parseCertInfo } from "../src/approvals/x509-info";
 import { allowedAaguids, keyPolicyViolation } from "../src/approvals/key-policy";
 import { AAGUID_PRESETS } from "../src/approvals/vendor-roots";
 import { makeCert, type TestCert } from "./helpers/x509";
@@ -78,6 +79,72 @@ describe("packed attestation", () => {
 
   test("a leaf without the AAGUID extension binds nothing: not verified", () => {
     expect(run(statement(leafFor(root, "L", false, null))).verified).toBe(false);
+  });
+
+  test("the AAGUID is read only from its own extension, which must not be critical", () => {
+    // The OID's bytes sit inside another extension's value: not an AAGUID.
+    const oidBytes = Buffer.from("060b2b06010401" + "82e51c" + "010104", "hex");
+    const decoy = makeCert({
+      cn: "L",
+      issuer: { cn: "R", key: root.key },
+      ca: false,
+      decoy: Buffer.concat([oidBytes, Buffer.from([0x04, 0x12, 0x04, 0x10]), AAGUID]),
+    });
+    expect(run(statement(decoy)).verified).toBe(false);
+    // A critical AAGUID extension is refused.
+    const critical = makeCert({
+      cn: "L",
+      issuer: { cn: "R", key: root.key },
+      ca: false,
+      aaguid: AAGUID,
+      aaguidCritical: true,
+    });
+    expect(() => run(statement(critical))).toThrow(/must not be critical/);
+  });
+
+  test("the leaf must be v3, carry OU=Authenticator Attestation, and not be a CA", () => {
+    const base = { cn: "L", issuer: { cn: "R", key: root.key }, aaguid: AAGUID };
+    expect(() => run(statement(makeCert({ ...base, ca: true })))).toThrow(/must not be a CA/);
+    expect(() => run(statement(makeCert({ ...base, ca: false, version: 1 })))).toThrow(
+      /v3|valid DER/,
+    );
+    expect(parseCertInfo(makeCert({ ...base, ca: false, version: 1 }).der).version).toBe(1);
+    expect(() => run(statement(makeCert({ ...base, ca: false, ou: null })))).toThrow(/OU=/);
+    expect(() => run(statement(makeCert({ ...base, ca: false, ou: "Something else" })))).toThrow(
+      /OU=/,
+    );
+  });
+
+  test("an intermediate must be a CA and respect its pathLen", () => {
+    const mk = (pathLen: number | undefined) =>
+      makeCert({
+        cn: "I",
+        issuer: { cn: "R", key: root.key },
+        ca: true,
+        ...(pathLen === undefined ? {} : { pathLen }),
+      });
+    const leafUnder = (i: TestCert) =>
+      makeCert({ cn: "L", issuer: { cn: "I", key: i.key }, ca: false, aaguid: AAGUID });
+    // pathLen 0 allows no CA below it: a leaf directly under it is fine.
+    const i0 = mk(0);
+    expect(run(statement(leafUnder(i0), { chain: [i0] })).verified).toBe(true);
+    // A second intermediate under a pathLen-0 one is refused; under an unconstrained one it is fine.
+    const sub = (parent: TestCert) =>
+      makeCert({ cn: "I", issuer: { cn: "I", key: parent.key }, ca: true });
+    const s0 = sub(i0);
+    expect(run(statement(leafUnder(s0), { chain: [s0, i0] })).verified).toBe(false);
+    const ii = mk(undefined);
+    const s1 = sub(ii);
+    expect(run(statement(leafUnder(s1), { chain: [s1, ii] })).verified).toBe(true);
+    // A non-CA certificate used as an issuer is not accepted.
+    const notCa = makeCert({ cn: "I", issuer: { cn: "R", key: root.key }, ca: false });
+    const l2 = makeCert({
+      cn: "L",
+      issuer: { cn: "I", key: notCa.key },
+      ca: false,
+      aaguid: AAGUID,
+    });
+    expect(run(statement(l2, { chain: [notCa] })).verified).toBe(false);
   });
 
   test("a bad signature, a CA leaf, a mismatched AAGUID, other formats and ECDAA are refused", () => {
