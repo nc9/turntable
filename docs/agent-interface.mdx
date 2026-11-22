@@ -4,7 +4,7 @@ description: How agents and scripts drive Longshore through MCP, REST, events an
 ---
 
 <Warning>
-  Partly implemented. The operations registry, agent tokens, the REST API and the OpenAPI document exist. The MCP server transport, the CLI, the event feed and the Claude Code channel do not yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#23](https://github.com/nc9/turntable/issues/23), [#24](https://github.com/nc9/turntable/issues/24), [#25](https://github.com/nc9/turntable/issues/25) and [#26](https://github.com/nc9/turntable/issues/26).
+  Partly implemented. The operations registry, agent tokens, the REST API, the OpenAPI document and the MCP server exist. The CLI, the event feed and the Claude Code channel do not yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#24](https://github.com/nc9/turntable/issues/24), [#25](https://github.com/nc9/turntable/issues/25) and [#26](https://github.com/nc9/turntable/issues/26).
 </Warning>
 
 Longshore is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
@@ -57,7 +57,8 @@ No token role reaches `admin`, so a token can never create tokens.
 | --- | --- | --- | --- |
 | `list_runs` | read | reader | Runs, newest first. Filters: branch, sha, event, state, since. Cursor paging. |
 | `get_run` | read | reader | One run with jobs, attempts, durations and the infra_error reason. |
-| `job_log` | read | reader | A job log: tail, head or byte-range paging. Byte-capped, cut on character boundaries, redacted again. |
+| `job_log` | read | reader | A job log: tail, head, byte-range paging, or grep with context. Byte-capped, cut on character boundaries, redacted again. |
+| `failure_digest` | read | reader | Why a job (or a run's failed jobs) failed: the failing step and the first error, about 2 KiB, extracted and redacted. |
 | `checks_for_sha` | read | reader | `GREEN`, `PENDING`, `RED` or `NONE` for a commit. A queued run is `PENDING`, never `NONE`. |
 | `job_steps` | read | reader | The steps of a job attempt with results, timing and the log offset where each starts. |
 | `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap. |
@@ -78,15 +79,11 @@ No token role reaches `admin`, so a token can never create tokens.
 
 `cancel` records the cancellation and, for a job running in the same process, stops it at once: the worker is signalled and its sandbox destroyed. A worker in another process stops at its next heartbeat, when it finds its lease gone.
 
-Planned next: `failure_digest`, `rerun`, `cost_summary`, and grep for `job_log`.
+Planned next: `cost_summary`.
 
 ## Human-only actions
 
 Release and environment approvals are human-only. An operation with `auth.type` of `signature` needs a human-signed assertion. No bearer token can satisfy it, so the dispatcher refuses it and it is left out of the REST routes, the OpenAPI document and the MCP tools. A test enforces this. There are no such operations yet. No operation ever returns secret values: a lint test rejects secret-looking output fields, except the one-time `token` of `create_api_token`.
-
-## MCP server
-
-The MCP server exposes registry operations as tools. It supports streamable HTTP for remote agents and stdio for local ones. Issue [#23](https://github.com/nc9/turntable/issues/23).
 
 ## REST and OpenAPI
 
@@ -101,7 +98,33 @@ Routes are generated from the registry under `/api/v1`. Send `Authorization: Bea
 
 ## MCP server
 
-MCP tool definitions (name, description, JSON Schema input, annotations) are generated from the registry. The server transport, streamable HTTP for remote agents and stdio for local ones, is not built yet. Issue [#23](https://github.com/nc9/turntable/issues/23).
+Every operation a bearer token may call is an MCP tool, generated from the registry. Signature operations are never listed. Each call goes through the dispatcher with the caller's own token, so roles, scopes, validation and audit are exactly those of REST: the MCP layer decides nothing about access. The server uses the official TypeScript SDK and is part of the single binary.
+
+**Claude Code, local agent (stdio).** Put a token in a file only you can read, then register the command. The token is read from the file, never from the command line.
+
+```sh
+longshore token create --org local --role reader --name claude-code > ~/.longshore-token
+chmod 600 ~/.longshore-token
+claude mcp add longshore -e LONGSHORE_TOKEN_FILE=$HOME/.longshore-token -- \
+  longshore mcp --data-dir /path/to/data
+```
+
+`longshore mcp` opens the data directory of the server (SQLite) and reads `LONGSHORE_TOKEN_FILE` or `--token-file`. It refuses a token file that other users can read. Only stdout carries the protocol; messages go to stderr.
+
+**Claude Code, remote server (streamable HTTP).** The server answers at `/mcp`, with the token in the `Authorization` header only (a token in a query string is ignored and refused).
+
+```sh
+claude mcp add --transport http longshore https://ci.example.com/mcp \
+  --header "Authorization: Bearer $(cat ~/.longshore-token)"
+```
+
+The HTTP transport is stateless: every request authenticates its own token and no session outlives it. A revoked token stops working at once on both transports.
+
+**Untrusted content.** A result that carries log or forge text (branch names, commit messages, step names, job logs) is wrapped: `{ "untrusted": true, "source": "job_log", "notice": "...", "content": { ... } }`. The fixed notice tells the agent the content is data to read, not instructions to follow. Resource reads are wrapped the same way. Errors come back as tool errors with the typed body `{ "error": { "code", "message" } }`.
+
+**Resources.** `longshore://runs/{id}` is a run with its jobs (the `get_run` result). `longshore://runs/{id}/jobs/{key}/log` is the tail of a job's latest log (the `job_log` result); URL-encode the job key, for example `build%5B0%5D` for a matrix leg. Both are read through the same operations and scopes.
+
+**Reading failures cheaply.** Start with `checks_for_sha` or `list_runs`, then `failure_digest`, which returns the failing step (as the runner recorded it) and about 2 KiB of the first error: the first `::error` annotation if there is one, else the first error-looking line near the step's end with a little context, else the last lines. It is extracted text, never a summary, and redacted. For more, `job_log` with `mode=grep` finds lines matching `pattern` with `context` lines and at most `max_matches` hits. Literal text is the default; `regex=true` takes a linear-time subset (literals, `.`, `[]`, `\d \w \s`, `^ $ \b`, groups, `|`, `* + ? {n,m}`; no backreferences or lookaround) that cannot be made to run slowly. A call scans at most 4 MiB and 2 seconds; `next_offset` continues a long log. Hits are prefixed with their byte offset, which `job_log` with `mode=range` can page from.
 
 ## Scoped agent tokens
 

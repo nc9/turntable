@@ -1,6 +1,7 @@
 import type { Db } from "./db";
 import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
+import { createMcpHttp } from "./mcp/http";
 import { createRestApi } from "./ops/rest";
 import { createRealtime, type WsData } from "./realtime/server";
 import { serveUi } from "./ui-assets";
@@ -70,6 +71,7 @@ export type ServeOptions = {
 export function startServer(options: ServeOptions) {
   const env = { registry, db: options.db };
   const api = createRestApi(env);
+  const mcp = createMcpHttp(env);
   const realtime = createRealtime({
     env,
     ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
@@ -83,6 +85,8 @@ export function startServer(options: ServeOptions) {
       const upgraded = await realtime.handle(req, srv);
       if (upgraded === "upgraded") return undefined;
       if (upgraded) return upgraded;
+      const mcpResponse = await mcp(req);
+      if (mcpResponse) return mcpResponse;
       return handleRequest(req, api);
     },
     websocket: realtime.websocket,
