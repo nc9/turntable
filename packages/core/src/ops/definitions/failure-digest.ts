@@ -37,11 +37,12 @@ const digestSchema = z.object({
     .nullable()
     .describe("The failing step as the runner recorded it; null when none is recorded."),
   basis: z
-    .enum(["annotation", "error_pattern", "tail"])
+    .enum(["failure_marker", "annotation", "error_pattern", "tail"])
     .nullable()
     .describe(
-      "How the excerpt was chosen: an ::error annotation, the first error-looking line near the " +
-        "step's end, or just the last lines. Null when there is no log.",
+      "How the excerpt was chosen: a test runner's own failure marker with its assertion context, " +
+        "an ::error annotation, the first error-looking line near the step's end, or just the " +
+        "last lines. Null when there is no log.",
     ),
   excerpt: z.string().describe("Untrusted log text, redacted, about 2 KiB at most."),
   truncated: z.boolean().describe("True when the excerpt was cut to the size cap."),
@@ -122,7 +123,7 @@ export const failureDigest = defineOp({
     "The cheapest first look at a failure. Give job_id for one job, or run_id for the digests of " +
     "up to 5 failed jobs of a run (exactly one of the two). Each digest names the failing step " +
     "(recorded by the runner, so log text cannot forge it) and an excerpt of its log of about " +
-    "2 KiB: the first ::error annotation if any, else the first error-looking line near the " +
+    "2 KiB: the first test-runner failure line (✗, (fail), FAILED, --- FAIL) with its assertion context, else the first ::error annotation, else the first error-looking line near the " +
     "step's end with a little context, else the last lines. It is extracted text, never a " +
     "summary, and redacted. `basis` says how it was picked. For infra_error jobs the reason is " +
     "given and the excerpt says nothing about the code. If the excerpt is not enough, read more " +
