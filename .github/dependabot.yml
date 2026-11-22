@@ -1,14 +1,29 @@
+# Updates arrive weekly, and none is proposed until the new version is at least 14 days old (the
+# same minimum age scripts/dep-age.ts enforces on bun.lock in CI), so a hijacked release has had
+# time to be noticed first.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
+  - package-ecosystem: docker
+    directory: /images/runner
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
