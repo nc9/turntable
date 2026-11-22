@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import {
   OUTPUT_HEAD_BYTES,
   OUTPUT_SLACK_BYTES,
@@ -28,6 +28,12 @@ export interface ConformanceOptions {
   cap?: { head: number; tail: number; slack: number };
   /** Command that must FAIL (non-zero, not 127) under egress `none`. Default: busybox wget. */
   egressProbe?: string[];
+  /**
+   * Most sandboxes the provider may have live at once (a cost or account cap). Sandboxes are
+   * destroyed after each test either way; with a cap below 3 the labels test uses two sandboxes
+   * instead of three. Default: unlimited.
+   */
+  maxConcurrentSandboxes?: number;
 }
 
 const enc = new TextEncoder();
@@ -90,8 +96,13 @@ export function runConformance(
     ...opts.spec,
   });
 
-  const sandbox = async (p: Provider, extra: Labels = {}): Promise<string> =>
-    (await p.create({ ...spec(extra), labels: { ...runLabels, ...extra } })).id;
+  /** Sandboxes made by the running test; destroyed afterwards so capped providers never fill up. */
+  const made: string[] = [];
+  const sandbox = async (p: Provider, extra: Labels = {}): Promise<string> => {
+    const id = (await p.create({ ...spec(extra), labels: { ...runLabels, ...extra } })).id;
+    made.push(id);
+    return id;
+  };
 
   const waitDone = async (
     p: Provider,
@@ -118,6 +129,10 @@ export function runConformance(
     beforeAll(async () => {
       p = await makeProvider();
       if (p.info.network.egressPolicy.includes("none")) egressDefault = "none";
+    });
+    afterEach(async () => {
+      const cleaner = await makeProvider();
+      for (const id of made.splice(0)) await cleaner.destroy(id).catch(() => {});
     });
     afterAll(async () => {
       const cleaner = await makeProvider();
@@ -326,15 +341,18 @@ export function runConformance(
 
     t("labels: list, count and destroyByLabels", async () => {
       const grp = `g${runId}`;
+      const capped = opts.maxConcurrentSandboxes !== undefined && opts.maxConcurrentSandboxes < 3;
       const a = await sandbox(p, { grp, k: "1" });
-      const b = await sandbox(p, { grp, k: "2" });
+      // With a cap of two, the group has one member; otherwise two.
+      const b = capped ? undefined : await sandbox(p, { grp, k: "2" });
       const c = await sandbox(p, { grp: `other${runId}` });
+      const members = [a, ...(b ? [b] : [])];
       const ids = async (labels: Labels) => (await p.list({ labels })).map((s) => s.id).toSorted();
-      expect(await ids({ grp })).toEqual([a, b].toSorted());
-      expect(await p.count({ labels: { grp } })).toBe(2);
-      expect(await ids({ ...runLabels, k: "2" })).toEqual([b]);
+      expect(await ids({ grp })).toEqual(members.toSorted());
+      expect(await p.count({ labels: { grp } })).toBe(members.length);
+      expect(await ids({ ...runLabels, k: "1" })).toEqual([a]);
       await expect(p.destroyByLabels({})).rejects.toBeInstanceOf(SpecError);
-      expect(await p.destroyByLabels({ grp })).toBe(2);
+      expect(await p.destroyByLabels({ grp })).toBe(members.length);
       expect(await ids({ grp })).toEqual([]);
       expect((await ids(runLabels)).includes(c)).toBe(true);
       const info = (await p.list({ labels: { grp: `other${runId}` } }))[0];
@@ -357,16 +375,17 @@ export function runConformance(
             " ",
           ),
         );
-        const sandboxNames = new Set(
-          out
-            .split("\n")
-            .map((l) => l.split("=")[0])
-            .filter((n): n is string => !!n),
+        // A leak is the controller's value showing up under the same name in the sandbox; the
+        // same name with a different value is the sandbox's own variable.
+        const inSandbox = new Map<string, string>();
+        for (const l of out.split("\n")) {
+          const eq = l.indexOf("=");
+          if (eq > 0) inSandbox.set(l.slice(0, eq), l.slice(eq + 1));
+        }
+        const leaked = Object.entries(process.env).filter(
+          ([n, v]) => !benign.has(n) && inSandbox.get(n) === v,
         );
-        const leaked = Object.keys(process.env).filter(
-          (n) => !benign.has(n) && sandboxNames.has(n),
-        );
-        expect(leaked).toEqual([]);
+        expect(leaked.map(([n]) => n)).toEqual([]);
       } finally {
         delete process.env[name];
       }
