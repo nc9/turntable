@@ -29,7 +29,6 @@ import {
   DEFAULT_ORG_CLASS,
   DEFAULT_ORG_CPU_LIMIT,
   DEFAULT_ORG_REGION,
-  FOREIGN_WAIT_AT,
   cpuInUse,
   type OwnerCiPreflight,
   type RegionUsageRow,
@@ -39,6 +38,7 @@ import {
   OWN_LABEL_VALUE,
   RUN_LABEL,
   clampMaxLive,
+  type OwnerCiLabels,
   isForeignCi,
   isLive,
   isOwn,
@@ -97,6 +97,16 @@ export interface DaytonaProviderOptions {
    * usage endpoint does not exist (404), the check is skipped and the label count still applies.
    */
   ownerCiPreflight?: OwnerCiPreflight | false;
+  /**
+   * How the account owner's CI sandboxes are recognised (a label key and its values). Default:
+   * none, so no label check. It only matters together with `ownerCiLabelWaitAt`.
+   */
+  ownerCiLabels?: OwnerCiLabels;
+  /**
+   * Wait while this many of the labelled CI sandboxes hold quota. Default: off. The org CPU check
+   * (`ownerCiPreflight`) is the gate that does not need to know anyone's labels.
+   */
+  ownerCiLabelWaitAt?: number;
   /** The interpreter that runs the proxy relay in a proxied sandbox. Default `node`. */
   relayInterpreter?: string;
   /**
@@ -374,8 +384,10 @@ export class DaytonaProvider implements Provider {
    * stopped or archived sandboxes that use none.
    */
   private async foreignLive(): Promise<number> {
+    // Off unless both the labels and a threshold are configured: no request is made.
+    if (!this.opts.ownerCiLabels || this.opts.ownerCiLabelWaitAt === undefined) return 0;
     const live = await this.listAll({ states: LIVE_STATES });
-    return live.filter((s) => !isOwn(s) && isForeignCi(s)).length;
+    return live.filter((s) => !isOwn(s) && isForeignCi(s, this.opts.ownerCiLabels)).length;
   }
 
   private orgId: string | undefined;
@@ -437,15 +449,17 @@ export class DaytonaProvider implements Provider {
   /** Waits until we are under our own cap and the owner's CI is not busy, or gives up. */
   private async waitForCapacity(vcpu = 1): Promise<void> {
     const deadline = this.now() + this.capacityWaitMs;
+    // With no threshold configured the label gate never holds (the count is 0 and never read).
+    const foreignAt = this.opts.ownerCiLabelWaitAt ?? Number.POSITIVE_INFINITY;
     for (;;) {
       const [own, foreign, room] = await Promise.all([
         this.ownLive(),
         this.foreignLive(),
         this.orgRoom(vcpu),
       ]);
-      if (own < this.maxLive && foreign < FOREIGN_WAIT_AT && room.ok) return;
+      if (own < this.maxLive && foreign < foreignAt && room.ok) return;
       if (this.now() >= deadline) {
-        if (!room.ok && own < this.maxLive && foreign < FOREIGN_WAIT_AT) {
+        if (!room.ok && own < this.maxLive && foreign < foreignAt) {
           throw new InfraError(
             `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.cpu} vCPU in use (waiting above ${room.limit}, this sandbox needs ${vcpu})`,
           );
@@ -453,7 +467,7 @@ export class DaytonaProvider implements Provider {
         throw new InfraError(
           own >= this.maxLive
             ? `waited ${Math.round(this.capacityWaitMs / 1000)}s: already ${own} live sandboxes of ours (max ${this.maxLive})`
-            : `waited ${Math.round(this.capacityWaitMs / 1000)}s: the account's CI has ${foreign} live sandboxes (waiting at ${FOREIGN_WAIT_AT})`,
+            : `waited ${Math.round(this.capacityWaitMs / 1000)}s: the account's CI has ${foreign} live sandboxes (waiting at ${foreignAt})`,
         );
       }
       await this.sleep(this.pollMs);

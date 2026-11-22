@@ -62,7 +62,9 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `maxLive` | `2` | Live sandboxes of ours at once. At most `3`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
-| `ownerCiPreflight` | `true` | Waiting while the account owner's own CI is busy cannot be turned off; `false` is refused. |
+| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
+| `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
+| `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
 The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
 
