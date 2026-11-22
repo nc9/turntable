@@ -137,6 +137,8 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
   const upstream: SafeFetch = o.upstream ?? createHttpClient().fetch;
   /** Every secret form injected so far in an attempt: the set scrubbed from its responses. */
   const injected = new WeakMap<Attempt, SecretRegistry>();
+  /** Tunnel slots held by CONNECTs whose audit write is still pending. */
+  const reserved = new WeakMap<Attempt, number>();
 
   const record = async (e: Omit<AuditEvent, "at">): Promise<void> => {
     await o.audit.record({ ...e, at: now() });
@@ -193,18 +195,30 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       raw.end(text(403, "Forbidden"));
       return;
     }
-    if (attempt.tunnels.size >= lim.tunnelsPerAttempt) {
+    // The slot is reserved here, with no await between the check and the reservation, so a burst of
+    // CONNECTs cannot all pass the check while the audit write is pending.
+    if (attempt.tunnels.size + (reserved.get(attempt) ?? 0) >= lim.tunnelsPerAttempt) {
       await deny({ attemptId: id, host, port, reason: "too_many_tunnels" });
       raw.end(text(429, "Too Many Requests"));
       return;
     }
+    reserved.set(attempt, (reserved.get(attempt) ?? 0) + 1);
+    const release = (): void => {
+      reserved.set(attempt, (reserved.get(attempt) ?? 1) - 1);
+    };
     try {
       await record({ kind: "tunnel", attemptId: id, host, port });
     } catch {
+      release();
       raw.end(text(502, "Bad Gateway"));
       return;
     }
 
+    release();
+    // The peer may have gone while the audit write ran: its close event is already past.
+    if (raw.destroyed) return;
+    // Nor may the attempt have been revoked or expired meanwhile: revoke already swept the set.
+    if (!o.registry.live(attempt)) return void raw.destroy();
     raw.setTimeout(0);
     attempt.tunnels.add(raw);
     raw.once("close", () => attempt.tunnels.delete(raw));

@@ -79,6 +79,12 @@ describe("path scope", () => {
     "/v1/a b",
     "/v1/é",
     "v1/x",
+    "/v1/..;/x",
+    "/v1/.;x/y",
+    "/v1/a;b",
+    "/v1/%2E%2E/x",
+    "/v1/a%2Fb",
+    "/v1/a%5Cb",
   ])("a path that is not canonical is refused, never normalised: %s", (path) => {
     expect(checkPath(path)).toBeDefined();
   });

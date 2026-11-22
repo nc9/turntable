@@ -111,7 +111,7 @@ export function compileRules(rules: readonly Rule[]): CompiledRule[] {
 
 /**
  * Why a request path is not acceptable, or undefined. The raw path must already be in canonical
- * form: no dot segments (plain or encoded), no empty segments, no encoded slash or backslash or
+ * form: no dot segments (plain or encoded), no ';' parameters, no empty segments, no encoded slash or backslash or
  * NUL, no characters a URL parser would rewrite. A refused path is never normalised into one that
  * matches.
  */
@@ -119,6 +119,8 @@ export function checkPath(rawPath: string): string | undefined {
   if (!rawPath.startsWith("/")) return "not_origin_form";
   if (!/^[\x21-\x7e]*$/.test(rawPath)) return "bad_characters";
   if (rawPath.includes("\\")) return "backslash";
+  // A matrix parameter: some upstreams drop everything from ';' in a segment, so "..;x" is ".." there.
+  if (rawPath.includes(";")) return "matrix_param";
   if (/%(2f|5c|00|2e)/i.test(rawPath)) return "encoded_separator";
   const segments = rawPath.split("/").slice(1);
   for (const [i, s] of segments.entries()) {

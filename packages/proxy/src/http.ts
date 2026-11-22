@@ -104,49 +104,78 @@ const MAX_CHUNK_LINE = 1024;
 const MAX_TRAILER_LINE = 8192;
 const MAX_TRAILER_BYTES = 16 * 1024;
 
+/** Chunk framing is parsed once: where it stopped and what it decoded are kept between reads. */
+interface ChunkState {
+  pos: number;
+  total: number;
+  count: number;
+  parts: Buffer[];
+  trailer: boolean;
+  trailerBytes: number;
+}
+
+const MAX_CHUNKS = 4096;
+
+function newChunkState(): ChunkState {
+  return { pos: 0, total: 0, count: 0, parts: [], trailer: false, trailerBytes: 0 };
+}
+
+/** Continues from `st.pos`; the buffer only ever grows at the end between calls. */
 function readChunked(
   buf: Buffer,
   max: number,
+  st: ChunkState,
 ): "need_more" | string | { body: Buffer; consumed: number } {
-  const parts: Buffer[] = [];
-  let pos = 0;
-  let total = 0;
   for (;;) {
-    const eol = buf.indexOf("\r\n", pos);
+    if (st.trailer) {
+      // Trailers are read and dropped, up to the terminating empty line, within a fixed budget.
+      const e = buf.indexOf("\r\n", st.pos);
+      if (e < 0) return buf.length - st.pos > MAX_TRAILER_LINE ? "bad_trailer" : "need_more";
+      const lineLength = e - st.pos;
+      st.pos = e + 2;
+      if (lineLength === 0) return { body: Buffer.concat(st.parts), consumed: st.pos };
+      st.trailerBytes += lineLength + 2;
+      if (lineLength > MAX_TRAILER_LINE || st.trailerBytes > MAX_TRAILER_BYTES)
+        return "bad_trailer";
+      continue;
+    }
+    const eol = buf.indexOf("\r\n", st.pos);
     // A line that is already too long and still has no end is refused now, not waited for.
-    if (eol < 0) return buf.length - pos > MAX_CHUNK_LINE ? "bad_chunk" : "need_more";
-    if (eol - pos > MAX_CHUNK_LINE) return "bad_chunk";
-    const sizeText = buf.subarray(pos, eol).toString("latin1").split(";", 1)[0]!.trim();
+    if (eol < 0) return buf.length - st.pos > MAX_CHUNK_LINE ? "bad_chunk" : "need_more";
+    if (eol - st.pos > MAX_CHUNK_LINE) return "bad_chunk";
+    const sizeText = buf.subarray(st.pos, eol).toString("latin1").split(";", 1)[0]!.trim();
     if (!/^[0-9a-fA-F]{1,8}$/.test(sizeText)) return "bad_chunk";
     const size = Number.parseInt(sizeText, 16);
-    pos = eol + 2;
     if (size === 0) {
-      // Trailers are read and dropped, up to the terminating empty line, within a fixed budget.
-      let trailerBytes = 0;
-      for (;;) {
-        const e = buf.indexOf("\r\n", pos);
-        if (e < 0) return buf.length - pos > MAX_TRAILER_LINE ? "bad_trailer" : "need_more";
-        const lineLength = e - pos;
-        pos = e + 2;
-        if (lineLength === 0) return { body: Buffer.concat(parts), consumed: pos };
-        trailerBytes += lineLength + 2;
-        if (lineLength > MAX_TRAILER_LINE || trailerBytes > MAX_TRAILER_BYTES) return "bad_trailer";
-      }
+      st.pos = eol + 2;
+      st.trailer = true;
+      continue;
     }
-    total += size;
-    if (total > max) return "body_too_large";
-    if (buf.length < pos + size + 2) return "need_more";
-    parts.push(buf.subarray(pos, pos + size));
-    if (buf.subarray(pos + size, pos + size + 2).toString("latin1") !== "\r\n") return "bad_chunk";
-    pos += size + 2;
+    if (st.count + 1 > MAX_CHUNKS) return "chunk_limit";
+    if (st.total + size > max) return "body_too_large";
+    const start = eol + 2;
+    if (buf.length < start + size + 2) return "need_more";
+    if (buf.subarray(start + size, start + size + 2).toString("latin1") !== "\r\n") {
+      return "bad_chunk";
+    }
+    st.count += 1;
+    st.total += size;
+    st.parts.push(buf.subarray(start, start + size));
+    st.pos = start + size + 2;
   }
 }
 
 export class RequestReader {
-  #buf: Buffer = Buffer.alloc(0);
+  // Fed bytes go into a store that doubles when full, so many tiny reads cost linear time. Bytes
+  // below #end are never rewritten (bodies handed out point into the store); a full store is
+  // replaced by a bigger one.
+  #store: Buffer = Buffer.alloc(0);
+  #off = 0;
+  #end = 0;
   readonly #limits: Limits;
   #head: (Head & { continued: boolean }) | undefined;
   #overflow = false;
+  #chunks: ChunkState | undefined;
 
   constructor(limits: Limits = DEFAULT_LIMITS) {
     this.#limits = limits;
@@ -155,27 +184,42 @@ export class RequestReader {
   /** Everything buffered, however it is framed, stays within one request's worth of bytes. */
   feed(chunk: Buffer): void {
     const cap = this.#limits.headerBytes + this.#limits.bodyBytes + 64 * 1024;
-    if (this.#buf.length + chunk.length > cap) {
+    const live = this.#end - this.#off;
+    if (live + chunk.length > cap) {
       this.#overflow = true;
-      this.#buf = Buffer.alloc(0);
+      this.#store = Buffer.alloc(0);
+      this.#off = 0;
+      this.#end = 0;
       return;
     }
-    this.#buf = this.#buf.length === 0 ? chunk : Buffer.concat([this.#buf, chunk]);
+    if (this.#end + chunk.length > this.#store.length) {
+      const next = Buffer.allocUnsafe(Math.max(4096, 2 * (live + chunk.length)));
+      this.#store.copy(next, 0, this.#off, this.#end);
+      this.#store = next;
+      this.#end = live;
+      this.#off = 0;
+    }
+    chunk.copy(this.#store, this.#end);
+    this.#end += chunk.length;
+  }
+
+  #view(): Buffer {
+    return this.#store.subarray(this.#off, this.#end);
   }
 
   next(): ReadResult {
     if (this.#overflow) return { kind: "error", reason: "buffer_too_large" };
     if (!this.#head) {
-      const end = this.#buf.indexOf("\r\n\r\n");
+      const end = this.#view().indexOf("\r\n\r\n");
       if (end < 0) {
-        return this.#buf.length > this.#limits.headerBytes
+        return this.#view().length > this.#limits.headerBytes
           ? { kind: "error", reason: "headers_too_large" }
           : { kind: "need_more" };
       }
       if (end > this.#limits.headerBytes) return { kind: "error", reason: "headers_too_large" };
-      const parsed = parseHead(this.#buf.subarray(0, end).toString("latin1"));
+      const parsed = parseHead(this.#view().subarray(0, end).toString("latin1"));
       if (typeof parsed === "string") return { kind: "error", reason: parsed };
-      this.#buf = this.#buf.subarray(end + 4);
+      this.#off += end + 4;
       this.#head = { ...parsed, continued: false };
     }
     const h = this.#head;
@@ -185,16 +229,18 @@ export class RequestReader {
     }
     let body: Buffer;
     if (h.length === "chunked") {
-      const r = readChunked(this.#buf, this.#limits.bodyBytes);
+      this.#chunks ??= newChunkState();
+      const r = readChunked(this.#view(), this.#limits.bodyBytes, this.#chunks);
       if (r === "need_more") return { kind: "need_more" };
       if (typeof r === "string") return { kind: "error", reason: r };
       body = r.body;
-      this.#buf = this.#buf.subarray(r.consumed);
+      this.#chunks = undefined;
+      this.#off += r.consumed;
     } else {
       if (h.length > this.#limits.bodyBytes) return { kind: "error", reason: "body_too_large" };
-      if (this.#buf.length < h.length) return { kind: "need_more" };
-      body = this.#buf.subarray(0, h.length);
-      this.#buf = this.#buf.subarray(h.length);
+      if (this.#view().length < h.length) return { kind: "need_more" };
+      body = this.#view().subarray(0, h.length);
+      this.#off += h.length;
     }
     this.#head = undefined;
     return {
