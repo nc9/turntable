@@ -169,8 +169,14 @@ export class AttestationStore {
   /**
    * The lane signed this run's release: remembered in this file, for the release proxy. The
    * approval lasts `ttlMs`; after that, or once the release is finalized, the proxy hands out no
-   * rules for it. Signing the same run again does not reopen a finalized release or move its
-   * place in the order of approvals.
+   * rules for it.
+   *
+   * Order matters: `approved_at` is set once, at the first approval of the run, and never moved
+   * (its row id breaks ties), because "newest approved release" is read from it. Signing a run
+   * again therefore cannot make an older release the newest and roll a mutable tag back. Signing
+   * again refreshes only the window, and only for an unfinalized run that no newer approval has
+   * replaced; for any other run it changes nothing. Returns whether the approval is open for
+   * registration after the call.
    */
   approveRelease(
     id: { orgId: string; projectId: string; runId: string },
@@ -184,17 +190,22 @@ export class AttestationStore {
     },
     now: number,
     ttlMs: number = APPROVAL_TTL_MS,
-  ): void {
+  ): boolean {
+    const existing = this.approvedRelease(id);
+    if (existing) {
+      if (existing.finalizedAt !== undefined || !this.isNewestApproved(id)) return false;
+      this.#db
+        .query(
+          "UPDATE approved_releases SET expires_at = ? WHERE org_id = ? AND project_id = ? AND run_id = ?",
+        )
+        .run(now + ttlMs, id.orgId, id.projectId, id.runId);
+      return true;
+    }
     this.#db
       .query(
         `INSERT INTO approved_releases
            (org_id, project_id, run_id, repo, tag, sha, artifacts, approved_at, envelope, expires_at, finalized_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-         ON CONFLICT (org_id, project_id, run_id) DO UPDATE SET
-           repo = excluded.repo, tag = excluded.tag, sha = excluded.sha, artifacts = excluded.artifacts,
-           envelope = excluded.envelope,
-           approved_at = CASE WHEN finalized_at IS NULL THEN excluded.approved_at ELSE approved_at END,
-           expires_at = CASE WHEN finalized_at IS NULL THEN excluded.expires_at ELSE expires_at END`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       )
       .run(
         id.orgId,
@@ -208,6 +219,7 @@ export class AttestationStore {
         r.envelope ?? null,
         now + ttlMs,
       );
+    return true;
   }
 
   /** The release is done (every target published): it can no longer be registered with the proxy. */

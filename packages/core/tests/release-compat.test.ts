@@ -689,6 +689,100 @@ describe("the release proxy", () => {
     ).toBe(true);
   });
 
+  test("re-signing an older release does not make it newest again: its mutable tag stays refused", async () => {
+    await sign();
+    const A = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    const B = { orgId: a.orgId, projectId: a.projectId, runId: "run-b" };
+    const info = { repo: "acme/web", sha: SHA, artifacts: ["web-1.0.0.tgz"] };
+    attest.approveRelease(B, { ...info, tag: "v2.0.0" }, Date.now() + 1_000);
+    expect(attest.isNewestApproved(A)).toBe(false);
+    const before = attest.approvedRelease(A)!;
+    // sign A again, later: nothing about A moves, B stays newest
+    expect(attest.approveRelease(A, { ...info, tag: "v1.0.0" }, Date.now() + 60_000)).toBe(false);
+    const after = attest.approvedRelease(A)!;
+    expect(after.approvedAt).toBe(before.approvedAt);
+    expect(after.expiresAt).toBe(before.expiresAt); // the window is not extended either
+    expect(attest.isNewestApproved(A)).toBe(false);
+    expect(attest.isNewestApproved(B)).toBe(true);
+    expect(await reg("r1")).toEqual({ ok: false, reason: "superseded" });
+    // the lane signing A again through the real path changes nothing either
+    await sign();
+    expect(attest.isNewestApproved(A)).toBe(false);
+    expect(await reg("r2")).toEqual({ ok: false, reason: "superseded" });
+    // and the rules it would have got carry no mutable tag
+    const rules = compatRules("img", OCI, { ...rel, newest: attest.isNewestApproved(A) });
+    expect(rules.some((r) => r.pathPrefix.endsWith("/manifests/latest"))).toBe(false);
+  });
+
+  test("a registration never outlives its approval", async () => {
+    await sign();
+    const id = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    attest.approveRelease(
+      id,
+      { repo: "acme/web", tag: "v1.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now(),
+      30_000,
+    );
+    // approveRelease on an open, newest, unfinalized run refreshes the window to 30 s
+    const approvedUntil = attest.approvedRelease(id)!.expiresAt;
+    const r = await reg("t1");
+    if (!r.ok) throw new Error("not registered");
+    expect(r.credential.expiresAt).toBeLessThanOrEqual(approvedUntil + 50); // not the 60 s asked for
+    expect(r.credential.expiresAt).toBeLessThan(Date.now() + 31_000);
+  });
+
+  test("finalizing a release, or approving a newer one, ends the live registration at once and on the next request", async () => {
+    // finalized
+    await sign();
+    const r = await reg("g1");
+    if (!r.ok) throw new Error("not registered");
+    const viaProxy = (cred: typeof r, b: string) =>
+      fetch("https://registry.npmjs.org/@acme%2Fweb", {
+        method: "PUT",
+        body: b,
+        headers: { "content-type": "application/json" },
+        proxy: cred.credential.proxyUrl(cred.listen.host, cred.listen.port),
+        tls: { ca: cred.credential.caPem },
+      });
+    const id = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
+    attest.markFinalized(id, Date.now());
+    // the next request is refused and sends nothing upstream, even before any sweep
+    const denied = await viaProxy(r, publishDoc(npmTar));
+    expect(denied.status).not.toBe(201);
+    expect(seen).toHaveLength(0);
+    expect(proxy!.active).toBe(0); // the request ended the registration
+    expect(await outcomes()).toContain("release_proxy_revoke:release_finalized");
+  });
+
+  test("a newer approval revokes live registrations: by sweep, and on the next request", async () => {
+    await sign();
+    const r1 = await reg("n1");
+    const r2 = await reg("n2");
+    if (!r1.ok || !r2.ok) throw new Error("not registered");
+    expect(proxy!.active).toBe(2);
+    attest.approveRelease(
+      { orgId: a.orgId, projectId: a.projectId, runId: "newer" },
+      { repo: "acme/web", tag: "v2.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
+      Date.now() + 1_000,
+    );
+    // a request on one is refused and ends that one
+    const viaProxy = (cred: typeof r1) =>
+      fetch("https://registry.npmjs.org/@acme%2Fweb", {
+        method: "PUT",
+        body: publishDoc(npmTar),
+        headers: { "content-type": "application/json" },
+        proxy: cred.credential.proxyUrl(cred.listen.host, cred.listen.port),
+        tls: { ca: cred.credential.caPem },
+      });
+    expect((await viaProxy(r1)).status).not.toBe(201);
+    expect(seen).toHaveLength(0);
+    expect(proxy!.active).toBe(1);
+    // the sweep ends the one nobody used
+    expect(await proxy!.sweepApprovals()).toBe(1);
+    expect(proxy!.active).toBe(0);
+    expect(await outcomes()).toContain("release_proxy_revoke:superseded");
+  });
+
   test("a job publishes the approved tarball through the proxy and never holds the token", async () => {
     await sign();
     const r = await reg();
