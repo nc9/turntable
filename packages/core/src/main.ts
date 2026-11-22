@@ -77,6 +77,8 @@ Usage:
   longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
                               [--longshore-org local] [--master-key-file <path>]
   longshore github-app rotate-webhook-secret | status [--master-key-file <path>] [--data-dir ./data]
+  longshore token create --instance --name <name> [--expires-days 30] [--data-dir ./data]
+                         (an instance-administrator token: REST only, for quotas; list and revoke take --instance too)
   longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
   longshore token generate
@@ -652,6 +654,9 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(claims ? { claims } : {}),
         ...(cache ? { cache } : {}),
+        instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
+          ? Number(values["org-cap"])
+          : undefined,
         trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
       })
@@ -700,6 +705,7 @@ async function token(args: string[]): Promise<void> {
     role: { type: "string" },
     name: { type: "string" },
     "expires-days": { type: "string" },
+    instance: { type: "boolean", default: false },
     "data-dir": { type: "string", default: "./data" },
   } as const;
   const { values, positionals } = parseArgs({
@@ -717,6 +723,45 @@ async function token(args: string[]): Promise<void> {
       `sha256: ${hashToken(secret)}\nSet LONGSHORE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
     );
     console.log(secret);
+    return;
+  }
+  if (values.instance) {
+    // An instance-administrator token (lsi_): not tied to an org, minted only here.
+    if (values.org || values.project || values.role) {
+      throw new Error("--instance takes no --org, --project or --role: it holds no org grant");
+    }
+    const { createInstanceTokenFromCli, listInstanceTokensFromCli, revokeInstanceTokenFromCli } =
+      await import("./ops/instance-token-cli");
+    const db = open();
+    try {
+      if (sub === "create") {
+        if (!values.name) throw new Error("--name is required");
+        const created = await createInstanceTokenFromCli(db, {
+          name: values.name,
+          expiresInDays:
+            values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
+        });
+        console.error(
+          `created instance token ${created.id}, expires ${iso(created.expiresAt)}. It is shown once. It can call the instance operations over REST and nothing else.`,
+        );
+        console.log(created.secret);
+      } else if (sub === "list") {
+        console.log(["ID", "NAME", "STATUS", "LAST USED", "EXPIRES"].join("\t"));
+        for (const r of await listInstanceTokensFromCli(db)) {
+          console.log([r.id, r.name, r.status, iso(r.lastUsedAt), iso(r.expiresAt)].join("\t"));
+        }
+      } else if (sub === "revoke") {
+        const [id] = positionals;
+        if (!id)
+          throw new Error("usage: longshore token revoke <id> --instance [--data-dir ./data]");
+        const done = await revokeInstanceTokenFromCli(db, id);
+        console.error(`revoked instance token ${done.id} (${done.name})`);
+      } else {
+        throw new Error("--instance works with create, list and revoke");
+      }
+    } finally {
+      db.close();
+    }
     return;
   }
   if (sub === "create") {

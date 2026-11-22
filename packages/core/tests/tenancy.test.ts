@@ -38,6 +38,7 @@ const NO_ORG_ID = new Set([
   "instance", // instance-level config
   "orgs", // the tenant itself
   "users", // global identity; membership is org_members
+  "instance_tokens", // the instance administrator: holds no org grant by design (#205)
 ]);
 
 test.skipIf(onPostgres)("every table except the allowlist has an org_id column", () => {

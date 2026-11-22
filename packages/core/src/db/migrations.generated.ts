@@ -345,5 +345,13 @@ export const migrations: Migration[] = [
       "ALTER TABLE `job_attempts` ADD `sandbox_destroyed_at` integer;",
       "CREATE INDEX `job_attempts_sandbox_idx` ON `job_attempts` (`org_id`,`sandbox_created_at`);"
     ]
+  },
+  {
+    "tag": "0030_nosy_captain_stacy",
+    "when": 1795394425119,
+    "statements": [
+      "CREATE TABLE `instance_tokens` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`token_hash` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\t`expires_at` integer,\n\t`revoked_at` integer\n);",
+      "CREATE UNIQUE INDEX `instance_tokens_hash_unique` ON `instance_tokens` (`token_hash`);"
+    ]
   }
 ];
