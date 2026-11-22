@@ -93,12 +93,9 @@ With `--worker` and with `longshore run`:
 | `LONGSHORE_HSTS_MAX_AGE` | `Strict-Transport-Security` max-age in seconds on https responses. Default `31536000` (one year). `0` or `off` turns the header off. `LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0` drops `includeSubDomains`. |
 | `LONGSHORE_TRUST_FORWARDED_FOR` | Set to `1` only behind a proxy you control that appends the real client address. The webhook limiter then keys on the right-most `X-Forwarded-For` hop. Unset, all clients share one limit, and a correctly signed delivery is never refused. |
 | `LONGSHORE_NET_ALLOW_HOSTS` | Comma-separated hostnames or IP literals that the control plane may contact even though they resolve to a private or loopback address (and over plain http): for example a self-hosted Daytona on your network. Nothing else on a private range is reachable. See [Security](/security). |
-<<<<<<< HEAD
 | `LONGSHORE_DROP_PRIVILEGES` | `<uid>:<gid>`, never root. When the server starts as root, it chowns the data directory to this user and drops to it before opening anything. The image sets `65532:65532`. Ignored when not root. See [Quickstart](/quickstart). |
 | `LONGSHORE_ALLOW_ROOT` | Set to `1` to let the server keep running as root. Without it, a root server with no `LONGSHORE_DROP_PRIVILEGES` refuses to start. |
-=======
 | `LONGSHORE_RELEASE_MASTER_KEY_FILE`, `LONGSHORE_RELEASE_DATA_DIR`, `LONGSHORE_RELEASE_GITHUB_TOKEN`, `LONGSHORE_RELEASE_ARTIFACT_DIR`, `LONGSHORE_RELEASE_BUILDER_ID`, `LONGSHORE_RELEASE_POLL_MS` | Configuration of `serve --roles release`, the release lane. Set on that process only; every other role ignores them. See [Release lane](/release-lane). |
->>>>>>> c06ce62 (feat(release): release lane role, request queue, forge and digest re-checks, signing service wiring, publish credentials gated to the lane (#45))
 | `LONGSHORE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
 | `LONGSHORE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
 

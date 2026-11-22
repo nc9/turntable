@@ -34,12 +34,9 @@ import {
   withIsolationPolicy,
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
-<<<<<<< HEAD
 import { enforceRootPolicy } from "./privileges";
-=======
 import { mainRuntime, resolveRoles } from "./roles";
 import { serveRelease } from "./release/serve";
->>>>>>> c06ce62 (feat(release): release lane role, request queue, forge and digest re-checks, signing service wiring, publish credentials gated to the lane (#45))
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
@@ -98,14 +95,11 @@ Environment:
                     sent over x-forwarded-proto: https are accepted
   LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
-<<<<<<< HEAD
   LONGSHORE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
                     before opening anything (the image sets 65532:65532)
   LONGSHORE_ALLOW_ROOT  set to 1 to keep running as root (otherwise a root server is refused)
-=======
   LONGSHORE_RELEASE_*  belong to "serve --roles release" alone (its own master key file, data dir, forge
                     token, artifact dir): the release lane runs as its own process and no other role reads them
->>>>>>> c06ce62 (feat(release): release lane role, request queue, forge and digest re-checks, signing service wiring, publish credentials gated to the lane (#45))
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
