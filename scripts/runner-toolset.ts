@@ -20,6 +20,8 @@ export interface Tool {
   /** GitHub's ubuntu-latest has it. */
   github: boolean;
   note?: string;
+  /** Which line of the output holds the version. Default 1. */
+  line?: number;
 }
 
 export const TOOLS: readonly Tool[] = [
@@ -47,12 +49,12 @@ export const TOOLS: readonly Tool[] = [
   { name: "g++", cmd: "g++", version: ["--version"], github: true },
   { name: "tar", cmd: "tar", version: ["--version"], github: true },
   { name: "unzip", cmd: "unzip", version: ["-v"], github: true },
-  { name: "zip", cmd: "zip", version: ["-v"], github: true },
+  { name: "zip", cmd: "zip", version: ["-v"], github: true, line: 2 },
   { name: "rsync", cmd: "rsync", version: ["--version"], github: true },
   { name: "openssl", cmd: "openssl", version: ["version"], github: true },
   { name: "ssh", cmd: "ssh", version: ["-V"], github: true },
   { name: "sudo", cmd: "sudo", version: ["--version"], github: true },
-  { name: "perl", cmd: "perl", version: ["--version"], github: true },
+  { name: "perl", cmd: "perl", version: ["-e", "print $^V"], github: true },
   { name: "ruby", cmd: "ruby", version: ["--version"], github: true },
   { name: "java", cmd: "java", version: ["-version"], github: true },
   { name: "go", cmd: "go", version: ["version"], github: true },
@@ -72,7 +74,7 @@ export const END = "{/* toolset:end */}";
 export function probeScript(tools: readonly Tool[] = TOOLS): string {
   const lines = tools.map((t) => {
     const args = t.version.map((a) => `'${a}'`).join(" ");
-    return `if command -v ${t.cmd} >/dev/null 2>&1; then v=$(${t.cmd} ${args} 2>&1 | head -n 1 | tr '\\t' ' ' | cut -c1-80); printf '%s\\tpresent\\t%s\\n' '${t.cmd}' "$v"; else printf '%s\\tabsent\\t\\n' '${t.cmd}'; fi`;
+    return `if command -v ${t.cmd} >/dev/null 2>&1; then v=$(${t.cmd} ${args} 2>&1 | sed -n '${t.line ?? 1}p' | tr '\\t' ' ' | cut -c1-80); printf '%s\\tpresent\\t%s\\n' '${t.cmd}' "$v"; else printf '%s\\tabsent\\t\\n' '${t.cmd}'; fi`;
   });
   return lines.join("\n");
 }
@@ -93,6 +95,12 @@ export function parseProbe(output: string): Probed[] {
     });
 }
 
+/** The version number in a tool's version line, so a changed build string does not churn the table. */
+export function versionOf(line: string): string {
+  const m = /(\d+\.\d+(?:\.\d+)?)/.exec(line);
+  return m?.[1] ?? line.slice(0, 40);
+}
+
 const cell = (s: string): string =>
   s.replaceAll("|", "\\|").replaceAll("{", "&#123;").replaceAll("<", "&lt;");
 
@@ -101,7 +109,7 @@ export function renderTable(probed: readonly Probed[], tools: readonly Tool[] = 
   const by = new Map(probed.map((p) => [p.cmd, p]));
   const rows = tools.map((t) => {
     const p = by.get(t.cmd);
-    const have = p?.present ? `Yes: ${cell(p.version || "installed")}` : "No";
+    const have = p?.present ? `Yes: ${cell(p.version ? versionOf(p.version) : "installed")}` : "No";
     return `| ${t.name} | ${t.github ? "Yes" : "No"} | ${have}${t.note ? `. ${cell(t.note)}` : ""} |`;
   });
   return [

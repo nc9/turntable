@@ -109,7 +109,8 @@ test("the CLI binary prints only the secret on stdout", async () => {
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
-    expect(code).toBe(0);
+    // A failure here is a spawn problem as often as a logic one: show what the child said.
+    if (code !== 0) throw new Error(`token create exited ${code}\nstdout: ${out}\nstderr: ${err}`);
     expect(out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
     expect(err).toContain("shown once");
     expect(err).not.toContain(out.trim());
