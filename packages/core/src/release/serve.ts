@@ -5,11 +5,13 @@ import { createApprovalVerifier } from "../approvals/verifier";
 import { type Db, ensureInstance, openDatabase } from "../db";
 import { getRunArtifactsByName } from "../db/repos";
 import { loadMasterKey } from "../secrets/crypto";
+import { SecretVault } from "../secrets/vault";
 import { SigningService } from "../signing";
 import { releaseConfigFromEnv } from "../roles";
 import { AttestationStore } from "./attest";
 import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
+import type { PublishWiring } from "./publish/types";
 import { fileKeyVault } from "./key-vault";
 import { ReleaseLane, type ArtifactRecords, type ReleaseSigner } from "./lane";
 
@@ -71,6 +73,20 @@ export async function serveRelease(
     dataDir: resolve(cfg.dataDir),
     builderId: cfg.builderId,
   });
+  // Publishing: the lane's own vault view (it alone can open release-class secrets) and its own
+  // GitHub write credential. With no targets declared this does nothing.
+  const vault = new SecretVault({ db, masterKey, lane: "release" });
+  const publish: PublishWiring = {
+    credentials: {
+      async secret(scope, name, destination, tag, requestId) {
+        const r = await vault.usePublishCredential({ ...scope, name, destination, tag, requestId });
+        return r.ok ? r.value : undefined;
+      },
+      async githubToken() {
+        return cfg.githubPublishToken;
+      },
+    },
+  };
   const lane = new ReleaseLane({
     db,
     forge: githubForge({ token: cfg.githubToken }),
@@ -78,6 +94,7 @@ export async function serveRelease(
     records,
     attest,
     signer,
+    publish,
     owner: `release-lane:${process.pid}`,
     log,
   });
