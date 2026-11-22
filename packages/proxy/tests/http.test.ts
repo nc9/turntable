@@ -104,3 +104,59 @@ describe("header parsing is linear", () => {
     expect(read(head(": v\r\n"))).toEqual({ kind: "error", reason: "bad_header" });
   });
 });
+
+describe("chunked bodies are parsed once", () => {
+  const chunked = head("transfer-encoding: chunked\r\n");
+
+  test("many tiny chunks, fed a few bytes at a time, stay within a time budget", () => {
+    // 4000 chunks is under the cap: each is "1\r\nx\r\n".
+    const body = `${"1\r\nx\r\n".repeat(4000)}0\r\n\r\n`;
+    const bytes = Buffer.from(chunked + body, "latin1");
+    const r = new RequestReader();
+    const t0 = performance.now();
+    let last: ReturnType<RequestReader["next"]> = { kind: "need_more" };
+    for (let i = 0; i < bytes.length; i += 3) {
+      r.feed(bytes.subarray(i, i + 3));
+      last = r.next();
+    }
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(last.kind).toBe("request");
+    if (last.kind === "request") expect(last.request.body.toString()).toBe("x".repeat(4000));
+  });
+
+  test("a request with more chunks than the cap is refused", () => {
+    const body = `${"1\r\nx\r\n".repeat(5000)}0\r\n\r\n`;
+    const t0 = performance.now();
+    expect(read(chunked + body)).toEqual({ kind: "error", reason: "chunk_limit" });
+    expect(performance.now() - t0).toBeLessThan(200);
+  });
+
+  test("one byte at a time yields the same request as one read", () => {
+    const text = `${chunked}3\r\nabc\r\n2;ext=1\r\nde\r\n0\r\nx-t: 1\r\n\r\n`;
+    const r = new RequestReader();
+    let last: ReturnType<RequestReader["next"]> = { kind: "need_more" };
+    for (const b of Buffer.from(text, "latin1")) {
+      r.feed(Buffer.from([b]));
+      last = r.next();
+    }
+    expect(last.kind).toBe("request");
+    if (last.kind === "request") expect(last.request.body.toString()).toBe("abcde");
+  });
+
+  test("a pipelined request after a chunked one is kept intact", () => {
+    const r = new RequestReader();
+    r.feed(
+      Buffer.from(`${chunked}1\r\na\r\n0\r\n\r\n${head("content-length: 2\r\n")}hi`, "latin1"),
+    );
+    const one = r.next();
+    const two = r.next();
+    expect(one.kind === "request" && one.request.body.toString()).toBe("a");
+    expect(two.kind === "request" && two.request.body.toString()).toBe("hi");
+  });
+
+  test("a body over the limit is refused while it is still being fed", () => {
+    const r = new RequestReader({ headerBytes: 1024, bodyBytes: 10 });
+    r.feed(Buffer.from(`${chunked}ff\r\n`, "latin1"));
+    expect(r.next()).toEqual({ kind: "error", reason: "body_too_large" });
+  });
+});
