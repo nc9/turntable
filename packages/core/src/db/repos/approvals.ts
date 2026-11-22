@@ -207,6 +207,19 @@ async function assertIdentityFree(
     throw new ApprovalConflict(
       "that forge login already belongs to an enrolled approver under a different person",
     );
+  // And the other way round: a person label an active approver holds under another login. Taking
+  // a new login under the same name would make the enrolee look like someone else to the check
+  // that a person cannot approve their own key.
+  const same = rows.find(
+    (r) =>
+      r.person.trim().toLowerCase() === a.person.trim().toLowerCase() &&
+      approverIdentity(r) !== null &&
+      approverIdentity(r) !== id,
+  );
+  if (same)
+    throw new ApprovalConflict(
+      "an enrolled approver already has that name under a different forge login",
+    );
 }
 
 export type NewApprover = {
@@ -299,8 +312,8 @@ export async function activeIdentities(
 }
 
 /**
- * The identities behind a set of records, by the approver key that signed (a revoked key still
- * counts as who signed). A record whose key has no forge login, or is gone, counts for nothing.
+ * The identities behind a set of records, by the approver key that signed. A record whose key is
+ * revoked, has no forge login, no longer satisfies the key policy, or is gone, counts for nothing.
  */
 export async function recordIdentities(
   db: Db,
@@ -314,8 +327,12 @@ export async function recordIdentities(
     let id = cache.get(r.approverId);
     if (id === undefined) {
       const a = await getApprover(db, orgId, r.approverId);
-      // A key that no longer satisfies the key policy stops counting (it is not deleted).
-      id = a && !(policy && keyPolicyViolation(policy, a) !== null) ? approverIdentity(a) : null;
+      // A revoked key stops counting, as it stops verifying (`verifySignature`) and stops being
+      // active (`activeIdentities`); so does a key that no longer satisfies the key policy.
+      id =
+        a && a.revokedAt === null && !(policy && keyPolicyViolation(policy, a) !== null)
+          ? approverIdentity(a)
+          : null;
       cache.set(r.approverId, id);
     }
     if (id !== null) out.add(id);

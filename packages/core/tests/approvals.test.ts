@@ -1635,3 +1635,72 @@ describe("approval key policy", () => {
     expect(set.has(aaguidText(AAGUID_A))).toBe(true);
   });
 });
+
+describe("quorum counting and self-approval hardening", () => {
+  test("a revoked approver's earlier signature no longer counts toward a quorum", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    const bob = await ed25519Approver("bob", "bob-gh");
+    await ed25519Approver("cleo", "cleo-gh");
+    const e = await ok(releaseTok, "request_enrolment", {
+      person: "dora",
+      forge_login: "dora-gh",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(e.required).toBe(2);
+    const sign = async (p: Person) => {
+      const c = await ok(releaseTok, "enrolment_challenge", {
+        enrolment_id: e.enrolment_id,
+        approver: p.id,
+      });
+      return dispatch(env, { kind: "signed" }, "approve_enrolment", {
+        statement: c.statement,
+        signature: await signOffline(p, c),
+      });
+    };
+    const first = await sign(alice);
+    expect(first.ok && first.output).toMatchObject({ approvals: 1, activated: false });
+    // alice is revoked: her signature stays on record but is worth nothing.
+    await db.run(async (h) => {
+      await h.orm.run(sql`update approvers set revoked_at = ${t} where id = ${alice.id}`);
+    });
+    const second = await sign(bob);
+    expect(second.ok && second.output).toMatchObject({ approvals: 1, activated: false });
+    // The overview agrees.
+    const ov = await ok(releaseTok, "approvers_overview");
+    expect(ov.pending_enrolments[0].approvals).toBe(1);
+  });
+
+  test("an enrolee cannot approve their own key by picking a new forge login", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    await ed25519Approver("bob", "bob-gh");
+    // Taking a new login under an existing person's name is refused when enrolling.
+    const r = await call(releaseTok, "request_enrolment", {
+      person: "Alice",
+      forge_login: "alice-other",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(!r.ok && r.error.code).toBe("conflict");
+    expect(!r.ok && r.error.message).toContain("under a different forge login");
+    // Even if such a row exists (written before the rule), alice's key cannot approve it.
+    const k = generateEd25519();
+    const row = await db.transaction(async (tx) =>
+      tx.run(async (h) => {
+        const id = "enrol-self";
+        await h.orm.run(
+          sql`insert into approver_enrolments (id, org_id, person, forge_login, kind, public_key, alg, sign_count, requested_by, created_at, expires_at, aaguid, attested) values (${id}, ${orgId}, 'alice', 'alice-other', 'ed25519', ${k.publicSpki}, 'EdDSA', 0, 'test', ${t}, ${t + 86_400_000}, null, 0)`,
+        );
+        return id;
+      }),
+    );
+    const c = await ok(releaseTok, "enrolment_challenge", {
+      enrolment_id: row,
+      approver: alice.id,
+    });
+    const self = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+      statement: c.statement,
+      signature: await signOffline(alice, c),
+    });
+    expect(!self.ok && self.error.code).toBe("forbidden");
+    expect(!self.ok && self.error.message).toContain("their own key");
+  });
+});

@@ -305,7 +305,11 @@ export async function applyEnrolmentApproval(
   }
   const signer = approverIdentity(v.key);
   if (signer === null) throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
-  if (signer === approverIdentity(e))
+  // The same person by login OR by name: an enrolee must not slip past by naming a new login.
+  if (
+    signer === approverIdentity(e) ||
+    v.key.person.trim().toLowerCase() === e.person.trim().toLowerCase()
+  )
     throw new OpError("forbidden", "a person cannot approve enrolling their own key");
   const keyPolicy = await getKeyPolicy(c.db, c.scope.orgId);
   const violation = keyPolicyViolation(keyPolicy, v.key);
