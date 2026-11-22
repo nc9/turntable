@@ -3343,6 +3343,454 @@
         "x-longshore-untrusted-output": true
       }
     },
+    "/quotas": {
+      "get": {
+        "operationId": "get_quotas",
+        "summary": "The org's quotas, what is used against each, and why work is held.",
+        "description": "The limits of this org (null is no limit), the usage each is measured against (concurrent attempts now, runs started in the last hour, sandbox minutes in the last 24 hours, stored log bytes, stored artifact and cache bytes), the percent used, and for a limit that is reached the reason new work is held. A held limit stops new claims; running attempts finish. Events (`infra.error` with `error_class` `quota_warning` at 80% and `quota_reached` at 100%) fire once per window. Read-only.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "max_concurrent": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_runs_per_hour": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_sandbox_minutes_per_day": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_log_bytes": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_stored_bytes": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "max_concurrent",
+                        "max_runs_per_hour",
+                        "max_sandbox_minutes_per_day",
+                        "max_log_bytes",
+                        "max_stored_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "metric": {
+                            "type": "string",
+                            "enum": [
+                              "concurrent",
+                              "runs_per_hour",
+                              "sandbox_minutes",
+                              "log_bytes",
+                              "stored_bytes"
+                            ]
+                          },
+                          "used": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "limit": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "percent": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Percent of the limit, rounded down; null with none."
+                          },
+                          "held": {
+                            "description": "Why new work is held because of this limit.",
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": ["metric", "used", "limit", "percent", "held"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["limits", "usage"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "reader",
+        "x-longshore-untrusted-output": false
+      },
+      "post": {
+        "operationId": "set_quotas",
+        "summary": "Set the org's quotas. Operator only; not available over MCP.",
+        "description": "Sets the limits you give (a number sets one, null removes it) and leaves the others as they are. `max_concurrent` replaces the instance's per-org concurrency cap for this org. The other limits hold new work when reached: running attempts finish, queued ones wait until the window moves or the limit is raised. Audited. Not exposed as an MCP tool: an agent must not raise its own limits.\n\nRequired role: operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "max_concurrent": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "max_runs_per_hour": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "max_sandbox_minutes_per_day": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "max_log_bytes": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "max_stored_bytes": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "max_concurrent": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_runs_per_hour": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_sandbox_minutes_per_day": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_log_bytes": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_stored_bytes": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "max_concurrent",
+                        "max_runs_per_hour",
+                        "max_sandbox_minutes_per_day",
+                        "max_log_bytes",
+                        "max_stored_bytes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "metric": {
+                            "type": "string",
+                            "enum": [
+                              "concurrent",
+                              "runs_per_hour",
+                              "sandbox_minutes",
+                              "log_bytes",
+                              "stored_bytes"
+                            ]
+                          },
+                          "used": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "limit": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "percent": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Percent of the limit, rounded down; null with none."
+                          },
+                          "held": {
+                            "description": "Why new work is held because of this limit.",
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": ["metric", "used", "limit", "percent", "held"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["limits", "usage"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
     "/action-pins/accept-move": {
       "post": {
         "operationId": "accept_action_move",

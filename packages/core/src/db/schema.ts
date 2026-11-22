@@ -1194,3 +1194,42 @@ export const cacheEntries = sqliteTable(
     index("cache_entries_used_idx").on(t.orgId, t.klass, t.usedAt),
   ],
 );
+
+// ---- per-org quotas (#52) ----
+
+/**
+ * Limits one org lives under. Null in a column means no limit of that kind. `max_concurrent`,
+ * when set, replaces the instance's per-org cap for this org.
+ */
+export const orgQuotas = sqliteTable("org_quotas", {
+  orgId: text("org_id")
+    .primaryKey()
+    .references(() => orgs.id),
+  maxConcurrent: integer("max_concurrent", { mode: "number" }),
+  maxRunsPerHour: integer("max_runs_per_hour", { mode: "number" }),
+  maxSandboxMinutesPerDay: integer("max_sandbox_minutes_per_day", { mode: "number" }),
+  maxLogBytes: integer("max_log_bytes", { mode: "number" }),
+  /** Artifact bytes recorded plus control-plane cache bytes. */
+  maxStoredBytes: integer("max_stored_bytes", { mode: "number" }),
+  updatedBy: text("updated_by").notNull(),
+  updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+});
+
+/**
+ * Which 80% and 100% notices an org already got, so each fires once per window (an hour, a day,
+ * or `total` for byte gauges, which re-arm when usage drops back under 80%).
+ */
+export const quotaNotices = sqliteTable(
+  "quota_notices",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    metric: text("metric").notNull(),
+    /** `warning` (80%) or `reached` (100%). */
+    level: text("level").notNull(),
+    window: text("window").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.metric, t.level, t.window] })],
+);

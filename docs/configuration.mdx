@@ -115,3 +115,15 @@ With `--worker` and with `longshore run`:
 Only `GET` and `HEAD` are accepted today. Responses carry a strict content security policy.
 
 More settings arrive with each feature, and this page ships with them.
+
+## Per-org quotas
+
+An org can live under limits, set by an operator with `set_quotas` (REST; not an MCP tool, so an agent cannot raise its own) and read with `get_quotas`, which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
+
+- `max_concurrent`: attempts running at once. When set, it replaces the instance's per-org cap (`--org-cap`) for this org; the instance-wide cap still applies.
+- `max_runs_per_hour`: runs that start in a rolling hour. A run that has already started finishes its jobs; new runs wait.
+- `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, from attempt start and finish times (a running attempt counts up to now).
+- `max_log_bytes`: stored job log bytes.
+- `max_stored_bytes`: recorded artifact bytes plus control-plane cache bytes. (The cache also keeps its own per-class shares inside the org's cache quota; this is the org-wide total.)
+
+A reached limit holds new claims only: running attempts finish, queued ones wait until the window moves or the limit is raised. Null means no limit. Each metric emits an event when it first crosses 80% and when it is reached, once per window: an `infra.error` event whose `error_class` is `quota_warning` or `quota_reached`, with the metric, used and limit. (The event type list is a database constraint, so a dedicated type needs a table rebuild migration; this reuses the existing type.)
