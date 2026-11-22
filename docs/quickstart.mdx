@@ -3,7 +3,7 @@ title: Quickstart
 description: Run the Turntable server from a binary or a container.
 ---
 
-Only what works today is listed here. There is no workflow execution yet.
+Only what works today is listed here. You can run one job of a workflow locally with `turntable run`; the server does not schedule runs yet.
 
 ## Binary
 
@@ -28,6 +28,24 @@ To run from source without building:
 ```sh
 bun run dev
 ```
+
+## Run a job
+
+`turntable run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
+
+```sh
+./dist/turntable-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
+  --repo path/to/repo --data-dir ./data
+```
+
+Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the repository root), `--image <ref>` (default: `node:22-bookworm` pinned by digest, which has bash, git and node), `--event push`, `--data-dir ./data`.
+
+- **What is delivered.** The committed tree (`git archive HEAD`) plus `.git`, which act's checkout stand-in copies into the workspace. Untracked and ignored files (such as `node_modules` or `.env`) and uncommitted edits are never sent. You get a warning when tracked files have uncommitted changes.
+- **No network.** The sandbox has no network access. act is downloaded and checked against a pinned sha256 on the host, and every `uses:` action is resolved to a commit sha and delivered by sha, so a moved tag cannot change what runs.
+- **Logs.** Output streams to your terminal as it happens and is stored in the database, after secret redaction, with byte offsets.
+- **One job only.** Workflows with `needs`, a matrix, `services`, `container`, `docker://` actions or non-Linux runners are refused before anything runs. See the act-runner README for the full support matrix.
+- **Cancel.** Ctrl-C destroys the sandbox and marks the attempt cancelled. The sandbox is always destroyed when the run ends.
+- **Exit codes.** `0` success (or a job skipped by `if:`), `1` the job failed, `2` infrastructure error or a workflow that cannot be run, `130` cancelled.
 
 ## Docker
 

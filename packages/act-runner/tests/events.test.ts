@@ -86,7 +86,7 @@ describe("act --json parser", () => {
     expect(s).toEqual({ started: true, finished: true, result: "failure", failedSteps: ["Boom"] });
   });
 
-  test("byte-by-byte chunking gives identical events; junk lines are ignored", async () => {
+  test("byte-by-byte chunking gives identical events; non-JSON lines become text events", async () => {
     const text = (await read("success.jsonl")) + "not json\n\n";
     expect(parseAll(text, 7)).toEqual(parseAll(text));
   });

@@ -26,6 +26,9 @@
       "name": "@turntable/core",
       "version": "0.0.0",
       "dependencies": {
+        "@turntable/act-runner": "workspace:*",
+        "@turntable/provider-docker": "workspace:*",
+        "@turntable/provider-sdk": "workspace:*",
         "@turntable/redact": "workspace:*",
         "drizzle-orm": "0.45.4",
         "zod": "4.6.7",

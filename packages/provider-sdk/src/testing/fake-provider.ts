@@ -20,6 +20,8 @@ export interface FakeWorldOptions {
   maxFileBytes?: number;
   /** Artificial latency per call, in milliseconds. */
   latencyMs?: number;
+  /** Absolute host path prefixes that files.put/get use as-is (tests that need fixed paths). */
+  hostPaths?: string[];
   /** Tuning passed to the wrapped exec (small head/tail make cut tests cheap). */
   exec?: WrappedExecOptions;
 }
@@ -50,7 +52,7 @@ export class FakeWorld {
   private generation = 0;
   private seq = 0;
   readonly opts: Required<Pick<FakeWorldOptions, "maxFileBytes" | "latencyMs" | "shell">> &
-    Pick<FakeWorldOptions, "exec">;
+    Pick<FakeWorldOptions, "exec" | "hostPaths">;
 
   constructor(opts: FakeWorldOptions = {}) {
     this.opts = {
@@ -58,6 +60,7 @@ export class FakeWorld {
       maxFileBytes: opts.maxFileBytes ?? 1024 * 1024,
       latencyMs: opts.latencyMs ?? 0,
       ...(opts.exec ? { exec: opts.exec } : {}),
+      ...(opts.hostPaths ? { hostPaths: opts.hostPaths } : {}),
     };
     mkdirSync(this.binDir);
     // The wrapper itself invokes `sh`; make that resolve to the chosen shell.
@@ -262,6 +265,9 @@ class FakeProvider implements Provider {
     };
     const resolveIn = (id: string, path: string): string => {
       const sb = world.get(id);
+      if (world.opts.hostPaths?.some((h) => path === h || path.startsWith(h + sep))) {
+        return path;
+      }
       if (path.startsWith(sb.dir + sep)) path = path.slice(sb.dir.length);
       const full = resolve(sb.dir, "." + (path.startsWith("/") ? path : "/" + path));
       if (!full.startsWith(sb.dir + sep)) throw new SpecError(`path escapes sandbox: ${path}`);

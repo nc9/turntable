@@ -34,7 +34,9 @@ export type ActEvent =
   | { type: "job-end"; jobId: string; result: string; time: string }
   | { type: "output"; jobId: string; stepKey: string; text: string; time: string }
   | { type: "command"; jobId: string; stepKey: string; command: string; arg?: string; time: string }
-  | { type: "error"; jobId: string; message: string; time: string };
+  | { type: "error"; jobId: string; message: string; time: string }
+  /** A non-JSON line (act's own stderr, a fatal message). Never part of a step. */
+  | { type: "text"; text: string };
 
 interface Raw {
   job?: string;
@@ -71,12 +73,13 @@ export function createActParser(): ActParser {
 
   function handle(line: string): ActEvent[] {
     const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) return [];
+    if (trimmed === "") return [];
     let r: Raw;
     try {
+      if (!trimmed.startsWith("{")) throw new Error("not json");
       r = JSON.parse(trimmed) as Raw;
     } catch {
-      return [];
+      return [{ type: "text", text: trimmed }];
     }
     const jobId = r.jobID ?? "";
     const time = r.time ?? "";
