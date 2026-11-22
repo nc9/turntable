@@ -32,6 +32,7 @@ import {
   withIsolationPolicy,
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
+import { enforceRootPolicy } from "./privileges";
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
@@ -89,6 +90,9 @@ Environment:
                     sent over x-forwarded-proto: https are accepted
   LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
+  LONGSHORE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
+                    before opening anything (the image sets 65532:65532)
+  LONGSHORE_ALLOW_ROOT  set to 1 to keep running as root (otherwise a root server is refused)
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
@@ -281,6 +285,12 @@ async function serve(args: string[]): Promise<void> {
     throw new Error(`invalid --port: ${values.port}`);
   }
   const dataDir = resolve(values["data-dir"]);
+  // Before anything is opened: as root, own the data dir and drop to an unprivileged user.
+  const privilege = enforceRootPolicy(dataDir);
+  if (privilege === "dropped")
+    console.log(`dropped privileges to ${process.env.LONGSHORE_DROP_PRIVILEGES}`);
+  if (privilege === "root_allowed")
+    console.warn("warning: running as root (LONGSHORE_ALLOW_ROOT=1)");
   const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
 

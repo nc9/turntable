@@ -49,6 +49,7 @@
     "test:vault": "bun test packages/core/tests/vault.test.ts packages/core/tests/vault-ops.test.ts packages/core/tests/vault-cli.test.ts packages/core/tests/env-scrub.test.ts",
     "test:audit": "bun test packages/core/tests/audit-chain.test.ts packages/core/tests/audit-coverage.test.ts packages/core/tests/audit-cli.test.ts packages/core/tests/audit-hardening.test.ts",
     "test:transport": "bun test packages/core/tests/transport.test.ts packages/core/tests/server.test.ts",
+    "test:privileges": "bun test packages/core/tests/privileges.test.ts",
     "test:pins": "bun test packages/core/tests/action-pins.test.ts packages/core/tests/forge-token.test.ts",
     "typecheck:net": "bun run --cwd packages/net typecheck",
     "typecheck:proxy": "bun run --cwd packages/proxy typecheck",

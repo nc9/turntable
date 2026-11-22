@@ -57,7 +57,7 @@ docker build -t longshore .
 docker run --rm -p 8080:8080 -v longshore-data:/data longshore
 ```
 
-The image is distroless and runs as a non-root user. It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
+The image is distroless and the server runs as the non-root user `65532`. It starts as root only to take ownership of its data directory and drops to `65532` before it opens anything (see [Root-owned volumes](#root-owned-volumes)). It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
 
 ## Check that it is up
 
@@ -85,6 +85,15 @@ Keep the token. Set only the hash on the server:
 | `PORT` | set by the host; `serve` uses it as the default port |
 
 On boot, if the org has no tokens yet, the server creates one `operator` token with that hash (valid 365 days). It does nothing when the org already has tokens, so the variable is safe to leave set. The token is never stored on the server or in its environment or logs; only its hash is. Use it as `Authorization: Bearer <token>`.
+
+### Root-owned volumes
+
+Railway and some other platforms mount a volume owned by root, which a non-root process cannot write. The image handles this itself: it starts as root with `LONGSHORE_DROP_PRIVILEGES=65532:65532` (set in the image), chowns the data directory to that user, then drops group, supplementary groups and user, and proves root cannot be regained, all before the database or any key file is opened. **Do not set `RAILWAY_RUN_UID=0`** (or any run-as-root override): the image no longer needs it.
+
+- The server refuses to keep running as root. To run as root on purpose, set `LONGSHORE_ALLOW_ROOT=1`.
+- Started as a non-root user (`docker run --user 65532:65532`), nothing is dropped and nothing is chowned.
+- Everything is opened after the drop, so a master key file (`LONGSHORE_MASTER_KEY_FILE`) must be readable by `65532`: keep it on the data volume, where it is chowned too, or make it readable.
+- Outside the image, set `LONGSHORE_DROP_PRIVILEGES=<uid>:<gid>` yourself if you start `longshore serve` as root.
 
 ## Network binding
 

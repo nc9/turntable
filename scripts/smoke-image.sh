@@ -32,10 +32,17 @@ headers=$(curl -fsS -D - -o /tmp/tt-index.html "http://127.0.0.1:$port/")
 echo "$headers" | grep -iq '^content-security-policy:.*script-src .self.' || { echo "missing CSP on /"; echo "$headers"; exit 1; }
 echo "$headers" | grep -iq '^content-security-policy:.*frame-ancestors .none.' || { echo "CSP lacks frame-ancestors"; exit 1; }
 grep -q '<div id="root">' /tmp/tt-index.html || { echo "/ is not the app shell"; exit 1; }
-user=$(docker inspect -f '{{.Config.User}}' "$image")
-case "$user" in nonroot*|65532*) ;; *) echo "image does not run as nonroot (user: $user)"; exit 1;; esac
+# The image starts as root so it can own a root-owned volume, and drops before opening anything:
+# the running server must be uid 65532, real, effective and saved (so root cannot be regained).
+assert_uid() { # container id, expected uid
+  local pid ids
+  pid=$(docker inspect -f '{{.State.Pid}}' "$1")
+  ids=$(awk '/^Uid:/{print $2, $3, $4}' "/proc/$pid/status")
+  test "$ids" = "$2 $2 $2" || { echo "server uids are '$ids', expected $2 $2 $2"; exit 1; }
+}
+assert_uid "$cid" 65532
 docker stop "$cid" >/dev/null
-echo "image: healthz, ui, csp, nonroot ok"
+echo "image: healthz, ui, csp, drops to 65532 ok"
 
 # 2. PORT is the default for --port, and a bootstrap token hash gives first-boot access.
 token="ls_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
@@ -50,3 +57,32 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" 
 test "$code" = "200" || { echo "bootstrap token returned $code, expected 200"; exit 1; }
 if docker logs "$cid" 2>&1 | grep -qF "$token"; then echo "token leaked into the logs"; exit 1; fi
 echo "image: PORT and bootstrap token ok"
+
+# 3. A root-owned mounted volume (what Railway gives): the server chowns it, drops, and writes.
+if sudo -n true 2>/dev/null; then
+  vol=$(mktemp -d)
+  sudo chown root:root "$vol"
+  sudo chmod 0755 "$vol"
+  cid=$(docker run -d --rm -p "$port:8080" -e LONGSHORE_HOST=0.0.0.0 -v "$vol:/data" "$image")
+  cids+=("$cid")
+  wait_healthy "$port"
+  assert_uid "$cid" 65532
+  owner=$(sudo stat -c '%u' "$vol/longshore.db")
+  test "$owner" = "65532" || { echo "database is owned by $owner, expected 65532"; exit 1; }
+  test "$(sudo stat -c '%u' "$vol")" = "65532" || { echo "data dir was not chowned"; exit 1; }
+  docker stop "$cid" >/dev/null
+  sudo rm -rf "$vol"
+  echo "image: root-owned volume ok"
+else
+  echo "image: skipping the root-owned volume case (no passwordless sudo)"
+fi
+
+# 4. No drop spec means a root server is refused, unless explicitly allowed.
+out=$(docker run --rm -e LONGSHORE_DROP_PRIVILEGES= "$image" 2>&1) && { echo "root server started without being allowed"; exit 1; }
+echo "$out" | grep -q "refusing to run as root" || { echo "unexpected refusal output: $out"; exit 1; }
+cid=$(docker run -d --rm -p "$port:8080" -e LONGSHORE_HOST=0.0.0.0 -e LONGSHORE_DROP_PRIVILEGES= -e LONGSHORE_ALLOW_ROOT=1 "$image")
+cids+=("$cid")
+wait_healthy "$port"
+assert_uid "$cid" 0
+docker stop "$cid" >/dev/null
+echo "image: root refused unless allowed ok"
