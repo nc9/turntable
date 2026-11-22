@@ -55,6 +55,8 @@ export interface DaytonaProviderOptions {
    * Name of an EXISTING snapshot to start from. This provider never creates snapshots. When a
    * spec also names an `image` (the scheduler always does), the snapshot is used and the image
    * name is ignored: the operator chose what runs, and an image build would create a snapshot.
+   * With no snapshot (and no `allowImageBuild`), the image name is ignored too and Daytona starts
+   * from the account's default snapshot.
    */
   snapshot?: string;
   /**
@@ -384,24 +386,17 @@ export class DaytonaProvider implements Provider {
     if (r?.memoryMb !== undefined) body.memory = Math.max(1, Math.ceil(r.memoryMb / 1024));
     if (r?.diskGb !== undefined) body.disk = r.diskGb;
 
+    // Which image the sandbox starts from, in order: a named snapshot (the spec's, else the
+    // configured one: the operator chose what runs, so an `image` name the scheduler adds is
+    // ignored); an image build, only when explicitly allowed; otherwise neither field is sent and
+    // Daytona starts from the account's default snapshot. No snapshot is ever created by default.
     const snapshot = spec.snapshot ?? this.opts.snapshot;
-    if (
-      spec.image !== undefined &&
-      this.opts.snapshot !== undefined &&
-      spec.snapshot === undefined
-    ) {
-      body.snapshot = this.opts.snapshot; // the configured snapshot wins; the image name is not used
-    } else if (spec.image !== undefined) {
-      if (!this.opts.allowImageBuild) {
-        throw new SpecError(
-          "this provider starts from existing snapshots only: set a snapshot (an image build would create one in the account)",
-        );
-      }
+    if (snapshot !== undefined) {
+      body.snapshot = snapshot;
+    } else if (spec.image !== undefined && this.opts.allowImageBuild) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/.test(spec.image))
         throw new SpecError("invalid image reference");
       body.buildInfo = { dockerfileContent: `FROM ${spec.image}\n` };
-    } else if (snapshot !== undefined) {
-      body.snapshot = snapshot;
     }
     return body;
   }
