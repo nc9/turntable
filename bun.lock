@@ -90,6 +90,17 @@
         "@types/bun": "1.4.4",
       },
     },
+    "packages/proxy": {
+      "name": "@longshore/proxy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@longshore/net": "workspace:*",
+        "@longshore/redact": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+      },
+    },
     "packages/redact": {
       "name": "@longshore/redact",
       "version": "0.0.0",
@@ -277,6 +288,8 @@
     "@longshore/provider-docker": ["@longshore/provider-docker@workspace:packages/provider-docker"],
 
     "@longshore/provider-sdk": ["@longshore/provider-sdk@workspace:packages/provider-sdk"],
+
+    "@longshore/proxy": ["@longshore/proxy@workspace:packages/proxy"],
 
     "@longshore/redact": ["@longshore/redact@workspace:packages/redact"],
 

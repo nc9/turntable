@@ -1,0 +1,19 @@
+{
+  "name": "@longshore/proxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@longshore/net": "workspace:*",
+    "@longshore/redact": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4"
+  }
+}
