@@ -288,7 +288,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       templateOf.set(row.id, tpl);
       const depEnd = Math.max(0, ...row.needs.map((n) => finished.get(n) ?? 0));
       if (broken && row.needs.length > 0) {
-        row.state = "cancelled";
+        row.state = "skipped";
         jobs.set(row.id, row);
         finished.set(row.jobKey, depEnd);
         continue;
@@ -472,10 +472,11 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
                 d &&
                 (d.state === "failure" ||
                   d.state === "cancelled" ||
+                  d.state === "skipped" ||
                   (d.state === "infra_error" && !retryAt.has(d.id))),
             )
           ) {
-            row.state = "cancelled";
+            row.state = "skipped";
             row.finishedAt = t;
             emit("job", row);
             changed = true;
@@ -609,7 +610,8 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       if (!job || job.runId !== runId) throw new Error(`job not found: ${jobId}`);
       const ids = new Set<string>([job.id]);
       // Re-queue the job and anything downstream that was cancelled.
-      for (const j of jobsOf(runId)) if (j.state === "cancelled") ids.add(j.id);
+      for (const j of jobsOf(runId))
+        if (j.state === "cancelled" || j.state === "skipped") ids.add(j.id);
       for (const jid of ids) {
         const j = jobs.get(jid)!;
         j.state = "queued";

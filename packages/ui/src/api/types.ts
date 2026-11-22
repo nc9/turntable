@@ -10,6 +10,7 @@ export const JOB_STATES = [
   "infra_error",
   "awaiting_approval",
   "cancelled",
+  "skipped",
 ] as const;
 export type JobState = (typeof JOB_STATES)[number];
 

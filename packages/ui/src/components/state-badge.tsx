@@ -5,6 +5,7 @@ import {
   CircleX,
   Hand,
   LoaderCircle,
+  SkipForward,
   TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
@@ -22,6 +23,7 @@ const ICONS: Record<JobState, LucideIcon> = {
   infra_error: TriangleAlert,
   awaiting_approval: Hand,
   cancelled: Ban,
+  skipped: SkipForward,
 };
 
 export function StateIcon({

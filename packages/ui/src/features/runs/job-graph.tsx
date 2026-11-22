@@ -33,6 +33,7 @@ const SEVERITY: JobState[] = [
   "awaiting_approval",
   "queued",
   "cancelled",
+  "skipped",
   "success",
 ];
 export function worstState(states: JobState[]): JobState {

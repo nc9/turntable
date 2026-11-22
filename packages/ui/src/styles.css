@@ -51,6 +51,8 @@
   --st-infra-bg: #fff3e0;
   --st-approval-bg: #f3ecfe;
   --st-cancelled-bg: #f2f2f2;
+  --st-skipped: #6a6a6a;
+  --st-skipped-bg: #f7f7f7;
 
   --log-bg: #fafafa;
   --log-fg: #1f1f1f;
@@ -116,6 +118,8 @@
   --st-infra-bg: #2b1d08;
   --st-approval-bg: #211634;
   --st-cancelled-bg: #1a1a1a;
+  --st-skipped: #8a8a8a;
+  --st-skipped-bg: #141414;
 
   --log-bg: #0d0d0d;
   --log-fg: #dedede;
@@ -178,6 +182,8 @@
     --st-infra-bg: #2b1d08;
     --st-approval-bg: #211634;
     --st-cancelled-bg: #1a1a1a;
+    --st-skipped: #8a8a8a;
+    --st-skipped-bg: #141414;
     --log-bg: #0d0d0d;
     --log-fg: #dedede;
     --log-gutter: #8a8a8a;
@@ -239,6 +245,8 @@
   --color-st-infra-bg: var(--st-infra-bg);
   --color-st-approval-bg: var(--st-approval-bg);
   --color-st-cancelled-bg: var(--st-cancelled-bg);
+  --color-st-skipped: var(--st-skipped);
+  --color-st-skipped-bg: var(--st-skipped-bg);
   --color-log: var(--log-bg);
   --color-log-fg: var(--log-fg);
   --radius-sm: 4px;
