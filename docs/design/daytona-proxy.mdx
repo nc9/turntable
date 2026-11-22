@@ -170,3 +170,14 @@ So a domain list is enforced by a transparent filter on the TLS server name and 
 3. The proxy gains a TLS listener mode, the per-source rate limits and the connection caps above.
 4. The canary gains the private-range and wrong-address probes. Nothing else in the job runner changes: it already works from `SandboxHandle.proxy` and `mustNotReach`.
 5. Tests: a fake Daytona API that records the create body (allow list present, no window), the relay against a local TLS proxy, the canary's refusal cases, and the live check script run by hand against a real account under the existing sandbox limits.
+
+## The live check
+
+The mock proves the provider sends the right requests. It does not prove Daytona enforces them, so before this path carries a secret there is one script to run by hand against a real account and a reachable proxy endpoint, `packages/provider-daytona/scripts/proxy-live-check.ts`. It creates one `deny-all-except-proxy` sandbox through `DaytonaProvider` (so the org CPU preflight, the live cap of 2, our label and name prefix, the 30 minute TTL ceiling and no snapshots all apply) and checks from inside it that:
+
+1. direct egress is closed (the egress canary's public and metadata targets);
+2. everything the provider names as must-not-reach is closed (a public address on the proxy's own port, private ranges, metadata);
+3. the proxy is open through the relay and answers `407` to a bad credential;
+4. given a per-attempt credential for a rule on that proxy (`--credential-file`) and a test upstream (`--upstream`, optionally `--expect <marker>`), one injected request succeeds. The credential goes into the sandbox as a file, never in an argument, and the response body is never printed.
+
+The sandbox is deleted in a `finally`, anything of ours left is swept by label, and sandbox-minutes are logged. `--dry-run` prints the create body and the planned checks and calls nothing (it does not read the key either). `--confine domain` runs the weaker domain-list policy instead. Exit status is 1 if any check fails or a sandbox is left.
