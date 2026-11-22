@@ -97,8 +97,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
     reason: string,
     code?: number,
   ): Promise<RunLocalResult> => {
-    // `skipped` has no job state yet: it is recorded as a successful run (TODO with the schema batch).
-    const dbState = state === "skipped" ? "success" : state;
+    const dbState = state;
     const exitCode =
       dbState === "success"
         ? 0
@@ -120,21 +119,23 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
   const steps = new Map<string, StepRecord>();
   const onAct = (e: ActEvent): void => {
     if (e.type === "step-start") {
-      steps.set(`${e.stepKey}\0${e.stage}`, {
+      const rec: StepRecord = {
         stepKey: e.stepKey,
         stage: e.stage,
         index: steps.size,
         name: stepLabel(e.name, e.stage),
         startedAt: Date.now(),
         logOffset: log.stored,
-      });
+      };
+      steps.set(`${e.stepKey}\0${e.stage}`, rec);
+      log.chain(() => o.store.recordStep(ids.attemptId, { ...rec }));
     } else if (e.type === "step-end") {
       const rec = steps.get(`${e.stepKey}\0${e.stage}`);
       if (rec) {
         rec.result = e.result;
         rec.endedAt = Date.now();
         if (e.durationMs !== undefined) rec.durationMs = e.durationMs;
-        log.chain(() => o.store.recordStep(ids.attemptId, rec));
+        log.chain(() => o.store.recordStep(ids.attemptId, { ...rec }));
       }
     }
     log.push(renderEvent(e));

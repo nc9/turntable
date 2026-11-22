@@ -8,10 +8,12 @@ import {
   transitionJob,
   updateAttempt,
   appendLog,
+  upsertStep,
 } from "../db";
 import { aggregateRunStatus } from "../db/job-state";
+import type { StepResult, StepStage } from "../db/schema";
 
-export type FinalState = "success" | "failure" | "infra_error" | "cancelled";
+export type FinalState = "success" | "failure" | "infra_error" | "cancelled" | "skipped";
 
 export interface StepRecord {
   stepKey: string;
@@ -77,9 +79,18 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
     async appendLog(attemptId, offset, bytes) {
       await appendLog(db, scope, attemptId, offset, bytes);
     },
-    async recordStep() {
-      // TODO(schema batch): write attempt_steps rows (step_key, stage, index, name, result,
-      // times, log_offset) once that table lands. Until then steps live only in the log text.
+    async recordStep(attemptId, step) {
+      await upsertStep(db, scope, {
+        attemptId,
+        stepKey: step.stepKey,
+        stage: stageOf(step.stage),
+        index: step.index,
+        name: step.name,
+        result: resultOf(step.result),
+        startedAt: step.startedAt ?? null,
+        finishedAt: step.endedAt ?? null,
+        logOffset: step.logOffset,
+      });
     },
     async finish(ids, state, opts) {
       const code = opts.exitCode ?? null;
@@ -92,4 +103,16 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
       await setRunStatus(db, scope, ids.runId, aggregateRunStatus([state]));
     },
   };
+}
+
+/** act's Pre, Main and Post map to pre, main and post; set up and complete job are main. */
+function stageOf(stage: string): StepStage {
+  return stage === "Pre" ? "pre" : stage === "Post" ? "post" : "main";
+}
+
+function resultOf(result: string | undefined): StepResult | null {
+  if (result === undefined) return null;
+  return result === "success" || result === "skipped" || result === "cancelled"
+    ? result
+    : "failure";
 }

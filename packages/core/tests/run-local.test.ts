@@ -10,6 +10,7 @@ import {
   listAttempts,
   listJobs,
   listRuns,
+  listSteps,
   openDatabase,
   readLog,
 } from "../src/db";
@@ -107,6 +108,22 @@ describe("runLocal", () => {
     expect(stored).toContain("hello from act");
     expect(stored).toContain("✓ Say hello");
     expect(await provider.count({ labels: { "turntable.run": result.runId } })).toBe(0);
+    // Steps are stored in order, with act stages mapped and each pointing into the stored log.
+    const steps = await listSteps(db, scope, result.attemptId);
+    expect(steps.map((x) => [x.name, x.stage, x.result])).toEqual([
+      ["Set up job", "main", "success"],
+      ["actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "main", "success"],
+      ["Say hello", "main", "success"],
+      ["Skipped step", "main", "skipped"],
+      ["./.github/actions/greet", "main", "success"],
+    ]);
+    const say = steps.find((x) => x.name === "Say hello");
+    expect(
+      Buffer.from(stored)
+        .subarray(say?.logOffset ?? 0)
+        .toString(),
+    ).toMatch(/^\u25b6 Say hello/);
+    expect(say?.startedAt).toBeGreaterThan(0);
   });
 
   test("failure: exit 1, job failure with a non-zero code", async () => {
@@ -127,11 +144,12 @@ describe("runLocal", () => {
     expect(out).toContain("Error: bad flag");
   });
 
-  test("skipped: exit 0, recorded as success until the skipped state exists", async () => {
+  test("skipped: exit 0, job state skipped with no exit code", async () => {
     const { db, scope, result } = await go(await fakeAct("", 0));
     expect(result).toMatchObject({ state: "skipped", exitCode: 0 });
     const [job] = await listJobs(db, scope, result.runId);
-    expect(job?.state).toBe("success");
+    expect(job?.state).toBe("skipped");
+    expect(job?.exitCode).toBeNull();
   });
 
   test("sandbox create failure is an infra_error row, not a crash", async () => {

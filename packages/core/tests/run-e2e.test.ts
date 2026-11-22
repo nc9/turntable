@@ -57,8 +57,9 @@ async function stored(data: string) {
   const [attempt] = job ? await listAttempts(db, scope, job.id) : [];
   const chunks = attempt ? await readLog(db, scope, attempt.id) : [];
   const log = chunks.map((c) => c.bytes.toString("utf8")).join("");
+  const steps = attempt ? await listSteps(db, scope, attempt.id) : [];
   db.close();
-  return { run, job, attempt, log };
+  return { run, job, attempt, log, steps };
 }
 
 describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
@@ -74,6 +75,7 @@ describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
     expect(s.job).toMatchObject({ state: "success", exitCode: 0 });
     expect(s.attempt?.sandboxId).toBeTruthy();
     expect(s.log).toBe(out);
+    expect(s.steps.map((x) => `${x.name}:${x.result}`)).toContain("Read output and env:success");
   }, 600_000);
 
   test("failing job: exit 1 and a stored failure", async () => {
