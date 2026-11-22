@@ -130,19 +130,24 @@ export async function publishGithubRelease(
     return { missing, different };
   };
 
+  /** Names of assets the release holds that nobody asked for. */
+  const extras = (rel: Release): string[] =>
+    rel.assets.map((a) => a.name).filter((n) => !want.has(n));
+
   let rel = await lookup();
   if (rel && "error" in rel) return failed(`http_${rel.error}`, "reading the release");
 
   if (rel && !rel.draft) {
     // Published: matching is a success, anything else a refusal. Never modified.
     const d = await differences(rel);
-    if (d.missing.length === 0 && d.different.length === 0) {
+    const more = extras(rel);
+    if (d.missing.length === 0 && d.different.length === 0 && more.length === 0) {
       return { target: key, state: "already", facts: { release: rel.id, assets: expected } };
     }
     return refuse(
       "republish_mismatch",
-      `the published release ${ctx.tag} differs: ${[...d.missing.map((n) => `${n} missing`), ...d.different.map((n) => `${n} differs`)].join(", ")}`,
-      { release: rel.id },
+      `the published release ${ctx.tag} differs: ${[...d.missing.map((n) => `${n} missing`), ...d.different.map((n) => `${n} differs`), ...more.map((n) => `${n} unexpected`)].join(", ")}`,
+      { release: rel.id, ...(more.length > 0 ? { extras: more } : {}) },
     );
   }
 
@@ -184,6 +189,16 @@ export async function publishGithubRelease(
   // What the draft now holds must be exactly what was sent, before anything is published.
   const after = await lookup();
   if (!after || "error" in after) return failed("lookup_failed", "re-reading the draft");
+  // The set must be exactly what was asked for: an asset a job attached on top is not published
+  // (the draft is left as it is, for a person to look at) and the names are audited.
+  const more = extras(after);
+  if (more.length > 0) {
+    return refuse(
+      "unexpected_assets",
+      `the draft holds assets that were not asked for: ${more.join(", ")}`,
+      { release: draft.id, extras: more },
+    );
+  }
   const d = await differences(after);
   if (d.missing.length > 0 || d.different.length > 0) {
     return refuse(
@@ -201,4 +216,57 @@ export async function publishGithubRelease(
   });
   if (pub.status !== 200) return failed(`http_${pub.status}`, "publishing the draft");
   return { target: key, state: "published", facts: { release: draft.id, assets: expected } };
+}
+
+/**
+ * The draft release for a tag, created by the lane itself when there is none. Compat publishing
+ * pins a job's upload rule to this release's id, so a job can never attach anything to a
+ * published release. A release for the tag that is already published is refused.
+ */
+export async function ensureDraft(
+  repo: string,
+  tag: string,
+  token: string,
+  o: GithubReleaseOptions = {},
+): Promise<{ ok: true; id: number } | { ok: false; reason: string }> {
+  const api = (o.api ?? "https://api.github.com").replace(/\/+$/, "");
+  const f = o.fetch ?? safeFetch;
+  const headers = {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "longshore",
+  };
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await f(`${api}${path}`, {
+      method,
+      headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      timeoutMs: 30_000,
+      maxBytes: 4 * 1024 * 1024,
+    });
+    let json: Release | undefined;
+    try {
+      json = (await res.json()) as Release;
+    } catch {
+      json = undefined;
+    }
+    return { status: res.status, json };
+  };
+  const found = await call("GET", `/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`);
+  if (found.status === 200 && found.json) {
+    return found.json.draft
+      ? { ok: true, id: found.json.id }
+      : { ok: false, reason: "already_published" };
+  }
+  if (found.status !== 404) return { ok: false, reason: `http_${found.status}` };
+  const made = await call("POST", `/repos/${repo}/releases`, {
+    tag_name: tag,
+    name: tag,
+    draft: true,
+    prerelease: tag.includes("-"),
+  });
+  return made.status === 201 && made.json
+    ? { ok: true, id: made.json.id }
+    : { ok: false, reason: `http_${made.status}` };
 }

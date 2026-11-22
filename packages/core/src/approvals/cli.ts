@@ -14,6 +14,7 @@ import {
   setEnvPolicy,
 } from "../db/repos";
 import { approvalWarnings } from "./apply";
+import { notCountingReason } from "./identity";
 import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "./keys";
 
 export const APPROVALS_USAGE = `Usage:
@@ -85,6 +86,19 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     } catch {
       // not JSON: the text is the canonical statement
     }
+    // Show what is being signed, so the signer sees the identity an enrolment would grant.
+    try {
+      const st = JSON.parse(canonical) as Record<string, unknown>;
+      const fields = ["type", "person", "forge_login", "run_id", "environment", "enrolment_id"];
+      console.error(
+        `signing: ${fields
+          .filter((f) => typeof st[f] === "string")
+          .map((f) => `${f}=${String(st[f])}`)
+          .join(" ")}`,
+      );
+    } catch {
+      // not JSON: nothing to summarise
+    }
     const sig = signEd25519(readFileSync(values.key, "utf8"), canonical);
     console.log(JSON.stringify({ kind: "ed25519", signature: sig }));
     return 0;
@@ -151,6 +165,7 @@ export async function approvalsCommand(args: string[]): Promise<number> {
               person: a.person,
               kind: a.kind,
               forge_login: a.forgeLogin,
+              not_counting: notCountingReason(a),
             })),
             warnings: await approvalWarnings(db, org.id, [
               "production",

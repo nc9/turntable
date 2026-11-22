@@ -405,6 +405,7 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
     "kind",
     "passkey_id",
     "created_at",
+    "not_counting",
   ]);
   expectKeys(approvers.properties!.pending_enrolments!.items!, [
     "id",

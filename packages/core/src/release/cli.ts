@@ -97,6 +97,10 @@ const PUBLISH_USAGE = `usage:
       [--access public|restricted] --accept-long-lived-token
   longshore release publish-target set --org <slug> --project <slug> --key <name> --kind github-release \
       --assets <a,b,...> [--provenance-asset <name>|none]
+  longshore release publish-target set --org <slug> --project <slug> --key <name> --kind oci-image \
+      --registry ghcr.io --repository <owner/name> --manifest <manifest artifact> --tags v1,latest \
+      --username <registry user> --secret <vault secret>
+  (npm and github-release also take --mode strict|compat; an image is always compat)
   longshore release publish-target remove --org <slug> --project <slug> --key <name>
   longshore release publish-target list --org <slug> --project <slug>
 Targets are stored in the release lane's own file, never in the workflow. An npm target uses a
@@ -121,6 +125,12 @@ async function publishTarget(args: string[]): Promise<number> {
       assets: { type: "string" },
       "provenance-asset": { type: "string" },
       "accept-long-lived-token": { type: "boolean" },
+      mode: { type: "string" },
+      registry: { type: "string" },
+      repository: { type: "string" },
+      manifest: { type: "string" },
+      tags: { type: "string" },
+      username: { type: "string" },
       "data-dir": { type: "string", default: "./data" },
     },
     strict: true,
@@ -152,10 +162,12 @@ async function publishTarget(args: string[]): Promise<number> {
         console.log(gone ? `removed ${values.key}` : `no target ${values.key}`);
         return gone ? 0 : 1;
       }
+      const mode = values.mode ? { mode: values.mode } : {};
       const raw =
         values.kind === "npm"
           ? {
               kind: "npm",
+              ...mode,
               package: values.package,
               artifact: values.artifact,
               secret: values.secret,
@@ -165,6 +177,7 @@ async function publishTarget(args: string[]): Promise<number> {
           : values.kind === "github-release"
             ? {
                 kind: "github-release",
+                ...mode,
                 assets: (values.assets ?? "")
                   .split(",")
                   .map((x) => x.trim())
@@ -176,8 +189,22 @@ async function publishTarget(args: string[]): Promise<number> {
                     }
                   : {}),
               }
-            : undefined;
-      if (!raw) throw new Error("--kind must be npm or github-release");
+            : values.kind === "oci-image"
+              ? {
+                  kind: "oci-image",
+                  mode: values.mode ?? "compat",
+                  registry: values.registry,
+                  repository: values.repository,
+                  manifest: values.manifest,
+                  tags: (values.tags ?? "")
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean),
+                  username: values.username,
+                  secret: values.secret,
+                }
+              : undefined;
+      if (!raw) throw new Error("--kind must be npm, github-release or oci-image");
       if (raw.kind === "npm" && !values["accept-long-lived-token"]) {
         throw new Error(
           "publishing to npm uses a long-lived registry token (a granular, package-scoped, publish-only one); pass --accept-long-lived-token to say you accept that",

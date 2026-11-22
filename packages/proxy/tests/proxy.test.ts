@@ -1,6 +1,7 @@
 // The proxy's guarantees, one test per property (see docs/secrets-proxy.mdx). Clients dial the
 // proxy on 127.0.0.1; the upstream is a recording stand-in unless a test says otherwise.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import net from "node:net";
 import tls from "node:tls";
@@ -1221,5 +1222,213 @@ describe("a public TLS listener and its limits", () => {
     clock += 1000;
     await Bun.sleep(300);
     expect(p.stats().tracked).toBe(0);
+  });
+});
+
+describe("publish rules through the proxy", () => {
+  const sha = (b: string | Buffer): string => createHash("sha256").update(b).digest("hex");
+  const put = (path: string, body: string, host = HOST): string =>
+    `PUT ${path} HTTP/1.1\r\nHost: ${host}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+  const tgz = Buffer.from("approved tarball");
+  const doc = (bytes: Buffer): string =>
+    JSON.stringify({
+      name: "@acme/web",
+      versions: {
+        "1.0.0": {
+          dist: { integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` },
+        },
+      },
+      _attachments: { "a.tgz": { data: bytes.toString("base64") } },
+    });
+  const npmRules = (): Rule[] => [
+    {
+      id: "npm-pkg",
+      host: HOST,
+      methods: ["GET", "PUT"],
+      pathPrefix: "/@acme%2Fweb",
+      npmPackage: "@acme/web",
+      inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+      secret: "NPM_TOKEN",
+      bodyCheck: { type: "npm-publish", digests: [sha(tgz)] },
+    },
+  ];
+
+  test("the approved tarball is published under the approved package, with the token", async () => {
+    const { cred } = newAttempt(npmRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    const r = await t.request(put("/@acme%2Fweb", doc(tgz)));
+    expect(r.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`https://${HOST}/@acme%2Fweb`);
+    expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${SECRET}`);
+    t.close();
+  });
+
+  test("other bytes, another package path, or a sub-path are refused and never sent", async () => {
+    const { cred } = newAttempt(npmRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t.request(put("/@acme%2Fweb", doc(Buffer.from("evil"))))).status).toBe(403);
+    const t2 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t2.request(put("/@acme%2Fother", doc(tgz)))).status).toBe(403);
+    const t3 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t3.request(put("/@acme%2Fweb/-rev/1", doc(tgz)))).status).toBe(403);
+    expect(seen).toHaveLength(0);
+    const e = events.find((x) => x.reason === "body_digest_not_approved");
+    expect(e).toBeDefined();
+    expect(e!.detail).toContain(sha(Buffer.from("evil")));
+    expect(events.some((x) => x.kind === "inject")).toBe(false);
+  });
+
+  test("a GET of the package needs no body check", async () => {
+    const { cred } = newAttempt(npmRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t.request(get("/@acme%2Fweb"))).status).toBe(200);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a rule without npmPackage still refuses an encoded slash", async () => {
+    const { cred } = newAttempt(rules({ pathPrefix: "/v1/" }));
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t.request(get("/v1/@acme%2Fweb"))).status).toBe(403);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a release may be created only as a draft", async () => {
+    const r: Rule[] = [
+      {
+        id: "gh-create",
+        host: HOST,
+        methods: ["POST"],
+        pathPrefix: "/repos/acme/web/releases",
+        pathExact: true,
+        inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+        secret: "GH",
+        bodyCheck: { type: "json", field: "draft", equals: true },
+      },
+    ];
+    const { cred } = newAttempt(r);
+    const post = (body: string): string =>
+      `POST /repos/acme/web/releases HTTP/1.1\r\nHost: ${HOST}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+    const a = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await a.request(post('{"tag_name":"v1","draft":true}'))).status).toBe(200);
+    const b = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await b.request(post('{"tag_name":"v1","draft":false}'))).status).toBe(403);
+    expect(seen).toHaveLength(1);
+  });
+
+  describe("an OCI registry's token exchange", () => {
+    const BEARER = "bearer_token_abcdef0123456789";
+    const ociRules = (over: Partial<Rule> = {}): Rule[] => [
+      {
+        id: "oci",
+        host: HOST,
+        methods: ["GET", "HEAD", "PUT", "POST", "PATCH"],
+        pathPrefix: "/v2/acme/web",
+        inject: { type: "oci-bearer", username: "bot", scope: "repository:acme/web:push,pull" },
+        secret: "REGISTRY_TOKEN",
+        ...over,
+      },
+    ];
+    let realm = `https://${HOST}/token`;
+    beforeEach(() => {
+      realm = `https://${HOST}/token`;
+      handler = (s) => {
+        const u = new URL(s.url);
+        if (u.pathname === "/v2/")
+          return new Response("", {
+            status: 401,
+            headers: { "www-authenticate": `Bearer realm="${realm}",service="reg"` },
+          });
+        if (u.pathname === "/token") return Response.json({ token: BEARER, expires_in: 300 });
+        return new Response("ok");
+      };
+    });
+
+    test("the proxy answers the challenge and the job's request carries only the bearer", async () => {
+      const { cred } = newAttempt(ociRules());
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      const r = await t.request(get("/v2/acme/web/blobs/sha256:abc"));
+      expect(r.status).toBe(200);
+      const exchange = seen.find((s) => new URL(s.url).pathname === "/token")!;
+      const q = new URL(exchange.url).searchParams;
+      expect(q.get("scope")).toBe("repository:acme/web:push,pull");
+      expect(q.get("service")).toBe("reg");
+      expect(exchange.headers.get("authorization")).toBe(basic("bot", SECRET));
+      const real = seen.find((s) => new URL(s.url).pathname.startsWith("/v2/acme"))!;
+      expect(real.headers.get("authorization")).toBe(`Bearer ${BEARER}`);
+      // the token is reused for the next request
+      await t.request(get("/v2/acme/web/blobs/sha256:def"));
+      expect(seen.filter((s) => new URL(s.url).pathname === "/token")).toHaveLength(1);
+      t.close();
+    });
+
+    test("a realm on another host or over http is refused, and the credential goes nowhere", async () => {
+      for (const bad of ["https://evil.example.test/token", `http://${HOST}/token`]) {
+        realm = bad;
+        const { cred } = newAttempt(ociRules());
+        const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+        seen = [];
+        expect((await t.request(get("/v2/acme/web/blobs/sha256:abc"))).status).toBe(502);
+        expect(seen.every((s) => !s.headers.get("authorization"))).toBe(true);
+        expect(reasons()).toContain("oci_token_failed");
+      }
+    });
+
+    test("a realm host the rule names is allowed", async () => {
+      realm = "https://auth.example.test/token";
+      const { cred } = newAttempt(
+        ociRules({
+          inject: {
+            type: "oci-bearer",
+            username: "bot",
+            scope: "repository:acme/web:pull",
+            realmHost: "auth.example.test",
+          },
+        }),
+      );
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t.request(get("/v2/acme/web/blobs/sha256:abc"))).status).toBe(200);
+    });
+
+    test("another repository is out of the rule, and a manifest is pinned by digest", async () => {
+      const manifest = '{"schemaVersion":2}';
+      const { cred } = newAttempt([
+        ...ociRules({ methods: ["GET", "HEAD"] }),
+        ...ociRules({
+          id: "oci-manifest",
+          methods: ["PUT"],
+          pathPrefix: "/v2/acme/web/manifests/v1.0.0",
+          pathExact: true,
+          bodyCheck: { type: "sha256", digests: [sha(manifest)] },
+        }),
+      ]);
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t.request(get("/v2/other/repo/blobs/sha256:abc"))).status).toBe(403);
+      const t2 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t2.request(put("/v2/acme/web/manifests/v1.0.0", manifest))).status).toBe(200);
+      const t3 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect(
+        (await t3.request(put("/v2/acme/web/manifests/v1.0.0", '{"schemaVersion":3}'))).status,
+      ).toBe(403);
+      const t4 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t4.request(put("/v2/acme/web/manifests/latest", manifest))).status).toBe(403);
+    });
+
+    test("neither the credential nor the bearer comes back in a response", async () => {
+      handler = (s) =>
+        new URL(s.url).pathname === "/v2/"
+          ? new Response("", {
+              status: 401,
+              headers: { "www-authenticate": `Bearer realm="${realm}"` },
+            })
+          : new URL(s.url).pathname === "/token"
+            ? Response.json({ token: BEARER })
+            : new Response(`echo ${s.headers.get("authorization")}`);
+      const { cred } = newAttempt(ociRules());
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      const r = await t.request(get("/v2/acme/web/blobs/sha256:abc"));
+      expect(r.body).not.toContain(BEARER);
+      expect(r.body).not.toContain(SECRET);
+    });
   });
 });

@@ -12,9 +12,11 @@ import {
   DEFAULT_PORT,
   INJECTING_ALLOWLIST,
   OVERRIDE_HEADERS,
+  checkBody,
   checkPath,
   hostAllowed,
   matchRule,
+  npmExactRule,
   passthroughAllowed,
   wireValue,
   MIN_INJECTABLE,
@@ -466,6 +468,63 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
     await serve(tunnel);
   }
 
+  /** Bearer tokens obtained from a registry's realm, per attempt and rule, in memory only. */
+  const ociTokens = new WeakMap<Attempt, Map<string, { token: string; until: number }>>();
+  /**
+   * Answers an OCI registry's token challenge on the job's behalf: asks the registry what it wants
+   * (the realm and service), refuses a realm on another host, and calls it with the credential.
+   */
+  async function ociToken(
+    attempt: Attempt,
+    rule: { id: string; host: string; port: number; inject: import("./types").Inject },
+    basicValue: string,
+  ): Promise<string | undefined> {
+    if (rule.inject.type !== "oci-bearer") return undefined;
+    const cache = ociTokens.get(attempt) ?? new Map();
+    ociTokens.set(attempt, cache);
+    const hit = cache.get(rule.id);
+    if (hit && hit.until > now()) return hit.token;
+    const base = `https://${rule.host}${rule.port === DEFAULT_PORT ? "" : `:${rule.port}`}`;
+    const call = {
+      redirect: "manual" as const,
+      maxBytes: 64 * 1024,
+      timeoutMs: lim.upstreamTimeoutMs,
+    };
+    try {
+      const ping = await upstream(`${base}/v2/`, { method: "GET", ...call });
+      void ping.body?.cancel();
+      const challenge = ping.headers.get("www-authenticate") ?? "";
+      const realm = /realm="([^"]+)"/i.exec(challenge)?.[1];
+      const service = /service="([^"]*)"/i.exec(challenge)?.[1];
+      if (ping.status !== 401 || !/^bearer\b/i.test(challenge) || !realm) return undefined;
+      const url = new URL(realm);
+      const realmHost = rule.inject.realmHost ?? rule.host;
+      if (url.protocol !== "https:" || url.username || url.password || url.hostname !== realmHost)
+        return undefined;
+      url.search = "";
+      url.searchParams.set("scope", rule.inject.scope);
+      if (service) url.searchParams.set("service", service);
+      const res = await upstream(url.toString(), {
+        method: "GET",
+        headers: { authorization: basicValue, accept: "application/json" },
+        ...call,
+      });
+      if (res.status !== 200) return undefined;
+      const doc = (await res.json()) as {
+        token?: unknown;
+        access_token?: unknown;
+        expires_in?: unknown;
+      };
+      const token = typeof doc.token === "string" ? doc.token : doc.access_token;
+      if (typeof token !== "string" || token.length < MIN_INJECTABLE) return undefined;
+      const ttl = typeof doc.expires_in === "number" && doc.expires_in > 0 ? doc.expires_in : 60;
+      cache.set(rule.id, { token, until: now() + Math.max(0, Math.min(ttl, 300) - 20) * 1000 });
+      return token;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function serve(t: {
     attempt: Attempt;
     host: string;
@@ -544,7 +603,8 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       const q = req.target.indexOf("?");
       const path = q < 0 ? req.target : req.target.slice(0, q);
       const query = q < 0 ? "" : req.target.slice(q);
-      const bad = checkPath(path);
+      // The one encoded slash accepted anywhere: a rule's exact npm package path.
+      const bad = npmExactRule(attempt.rules, host, port, path) ? undefined : checkPath(path);
       if (bad !== undefined) return refuse(403, `path_${bad}`);
       // The Host header must be the host that was tunnelled to.
       const hostHeader = (req.headers.find(([k]) => k === "host")?.[1] ?? "").toLowerCase();
@@ -553,6 +613,15 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       const m = matchRule(attempt.rules, host, port, req.method, path);
       if (!m.ok) return refuse(403, m.reason);
       const rule = m.rule;
+      if (rule.bodyCheck && req.method !== "GET" && req.method !== "HEAD") {
+        const v = checkBody(rule.bodyCheck, req.body);
+        if (!v.ok) {
+          return refuse(403, `body_${v.reason}`, {
+            ruleId: rule.id,
+            ...(v.detail ? { detail: v.detail } : {}),
+          });
+        }
+      }
 
       const headers = new Headers();
       // After anything was injected in this attempt, no request may ask for part of a
@@ -608,9 +677,18 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
         } catch {
           return refuse(502, "audit_failed", { ruleId: rule.id });
         }
+        let value = wire.value;
+        if (rule.inject.type === "oci-bearer") {
+          // The credential goes to the registry's token realm, never to the job.
+          const token = await ociToken(attempt, rule, wire.value);
+          if (!token) return refuse(502, "oci_token_failed", { ruleId: rule.id });
+          scrubSet.register(token);
+          scrubSet.register(`Bearer ${token}`);
+          value = `Bearer ${token}`;
+        }
         // The job's own copy of this header is replaced, never added to.
         headers.delete(wire.header);
-        headers.set(wire.header, wire.value);
+        headers.set(wire.header, value);
         injectedHere = true;
       }
 

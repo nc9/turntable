@@ -1,4 +1,5 @@
 // `longshore serve --roles release`: the release lane as its own process.
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { LocalSigner } from "@longshore/signer";
 import { createApprovalVerifier } from "../approvals/verifier";
@@ -13,6 +14,8 @@ import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
 import type { PublishWiring } from "./publish/types";
 import { fileKeyVault } from "./key-vault";
+import { startChannel } from "./channel";
+import { ReleaseProxy } from "./proxy";
 import { ReleaseLane, type ArtifactRecords, type ReleaseSigner } from "./lane";
 
 /** What the lane needs from the signing service and the artifact records. */
@@ -87,9 +90,10 @@ export async function serveRelease(
       },
     },
   };
+  const forge = githubForge({ token: cfg.githubToken });
   const lane = new ReleaseLane({
     db,
-    forge: githubForge({ token: cfg.githubToken }),
+    forge,
     bytes: dirArtifacts(cfg.artifactDir),
     records,
     attest,
@@ -98,10 +102,73 @@ export async function serveRelease(
     owner: `release-lane:${process.pid}`,
     log,
   });
+  // Compat publishing: the release proxy, only when asked for. It is the lane's own listener, so
+  // the credential it injects stays in the process that can open it.
+  const proxy = cfg.proxy
+    ? await ReleaseProxy.start({
+        db,
+        vault,
+        attest,
+        forge,
+        bytes: dirArtifacts(cfg.artifactDir),
+        githubToken: async () => cfg.githubPublishToken,
+        bindHost: cfg.proxy.bind,
+        port: cfg.proxy.port,
+        ...(cfg.proxy.advertiseHost ? { advertiseHost: cfg.proxy.advertiseHost } : {}),
+        ...(cfg.proxy.advertisePort ? { advertisePort: cfg.proxy.advertisePort } : {}),
+        ...(cfg.proxy.advertiseAddresses
+          ? { advertiseAddresses: cfg.proxy.advertiseAddresses }
+          : {}),
+        ...(cfg.proxy.tlsCertFile && cfg.proxy.tlsKeyFile
+          ? {
+              tls: {
+                cert: readFileSync(cfg.proxy.tlsCertFile, "utf8"),
+                key: readFileSync(cfg.proxy.tlsKeyFile, "utf8"),
+              },
+            }
+          : {}),
+        log,
+      })
+    : undefined;
+  if (proxy) log(`release proxy listening on ${proxy.host}:${proxy.port}`);
+  // How the worker asks for a job's proxy credential: the lane re-verifies each request itself.
+  const channel =
+    proxy && cfg.channel
+      ? await startChannel({
+          db,
+          proxy,
+          key: readFileSync(cfg.channel.keyFile, "utf8").trim(),
+          listen: cfg.channel.tcp
+            ? {
+                tcp: {
+                  host: cfg.channel.tcp.host,
+                  port: cfg.channel.tcp.port,
+                  tls: {
+                    cert: readFileSync(cfg.channel.tcp.certFile, "utf8"),
+                    key: readFileSync(cfg.channel.tcp.keyFile, "utf8"),
+                    ca: readFileSync(cfg.channel.tcp.caFile, "utf8"),
+                  },
+                },
+              }
+            : { unix: cfg.channel.socket || join(resolve(cfg.dataDir), "channel.sock") },
+          log,
+        })
+      : undefined;
+  if (channel) log("release channel listening");
+  // A freeze revokes the credentials of running publish jobs, not only the next request.
+  const sweep = proxy
+    ? setInterval(
+        () => void proxy.sweepFrozen().catch((e) => log(`sweep failed: ${String(e)}`)),
+        cfg.pollMs,
+      )
+    : undefined;
   lane.start(cfg.pollMs);
   log("release lane started");
   return {
     stop() {
+      if (sweep) clearInterval(sweep);
+      channel?.stop();
+      void proxy?.stop();
       lane.stop();
       attest.close();
       db.close();

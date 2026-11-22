@@ -1,10 +1,12 @@
 // Applying a verified, signed statement: checks that it binds this run, records it, and releases
 // the run's gated jobs once enough distinct people have approved. Runs inside the op's
 // transaction, so a refusal leaves nothing behind.
+import { approverIdentity, NO_FORGE_LOGIN, normalizeLogin } from "./identity";
 import type { Db } from "../db";
 import {
   activateEnrolment,
-  activePeople,
+  activeIdentities,
+  recordIdentities,
   ApprovalConflict,
   consumeChallenge,
   getEnrolment,
@@ -197,6 +199,8 @@ export async function applyEnvironmentApproval(
   if (!(await waitingEnvironments(c.db, c.scope, run.id)).includes(statement.environment))
     throw new OpError("conflict", "no job of this run waits for approval in that environment");
   const policy = await getEnvPolicy(c.db, c.scope.orgId, statement.environment);
+  if (approverIdentity(v.key) === null)
+    throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
   const blocked = authorBlocked(policy, v.key.forgeLogin, run.actor);
   if (blocked === "author") throw new OpError("forbidden", "the author of a run cannot approve it");
   if (blocked === "unknown")
@@ -221,7 +225,7 @@ export async function applyEnvironmentApproval(
     },
     c.now,
   );
-  const people = new Set(live.map((r) => r.person));
+  const people = await recordIdentities(c.db, c.scope.orgId, live);
   let released = 0;
   let state = run.status as string;
   if (people.size >= policy.required) {
@@ -240,9 +244,13 @@ export async function applyEnvironmentApproval(
 }
 
 /** Quorum for adding an approver: the production policy's count, capped by who could sign. */
-export async function enrolmentQuorum(db: Db, orgId: string, enrolPerson: string): Promise<number> {
+export async function enrolmentQuorum(
+  db: Db,
+  orgId: string,
+  enrolIdentity: string | null,
+): Promise<number> {
   const prod = await getEnvPolicy(db, orgId, "production");
-  const others = (await activePeople(db, orgId)).filter((p) => p !== enrolPerson).length;
+  const others = (await activeIdentities(db, orgId)).filter((p) => p !== enrolIdentity).length;
   return Math.max(1, Math.min(prod.required, others));
 }
 
@@ -267,12 +275,15 @@ export async function applyEnrolmentApproval(
     throw new OpError("not_found", "no pending enrolment with that id");
   if (
     statement.person !== e.person ||
+    normalizeLogin(statement.forge_login) !== normalizeLogin(e.forgeLogin ?? "") ||
     statement.key_fingerprint !==
       keyFingerprint({ kind: e.kind, credentialId: e.credentialId, publicKey: e.publicKey })
   ) {
     throw new OpError("conflict", "the statement is not for this enrolment");
   }
-  if (v.key.person === e.person)
+  const signer = approverIdentity(v.key);
+  if (signer === null) throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  if (signer === approverIdentity(e))
     throw new OpError("forbidden", "a person cannot approve enrolling their own key");
   await consumeProof(c, v, "enrol", statement.nonce);
   await record(c, v, signature, {
@@ -280,12 +291,12 @@ export async function applyEnrolmentApproval(
     enrolmentId: e.id,
     expiresAt: statement.expires_at,
   });
-  const people = new Set(
-    (await listEnrolmentRecords(c.db, c.scope.orgId, e.id))
-      .filter((r) => r.expiresAt > c.now)
-      .map((r) => r.person),
+  const people = await recordIdentities(
+    c.db,
+    c.scope.orgId,
+    (await listEnrolmentRecords(c.db, c.scope.orgId, e.id)).filter((r) => r.expiresAt > c.now),
   );
-  const required = await enrolmentQuorum(c.db, c.scope.orgId, e.person);
+  const required = await enrolmentQuorum(c.db, c.scope.orgId, approverIdentity(e));
   let approverId: string | null = null;
   if (people.size >= required) {
     const a = await activateEnrolment(
@@ -317,7 +328,7 @@ export async function approvalWarnings(
   orgId: string,
   environments: string[],
 ): Promise<string[]> {
-  const people = (await activePeople(db, orgId)).length;
+  const people = (await activeIdentities(db, orgId)).length;
   const out: string[] = [];
   let max = 0;
   for (const environment of environments) {

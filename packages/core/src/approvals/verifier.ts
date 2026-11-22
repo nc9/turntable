@@ -3,6 +3,7 @@
 // people? It never trusts a stored "approved" flag. Each stored statement is checked again: it
 // must bind exactly this subject, be unexpired, and its signature must verify against the
 // approver key (the org's enrolled keys, or the caller's own key store).
+import { approverIdentity } from "./identity";
 import type { Db } from "../db";
 import { getEnvPolicy, getRun, listEnvironmentRecords, parseTrust } from "../db/repos";
 import { authorBlocked, liveEnvironmentRecords } from "./apply";
@@ -24,6 +25,8 @@ export type ApprovalSubject = {
 export type VerifiedApproval = {
   approverId: string;
   person: string;
+  /** The verified forge login the approval counts under (see identity.ts). */
+  identity: string;
   method: "webauthn" | "ed25519";
   statementHash: string;
   approvedAt: number;
@@ -112,6 +115,9 @@ export function createApprovalVerifier(
         } catch {
           continue;
         }
+        // A key with no forge login is tied to no person and counts for nothing.
+        const identity = approverIdentity(key);
+        if (identity === null) continue;
         if (authorBlocked(policy, key.forgeLogin, run.actor) !== null) {
           selfApproved = true;
           continue;
@@ -119,6 +125,7 @@ export function createApprovalVerifier(
         good.push({
           approverId: key.id,
           person: key.person,
+          identity,
           method: sig.kind,
           statementHash: r.statementHash,
           approvedAt: r.createdAt,
@@ -126,7 +133,7 @@ export function createApprovalVerifier(
         });
       }
       const distinct = new Map<string, VerifiedApproval>();
-      for (const a of good) if (!distinct.has(a.person)) distinct.set(a.person, a);
+      for (const a of good) if (!distinct.has(a.identity)) distinct.set(a.identity, a);
       if (distinct.size >= policy.required)
         return {
           approved: true,

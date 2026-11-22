@@ -10,6 +10,7 @@ import {
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalJson as canonicalJsonOf } from "../src/audit/chain";
 import { approvalsCommand } from "../src/approvals/cli";
 import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "../src/approvals/keys";
 import { createApprovalVerifier } from "../src/approvals/verifier";
@@ -954,7 +955,7 @@ describe("review hardening", () => {
     const c = await challenge(noLogin.id);
     const r = await approve(c.statement, await signOffline(noLogin, c));
     expect(!r.ok && r.error.code).toBe("forbidden");
-    expect(!r.ok && r.error.message).toContain("cannot establish");
+    expect(!r.ok && r.error.message).toContain("no forge login");
     // A run whose author is unknown.
     const anon = await makeRun({ sha: "9".repeat(40) });
     await db.run(async (h) => {
@@ -973,8 +974,13 @@ describe("review hardening", () => {
       by: "t",
       now: t,
     });
+    // It waives the author check, not the need for an identity: a key with no login still counts
+    // for nothing, while one with a login may approve.
     const c3 = await challenge(noLogin.id);
-    expect((await approve(c3.statement, await signOffline(noLogin, c3))).ok).toBe(true);
+    const r3 = await approve(c3.statement, await signOffline(noLogin, c3));
+    expect(!r3.ok && r3.error.code).toBe("forbidden");
+    const c4 = await challenge(bob.id);
+    expect((await approve(c4.statement, await signOffline(bob, c4))).ok).toBe(true);
   });
 
   test("the verifier does not count an approval it cannot show is not the author's", async () => {
@@ -1042,5 +1048,198 @@ describe("review hardening", () => {
       now: t,
     });
     expect(await approvalWarnings(db, orgId, ["production", "release"])).toEqual([]);
+  });
+  describe("identity is the verified forge login, not the person label (fix)", () => {
+    test("two people rows that share one forge login count as one approver", async () => {
+      const alice = await ed25519Approver("alice", "alice-gh");
+      const bob = await ed25519Approver("bob", "bob-gh");
+      // Rows from before the identity rule: a second label on the same login.
+      await db.run(async (h) => {
+        await h.orm.run(sql`update approvers set forge_login = 'Alice-GH' where id = ${bob.id}`);
+      });
+      const c1 = await challenge(alice.id);
+      await approve(c1.statement, await signOffline(alice, c1));
+      const c2 = await challenge(bob.id);
+      const r = await approve(c2.statement, await signOffline(bob, c2));
+      expect(r.ok && r.output).toMatchObject({ approvals: 1, required: 2, released_jobs: 0 });
+      // The verifier counts the same way.
+      const v = await createApprovalVerifier(db, { rp: RP }).verify(
+        { orgId, projectId: scope.projectId, runId, headSha: SHA, workflowHash: WF_HASH },
+        "production",
+        { now: t },
+      );
+      expect(v.approved).toBe(false);
+    });
+
+    test("an impersonation enrolment is refused: a held login under another label, any case", async () => {
+      await ed25519Approver("alice", "alice-gh");
+      const r = await call(releaseTok, "request_enrolment", {
+        person: "mallory",
+        forge_login: "ALICE-GH",
+        ed25519_public_key: generateEd25519().publicSpki,
+      });
+      expect(!r.ok && r.error.code).toBe("conflict");
+      // Direct inserts (the CLI bootstrap path) are held to the same rule.
+      await expect(
+        insertApprover(
+          db,
+          orgId,
+          {
+            person: "mallory",
+            forgeLogin: "Alice-Gh",
+            kind: "ed25519",
+            publicKey: generateEd25519().publicSpki,
+            alg: "EdDSA",
+            createdBy: "t",
+          },
+          t,
+        ),
+      ).rejects.toThrow(/already belongs/);
+      // A second key for the same human (same label and login) is fine.
+      const again = await call(releaseTok, "request_enrolment", {
+        person: "alice",
+        forge_login: "Alice-GH",
+        ed25519_public_key: generateEd25519().publicSpki,
+      });
+      expect(again.ok).toBe(true);
+    });
+
+    test("the enrolment quorum is over identities, excluding the enrolee only by the same login", async () => {
+      const alice = await ed25519Approver("alice", "alice-gh");
+      await ed25519Approver("bob", "bob-gh");
+      const second = await ok(releaseTok, "request_enrolment", {
+        person: "alice",
+        forge_login: "ALICE-gh",
+        ed25519_public_key: generateEd25519().publicSpki,
+      });
+      // alice's own new key: only bob is "another", so the quorum is 1, and alice cannot be it.
+      expect(second.required).toBe(1);
+      const c = await ok(releaseTok, "enrolment_challenge", {
+        enrolment_id: second.enrolment_id,
+        approver: alice.id,
+      });
+      const self = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+        statement: c.statement,
+        signature: await signOffline(alice, c),
+      });
+      expect(!self.ok && self.error.code).toBe("forbidden");
+    });
+
+    test("the enrolment statement carries the forge login, and a different one is not for this enrolment", async () => {
+      const alice = await ed25519Approver("alice", "alice-gh");
+      await ed25519Approver("bob", "bob-gh");
+      const e = await ok(releaseTok, "request_enrolment", {
+        person: "carl",
+        forge_login: "Carl-GH",
+        ed25519_public_key: generateEd25519().publicSpki,
+      });
+      const c = await ok(releaseTok, "enrolment_challenge", {
+        enrolment_id: e.enrolment_id,
+        approver: alice.id,
+      });
+      expect(c.statement.forge_login).toBe("carl-gh");
+      const overview = await ok(releaseTok, "approvers_overview");
+      expect(overview.pending_enrolments[0].forge_login).toBe("Carl-GH");
+      // A statement naming another login is a different statement: it fails the enrolment match
+      // (its signature would be over other text, so sign the altered one).
+      const altered = { ...c.statement, forge_login: "someone-else" };
+      const sig = { kind: "ed25519", signature: signEd25519(alice.priv, canonicalJsonOf(altered)) };
+      const r = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+        statement: altered,
+        signature: sig,
+      });
+      expect(!r.ok && r.error.code).toBe("conflict");
+    });
+  });
+
+  describe("open challenges are capped per principal and expired rows are purged", () => {
+    test("one token filling its cap does not block another, and expiry frees the cap", async () => {
+      await ed25519Approver("alice", "alice-gh");
+      const other = (await mintToken(db, { orgId }, "release_operator")).secret;
+      for (let i = 0; i < 50; i++) await ok(releaseTok, "register_challenge");
+      const over = await call(releaseTok, "register_challenge", {});
+      expect(!over.ok && over.error.code).toBe("conflict");
+      expect((await call(other, "register_challenge", {})).ok).toBe(true);
+      // The cap covers register challenges too: the other token's approve challenge path is its own.
+      t += 11 * 60_000;
+      expect((await call(releaseTok, "register_challenge", {})).ok).toBe(true);
+      const rows = await db.run(async (h) =>
+        h.orm.all<{ n: number }>(sql`select count(*) as n from approval_challenges`),
+      );
+      // Expired rows were purged: only the fresh ones remain.
+      expect(Number(rows[0]!.n)).toBeLessThanOrEqual(2);
+    });
+  });
+});
+
+describe("keys without a forge login count for nothing (fix)", () => {
+  test("not in approvals, not in the verifier, not in the quorum, and the overview says so", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    const bob = await ed25519Approver("bob", "bob-gh");
+    const keyless = await ed25519Approver("legacy", null);
+    // A solo-style policy that lets authors approve would otherwise let a keyless key through.
+    await setEnvPolicy(db, orgId, {
+      environment: "production",
+      required: 2,
+      allowAuthorApproval: true,
+      by: "t",
+      now: t,
+    });
+    const o = await ok(releaseTok, "approvers_overview");
+    expect(o.approvers.find((a: any) => a.person === "legacy").not_counting).toContain(
+      "no forge login",
+    );
+    expect(o.approvers.find((a: any) => a.person === "alice").not_counting).toBeNull();
+    // It cannot approve a run.
+    const c = await challenge(keyless.id);
+    const r = await approve(c.statement, await signOffline(keyless, c));
+    expect(!r.ok && r.error.code).toBe("forbidden");
+    // The quorum for a new key is over counted identities only: alice and bob, not the keyless key.
+    const e = await ok(releaseTok, "request_enrolment", {
+      person: "carl",
+      forge_login: "carl-gh",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(e.required).toBe(2);
+    // It cannot sign an enrolment either.
+    const ec = await ok(releaseTok, "enrolment_challenge", {
+      enrolment_id: e.enrolment_id,
+      approver: keyless.id,
+    });
+    const er = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+      statement: ec.statement,
+      signature: await signOffline(keyless, ec),
+    });
+    expect(!er.ok && er.error.code).toBe("forbidden");
+    // A stored approval from it (rows from before the rule) is not counted by the verifier.
+    for (const p of [alice, bob]) {
+      const cc = await challenge(p.id);
+      expect((await approve(cc.statement, await signOffline(p, cc))).ok).toBe(true);
+    }
+    await db.run(async (h) => {
+      await h.orm.run(sql`update approvers set forge_login = NULL where id = ${bob.id}`);
+    });
+    const v = await createApprovalVerifier(db, { rp: RP }).verify(
+      { orgId, projectId: scope.projectId, runId, headSha: SHA, workflowHash: WF_HASH },
+      "production",
+      { now: t },
+    );
+    expect(v.approved).toBe(false);
+  });
+
+  test("request_enrolment audits the login the caller asserted", async () => {
+    await ed25519Approver("alice", "alice-gh");
+    await ok(releaseTok, "request_enrolment", {
+      person: "dora",
+      forge_login: "Dora-GH",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    const rows = await db.run(async (h) =>
+      h.orm.all<{ d: string }>(
+        sql`select input as d from audit_log where op = 'request_enrolment'`,
+      ),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.map((r) => r.d).join(" ")).toContain("Dora-GH");
   });
 });

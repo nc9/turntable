@@ -2,6 +2,14 @@ import { readFileSync } from "node:fs";
 import { DaytonaProvider, HARD_MAX_LIVE, type OwnerCiPreflight } from "@longshore/provider-daytona";
 import { DockerProvider } from "@longshore/provider-docker";
 import type { Provider } from "@longshore/provider-sdk";
+import {
+  BUILTIN_CEILINGS,
+  checkProviderInfo,
+  parsePluginPins,
+  ProviderTrustError,
+  verifyExternalPlugin,
+  type PluginPin,
+} from "./provider-trust";
 
 /** Providers `serve --provider` knows. */
 export const PROVIDER_NAMES = ["docker", "daytona"] as const;
@@ -49,10 +57,28 @@ const DOCKER_KEYS = new Set(["docker", "maxFileBytes", "runtime"]);
  * Builds the provider named on the command line. It codes against the provider-sdk `Provider`
  * interface only, so the worker never knows which one it has.
  */
-export function createProvider(name: string, config: Record<string, unknown> = {}): Provider {
+export function createProvider(
+  name: string,
+  config: Record<string, unknown> = {},
+  opts: { hosted?: boolean; pins?: readonly PluginPin[] } = {},
+): Provider {
   if (!isProviderName(name)) {
-    throw new Error(`unknown provider ${name}; use one of: ${PROVIDER_NAMES.join(", ")}`);
+    // Not built in: gated by hosted mode and a digest pin, and no external loader exists yet.
+    const path = verifyExternalPlugin(name, {
+      hosted: opts.hosted === true,
+      pins: opts.pins ?? parsePluginPins(process.env.LONGSHORE_PROVIDER_PLUGINS),
+    });
+    throw new ProviderTrustError(
+      `plugin ${name} (${path}) matches its pinned digest, but this build has no external provider loader; use one of: ${PROVIDER_NAMES.join(", ")}`,
+    );
   }
+  const provider = build(name, config);
+  // The declaration is checked at registration, before the scheduler relies on it.
+  checkProviderInfo(name, provider.info, BUILTIN_CEILINGS[name]);
+  return provider;
+}
+
+function build(name: ProviderName, config: Record<string, unknown>): Provider {
   switch (name) {
     case "docker": {
       const unknown = Object.keys(config).filter((k) => !DOCKER_KEYS.has(k));

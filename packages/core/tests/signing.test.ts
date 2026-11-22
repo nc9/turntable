@@ -52,6 +52,7 @@ let spy: Signer;
 const person = (name: string) => ({
   approverId: `ap-${name}`,
   person: name,
+  identity: `login:${name}`,
   method: "ed25519" as const,
   statementHash: "s".repeat(64),
   approvedAt: 1,

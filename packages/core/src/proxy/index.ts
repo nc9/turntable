@@ -263,6 +263,7 @@ export class SecretsProxy {
         port: e.port ?? null,
         method: e.method ?? null,
         rule: e.ruleId ?? null,
+        ...(e.detail ? { detail: e.detail } : {}),
       },
     });
   }
