@@ -111,6 +111,19 @@ A moved tag, a refused owner, an unpinned or unreachable action and the other de
 
 Two optional project policies tighten this further. `require_sha_pins` refuses any `uses:` that is not already a full commit sha. The org's action owner allowlist refuses actions from any owner not on it (`longshore policy set --allow-owners actions,oven-sh`). Both are off by default and apply to nested actions inside local composite actions too.
 
+## Outbound requests from the control plane
+
+Everything the control plane fetches (the GitHub API and codeload, the Daytona API, release downloads, outbound webhooks later) goes through one client, `@longshore/net`. A source-guard test fails if any other code calls `fetch` or opens a connection itself.
+
+- **Addresses.** The client resolves the host itself and requires every answer to be public. It refuses loopback, link-local (including the cloud metadata address 169.254.169.254), private RFC1918, carrier-grade NAT, unique local (ULA) and the other reserved ranges, and judges IPv6 forms that embed an IPv4 address (mapped, NAT64, 6to4) by the IPv4 address inside. Decimal and hex IPv4 spellings are normalised first. One private record among public ones is enough to refuse.
+- **Pinned resolution.** The connection goes to the address that was validated. DNS is not consulted again, so a name that changes between the check and the connect (DNS rebinding) cannot redirect it.
+- **Redirects.** Followed by hand, at most 5, each hop validated in full (scheme, host, address). A redirect to a refused address is never followed, and credentials are dropped when the origin changes.
+- **Scheme and URL.** https only. Credentials in the URL are refused.
+- **Caps.** Responses are capped while streaming (32 MiB by default, larger for release and source tarballs) and the whole exchange, redirects included, has a 30 second deadline by default.
+- **Allowlist.** `LONGSHORE_NET_ALLOW_HOSTS` names hosts that may be private and may use http, such as a local Daytona. Only those exact hosts.
+
+An address the guard refuses ends the job as a `policy:` failure, not an infrastructure error.
+
 ## Scoped per-job GitHub token
 
 Each job gets a short-lived GitHub token limited to its repository and the permissions its workflow declares. Issue [#18](https://github.com/nc9/turntable/issues/18).

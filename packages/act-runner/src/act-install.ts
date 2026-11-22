@@ -1,4 +1,6 @@
+import { SsrfError, safeFetch } from "@longshore/net";
 import { InfraError } from "@longshore/provider-sdk";
+import { PlanError } from "./plan";
 
 /** nektos/act (MIT). Bump version and both hashes together, from the release's checksums.txt. */
 export const ACT_VERSION = "v0.2.97";
@@ -12,6 +14,18 @@ export const ACT_RELEASES = {
     sha256: "44d48e3d4a6409053fdec6fc6518322467d79a2d5be8f72c021b0421e2ac113d",
   },
 } as const;
+
+/** The act release tarball is about 12 MiB; the cap leaves room without being open-ended. */
+const ACT_MAX_BYTES = 128 * 1024 * 1024;
+/** A GitHub source tarball of one action commit. */
+const ACTION_MAX_BYTES = 256 * 1024 * 1024;
+
+/** An address the guard refused is deterministic (a policy failure); anything else is transient. */
+export function netError(e: unknown, what: string): Error {
+  return e instanceof SsrfError
+    ? new PlanError("outbound-address", e.message)
+    : new InfraError(what, e);
+}
 
 export type ActArch = keyof typeof ACT_RELEASES;
 
@@ -41,9 +55,9 @@ export async function fetchAct(arch: ActArch): Promise<ActTarball> {
   const url = `https://github.com/nektos/act/releases/download/${ACT_VERSION}/${rel.asset}`;
   let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    res = await safeFetch(url, { timeoutMs: 120_000, maxBytes: ACT_MAX_BYTES });
   } catch (e) {
-    throw new InfraError(`cannot download ${url}`, e);
+    throw netError(e, `cannot download ${url}`);
   }
   if (!res.ok) throw new InfraError(`download ${url} failed: HTTP ${res.status}`);
   const bytes = await res.bytes();
@@ -76,9 +90,9 @@ export const fetchActionTarball: ActionFetcher = async (repo, sha) => {
   const url = `https://codeload.github.com/${repo}/tar.gz/${sha}`;
   let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    res = await safeFetch(url, { timeoutMs: 120_000, maxBytes: ACTION_MAX_BYTES });
   } catch (e) {
-    throw new InfraError(`cannot download ${url}`, e);
+    throw netError(e, `cannot download ${url}`);
   }
   if (!res.ok) throw new InfraError(`download ${url} failed: HTTP ${res.status}`);
   return res.bytes();

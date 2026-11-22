@@ -1,3 +1,4 @@
+import type { SafeFetch } from "@longshore/net";
 import {
   FileTooLargeError,
   InfraError,
@@ -81,7 +82,7 @@ export interface DaytonaProviderOptions {
   startTimeoutMs?: number;
   /** Called after a sandbox is deleted, so callers can account for minutes used. */
   onUsage?: (r: UsageRecord) => void;
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }

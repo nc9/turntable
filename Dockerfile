@@ -15,6 +15,7 @@ COPY packages/provider-daytona/package.json packages/provider-daytona/package.js
 COPY packages/redact/package.json packages/redact/package.json
 COPY packages/ui/package.json packages/ui/package.json
 COPY packages/act-runner/package.json packages/act-runner/package.json
+COPY packages/net/package.json packages/net/package.json
 RUN bun install --frozen-lockfile
 COPY . .
 RUN case "${TARGETARCH}" in \

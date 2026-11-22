@@ -1,5 +1,6 @@
 // The single place that turns the App's private key into credentials: an App JWT, and from it
 // installation access tokens scoped down per call. Nothing else in the codebase signs or mints.
+import { type SafeFetch, safeFetch } from "@longshore/net";
 import { createHash, createSign } from "node:crypto";
 import { getGithubApp } from "../db/repos";
 import type { Db } from "../db";
@@ -39,7 +40,7 @@ export interface AppAuthOptions {
   store: SecretStore;
   /** GitHub API base. Default https://api.github.com. */
   apiBase?: string;
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
   now?: () => number;
 }
 
@@ -86,7 +87,7 @@ export class AppAuth {
     const body: Record<string, unknown> = {};
     if (scope.repositories) body.repositories = [...scope.repositories];
     if (scope.permissions) body.permissions = scope.permissions;
-    const res = await (this.#o.fetch ?? fetch)(
+    const res = await (this.#o.fetch ?? safeFetch)(
       `${this.apiBase}/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
       {
         method: "POST",

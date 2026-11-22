@@ -14,6 +14,7 @@
       "name": "@longshore/act-runner",
       "version": "0.0.0",
       "dependencies": {
+        "@longshore/net": "workspace:*",
         "@longshore/provider-sdk": "workspace:*",
         "yaml": "2.9.1",
       },
@@ -27,6 +28,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@longshore/act-runner": "workspace:*",
+        "@longshore/net": "workspace:*",
         "@longshore/provider-daytona": "workspace:*",
         "@longshore/provider-docker": "workspace:*",
         "@longshore/provider-sdk": "workspace:*",
@@ -39,6 +41,13 @@
       "devDependencies": {
         "@types/bun": "1.4.4",
         "drizzle-kit": "0.31.11",
+      },
+    },
+    "packages/net": {
+      "name": "@longshore/net",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
       },
     },
     "packages/provider-conformance": {
@@ -55,6 +64,7 @@
       "name": "@longshore/provider-daytona",
       "version": "0.0.0",
       "dependencies": {
+        "@longshore/net": "workspace:*",
         "@longshore/provider-sdk": "workspace:*",
       },
       "devDependencies": {
@@ -257,6 +267,8 @@
     "@longshore/act-runner": ["@longshore/act-runner@workspace:packages/act-runner"],
 
     "@longshore/core": ["@longshore/core@workspace:packages/core"],
+
+    "@longshore/net": ["@longshore/net@workspace:packages/net"],
 
     "@longshore/provider-conformance": ["@longshore/provider-conformance@workspace:packages/provider-conformance"],
 

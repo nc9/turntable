@@ -11,6 +11,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@longshore/net": "workspace:*",
     "@longshore/provider-sdk": "workspace:*"
   },
   "devDependencies": {

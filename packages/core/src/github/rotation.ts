@@ -1,3 +1,4 @@
+import { type SafeFetch, safeFetch } from "@longshore/net";
 import { randomBytes } from "node:crypto";
 import type { Db } from "../db";
 import { getGithubApp, setPreviousSecretExpiry } from "../db/repos";
@@ -16,7 +17,7 @@ export async function rotateWebhookSecret(
   db: Db,
   store: SecretSeal,
   auth: AppAuth,
-  opts: { overlapMs?: number; now?: () => number; fetch?: typeof fetch } = {},
+  opts: { overlapMs?: number; now?: () => number; fetch?: SafeFetch } = {},
 ): Promise<{ overlapUntil: number }> {
   const app = await getGithubApp(db);
   if (!app) throw new Error("no GitHub App is configured");
@@ -29,7 +30,7 @@ export async function rotateWebhookSecret(
   await setPreviousSecretExpiry(db, app.appId, until);
   await store.set(app.orgId, SECRET_WEBHOOK, fresh);
   try {
-    const res = await (opts.fetch ?? fetch)(`${auth.apiBase}/app/hook/config`, {
+    const res = await (opts.fetch ?? safeFetch)(`${auth.apiBase}/app/hook/config`, {
       method: "PATCH",
       headers: {
         authorization: `Bearer ${await auth.appJwt()}`,

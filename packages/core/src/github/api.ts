@@ -1,5 +1,6 @@
 // The slice of the GitHub API the ingest path reads. Trust decisions use what this returns, never
 // what a webhook payload claims. Reads only: no GitHub writes yet.
+import { type SafeFetch, safeFetch } from "@longshore/net";
 import type { AppAuth } from "./app-auth";
 
 export interface GithubInstallationFacts {
@@ -25,7 +26,7 @@ export interface GithubFacts {
   listInstallationRepos(installationId: string): Promise<GithubRepoFacts[]>;
 }
 
-export function githubFacts(auth: AppAuth, fetchImpl: typeof fetch = fetch): GithubFacts {
+export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): GithubFacts {
   const headers = (token: string): Record<string, string> => ({
     authorization: `Bearer ${token}`,
     accept: "application/vnd.github+json",
