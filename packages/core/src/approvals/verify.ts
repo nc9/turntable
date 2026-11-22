@@ -38,7 +38,8 @@ export class VerifyError extends Error {
 export type ApproverKey = Pick<
   Approver,
   "id" | "kind" | "publicKey" | "alg" | "person" | "forgeLogin" | "credentialId" | "signCount"
-> & { revoked: boolean };
+> &
+  Partial<Pick<Approver, "aaguid" | "attested">> & { revoked: boolean };
 
 export interface ApproverKeyStore {
   lookup(approverId: string): Promise<ApproverKey | undefined>;

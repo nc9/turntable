@@ -552,7 +552,9 @@ describe("checks mode policy", () => {
     // No registered operation can change it: live is reachable from the CLI alone.
     const { registry } = await import("../src/ops");
     expect(
-      registry.ops.map((o) => o.name).filter((n) => /checks_mode|check_run|policy/.test(n)),
+      registry.ops
+        .map((o) => o.name)
+        .filter((n) => /checks_mode|check_run|policy/.test(n) && !n.includes("key_policy")),
     ).toEqual([]);
   });
 });

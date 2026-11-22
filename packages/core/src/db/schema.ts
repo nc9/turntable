@@ -873,6 +873,10 @@ export const approvers = sqliteTable(
     /** `ES256` or `EdDSA`. */
     alg: text("alg").notNull(),
     signCount: integer("sign_count", { mode: "number" }).notNull().default(0),
+    /** AAGUID from registration (lower-case UUID); only meaningful when `attested`. */
+    aaguid: text("aaguid"),
+    /** Whether a pinned vendor attestation chain verified at enrolment (#152). */
+    attested: integer("attested", { mode: "boolean" }).notNull().default(false),
     createdBy: text("created_by").notNull(),
     createdAt: createdAt(),
     revokedAt: integer("revoked_at", { mode: "number" }),
@@ -939,6 +943,8 @@ export const approverEnrolments = sqliteTable(
     publicKey: text("public_key").notNull(),
     alg: text("alg").notNull(),
     signCount: integer("sign_count", { mode: "number" }).notNull().default(0),
+    aaguid: text("aaguid"),
+    attested: integer("attested", { mode: "boolean" }).notNull().default(false),
     requestedBy: text("requested_by").notNull(),
     createdAt: createdAt(),
     expiresAt: integer("expires_at", { mode: "number" }).notNull(),
@@ -947,6 +953,23 @@ export const approverEnrolments = sqliteTable(
   },
   (t) => [index("approver_enrolments_org_idx").on(t.orgId, t.createdAt)],
 );
+
+/** Which keys an org's approvers may use (#152). One row per org; no row means `any`. */
+export const approvalKeyPolicies = sqliteTable("approval_key_policies", {
+  orgId: text("org_id")
+    .primaryKey()
+    .references(() => orgs.id),
+  /** `any` or `hardware`. */
+  policy: text("policy").notNull(),
+  /** JSON array of preset names (for example `yubikey`). */
+  /** Bumped on every change: a signed statement names the generation it was issued against. */
+  generation: integer("generation", { mode: "number" }).notNull().default(0),
+  presets: text("presets").notNull().default("[]"),
+  /** JSON array of custom AAGUIDs (lower-case UUIDs). */
+  aaguids: text("aaguids").notNull().default("[]"),
+  updatedBy: text("updated_by").notNull(),
+  updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+});
 
 /**
  * A verified, signed statement: an environment approval or an enrolment approval. The statement
@@ -960,10 +983,11 @@ export const approvalRecords = sqliteTable(
       .notNull()
       .references(() => orgs.id),
     projectId: text("project_id"),
-    /** `environment` or `enrol`. */
+    /** `environment`, `enrol` or `policy`. */
     kind: text("kind").notNull(),
     runId: text("run_id"),
     environment: text("environment"),
+    /** The enrolment id; for a `policy` record, the digest of the proposal its signers share. */
     enrolmentId: text("enrolment_id"),
     /** sha256 hex of the canonical statement. Unique per org: a statement is accepted once. */
     statementHash: text("statement_hash").notNull(),

@@ -49,9 +49,53 @@ export const enrolStatementSchema = z.strictObject({
 });
 export type EnrolStatement = z.infer<typeof enrolStatementSchema>;
 
+export const POLICY_STATEMENT_TYPE = "longshore.approve_key_policy.v1";
+
+const keyPolicyShape = z.strictObject({
+  mode: z.enum(["any", "hardware"]),
+  presets: z.array(z.string().max(40)).max(10),
+  aaguids: z.array(z.string().max(40)).max(200),
+});
+
+/**
+ * A change of the org's key policy. It names the policy being replaced and the one that replaces
+ * it, plus a hash of the AAGUID allowlist the new policy expands to, so the signers approve exactly
+ * this change against exactly this state, and it cannot be replayed after the policy moved on.
+ */
+export const policyStatementSchema = z.strictObject({
+  type: z.literal(POLICY_STATEMENT_TYPE),
+  org: slug,
+  /** The policy's change counter when the statement was issued: it cannot be replayed later. */
+  generation: z.int().min(0),
+  old: keyPolicyShape,
+  new: keyPolicyShape,
+  /** sha256 hex over the new policy's effective AAGUID set (sorted, newline-joined). */
+  allowlist_hash: hex(64, 64),
+  approver: z.string().min(1).max(64),
+  expires_at: z.int().positive(),
+  nonce,
+});
+export type PolicyStatement = z.infer<typeof policyStatementSchema>;
+
+/** The same change, whoever signs it: what the signers of one proposal have in common. */
+export const policyDigest = (s: PolicyStatement): string =>
+  createHash("sha256")
+    .update(
+      canonicalJson({
+        org: s.org,
+        generation: s.generation,
+        old: s.old,
+        new: s.new,
+        allowlist_hash: s.allowlist_hash,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+
 export const statementSchema = z.discriminatedUnion("type", [
   envStatementSchema,
   enrolStatementSchema,
+  policyStatementSchema,
 ]);
 export type Statement = z.infer<typeof statementSchema>;
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   createHash,
   createSign,
+  sign,
   generateKeyPairSync,
   randomBytes,
   type KeyObject,
@@ -38,6 +39,7 @@ import {
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { mcpTools } from "../src/ops/mcp";
 import { createRestApi } from "../src/ops/rest";
+import { makeCert, type TestCert } from "./helpers/x509";
 import { mintToken } from "./ops-helpers";
 
 // ---- a software WebAuthn authenticator ----
@@ -55,6 +57,7 @@ const cbor = {
   int: (n: number) => (n >= 0 ? cborHead(0, n) : cborHead(1, -1 - n)),
   bytes: (b: Buffer) => Buffer.concat([cborHead(2, b.length), b]),
   text: (t: string) => Buffer.concat([cborHead(3, Buffer.byteLength(t)), Buffer.from(t)]),
+  array: (items: Buffer[]) => Buffer.concat([cborHead(4, items.length), ...items]),
   map: (pairs: [Buffer, Buffer][]) => Buffer.concat([cborHead(5, pairs.length), ...pairs.flat()]),
 };
 
@@ -62,7 +65,12 @@ type Soft = {
   credentialId: Buffer;
   register(
     challenge: string,
-    o?: Partial<{ origin: string; rpId: string; uv: boolean }>,
+    o?: Partial<{
+      origin: string;
+      rpId: string;
+      uv: boolean;
+      packed: { aaguid: Buffer; leaf: TestCert; tamper?: boolean };
+    }>,
   ): {
     clientDataJSON: string;
     attestationObject: string;
@@ -107,16 +115,38 @@ function softAuthenticator(): Soft {
         sha256(o.rpId ?? RP.rpId),
         Buffer.from([flags(o.uv ?? true, 0x40)]),
         Buffer.alloc(4),
-        Buffer.alloc(16),
+        o.packed?.aaguid ?? Buffer.alloc(16),
         idLen,
         credentialId,
         cose,
       ]);
-      const att = cbor.map([
-        [cbor.text("fmt"), cbor.text("none")],
-        [cbor.text("attStmt"), cbor.map([])],
-        [cbor.text("authData"), cbor.bytes(authData)],
-      ]);
+      let att: Buffer;
+      if (o.packed) {
+        const attSig = sign(
+          "sha256",
+          Buffer.concat([authData, sha256(clientData)]),
+          o.packed.leaf.key,
+        );
+        if (o.packed.tamper) attSig[attSig.length - 1]! ^= 0xff;
+        att = cbor.map([
+          [cbor.text("fmt"), cbor.text("packed")],
+          [
+            cbor.text("attStmt"),
+            cbor.map([
+              [cbor.text("alg"), cbor.int(-7)],
+              [cbor.text("sig"), cbor.bytes(attSig)],
+              [cbor.text("x5c"), cbor.array([cbor.bytes(o.packed.leaf.der)])],
+            ]),
+          ],
+          [cbor.text("authData"), cbor.bytes(authData)],
+        ]);
+      } else {
+        att = cbor.map([
+          [cbor.text("fmt"), cbor.text("none")],
+          [cbor.text("attStmt"), cbor.map([])],
+          [cbor.text("authData"), cbor.bytes(authData)],
+        ]);
+      }
       return {
         clientDataJSON: clientData.toString("base64url"),
         attestationObject: att.toString("base64url"),
@@ -146,6 +176,24 @@ function softAuthenticator(): Soft {
     },
   };
 }
+
+// ---- attestation fixtures (a stand-in vendor root and devices, made at runtime) ----
+
+const TEST_ROOT = makeCert({ cn: "Test Vendor Root", ca: true });
+const AAGUID_A = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
+const AAGUID_B = Buffer.from("fedcba9876543210fedcba9876543210", "hex");
+const aaguidText = (b: Buffer) => {
+  const h = b.toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+const deviceCert = (aaguid: Buffer) =>
+  makeCert({
+    cn: "Test Device",
+    issuer: { cn: "Test Vendor Root", key: TEST_ROOT.key },
+    ca: false,
+    aaguid,
+  });
+const ANCHORS = { roots: [TEST_ROOT.cert], intermediates: [] };
 
 // ---- world ----
 
@@ -240,7 +288,7 @@ beforeEach(async () => {
   const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "App" });
   orgId = org.id;
   scope = { orgId, projectId: project.id };
-  env = { registry, db, now, webauthn: RP };
+  env = { registry, db, now, webauthn: RP, attestationAnchors: ANCHORS };
   releaseTok = (await mintToken(db, { orgId }, "release_operator")).secret;
   operatorTok = (await mintToken(db, { orgId }, "operator")).secret;
   runId = await makeRun();
@@ -808,6 +856,13 @@ describe("offline signature and CLI", () => {
       const pub = logs.at(-1)!;
       expect(parseEd25519PublicKey(pub)).toBe(pub);
       expect(await approvalsCommand(["keygen", "--out", keyFile])).toBe(1); // never overwrites a key
+      // Before any approver exists the CLI is the local trust root and may set the policy.
+      const kp0 = (...a: string[]) =>
+        approvalsCommand(["key-policy", "--org", "cli-org", "--data-dir", dir, ...a]);
+      expect(await kp0("--policy", "bogus")).toBe(2);
+      expect(await kp0("--policy", "hardware", "--preset", "yubikey")).toBe(0);
+      expect(await kp0("--policy", "any")).toBe(0);
+      expect(JSON.parse(logs.at(-1)!)).toEqual({ mode: "any", presets: [], aaguids: [] });
       expect(
         await approvalsCommand([
           "bootstrap",
@@ -823,6 +878,12 @@ describe("offline signature and CLI", () => {
           dir,
         ]),
       ).toBe(0);
+      // The key policy can be set from the CLI only while the org has no approver; after that it
+      // takes a quorum-signed statement.
+      const kp = (...a: string[]) =>
+        approvalsCommand(["key-policy", "--org", "cli-org", "--data-dir", dir, ...a]);
+      expect(await kp("--policy", "hardware", "--preset", "yubikey")).toBe(1);
+      expect(await kp("--policy", "any")).toBe(1);
       // A second bootstrap is refused: after the first approver, enrolment needs a quorum.
       expect(
         await approvalsCommand([
@@ -1241,5 +1302,405 @@ describe("keys without a forge login count for nothing (fix)", () => {
     );
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.map((r) => r.d).join(" ")).toContain("Dora-GH");
+  });
+});
+
+// ---- the per-org key policy (#152) ----
+
+describe("approval key policy", () => {
+  const snake2 = (r: { clientDataJSON: string; attestationObject: string }) => ({
+    client_data_json: r.clientDataJSON,
+    attestation_object: r.attestationObject,
+  });
+  type RegOpts = Parameters<Soft["register"]>[1];
+  async function enrolPasskey(person: string, o?: RegOpts) {
+    const dev = softAuthenticator();
+    const ch = await ok(releaseTok, "register_challenge");
+    const r = await call(releaseTok, "request_enrolment", {
+      person,
+      forge_login: `${person}-gh`,
+      webauthn: { challenge: ch.challenge, ...snake2(dev.register(ch.challenge, o)) },
+    });
+    return { dev, r };
+  }
+  async function quorumEnrol(enrolmentId: string, signers: Person[]) {
+    for (const p of signers) {
+      const c = await ok(releaseTok, "enrolment_challenge", {
+        enrolment_id: enrolmentId,
+        approver: p.id,
+      });
+      const r = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+        statement: c.statement,
+        signature: await signOffline(p, c),
+      });
+      if (!r.ok) throw new Error(`approve_enrolment: ${r.error.message}`);
+    }
+  }
+  const packedA = () => ({ packed: { aaguid: AAGUID_A, leaf: deviceCert(AAGUID_A) } });
+  const HW = { mode: "hardware", aaguids: [aaguidText(AAGUID_A)] };
+
+  type Signer = { id: string; sign: (c: any) => Promise<unknown> };
+  const offline = (p: Person): Signer => ({ id: p.id, sign: (c) => signOffline(p, c) });
+  const passkeyOf = (id: string, dev: Soft): Signer => ({
+    id,
+    sign: async (c) => ({ kind: "webauthn", ...dev.assert(c.challenge) }),
+  });
+
+  /** The challenge for a policy change, to be signed by `signer`. */
+  const policyChallenge = (input: unknown, approver: string) =>
+    call(releaseTok, "key_policy_challenge", { ...(input as object), approver });
+  /** Every signer signs the same proposal; returns the last approve_key_policy result. */
+  async function changePolicy(input: unknown, signers: Signer[]) {
+    let last: Awaited<ReturnType<typeof dispatch>> | undefined;
+    for (const sg of signers) {
+      const c = await policyChallenge(input, sg.id);
+      if (!c.ok) return c;
+      last = await dispatch(env, { kind: "signed" }, "approve_key_policy", {
+        statement: (c.output as any).statement,
+        signature: await sg.sign(c.output),
+      });
+      if (!last.ok) return last;
+    }
+    return last!;
+  }
+
+  /**
+   * alice and bob (offline keys) plus carol and dave, attested devices with AAGUID A, all under
+   * `any`. Two attested people, so the hardware policy leaves the quorum of 2 intact.
+   */
+  async function world() {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    const bob = await ed25519Approver("bob", "bob-gh");
+    const devs: Record<string, Soft> = {};
+    for (const name of ["carol", "dave"]) {
+      const { dev, r } = await enrolPasskey(name, packedA());
+      if (!r.ok) throw new Error(r.error.message);
+      await quorumEnrol((r.output as any).enrolment_id, [alice, bob]);
+      devs[name] = dev;
+    }
+    const ov = await ok(releaseTok, "approvers_overview");
+    const carol = ov.approvers.find((a: any) => a.person === "carol");
+    const dave = ov.approvers.find((a: any) => a.person === "dave");
+    return { alice, bob, carol, dave, devs };
+  }
+
+  test("an attested key is accepted and recorded; the policy defaults to any", async () => {
+    const { carol } = await world();
+    expect(carol).toMatchObject({ attested: true, aaguid: aaguidText(AAGUID_A) });
+    const o = await ok(releaseTok, "approvers_overview");
+    expect(o.key_policy).toEqual({ mode: "any", presets: [], aaguids: [] });
+    expect(o.approvers.every((a: any) => a.not_counting === null)).toBe(true);
+  });
+
+  test("no token can set the policy; it takes a quorum-signed statement, and the one-signer case is not enough", async () => {
+    const { alice, bob } = await world();
+    // There is no token operation that sets it, and the server CLI refuses once approvers exist.
+    expect(registry.ops.map((o) => o.name)).not.toContain("set_approval_key_policy");
+    expect(
+      (await call(releaseTok, "approve_key_policy", { statement: {}, signature: {} })).ok,
+    ).toBe(false);
+    // The challenge alone changes nothing.
+    const c = await policyChallenge(HW, alice.id);
+    expect(c.ok).toBe(true);
+    expect((await ok(releaseTok, "approvers_overview")).key_policy.mode).toBe("any");
+    // One signature of the two required: not applied. The second applies it.
+    const first = await changePolicy(HW, [offline(alice)]);
+    expect(first.ok && first.output).toMatchObject({ approvals: 1, required: 2, applied: false });
+    expect((await ok(releaseTok, "approvers_overview")).key_policy.mode).toBe("any");
+    const second = await changePolicy(HW, [offline(bob)]);
+    expect(second.ok && second.output).toMatchObject({ approvals: 2, required: 2, applied: true });
+    expect((await ok(releaseTok, "approvers_overview")).key_policy.mode).toBe("hardware");
+  });
+
+  test("the quorum is computed before the change: signers must count under the policy being replaced", async () => {
+    const { alice, bob, carol, dave, devs } = await world();
+    const cs = passkeyOf(carol.id, devs.carol!);
+    const ds = passkeyOf(dave.id, devs.dave!);
+    expect((await changePolicy(HW, [offline(alice), offline(bob)])).ok).toBe(true);
+    // Now alice and bob no longer count: they cannot sign a loosening.
+    const refused = await changePolicy({ mode: "any" }, [offline(alice)]);
+    expect(!refused.ok && refused.error.code).toBe("forbidden");
+    // carol alone is one of two: not applied. carol and dave: applied, with the quorum of two
+    // that was in force before the change (not lowered by the smaller counted set).
+    const one = await changePolicy({ mode: "any" }, [cs]);
+    expect(one.ok && one.output).toMatchObject({ approvals: 1, required: 2, applied: false });
+    const two = await changePolicy({ mode: "any" }, [ds]);
+    expect(two.ok && two.output).toMatchObject({ approvals: 2, required: 2, applied: true });
+  });
+
+  test("a change that would leave fewer counted people than the quorum is refused", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    const bob = await ed25519Approver("bob", "bob-gh");
+    const carolEnrol = await enrolPasskey("carol", packedA());
+    if (!carolEnrol.r.ok) throw new Error(carolEnrol.r.error.message);
+    await quorumEnrol((carolEnrol.r.output as any).enrolment_id, [alice, bob]);
+    // Only carol would count under hardware: one person, quorum is two.
+    const r = await policyChallenge(HW, alice.id);
+    expect(!r.ok && r.error.code).toBe("conflict");
+    expect(!r.ok && r.error.message).toContain("fewer than the 2");
+    // And with nobody who would satisfy it at all.
+    const none = await policyChallenge(
+      { mode: "hardware", aaguids: [aaguidText(AAGUID_B)] },
+      alice.id,
+    );
+    expect(!none.ok && none.error.code).toBe("conflict");
+    expect(!(await policyChallenge({ mode: "hardware" }, alice.id)).ok).toBe(true);
+    expect(!(await policyChallenge({ mode: "hardware", presets: ["nope"] }, alice.id)).ok).toBe(
+      true,
+    );
+    expect(
+      !(await policyChallenge({ mode: "hardware", aaguids: ["not-a-uuid"] }, alice.id)).ok,
+    ).toBe(true);
+  });
+
+  test("a statement is for the policy it was issued against: after it moves on, it is refused", async () => {
+    const { alice, bob } = await world();
+    const stale = await policyChallenge(HW, alice.id);
+    if (!stale.ok) throw new Error(stale.error.message);
+    expect((await changePolicy(HW, [offline(alice), offline(bob)])).ok).toBe(true);
+    const replay = await dispatch(env, { kind: "signed" }, "approve_key_policy", {
+      statement: (stale.output as any).statement,
+      signature: await signOffline(alice, stale.output as any),
+    });
+    expect(!replay.ok).toBe(true);
+  });
+
+  test("approval records cannot be replayed across policy versions: a statement names the policy generation", async () => {
+    const { alice, bob, carol, dave, devs } = await world();
+    const cs = passkeyOf(carol.id, devs.carol!);
+    const ds = passkeyOf(dave.id, devs.dave!);
+    // P1 (any to hardware) at generation 0: alice signs it, one of two.
+    const p1 = await policyChallenge(HW, alice.id);
+    if (!p1.ok) throw new Error(p1.error.message);
+    expect(
+      (
+        await dispatch(env, { kind: "signed" }, "approve_key_policy", {
+          statement: (p1.output as any).statement,
+          signature: await signOffline(alice, p1.output as any),
+        })
+      ).ok,
+    ).toBe(true);
+    const p1b = await policyChallenge(HW, bob.id);
+    if (!p1b.ok) throw new Error(p1b.error.message);
+    // The policy moves on twice and ends up where P1 started (any): same old policy, new generation.
+    const other = { mode: "hardware", presets: ["yubikey"], aaguids: [aaguidText(AAGUID_A)] };
+    expect((await changePolicy(other, [offline(alice), offline(bob)])).ok).toBe(true);
+    expect((await changePolicy({ mode: "any" }, [cs, ds])).ok).toBe(true);
+    // Replaying P1 now (old = any again) is refused: it was issued against generation 0.
+    const replay = await dispatch(env, { kind: "signed" }, "approve_key_policy", {
+      statement: (p1b.output as any).statement,
+      signature: await signOffline(bob, p1b.output as any),
+    });
+    expect(!replay.ok && replay.error.code).toBe("conflict");
+    expect(!replay.ok && replay.error.message).toContain("policy changed");
+    const c1 = await policyChallenge(HW, bob.id);
+    if (!c1.ok) throw new Error(c1.error.message);
+    expect((c1.output as any).statement.generation).toBe(2);
+    // And alice's old signature counts for nothing toward a fresh proposal: only bob's counts.
+    const r = await dispatch(env, { kind: "signed" }, "approve_key_policy", {
+      statement: (c1.output as any).statement,
+      signature: await signOffline(bob, c1.output as any),
+    });
+    expect(r.ok && r.output).toMatchObject({ approvals: 1, required: 2, applied: false });
+  });
+
+  test("under hardware: none attestation, an unlisted AAGUID, an offline key and a bad statement are refused; an allowlisted attested key is accepted", async () => {
+    const { alice, bob } = await world();
+    expect((await changePolicy(HW, [offline(alice), offline(bob)])).ok).toBe(true);
+    expect((await ok(releaseTok, "register_challenge")).attestation).toBe("direct");
+
+    const none = await enrolPasskey("erin");
+    expect(!none.r.ok && none.r.error.message).toContain("no verified hardware attestation");
+    const other = await enrolPasskey("erin", {
+      packed: { aaguid: AAGUID_B, leaf: deviceCert(AAGUID_B) },
+    });
+    expect(!other.r.ok && other.r.error.message).toContain("AAGUID is not on the allowlist");
+    const offlineKey = await call(releaseTok, "request_enrolment", {
+      person: "erin",
+      forge_login: "erin-gh",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(!offlineKey.ok && offlineKey.error.code).toBe("invalid_input");
+    // A device whose cert does not chain to a pinned root is unverified.
+    const rogueRoot = makeCert({ cn: "Rogue Root", ca: true });
+    const rogue = makeCert({
+      cn: "Rogue Device",
+      issuer: { cn: "Rogue Root", key: rogueRoot.key },
+      ca: false,
+      aaguid: AAGUID_A,
+    });
+    const untrusted = await enrolPasskey("erin", { packed: { aaguid: AAGUID_A, leaf: rogue } });
+    expect(!untrusted.r.ok && untrusted.r.error.message).toContain("no verified hardware");
+    // A leaf without the AAGUID extension binds nothing: not verified, never allowlisted.
+    const noExt = makeCert({
+      cn: "No Ext",
+      issuer: { cn: "Test Vendor Root", key: TEST_ROOT.key },
+      ca: false,
+    });
+    const unbound = await enrolPasskey("erin", { packed: { aaguid: AAGUID_A, leaf: noExt } });
+    expect(!unbound.r.ok && unbound.r.error.message).toContain("no verified hardware");
+    // A tampered attestation signature is refused outright.
+    const tampered = await enrolPasskey("erin", {
+      packed: { ...packedA().packed, tamper: true },
+    });
+    expect(!tampered.r.ok && tampered.r.error.message).toContain("does not verify");
+    // A device certificate that names a different AAGUID than the credential is refused.
+    const mismatch = await enrolPasskey("erin", {
+      packed: { aaguid: AAGUID_A, leaf: deviceCert(AAGUID_B) },
+    });
+    expect(!mismatch.r.ok && mismatch.r.error.message).toContain("AAGUID");
+
+    expect((await enrolPasskey("erin", packedA())).r.ok).toBe(true);
+  });
+
+  test("flipping to hardware makes keys that do not satisfy it stop counting, at once", async () => {
+    const { alice, bob, carol, dave, devs } = await world();
+    const verifier = createApprovalVerifier(db, { rp: RP });
+    const subject = {
+      orgId,
+      projectId: scope.projectId,
+      runId,
+      headSha: SHA,
+      workflowHash: WF_HASH,
+    };
+    for (const p of [alice, bob]) {
+      const c = await challenge(p.id);
+      expect((await approve(c.statement, await signOffline(p, c))).ok).toBe(true);
+    }
+    expect((await verifier.verify(subject, "production", { now: t })).approved).toBe(true);
+
+    expect((await changePolicy(HW, [offline(alice), offline(bob)])).ok).toBe(true);
+    const after = await verifier.verify(subject, "production", { now: t });
+    expect(!after.approved && after.have).toBe(0);
+    const run2 = await makeRun({ sha: "d".repeat(40) });
+    const c = await challenge(alice.id, "production", run2);
+    const refused = await approve(c.statement, await signOffline(alice, c));
+    expect(!refused.ok && refused.error.code).toBe("forbidden");
+    const o = await ok(releaseTok, "approvers_overview");
+    expect(o.approvers.find((a: any) => a.person === "alice").not_counting).toContain(
+      "offline key",
+    );
+    expect(o.approvers.find((a: any) => a.person === "carol").not_counting).toBeNull();
+    // carol's and dave's attested passkeys approve and count as two.
+    for (const [who, dev] of [
+      [carol, devs.carol!],
+      [dave, devs.dave!],
+    ] as const) {
+      const cc = await challenge(who.id, "production", run2);
+      const r = await approve(cc.statement, { kind: "webauthn", ...dev.assert(cc.challenge) });
+      expect(r.ok).toBe(true);
+    }
+    // Loosening back to any (signed by carol and dave) restores the old keys.
+    expect(
+      (
+        await changePolicy({ mode: "any" }, [
+          passkeyOf(carol.id, devs.carol!),
+          passkeyOf(dave.id, devs.dave!),
+        ])
+      ).ok,
+    ).toBe(true);
+    expect((await verifier.verify(subject, "production", { now: t })).approved).toBe(true);
+  });
+
+  test("the enrolment quorum only counts keys that satisfy the policy", async () => {
+    const { alice, bob, carol } = await world();
+    expect((await changePolicy(HW, [offline(alice), offline(bob)])).ok).toBe(true);
+    const e = await enrolPasskey("erin", packedA());
+    if (!e.r.ok) throw new Error(e.r.error.message);
+    expect((e.r.output as any).required).toBe(2);
+    // alice's offline key cannot sign an enrolment under hardware.
+    const c = await ok(releaseTok, "enrolment_challenge", {
+      enrolment_id: (e.r.output as any).enrolment_id,
+      approver: alice.id,
+    });
+    const r = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+      statement: c.statement,
+      signature: await signOffline(alice, c),
+    });
+    expect(!r.ok && r.error.code).toBe("forbidden");
+    expect(carol).toBeDefined();
+  });
+
+  test("the AAGUID preset expands to the YubiKey list and custom AAGUIDs are normalised", async () => {
+    const { alice, bob } = await world();
+    const r = await changePolicy(
+      { mode: "hardware", presets: ["yubikey"], aaguids: [aaguidText(AAGUID_A).toUpperCase()] },
+      [offline(alice), offline(bob)],
+    );
+    expect(r.ok && (r.output as any).policy.aaguids).toEqual([aaguidText(AAGUID_A)]);
+    expect(r.ok && (r.output as any).policy.presets).toEqual(["yubikey"]);
+    const { allowedAaguids } = await import("../src/approvals/key-policy");
+    const set = allowedAaguids((r as any).output.policy);
+    expect(set.has("cb69481e-8ff7-4039-93ec-0a2729a154a8")).toBe(true);
+    expect(set.has(aaguidText(AAGUID_A))).toBe(true);
+  });
+});
+
+describe("quorum counting and self-approval hardening", () => {
+  test("a revoked approver's earlier signature no longer counts toward a quorum", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    const bob = await ed25519Approver("bob", "bob-gh");
+    await ed25519Approver("cleo", "cleo-gh");
+    const e = await ok(releaseTok, "request_enrolment", {
+      person: "dora",
+      forge_login: "dora-gh",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(e.required).toBe(2);
+    const sign = async (p: Person) => {
+      const c = await ok(releaseTok, "enrolment_challenge", {
+        enrolment_id: e.enrolment_id,
+        approver: p.id,
+      });
+      return dispatch(env, { kind: "signed" }, "approve_enrolment", {
+        statement: c.statement,
+        signature: await signOffline(p, c),
+      });
+    };
+    const first = await sign(alice);
+    expect(first.ok && first.output).toMatchObject({ approvals: 1, activated: false });
+    // alice is revoked: her signature stays on record but is worth nothing.
+    await db.run(async (h) => {
+      await h.orm.run(sql`update approvers set revoked_at = ${t} where id = ${alice.id}`);
+    });
+    const second = await sign(bob);
+    expect(second.ok && second.output).toMatchObject({ approvals: 1, activated: false });
+    // The overview agrees.
+    const ov = await ok(releaseTok, "approvers_overview");
+    expect(ov.pending_enrolments[0].approvals).toBe(1);
+  });
+
+  test("an enrolee cannot approve their own key by picking a new forge login", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    await ed25519Approver("bob", "bob-gh");
+    // Taking a new login under an existing person's name is refused when enrolling.
+    const r = await call(releaseTok, "request_enrolment", {
+      person: "Alice",
+      forge_login: "alice-other",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(!r.ok && r.error.code).toBe("conflict");
+    expect(!r.ok && r.error.message).toContain("under a different forge login");
+    // Even if such a row exists (written before the rule), alice's key cannot approve it.
+    const k = generateEd25519();
+    const row = await db.transaction(async (tx) =>
+      tx.run(async (h) => {
+        const id = "enrol-self";
+        await h.orm.run(
+          sql`insert into approver_enrolments (id, org_id, person, forge_login, kind, public_key, alg, sign_count, requested_by, created_at, expires_at, aaguid, attested) values (${id}, ${orgId}, 'alice', 'alice-other', 'ed25519', ${k.publicSpki}, 'EdDSA', 0, 'test', ${t}, ${t + 86_400_000}, null, 0)`,
+        );
+        return id;
+      }),
+    );
+    const c = await ok(releaseTok, "enrolment_challenge", {
+      enrolment_id: row,
+      approver: alice.id,
+    });
+    const self = await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+      statement: c.statement,
+      signature: await signOffline(alice, c),
+    });
+    expect(!self.ok && self.error.code).toBe("forbidden");
+    expect(!self.ok && self.error.message).toContain("their own key");
   });
 });
