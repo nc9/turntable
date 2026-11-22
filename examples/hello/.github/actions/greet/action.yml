@@ -1,0 +1,18 @@
+name: greet
+description: Writes a greeting output.
+inputs:
+  who:
+    description: Who to greet
+    required: true
+outputs:
+  message:
+    description: The greeting
+    value: ${{ steps.make.outputs.message }}
+runs:
+  using: composite
+  steps:
+    - id: make
+      shell: bash
+      env:
+        WHO: ${{ inputs.who }}
+      run: echo "message=hello $WHO" >> "$GITHUB_OUTPUT"

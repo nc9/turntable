@@ -122,7 +122,7 @@ export const PATTERNS: readonly Pattern[] = [
   {
     // A password past the bound above: redact it and the rest of the token, never skip it.
     name: "url-userinfo-long",
-    re: /([a-z][a-z0-9+.-]{1,31}:\/\/)[^\s:@/?#]{0,256}:(?!\d{1,5}(?:\/|$))[^\s]{256}/gi,
+    re: /([a-z][a-z0-9+.-]{1,31}:\/\/)[^\s:@/?#]{0,256}:(?!\d{1,5}(?:\/|$)(?![^\s]*@))[^\s]{256}/gi,
     maxLength: 32 + 3 + 256 + 1 + 256,
     keepPrefix: true,
     needs: "://",

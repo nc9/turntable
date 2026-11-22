@@ -1,0 +1,8 @@
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "⭐ Run Set up job", "step": "Set up job", "stepid": ["--setup-job"], "time": "2026-11-22T10:00:00Z"}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "  ✅  Success - Set up job", "step": "Set up job", "stepResult": "success", "stepid": ["--setup-job"], "time": "2026-11-22T10:00:00Z"}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "⭐ Run Main Boom", "stage": "Main", "step": "Boom", "stepID": ["0"], "time": "2026-11-22T10:00:01Z"}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "about to fail\n", "raw_output": true, "stage": "Main", "step": "Boom", "stepID": ["0"], "time": "2026-11-22T10:00:01Z"}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "  ❌  Failure - Main Boom [3.868386ms]", "stage": "Main", "step": "Boom", "stepID": ["0"], "stepResult": "failure", "time": "2026-11-22T10:00:01Z", "executionTime": 3868386}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "error", "matrix": {}, "msg": "exit status 3", "stage": "Main", "step": "Boom", "stepID": ["0"], "time": "2026-11-22T10:00:02Z"}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "Cleaning up container for job Fail", "step": "Complete job", "stepid": ["--complete-job"], "time": "2026-11-22T10:00:02Z"}
+{"dryrun": false, "job": "CI/Fail", "jobID": "fail", "level": "info", "matrix": {}, "msg": "🏁  Job failed", "jobResult": "failure", "time": "2026-11-22T10:00:02Z"}

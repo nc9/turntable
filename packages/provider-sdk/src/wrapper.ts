@@ -12,7 +12,8 @@
  *   out        combined stdout and stderr while running (and after, when small)
  *   head/tail/capped  after exit, only when out exceeded head+tail+slack: first HEAD bytes, last
  *              TAIL bytes, and the original size. `out` is removed after these are complete.
- *   killed/timedout/outlimit  markers, why the command was signalled
+ *   killed/timedout/outlimit  markers, why the command was signalled. A non-zero exit with a marker
+ *              is state `killed` (a process may handle TERM and exit 1, not 143)
  *   exit       "<code> <epoch seconds>", written LAST via tmp + mv. Its existence means every
  *              other file is final.
  *
@@ -111,7 +112,7 @@ report() {
   [ -f "$D/exit" ] || return 1
   read rc ts < "$D/exit"
   st=exited; why=-
-  if [ "$rc" -ge 128 ]; then
+  if [ "$rc" -ne 0 ]; then
     if [ -f "$D/outlimit" ]; then st=killed; why=output_limit
     elif [ -f "$D/timedout" ]; then st=killed; why=timeout
     elif [ -f "$D/killed" ]; then st=killed; why=killed

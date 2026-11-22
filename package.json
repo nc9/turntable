@@ -10,8 +10,8 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
-    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui",
-    "test": "bun run --sequential test:core test:core2 test:ops test:provider test:redact test:ui",
+    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner",
+    "test": "bun run --sequential test:core test:core2 test:ops test:provider test:redact test:ui test:act",
     "build": "bun run scripts/build.ts",
     "dev": "bun run packages/core/src/main.ts serve",
     "typecheck:core": "bun run --cwd packages/core typecheck",
@@ -27,7 +27,10 @@
     "test:docker": "TT_DOCKER_CONFORMANCE=1 bun test packages/provider-docker/tests/conformance.test.ts",
     "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts packages/core/tests/db-transaction.test.ts",
     "test:ops": "bun test packages/core/tests/ops-dispatch.test.ts packages/core/tests/ops-ops.test.ts packages/core/tests/ops-rest.test.ts packages/core/tests/ops-openapi.test.ts packages/core/tests/ops-cli.test.ts",
-    "openapi:gen": "bun run --cwd packages/core openapi:gen"
+    "openapi:gen": "bun run --cwd packages/core openapi:gen",
+    "typecheck:act-runner": "bun run --cwd packages/act-runner typecheck",
+    "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/run-job.test.ts",
+    "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
