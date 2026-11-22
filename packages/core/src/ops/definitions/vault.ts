@@ -65,6 +65,18 @@ async function guarded<T>(f: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * The scope an incident flag may be closed from: the token's own grant. A project given in the
+ * input only narrows what the call touches; it must not let an org-wide token pose as a project
+ * one, and a project-scoped token must stay inside its project.
+ */
+const grantScope = (ctx: OpContext) => ({
+  orgId: ctx.scope.orgId,
+  ...(ctx.principal.kind === "token" && ctx.principal.projectId
+    ? { projectId: ctx.principal.projectId }
+    : {}),
+});
+
 const actor = (ctx: OpContext): string => `${ctx.principal.kind}:${ctx.principal.id}`;
 
 const scopeOf = (
@@ -122,7 +134,7 @@ export const setSecretOp = defineOp({
     );
     // A new value for an existing secret is a rotation: close the incident flag if every scope of
     // the name has been replaced since it was raised.
-    if (!r.created) await clearRotationFlagIfRotated(ctx.db, ctx.scope, i.name, ctx.now());
+    if (!r.created) await clearRotationFlagIfRotated(ctx.db, grantScope(ctx), i.name, ctx.now());
     return { created: r.created, entry: r.secret };
   },
 });
@@ -171,7 +183,7 @@ export const rotateSecretOp = defineOp({
       ),
     );
     if (!r) throw new OpError("not_found", "no secret with that name and scope");
-    await clearRotationFlagIfRotated(ctx.db, ctx.scope, i.name, ctx.now());
+    await clearRotationFlagIfRotated(ctx.db, grantScope(ctx), i.name, ctx.now());
     return r;
   },
 });

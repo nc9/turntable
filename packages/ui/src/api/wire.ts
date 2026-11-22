@@ -203,5 +203,6 @@ export type WireIncident = {
   reason: string | null;
   frozen_at: number | null;
   frozen_by: string | null;
+  rotation_required_count: number;
   rotation_required: { name: string; reason: string; flagged_by: string; flagged_at: number }[];
 };

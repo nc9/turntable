@@ -225,5 +225,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE `projects` ADD `release_refs` text;",
       "ALTER TABLE `projects` ADD `signing_key` text;"
     ]
+  },
+  {
+    "tag": "0017_lying_imperial_guard",
+    "when": 1795373427913,
+    "statements": [
+      "ALTER TABLE `incident_rotation_flags` ADD `source` text DEFAULT 'builtin' NOT NULL;"
+    ]
   }
 ];

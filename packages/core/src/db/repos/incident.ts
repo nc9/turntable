@@ -150,18 +150,20 @@ const FLAG_COLS = {
   projectId: s.incidentRotationFlags.projectId,
 };
 
-/** Opens a rotation flag for each name that has no open one. Returns how many were new. */
+export type FlagSource = "builtin" | "vault";
+
+/** Opens a rotation flag for each (source, name) that has no open one. Returns how many were new. */
 export function flagForRotation(
   db: Db,
   scope: Scope,
-  names: readonly string[],
+  names: readonly { source: FlagSource; name: string }[],
   o: { reason: string; by: string; now: number },
 ): Promise<number> {
   return db.run(async (h) => {
     const open = new Set(
       (
         await h.orm
-          .select({ name: s.incidentRotationFlags.name })
+          .select({ name: s.incidentRotationFlags.name, source: s.incidentRotationFlags.source })
           .from(s.incidentRotationFlags)
           .where(
             and(
@@ -169,16 +171,19 @@ export function flagForRotation(
               isNull(s.incidentRotationFlags.clearedAt),
             ),
           )
-      ).map((r) => r.name),
+      ).map((r) => `${r.source}\n${r.name}`),
     );
     let added = 0;
-    for (const name of new Set(names)) {
-      if (open.has(name)) continue;
+    for (const n of names) {
+      const key = `${n.source}\n${n.name}`;
+      if (open.has(key)) continue;
+      open.add(key);
       await h.orm.insert(s.incidentRotationFlags).values({
         id: ulid(),
         orgId: scope.orgId,
         projectId: scope.projectId ?? null,
-        name,
+        name: n.name,
+        source: n.source,
         reason: o.reason,
         flaggedBy: o.by,
         flaggedAt: o.now,
@@ -214,11 +219,16 @@ export function listOpenRotationFlags(db: Db, scope: Scope): Promise<RotationFla
   });
 }
 
-/** Called when a secret is rotated: closes its open flag. Returns whether one was open. */
+/**
+ * Called when a secret is updated in the store `source`: closes that store's open flag for the
+ * name. A caller scoped to a project closes only that project's flags, never the org-wide ones.
+ * Returns whether one was open.
+ */
 export function clearRotationFlag(
   db: Db,
   scope: Scope,
   name: string,
+  source: FlagSource,
   now: number,
 ): Promise<boolean> {
   return db.run(async (h) => {
@@ -229,7 +239,11 @@ export function clearRotationFlag(
         and(
           eq(s.incidentRotationFlags.orgId, scope.orgId),
           eq(s.incidentRotationFlags.name, name),
+          eq(s.incidentRotationFlags.source, source),
           isNull(s.incidentRotationFlags.clearedAt),
+          scope.projectId === undefined
+            ? undefined
+            : eq(s.incidentRotationFlags.projectId, scope.projectId),
         ),
       )
       .returning({ id: s.incidentRotationFlags.id });
@@ -257,7 +271,12 @@ export function clearRotationFlagIfRotated(
         and(
           eq(s.incidentRotationFlags.orgId, scope.orgId),
           eq(s.incidentRotationFlags.name, name),
+          eq(s.incidentRotationFlags.source, "vault"),
           isNull(s.incidentRotationFlags.clearedAt),
+          // A project-scoped caller may only close the flags of its own project.
+          scope.projectId === undefined
+            ? undefined
+            : eq(s.incidentRotationFlags.projectId, scope.projectId),
         ),
       )
       .limit(1);
@@ -265,7 +284,14 @@ export function clearRotationFlagIfRotated(
     const rows = await h.orm
       .select({ updatedAt: s.vaultSecrets.updatedAt })
       .from(s.vaultSecrets)
-      .where(and(eq(s.vaultSecrets.orgId, scope.orgId), eq(s.vaultSecrets.name, name)));
+      .where(
+        and(
+          eq(s.vaultSecrets.orgId, scope.orgId),
+          eq(s.vaultSecrets.name, name),
+          // A project's flag covers that project's secrets; an org flag covers every scope.
+          flag.projectId === null ? undefined : eq(s.vaultSecrets.projectId, flag.projectId),
+        ),
+      );
     if (rows.some((r) => r.updatedAt <= flag.flaggedAt)) return false;
     await h.orm
       .update(s.incidentRotationFlags)

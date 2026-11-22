@@ -2,7 +2,7 @@
 // the pieces that hold credentials (the GitHub App's token cache, the vault) plug in without the
 // freeze knowing about them.
 import type { Db } from "../db";
-import { listSecretNames, listVaultSecrets, type Scope } from "../db/repos";
+import { type FlagSource, listSecretNames, listVaultSecrets, type Scope } from "../db/repos";
 
 export type CredentialRevoker = {
   name: string;
@@ -28,11 +28,12 @@ export async function revokeMintedCredentials(scope: Scope): Promise<RevokeRepor
 
 /** Names of the secrets a scope can use, from one store. Names only, never values. */
 export type SecretNameSource = {
-  name: string;
+  /** The store: a flag raised from it is cleared only by an update in the same store. */
+  name: FlagSource;
   list(db: Db, scope: Scope): Promise<string[]>;
 };
 
-const sources = new Map<string, SecretNameSource>([
+const sources = new Map<FlagSource, SecretNameSource>([
   // The built-in store (the GitHub App's key and webhook secret) is org-wide: a project-scoped
   // freeze does not flag it.
   // The vault: every secret name in the org, or in the project for a project-scoped freeze. One
@@ -71,8 +72,14 @@ export function registerSecretNameSource(s: SecretNameSource): () => void {
   return () => void (sources.get(s.name) === s && sources.delete(s.name));
 }
 
-export async function secretNamesInScope(db: Db, scope: Scope): Promise<string[]> {
-  const names = new Set<string>();
-  for (const s of sources.values()) for (const n of await s.list(db, scope)) names.add(n);
-  return [...names].toSorted();
+export async function secretNamesInScope(
+  db: Db,
+  scope: Scope,
+): Promise<{ source: FlagSource; name: string }[]> {
+  const out: { source: FlagSource; name: string }[] = [];
+  for (const src of sources.values()) {
+    for (const name of [...new Set(await src.list(db, scope))].toSorted())
+      out.push({ source: src.name, name });
+  }
+  return out;
 }
