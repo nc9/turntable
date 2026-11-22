@@ -149,7 +149,7 @@ The release role gets its own: it can do its listed operations and nothing else 
 
 ## What it does not cover
 
-- A compromised server process holds the tenant pool and can run any SQL as that role, including `set_config('app.org_id', ...)` for another org. RLS driven by a setting protects against our bugs, not against code execution in the server. The stronger form is a role per org (`set local role`), which changes the cost model (roles to manage, grants per org); this design keeps the setting and records the option.
+- A compromised server process holds the tenant pool and can run any SQL as that role, including `set_config('app.org_id', ...)` for another org. RLS driven by a setting protects against our bugs, not against code execution in the server. The stronger form is a role per org (`set local role`), which changes the cost model (roles to manage, grants per org); this design keeps the setting as the first step and records the role per org as the documented route for hosted multi-tenant, if the first step proves not to be enough.
 - The system role, by design, sees every org. Its callers are few and allowlisted, but a bug there is still cross-tenant.
 - SQLite. There is no RLS there; its isolation is the repo layer and the hostile suite.
 - Encryption at rest and keys: tracked separately in the tenant isolation checklist.
@@ -159,7 +159,7 @@ The release role gets its own: it can do its listed operations and nothing else 
 - The `users` rule through `org_members` assumes a user belongs to a few orgs; confirm before the people model grows.
 - Whether the realtime server should hold one scoped transaction per subscription or open one per read. Per read is simpler and what the sketch assumes.
 - Whether `app.project_id` should also be enforced on tables where `project_id` is a denormalised copy, or only where the row is project-owned.
-- The cost of a transaction per read, measured under the Postgres CI job, before it is made the default.
+- The cost of a transaction per read. It is measured under the Postgres CI job (the same suites with and without a scope transaction around reads) before scoped reads become the default.
 
 ## Work, in order
 
