@@ -1,9 +1,10 @@
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { SsrfError, type SafeFetch, safeFetch } from "@longshore/net";
 import {
   FileTooLargeError,
   InfraError,
   SandboxNotFoundError,
   SpecError,
+  TransientInfraError,
   readCappedJson,
   readCappedText,
 } from "@longshore/provider-sdk";
@@ -95,9 +96,10 @@ export class DaytonaApi {
         redirect: "error",
       });
     } catch (e) {
-      throw new InfraError(
-        `Daytona request failed: ${method} ${new URL(full).pathname} (${(e as Error).name})`,
-      );
+      const message = `Daytona request failed: ${method} ${new URL(full).pathname} (${(e as Error).name})`;
+      // A refused address is a policy answer, not weather; a timeout or a reset is weather.
+      if (e instanceof SsrfError) throw new InfraError(message);
+      throw new TransientInfraError(message);
     }
     if (res.ok) return res;
     const detail = await errorDetail(res);
@@ -108,9 +110,13 @@ export class DaytonaApi {
         `Daytona rejected the API key (${res.status}); check the configured key`,
       );
     }
-    if (res.status === 429) throw new InfraError(`Daytona rate limit (${where}); retry later`);
-    if (res.status === 408 || res.status >= 500)
-      throw new InfraError(`Daytona ${res.status} (${where}): ${detail}`);
+    if (res.status === 429) {
+      throw new TransientInfraError(`Daytona rate limit (${where}); retry later`);
+    }
+    if (res.status === 408 || res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new TransientInfraError(`Daytona ${res.status} (${where}): ${detail}`);
+    }
+    if (res.status >= 500) throw new InfraError(`Daytona ${res.status} (${where}): ${detail}`);
     throw new SpecError(`Daytona ${res.status} (${where}): ${detail}`);
   }
 

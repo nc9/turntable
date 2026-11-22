@@ -14,6 +14,13 @@ export class InfraError extends ProviderError {
   readonly retryable = true;
 }
 
+/**
+ * An infrastructure failure that is likely to pass on its own: a timeout, a connection reset, 429,
+ * 502, 503 or 504. Idempotent calls retry it within a budget (see wrapped-exec); anything that is
+ * only an InfraError (a rejected key, a 500, a bad reply) is not retried.
+ */
+export class TransientInfraError extends InfraError {}
+
 /** The request is invalid or can never succeed as stated. Do not retry. */
 export class SpecError extends ProviderError {
   readonly retryable = false;

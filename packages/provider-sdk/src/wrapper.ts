@@ -99,7 +99,10 @@ export const LAUNCH_SH = String.raw`set -e
 D=$1; C=$2; R=$3
 shift 3
 umask 077
-mkdir -p "$D"
+mkdir -p "$(dirname "$D")"
+# Atomic, and a no-op the second time: a launch that is repeated (the first reply was lost) never
+# starts a second process for the same exec id.
+mkdir "$D" 2>/dev/null || { [ -d "$D" ] && exit 0; exit 1; }
 : > "$D/out"
 printf '%s\n' "$C" > "$D/cmd.sh"
 printf '%s\n' "$R" > "$D/run.sh"
