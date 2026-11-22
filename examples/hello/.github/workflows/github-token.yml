@@ -1,0 +1,23 @@
+name: github-token
+on: push
+jobs:
+  token:
+    runs-on: ubuntu-latest
+    steps:
+      - name: GITHUB_TOKEN is only a placeholder in the job
+        env:
+          FROM_SECRETS: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "env-token-length=${#GITHUB_TOKEN}"
+          echo "secrets-token-length=${#FROM_SECRETS}"
+          # act masks a secret value in the log, so the value itself shows as ***
+          echo "env-token=$GITHUB_TOKEN"
+      - name: The repository's API, through the proxy
+        run: |
+          code=$(curl -sS -o body.txt -w '%{http_code}' https://api.github.com/repos/acme/app/issues)
+          echo "own-repo-status=$code"
+          echo "own-repo-body=$(cat body.txt)"
+      - name: Another repository gets nothing
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' https://api.github.com/repos/acme/other/issues || true)
+          echo "other-repo-status=$code"

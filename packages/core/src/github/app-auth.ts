@@ -85,6 +85,70 @@ export class AppAuth {
     return signAppJwt(appId, pem, (this.#o.now ?? Date.now)());
   }
 
+  #headers(bearer: string): Record<string, string> {
+    return {
+      authorization: `Bearer ${bearer}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "longshore",
+    };
+  }
+
+  /**
+   * A token for exactly one use: never cached, never shared, so revoking it cannot break another
+   * job and another job cannot be handed it. Callers revoke it when they are done.
+   */
+  async mintFresh(installationId: string, scope: TokenScope = {}): Promise<MintedToken> {
+    const body: Record<string, unknown> = {};
+    if (scope.repositories) body.repositories = [...scope.repositories];
+    if (scope.permissions) body.permissions = scope.permissions;
+    const res = await (this.#o.fetch ?? safeFetch)(
+      `${this.apiBase}/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+      {
+        method: "POST",
+        headers: {
+          ...this.#headers(await this.appJwt()),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    if (!res.ok) throw new Error(`minting an installation token failed: HTTP ${res.status}`);
+    const json = (await res.json()) as { token?: string; expires_at?: string };
+    if (!json.token || !json.expires_at)
+      throw new Error("minting an installation token: bad response");
+    return { token: json.token, expiresAt: Date.parse(json.expires_at) };
+  }
+
+  /** What the installation was granted, so a request is never wider than the grant. */
+  async installationPermissions(installationId: string): Promise<Readonly<Record<string, string>>> {
+    const res = await (this.#o.fetch ?? safeFetch)(
+      `${this.apiBase}/app/installations/${encodeURIComponent(installationId)}`,
+      {
+        headers: this.#headers(await this.appJwt()),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    if (!res.ok) throw new Error(`reading the installation failed: HTTP ${res.status}`);
+    const json = (await res.json()) as { permissions?: Record<string, string> };
+    return json.permissions ?? {};
+  }
+
+  /** Revokes an installation token at GitHub (DELETE /installation/token). Never throws. */
+  async revoke(token: string): Promise<boolean> {
+    try {
+      const res = await (this.#o.fetch ?? safeFetch)(`${this.apiBase}/installation/token`, {
+        method: "DELETE",
+        headers: this.#headers(token),
+        signal: AbortSignal.timeout(15_000),
+      });
+      return res.status === 204;
+    } catch {
+      return false;
+    }
+  }
+
   async mint(installationId: string, scope: TokenScope = {}): Promise<MintedToken> {
     const now = (this.#o.now ?? Date.now)();
     const key = cacheKey(installationId, scope);

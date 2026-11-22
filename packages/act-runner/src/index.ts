@@ -1,6 +1,7 @@
 export * from "./plan";
 export * from "./events";
 export * from "./missing-tool";
+export * from "./permissions";
 export * from "./run-job";
 export * from "./act-install";
 export * from "./checkout-stub";

@@ -69,6 +69,12 @@ export interface JobEnv {
    * run. `listen` is the proxy as the provider's host reaches it.
    */
   proxy?: { listen: { host: string; port: number }; credential: AttemptCredential };
+  /**
+   * The value of GITHUB_TOKEN inside the job. The real token for a trusted class with no proxy
+   * (the caller has registered it with `registry`), or a placeholder behind the proxy, which
+   * attaches the real one.
+   */
+  githubToken?: string;
 }
 
 export interface JobOutcome {
@@ -293,7 +299,9 @@ export async function executeJob(
           );
         }
       }
-      if (!proxied && env.canary && (env.egress ?? "none") === "none") {
+      // A job that holds a secret is always probed, whatever `canary` says, and an answer the probe
+      // cannot give refuses it (below).
+      if (!proxied && (env.canary || env.secretBearing) && (env.egress ?? "none") === "none") {
         const v = await probeEgress(env.provider, sb.id, {
           ...(env.pollMs ? { pollMs: env.pollMs } : {}),
           signal: env.signal,
@@ -325,6 +333,7 @@ export async function executeJob(
           ...(proxied && proxyUrl
             ? { proxy: { url: proxyUrl, caPem: proxied.credential.caPem } }
             : {}),
+          ...(env.githubToken !== undefined ? { githubToken: env.githubToken } : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },
