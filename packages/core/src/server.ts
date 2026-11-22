@@ -1,4 +1,5 @@
 import type { Db } from "./db";
+import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 
 const PLACEHOLDER_HTML = `<!doctype html>
@@ -30,6 +31,8 @@ export function handleRequest(req: Request): Response {
   if (url.pathname === "/healthz") {
     return Response.json({ ok: true, version: VERSION }, { headers: SECURITY_HEADERS });
   }
+  const ui = serveUi(url, req.method, SECURITY_HEADERS);
+  if (ui) return ui;
   if (url.pathname === "/") {
     return new Response(PLACEHOLDER_HTML, {
       headers: { ...SECURITY_HEADERS, "content-type": "text/html; charset=utf-8" },
