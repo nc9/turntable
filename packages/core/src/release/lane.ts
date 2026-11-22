@@ -22,7 +22,16 @@ import type { ForgeFacts } from "./forge";
 export interface ReleaseSigner {
   signRelease(
     scope: { orgId: string; projectId: string },
-    req: { runId: string; artifacts: readonly string[] },
+    req: {
+      runId: string;
+      artifacts: readonly string[];
+      /** What the lane verified itself: the service signs only if its own read is exactly this. */
+      verified: {
+        sha: string;
+        repo: string;
+        subjects: readonly { name: string; sha256: string }[];
+      };
+    },
   ): Promise<
     | { ok: true; envelope: unknown; keyid: string; subjects: { name: string; sha256: string }[] }
     | { ok: false; reason: string; detail?: string }
@@ -42,6 +51,9 @@ export type LaneDenial =
   | "bad_tag"
   | "unknown_run"
   | "no_repo"
+  | "repo_not_pinned"
+  | "repo_mismatch"
+  | "signed_subjects_differ"
   | "ref_mismatch"
   | "tag_not_found"
   | "sha_mismatch"
@@ -141,11 +153,21 @@ export class ReleaseLane {
     const run = await getRun(this.#o.db, scope, req.runId);
     if (!run) return refuse("unknown_run");
     if (!run.repo) return refuse("no_repo");
+    // The repository comes from the lane's own pinned mapping, never from a row the main process
+    // can write: a run row naming another repo cannot redirect the forge check.
+    const pinned = this.#o.attest.pinnedRepo(scope.orgId, scope.projectId);
+    if (!pinned)
+      return refuse(
+        "repo_not_pinned",
+        "pin the project's repository with `longshore release pin-repo`",
+      );
+    if (run.repo.toLowerCase() !== pinned)
+      return refuse("repo_mismatch", `the project is pinned to ${pinned}`);
     if (run.ref !== `refs/tags/${req.tag}`) return refuse("ref_mismatch", `run ref is ${run.ref}`);
 
     // The forge, asked here, with this lane's own credential: the tag must exist and must point
     // at exactly the commit the run says it built.
-    const tag = await this.#o.forge.tagCommit(run.repo, req.tag);
+    const tag = await this.#o.forge.tagCommit(pinned, req.tag);
     facts.forgeSha = tag.found ? tag.sha : null;
     facts.runSha = run.sha;
     if (!tag.found) return refuse("tag_not_found");
@@ -177,11 +199,24 @@ export class ReleaseLane {
     for (const name of names)
       this.#o.attest.attest(scope.orgId, req.runId, name, digests[name]!, now);
 
+    // The service signs exactly what was verified here: the commit the forge confirmed, the
+    // pinned repository and the digests computed from the bytes. If a row changed since, it
+    // refuses; and what comes back must be exactly these subjects.
+    const subjects = names.map((name) => ({ name, sha256: digests[name]! }));
     const out = await this.#o.signer.signRelease(scope, {
       runId: req.runId,
       artifacts: names,
+      verified: { sha: tag.sha, repo: pinned, subjects },
     });
     if (!out.ok) return refuse(`signer:${out.reason}`, out.detail);
+    const got = [...out.subjects].toSorted((x, y) => x.name.localeCompare(y.name));
+    const want = [...subjects].toSorted((x, y) => x.name.localeCompare(y.name));
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      return refuse(
+        "signed_subjects_differ",
+        "the signed statement does not name what was verified",
+      );
+    }
     return {
       status: "signed",
       result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },

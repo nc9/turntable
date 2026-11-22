@@ -45,6 +45,13 @@ export interface SignRequest {
    * that names a different one is refused.
    */
   environment?: string | undefined;
+  /**
+   * What a caller that checked the facts itself (the release lane) verified: the commit, the
+   * repository and the digests it computed from the bytes. The service signs only if its own
+   * read of the stored run and artifacts is exactly this, so a row changed after the caller
+   * looked is refused, never signed.
+   */
+  verified?: { sha: string; repo: string; subjects: readonly Artifact[] } | undefined;
 }
 
 export type SignOutcome =
@@ -120,6 +127,22 @@ export class SigningService {
       approvalOk: approval?.approved === true,
     });
     if (!decision.ok) return deny(decision.reason, decision.detail);
+    if (req.verified) {
+      const v = req.verified;
+      const own = new Map(recorded.map((a) => [a.name, a.sha256]));
+      const sameSubjects =
+        own.size === v.subjects.length && v.subjects.every((s) => own.get(s.name) === s.sha256);
+      const sameSha = run.sha !== null && run.sha.toLowerCase() === v.sha.toLowerCase();
+      const sameRepo = run.repo !== null && run.repo.toLowerCase() === v.repo.toLowerCase();
+      if (!sameSha || !sameRepo || !sameSubjects) {
+        return deny(
+          "verification_mismatch",
+          [!sameSha && "sha", !sameRepo && "repo", !sameSubjects && "artifact digests"]
+            .filter(Boolean)
+            .join(", "),
+        );
+      }
+    }
 
     const key = parseKeyRef(project.signingKey!);
     const signer = key ? this.#o.signers[key.backend] : undefined;

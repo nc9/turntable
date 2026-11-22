@@ -39,9 +39,10 @@ Publish credentials are vault secrets for `release`-class jobs. The main lane's 
 1. An operator or pipeline with `release_operator` calls `request_release` (REST and CLI only, never an MCP tool) with a run, the tag and the artifact names. The main process writes a `pending` row in `release_requests` and does nothing else.
 2. The release lane claims the oldest pending request. It trusts nothing in that row or in the main database for what to sign:
    - the run must have been built from `refs/tags/<tag>`;
-   - **it asks the forge itself**, with its own credential, which commit the tag points at (annotated tags followed to the commit), and that must be exactly the run's sha. A tag that does not exist, or has moved, is refused;
+   - the run's repository must equal the one **pinned for the project in the lane's own file** (`longshore release pin-repo --org <slug> --project <slug> --repo <owner/name>`); a project with no pin, or a run row naming another repository, is refused before the forge is asked;
+   - **it asks the forge itself**, with its own credential, about that pinned repository: which commit the tag points at (annotated tags followed to the commit), and that must be exactly the run's sha. A tag that does not exist, or has moved, is refused;
    - **it reads the artifact bytes and recomputes the digests**. They must equal what the build recorded, and equal what the lane attested the first time it saw them, kept in a file the main process cannot write. A recorded digest edited to match tampered bytes is refused as an attestation mismatch.
-3. Only then does it call the signing service, which applies its own policy on top (release class, release ref, approvals).
+3. Only then does it call the signing service, passing what it verified: the forge's commit, the pinned repository and the digests it computed from the bytes. The service signs only if its own read of the stored run and artifacts is exactly that (a row edited between the lane's check and the signature is refused as `verification_mismatch`), applies its own policy on top (release class, release ref, approvals), and the lane accepts the result only if the signed subjects are exactly what it verified.
 4. It writes the outcome (`signed` with the key id and envelope, or `refused` with a short reason) and an audit entry with what it saw at the forge and in the bytes.
 
 A compromised main process can write any row it likes, including a finished, signed-looking request. The lane never reads results back as truth; whoever consumes a release verifies the envelope under the release public key (`longshore verify`), which a forged row cannot satisfy.
@@ -66,7 +67,7 @@ The release service's variables:
 | `LONGSHORE_RELEASE_MASTER_KEY_FILE` | The release master key file (`longshore keys init`), on the release service's own volume. |
 | `LONGSHORE_RELEASE_DATA_DIR` | Its own state: the attested digests. |
 | `LONGSHORE_RELEASE_GITHUB_TOKEN` | A read-only token for repository contents and refs, used only to re-check tags. |
-| `LONGSHORE_RELEASE_ARTIFACT_DIR` | Read-only artifact bytes, `<dir>/<run id>/<name>`. |
+| `LONGSHORE_RELEASE_ARTIFACT_DIR` | Read-only artifact bytes, `<dir>/<run id>/<name>`. The lane refuses a symbolic link at any component, checks containment on real paths and reads through an open descriptor, so a link planted in the directory cannot make it hash (and sign) another file. |
 | `LONGSHORE_RELEASE_BUILDER_ID` | The instance URL, written into the provenance as the builder id. |
 | `LONGSHORE_RELEASE_POLL_MS` | How often it looks for requests. Default 5000. |
 

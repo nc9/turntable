@@ -25,6 +25,11 @@ export class AttestationStore {
          sha256 TEXT NOT NULL, first_seen INTEGER NOT NULL,
          PRIMARY KEY (org_id, run_id, name))`,
     );
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS pinned_repos (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL,
+         pinned_at INTEGER NOT NULL, PRIMARY KEY (org_id, project_id))`,
+    );
   }
 
   check(orgId: string, runId: string, name: string, sha256: string): AttestCheck {
@@ -42,6 +47,26 @@ export class AttestationStore {
     this.#db
       .query("INSERT OR IGNORE INTO attested_artifacts VALUES (?, ?, ?, ?, ?)")
       .run(orgId, runId, name, sha256, now);
+  }
+
+  /**
+   * Which repository a project releases from, set by the operator in the lane's own file. The
+   * lane asks the forge about THIS repository, never about whichever one a run row names.
+   */
+  pinRepo(orgId: string, projectId: string, repo: string, now: number): void {
+    this.#db
+      .query(
+        "INSERT INTO pinned_repos VALUES (?, ?, ?, ?) ON CONFLICT (org_id, project_id) DO UPDATE SET repo = excluded.repo, pinned_at = excluded.pinned_at",
+      )
+      .run(orgId, projectId, repo.toLowerCase(), now);
+  }
+
+  pinnedRepo(orgId: string, projectId: string): string | undefined {
+    return this.#db
+      .query<{ repo: string }, [string, string]>(
+        "SELECT repo FROM pinned_repos WHERE org_id = ? AND project_id = ?",
+      )
+      .get(orgId, projectId)?.repo;
   }
 
   close(): void {

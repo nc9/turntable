@@ -12,6 +12,7 @@ export type SigningDenial =
   | "no_artifacts"
   | "artifact_not_recorded"
   | "environment_mismatch"
+  | "verification_mismatch"
   | "no_approval"
   | "no_backend";
 

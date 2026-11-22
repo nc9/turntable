@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { eq } from "drizzle-orm";
 import {
+  setProjectSigning,
   chainedAudit,
   createReleaseRequest,
   getReleaseRequest,
@@ -27,8 +28,10 @@ import { dirArtifacts } from "../src/release/artifacts";
 import { githubForge, type ForgeFacts } from "../src/release/forge";
 import { ReleaseLane, type ArtifactRecords, type ReleaseSigner } from "../src/release/lane";
 import { fileKeyVault } from "../src/release/key-vault";
+import { releaseCommand } from "../src/release/cli";
 import { serveRelease, signingWiring } from "../src/release/serve";
 import { LocalSigner, verifyDigest } from "@longshore/signer";
+import { SigningService } from "../src/signing";
 import { mainRuntime, releaseConfigFromEnv, resolveRoles } from "../src/roles";
 import { initMasterKey } from "../src/secrets/crypto";
 import { SecretVault } from "../src/secrets/vault";
@@ -43,7 +46,7 @@ let forgeTags: Map<string, string>;
 let forgeCalls: string[];
 let blobs: Map<string, string>; // `${runId}/${name}` -> bytes
 let recorded: Map<string, string>; // `${runId}/${name}` -> sha256 (the main database's rows)
-let signed: { runId: string; artifacts: readonly string[] }[];
+let signed: Parameters<ReleaseSigner["signRelease"]>[1][];
 let signerAnswer: Awaited<ReturnType<ReleaseSigner["signRelease"]>>;
 let attest: AttestationStore;
 let lane: ReleaseLane;
@@ -106,6 +109,7 @@ beforeEach(async () => {
     subjects: [{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }],
   };
   attest = new AttestationStore(":memory:");
+  attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
   lane = makeLane();
   await db.orm
     .update(s.runs)
@@ -133,7 +137,19 @@ describe("the lane signs only what it has checked itself", () => {
     const row = await process1();
     expect(row.status).toBe("signed");
     expect(JSON.parse(row.result!).keyid).toBe("k1");
-    expect(signed).toEqual([{ runId: a.runId, artifacts: ["longshore-linux-x64"] }]);
+    // the service is told exactly what the lane verified: the forge's commit, the pinned repo and
+    // the digests computed from the bytes
+    expect(signed).toEqual([
+      {
+        runId: a.runId,
+        artifacts: ["longshore-linux-x64"],
+        verified: {
+          sha: SHA,
+          repo: "acme/web",
+          subjects: [{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }],
+        },
+      },
+    ]);
     expect(forgeCalls).toEqual(["acme/web@v1.0.0"]);
     const facts = JSON.parse(row.facts!);
     expect(facts).toMatchObject({ forgeSha: SHA, runSha: SHA });
@@ -227,6 +243,155 @@ describe("the lane signs only what it has checked itself", () => {
     const rows = await Promise.all([r1, r2].map((r) => getReleaseRequest(db, a.scope, r.id)));
     expect(rows.map((r) => r!.status)).toEqual(["signed", "signed"]);
     expect(new Set(rows.map((r) => r!.claimedBy)).size).toBe(2);
+  });
+});
+
+describe("what is signed is exactly what the lane verified", () => {
+  test("the repository is the lane's own pinned one: an unpinned project, or a run row naming another repo, is refused before the forge is asked", async () => {
+    attest.close();
+    attest = new AttestationStore(":memory:");
+    lane = makeLane();
+    expect((await process1()).reason).toBe("repo_not_pinned");
+    attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
+    await db.orm.update(s.runs).set({ repo: "evil/web" }).where(eq(s.runs.id, a.runId));
+    forgeTags.set("evil/web@v1.0.0", SHA);
+    expect((await process1()).reason).toBe("repo_mismatch");
+    expect(forgeCalls).toEqual([]);
+    expect(signed).toEqual([]);
+    // pins are case-insensitive and per project
+    attest.pinRepo(a.orgId, a.projectId, "ACME/Web", 0);
+    expect(attest.pinnedRepo(a.orgId, a.projectId)).toBe("acme/web");
+    expect(attest.pinnedRepo(a.orgId, "other")).toBeUndefined();
+  });
+
+  test("a signer that returns other subjects than the lane verified is not accepted", async () => {
+    signerAnswer = {
+      ok: true,
+      envelope: { payload: "x" },
+      keyid: "k1",
+      subjects: [{ name: "longshore-linux-x64", sha256: digest("something else") }],
+    };
+    const row = await process1();
+    expect(row).toMatchObject({ status: "refused", reason: "signed_subjects_differ" });
+    expect(row.result).toBeNull();
+  });
+
+  describe("against the real signing service", () => {
+    const person = {
+      approverId: "ap",
+      person: "alice",
+      method: "ed25519" as const,
+      statementHash: "s".repeat(64),
+      approvedAt: 1,
+      expiresAt: 2,
+    };
+    const approve = {
+      verify: async (_s: unknown, environment: string) => ({
+        approved: true as const,
+        environment,
+        required: 1,
+        approvals: [person],
+      }),
+    };
+
+    async function realLane(tamper?: () => Promise<void>) {
+      const map = new Map<string, string>();
+      const local = new LocalSigner({
+        get: async (n) => map.get(n),
+        set: async (n, v) => void map.set(n, v),
+      });
+      await local.ensureKey("release");
+      const service = new SigningService({
+        db,
+        signers: { builtin: local },
+        approvals: approve,
+        builderId: "https://ci.example.com",
+      });
+      await setProjectSigning(db, a.scope, { signingKey: "builtin:release" });
+      await db.orm
+        .update(s.runs)
+        .set({
+          trust: JSON.stringify({
+            class: "release",
+            reasons: [],
+            facts: {},
+            workflowHash: "h",
+            decidedAt: 1,
+          }),
+        })
+        .where(eq(s.runs.id, a.runId));
+      await recordArtifact(db, a.scope, {
+        runId: a.runId,
+        attemptId: a.attemptId,
+        name: "longshore-linux-x64",
+        sha256: digest("binary-bytes"),
+        size: 12,
+      });
+      const real: ReleaseSigner = {
+        async signRelease(scope, req) {
+          // the main process, with database access, changes a row after the lane has looked
+          await tamper?.();
+          return service.signRelease(scope, req);
+        },
+      };
+      const wired = signingWiring({
+        db,
+        masterKey: randomBytes(32),
+        dataDir: mkdtempSync(join(tmpdir(), "ls-rl-")),
+        builderId: "https://ci.example.com",
+      });
+      return new ReleaseLane({
+        db,
+        forge,
+        bytes,
+        records: (await wired).records,
+        attest,
+        signer: real,
+        owner: "lane-real",
+        now: () => 1_800_000_000_000,
+      });
+    }
+
+    test("a clean request is signed over the verified digests", async () => {
+      const l = await realLane();
+      const r = await request();
+      expect(await l.processNext()).toBe(true);
+      const row = (await getReleaseRequest(db, a.scope, r.id))!;
+      expect(row.status).toBe("signed");
+      expect(JSON.parse(row.result!).subjects).toEqual([
+        { name: "longshore-linux-x64", sha256: digest("binary-bytes") },
+      ]);
+    });
+
+    test("a database digest edited between the check and the sign is refused, never signed", async () => {
+      const evil = digest("malicious-bytes");
+      const l = await realLane(async () => {
+        await db.orm
+          .update(s.artifacts)
+          .set({ sha256: evil })
+          .where(eq(s.artifacts.runId, a.runId));
+      });
+      const r = await request();
+      await l.processNext();
+      const row = (await getReleaseRequest(db, a.scope, r.id))!;
+      expect(row).toMatchObject({ status: "refused", reason: "signer:verification_mismatch" });
+      expect(row.result).toBeNull();
+      expect(row.detail).toContain("artifact digests");
+    });
+
+    test("the run's sha edited between the check and the sign is refused too", async () => {
+      const l = await realLane(async () => {
+        await db.orm
+          .update(s.runs)
+          .set({ sha: "c".repeat(40) })
+          .where(eq(s.runs.id, a.runId));
+      });
+      const r = await request();
+      await l.processNext();
+      const row = (await getReleaseRequest(db, a.scope, r.id))!;
+      expect(row).toMatchObject({ status: "refused", reason: "signer:verification_mismatch" });
+      expect(row.detail).toContain("sha");
+    });
   });
 });
 
@@ -406,7 +571,11 @@ describe("roles", () => {
       });
       const wired = await w;
       // the run is not release class (seedTenant has no trust decision), so the service says no
-      const out = await wired.signer.signRelease(a.scope, { runId: a.runId, artifacts: ["x"] });
+      const out = await wired.signer.signRelease(a.scope, {
+        runId: a.runId,
+        artifacts: ["x"],
+        verified: { sha: SHA, repo: "acme/web", subjects: [] },
+      });
       expect(out).toMatchObject({ ok: false, reason: "not_release_class" });
       // recorded digests come from the main database's artifact table
       await recordArtifact(db, a.scope, {
@@ -420,6 +589,38 @@ describe("roles", () => {
         await wired.records.recorded(a.scope, a.runId, ["longshore-linux-x64", "missing"]),
       ).toEqual([{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }]);
     } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("release pin-repo writes the project's repository into the lane's own file, and rejects bad input", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ls-rel-"));
+    const saved = { ...process.env };
+    try {
+      const { openDatabase, createOrg, createProject, ensureInstance } = await import("../src/db");
+      const dataDir = join(tmp, "data");
+      const d = openDatabase(join(dataDir, "longshore.db"));
+      await ensureInstance(d);
+      const org = await createOrg(d, { slug: "acme", name: "acme" });
+      const proj = await createProject(d, { orgId: org.id }, { slug: "web", name: "web" });
+      d.close();
+      Object.assign(process.env, {
+        LONGSHORE_RELEASE_MASTER_KEY_FILE: join(tmp, "release.key"),
+        LONGSHORE_RELEASE_DATA_DIR: join(tmp, "rel"),
+        LONGSHORE_RELEASE_GITHUB_TOKEN: "t",
+        LONGSHORE_RELEASE_ARTIFACT_DIR: join(tmp, "art"),
+        LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+      });
+      const args = ["pin-repo", "--org", "acme", "--project", "web", "--data-dir", dataDir];
+      expect(await releaseCommand([...args, "--repo", "Acme/Web"])).toBe(0);
+      const store = new AttestationStore(join(tmp, "rel", "attested.db"));
+      expect(store.pinnedRepo(org.id, proj.id)).toBe("acme/web");
+      store.close();
+      await expect(releaseCommand([...args, "--repo", "not a repo"])).rejects.toThrow();
+      await expect(releaseCommand(["pin-repo", "--org", "acme"])).rejects.toThrow();
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
       rmSync(tmp, { recursive: true, force: true });
     }
   });
@@ -495,9 +696,18 @@ describe("the lane's inputs", () => {
       writeFileSync(join(tmp, "RUN1", "bin"), "ok");
       writeFileSync(join(tmp, "secret"), "outside");
       symlinkSync(join(tmp, "secret"), join(tmp, "RUN1", "link"));
+      // a link that stays inside the directory is refused too, as is a linked directory
+      symlinkSync(join(tmp, "RUN1", "bin"), join(tmp, "RUN1", "inner-link"));
+      mkdirSync(join(tmp, "RUN2"));
+      writeFileSync(join(tmp, "RUN2", "f"), "two");
+      symlinkSync(join(tmp, "RUN2"), join(tmp, "RUN1", "dirlink"));
       const art = dirArtifacts(tmp);
       expect(new TextDecoder().decode((await art.read("RUN1", "bin"))!)).toBe("ok");
+      expect(await art.read("RUN2", "f")).toBeDefined();
       for (const [run, name] of [
+        ["RUN1", "link"],
+        ["RUN1", "inner-link"],
+        ["RUN1", "dirlink/f"],
         ["RUN1", "../secret"],
         ["../x", "bin"],
         ["RUN1", "missing"],
