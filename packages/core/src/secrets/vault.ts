@@ -317,6 +317,18 @@ export class SecretVault {
   }
 
   /**
+   * Whether some secret of this name, visible to the project, names this host as a destination.
+   * A rule check only: it reads no value and says nothing about a run. `use` decides each real
+   * delivery.
+   */
+  async canDeliver(orgId: string, projectId: string, name: string, host: string): Promise<boolean> {
+    const candidates = (await vaultCandidates(this.#db, orgId, name)).filter(
+      (c) => c.projectId === null || c.projectId === projectId,
+    );
+    return candidates.some((c) => hostAllowed(JSON.parse(c.destinations) as string[], host));
+  }
+
+  /**
    * The one policy decision. Returns the value only when every rule holds, and audits the
    * outcome either way (which run, job, attempt, destination; never the value).
    */

@@ -36,13 +36,16 @@ export const STEP_ENV: readonly string[] = [
  * terminal, so no TERM; `dumb` would also hide the errors tput and clear give there), sets
  * STEP_ENV, and execs act. `CI=true` and `GITHUB_ACTIONS=true` are set by act itself.
  */
-export function launcherArgv(shimDir: string, actArgv: readonly string[]): string[] {
+export function launcherArgv(shimDir: string, actArgv: readonly string[], envFile = ""): string[] {
+  // `envFile` holds export lines that must not appear in an argv (a ps listing, a provider log):
+  // the launcher sources it and deletes it before act starts.
   return [
     "sh",
     "-c",
-    'PATH="$1:$PATH"; shift; export PATH; exec env -u TERM "$@"',
+    'PATH="$1:$PATH"; f=$2; shift 2; export PATH; if [ -n "$f" ]; then . "$f"; rm -f "$f"; fi; exec env -u TERM "$@"',
     "tt",
     shimDir,
+    envFile,
     ...STEP_ENV,
     ...actArgv,
   ];
@@ -150,4 +153,40 @@ wait "$cpid" 2>/dev/null
 kill "$killer" 2>/dev/null
 wait "$killer" 2>/dev/null
 exit "$rc"
+`;
+
+/** POSIX single-quote quoting of one value. */
+const q = (v: string): string => `'${v.replaceAll("'", "'\\''")}'`;
+
+/**
+ * The environment that routes a step's traffic through the secrets proxy, and trusts its
+ * certificates, as `export` lines for a file the launcher sources (never an argv: the proxy URL
+ * carries the attempt's credential). `bundle` is the system roots plus the attempt's CA (see
+ * PROXY_BUNDLE_SH): a passthrough destination is still verified against the roots, an intercepted
+ * one against the CA. Both spellings of the proxy variables are set, because tools disagree.
+ */
+export function proxyEnvFile(url: string, bundle: string): string {
+  const vars: [string, string][] = [
+    ["HTTP_PROXY", url],
+    ["HTTPS_PROXY", url],
+    ["http_proxy", url],
+    ["https_proxy", url],
+    ["NO_PROXY", "localhost,127.0.0.1,::1"],
+    ["no_proxy", "localhost,127.0.0.1,::1"],
+    ["SSL_CERT_FILE", bundle],
+    ["CURL_CA_BUNDLE", bundle],
+    ["REQUESTS_CA_BUNDLE", bundle],
+    ["NODE_EXTRA_CA_CERTS", bundle],
+    ["GIT_SSL_CAINFO", bundle],
+  ];
+  return `${vars.map(([k, v]) => `export ${k}=${q(v)}`).join("\n")}\n`;
+}
+
+/** Builds the trust bundle. Args: attempt CA file, bundle path. */
+export const PROXY_BUNDLE_SH = `set -eu
+sys=
+for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  [ -r "$f" ] && { sys=$f; break; }
+done
+if [ -n "$sys" ]; then cat "$sys" "$1" > "$2"; else cp "$1" "$2"; fi
 `;

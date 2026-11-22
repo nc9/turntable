@@ -17,7 +17,15 @@ import {
 import { checkoutStubAction } from "./checkout-stub";
 import { createActParser, summarize, type ActEvent } from "./events";
 import { PlanError, assertNoDockerAccess, assertPinned, type JobPlan } from "./plan";
-import { INSTALL_SHIMS_SH, launcherArgv, SHIM_NAMES, STEP_ENV, STEP_SHIM } from "./step-env";
+import {
+  INSTALL_SHIMS_SH,
+  launcherArgv,
+  PROXY_BUNDLE_SH,
+  proxyEnvFile,
+  SHIM_NAMES,
+  STEP_ENV,
+  STEP_SHIM,
+} from "./step-env";
 
 export type JobState = "success" | "failure" | "skipped" | "infra_error";
 
@@ -43,6 +51,12 @@ export interface RunInput {
   act?: ActTarball;
   /** Override how remote actions are fetched by sha (tests). */
   fetchAction?: ActionFetcher;
+  /**
+   * Route the job's traffic through the secrets proxy: the proxy URL (as the sandbox reaches it,
+   * credential included) and the certificate the proxy signs with. Env and files only, set for
+   * act and so for every step; never a provider env field.
+   */
+  proxy?: { url: string; caPem: string };
 }
 
 export interface RunOptions {
@@ -195,6 +209,34 @@ export async function* runJob(
         pollMs,
       );
     }
+    let envFile = "";
+    if (input.proxy) {
+      const caPath = `${L.root}/proxy-ca.pem`;
+      const bundle = `${L.root}/proxy-bundle.pem`;
+      await withRetry(
+        () => provider.files.put(sandboxId, caPath, enc.encode(input.proxy?.caPem ?? "")),
+        maxErr,
+        pollMs,
+      );
+      const b = await execShort(provider, sandboxId, PROXY_BUNDLE_SH, [caPath, bundle], retry);
+      if (b.exitCode !== 0) return fail(`cannot build the proxy trust bundle: ${b.output.trim()}`);
+      // The proxy URL carries the attempt's credential: it goes in a 0600 file the launcher
+      // sources and deletes, never into an argv.
+      envFile = `${L.root}/proxy.env`;
+      await withRetry(
+        () =>
+          provider.files.put(
+            sandboxId,
+            envFile,
+            enc.encode(proxyEnvFile(input.proxy?.url ?? "", bundle)),
+          ),
+        maxErr,
+        pollMs,
+      );
+      const m = await execShort(provider, sandboxId, 'chmod 600 "$1"', [envFile], retry);
+      if (m.exitCode !== 0) return fail("cannot protect the proxy environment file");
+    }
+
     // Pin every `uses:` to its sha in the files act will read.
     for (const [i, f] of plan.files.entries()) {
       // The workflow itself is always uploaded: for a split job it exists only here.
@@ -217,7 +259,7 @@ export async function* runJob(
     const { execId } = await withRetry(
       () =>
         provider.exec.start(sandboxId, {
-          argv: launcherArgv(L.shims, plan.argv),
+          argv: launcherArgv(L.shims, plan.argv, envFile),
           cwd: plan.cwd,
           timeoutSeconds: opts.timeoutSeconds ?? 3600,
         }),

@@ -18,11 +18,20 @@ import {
   EXPIRES_LABEL,
   GET_SH,
   MANAGED_LABEL,
+  NET_LABEL,
   PUT_SH,
+  RELAY_LABEL,
+  RELAY_PORT,
+  netName,
+  relayName,
   DEFAULT_HARDENING,
+  assertRef,
+  firstAddress,
   buildExecArgs,
   buildInspectArgs,
   buildPsArgs,
+  buildNetworkCreateArgs,
+  buildRelayRunArgs,
   buildRmArgs,
   buildRunArgs,
   type Hardening,
@@ -75,7 +84,11 @@ export class DockerProvider implements Provider {
       createFrom: ["image"],
       exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
       files: { upload: true, download: true, maxBytes: this.maxFileBytes },
-      network: { egressPolicy: ["none", "open"], ingress: false, proxyReachability: true },
+      network: {
+        egressPolicy: ["none", "open", "deny-all-except-proxy"],
+        ingress: false,
+        proxyReachability: true,
+      },
       resources: { cpus: true, memoryMb: true, diskGb: false },
       ttl: true,
       labels: true,
@@ -166,6 +179,7 @@ export class DockerProvider implements Provider {
 
   async create(spec: SandboxSpec) {
     const now = Date.now();
+    if (spec.network.egress === "deny-all-except-proxy") return this.createProxied(spec, now);
     const res = await this.cli(buildRunArgs(spec, now, this.hardening), undefined, 600_000);
     if (res.exitCode !== 0) this.fail("docker run", res);
     const id = dec.decode(res.stdout).trim().split("\n").pop() ?? "";
@@ -173,12 +187,119 @@ export class DockerProvider implements Provider {
     return { id, startedAt: now };
   }
 
+  /**
+   * A sandbox on an internal network (no route out) whose only neighbour is a relay container
+   * that forwards one port to the controller's proxy. Anything that fails removes what was made.
+   */
+  private async createProxied(spec: SandboxSpec, now: number) {
+    const net = netName(spec.name);
+    const relay = relayName(spec.name);
+    const cleanup = async (): Promise<void> => {
+      await this.cli(buildRmArgs(relay)).catch(() => undefined);
+      await this.cli(["network", "rm", net]).catch(() => undefined);
+    };
+    await this.reapExpired().catch(() => undefined);
+    // Fail closed: without isolated gateways the host is reachable from the sandbox.
+    const ver = await this.cli(["version", "--format", "{{.Server.Version}}"], undefined, 15_000);
+    const major = Number(dec.decode(ver.stdout).trim().split(".")[0]);
+    if (ver.exitCode !== 0 || !Number.isInteger(major) || major < 28) {
+      throw new SpecError(
+        "deny-all-except-proxy needs Docker 28 or newer (isolated bridge gateways); not started",
+      );
+    }
+    const made = await this.cli(buildNetworkCreateArgs(net, now, spec.ttlSeconds));
+    if (made.exitCode !== 0) this.fail("docker network create", made);
+    try {
+      const r = await this.cli(buildRelayRunArgs(spec, now), undefined, 600_000);
+      if (r.exitCode !== 0) this.fail("docker run (relay)", r);
+      const joined = await this.cli(["network", "connect", net, relay]);
+      if (joined.exitCode !== 0) this.fail("docker network connect", joined);
+      const insp = await this.cli([
+        "inspect",
+        "--format",
+        `{{(index .NetworkSettings.Networks "${net}").IPAddress}}`,
+        "--",
+        relay,
+      ]);
+      const ip = dec.decode(insp.stdout).trim();
+      if (insp.exitCode !== 0 || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+        throw new InfraError("cannot find the relay's address");
+      }
+      // The host's would-be address on this network (the first one): the sandbox must not reach
+      // the proxy's listener, or anything else, through it.
+      const sub = await this.cli([
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}}",
+        net,
+      ]);
+      const gateway = firstAddress(dec.decode(sub.stdout).trim());
+      // Without the address there is nothing to verify closed: do not start.
+      if (sub.exitCode !== 0 || !gateway) {
+        throw new InfraError("cannot determine the host's address on the sandbox network");
+      }
+      // Ready when it says so; a sandbox that dials first would see a refused connection.
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const logs = await this.cli(["logs", "--", relay]);
+        if (dec.decode(logs.stdout).includes("ready")) break;
+        if (Date.now() > deadline) throw new InfraError("the proxy relay did not start");
+        await Bun.sleep(150);
+      }
+      const res = await this.cli(buildRunArgs(spec, now, this.hardening), undefined, 600_000);
+      if (res.exitCode !== 0) this.fail("docker run", res);
+      const id = dec.decode(res.stdout).trim().split("\n").pop() ?? "";
+      if (!/^[0-9a-f]{64}$/.test(id)) throw new InfraError(`docker run: unexpected output`);
+      return {
+        id,
+        startedAt: now,
+        proxy: { host: ip, port: RELAY_PORT },
+        mustNotReach: [`${gateway}:${spec.network.proxy?.port ?? RELAY_PORT}`, `${gateway}:80`],
+      };
+    } catch (e) {
+      await cleanup();
+      throw e;
+    }
+  }
+
+  /** Removes internal networks (and their relays) whose sandbox TTL passed and that nothing uses. */
+  private async reapExpired(): Promise<void> {
+    const ls = await this.cli(["network", "ls", "-q", "--filter", `label=${MANAGED_LABEL}=1`]);
+    for (const id of dec.decode(ls.stdout).split("\n").filter(Boolean)) {
+      const insp = await this.cli([
+        "network",
+        "inspect",
+        "--format",
+        `{{index .Labels "${EXPIRES_LABEL}"}} {{.Name}}`,
+        id,
+      ]);
+      const [exp, name] = dec.decode(insp.stdout).trim().split(" ");
+      if (!name || !/^\d+$/.test(exp ?? "") || Number(exp) > Date.now()) continue;
+      await this.cli(buildRmArgs(name.replace(/-net$/, "-relay"))).catch(() => undefined);
+      await this.cli(["network", "rm", name]).catch(() => undefined);
+    }
+  }
+
   async destroy(id: string): Promise<void> {
+    // A proxied sandbox has a relay and a network to remove with it; read them before it goes.
+    const links = await this.cli([
+      "inspect",
+      "--format",
+      `{{index .Config.Labels "${RELAY_LABEL}"}} {{index .Config.Labels "${NET_LABEL}"}}`,
+      "--",
+      assertRef(id),
+    ]);
+    const [relay, net] =
+      links.exitCode === 0 ? dec.decode(links.stdout).trim().split(" ") : [undefined, undefined];
     const res = await this.cli(buildRmArgs(id));
-    if (res.exitCode === 0) return;
     const err = dec.decode(res.stderr);
-    if (/No such container|is already in progress/i.test(err)) return;
-    this.fail("docker rm", res);
+    if (res.exitCode !== 0 && !/No such container|is already in progress/i.test(err)) {
+      this.fail("docker rm", res);
+    }
+    if (relay) await this.cli(buildRmArgs(relay));
+    // A network that cannot be removed now is swept by its expiry at the next create.
+    if (net) await this.cli(["network", "rm", net]);
   }
 
   async destroyByLabels(labels: Labels): Promise<number> {
@@ -221,5 +342,34 @@ export class DockerProvider implements Provider {
 
   async count(filter: { labels?: Labels }): Promise<number> {
     return (await this.list(filter)).length;
+  }
+}
+
+/**
+ * The address of the Docker bridge on this Linux host (`docker0`'s gateway), which is where
+ * `host.docker.internal:host-gateway` points: binding the secrets proxy there reaches containers
+ * and no other interface. Undefined when it cannot be determined, or off Linux (Docker Desktop
+ * routes `host.docker.internal` to the host's loopback instead).
+ */
+export async function dockerBridgeGateway(
+  bin = "docker",
+  platform: string = process.platform,
+): Promise<string | undefined> {
+  if (platform !== "linux") return undefined;
+  try {
+    const p = Bun.spawn(
+      [bin, "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+        timeout: 10_000,
+        env: scrubbedEnv({}, DOCKER_ENV_PASSTHROUGH),
+      },
+    );
+    const out = (await new Response(p.stdout).text()).trim();
+    return (await p.exited) === 0 && /^\d{1,3}(\.\d{1,3}){3}$/.test(out) ? out : undefined;
+  } catch {
+    return undefined;
   }
 }

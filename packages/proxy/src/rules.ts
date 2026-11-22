@@ -137,6 +137,25 @@ export function checkPath(rawPath: string): string | undefined {
   return undefined;
 }
 
+/**
+ * An entry names an exact host, or `*.suffix` for any subdomain (not the bare suffix), and the
+ * ports a tunnel to it may use. Empty list: nothing.
+ */
+export function passthroughAllowed(
+  entries: readonly { host: string; ports: readonly number[] }[] | undefined,
+  host: string,
+  port: number,
+): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  return (entries ?? []).some(
+    (e) =>
+      e.ports.includes(port) &&
+      (e.host.startsWith("*.")
+        ? h.endsWith(e.host.slice(1)) && h.length > e.host.length - 1
+        : e.host === h),
+  );
+}
+
 /** True when `path` is the prefix or lies below it, on segment boundaries. */
 export function underPrefix(path: string, prefix: string): boolean {
   if (prefix === "/") return true;

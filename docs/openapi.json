@@ -3450,6 +3450,779 @@
         "x-longshore-untrusted-output": false
       }
     },
+    "/proxy-rules": {
+      "post": {
+        "operationId": "set_proxy_rule",
+        "summary": "Allow the secrets proxy to inject a secret into requests to one host (create or replace).",
+        "description": "Names where a project's jobs may have a vault secret attached by the secrets proxy: one exact host, port, methods and path prefix, and how it is attached (a header with a format such as `Bearer {secret}`, or HTTP Basic). The host must be one of the secret's destination hosts. The job never sees the value. Jobs of class untrusted_pr never get rules. Needs release_operator or admin; audited.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                  },
+                  "secret": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253
+                  },
+                  "port": {
+                    "default": 443,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "methods": {
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 10
+                    }
+                  },
+                  "path_prefix": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "inject": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "header"
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "format": {
+                            "type": "string",
+                            "maxLength": 200
+                          }
+                        },
+                        "required": ["type", "name"]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "basic"
+                          },
+                          "username": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100
+                          }
+                        },
+                        "required": ["type", "username"]
+                      }
+                    ]
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug. Required unless the token is scoped to one project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["name", "secret", "host", "methods", "path_prefix", "inject"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": {
+                      "type": "boolean"
+                    },
+                    "rule": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "vault_key": {
+                          "type": "string",
+                          "description": "The vault secret's name; its value is never returned."
+                        },
+                        "host": {
+                          "type": "string"
+                        },
+                        "port": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "methods": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "path_prefix": {
+                          "type": "string"
+                        },
+                        "inject": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "header"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "format": {
+                                  "type": ["string", "null"]
+                                }
+                              },
+                              "required": ["type", "name", "format"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "basic"
+                                },
+                                "username": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["type", "username"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "vault_key",
+                        "host",
+                        "port",
+                        "methods",
+                        "path_prefix",
+                        "inject",
+                        "created_by",
+                        "updated_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["created", "rule"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      },
+      "get": {
+        "operationId": "list_proxy_rules",
+        "summary": "List a project's secrets-proxy rules.",
+        "description": "Lists where the project's jobs may have secrets injected: host, methods, path prefix and injection form. Never values. Needs release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size, 1 to 100.",
+            "schema": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response's next_cursor.",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug. Required unless the token is scoped to one project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rules": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "vault_key": {
+                            "type": "string",
+                            "description": "The vault secret's name; its value is never returned."
+                          },
+                          "host": {
+                            "type": "string"
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "methods": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "path_prefix": {
+                            "type": "string"
+                          },
+                          "inject": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "header"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "format": {
+                                    "type": ["string", "null"]
+                                  }
+                                },
+                                "required": ["type", "name", "format"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "basic"
+                                  },
+                                  "username": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["type", "username"],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "created_by": {
+                            "type": "string"
+                          },
+                          "updated_at": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "vault_key",
+                          "host",
+                          "port",
+                          "methods",
+                          "path_prefix",
+                          "inject",
+                          "created_by",
+                          "updated_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next_cursor": {
+                      "description": "Pass as cursor to get the next page; null on the last page.",
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["rules", "next_cursor"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      },
+      "delete": {
+        "operationId": "delete_proxy_rule",
+        "summary": "Delete a secrets-proxy rule.",
+        "description": "Removes the rule: new jobs no longer get that injection. Attempts already running keep the rules they were registered with until they end. Needs release_operator or admin; audited.\n\nRequired role: release_operator. Side effects: destructive; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug. Required unless the token is scoped to one project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["deleted"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "destructive",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
+    "/proxy-passthrough-hosts": {
+      "post": {
+        "operationId": "add_proxy_passthrough_host",
+        "summary": "Allow a project's secret-bearing jobs a plain tunnel to one host (no injection).",
+        "description": "A job that has proxy rules is secret-bearing: through the secrets proxy it may reach rule hosts and, with no other entry, nothing else. This lists hosts it may also open a plain TLS tunnel to (nothing is injected, the job's own TLS runs end to end), for example github.com and codeload.github.com for checkout, or registry.npmjs.org. Without entries, sources must be pre-staged. Needs release_operator or admin; audited.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "description": "An exact host (github.com) or *.suffix for any subdomain (*.githubusercontent.com)."
+                  },
+                  "ports": {
+                    "default": [443],
+                    "description": "Ports a tunnel to this host may use. Default [443].",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    }
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug. Required unless the token is scoped to one project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["host"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "added": {
+                      "type": "boolean"
+                    },
+                    "host": {
+                      "type": "string"
+                    },
+                    "ports": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": ["added", "host", "ports"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      },
+      "get": {
+        "operationId": "list_proxy_passthrough_hosts",
+        "summary": "List the hosts a project's secret-bearing jobs may tunnel to without injection.",
+        "description": "Needs release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size, 1 to 100.",
+            "schema": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response's next_cursor.",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug. Required unless the token is scoped to one project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hosts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "string"
+                          },
+                          "ports": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          }
+                        },
+                        "required": ["host", "ports"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next_cursor": {
+                      "description": "Pass as cursor to get the next page; null on the last page.",
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["hosts", "next_cursor"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      },
+      "delete": {
+        "operationId": "delete_proxy_passthrough_host",
+        "summary": "Remove a host from a project's passthrough list.",
+        "description": "New attempts no longer get a tunnel to that host. Needs release_operator or admin; audited.\n\nRequired role: release_operator. Side effects: destructive; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "description": "An exact host (github.com) or *.suffix for any subdomain (*.githubusercontent.com)."
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug. Required unless the token is scoped to one project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["host"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["deleted"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "destructive",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
     "/approvals/status": {
       "get": {
         "operationId": "approval_status",
