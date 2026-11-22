@@ -34,7 +34,7 @@ import {
 } from "../db/repos";
 import { credentialsFor, normalizeRef, type TrustClass } from "../trust";
 import { auditFailure } from "../audit/failures";
-import { open, recordVersion, seal, vaultAad } from "./crypto";
+import { assertResealAllowed, open, recordVersion, seal, vaultAad } from "./crypto";
 
 /** Classes a secret may name. `untrusted_pr` is deliberately absent and can never be added. */
 export const ALLOWED_SECRET_CLASSES = ["protected", "release", "trusted_pr"] as const;
@@ -300,11 +300,12 @@ export class SecretVault {
    * and versions are unchanged. Versions already v3 are skipped. Returns how many changed.
    */
   async reseal(orgId: string): Promise<number> {
+    assertResealAllowed();
     let n = 0;
     for (const v of await listVaultCiphertexts(this.#db, orgId)) {
       if (recordVersion(v.ciphertext) === "v3") continue;
       const aad = vaultAad(orgId, v.secretId, v.version, v.name);
-      const value = open(this.#key, v.ciphertext, aad, "job");
+      const value = open(this.#key, v.ciphertext, aad, "job", orgId, { allowLegacy: true });
       await setVaultCiphertext(
         this.#db,
         orgId,
