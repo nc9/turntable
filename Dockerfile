@@ -35,7 +35,11 @@ FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57
 COPY --from=build --chmod=0755 /longshore /longshore
 COPY --from=build --chown=nonroot:nonroot /data /data
 ENV LONGSHORE_HOST=0.0.0.0
-USER nonroot:nonroot
+# Starts as root only so it can take ownership of a volume a platform mounted as root (Railway),
+# then drops to nonroot (65532) before it opens anything: the server refuses to keep running as
+# root. Run with `--user 65532:65532` and no drop happens (nothing to do).
+ENV LONGSHORE_DROP_PRIVILEGES=65532:65532
+USER 0:0
 # Data lives in /data. Mount a volume there (docker run -v ..., or your platform's volume feature).
 # No VOLUME directive: some platforms (Railway) reject it, and an anonymous volume hides data loss.
 EXPOSE 8080
