@@ -141,6 +141,11 @@ export const projects = sqliteTable(
     frozenAt: integer("frozen_at", { mode: "number" }),
     frozenReason: text("frozen_reason"),
     frozenBy: text("frozen_by"),
+    /**
+     * 1: release-class jobs of the project may restore caches written by release-class jobs.
+     * Default 0: a release job restores nothing (it consumes nothing a lower class could write).
+     */
+    cacheReleaseRestore: integer("cache_release_restore").notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [
@@ -1144,4 +1149,39 @@ export const installationClaims = sqliteTable(
     githubLogin: text("github_login"),
   },
   (t) => [index("installation_claims_org_idx").on(t.orgId, t.createdAt)],
+);
+
+// ---- cache service (#38) ----
+
+/**
+ * One entry of the control-plane cache. The namespace is assigned by the server from the job
+ * (org, project, trust class, ref scope); a client names only a key and version inside it. Blobs
+ * live in the cache store under the entry id.
+ */
+export const cacheEntries = sqliteTable(
+  "cache_entries",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id").notNull(),
+    /** The trust class of the job that wrote it: `protected`, `release`, `trusted_pr`, `untrusted_pr`. */
+    klass: text("klass").notNull(),
+    /** `-` for protected and release; `pr:<number>` (or the ref) for pull request classes. */
+    refScope: text("ref_scope").notNull(),
+    /** Lower-cased: cache keys are case insensitive. */
+    key: text("key").notNull(),
+    version: text("version").notNull(),
+    size: integer("size", { mode: "number" }).notNull().default(0),
+    /** 1 once the upload committed and its archive passed validation. Only these restore. */
+    complete: integer("complete").notNull().default(0),
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+    usedAt: integer("used_at", { mode: "number" }).notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    index("cache_entries_ns_idx").on(t.orgId, t.projectId, t.klass, t.refScope, t.key),
+    index("cache_entries_used_idx").on(t.orgId, t.klass, t.usedAt),
+  ],
 );

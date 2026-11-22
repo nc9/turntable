@@ -101,6 +101,9 @@ export function buildRunArgs(
   if (spec.network.egress === "none") args.push("--network", "none");
   // An internal network has no route out; its only other member is the relay.
   if (proxied) args.push("--network", netName(spec.name));
+  // With a network, the sandbox can reach the host's control plane (the cache service) by name.
+  else if (spec.network.egress !== "none")
+    args.push("--add-host", "host.docker.internal:host-gateway");
   if (hardening.noNewPrivileges) args.push("--security-opt", "no-new-privileges");
   if (hardening.pidsLimit > 0) args.push("--pids-limit", String(hardening.pidsLimit));
   for (const cap of hardening.capDrop) {

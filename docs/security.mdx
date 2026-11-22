@@ -111,6 +111,10 @@ A moved tag, a refused owner, an unpinned or unreachable action and the other de
 
 Two optional project policies tighten this further. `require_sha_pins` refuses any `uses:` that is not already a full commit sha. The org's action owner allowlist refuses actions from any owner not on it (`longshore policy set --allow-owners actions,oven-sh`). Both are off by default and apply to nested actions inside local composite actions too.
 
+## Job cache
+
+Implemented. The control-plane cache assigns each job a namespace from its org, project, trust class and ref scope. A job writes only to its own namespace and never reads one written by a lower trust class, release jobs restore nothing unless a project opts in, each trust class has its own share of the org quota and evicts only within it, archives are validated before they can be restored, and the per-job credential dies with the job. See [Job cache](/cache). Issue [#38](https://github.com/nc9/turntable/issues/38).
+
 ## Outbound requests from the control plane
 
 Everything the control plane fetches (the GitHub API and codeload, the Daytona API, release downloads, outbound webhooks later) goes through one client, `@longshore/net`. A source-guard test fails if any other code calls `fetch` or opens a connection itself.

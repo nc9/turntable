@@ -5,6 +5,7 @@ import { GithubClient } from "../poll/github";
 import { policyCommand as actionPolicyCommand } from "../pins/cli";
 import {
   POLICY_USAGE,
+  setCacheReleaseRestorePolicy,
   setChecksModePolicy,
   setIngestPolicy,
   showIngest,
@@ -31,6 +32,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       "pr-mode": { type: "string" },
       authors: { type: "string" },
       "merge-queue": { type: "boolean", default: false },
+      "cache-release-restore": { type: "string" },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -102,6 +104,15 @@ async function ownPolicy(args: string[]): Promise<void> {
           }).repoDefaultBranch(repo),
       });
       console.error(`ingest ${r.project}: ${r.from ? "on" : "off"} -> ${r.to ? "on" : "off"}`);
+    } else if (values["cache-release-restore"] !== undefined) {
+      for (const r of await setCacheReleaseRestorePolicy(
+        db,
+        values.org,
+        values.project,
+        values["cache-release-restore"],
+      )) {
+        console.error(`cache-release-restore ${r.project}: ${r.from} -> ${r.to}`);
+      }
     } else if (values["checks-mode"] !== undefined) {
       for (const r of await setChecksModePolicy(
         db,
