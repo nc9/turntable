@@ -32,7 +32,7 @@ async function git(dir: string, ...args: string[]): Promise<void> {
 }
 
 async function runExample(workflow: string, jobId: string, egress: "open" | "none" = "open") {
-  const repo = join(tmp, `${jobId}-repo`);
+  const repo = join(tmp, `${jobId}-${egress}-repo`);
   cpSync(join(import.meta.dir, "../../../examples/hello"), repo, { recursive: true });
   await git(repo, "init", "-q", "-b", "main");
   await git(repo, "add", "-A");
