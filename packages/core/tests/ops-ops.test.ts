@@ -257,6 +257,9 @@ test("checks_for_sha: NONE is not PENDING, and the verdict rules hold", async ()
   expect(verdict(["success", "cancelled"])).toBe("RED");
   expect(verdict(["failure", "queued"])).toBe("RED");
   expect(verdict(["success"])).toBe("GREEN");
+  expect(verdict(["success", "skipped"])).toBe("GREEN");
+  expect(verdict(["skipped"])).toBe("GREEN");
+  expect(verdict(["skipped", "running"])).toBe("PENDING");
 });
 
 test("checks_for_sha: a short sha is rejected and repo narrows to its project", async () => {
