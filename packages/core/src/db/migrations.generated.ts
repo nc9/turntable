@@ -110,5 +110,17 @@ export const migrations: Migration[] = [
       "ALTER TABLE `job_attempts` ADD `heartbeat_at` integer;",
       "CREATE INDEX `job_attempts_state_idx` ON `job_attempts` (`state`,`id`);"
     ]
+  },
+  {
+    "tag": "0006_fluffy_vance_astro",
+    "when": 1795349771958,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `plan` text;",
+      "ALTER TABLE `jobs` ADD `planned` text;",
+      "ALTER TABLE `jobs` ADD `outputs` text;",
+      "ALTER TABLE `runs` ADD `plan` text;",
+      "ALTER TABLE `runs` ADD `concurrency_group` text;",
+      "CREATE INDEX `runs_concurrency_idx` ON `runs` (`org_id`,`project_id`,`concurrency_group`);"
+    ]
   }
 ];

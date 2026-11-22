@@ -905,3 +905,28 @@ test("rerunning a failed job brings back the dependents that were skipped becaus
   });
   expect((await claim("w"))?.job.jobKey).toBe("test");
 });
+
+test("--provider: docker builds, daytona is not in this build yet, unknown and bad config are errors", async () => {
+  const { createProvider, isProviderName, loadProviderConfig } = await import("../src/scheduler");
+  expect(createProvider("docker", {}).info.name).toBe("docker");
+  expect(() => createProvider("daytona", {})).toThrow(/not available in this build/);
+  expect(() => createProvider("nope", {})).toThrow(/unknown provider nope/);
+  expect(() => createProvider("docker", { dockr: "x" })).toThrow(/unknown docker provider option/);
+  expect(isProviderName("docker") && isProviderName("daytona") && !isProviderName("k8s")).toBe(
+    true,
+  );
+  expect(loadProviderConfig(undefined)).toEqual({});
+  const dir = mkdtempSync(join(tmpdir(), "tt-pc-"));
+  try {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(dir, "ok.json"), JSON.stringify({ docker: "/usr/bin/docker" }));
+    writeFileSync(join(dir, "arr.json"), "[]");
+    expect(loadProviderConfig(join(dir, "ok.json"))).toEqual({ docker: "/usr/bin/docker" });
+    expect(() => loadProviderConfig(join(dir, "arr.json"))).toThrow(/must be a JSON object/);
+    expect(() => loadProviderConfig(join(dir, "missing.json"))).toThrow(
+      /cannot read provider config/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

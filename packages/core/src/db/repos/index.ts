@@ -40,6 +40,9 @@ export type RunInput = {
   actor?: string | undefined;
   headBranch?: string | undefined;
   prNumber?: number | undefined;
+  /** Run-level planning facts (JSON text); see `runs.plan`. */
+  plan?: string | undefined;
+  concurrencyGroup?: string | undefined;
 };
 
 const cap = (value: string | undefined, max: number): string | null =>
@@ -297,6 +300,8 @@ export function createRun(db: Db, scope: Scope, input: RunInput): Promise<Run> {
       actor: cap(input.actor, 100),
       headBranch: cap(input.headBranch, 255),
       prNumber: input.prNumber ?? null,
+      plan: input.plan ?? null,
+      concurrencyGroup: input.concurrencyGroup ?? null,
     });
     await appendEvent(h, scope, {
       type: "run.queued",
@@ -395,6 +400,8 @@ export function createJob(
     /** This leg's matrix values. */
     matrix?: Record<string, unknown> | undefined;
     approvalKind?: s.ApprovalKind | undefined;
+    /** The planned job (key, ids, if:, outputs, continue-on-error ...), stored as JSON. */
+    planned?: unknown;
   },
 ): Promise<Job | undefined> {
   return db.run(async (h) => {
@@ -415,6 +422,7 @@ export function createJob(
       needs: JSON.stringify(input.needs ?? []),
       matrix: input.matrix === undefined ? null : JSON.stringify(input.matrix),
       approvalKind: input.approvalKind ?? null,
+      planned: input.planned === undefined ? null : JSON.stringify(input.planned),
     });
     return getJob(h, scope, id);
   });

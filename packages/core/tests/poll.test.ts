@@ -352,7 +352,7 @@ test("a workflow that is missing or invalid at the commit creates no run", async
   const missing = await poll(gh);
   expect(missing.refused[0]?.reason).toContain("workflow not found");
   gh.state.files.set("*", "jobs: [not, a, map");
-  expect((await poll(gh)).refused[0]?.reason).toContain("no jobs");
+  expect((await poll(gh)).refused[0]?.reason).toContain("plan rejected");
   gh.state.files.set("*", "name: empty\non: push\n");
   expect((await poll(gh)).created).toEqual([]);
   expect(await listRuns(db, scope)).toHaveLength(0);
@@ -609,6 +609,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   );
   expect(methods.toSorted()).toEqual([
     "branchHead",
+    "changedFiles",
     "commitInfo",
     "fileAt",
     "openPulls",
@@ -800,10 +801,10 @@ test("ingest refuses unknown needs, cycles, self-dependencies and more than 256 
       )
       .join("")}`;
   const cases: [string, string, RegExp][] = [
-    ["unknown need", wf({ a: ["ghost"] }), /needs unknown job ghost/],
-    ["self dependency", wf({ a: ["a"] }), /dependency cycle: a -> a/],
-    ["two-cycle", wf({ a: ["b"], b: ["a"] }), /dependency cycle/],
-    ["long cycle", wf({ a: ["c"], b: ["a"], c: ["b"], d: [] }), /dependency cycle/],
+    ["unknown need", wf({ a: ["ghost"] }), /needs unknown job "ghost"/],
+    ["self dependency", wf({ a: ["a"] }), /needs cycle: a -> a/],
+    ["two-cycle", wf({ a: ["b"], b: ["a"] }), /needs cycle/],
+    ["long cycle", wf({ a: ["c"], b: ["a"], c: ["b"], d: [] }), /needs cycle/],
     [
       "too many",
       wf(Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`j${i}`, []]))),

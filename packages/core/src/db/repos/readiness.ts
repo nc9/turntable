@@ -7,9 +7,12 @@ import { aggregateRunStatus } from "../job-state";
 import type { JobState } from "../schema";
 import { listRunAttempts } from "./api";
 import {
+  appendLog,
+  getRun,
   type Job,
   listAttempts,
   listJobs,
+  type Run,
   setRunStatus,
   transitionJob,
   updateAttempt,
@@ -21,7 +24,15 @@ import type { Scope } from "./scope";
  * `reason` is the latest attempt's error class: a job skipped because ITS dependency failed
  * carries `dependency:<state>`, which tells it apart from one a filter skipped.
  */
-export type DepState = { key: string; state: JobState | "missing"; reason: string | null };
+export type DepState = {
+  key: string;
+  state: JobState | "missing";
+  reason: string | null;
+  /** The dependency's outputs once it finished. */
+  outputs?: Record<string, string>;
+  /** The dependency's own `continue-on-error`: its failure then counts as success. */
+  continueOnError?: boolean;
+};
 
 /**
  * What the engine decides about a queued job. The shape matches `jobReadiness` of
@@ -39,7 +50,8 @@ export type Decision =
   | { decision: "skip"; reason: string }
   | { decision: "cancel"; reason: string };
 
-export type Readiness = (job: Job, deps: readonly DepState[]) => Decision;
+/** `run` is the job's run, for run-level facts (the contexts `if:` sees, whether it was cancelled). */
+export type Readiness = (job: Job, deps: readonly DepState[], run?: Run) => Decision;
 
 /** A dependency in the `needs` record shape of `jobReadiness` from `@turntable/act-runner`. */
 export type NeedStatus = {
@@ -98,10 +110,15 @@ export function depStates(
   const needs = JSON.parse(job.needs) as string[];
   return needs.map((key) => {
     const dep = siblings.find((j) => j.jobKey === key);
+    const planned = dep?.planned
+      ? (JSON.parse(dep.planned) as { continueOnError?: boolean })
+      : undefined;
     return {
       key,
       state: (dep?.state as JobState | undefined) ?? "missing",
       reason: dep ? (reasons.get(dep.id) ?? null) : null,
+      ...(dep?.outputs ? { outputs: JSON.parse(dep.outputs) as Record<string, string> } : {}),
+      ...(planned?.continueOnError ? { continueOnError: true } : {}),
     };
   });
 }
@@ -118,9 +135,29 @@ export async function latestReasons(
 }
 
 /**
+ * Job states as the run status sees them: a job that failed (or hit an infrastructure error)
+ * with `continue-on-error` counts as success.
+ */
+export function effectiveStates(jobs: readonly Job[]): JobState[] {
+  return jobs.map((j) => {
+    const state = j.state as JobState;
+    if ((state === "failure" || state === "infra_error") && j.planned) {
+      if ((JSON.parse(j.planned) as { continueOnError?: boolean }).continueOnError)
+        return "success";
+    }
+    return state;
+  });
+}
+
+/** True when a queued job has anything for the readiness function to decide. */
+export const needsDecision = (job: Job): boolean => job.needs !== "[]" || job.planned !== null;
+
+/**
  * Moves queued jobs of a run that can never run out of the queue, repeatedly (a skipped job's own
  * dependents are resolved too), then refreshes the run status. Call inside the transaction of
- * the change that ended a dependency. Returns how many jobs it resolved.
+ * the change that ended a dependency. Returns how many jobs it resolved. Jobs that can never run
+ * for a reason of their own (unsupported here, a false `if:`) are resolved too, with the reason
+ * kept as the attempt's log.
  */
 export async function resolveDependents(
   db: Db,
@@ -129,26 +166,43 @@ export async function resolveDependents(
   readiness: Readiness = defaultReadiness,
 ): Promise<number> {
   let resolved = 0;
+  const run = await getRun(db, scope, runId);
   for (;;) {
     const jobs = await listJobs(db, scope, runId);
     const reasons = await latestReasons(db, scope, runId);
     let changed = false;
     for (const job of jobs) {
-      if (job.state !== "queued" || job.needs === "[]") continue;
+      if (job.state !== "queued" || !needsDecision(job)) continue;
       const deps = depStates(job, jobs, reasons);
-      const verdict = readiness(job, deps).decision;
-      if (verdict !== "skip" && verdict !== "cancel") continue;
-      const to = verdict === "skip" ? "skipped" : "cancelled";
+      const verdict = readiness(job, deps, run);
+      if (verdict.decision !== "skip" && verdict.decision !== "cancel") continue;
+      const to = verdict.decision === "skip" ? "skipped" : "cancelled";
+      // A dependency that ended badly (or was itself skipped for one) is the culprit; a skip with
+      // none is the job's own (unsupported, a false `if:`), which a rerun must not undo.
       const culprit = deps.find(
-        (d) => d.state !== "success" && (d.state !== "skipped" || d.reason !== null),
+        (d) =>
+          d.state === "failure" ||
+          d.state === "cancelled" ||
+          d.state === "infra_error" ||
+          d.state === "missing" ||
+          (d.state === "skipped" && d.reason?.startsWith(DEPENDENCY_SKIP_PREFIX)),
       );
       await transitionJob(db, scope, job.id, to);
       const live = (await listAttempts(db, scope, job.id)).findLast((a) => a.state === "queued");
       if (live) {
         await updateAttempt(db, scope, live.id, {
           state: to,
-          errorClass: `${DEPENDENCY_SKIP_PREFIX}${culprit?.state ?? "unknown"}`,
+          errorClass: culprit
+            ? `${DEPENDENCY_SKIP_PREFIX}${culprit.state}`
+            : `skipped: ${verdict.reason}`.slice(0, 200),
         });
+        await appendLog(
+          db,
+          scope,
+          live.id,
+          0,
+          new TextEncoder().encode(`${to}: ${verdict.reason}\n`),
+        );
       }
       resolved++;
       changed = true;
@@ -156,7 +210,7 @@ export async function resolveDependents(
     if (!changed) break;
   }
   if (resolved > 0) {
-    const states = (await listJobs(db, scope, runId)).map((j) => j.state as JobState);
+    const states = effectiveStates(await listJobs(db, scope, runId));
     await setRunStatus(db, scope, runId, aggregateRunStatus(states));
   }
   return resolved;

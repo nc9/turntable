@@ -10,9 +10,11 @@ import {
   ifLeaseHeld,
   type Readiness,
   recordExec,
+  recordPlan,
   resetAttemptOutput,
   upsertStep,
 } from "../db/repos";
+import { workflowReadiness } from "./workflow-readiness";
 import type {
   AttemptContext,
   AttemptOutcome,
@@ -53,7 +55,7 @@ export class Scheduler {
   readonly owner: string;
   readonly #o: Required<Omit<SchedulerOptions, "owner" | "log" | "readiness">> & {
     log: (message: string) => void;
-    readiness: Readiness | undefined;
+    readiness: Readiness;
   };
   readonly #active = new Map<string, { controller: AbortController; done: Promise<void> }>();
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,7 +74,7 @@ export class Scheduler {
       pollMs: o.pollMs ?? 1000,
       globalCap: o.globalCap ?? 4,
       perOrgCap: o.perOrgCap ?? 2,
-      readiness: o.readiness,
+      readiness: o.readiness ?? workflowReadiness,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
     };
@@ -96,7 +98,7 @@ export class Scheduler {
         now: this.#o.now(),
         globalCap: this.#o.globalCap,
         perOrgCap: this.#o.perOrgCap,
-        ...(this.#o.readiness ? { readiness: this.#o.readiness } : {}),
+        readiness: this.#o.readiness,
       });
       if (!claim) return started;
       this.#launch(claim);
@@ -141,6 +143,22 @@ export class Scheduler {
     await Promise.all([...this.#active.values()].map((a) => a.done));
   }
 
+  /**
+   * Stops attempts of this worker now (a newer run superseded them, or they were cancelled). Their
+   * runners destroy the sandboxes. Returns how many were running here.
+   */
+  abort(attemptIds: readonly string[]): number {
+    let n = 0;
+    for (const id of attemptIds) {
+      const a = this.#active.get(id);
+      if (a) {
+        a.controller.abort("superseded or cancelled");
+        n++;
+      }
+    }
+    return n;
+  }
+
   /** Resolves when every attempt this worker started has finished. */
   async idle(): Promise<void> {
     while (this.#active.size > 0) await Promise.all([...this.#active.values()].map((a) => a.done));
@@ -164,6 +182,9 @@ export class Scheduler {
     const store: AttemptStore = {
       setExec: async (where) => {
         await recordExec(db, scope, attempt.id, owner, where);
+      },
+      setPlan: async (planJson) => {
+        await recordPlan(db, scope, attempt.id, owner, planJson);
       },
       reset: async () => {
         await resetAttemptOutput(db, scope, attempt.id, owner);
@@ -236,7 +257,8 @@ export class Scheduler {
           state: outcome.state,
           exitCode,
           errorClass: outcome.state === "infra_error" ? outcome.reason.slice(0, 200) : null,
-          ...(this.#o.readiness ? { readiness: this.#o.readiness } : {}),
+          readiness: this.#o.readiness,
+          ...(outcome.outputs ? { outputs: outcome.outputs } : {}),
         });
         if (!done)
           this.#o.log(`attempt ${attempt.id} was already resolved elsewhere; dropped result`);
