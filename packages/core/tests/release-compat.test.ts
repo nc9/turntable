@@ -173,6 +173,16 @@ describe("rules for compat targets", () => {
     expect(rules.find((r) => r.id === "img:blobs")!.methods).not.toContain("DELETE");
   });
 
+  test("oci: a named token host is carried into the rules, and only then", () => {
+    const plain = compatRules("img", OCI, rel).find((r) => r.id === "img:blobs")!;
+    expect(plain.inject).not.toHaveProperty("realmHost");
+    const hub = compatRules("img", { ...OCI, realmHost: "auth.docker.io" } as PublishTarget, rel);
+    expect(
+      hub.every((r) => r.inject.type === "oci-bearer" && r.inject.realmHost === "auth.docker.io"),
+    ).toBe(true);
+    expect(() => compileRules(hub)).not.toThrow();
+  });
+
   test("strict targets and unattested artifacts give no rules", () => {
     expect(compatRules("npm", { ...NPM, mode: "strict" } as PublishTarget, rel)).toEqual([]);
     expect(compatRules("npm", NPM, { ...rel, digests: {} })).toEqual([]);

@@ -336,7 +336,11 @@ export class ReleaseLane {
   ): Promise<TargetResult[]> {
     const w = this.#o.publish;
     const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
-    const keys = Object.keys(targets);
+    // Images last: whether their provenance could go on a release asset depends on what happened
+    // to the release targets in this same pass.
+    const keys = Object.keys(targets).toSorted(
+      (a, b) => Number(targets[a]!.kind === "oci-image") - Number(targets[b]!.kind === "oci-image"),
+    );
     if (!w || keys.length === 0) return [];
     const now = this.#o.now ?? Date.now;
     const id = { orgId: scope.orgId, projectId: scope.projectId, repo: v.repo, tag: req.tag };
@@ -426,9 +430,16 @@ export class ReleaseLane {
           await record(
             await verifyOciImage(key, t, ctx, cred, {
               ...(w.fetch ? { fetch: w.fetch } : {}),
-              releaseAssetFallback: Object.values(targets).some(
-                (x) => x.kind === "github-release" && x.provenanceAsset !== null,
-              ),
+              // Only if a release target that carries the provenance really did, in this pass or
+              // on record: published (assets read back and checked) or already there.
+              releaseAssetFallback: out.some((r) => {
+                const x = targets[r.target];
+                return (
+                  x?.kind === "github-release" &&
+                  x.provenanceAsset !== null &&
+                  (r.state === "published" || r.state === "already")
+                );
+              }),
             }),
           );
         } else {

@@ -86,7 +86,12 @@ export async function verifyOciImage(
     const service = /service="([^"]*)"/i.exec(challenge)?.[1];
     if (!/^bearer\b/i.test(challenge) || !realm) throw new Error("no usable challenge");
     const url = new URL(realm);
-    if (url.protocol !== "https:" || url.hostname !== t.registry || url.username || url.password)
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== (t.realmHost ?? t.registry) ||
+      url.username ||
+      url.password
+    )
       throw new Error("the token realm is not on the registry's host");
     url.search = "";
     url.searchParams.set("scope", `repository:${repo}:pull,push`);

@@ -6,6 +6,7 @@ import { chainedAudit, createReleaseRequest, type Db } from "../src/db";
 import * as s from "../src/db/schema";
 import { AttestationStore } from "../src/release/attest";
 import { ReleaseLane } from "../src/release/lane";
+import { parseTarget } from "../src/release/publish/config";
 import { PROVENANCE_ARTIFACT_TYPE, PROVENANCE_LAYER_TYPE } from "../src/release/publish/oci";
 import type { PublishTarget } from "../src/release/publish/types";
 import { seedWorld, type Tenant } from "./ops-helpers";
@@ -52,12 +53,64 @@ interface Fake {
 }
 let fake: Fake;
 
+/** A small GitHub for the release target: draft, upload, read back, publish. */
+interface Gh {
+  release:
+    | { id: number; draft: boolean; assets: Map<number, { name: string; bytes: Uint8Array }> }
+    | undefined;
+  next: number;
+  refuseCreate: boolean;
+  token: string | undefined;
+}
+let gh: Gh;
+const ghFetch = async (
+  u: URL,
+  method: string,
+  init: Parameters<SafeFetch>[1],
+): Promise<Response> => {
+  const m =
+    /^\/repos\/acme\/web\/releases(?:\/tags\/([^/]+)|\/assets\/(\d+)|\/(\d+)\/assets|\/(\d+))?$/.exec(
+      u.pathname,
+    );
+  if (!m) return new Response("{}", { status: 404 });
+  const [, tag, assetId, uploadFor, relId] = m;
+  const view = () => ({
+    id: gh.release!.id,
+    draft: gh.release!.draft,
+    assets: [...gh.release!.assets].map(([id, x]) => ({ id, name: x.name })),
+  });
+  if (method === "GET" && tag)
+    return gh.release ? Response.json(view()) : new Response("{}", { status: 404 });
+  if (method === "POST" && !tag && !assetId && !uploadFor && !relId) {
+    if (gh.refuseCreate) return new Response("{}", { status: 403 });
+    gh.release = { id: ++gh.next, draft: true, assets: new Map() };
+    return Response.json(view(), { status: 201 });
+  }
+  if (method === "POST" && uploadFor) {
+    gh.release!.assets.set(++gh.next, {
+      name: u.searchParams.get("name")!,
+      bytes: init!.body as Uint8Array,
+    });
+    return new Response("{}", { status: 201 });
+  }
+  if (method === "GET" && assetId)
+    return new Response(gh.release!.assets.get(Number(assetId))!.bytes, { status: 200 });
+  if (method === "PATCH" && relId) {
+    gh.release!.draft = false;
+    return Response.json(view());
+  }
+  return new Response("{}", { status: 404 });
+};
+
 const fetcher: SafeFetch = async (input, init) => {
   const u = new URL(String(input));
   const method = init?.method ?? "GET";
   const h = new Headers(init?.headers);
   fake.requests.push({ method, url: String(input), auth: h.get("authorization") ?? "" });
-  if (u.hostname !== "registry.test") return new Response("", { status: 404 });
+  if (u.hostname === "api.github.com" || u.hostname === "uploads.github.com")
+    return ghFetch(u, method, init);
+  if (u.hostname !== "registry.test" && u.hostname !== "auth.registry.test")
+    return new Response("", { status: 404 });
   if (u.pathname === "/token") {
     const want = `Basic ${Buffer.from(`bot:${CRED}`).toString("base64")}`;
     return h.get("authorization") === want
@@ -158,6 +211,7 @@ beforeEach(async () => {
     realm: "https://registry.test/token",
     puts: [],
   };
+  gh = { release: undefined, next: 100, refuseCreate: false, token: "ghp_lane_write_token_88" };
   attest = new AttestationStore(":memory:");
   attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
   attest.setPublishTarget(a.orgId, a.projectId, "img", OCI, 0);
@@ -194,7 +248,7 @@ beforeEach(async () => {
     publish: {
       credentials: {
         secret: async () => (secretAvailable ? CRED : undefined),
-        githubToken: async () => undefined,
+        githubToken: async () => gh.token,
       },
       fetch: fetcher,
     },
@@ -285,13 +339,68 @@ describe("an image pushed by a job", () => {
     expect(fake.puts).toEqual([]);
   });
 
-  test("a registry with no referrers API leaves the provenance as a release asset", async () => {
+  test("a registry with no referrers API leaves the provenance as a release asset, once that asset is really on the release", async () => {
     fake.referrers = false;
     attest.setPublishTarget(a.orgId, a.projectId, "rel", GH, 0);
     const out = await finalize();
-    const img = out.find((x) => x.target === "img")!;
-    expect(img).toMatchObject({ state: "published", reason: "provenance_as_release_asset" });
-    expect(img.facts).toMatchObject({ provenance: "release-asset" });
+    // the release is processed first, and the image sees what happened to it
+    expect(out.map((x) => x.target)).toEqual(["rel", "img"]);
+    expect(out[0]).toMatchObject({ target: "rel", state: "published" });
+    expect([...gh.release!.assets.values()].map((x) => x.name).sort()).toEqual([
+      "manifest.json",
+      "provenance.intoto.json",
+    ]);
+    expect(out[1]).toMatchObject({ state: "published", reason: "provenance_as_release_asset" });
+    expect(out[1]!.facts).toMatchObject({ provenance: "release-asset" });
+  });
+
+  test("a release target that failed or was refused does not make the image claim a release asset", async () => {
+    fake.referrers = false;
+    attest.setPublishTarget(a.orgId, a.projectId, "rel", GH, 0);
+    // failed: GitHub refuses to create the draft
+    gh.refuseCreate = true;
+    const failed = await finalize();
+    expect(failed[0]).toMatchObject({ target: "rel", state: "failed" });
+    expect(failed[1]).toMatchObject({ state: "published", reason: "provenance_unattached" });
+    expect(failed[1]!.facts).toMatchObject({ provenance: "none" });
+    // no credential: failed again
+    attest.setPublishState(
+      { ...a.scope, repo: "acme/web", tag: "v1.0.0" },
+      "img",
+      "pending",
+      null,
+      0,
+    );
+    gh.refuseCreate = false;
+    gh.token = undefined;
+    const noToken = await finalize();
+    expect(noToken[0]).toMatchObject({ target: "rel", state: "failed" });
+    expect(noToken[1]).toMatchObject({ reason: "provenance_unattached" });
+    // refused: the release for the tag is published with other assets
+    attest.setPublishState(
+      { ...a.scope, repo: "acme/web", tag: "v1.0.0" },
+      "img",
+      "pending",
+      null,
+      0,
+    );
+    gh.token = "ghp_lane_write_token_88";
+    gh.release = {
+      id: 7,
+      draft: false,
+      assets: new Map([[1, { name: "manifest.json", bytes: enc("something else") }]]),
+    };
+    const refused = await finalize();
+    expect(refused[0]).toMatchObject({ target: "rel", state: "refused" });
+    expect(refused[1]).toMatchObject({ reason: "provenance_unattached" });
+  });
+
+  test("a release target that has no provenance asset does not count either", async () => {
+    fake.referrers = false;
+    attest.setPublishTarget(a.orgId, a.projectId, "rel", { ...GH, provenanceAsset: null }, 0);
+    const out = await finalize();
+    expect(out[0]).toMatchObject({ target: "rel", state: "published" });
+    expect(out[1]).toMatchObject({ reason: "provenance_unattached" });
   });
 
   test("without a GitHub release target to carry it, the missing provenance is stated, not hidden", async () => {
@@ -315,5 +424,55 @@ describe("an image pushed by a job", () => {
       reason: "credential_unavailable",
     });
     expect(fake.requests).toEqual([]);
+  });
+});
+
+describe("a token endpoint on another host (Docker Hub style)", () => {
+  test("refused unless the target names that exact host; allowed when it does", async () => {
+    fake.realm = "https://auth.registry.test/token";
+    expect((await finalize())[0]).toMatchObject({ state: "failed", reason: "auth_failed" });
+    expect(fake.requests.some((q) => q.auth.startsWith("Basic"))).toBe(false);
+
+    attest.setPublishTarget(
+      a.orgId,
+      a.projectId,
+      "img",
+      { ...OCI, realmHost: "auth.registry.test" },
+      0,
+    );
+    const [r] = await finalize();
+    expect(r).toMatchObject({ state: "published" });
+    const exchange = fake.requests.filter((q) => q.auth.startsWith("Basic"));
+    expect(exchange.map((q) => new URL(q.url).hostname)).toEqual(["auth.registry.test"]);
+  });
+
+  test("a different host than the named one still never sees the credential", async () => {
+    fake.realm = "https://evil.test/token";
+    attest.setPublishTarget(
+      a.orgId,
+      a.projectId,
+      "img",
+      { ...OCI, realmHost: "auth.registry.test" },
+      0,
+    );
+    expect((await finalize())[0]).toMatchObject({ reason: "auth_failed" });
+    expect(fake.requests.every((q) => !q.auth)).toBe(true);
+  });
+
+  test("set time: an exact lower-case hostname only", () => {
+    expect(parseTarget({ ...OCI, realmHost: "auth.docker.io" })).toMatchObject({
+      realmHost: "auth.docker.io",
+    });
+    for (const bad of [
+      "*.docker.io",
+      "Auth.Docker.io",
+      "10.0.0.1",
+      "auth docker io",
+      "",
+      "docker",
+      "https://auth.docker.io",
+    ]) {
+      expect(() => parseTarget({ ...OCI, realmHost: bad })).toThrow();
+    }
   });
 });

@@ -99,7 +99,7 @@ const PUBLISH_USAGE = `usage:
       --assets <a,b,...> [--provenance-asset <name>|none]
   longshore release publish-target set --org <slug> --project <slug> --key <name> --kind oci-image \
       --registry ghcr.io --repository <owner/name> --manifest <manifest artifact> --tags v1,latest \
-      --username <registry user> --secret <vault secret>
+      --username <registry user> --secret <vault secret> [--realm-host <token host>]
   (npm and github-release also take --mode strict|compat; an image is always compat)
   longshore release publish-target remove --org <slug> --project <slug> --key <name>
   longshore release publish-target list --org <slug> --project <slug>
@@ -131,6 +131,7 @@ async function publishTarget(args: string[]): Promise<number> {
       manifest: { type: "string" },
       tags: { type: "string" },
       username: { type: "string" },
+      "realm-host": { type: "string" },
       "data-dir": { type: "string", default: "./data" },
     },
     strict: true,
@@ -201,6 +202,9 @@ async function publishTarget(args: string[]): Promise<number> {
                     .map((x) => x.trim())
                     .filter(Boolean),
                   username: values.username,
+                  ...(values["realm-host"] !== undefined
+                    ? { realmHost: values["realm-host"] }
+                    : {}),
                   secret: values.secret,
                 }
               : undefined;
