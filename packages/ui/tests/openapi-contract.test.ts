@@ -8,6 +8,7 @@ import type {
   WireCuts,
   WireDigest,
   WireFailureDigest,
+  WireIncident,
   WireIngestStatus,
   WireJob,
   WireLog,
@@ -190,6 +191,7 @@ test("the spec has every operation the UI uses", () => {
     "job_cuts",
     "failure_digest",
     "ingest_status",
+    "incident_status",
   ]) {
     expect(ids).toContain(known);
   }
@@ -358,4 +360,28 @@ test("run and job metadata from #66 are in the spec", () => {
   }
   const jobs = (run.jobs as { items: { properties: Record<string, unknown> } }).items.properties;
   for (const key of ["needs", "matrix", "approval_kind"]) expect(jobs).toHaveProperty(key);
+});
+
+test("incident_status", () => {
+  const o = op("/incident", "get");
+  const names = (o.parameters ?? []).map((p) => p.name);
+  for (const n of ["org", "project"]) expect(names).toContain(n);
+  const body = ok(o);
+  expectKeys(
+    body,
+    keysOf<WireIncident>({
+      frozen: true,
+      level: true,
+      reason: true,
+      frozen_at: true,
+      frozen_by: true,
+      rotation_required: true,
+    }),
+  );
+  expectKeys(body.properties!.rotation_required!.items!, [
+    "name",
+    "reason",
+    "flagged_by",
+    "flagged_at",
+  ]);
 });
