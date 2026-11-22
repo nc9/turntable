@@ -147,7 +147,7 @@ export type WireDigest = {
     index: number;
     result: "success" | "failure" | "skipped" | "cancelled" | null;
   } | null;
-  basis: "annotation" | "error_pattern" | "tail" | null;
+  basis: "failure_marker" | "annotation" | "error_pattern" | "tail" | null;
   excerpt: string;
   truncated: boolean;
   infra_error_reason: string | null;

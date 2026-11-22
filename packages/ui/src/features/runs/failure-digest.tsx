@@ -5,6 +5,7 @@ import { sanitize } from "@/log/parser";
 import { useAsync } from "@/lib/use-async";
 
 const BASIS: Record<string, string> = {
+  failure_marker: "From the first failing test",
   annotation: "From an error annotation in the log",
   error_pattern: "From the first error in the log",
   tail: "The last lines of the log",
