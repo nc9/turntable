@@ -5767,6 +5767,281 @@
         "x-longshore-untrusted-output": true
       }
     },
+    "/release-requests": {
+      "post": {
+        "operationId": "request_release",
+        "summary": "Ask the release lane to sign the artifacts of a tagged run.",
+        "description": "Queues a request for the release lane, a separate process that holds the signing keys. The request names a run, the tag being released, the artifact names (never an approval environment: that is the project's own setting). It is only a request: the release lane re-checks with the forge that the tag points at the run's commit and recomputes the artifact digests itself, so nothing here can make it sign something it cannot verify. Poll get_release_request for the outcome. Needs one project and release_operator or admin; audited. Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "run_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "tag": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "artifacts": {
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug. Required unless the token is scoped to one project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["run_id", "tag", "artifacts"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "artifacts": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["pending", "claimed", "signed", "refused", "error"]
+                    },
+                    "reason": {
+                      "description": "Why the release lane refused, as a short code.",
+                      "type": ["string", "null"]
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "finished_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "key_id": {
+                      "description": "The id of the key that signed, when it signed.",
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "run_id",
+                    "tag",
+                    "artifacts",
+                    "status",
+                    "reason",
+                    "created_at",
+                    "finished_at",
+                    "key_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
+    "/release-requests/{id}": {
+      "get": {
+        "operationId": "get_release_request",
+        "summary": "The state of a release request: pending, signed, or refused with a reason.",
+        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug. Required unless the token is scoped to one project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "artifacts": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["pending", "claimed", "signed", "refused", "error"]
+                    },
+                    "reason": {
+                      "description": "Why the release lane refused, as a short code.",
+                      "type": ["string", "null"]
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "finished_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "key_id": {
+                      "description": "The id of the key that signed, when it signed.",
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "run_id",
+                    "tag",
+                    "artifacts",
+                    "status",
+                    "reason",
+                    "created_at",
+                    "finished_at",
+                    "key_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
     "/approvals": {
       "post": {
         "operationId": "approve_environment",

@@ -101,6 +101,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "enrolment_challenge",
     "register_challenge",
     "request_enrolment",
+    "request_release",
     "rotate_secret",
     "set_secret",
   ]);

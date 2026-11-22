@@ -3,7 +3,7 @@ title: "Design: secrets proxy for Daytona sandboxes"
 description: How a Daytona sandbox reaches the secrets proxy and nothing else, how that is enforced and verified, and what it costs.
 ---
 
-This is a design, not an implementation. It extends the [secrets proxy](/secrets-proxy), which today confines Docker sandboxes, to the hosted setup: the worker runs on a platform such as Railway and the sandboxes run in Daytona's cloud. Nothing here is built. Some facts about Daytona can only be settled on a real account, and they are listed as a spike below.
+This is a design, not an implementation. It extends the [secrets proxy](/secrets-proxy), which today confines Docker sandboxes, to the hosted setup: the worker runs on a platform such as Railway and the sandboxes run in Daytona's cloud. Nothing here is built. Some facts about Daytona could only be settled on a real account, and the results of that spike are below; they changed the recommendation in one place (the allow-list mechanism).
 
 ## The problem
 
@@ -21,7 +21,7 @@ From Daytona's [network limits documentation](https://www.daytona.io/docs/en/net
 | Feature | What it does | Fit |
 | --- | --- | --- |
 | `networkAllowList` | Outbound traffic limited to a comma-separated list of IPv4 CIDR blocks. At most 10 entries. No hostnames, no IPv6. Set at create time or on a running sandbox. | Good: a per-sandbox firewall, deny by default once set. |
-| `domainAllowList` | Outbound traffic limited to listed hostnames, `*.` wildcards allowed, up to 100 entries. | Useful if the proxy has no stable IP, but how a name is enforced (resolver, SNI, or resolved addresses) is not documented. |
+| `domainAllowList` | Outbound traffic limited to listed hostnames, `*.` wildcards allowed, up to 100 entries. | Useful if the proxy has no stable IP. How a name is enforced is not documented; the spike found it is a filter on the TLS server name and HTTP Host header (see the results). |
 | `networkBlockAll` | No outbound traffic. | What the provider uses today for egress `none`. |
 | `outboundProxyUrl` | Create time only. Routes HTTP(S) through an upstream proxy and sets `HTTP_PROXY` and `HTTPS_PROXY` in the sandbox. Clients that ignore the variables are not routed. | Rejected below. |
 | VPN clients (Tailscale, OpenVPN and others) | The sandbox joins a private network. Per sandbox, Tier 3 and up. | Rejected below. |
@@ -90,7 +90,7 @@ The provider returns the list of targets that must not be reachable, as the Dock
 | **Our sandbox reaching other hosts** | The allow list, verified by the canary on every start. |
 | **A hostile job tunnelling data out through the proxy** | Only to hosts with a rule or a listed passthrough host and port, exactly as with Docker. |
 | **Interception between the relay and the proxy** | TLS with certificate and name verification in the relay. |
-| **Daytona itself** | Out of scope: it hosts the sandbox and sees what the sandbox sees, including the environment file in transit. The proxy exists so that raw secret values are never in that set. |
+| **Daytona itself** | Out of scope: it hosts the sandbox and sees what the sandbox sees, including the environment file in transit. Its gateway's SSH port (TCP 22) is reachable from the sandbox under every network setting, as part of that boundary. The proxy exists so that raw secret values are never in that set. |
 | **Denial of service on the public listener** | Handshake and head deadlines, connection caps per source and in total, work only after authentication, and the platform's own protections. A flood costs availability of proxied jobs, not secrecy. |
 
 ## Costs
@@ -101,15 +101,67 @@ The provider returns the list of targets that must not be reachable, as the Dock
 - **Latency:** one extra hop per connection. Noticeable for many small requests, not for a build.
 - **Account requirement:** Tier 3 or above on the Daytona account that runs these jobs. Jobs that need no secrets stay on egress `none` and cost nothing extra.
 
-## Spike before building
+## Spike results
 
-Each of these is a short experiment on a real account, with at most two labelled sandboxes, deleted afterwards:
+Run from one machine against a real Tier 3 account with the script `packages/provider-daytona/scripts/proxy-spike.ts`: five short runs, nine sandboxes, none alive more than about 25 seconds, 124 sandbox-seconds (about 2.1 minutes) in total, all deleted (nothing left). The org's vCPU usage was checked before each create. Every probe ran inside the sandbox with `curl` (so it measures a real answer, not only a TCP connect). Results are as observed on the day and should be re-run when Daytona changes its firewall.
 
-1. The tier of the account, and whether a per-sandbox `networkAllowList` can be set at create time.
-2. Whether a public hostname on the hosting platform has a stable address. If not, whether `domainAllowList` is enforced by the resolver (weak: a job can connect to an address it knows), by SNI or by resolved addresses, and whether the relay needs DNS at all.
-3. What is reachable under the allow list: Daytona's internal ranges, its DNS, its metadata, its toolbox address. These become the `mustNotReach` list.
-4. Whether the sandbox's image has `curl` and `node` (the probes and the relay).
-5. Whether the allow list can be updated on a running sandbox without a window of open egress (the create-time path avoids needing it).
+### Setting an allow list
+
+- `networkAllowList` is accepted at create time on this account, in the same create call, so there is no window of open egress. The sandbox started and its toolbox answered, so the control channel is not affected by the list.
+- It can also be changed on a running sandbox: `POST /sandbox/{id}/network-settings` with `{"networkAllowList": "<cidr>"}` took about 0.6 seconds and was in force at the next probe (a previously listed address was refused straight away, a newly listed one was passed).
+- The sandbox image had `curl`, `node`, `python3`, `bash`, `getent`, `dig` and `nslookup`, and no `nc`. It runs as an unprivileged user. It has no IPv6 address or route.
+
+### What an IPv4 allow list does (list: one public address)
+
+| Probe | Result, exactly as seen |
+| --- | --- |
+| The listed address | Answered: HTTP 301 for `https://1.1.1.1/`. |
+| A non-listed public address, by IP literal | `curl: (7) Failed to connect to 8.8.8.8 port 443 after 0 ms: Could not connect to server`. An immediate refusal, not a timeout. |
+| RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`) and the cloud metadata address | The same immediate refusal, port 80. |
+| Raw TCP to a non-listed address | `bash: connect: Connection refused`. |
+| IPv6 literals, listed or not | The same immediate refusal. The sandbox has no usable IPv6, so there is no way around the IPv4 list. |
+| A non-listed name, when the system resolver is itself on the list | The name resolves (the resolver answers) and then `curl: (7) Failed to connect to example.com port 443 after 3 ms: Could not connect to server`. |
+| A non-listed name, when the resolver is not on the list | `curl: (28) Resolving timed out after 8001 milliseconds`. DNS is dropped silently, which looks like a timeout and not a refusal. |
+| A listed address that does not answer | A timeout (`Connection timed out after 8002 milliseconds`), not a refusal. The difference tells a firewall refusal from a quiet destination. |
+
+Two consequences. First, a resolver on the list is a data channel: any name resolves through it, so the list for a proxied job must hold only the proxy endpoint and the relay must connect to its address, not its name. Second, `networkBlockAll` behaves differently from a list: connections to a public address are accepted at TCP level and then end at TLS (`curl: (35) ... unexpected eof while reading`), so a probe must check for a real HTTP answer, as the existing canary does, and never trust a successful connect.
+
+### What is still reachable under a list or under `networkBlockAll`
+
+The sandbox's default gateway (`172.20.0.1` in the runs; the address is Daytona's, so read it from the route table) answers on two ports whatever the setting:
+
+- TCP 18080, Daytona's forward proxy (it is also what `HTTP_PROXY` points at). It refuses to forward for a sandbox under a list or under `networkBlockAll`: `CONNECT tunnel failed, response 403` for a name and for a bare address, and HTTP 403 for plain http. It is not a way out.
+- TCP 22, an SSH server (banner `SSH-2.0-OpenSSH_9.x`). Authentication was not attempted. It is a Daytona service, part of the platform's own trust boundary, and cannot be closed from the sandbox side.
+
+The sandbox's resolvers in `/etc/resolv.conf` were `1.1.1.1`, `1.0.0.1` and a CGNAT address (`100.65.x.x`). Under a list that held none of them, resolution timed out, so none of them answers a sandbox that is restricted.
+
+### What a domain allow list does (list: `example.com`)
+
+| Probe | Result |
+| --- | --- |
+| The listed name | HTTP 200, with the proxy variables set in the environment (to the gateway, port 18080). |
+| Another name through the environment proxy | `curl: (56) CONNECT tunnel failed, response 403`. |
+| Another name, skipping the proxy | `curl: (6) Could not resolve host`: only listed names resolve. |
+| A non-listed address, skipping the proxy, TLS | The TCP connection is accepted and then ends: `curl: (35) ... unexpected eof while reading`. |
+| A non-listed address, plain http | `curl: (52) Empty reply from server`. |
+| The listed name's SNI or Host header sent to a different address (`1.1.1.1`, `8.8.8.8`) | HTTP 200, and a raw HTTP request to `1.1.1.1:80` with `Host: example.com` got `example.com`'s own response. |
+
+So a domain list is enforced by a transparent filter on the TLS server name and the HTTP Host header, which ignores the destination address and delivers to the named host itself. It does not let a job reach any address it likes by faking a name (the traffic goes to the real host for that name), it drops everything that is not named, and it needs no stable address for the destination. Non-HTTP protocols that carry neither a server name nor a Host header are dropped. What it does not give is a hard network-level refusal: it relies on Daytona's filter parsing the first bytes correctly.
+
+### The five questions
+
+1. **Tier and per-sandbox lists.** Tier 3. A per-sandbox allow list, a domain list and `networkBlockAll` all work, at create time and on a running sandbox.
+2. **A stable endpoint address, and how a domain list is enforced.** The address of a public hostname on the hosting platform was not tested, because no endpoint was deployed for the spike. A domain list is enforced as described above (server name and Host header, destination ignored), so it can carry a proxy whose address changes. A CIDR list needs the address to be stable.
+3. **What is reachable.** Nothing outside the list, including every private range, CGNAT and metadata, with two exceptions that are Daytona's own: the gateway's TCP 18080 (refuses to forward) and TCP 22 (SSH). The `mustNotReach` probes should therefore use a public address on the proxy's port, a private-range address and the metadata address; they cannot include the gateway.
+4. **Tools in the image.** `curl` and `node` are present: the probes and the relay can be shipped as designed. `nc` is not.
+5. **Changing the list on a running sandbox.** Possible and fast, but not needed: create-time lists leave no window.
+
+## What the results change
+
+- **The mechanism is a choice, and the canary decides.** With a stable proxy address, use `networkAllowList` (a hard refusal, DNS silently dropped, no resolver needed). With an address that can change, use `domainAllowList` with the one proxy hostname: the relay's TLS connection carries that server name, so the filter delivers it. The provider takes the mechanism from the proxy endpoint it is given.
+- **The relay still connects by address under a CIDR list** and by name under a domain list; under neither does it rely on a resolver that is not the proxy's.
+- **The canary probes with real requests.** A TCP connect is not a signal on Daytona (`networkBlockAll` and a domain list accept it and then drop); a probe passes only on the absence of an HTTP answer, which is what the existing canary tests.
+- **A residual that cannot be closed:** Daytona's gateway SSH port stays reachable under every setting. It sits in the same trust boundary as Daytona itself (see the threat model) and is listed there.
 
 ## What would be built
 

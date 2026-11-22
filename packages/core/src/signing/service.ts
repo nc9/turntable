@@ -45,6 +45,13 @@ export interface SignRequest {
    * that names a different one is refused.
    */
   environment?: string | undefined;
+  /**
+   * What a caller that checked the facts itself (the release lane) verified: the commit, the
+   * repository and the digests it computed from the bytes. The service signs only if its own
+   * read of the stored run and artifacts is exactly this, so a row changed after the caller
+   * looked is refused, never signed.
+   */
+  verified?: { sha: string; repo: string; ref: string; subjects: readonly Artifact[] } | undefined;
 }
 
 export type SignOutcome =
@@ -120,6 +127,28 @@ export class SigningService {
       approvalOk: approval?.approved === true,
     });
     if (!decision.ok) return deny(decision.reason, decision.detail);
+    if (req.verified) {
+      const v = req.verified;
+      const own = new Map(recorded.map((a) => [a.name, a.sha256]));
+      const sameSubjects =
+        own.size === v.subjects.length && v.subjects.every((s) => own.get(s.name) === s.sha256);
+      const sameSha = run.sha !== null && run.sha.toLowerCase() === v.sha.toLowerCase();
+      const sameRepo = run.repo !== null && run.repo.toLowerCase() === v.repo.toLowerCase();
+      const sameRef = run.ref === v.ref;
+      if (!sameSha || !sameRepo || !sameRef || !sameSubjects) {
+        return deny(
+          "verification_mismatch",
+          [
+            !sameSha && "sha",
+            !sameRepo && "repo",
+            !sameRef && "ref",
+            !sameSubjects && "artifact digests",
+          ]
+            .filter(Boolean)
+            .join(", "),
+        );
+      }
+    }
 
     const key = parseKeyRef(project.signingKey!);
     const signer = key ? this.#o.signers[key.backend] : undefined;
@@ -127,10 +156,15 @@ export class SigningService {
 
     const subjects: Artifact[] = recorded.map((a) => ({ name: a.name, sha256: a.sha256 }));
     const chosen = new Set(subjects.map((s) => s.name));
-    const byproducts = (await listRunArtifacts(db, scope, run.id))
-      .filter((a) => !chosen.has(a.name))
-      .map((a) => ({ name: a.name, sha256: a.sha256 }));
-    const actions = await this.#actions(scope, run.id);
+    // A statement signed for a caller that verified the facts itself (the release lane) carries
+    // only what that caller verified. The other recorded artifacts and the pinned actions are
+    // plain reads of rows nobody re-checked, so they are left out, not vouched for.
+    const byproducts = req.verified
+      ? []
+      : (await listRunArtifacts(db, scope, run.id))
+          .filter((a) => !chosen.has(a.name))
+          .map((a) => ({ name: a.name, sha256: a.sha256 }));
+    const actions = req.verified ? [] : await this.#actions(scope, run.id);
 
     const statement = buildStatement({
       builderId: this.#o.builderId,
