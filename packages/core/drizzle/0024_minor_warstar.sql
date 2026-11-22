@@ -1,0 +1,1 @@
+ALTER TABLE `approval_challenges` ADD `principal` text;

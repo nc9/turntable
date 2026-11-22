@@ -143,6 +143,11 @@ export function ApproversPage() {
                   {a.forgeLogin ? `${sanitize(a.forgeLogin)}, ` : "no forge login, "}
                   enrolled {formatRelative(a.createdAt)}
                 </span>
+                {a.notCounting ? (
+                  <span className="basis-full text-xs text-st-approval">
+                    Not counting: {sanitize(a.notCounting)}.
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -179,6 +184,9 @@ export function ApproversPage() {
               <li key={e.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                 <span className="min-w-0 flex-1 basis-48">
                   <span className="block font-medium">{sanitize(e.person)}</span>
+                  <span className="block text-xs text-dim">
+                    forge login {e.forgeLogin ? sanitize(e.forgeLogin) : "not set"}
+                  </span>
                   <span className="block font-mono text-xs text-dim">
                     key {e.keyFingerprint.slice(0, 16)}, {e.approvals} of {e.required} signatures
                   </span>
@@ -194,7 +202,11 @@ export function ApproversPage() {
                 >
                   <option value="">Sign as</option>
                   {passkeyPeople
-                    .filter((a) => a.person !== e.person)
+                    .filter(
+                      (a) =>
+                        (a.forgeLogin ?? a.person).toLowerCase() !==
+                        (e.forgeLogin ?? e.person).toLowerCase(),
+                    )
                     .map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.person}
