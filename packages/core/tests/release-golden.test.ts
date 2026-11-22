@@ -10,6 +10,7 @@
 // recorded as finished). It is slower than a unit test, so it has its own CI job.
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,7 @@ import {
   setEnvPolicy,
   setFreeze,
   setProjectSigning,
+  schema,
   setRunStatus,
   type Db,
 } from "../src/db";
@@ -178,7 +180,13 @@ async function npmTarball(): Promise<Uint8Array> {
 }
 
 async function world(
-  o: { fork?: boolean; approve?: boolean; tamperBytes?: boolean } = {},
+  o: {
+    fork?: boolean;
+    approve?: boolean;
+    tamperBytes?: boolean;
+    /** The attempt that wrote the tarball ran as this lower class. */
+    lowerTarball?: string;
+  } = {},
 ): Promise<World> {
   const db = openDatabase(":memory:");
   const org = await createOrg(db, { slug: "acme", name: "Acme" });
@@ -289,10 +297,24 @@ async function world(
   await setRunStatus(db, scope, runId, "running");
   await setRunStatus(db, scope, runId, "success");
   const files: Record<string, Uint8Array> = { "cli-linux": binary, "web-1.0.0.tgz": tarball };
+  // What an attempt writes is only as trusted as the class it ran as (#39); the lease records it.
+  const asClass = async (attemptId: string, klass: string): Promise<void> => {
+    await db.run(async (h) => {
+      await h.orm
+        .update(schema.jobAttempts)
+        .set({ trustClass: klass })
+        .where(eq(schema.jobAttempts.id, attemptId));
+    });
+  };
+  await asClass(attempt.id, "release");
+  const lower = o.lowerTarball
+    ? (await createAttempt(db, scope, { jobId, provider: "test" }))!
+    : undefined;
+  if (lower && o.lowerTarball) await asClass(lower.id, o.lowerTarball);
   for (const [name, bytes] of Object.entries(files)) {
     await recordArtifact(db, scope, {
       runId,
-      attemptId: attempt.id,
+      attemptId: lower && name === "web-1.0.0.tgz" ? lower.id : attempt.id,
       name,
       sha256: sha256Hex(bytes),
       size: bytes.length,
@@ -520,6 +542,17 @@ describe("one negative per gate: nothing is signed, nothing is published", () =>
     expect(await w.state(id)).toMatchObject({
       status: "refused",
       reason: "signer:not_release_class",
+    });
+    untouched(w);
+  });
+
+  test("an artifact written by a lower-class attempt of a release run: the signer refuses it", async () => {
+    w = await world({ lowerTarball: "trusted_pr" });
+    const id = await w.request();
+    await w.lane.processNext();
+    expect(await w.state(id)).toMatchObject({
+      status: "refused",
+      reason: "signer:artifact_not_release_class",
     });
     untouched(w);
   });
