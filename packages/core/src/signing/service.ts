@@ -136,6 +136,10 @@ export class SigningService {
       approvalOk: approval?.approved === true,
     });
     if (!decision.ok) return deny(decision.reason, decision.detail);
+    // A release signs only what a release-class run produced: nothing a lower class could write.
+    const lower = recorded.find((a) => a.klass !== "release");
+    if (lower) return deny("artifact_not_release_class", lower.name);
+
     if (req.verified) {
       const v = req.verified;
       const own = new Map(recorded.map((a) => [a.name, a.sha256]));

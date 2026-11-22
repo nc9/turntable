@@ -88,6 +88,8 @@ beforeEach(async () => {
 async function releaseRun(
   over: {
     klass?: string;
+    /** The class the attempt ran as, when it differs from the run's (default: the run's). */
+    attemptClass?: string;
     ref?: string;
     status?: "success" | "failure";
     record?: boolean;
@@ -139,6 +141,10 @@ async function releaseRun(
         ],
       }),
     })
+    .where(eq(s.jobAttempts.id, attempt.id));
+  await db.orm
+    .update(s.jobAttempts)
+    .set({ trustClass: over.attemptClass ?? over.klass ?? "release" })
     .where(eq(s.jobAttempts.id, attempt.id));
   await setRunStatus(db, (over.t ?? a).scope, run.id, "running");
   await setRunStatus(db, (over.t ?? a).scope, run.id, over.status ?? "success");
@@ -261,6 +267,31 @@ describe("policy refusals (nothing reaches the signer)", () => {
     expect(out).toMatchObject({ ok: false, reason });
     expect(signCalls).toBe(0);
     expect(await denials()).toContain(`denied:${reason}`);
+  });
+
+  test("a release-class run whose attempt ran as trusted_pr produces an artifact the signer refuses (#39)", async () => {
+    const run = await releaseRun({ attemptClass: "trusted_pr" });
+    const out = await service().signRelease(a.scope, req(run.id));
+    expect(out).toMatchObject({ ok: false, reason: "artifact_not_release_class" });
+    // An attempt with no recorded class is the lowest: refused too.
+    const bare = await releaseRun({ attemptClass: "" });
+    expect(await service().signRelease(a.scope, req(bare.id))).toMatchObject({
+      ok: false,
+      reason: "artifact_not_release_class",
+    });
+  });
+
+  test("an artifact from a lower trust class is never signed, even on a release run (#39)", async () => {
+    const run = await releaseRun();
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.artifacts)
+        .set({ klass: "trusted_pr" })
+        .where(eq(s.artifacts.runId, run.id));
+    });
+    const out = await service().signRelease(a.scope, req(run.id));
+    expect(out).toMatchObject({ ok: false, reason: "artifact_not_release_class" });
+    expect(await denials()).toContain("denied:artifact_not_release_class");
   });
 
   test("the approval environment is the project's, the provenance and audit row record it", async () => {

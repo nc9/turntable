@@ -319,5 +319,14 @@ export const migrations: Migration[] = [
       "CREATE INDEX `cache_entries_used_idx` ON `cache_entries` (`org_id`,`klass`,`used_at`);",
       "ALTER TABLE `projects` ADD `cache_release_restore` integer DEFAULT 0 NOT NULL;"
     ]
+  },
+  {
+    "tag": "0027_damp_sir_ram",
+    "when": 1795385063502,
+    "statements": [
+      "ALTER TABLE `artifacts` ADD `klass` text DEFAULT 'untrusted_pr' NOT NULL;",
+      "ALTER TABLE `artifacts` ADD `run_sha` text;",
+      "ALTER TABLE `artifacts` ADD `digest_source` text DEFAULT 'reported' NOT NULL;"
+    ]
   }
 ];
