@@ -50,6 +50,13 @@
       "when": 1795349771958,
       "tag": "0006_fluffy_vance_astro",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795351041847,
+      "tag": "0007_violet_starbolt",
+      "breakpoints": true
     }
   ]
 }
