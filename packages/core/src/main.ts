@@ -273,7 +273,7 @@ async function serve(args: string[]): Promise<void> {
     const store = new SecretStore(db, loadMasterKey(keyFile));
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
-    // that has not turned it on. TODO(#49): pass the SSRF-guarded client as `fetch` here.
+    // that has not turned it on.
     checks = new CheckReporter({
       db,
       auth,

@@ -426,9 +426,9 @@ describe("githubCheckRunsApi", () => {
     let status = 200;
     const api = githubCheckRunsApi({
       baseUrl: "https://api.example.test",
-      fetch: async (url, init) => {
+      fetch: async (input, init = {}) => {
         seen.push({
-          url,
+          url: String(input),
           method: init.method!,
           auth: new Headers(init.headers).get("authorization"),
           body: init.body as string | undefined,

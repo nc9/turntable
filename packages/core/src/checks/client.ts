@@ -1,5 +1,8 @@
-// The check-runs API of GitHub, behind a small interface. Every request goes through one
-// injectable `fetch`, so the SSRF-guarded client plugs in here without touching the reporter.
+// The check-runs API of GitHub, behind a small interface. Every request goes through the
+// SSRF-guarded outbound client (address validation, pinned resolution, redirect rules, caps); a
+// test injects its own.
+import { type SafeFetch, safeFetch } from "@longshore/net";
+
 export type CheckRunBody = {
   name?: string;
   head_sha?: string;
@@ -37,13 +40,13 @@ export class CheckRunsError extends Error {
   }
 }
 
-export type HttpFetch = (url: string, init: RequestInit) => Promise<Response>;
+export type HttpFetch = SafeFetch;
 
 export function githubCheckRunsApi(
   o: { baseUrl?: string; fetch?: HttpFetch; timeoutMs?: number } = {},
 ): CheckRunsApi {
   const base = (o.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
-  const doFetch: HttpFetch = o.fetch ?? ((url, init) => fetch(url, init));
+  const doFetch: HttpFetch = o.fetch ?? safeFetch;
   async function call(
     token: string,
     method: "GET" | "POST" | "PATCH",
