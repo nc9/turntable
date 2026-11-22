@@ -109,6 +109,8 @@ const DAYTONA_KEYS = new Set([
   "ttlSeconds",
   "capacityWaitSeconds",
   "ownerCiPreflight",
+  "ownerCiLabels",
+  "ownerCiLabelWaitAt",
   "allowDomainListConfinement",
 ]);
 
@@ -139,6 +141,29 @@ function int(
  * check's `cpuLimit`, `region` and `sandboxClass`; `false` turns that org check off. The label
  * count of the account owner's CI sandboxes is part of the provider and is never configurable.
  */
+/**
+ * `ownerCiLabels` in the config: `{ key, values }`, how the account owner's CI sandboxes are
+ * recognised (label `key` set to one of `values`). Absent means no label check.
+ */
+function ownerCiLabelsOf(v: unknown): { key: string; values: string[] } | undefined {
+  if (v === undefined) return undefined;
+  const o = v as { key?: unknown; values?: unknown };
+  if (v === null || typeof v !== "object" || Array.isArray(v))
+    throw new Error("daytona provider option ownerCiLabels must be { key, values }");
+  const unknown = Object.keys(o).filter((k) => k !== "key" && k !== "values");
+  if (unknown.length > 0) throw new Error(`unknown ownerCiLabels option(s): ${unknown.join(", ")}`);
+  if (typeof o.key !== "string" || !/^[A-Za-z0-9._/-]{1,63}$/.test(o.key))
+    throw new Error("ownerCiLabels.key must be a short label name");
+  if (
+    !Array.isArray(o.values) ||
+    o.values.length === 0 ||
+    o.values.length > 50 ||
+    !o.values.every((x) => typeof x === "string" && /^[A-Za-z0-9._/-]{1,63}$/.test(x))
+  )
+    throw new Error("ownerCiLabels.values must be 1 to 50 short label values");
+  return { key: o.key, values: o.values as string[] };
+}
+
 function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
   if (v === undefined || v === true) return undefined;
   if (v === false) return false;
@@ -189,6 +214,10 @@ function createDaytona(config: Record<string, unknown>): Provider {
     );
   }
   const preflight = ownerCiPreflightOf(config.ownerCiPreflight);
+  const labels = ownerCiLabelsOf(config.ownerCiLabels);
+  const labelWaitAt = int(config, "ownerCiLabelWaitAt", 1, 1000);
+  if (labelWaitAt !== undefined && labels === undefined)
+    throw new Error("daytona provider option ownerCiLabelWaitAt needs ownerCiLabels");
   const domainOk = config.allowDomainListConfinement;
   if (domainOk !== undefined && typeof domainOk !== "boolean") {
     throw new Error("daytona provider option allowDomainListConfinement must be true or false");
@@ -217,6 +246,8 @@ function createDaytona(config: Record<string, unknown>): Provider {
     // server name, which the strict address allow list does not.
     ...(domainOk === true ? { allowDomainListConfinement: true } : {}),
     ...(preflight !== undefined ? { ownerCiPreflight: preflight } : {}),
+    ...(labels ? { ownerCiLabels: labels } : {}),
+    ...(labelWaitAt !== undefined ? { ownerCiLabelWaitAt: labelWaitAt } : {}),
     clampTtl: true,
     ...(ttl !== undefined ? { maxTtlSeconds: ttl } : {}),
   });

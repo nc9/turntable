@@ -11,6 +11,7 @@ export type SigningDenial =
   | "no_repo"
   | "no_artifacts"
   | "artifact_not_recorded"
+  | "artifact_not_release_class"
   | "environment_mismatch"
   | "verification_mismatch"
   | "no_approval"

@@ -166,3 +166,44 @@ test(
     expect(mock.usage.calls).toBe(before);
   },
 );
+
+test("daytona owner-CI labels are config, none by default, and the label wait needs them", () => {
+  const key = { apiKeyEnv: "X" };
+  // Nothing is assumed: no labels, no wait.
+  expect(createProvider("daytona", key).info.name).toBe("daytona");
+  // Configured, with or without a threshold.
+  expect(
+    createProvider("daytona", { ...key, ownerCiLabels: { key: "project", values: ["acme-ci"] } })
+      .info.name,
+  ).toBe("daytona");
+  expect(
+    createProvider("daytona", {
+      ...key,
+      ownerCiLabels: { key: "project", values: ["acme-ci", "acme-release"] },
+      ownerCiLabelWaitAt: 12,
+    }).info.name,
+  ).toBe("daytona");
+  // A threshold alone has nothing to count.
+  expect(() => createProvider("daytona", { ...key, ownerCiLabelWaitAt: 8 })).toThrow(
+    /needs ownerCiLabels/,
+  );
+  for (const bad of [
+    "acme-ci",
+    { key: "project" },
+    { key: "project", values: [] },
+    { key: "project", values: [1] },
+    { key: "bad key!", values: ["a"] },
+    { key: "project", values: ["a"], extra: 1 },
+  ])
+    expect(
+      () => createProvider("daytona", { ...key, ownerCiLabels: bad }),
+      JSON.stringify(bad),
+    ).toThrow();
+  expect(() =>
+    createProvider("daytona", {
+      ...key,
+      ownerCiLabels: { key: "project", values: ["a"] },
+      ownerCiLabelWaitAt: 0,
+    }),
+  ).toThrow();
+});
