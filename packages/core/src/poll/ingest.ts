@@ -58,6 +58,14 @@ export function gatePullRequestOpener(
  * trusted while the commit that would run was written by someone else (someone pushed to the
  * branch, or the PR was opened by a maintainer for another's work). GitHub linking no account
  * to the commit (null) is refused: we cannot say who wrote the code we would run.
+ *
+ * This is defense in depth, NOT identity. A commit's author is whatever name and email the
+ * committer put in it, and GitHub links an account by matching that email, so anyone who can
+ * push can write a commit "authored by" an allowlisted user. The real anchors of the gate are:
+ * (a) the head repo is the configured repo, because pushing a branch there needs write access;
+ * and (b) the PR opener, an authenticated GitHub identity. Hosted mode will need verified
+ * (signed) commits or per-sha approval; tracked on #17. The check stays because it is cheap and
+ * catches honest mistakes, such as a maintainer opening a PR for someone else's branch.
  */
 export function gateHeadCommit(
   cfg: Pick<PollRepoConfig, "authors">,
