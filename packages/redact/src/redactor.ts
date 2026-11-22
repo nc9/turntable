@@ -4,6 +4,7 @@ import {
   PEM_BEGIN,
   PEM_END,
   KEY_LINE_END,
+  KEY_LINE_SPAN,
   KEY_NAMES,
   PEM_END_MAX,
   REPLACEMENT,
@@ -16,7 +17,7 @@ export const MAX_OPEN_PEM = 256 * 1024;
 const PEM_MARKER = "-----BEGIN ";
 const PEM_TAILS = ["PRIVATE KEY-----", "PRIVATE KEY BLOCK-----"];
 
-const isKeyLine = (line: string): boolean => KEY_LINE_END.test(line.slice(-160));
+const isKeyLine = (line: string): boolean => KEY_LINE_END.test(line.slice(-KEY_LINE_SPAN));
 
 /** Start of the complete line before the partial line, if it ends with a key name. */
 function prevKeyLineStart(text: string, partialStart: number): number {

@@ -4,9 +4,9 @@
  * upper bounds also give each pattern a maximum match length, which sizes the streaming
  * carry-over window. A token longer than its bound is still redacted in full: see `run`.
  *
- * Only the key/value patterns (aws secret, bearer) may span a newline, so a YAML-style value on
- * the line after its key is still found; the redactor holds a trailing key line for that (see
- * KEY_LINE_END). Every other pattern is single-line (PEM blocks are handled separately), which
+ * Only the key/value patterns (aws secret, bearer) may span a newline, and only ONE, so a
+ * YAML-style value on the line after its key is still found; the redactor holds the single
+ * trailing key line for that (see KEY_LINE_END). Every other pattern is single-line (PEM blocks are handled separately), which
  * is what lets the redactor emit complete lines immediately.
  *
  * With `keepPrefix`, capture group 1 (a key name or header prefix) stays in the output and the
@@ -38,6 +38,17 @@ export const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/
 export const PEM_END = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/g;
 export const PEM_END_MAX = 80;
 
+// Whitespace shared by the key/value patterns and KEY_LINE_END, so the two cannot drift: the hold
+// in the redactor must cover exactly the gaps the patterns accept.
+const WS_MAX = 64;
+/** Line-local whitespace: anything but newline, so CR, FF and VT count. */
+const WS = `[^\\S\\n]{0,${WS_MAX}}`;
+/** Gap between a key and its value: whitespace, at most ONE newline, whitespace. */
+const GAP = `${WS}\\r?\\n?${WS}`;
+const GAP_MAX = WS_MAX + 2 + WS_MAX;
+/** Whitespace after a key on its own line: as much as GAP can swallow without the newline. */
+const GAP_ON_LINE = `[^\\S\\n]{0,${GAP_MAX}}`;
+
 export const PATTERNS: readonly Pattern[] = [
   {
     name: "github-token",
@@ -55,8 +66,8 @@ export const PATTERNS: readonly Pattern[] = [
   { name: "aws-access-key-id", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, maxLength: 21 },
   {
     name: "aws-secret-access-key",
-    re: /(aws_secret_access_key["']?\s{0,64}[:=]\s{0,64}["']?)[A-Za-z0-9/+=]{40}/gi,
-    maxLength: 21 + 1 + 64 + 1 + 64 + 1 + 40,
+    re: new RegExp(`(aws_secret_access_key["']?${WS}[:=]${GAP}["']?)[A-Za-z0-9/+=]{40}`, "gi"),
+    maxLength: 21 + 1 + WS_MAX + 1 + GAP_MAX + 1 + 40,
     keepPrefix: true,
     run: "A-Za-z0-9/+=",
   },
@@ -84,8 +95,11 @@ export const PATTERNS: readonly Pattern[] = [
   {
     // Only inside an Authorization header, so prose like "Bearer authentication" is untouched.
     name: "bearer-token",
-    re: /(Authorization["']?\s{0,16}[:=]\s{0,16}["']?Bearer\s{1,64})[A-Za-z0-9._~+/=-]{8,4096}/gi,
-    maxLength: 13 + 1 + 16 + 1 + 16 + 1 + 6 + 64 + 4096,
+    re: new RegExp(
+      `(Authorization["']?${WS}[:=]${WS}["']?Bearer(?=\\s)${GAP})[A-Za-z0-9._~+/=-]{8,4096}`,
+      "gi",
+    ),
+    maxLength: 13 + 1 + WS_MAX + 1 + WS_MAX + 1 + 6 + GAP_MAX + 4096,
     keepPrefix: true,
     run: "A-Za-z0-9._~+/=-",
   },
@@ -117,11 +131,17 @@ export const MAX_PATTERN_LENGTH: number = Math.max(
 );
 
 /**
- * End of a line that names a key whose value may follow on the next line. Test it against the
- * last 160 characters of one line, never the whole line.
+ * End of a line that names a key whose value may follow on the next line (one newline at most,
+ * see GAP). Built from the same WS as the patterns. Test it against the last KEY_LINE_SPAN
+ * characters of one line, never the whole line.
  */
-export const KEY_LINE_END =
-  /(?:aws_secret_access_key["']?[^\S\n]{0,16}[:=]?[^\S\n]{0,16}["']?|Authorization["']?[^\S\n]{0,16}[:=]?[^\S\n]{0,16}["']?(?:B(?:e(?:a(?:r(?:e(?:r[^\S\n]{0,16})?)?)?)?)?)?)$/i;
+export const KEY_LINE_END = new RegExp(
+  `(?:aws_secret_access_key["']?${WS}[:=]?${GAP_ON_LINE}["']?|Authorization["']?${WS}[:=]?${WS}["']?(?:B(?:e(?:a(?:r(?:e(?:r${GAP_ON_LINE})?)?)?)?)?)?)$`,
+  "i",
+);
+
+/** Longest key-line ending KEY_LINE_END can match (Authorization form, plus slack). */
+export const KEY_LINE_SPAN = 384;
 
 /** Key names whose partial spelling at the end of the text must survive an idle flush. */
 export const KEY_NAMES: readonly string[] = ["aws_secret_access_key", "authorization"];

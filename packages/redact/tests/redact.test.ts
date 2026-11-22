@@ -605,3 +605,84 @@ describe("url userinfo", () => {
     for (const c of clean) expect(redactString(c)).toBe(c);
   });
 });
+
+describe("differential: streaming at every split equals one shot", () => {
+  const spaces = [
+    "",
+    " ",
+    "\t",
+    "\r",
+    "\u000b\u000c",
+    " ".repeat(17),
+    " ".repeat(64),
+    " ".repeat(65),
+  ];
+  const newlines = ["", "\n", "\n\n"];
+  const keys: [string, (gap: string) => string][] = [
+    ["aws", (gap) => `aws_secret_access_key:${gap}${AWS_SECRET}`],
+    ["aws quoted", (gap) => `"aws_secret_access_key": ${gap}"${AWS_SECRET}"`],
+    ["bearer", (gap) => `Authorization: Bearer${gap || " "}abcdef1234567890XYZ`],
+    ["bearer json", (gap) => `{"Authorization": "Bearer${gap || " "}abcdef1234567890XYZ"}`],
+  ];
+
+  for (const [name, build] of keys) {
+    test(`${name}: every whitespace and newline gap, split at every offset`, () => {
+      let accepted = 0;
+      let refused = 0;
+      for (const w1 of spaces) {
+        for (const nl of newlines) {
+          for (const w2 of spaces) {
+            const text = `a\n${build(`${w1}${nl}${w2}`)}\nz\n`;
+            const whole = redactString(text);
+            if (whole.includes(R)) accepted++;
+            else refused++;
+            for (let i = 0; i <= text.length; i++) {
+              const out = twoChunks(text, i);
+              if (out !== whole) {
+                throw new Error(
+                  `${JSON.stringify(text)} split ${i}: ${JSON.stringify(out)} != ${JSON.stringify(whole)}`,
+                );
+              }
+            }
+          }
+        }
+      }
+      // both outcomes were exercised: the gaps the pattern accepts, and the ones it refuses
+      expect(accepted).toBeGreaterThan(20);
+      expect(refused).toBeGreaterThan(5);
+    });
+
+    test(`${name}: an idle flush before the value never changes the output`, () => {
+      for (const w1 of spaces) {
+        for (const nl of newlines) {
+          for (const w2 of spaces) {
+            const text = `a\n${build(`${w1}${nl}${w2}`)}\nz\n`;
+            const whole = redactString(text);
+            // idle flushes are only lossless where no token has started
+            const valueAt = Math.max(text.indexOf(AWS_SECRET), text.indexOf("abcdef12"));
+            for (let i = 0; i <= valueAt; i++) {
+              const out = withIdle(text, i);
+              if (out !== whole) {
+                throw new Error(`${JSON.stringify(text)} idle at ${i}: ${JSON.stringify(out)}`);
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  test("a key line with 17 to 64 spaces after it is held and its value redacted", () => {
+    for (const n of [17, 40, 64]) {
+      const text = `aws_secret_access_key:${" ".repeat(n)}\n  ${AWS_SECRET}\n`;
+      expect(twoChunks(text, text.indexOf("\n") + 1)).toBe(
+        `aws_secret_access_key:${" ".repeat(n)}\n  ${R}\n`,
+      );
+    }
+  });
+
+  test("only one newline is allowed between key and value", () => {
+    const two = `aws_secret_access_key:\n\n${AWS_SECRET}\n`;
+    expect(redactString(two)).toBe(two);
+  });
+});

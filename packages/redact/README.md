@@ -46,7 +46,10 @@ complete lines go out at once. A registered value that contains a newline switch
 emission back to the plain window rule.
 
 A key line (`aws_secret_access_key:` or `Authorization: Bearer` at the end of a line) is held
-until the next line arrives, so a YAML-style value on the following line is still redacted.
+until the next line arrives, so a YAML-style value on the following line is still redacted. Key
+and value may be separated by whitespace and at most one newline. The patterns and the hold
+are built from the same whitespace constants, and a differential test (streaming split at every
+offset equals one-shot, over every whitespace and newline gap) keeps them from drifting.
 
 Latency: `flushIdle()` emits the held partial line, redacted. Call it after about a second
 without input so the last line of a slow or hung job becomes visible.
