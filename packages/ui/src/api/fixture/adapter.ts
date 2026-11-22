@@ -107,6 +107,8 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         const bytes = l.log.bytes.slice(Math.min(offset, l.available), end);
         return { attemptId, offset, bytes, size: l.available, done: l.done && end >= l.available };
       }),
+    jobSteps: ({ attemptId }) =>
+      delay(() => (world.logOf(attemptId)?.steps ?? []).map((st) => ({ ...st, attemptId }))),
     checksForSha: ({ projectId, sha }) =>
       delay((): CheckSummary => {
         const rows = [...world.runs.values()].filter(
@@ -198,6 +200,7 @@ function subscribeLog(
 ): () => void {
   const rng = createRng(`chunks:${attemptId}:${fromOffset}`);
   let offset = fromOffset;
+  let stepsSent = 0;
   let stopped = false;
   let handle: ReturnType<typeof setTimeout> | undefined;
   const step = () => {
@@ -216,6 +219,12 @@ function subscribeLog(
         data,
         ...(eof ? { eof: true } : {}),
       });
+      // Step boundaries travel out of band, once the log has reached their offset. A resume may
+      // replay some; the client applies them idempotently.
+      const due = l.steps.filter((st) => st.logOffset >= fromOffset && st.logOffset <= offset);
+      for (; stepsSent < due.length; stepsSent++) {
+        deliver({ type: "step", attemptId, ...(due[stepsSent] as (typeof due)[number]) });
+      }
       if (eof) return;
       handle = setTimeout(step, rng.int(20, 90));
       return;

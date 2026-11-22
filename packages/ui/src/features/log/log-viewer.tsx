@@ -441,11 +441,33 @@ export function LogViewer({
     [revealLine],
   );
 
+  const jumpToOffset = useCallback(
+    (offset: number) => {
+      const idx = parser.lineAtOffset(offset);
+      if (idx < 0) return;
+      setNavOpen(false);
+      revealLine(idx, "start");
+    },
+    [parser, revealLine],
+  );
+
+  // Lines where a step begins, resolved from the out-of-band step events.
+  const stepStarts = useMemo(() => {
+    const m = new Map<number, (typeof parser.steps)[number]>();
+    for (const st of parser.steps) {
+      const idx = parser.lineAtOffset(st.startOffset);
+      if (idx >= 0 && !m.has(idx)) m.set(idx, st);
+    }
+    return m;
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [parser, version]);
+
   const items = virtualizer.getVirtualItems();
   const firstRow = items[0]?.index ?? 0;
   useEffect(() => {
     const lineIdx = rows[Math.min(firstRow, rows.length - 1)];
-    const step = lineIdx === undefined ? 0 : (parser.lines[lineIdx]?.step ?? 0);
+    const step =
+      lineIdx === undefined ? 0 : parser.stepAtOffset(parser.lines[lineIdx]?.offset ?? 0);
     setActiveStep((s) => (s === step ? s : step));
   }, [firstRow, rows, parser]);
   const widthCh = Math.min(parser.maxCols, 600) + numberWidth + 3 + (showTime ? 13 : 0) + 4;
@@ -457,7 +479,8 @@ export function LogViewer({
       attemptState={attemptState}
       truncated={log.truncated}
       activeStep={activeStep}
-      onJump={jumpToLine}
+      onJumpLine={jumpToLine}
+      onJumpOffset={jumpToOffset}
       className="h-full"
     />
   );
@@ -731,12 +754,7 @@ export function LogViewer({
                           line.kind === "group" ? isCollapsed(parser, line.ref, overrides) : false
                         }
                         groupSize={line.kind === "group" ? (groupSizes.get(line.ref) ?? 0) : 0}
-                        step={
-                          line.kind === "step"
-                            ? parser.steps.find((s) => s.index === line.ref)
-                            : undefined
-                        }
-                        stepActive={false}
+                        stepStart={stepStarts.get(lineIdx)}
                         measure={wrap ? virtualizer.measureElement : undefined}
                         index={v.index}
                         onSelect={select}

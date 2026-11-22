@@ -11,6 +11,7 @@ import { useScope } from "@/features/shell/scope";
 import { STATE_META } from "@/lib/states";
 import { cn } from "@/lib/utils";
 import type { JobSearch } from "@/router";
+import { ApprovalNotice } from "./approval";
 import { AttemptChip } from "./run-page";
 import { useRunAttempts, useRunJobs, useRunRow } from "./common";
 
@@ -97,6 +98,8 @@ export function JobPage() {
           <span className="font-mono text-xs text-st-failure">exit {selected.exitCode}</span>
         ) : null}
       </div>
+
+      <ApprovalNotice jobs={[job]} />
 
       {attempts.length > 1 ? (
         <div

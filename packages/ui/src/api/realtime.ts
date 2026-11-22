@@ -1,4 +1,4 @@
-import type { Job, JobAttempt, Run } from "./types";
+import type { Job, JobAttempt, Run, StepEvent } from "./types";
 
 /** What a client may subscribe to. The server checks each topic against the caller's scope (#30). */
 export type Topic =
@@ -36,11 +36,15 @@ export type LogChunkEvent = {
   eof?: boolean;
 };
 
+/** A step boundary for an attempt, out of band from the log bytes. */
+export type StepMessage = { type: "step" } & StepEvent;
+
 export type RealtimeMessage =
   | ChangeEvent
   /** The server cannot replay from the cursor (or dropped a slow client); refetch, then resume. */
   | { type: "reset"; topic: string; cursor: string }
-  | LogChunkEvent;
+  | LogChunkEvent
+  | StepMessage;
 
 export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "offline";
 

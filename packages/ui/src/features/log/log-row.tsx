@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, Scissors } from "lucide-react";
 import { memo, type ReactNode } from "react";
 import type { LogLine, StepInfo, StyleDef } from "@/log/parser";
 import type { Match } from "@/log/search";
-import { formatBytes, formatDuration } from "@/lib/format";
+import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export type RowProps = {
@@ -19,8 +19,8 @@ export type RowProps = {
   collapsed: boolean;
   /** Lines inside the group, for group headers. */
   groupSize: number;
-  step: StepInfo | undefined;
-  stepActive: boolean;
+  /** The step that begins on this line (steps come from the API, not the log text). */
+  stepStart: StepInfo | undefined;
   measure: ((el: HTMLElement | null) => void) | undefined;
   index: number;
   onSelect: (line: number, extend: boolean) => void;
@@ -135,22 +135,12 @@ function RowImpl(p: RowProps) {
         ) : null}
       </button>
     );
-  } else if (line.kind === "step") {
-    const s = p.step;
-    const dur =
-      s && s.startTs !== null && s.endTs !== null ? formatDuration(s.endTs - s.startTs) : null;
-    body = (
-      <span className="flex min-w-0 flex-1 items-center gap-3 font-semibold">
-        <span className="truncate">{renderContent(line, p.styles, p.matches, p.current)}</span>
-        {dur ? <span className="shrink-0 font-normal text-faint">{dur}</span> : null}
-      </span>
-    );
   } else if (line.kind === "cut") {
     body = (
       <span className="flex items-center gap-2">
         <Scissors className="size-3.5" aria-hidden="true" />
-        {line.cutBytes > 0 ? formatBytes(line.cutBytes) : "Some output"} removed from the{" "}
-        {line.text} of this log to stay within the size cap
+        {line.cutBytes > 0 ? formatBytes(line.cutBytes) : "Some output"} of output omitted to stay
+        within the size cap
       </span>
     );
   } else {
@@ -174,6 +164,7 @@ function RowImpl(p: RowProps) {
       data-wrap={p.wrap}
       data-selected={p.selected}
       data-kind={line.kind}
+      data-step-start={p.stepStart ? "" : undefined}
       data-level={line.level ?? undefined}
       className="log-row"
       style={{ transform: `translateY(${p.start}px)` }}

@@ -5,12 +5,12 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { prepareCompileEntry } from "../packages/ui/scripts/compile-entry";
 
 const TARGETS = ["bun-linux-x64", "bun-linux-arm64", "bun-darwin-arm64"] as const;
 
 const root = join(import.meta.dir, "..");
 const dist = join(root, "dist");
-const entry = join(root, "packages/core/src/main.ts");
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
 const version = (process.env.TURNTABLE_VERSION ?? pkg.version).replace(/^v/, "");
@@ -25,6 +25,9 @@ for (const target of targets) {
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
+
+// Builds the web UI and writes the generated entry that embeds it and starts core (main.ts).
+const entry = await prepareCompileEntry();
 
 const sums: string[] = [];
 for (const target of targets) {

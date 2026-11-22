@@ -31,7 +31,7 @@ export function StepList({
   attemptState: JobState;
   truncated: boolean;
   activeStep: number;
-  onJump: (line: number) => void;
+  onJump: (offset: number) => void;
 }) {
   const live =
     steps.some((s) => s.result === null) &&
@@ -53,7 +53,7 @@ export function StepList({
           <li key={s.index}>
             <button
               type="button"
-              onClick={() => onJump(s.startLine)}
+              onClick={() => onJump(s.startOffset)}
               aria-current={activeStep === s.index ? "step" : undefined}
               className={cn(
                 "flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] transition-colors duration-150 hover:bg-muted aria-[current=step]:bg-muted",
@@ -132,7 +132,8 @@ export function LogSidebar({
   attemptState,
   truncated,
   activeStep,
-  onJump,
+  onJumpLine,
+  onJumpOffset,
   className,
 }: {
   steps: readonly StepInfo[];
@@ -140,7 +141,8 @@ export function LogSidebar({
   attemptState: JobState;
   truncated: boolean;
   activeStep: number;
-  onJump: (line: number) => void;
+  onJumpLine: (line: number) => void;
+  onJumpOffset: (offset: number) => void;
   className?: string;
 }) {
   const [tab, setTab] = useState<"steps" | "annotations">("steps");
@@ -199,10 +201,10 @@ export function LogSidebar({
             attemptState={attemptState}
             truncated={truncated}
             activeStep={activeStep}
-            onJump={onJump}
+            onJump={onJumpOffset}
           />
         ) : (
-          <AnnotationList annotations={annotations} onJump={onJump} />
+          <AnnotationList annotations={annotations} onJump={onJumpLine} />
         )}
       </div>
     </div>

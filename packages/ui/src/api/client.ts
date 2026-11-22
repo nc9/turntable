@@ -1,5 +1,14 @@
 import type { ChangeEvent } from "./realtime";
-import type { CheckSummary, LogSlice, Org, Project, Run, RunDetail, RunFilter } from "./types";
+import type {
+  CheckSummary,
+  LogSlice,
+  Org,
+  Project,
+  Run,
+  RunDetail,
+  RunFilter,
+  StepEvent,
+} from "./types";
 
 /**
  * Typed client aligned with the planned operations registry (#22): `listRuns`, `getRun`,
@@ -14,6 +23,8 @@ export interface TurntableApi {
   getRun(runId: string): Promise<RunDetail>;
   /** Read log bytes by offset. Used for the initial window, load-more and raw download. */
   jobLog(args: { attemptId: string; offset: number; limit: number }): Promise<LogSlice>;
+  /** Step boundaries for an attempt that have occurred so far (out of band from the log bytes). */
+  jobSteps(args: { attemptId: string }): Promise<StepEvent[]>;
   checksForSha(args: { projectId: string; sha: string }): Promise<CheckSummary>;
   rerun(args: { runId: string; jobId?: string }): Promise<{ runId: string }>;
   cancel(args: { runId: string }): Promise<void>;

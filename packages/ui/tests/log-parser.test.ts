@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { LogParser, parseAll, visibleLines } from "../src/log/parser";
+import { cutMarker } from "@turntable/provider-sdk";
+import { LogParser, MAX_LINE_BYTES, parseAll, visibleLines } from "../src/log/parser";
 import { findMatches } from "../src/log/search";
 
 const enc = new TextEncoder();
@@ -177,37 +178,66 @@ describe("annotations", () => {
   });
 });
 
-describe("steps and cuts", () => {
-  const step = (o: object) => `::tt-step::${JSON.stringify(o)}\n`;
+describe("steps (out of band) and cuts", () => {
+  const at = (iso: string) => Date.parse(iso);
 
-  test("step boundaries give duration and result, and tag the lines inside", () => {
-    const p = parseAll(
-      bytes(
-        `2026-11-22T10:00:00.000Z ${step({ phase: "start", index: 1, name: "Build" })}` +
-          `2026-11-22T10:00:01.000Z compiling\n` +
-          `2026-11-22T10:00:05.500Z ${step({ phase: "end", index: 1, result: "failure" })}` +
-          `outside\n`,
-      ),
-    );
+  test("step events are keyed by log offset and give duration, result and membership", () => {
+    const text = "setup\ncompiling\nlinking\nafter\n";
+    const p = parseAll(bytes(text));
+    const second = text.indexOf("compiling");
+    const fourth = text.indexOf("after");
+    p.applyStep({
+      index: 1,
+      name: "Build",
+      phase: "start",
+      at: at("2026-11-22T10:00:00.000Z"),
+      logOffset: second,
+    });
+    p.applyStep({
+      index: 1,
+      name: "Build",
+      phase: "end",
+      result: "failure",
+      at: at("2026-11-22T10:00:05.500Z"),
+      logOffset: fourth,
+    });
     const s = p.steps[0]!;
-    expect(s).toMatchObject({ index: 1, name: "Build", result: "failure" });
+    expect(s).toMatchObject({ index: 1, name: "Build", result: "failure", startOffset: second });
     expect((s.endTs ?? 0) - (s.startTs ?? 0)).toBe(5500);
-    expect(p.lines.map((l) => [l.kind, l.step])).toEqual([
-      ["step", 1],
-      ["text", 1],
-      ["text", 0],
-    ]);
+    expect(p.lineAtOffset(second)).toBe(1);
+    expect(p.lineAtOffset(second + 3)).toBe(1); // mid-line offsets map to the containing line
+    expect(p.lineAtOffset(10_000)).toBe(-1); // not loaded yet
+    expect([0, second, second + 5, fourth].map((o) => p.stepAtOffset(o))).toEqual([0, 1, 1, 0]);
   });
 
-  test("an unfinished step stays open (result null)", () => {
-    const p = parseAll(bytes(step({ phase: "start", index: 1, name: "Run" }) + "line\n"));
+  test("replayed step events are idempotent and an unfinished step stays open", () => {
+    const p = parseAll(bytes("a\nb\n"));
+    const ev = { index: 1, name: "Run", phase: "start", at: 1, logOffset: 2 } as const;
+    p.applyStep(ev);
+    p.applyStep(ev);
+    expect(p.steps).toHaveLength(1);
     expect(p.steps[0]?.result).toBeNull();
-    expect(p.lines[1]?.step).toBe(1);
+    expect(p.stepAtOffset(3)).toBe(1);
   });
 
-  test("cut markers carry the omitted byte count", () => {
-    const p = parseAll(bytes(`::tt-cut::${JSON.stringify({ bytes: 4096, reason: "middle" })}\n`));
-    expect(p.lines[0]).toMatchObject({ kind: "cut", cutBytes: 4096 });
+  test("a log cannot forge a step: ::tt-step:: text is just text", () => {
+    const p = parseAll(bytes('::tt-step::{"phase":"start","index":9,"name":"Deploy to prod"}\n'));
+    expect(p.steps).toHaveLength(0);
+    expect(p.lines[0]?.kind).toBe("text");
+  });
+
+  test("the cut marker is exactly what cutMarker() in the provider SDK produces", () => {
+    const p = parseAll(
+      bytes(`head of output${new TextDecoder().decode(cutMarker(4096))}tail of output\n`),
+    );
+    expect(p.lines.map((l) => l.kind)).toEqual(["text", "cut", "text"]);
+    expect(p.lines[1]).toMatchObject({ kind: "cut", cutBytes: 4096 });
+    // also with a timestamp prefix, and a near-miss stays text
+    expect(
+      parseAll(bytes("2026-11-22T10:00:00.000Z [turntable: 12 bytes of output omitted]\n")).lines[0]
+        ?.kind,
+    ).toBe("cut");
+    expect(parseAll(bytes("[turntable: x bytes of output omitted]\n")).lines[0]?.kind).toBe("text");
   });
 });
 
@@ -280,5 +310,42 @@ describe("untrusted input neutralisation", () => {
     const a = p.annotations[0]!;
     expect(a.title).toBe("<b>x</b>");
     expect(p.lines[0]?.text).toBe("<img src=x onerror=alert(1)>hi");
+  });
+  test("C1 controls are neutralised, including the single-byte CSI as UTF-8 and as a raw byte", () => {
+    expect(textOf("a\u009b2Jb\u009d8;;u\u009cc\n")).toEqual(["a2Jb8;;uc"]);
+    // a bare 0x9b byte is invalid UTF-8: it decodes to U+FFFD, never to a control
+    const raw = new Uint8Array([0x61, 0x9b, 0x32, 0x4a, 0x62, 0x0a]);
+    const text = parseAll(raw).lines[0]!.text;
+    expect(text).not.toContain("\u009b");
+    expect(text.startsWith("a")).toBe(true);
+  });
+
+  test("an OSC split across chunks never renders its tail as text", () => {
+    const p = new LogParser();
+    feed(p, [
+      "before \u001b]8;;https://ev",
+      "il.example/pa",
+      "th\u0007visible\u001b]8;;",
+      "\u0007 after\n",
+    ]);
+    expect(p.lines[0]?.text).toBe("before visible after");
+    // the live partial line is neutralised too
+    const q = new LogParser();
+    feed(q, ["partial \u001b]8;;https://evil.example", "/x\u0007shown"]);
+    expect(q.pendingText).toBe("partial shown");
+    const r = new LogParser();
+    feed(r, ["half \u001b]0;never-ended-title"]);
+    expect(r.pendingText).toBe("half ");
+  });
+
+  test("an OSC cut in half by the forced line split does not leak its tail", () => {
+    const head = "a".repeat(MAX_LINE_BYTES - 3) + "\u001b]8";
+    const p = parseAll(bytes(`${head};;https://evil.example\u0007text\n`));
+    const joined = p.lines.map((l) => l.text).join("");
+    expect(joined).not.toContain("evil");
+    expect(joined.endsWith("text")).toBe(true);
+    // same for a CSI split from its final byte
+    const q = parseAll(bytes(`${"b".repeat(MAX_LINE_BYTES - 2)}\u001b[3` + "1mred\n"));
+    expect(q.lines.map((l) => l.text).join("")).toBe("b".repeat(MAX_LINE_BYTES - 2) + "red");
   });
 });

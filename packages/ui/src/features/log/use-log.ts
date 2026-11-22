@@ -71,25 +71,28 @@ export function useAttemptLog(attemptId: string | null, active: boolean): LogMod
     }
     setStatus("loading");
     let cancelled = false;
-    getBackend()
-      .api.jobLog({ attemptId, offset: 0, limit: VIEW_CAP })
-      .then(
-        (slice) => {
-          if (cancelled) return;
-          fresh.push(slice.bytes, slice.offset);
-          knownRef.current = slice.size;
-          if (slice.done) setEof(true);
-          setVersion(fresh.version);
-          setKnownSize(slice.size);
-          setStatus("ready");
-          setResub((n) => n + 1);
-        },
-        (e: unknown) => {
-          if (cancelled) return;
-          setError(e instanceof Error ? e.message : "Could not load the log");
-          setStatus("error");
-        },
-      );
+    const { api } = getBackend();
+    Promise.all([
+      api.jobLog({ attemptId, offset: 0, limit: VIEW_CAP }),
+      api.jobSteps({ attemptId }),
+    ]).then(
+      ([slice, steps]) => {
+        if (cancelled) return;
+        fresh.push(slice.bytes, slice.offset);
+        for (const st of steps) fresh.applyStep(st);
+        knownRef.current = slice.size;
+        if (slice.done) setEof(true);
+        setVersion(fresh.version);
+        setKnownSize(slice.size);
+        setStatus("ready");
+        setResub((n) => n + 1);
+      },
+      (e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Could not load the log");
+        setStatus("error");
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -108,6 +111,13 @@ export function useAttemptLog(attemptId: string | null, active: boolean): LogMod
           setResub((n) => n + 1);
           return;
         }
+        if (msg.type === "step") {
+          if (msg.attemptId === attemptId) {
+            p.applyStep(msg);
+            bump();
+          }
+          return;
+        }
         if (msg.type !== "log" || msg.attemptId !== attemptId) return;
         knownRef.current = Math.max(knownRef.current, msg.offset + msg.data.length);
         if (p.nextOffset < capRef.current) p.push(msg.data, msg.offset);
@@ -124,22 +134,25 @@ export function useAttemptLog(attemptId: string | null, active: boolean): LogMod
     if (active || !attemptId || status !== "ready" || eof) return;
     let cancelled = false;
     const p = parserRef.current;
-    getBackend()
-      .api.jobLog({
+    const { api } = getBackend();
+    Promise.all([
+      api.jobLog({
         attemptId,
         offset: p.nextOffset,
         limit: Math.max(0, capRef.current - p.nextOffset),
-      })
-      .then(
-        (slice) => {
-          if (cancelled) return;
-          if (slice.bytes.length > 0) p.push(slice.bytes, slice.offset);
-          knownRef.current = slice.size;
-          if (slice.done) setEof(true);
-          bump();
-        },
-        () => {},
-      );
+      }),
+      api.jobSteps({ attemptId }),
+    ]).then(
+      ([slice, steps]) => {
+        if (cancelled) return;
+        if (slice.bytes.length > 0) p.push(slice.bytes, slice.offset);
+        for (const st of steps) p.applyStep(st);
+        knownRef.current = slice.size;
+        if (slice.done) setEof(true);
+        bump();
+      },
+      () => {},
+    );
     return () => {
       cancelled = true;
     };

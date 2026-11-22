@@ -14,6 +14,7 @@ type JobTemplate = {
   matrixGroup?: string;
   /** Baseline duration in ms before jitter. */
   base: number;
+  /** Release/environment gate: approved by a human with a security key. */
   approval?: boolean;
 };
 
@@ -26,7 +27,7 @@ type WorkflowTemplate = {
 
 const matrixLegs = (): JobTemplate[] => {
   const legs: JobTemplate[] = [];
-  for (const os of ["ubuntu", "macos"]) {
+  for (const os of ["ubuntu-22.04", "ubuntu-24.04"]) {
     for (const node of ["20", "22"]) {
       legs.push({
         key: `test-${os}-${node}`,
@@ -57,10 +58,10 @@ const WORKFLOWS: WorkflowTemplate[] = [
         needs: [
           "lint",
           "typecheck",
-          "test-ubuntu-20",
-          "test-ubuntu-22",
-          "test-macos-20",
-          "test-macos-22",
+          "test-ubuntu-22.04-20",
+          "test-ubuntu-22.04-22",
+          "test-ubuntu-24.04-20",
+          "test-ubuntu-24.04-22",
         ],
         kind: "build",
         base: 55_000,
@@ -258,6 +259,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       needs: t.needs,
       matrix: t.matrix ?? null,
       matrixGroup: t.matrixGroup ?? null,
+      approval: null,
       exitCode: null,
       createdAt: run.createdAt,
       startedAt: null,
@@ -296,6 +298,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       const plan = planFor(tpl, failing, aKey);
       if (tpl.approval) {
         row.state = "awaiting_approval";
+        row.approval = "environment";
         jobs.set(row.id, row);
         finished.set(row.jobKey, start);
         continue;
@@ -359,6 +362,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     const states = rows.map((r) => r.state);
     if (states.some((s) => s === "running")) return "running";
     if (rows.some((r) => r.state === "infra_error" && retryAt.has(r.id))) return "running";
+    if (states.some((s) => s === "awaiting_approval")) return "awaiting_approval";
     const started = rows.some((r) => r.startedAt != null);
     const pending = states.some((s) => s === "queued");
     if (pending) return started ? "running" : "queued";
@@ -378,7 +382,12 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       .toSorted((a, b) => a.attempt - b.attempt);
   }
 
-  function startRunning(project: Project, wf: WorkflowTemplate, failing: boolean): string {
+  function startRunning(
+    project: Project,
+    wf: WorkflowTemplate,
+    failing: boolean,
+    untrustedAuthor = false,
+  ): string {
     const at = now() - rng.int(0, 5000);
     const { run, templates } = createRunRow(project, wf, at);
     const rows = createJobRows(run, templates);
@@ -390,6 +399,17 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
         templates.find((x) => x.key === row.jobKey)!,
       );
       row.state = "queued";
+      if (untrustedAuthor && row.needs.length === 0) {
+        // Untrusted-author gate: nothing runs until an operator approves.
+        row.state = "awaiting_approval";
+        row.approval = "untrusted_author";
+      }
+    }
+    if (untrustedAuthor) {
+      run.event = "pull_request";
+      run.ref = `refs/pull/${rng.int(40, 220)}/merge`;
+      run.actor = "first-time-contributor";
+      run.status = "awaiting_approval";
     }
     failingRuns.set(run.id, failing);
     emit("run", run);
@@ -462,6 +482,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
           } else if (deps.every((d) => !d || d.state === "success")) {
             if (tpl.approval) {
               row.state = "awaiting_approval";
+              row.approval = "environment";
               emit("job", row);
               changed = true;
               continue;
@@ -522,6 +543,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
   startRunning(projects[0]!, WORKFLOWS[0]!, false);
   startRunning(projects[0]!, WORKFLOWS[0]!, true);
   startRunning(projects[1]!, WORKFLOWS[0]!, false);
+  startRunning(projects[1]!, WORKFLOWS[0]!, false, true);
 
   function maybeSpawn(): void {
     for (const p of projects) {
@@ -547,7 +569,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
   /** The log for an attempt and how many bytes of it exist right now. */
   function logOf(
     attemptId: string,
-  ): { log: GeneratedLog; available: number; done: boolean } | null {
+  ): { log: GeneratedLog; available: number; done: boolean; steps: GeneratedLog["steps"] } | null {
     const a = attempts.get(attemptId);
     if (!a || a.startedAt == null) return null;
     const plan = planOfAttempt(a);
@@ -560,10 +582,16 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       durationMs,
     });
     const finished = a.finishedAt != null;
-    if (finished) return { log, available: log.bytes.length, done: true };
+    if (finished) return { log, available: log.bytes.length, done: true, steps: log.steps };
     const p = Math.min(1, Math.max(0, (now() - a.startedAt) / durationMs));
     const lines = Math.floor(log.lineCount * p);
-    return { log, available: lines === 0 ? 0 : (log.lineEnds[lines - 1] ?? 0), done: false };
+    const available = lines === 0 ? 0 : (log.lineEnds[lines - 1] ?? 0);
+    return {
+      log,
+      available,
+      done: false,
+      steps: log.steps.filter((st) => st.logOffset <= available),
+    };
   }
 
   // ---- writes ----

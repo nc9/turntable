@@ -19,6 +19,7 @@ import { useScope } from "@/features/shell/scope";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { isActive, STATE_META } from "@/lib/states";
 import { toast } from "@/lib/toast";
+import { ApprovalNotice, approvalLabel } from "./approval";
 import { JobGraph } from "./job-graph";
 import { RefChip, ShaChip, useRunAttempts, useRunJobs, useRunRow } from "./common";
 
@@ -164,6 +165,8 @@ export function RunPage() {
         <RunActions run={run} jobs={jobs} />
       </div>
 
+      <ApprovalNotice jobs={jobs} />
+
       {infraAttempts.length > 0 ? (
         <div
           role="note"
@@ -242,9 +245,7 @@ export function RunPage() {
                           Exited with code {job.exitCode}
                         </span>
                       ) : job.state === "awaiting_approval" ? (
-                        <span className="text-xs text-st-approval">
-                          Waiting for a human to approve
-                        </span>
+                        <span className="text-xs text-st-approval">{approvalLabel(job)}</span>
                       ) : null}
                     </span>
                     <span className="flex flex-wrap items-center gap-1.5">

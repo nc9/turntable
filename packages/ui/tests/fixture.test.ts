@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { cutMarker } from "@turntable/provider-sdk";
+import { cutMarkerText } from "../src/api/fixture/log-gen";
 import { createFixture } from "../src/api/fixture/adapter";
 import type { ChangeEvent, LogChunkEvent } from "../src/api/realtime";
 import { LogParser } from "../src/log/parser";
@@ -19,12 +21,16 @@ test("log stream resumes by byte offset with no loss or duplicates and parses to
     const head = await fx.api.jobLog({ attemptId: attempt.id, offset: 0, limit: 5000 });
     const parser = new LogParser(0);
     parser.push(head.bytes, head.offset);
+    for (const st of await fx.api.jobSteps({ attemptId: attempt.id })) {
+      if (st.logOffset < parser.nextOffset) parser.applyStep(st);
+    }
     const chunks: LogChunkEvent[] = [];
     const done = new Promise<void>((resolve) => {
       fx.realtime.subscribe(
         { kind: "attempt-log", attemptId: attempt.id },
         { offset: parser.nextOffset },
         (m) => {
+          if (m.type === "step") parser.applyStep(m);
           if (m.type !== "log") return;
           chunks.push(m);
           expect(parser.push(m.data, m.offset)).toBe("ok");
@@ -37,6 +43,10 @@ test("log stream resumes by byte offset with no loss or duplicates and parses to
     const reference = new LogParser(0);
     reference.push(full.bytes, 0);
     expect(parser.lines.map((l) => l.text)).toEqual(reference.lines.map((l) => l.text));
+    // Steps arrive out of band and match what the API reports for the whole attempt.
+    const all = await fx.api.jobSteps({ attemptId: attempt.id });
+    expect(parser.steps.length).toBe(new Set(all.map((st) => st.index)).size);
+    expect(parser.steps.every((st) => st.result !== null)).toBe(true);
     expect(chunks.some((c) => c.data.length > 0 && c.offset === head.bytes.length)).toBe(true);
   } finally {
     fx.stop();
@@ -91,6 +101,22 @@ test("rerun of a failed job requeues it; cancel stops unfinished jobs", async ()
     const { runId } = await fx.api.rerun({ runId: active.id });
     expect(runId).not.toBe(active.id);
     expect(fx.world.runs.get(runId)?.status).toBe("queued");
+  } finally {
+    fx.stop();
+  }
+});
+
+test("the fixture cut marker is the provider SDK's cutMarker text", () => {
+  expect(`\n${cutMarkerText(3405772)}\n`).toBe(new TextDecoder().decode(cutMarker(3405772)));
+});
+
+test("fixture logs carry no inline step markers and no macOS legs", async () => {
+  const fx = createFixture({ latency: [0, 0], tickMs: 1000, seed: "t4" });
+  try {
+    const attempt = [...fx.world.attempts.values()].find((a) => a.finishedAt !== null)!;
+    const slice = await fx.api.jobLog({ attemptId: attempt.id, offset: 0, limit: 1 << 30 });
+    expect(new TextDecoder().decode(slice.bytes)).not.toContain("::tt-step::");
+    expect([...fx.world.jobs.values()].some((j) => /macos/i.test(j.name))).toBe(false);
   } finally {
     fx.stop();
   }

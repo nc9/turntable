@@ -54,6 +54,11 @@ export type Job = {
   /** Matrix leg values, or null for a plain job. Legs of one matrix share `matrixGroup`. */
   matrix: Record<string, string> | null;
   matrixGroup: string | null;
+  /**
+   * Why the job is waiting when `state` is awaiting_approval: an untrusted-author gate
+   * (an operator approves) or a release/environment gate (a human approves with a security key).
+   */
+  approval: "untrusted_author" | "environment" | null;
   exitCode: number | null;
   createdAt: number;
   startedAt: number | null;
@@ -75,6 +80,21 @@ export type JobAttempt = {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+};
+
+/**
+ * One step boundary from act's step events. The server stores these apart from the log text and
+ * delivers them out of band; `logOffset` is the byte offset in the log where the step starts
+ * (for an "end" event, where it ended). Never parsed from log text, so a log cannot forge one.
+ */
+export type StepEvent = {
+  attemptId: string;
+  index: number;
+  name: string;
+  phase: "start" | "end";
+  result?: "success" | "failure" | "skipped";
+  at: number;
+  logOffset: number;
 };
 
 export type RunDetail = { run: Run; jobs: Job[]; attempts: JobAttempt[] };

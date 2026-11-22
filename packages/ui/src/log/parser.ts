@@ -1,3 +1,4 @@
+/* oxlint-disable no-control-regex -- this file exists to match terminal control sequences */
 // Incremental log parser. Feed it ordered byte chunks (by byte offset); it keeps only the
 // unfinished tail line between pushes, so a new chunk never reparses earlier lines.
 //
@@ -6,13 +7,18 @@
 //   - ANSI SGR colours and styles (state carries across chunks and lines); other escapes are dropped
 //   - "::group::title" / "::endgroup::" folding (nestable)
 //   - "::error|warning|notice|debug <props>::message" annotations
-//   - step boundaries: "::tt-step::{"phase":"start","index":1,"name":"..."}" and the matching
-//     "end" record with a result. This is Turntable's own framing of act's step events; the
-//     server-side emitter lands with the log pipeline (#30).
-//   - "::tt-cut::{"bytes":N,"reason":"head"|"tail"|"middle"}" where the head/tail cap removed bytes
+//   - the cut marker the output cap inserts (`cutMarker()` in @turntable/provider-sdk):
+//     "[turntable: N bytes of output omitted]" on its own line
+//
+// Step boundaries are NOT read from the log text. The server stores act's step events separately
+// and delivers them out of band; feed them with `applyStep`, keyed by the log byte offset where
+// the step starts. A log can therefore never forge a step.
+//
+// Everything else is untrusted text. Only SGR colours and styles survive: OSC (hyperlinks, titles),
+// other CSI (cursor movement, erase), lone escapes, C0/C1 controls and bidi overrides are dropped.
 
 export type Level = "error" | "warning" | "notice" | "debug";
-export type LineKind = "text" | "group" | "step" | "cut";
+export type LineKind = "text" | "group" | "cut";
 export type StepResult = "success" | "failure" | "skipped";
 
 /** A run of text with one style. `style` indexes `LogParser.styles`; 0 is the default style. */
@@ -46,10 +52,8 @@ export type LogLine = {
   segs: Seg[] | null;
   /** Innermost enclosing group id (0 when none). A group's own header belongs to its parent. */
   group: number;
-  /** For kind "group": this line's own group id. For "step": the step index. For "cut": 0. */
+  /** For kind "group": this line's own group id; otherwise 0. */
   ref: number;
-  /** Step index the line belongs to (0 when outside any step). */
-  step: number;
   /** Bytes omitted, for kind "cut". */
   cutBytes: number;
 };
@@ -64,11 +68,23 @@ export type GroupInfo = {
   hasError: boolean;
 };
 
+/** An out-of-band step event, as delivered by the API (see realtime `StepMessage`). */
+export type StepEventInput = {
+  index: number;
+  name: string;
+  phase: "start" | "end";
+  result?: StepResult | undefined;
+  at: number;
+  /** Byte offset in the log where the step starts (for "end": where it ended). */
+  logOffset: number;
+};
+
 export type StepInfo = {
   index: number;
   name: string;
-  startLine: number;
-  endLine: number | null;
+  /** Byte offset in the raw log where the step starts. */
+  startOffset: number;
+  endOffset: number | null;
   startTs: number | null;
   endTs: number | null;
   result: StepResult | null;
@@ -85,15 +101,14 @@ const FLAG_INVERSE = 32;
 const TRUE_COLOR = 0x1000000;
 
 const ESCAPE_RE =
-  // oxlint-disable-next-line no-control-regex
   /\u001b(?:\[([0-?]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[ -/]*[0-~])/g;
 // Controls that could spoof UI chrome or hide text: C0 (except tab, CR, ESC and BEL, which are handled
 // below: BEL may terminate an OSC), DEL, C1 (including the 8-bit CSI/OSC introducers), and bidirectional overrides.
-// oxlint-disable-next-line no-control-regex
 const STRAY_RE = /[\u001b\u0007]/g;
 const UNSAFE_RE =
-  // oxlint-disable-next-line no-control-regex
   /[\u0000-\u0006\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+// Exactly what `cutMarker()` in @turntable/provider-sdk writes (plus its surrounding newlines).
+const CUT_RE = /^\[turntable: (\d+) bytes of output omitted\]$/;
 const TS_RE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) /;
 const COMMAND_RE = /^::([A-Za-z-]+)(?: ([^\n]*?))?::(.*)$/;
 
@@ -139,6 +154,14 @@ const toInt = (s: string | undefined): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+/** Plain-text view of a raw fragment: same neutralisation as a full line, no styling. */
+function sanitize(raw: string): string {
+  let s = raw.replace(UNSAFE_RE, "");
+  const cr = s.lastIndexOf("\r");
+  if (cr !== -1) s = s.slice(cr + 1) || s.slice(0, cr);
+  return s.replace(ESCAPE_RE, "").replace(STRAY_RE, "");
+}
+
 export class LogParser {
   readonly lines: LogLine[] = [];
   readonly groups: GroupInfo[] = [
@@ -162,7 +185,9 @@ export class LogParser {
   private flags = 0;
   private styleIndex = new Map<string, number>([["-1,-1,0", 0]]);
   private groupStack: number[] = [];
-  private openStep = 0;
+  /** Escape sequence left open by a forced line split (see `consume`). */
+  private carry: "none" | "osc" | "csi" | "esc" = "none";
+  private continuing = false;
 
   constructor(startOffset = 0) {
     this.nextOffset = startOffset;
@@ -176,7 +201,60 @@ export class LogParser {
   /** Text of the unfinished last line (no newline yet), with escapes stripped. */
   get pendingText(): string {
     if (this.pending.length === 0) return "";
-    return this.decoder.decode(this.pending).replace(ESCAPE_RE, "").replace(/\r/g, "");
+    return sanitize(this.decoder.decode(this.pending));
+  }
+
+  /** Apply an out-of-band step event. Idempotent: replays after a reconnect are harmless. */
+  applyStep(ev: StepEventInput): void {
+    let step = this.steps.find((x) => x.index === ev.index);
+    if (!step) {
+      step = {
+        index: ev.index,
+        name: ev.name,
+        startOffset: ev.logOffset,
+        endOffset: null,
+        startTs: null,
+        endTs: null,
+        result: null,
+      };
+      this.steps.push(step);
+    }
+    if (ev.phase === "start") {
+      step.name = ev.name;
+      step.startOffset = ev.logOffset;
+      step.startTs = ev.at;
+    } else {
+      step.endOffset = ev.logOffset;
+      step.endTs = ev.at;
+      step.result = ev.result ?? "success";
+    }
+    this.steps.sort((a, b) => a.startOffset - b.startOffset || a.index - b.index);
+    this.version += 1;
+  }
+
+  /** Index of the line containing byte `offset`, or -1 when that part of the log is not loaded. */
+  lineAtOffset(offset: number): number {
+    const { lines } = this;
+    if (lines.length === 0 || offset < (lines[0] as LogLine).offset || offset >= this.nextOffset)
+      return -1;
+    let lo = 0;
+    let hi = lines.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if ((lines[mid] as LogLine).offset <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** The step in progress at byte `offset` (0 when outside any step). */
+  stepAtOffset(offset: number): number {
+    let found = 0;
+    for (const st of this.steps) {
+      if (st.startOffset > offset) break;
+      found = st.endOffset !== null && offset >= st.endOffset ? 0 : st.index;
+    }
+    return found;
   }
 
   /**
@@ -214,12 +292,12 @@ export class LogParser {
         // A single enormous line: split it so memory stays bounded. Never cut mid UTF-8 sequence.
         let cut = pos + MAX_LINE_BYTES;
         while (cut > pos && ((data[cut] ?? 0) & 0xc0) === 0x80) cut -= 1;
-        this.processLine(this.decoder.decode(data.subarray(pos, cut)), base + pos);
+        this.processLine(this.decoder.decode(data.subarray(pos, cut)), base + pos, true);
         pos = cut;
         continue;
       }
       if (nl === -1) break;
-      this.processLine(this.decoder.decode(data.subarray(pos, nl)), base + pos);
+      this.processLine(this.decoder.decode(data.subarray(pos, nl)), base + pos, false);
       pos = nl + 1;
     }
     this.pending = pos < data.length ? data.slice(pos) : new Uint8Array(0);
@@ -340,12 +418,11 @@ export class LogParser {
     return { text, segs: styled ? segs : null };
   }
 
-  private push1(line: Omit<LogLine, "index" | "step" | "group"> & { group?: number }): LogLine {
+  private push1(line: Omit<LogLine, "index" | "group"> & { group?: number }): LogLine {
     const full: LogLine = {
       ...line,
       index: this.lines.length,
       group: line.group ?? this.groupStack.at(-1) ?? 0,
-      step: this.openStep,
     };
     this.lines.push(full);
     if (full.text.length > this.maxCols) this.maxCols = full.text.length;
@@ -359,7 +436,49 @@ export class LogParser {
     }
   }
 
-  private processLine(input: string, offset: number): void {
+  /** Drops the tail of an escape sequence that a forced split cut in half. */
+  private stripCarry(s: string): string {
+    let rest = s;
+    while (this.carry !== "none") {
+      if (this.carry === "esc") {
+        if (rest === "") return "";
+        const c = rest[0];
+        rest = rest.slice(1);
+        this.carry = c === "]" ? "osc" : c === "[" ? "csi" : "none";
+      } else if (this.carry === "osc") {
+        const m = /\u0007|\u001b\\/.exec(rest);
+        if (!m) return "";
+        rest = rest.slice(m.index + m[0].length);
+        this.carry = "none";
+      } else {
+        const m = /^[0-?]*[ -/]*[@-~]/.exec(rest);
+        if (!m) return /^[0-?]*[ -/]*$/.test(rest) ? "" : ((this.carry = "none"), rest);
+        rest = rest.slice(m[0].length);
+        this.carry = "none";
+      }
+    }
+    return rest;
+  }
+
+  /** After a forced split, remember whether the piece ended inside an escape sequence. */
+  private updateCarry(piece: string): void {
+    const i = piece.lastIndexOf("\u001b");
+    this.carry = "none";
+    if (i === -1) return;
+    const tail = piece.slice(i);
+    if (tail === "\u001b") this.carry = "esc";
+    else if (tail[1] === "]") {
+      if (!/\u0007|\u001b\\/.test(tail.slice(2))) this.carry = "osc";
+    } else if (tail[1] === "[") {
+      if (!/^\u001b\[[0-?]*[ -/]*[@-~]/.test(tail)) this.carry = "csi";
+    }
+  }
+
+  private processLine(inputRaw: string, offset: number, forced: boolean): void {
+    const input = this.continuing && this.carry !== "none" ? this.stripCarry(inputRaw) : inputRaw;
+    if (forced) this.updateCarry(inputRaw);
+    else this.carry = "none";
+    this.continuing = forced;
     const raw = input.replace(UNSAFE_RE, "");
     let rest = raw;
     let ts: number | null = null;
@@ -370,6 +489,12 @@ export class LogParser {
     }
 
     const base = { offset, ts, level: null, segs: null, ref: 0, cutBytes: 0 } as const;
+
+    const cutMatch = CUT_RE.exec(rest);
+    if (cutMatch) {
+      this.push1({ ...base, kind: "cut", text: "omitted", cutBytes: Number(cutMatch[1]) });
+      return;
+    }
 
     if (rest.startsWith("::")) {
       const cmd = COMMAND_RE.exec(rest.replace(/\r$/, ""));
@@ -432,51 +557,6 @@ export class LogParser {
           }
           case "add-mask":
             return;
-          case "tt-step": {
-            const info = this.stepRecord(value);
-            if (!info) break;
-            if (info.phase === "start") {
-              const line = this.push1({
-                ...base,
-                kind: "step",
-                text: info.name ?? `Step ${info.index}`,
-                ref: info.index,
-              });
-              this.steps.push({
-                index: info.index,
-                name: info.name ?? `Step ${info.index}`,
-                startLine: line.index,
-                endLine: null,
-                startTs: ts,
-                endTs: null,
-                result: null,
-              });
-              line.step = info.index;
-              this.openStep = info.index;
-            } else {
-              const step = this.steps.find((s) => s.index === info.index);
-              if (step) {
-                step.endTs = ts;
-                step.endLine = this.lines.length - 1;
-                step.result = info.result ?? "success";
-              }
-              if (this.openStep === info.index) this.openStep = 0;
-            }
-            return;
-          }
-          case "tt-cut": {
-            let bytes = 0;
-            let reason = "middle";
-            try {
-              const j = JSON.parse(value) as { bytes?: number; reason?: string };
-              bytes = typeof j.bytes === "number" ? j.bytes : 0;
-              reason = j.reason ?? reason;
-            } catch {
-              // malformed cut record; still show a marker
-            }
-            this.push1({ ...base, kind: "cut", text: `${reason}`, cutBytes: bytes });
-            return;
-          }
           default:
             break;
         }
@@ -485,28 +565,6 @@ export class LogParser {
 
     const { text, segs } = this.tokenize(rest);
     this.push1({ ...base, kind: "text", text, segs });
-  }
-
-  private stepRecord(
-    value: string,
-  ): { phase: "start" | "end"; index: number; name?: string; result?: StepResult } | null {
-    try {
-      const j = JSON.parse(value) as {
-        phase?: string;
-        index?: number;
-        name?: string;
-        result?: StepResult;
-      };
-      if ((j.phase !== "start" && j.phase !== "end") || typeof j.index !== "number") return null;
-      return {
-        phase: j.phase,
-        index: j.index,
-        ...(j.name !== undefined ? { name: j.name } : {}),
-        ...(j.result !== undefined ? { result: j.result } : {}),
-      };
-    } catch {
-      return null;
-    }
   }
 }
 

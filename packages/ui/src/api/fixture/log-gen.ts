@@ -1,3 +1,4 @@
+import type { StepEvent } from "../types";
 import { createRng, type Rng } from "./prng";
 
 export type LogKind = "setup" | "lint" | "typecheck" | "test" | "build" | "e2e" | "huge" | "deploy";
@@ -16,6 +17,8 @@ export type GeneratedLog = {
   /** Cumulative byte offset after each line (lineEnds[i] is the end of line i, incl. newline). */
   lineEnds: Uint32Array;
   lineCount: number;
+  /** Step boundaries, out of band: `logOffset` is where in `bytes` the boundary falls. */
+  steps: Omit<StepEvent, "attemptId">[];
 };
 
 const ESC = "\u001b";
@@ -26,25 +29,40 @@ const dim = (s: string) => c("2", s);
 const bold = (s: string) => c("1", s);
 const cyan = (s: string) => c("36", s);
 
-type Draft = { text: string; weight: number };
+type Draft = {
+  text: string;
+  weight: number;
+  /** Written without a timestamp (cut markers). */
+  raw?: boolean;
+};
+type StepMark = {
+  /** Draft index the boundary precedes. */
+  pos: number;
+  index: number;
+  name: string;
+  phase: "start" | "end";
+  result?: "success" | "failure" | "skipped";
+};
 
 class Builder {
   readonly drafts: Draft[] = [];
+  readonly marks: StepMark[] = [];
   private step = 0;
   readonly rng: Rng;
   constructor(rng: Rng) {
     this.rng = rng;
   }
-  line(text: string, weight = 1): void {
-    this.drafts.push({ text, weight });
+  line(text: string, weight = 1, raw = false): void {
+    this.drafts.push({ text, weight, ...(raw ? { raw: true } : {}) });
   }
   startStep(name: string): number {
     this.step += 1;
-    this.line(`::tt-step::${JSON.stringify({ phase: "start", index: this.step, name })}`, 0.3);
+    this.marks.push({ pos: this.drafts.length, index: this.step, name, phase: "start" });
     return this.step;
   }
   endStep(index: number, result: "success" | "failure" | "skipped"): void {
-    this.line(`::tt-step::${JSON.stringify({ phase: "end", index, result })}`, 0.1);
+    const name = this.marks.find((m) => m.index === index && m.phase === "start")?.name ?? "";
+    this.marks.push({ pos: this.drafts.length, index, name, phase: "end", result });
   }
   group(title: string, body: string[]): void {
     this.line(`::group::${title}`);
@@ -202,7 +220,9 @@ function hugeBody(b: Builder): void {
   const total = 126_000;
   for (let i = 0; i < total; i++) {
     if (i === 62_000) {
-      b.line(`::tt-cut::${JSON.stringify({ bytes: 3_405_772, reason: "middle" })}`);
+      // Exactly what cutMarker() in @turntable/provider-sdk writes: "\n[turntable: N bytes ...]\n".
+      b.line("", 1, true);
+      b.line(cutMarkerText(3_405_772), 1, true);
       continue;
     }
     if (i % 5000 === 0) b.line(`::group::Shard ${i / 5000 + 1}`);
@@ -216,7 +236,7 @@ function hugeBody(b: Builder): void {
   b.endStep(idx, "success");
 }
 
-function build(plan: LogPlan): Draft[] {
+function build(plan: LogPlan): { drafts: Draft[]; marks: StepMark[] } {
   const rng = createRng(plan.seed);
   const b = new Builder(rng);
   const failing = plan.outcome === "failure";
@@ -259,9 +279,19 @@ function build(plan: LogPlan): Draft[] {
     b.drafts.length = keep;
     while (b.drafts.length > 0 && b.drafts[b.drafts.length - 1]?.text.startsWith("::endgroup"))
       b.drafts.pop();
+    // Boundaries after the cut never happened; the step in progress stays open (no end event).
+    const kept = b.marks.filter((m) =>
+      m.phase === "start" ? m.pos < b.drafts.length : m.pos <= b.drafts.length,
+    );
+    b.marks.length = 0;
+    b.marks.push(...kept);
   }
-  return b.drafts;
+  return { drafts: b.drafts, marks: b.marks };
 }
+
+/** The text of cutMarker(n) in @turntable/provider-sdk (a test keeps them in step). */
+export const cutMarkerText = (omittedBytes: number): string =>
+  `[turntable: ${omittedBytes} bytes of output omitted]`;
 
 const pad = (n: number, w: number) => String(n).padStart(w, "0");
 function iso(ms: number): string {
@@ -275,28 +305,43 @@ const cache = new Map<string, GeneratedLog>();
 export function generateLog(plan: LogPlan): GeneratedLog {
   const hit = cache.get(plan.seed);
   if (hit) return hit;
-  const drafts = build(plan);
+  const { drafts, marks } = build(plan);
   const enc = new TextEncoder();
   const totalWeight = drafts.reduce((a, d) => a + d.weight, 0);
   const parts: Uint8Array[] = [];
   const lineEnds = new Uint32Array(drafts.length);
+  const msPerWeight = plan.durationMs / Math.max(1, totalWeight);
+  // Offset and time at the start of each draft (and one past the end), for step boundaries.
+  const offBefore: number[] = [];
+  const tBefore: number[] = [];
   let t = plan.startedAt;
   let off = 0;
-  const msPerWeight = plan.durationMs / Math.max(1, totalWeight);
   drafts.forEach((d, i) => {
+    offBefore.push(off);
+    tBefore.push(Math.floor(t));
     t += d.weight * msPerWeight;
-    const bytes = enc.encode(`${iso(Math.floor(t))} ${d.text}\n`);
+    const bytes = enc.encode(d.raw ? `${d.text}\n` : `${iso(Math.floor(t))} ${d.text}\n`);
     parts.push(bytes);
     off += bytes.length;
     lineEnds[i] = off;
   });
+  offBefore.push(off);
+  tBefore.push(Math.floor(t));
   const all = new Uint8Array(off);
   let p = 0;
   for (const part of parts) {
     all.set(part, p);
     p += part.length;
   }
-  const out = { bytes: all, lineEnds, lineCount: drafts.length };
+  const steps = marks.map((m) => ({
+    index: m.index,
+    name: m.name,
+    phase: m.phase,
+    ...(m.result ? { result: m.result } : {}),
+    at: tBefore[m.pos] ?? Math.floor(t),
+    logOffset: offBefore[m.pos] ?? off,
+  }));
+  const out = { bytes: all, lineEnds, lineCount: drafts.length, steps };
   cache.set(plan.seed, out);
   if (cache.size > 40) cache.delete(cache.keys().next().value as string);
   return out;
