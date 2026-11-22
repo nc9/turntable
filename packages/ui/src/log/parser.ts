@@ -18,7 +18,7 @@
 
 export type Level = "error" | "warning" | "notice" | "debug";
 export type LineKind = "text" | "group";
-export type StepResult = "success" | "failure" | "skipped";
+export type StepResult = "success" | "failure" | "skipped" | "cancelled";
 
 /** A run of text with one style. `style` indexes `LogParser.styles`; 0 is the default style. */
 export type Seg = { text: string; style: number };

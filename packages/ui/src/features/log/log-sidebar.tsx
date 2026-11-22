@@ -10,7 +10,8 @@ import { cn } from "@/lib/utils";
 function stepState(step: StepInfo, attemptState: JobState, truncated: boolean): JobState {
   if (step.result === "success") return "success";
   if (step.result === "failure") return "failure";
-  if (step.result === "skipped") return "cancelled";
+  if (step.result === "skipped") return "skipped";
+  if (step.result === "cancelled") return "cancelled";
   // The end marker may lie beyond the loaded window: borrow the attempt's own result.
   if (truncated)
     return attemptState === "running" || attemptState === "queued" ? "running" : attemptState;

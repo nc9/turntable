@@ -45,6 +45,12 @@ export const STATE_META: Record<JobState, StateMeta> = {
     bg: "bg-st-approval-bg",
     description: "Paused until a human approves it.",
   },
+  skipped: {
+    label: "Skipped",
+    text: "text-st-skipped",
+    bg: "bg-st-skipped-bg",
+    description: "Not run, because a job it needs did not succeed.",
+  },
   cancelled: {
     label: "Cancelled",
     text: "text-st-cancelled",

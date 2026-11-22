@@ -35,6 +35,7 @@ const FILTER_STATES: JobState[] = [
   "awaiting_approval",
   "success",
   "cancelled",
+  "skipped",
 ];
 
 function FilterMenu({
