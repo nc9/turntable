@@ -42,6 +42,10 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     tags: new Map<string, { sha: string; annotatedAs?: string; tagger?: string }>(),
     /** The default branch's commits, newest first, as the commit listing reports them. */
     history: [] as { sha: string; parents: string[] }[],
+    /** The events API's PushEvents, newest first. */
+    events: [] as { ref: string; head: string; before: string }[],
+    /** Answer the events endpoint with this status instead. */
+    eventsStatus: undefined as number | undefined,
     /** Tag rulesets, as the rulesets API would report them. */
     rulesets: [] as {
       id: number;
@@ -62,6 +66,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     commits: new Map<string, { login: string | null; message: string }>(),
     calls: [] as { path: string; method: string | undefined; ifNoneMatch?: string }[],
   };
+  const parentsOf = (sha: string): { sha: string }[] =>
+    (state.history.find((c) => c.sha === sha)?.parents ?? []).map((p) => ({ sha: p }));
   const fetchStub = async (url: string, init?: RequestInit): Promise<Response> => {
     const u = new URL(url);
     const path = decodeURIComponent(u.pathname);
@@ -121,6 +127,15 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
             object: { type: "commit", sha: hit.sha },
           })
         : new Response("not found", { status: 404 });
+    }
+    if (path === `/repos/${repo}/events`) {
+      if (state.eventsStatus) return new Response("no", { status: state.eventsStatus });
+      return json(
+        state.events.map((e) => ({
+          type: "PushEvent",
+          payload: { ref: e.ref, head: e.head, before: e.before },
+        })),
+      );
     }
     if (path === `/repos/${repo}/commits` && u.searchParams.has("sha")) {
       const page = Number(u.searchParams.get("page") ?? "1");
@@ -184,6 +199,7 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       return json({
         sha: commit[1],
         commit: { message: known.message },
+        parents: parentsOf(commit[1] as string),
         author: known.login === null ? null : { login: known.login },
       });
     }
@@ -192,6 +208,7 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       return json({
         sha: commit[1],
         commit: { message: `head commit of #${pull?.number}` },
+        parents: parentsOf(commit[1] as string),
         author: pull ? { login: pull.user } : null,
       });
     }
