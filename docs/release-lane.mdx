@@ -79,5 +79,5 @@ The release service's variables:
 ## Limits
 
 - The lane's artifact attestation is first use: it protects against changes after the lane first saw an artifact, not against a build that recorded bad bytes in the first place. An independent record of digests written by the build is future work.
-- Only the built-in key backend is wired into the lane. Create its key once, on the release service, with `longshore release init-key --name release` (it prints the public key to pin; the private key is sealed under the release master key in the lane's own directory), and point the project at it with `longshore policy set --signing-key builtin:release`.
+- Only the built-in key backend is wired into the lane. Create its key once, on the release service, with `longshore release init-key --org <slug> --name release` (the key is stored under the org's id, so another org's `builtin:release` is a different key; it prints the public key to pin; the private key is sealed under the release master key in the lane's own directory), and point the project at it with `longshore policy set --signing-key builtin:release`.
 - Approvals are read from the main database and re-verified from their signatures, so the lane does not trust a stored "approved" flag either.

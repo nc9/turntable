@@ -29,6 +29,7 @@ import {
 import * as s from "../src/db/schema";
 import {
   type ApprovalVerifier,
+  builtinKeyRef,
   denyAllApprovals,
   parseKeyRef,
   secretStoreVault,
@@ -70,7 +71,7 @@ beforeEach(async () => {
   const map = new Map<string, string>();
   vault = { get: async (n) => map.get(n), set: async (n, v) => void map.set(n, v) };
   local = new LocalSigner(vault);
-  await local.ensureKey("release");
+  await local.ensureKey(builtinKeyRef(a.orgId, "release"));
   signCalls = 0;
   spy = {
     publicKey: (r) => local.publicKey(r),
@@ -84,9 +85,15 @@ beforeEach(async () => {
 
 /** A finished release run with a stored plan and a recorded artifact. */
 async function releaseRun(
-  over: { klass?: string; ref?: string; status?: "success" | "failure"; record?: boolean } = {},
+  over: {
+    klass?: string;
+    ref?: string;
+    status?: "success" | "failure";
+    record?: boolean;
+    t?: Tenant;
+  } = {},
 ) {
-  const run = await createRun(db, a.scope, {
+  const run = await createRun(db, (over.t ?? a).scope, {
     workflowPath: ".github/workflows/release.yml",
     event: "push",
     ref: over.ref ?? "refs/tags/v1.2.3",
@@ -100,8 +107,15 @@ async function releaseRun(
       decidedAt: 1,
     }),
   });
-  const job = (await createJob(db, a.scope, { runId: run.id, jobKey: "build", name: "build" }))!;
-  const attempt = (await createAttempt(db, a.scope, { jobId: job.id, provider: "test" }))!;
+  const job = (await createJob(db, (over.t ?? a).scope, {
+    runId: run.id,
+    jobKey: "build",
+    name: "build",
+  }))!;
+  const attempt = (await createAttempt(db, (over.t ?? a).scope, {
+    jobId: job.id,
+    provider: "test",
+  }))!;
   await db.orm
     .update(s.jobAttempts)
     .set({
@@ -125,17 +139,17 @@ async function releaseRun(
       }),
     })
     .where(eq(s.jobAttempts.id, attempt.id));
-  await setRunStatus(db, a.scope, run.id, "running");
-  await setRunStatus(db, a.scope, run.id, over.status ?? "success");
+  await setRunStatus(db, (over.t ?? a).scope, run.id, "running");
+  await setRunStatus(db, (over.t ?? a).scope, run.id, over.status ?? "success");
   if (over.record !== false) {
-    await recordArtifact(db, a.scope, {
+    await recordArtifact(db, (over.t ?? a).scope, {
       runId: run.id,
       attemptId: attempt.id,
       name: "longshore-linux-x64",
       sha256: sha256Hex(BINARY),
       size: BINARY.length,
     });
-    await recordArtifact(db, a.scope, {
+    await recordArtifact(db, (over.t ?? a).scope, {
       runId: run.id,
       attemptId: attempt.id,
       name: "sbom.json",
@@ -163,7 +177,7 @@ describe("what is signed", () => {
     const out = await service().signRelease(a.scope, req(run.id));
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    const key = await local.publicKey("release");
+    const key = await local.publicKey(builtinKeyRef(a.orgId, "release"));
     const v = verifyArtifact({
       artifact: BINARY,
       envelope: out.envelope,
@@ -476,6 +490,81 @@ describe("the built-in key", () => {
     const sig = await signer.sign(Buffer.from("m"), "release2");
     const pub = crypto.createPublicKey(key.publicKeyPem);
     expect(crypto.verify(null, Buffer.from("m"), pub, Buffer.from(sig))).toBe(true);
+  });
+});
+
+describe("a built-in key belongs to one org", () => {
+  test("two orgs naming builtin:release have two keys: neither signs for the other, and an org naming the other's stored name reaches only its own", async () => {
+    const hostile = new SigningService({
+      db,
+      signers: { builtin: spy },
+      approvals: approve,
+      builderId: "https://ci.example.test/longshore",
+    });
+    await setProjectSigning(db, b.scope, { signingKey: "builtin:release" });
+    // Org B has no key yet: it cannot sign, and in particular not with A's key of the same name.
+    const bRun = await releaseRun({ t: b });
+    const before = signCalls;
+    const denied = await hostile
+      .signRelease(b.scope, { runId: bRun.id, artifacts: ["longshore-linux-x64"] })
+      .catch((e: unknown) => e);
+    expect(
+      denied instanceof Error ||
+        (typeof denied === "object" && denied !== null && "ok" in denied && denied.ok === false),
+    ).toBe(true);
+    expect(signCalls).toBe(before); // nothing was signed
+    // Once B has its own key, the two envelopes carry different key ids and each verifies under
+    // its own public key only.
+    await local.ensureKey(builtinKeyRef(b.orgId, "release"));
+    const aRun = await releaseRun();
+    const bRun2 = await releaseRun({ t: b });
+    const aOut = await hostile.signRelease(a.scope, req(aRun.id));
+    const bOut = await hostile.signRelease(b.scope, req(bRun2.id));
+    expect(aOut.ok && bOut.ok).toBe(true);
+    if (!aOut.ok || !bOut.ok) return;
+    expect(aOut.keyid).not.toBe(bOut.keyid);
+    const aPub = await local.publicKey(builtinKeyRef(a.orgId, "release"));
+    const bPub = await local.publicKey(builtinKeyRef(b.orgId, "release"));
+    expect(verifyEnvelope(aOut.envelope, aPub.publicKeyPem).ok).toBe(true);
+    expect(verifyEnvelope(bOut.envelope, bPub.publicKeyPem).ok).toBe(true);
+    // an envelope signed by A does not verify under B's key, and the reverse
+    expect(verifyEnvelope(aOut.envelope, bPub.publicKeyPem).ok).toBe(false);
+    expect(verifyEnvelope(bOut.envelope, aPub.publicKeyPem).ok).toBe(false);
+    // B names A's namespaced key: it is looked up inside B, so it finds nothing
+    await setProjectSigning(db, b.scope, { signingKey: `builtin:${a.orgId}.release` });
+    const bRun3 = await releaseRun({ t: b });
+    const stolen = await hostile.signRelease(b.scope, req(bRun3.id)).catch((e: unknown) => e);
+    expect(
+      stolen instanceof Error ||
+        (typeof stolen === "object" && stolen !== null && "ok" in stolen && stolen.ok === false),
+    ).toBe(true);
+  });
+
+  test("a KMS key reference may belong to one org only: at signing time and when the policy is set", async () => {
+    const kms: Signer = { publicKey: (r) => local.publicKey(r), sign: (m, r) => local.sign(m, r) };
+    await setProjectSigning(db, a.scope, { signingKey: "aws-kms:arn:aws:kms:eu-1:111:key/shared" });
+    await setProjectSigning(db, b.scope, { signingKey: "aws-kms:arn:aws:kms:eu-1:111:key/shared" });
+    const svc = new SigningService({
+      db,
+      signers: { "aws-kms": kms },
+      approvals: approve,
+      builderId: "https://ci.example.test/longshore",
+    });
+    const run = await releaseRun();
+    const out = await svc.signRelease(a.scope, req(run.id));
+    expect(out).toMatchObject({ ok: false, reason: "key_shared" });
+    // the CLI refuses to create the sharing in the first place
+    const { setSigningPolicy } = await import("../src/ops/policy-cli");
+    await setProjectSigning(db, b.scope, { signingKey: null });
+    await expect(
+      setSigningPolicy(db, "org-b", "app", {
+        signingKey: "aws-kms:arn:aws:kms:eu-1:111:key/shared",
+      }),
+    ).rejects.toThrow(/another org/);
+    // a builtin name is fine in both orgs, it is two keys
+    await expect(
+      setSigningPolicy(db, "org-b", "app", { signingKey: "builtin:release" }),
+    ).resolves.toHaveLength(1);
   });
 });
 
