@@ -44,7 +44,8 @@ Usage:
   longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
   longshore token revoke <id> [--data-dir ./data]
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
-  longshore policy show --org <slug> | set approve-run-min-role <operator|release_operator> --org <slug>
+  longshore policy set approve-run-min-role <operator|release_operator> [--org local]
+  longshore policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
   longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore version
 
@@ -387,10 +388,6 @@ async function main(argv: string[]): Promise<void> {
       return await serve(rest);
     case "token":
       return await token(rest);
-    case "policy": {
-      const { policyCommand } = await import("./pins/cli");
-      return await policyCommand(rest);
-    }
     case "keys": {
       const { keysCommand } = await import("./github/cli");
       return await keysCommand(rest);

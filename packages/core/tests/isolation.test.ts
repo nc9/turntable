@@ -9,14 +9,27 @@ const ok: AttemptOutcome = { state: "success", reason: "ok" };
 
 function ctx(
   isolation: ProviderInfo["isolation"],
-  opts: { approvalKind?: string | null; plan?: string | null } = {},
+  opts: {
+    approvalKind?: string | null;
+    plan?: string | null;
+    trust?: string | null;
+    local?: boolean;
+  } = {},
 ): AttemptContext {
   const world = new FakeWorld();
   const provider = world.provider();
   return {
     attempt: { id: "att1" },
     job: { id: "job1", approvalKind: opts.approvalKind ?? null },
-    run: { id: "run1", plan: opts.plan ?? null },
+    run: {
+      id: "run1",
+      plan: opts.plan ?? null,
+      trust: opts.trust ?? null,
+      // A run with no stated class is a local one unless the test says otherwise.
+      local: opts.local ?? (opts.plan === undefined && opts.trust === undefined),
+      event: "push",
+      ref: "refs/heads/main",
+    },
     scope: { orgId: "o", projectId: "p" },
     provider: { ...provider, info: { ...provider.info, isolation, name: "testprov" } } as never,
     signal: new AbortController().signal,
@@ -45,18 +58,82 @@ test("isolation classes are ordered container < gvisor < microvm < vm", () => {
     }
 });
 
-test("trust comes from the untrusted-author approval or the run plan, and defaults to trusted", () => {
-  expect(trustOf({}, null)).toBe("trusted");
-  expect(trustOf({ approvalKind: null }, "{}")).toBe("trusted");
-  expect(trustOf({ approvalKind: "environment" }, null)).toBe("trusted");
-  expect(trustOf({ approvalKind: "untrusted_author" }, null)).toBe("untrusted");
-  expect(trustOf({}, '{"trust":"untrusted"}')).toBe("untrusted");
-  expect(trustOf({}, '{"trust":"untrusted_pr"}')).toBe("untrusted"); // the trust module's class
-  for (const klass of ["protected", "release", "trusted_pr", "trusted"]) {
-    expect(trustOf({}, JSON.stringify({ trust: klass }))).toBe("trusted");
+const run = (over: Record<string, unknown> = {}) => ({
+  local: false,
+  event: "push",
+  ref: "refs/heads/main",
+  trust: null as string | null,
+  plan: null as string | null,
+  ...over,
+});
+const decided = (klass: string) => JSON.stringify({ class: klass });
+
+test("trust fails closed: only a stored trusted class, or a local run, is trusted", () => {
+  // A missing class on a run that is not local is untrusted; so is an unparseable one.
+  expect(trustOf({}, run())).toBe("untrusted");
+  expect(trustOf({}, run({ plan: "{}" }))).toBe("untrusted");
+  expect(trustOf({}, run({ plan: "not json" }))).toBe("untrusted");
+  expect(trustOf({}, run({ trust: "not json" }))).toBe("untrusted");
+  // An unknown string is untrusted, including near misses and the old bare word.
+  for (const bad of ["trusted", "TRUSTED_PR", "weird", "", "untrusted", "untrusted_pr"]) {
+    expect(trustOf({}, run({ plan: JSON.stringify({ trust: bad }) }))).toBe("untrusted");
+    expect(trustOf({}, run({ trust: decided(bad) }))).toBe("untrusted");
   }
-  expect(trustOf({}, "not json")).toBe("trusted");
-  expect(trustOf({}, '{"trust":"UNTRUSTED"}')).toBe("trusted");
+  expect(trustOf({}, run({ trust: JSON.stringify({ notclass: "protected" }) }))).toBe("untrusted");
+  // The three trusted classes are trusted, from either copy.
+  for (const klass of ["protected", "release", "trusted_pr"]) {
+    expect(trustOf({}, run({ trust: decided(klass) }))).toBe("trusted");
+    expect(trustOf({}, run({ plan: JSON.stringify({ trust: klass }) }))).toBe("trusted");
+    expect(
+      trustOf({}, run({ trust: decided(klass), plan: JSON.stringify({ trust: klass }) })),
+    ).toBe("trusted");
+  }
+  // If the two copies disagree, the lower wins.
+  expect(
+    trustOf(
+      {},
+      run({ trust: decided("protected"), plan: JSON.stringify({ trust: "untrusted_pr" }) }),
+    ),
+  ).toBe("untrusted");
+  // A local run (the operator's own checkout) is trusted, with or without a class.
+  expect(trustOf({}, run({ local: true }))).toBe("trusted");
+  // A job that needed untrusted-author approval is untrusted whatever the class.
+  expect(trustOf({ approvalKind: "untrusted_author" }, run({ trust: decided("protected") }))).toBe(
+    "untrusted",
+  );
+  expect(trustOf({ approvalKind: "environment" }, run({ trust: decided("protected") }))).toBe(
+    "trusted",
+  );
+});
+
+test("a job the demotion rule lowers is untrusted for isolation too", () => {
+  // A privileged trigger handed a non-protected ref.
+  expect(
+    trustOf(
+      {},
+      run({ event: "pull_request_target", ref: "refs/pull/5/head", trust: decided("trusted_pr") }),
+    ),
+  ).toBe("untrusted");
+  // A privileged trigger on a protected ref, without a head checkout, is not demoted.
+  expect(
+    trustOf(
+      {},
+      run({ event: "workflow_run", ref: "refs/heads/main", trust: decided("protected") }),
+    ),
+  ).toBe("trusted");
+  // A step that checks out the PR head (listed at ingest by job id) demotes that job only.
+  const plan = JSON.stringify({ trust: "protected", headCheckouts: ["risky"] });
+  const privileged = run({
+    event: "workflow_run",
+    ref: "refs/heads/main",
+    trust: decided("protected"),
+    plan,
+  });
+  expect(trustOf({ jobKey: "risky" }, privileged)).toBe("untrusted");
+  expect(trustOf({ jobKey: "safe" }, privileged)).toBe("trusted");
+  expect(trustOf({ jobKey: "x", planned: JSON.stringify({ id: "risky" }) }, privileged)).toBe(
+    "untrusted",
+  );
 });
 
 test("minimums: untrusted needs gvisor, a hosted instance needs microvm for everything", () => {
@@ -72,7 +149,7 @@ test("a provider that meets the minimum runs the job untouched", async () => {
   const runner = withIsolationPolicy(async () => (ran++, ok), p);
   expect((await runner(ctx("container"))).state).toBe("success");
   expect((await runner(ctx("gvisor", { approvalKind: "untrusted_author" }))).state).toBe("success");
-  expect((await runner(ctx("vm", { plan: '{"trust":"untrusted"}' }))).state).toBe("success");
+  expect((await runner(ctx("vm", { plan: '{"trust":"untrusted_pr"}' }))).state).toBe("success");
   expect(ran).toBe(3);
 });
 
@@ -135,4 +212,14 @@ test("an explicit override lets it run, is audited with the reason, and shows on
   await runner(ctx("container"));
   expect(audits).toHaveLength(0);
   expect(seen()?.notices).toBeUndefined();
+});
+
+test("a non-local run with no class is refused on a container provider (fails closed)", async () => {
+  const { policy: p } = policy();
+  const runner = withIsolationPolicy(async () => ok, p);
+  const out = await runner(ctx("container", { plan: "{}", local: false }));
+  expect(out.state).toBe("infra_error");
+  expect(out.reason).toContain("untrusted runs need gvisor");
+  expect((await runner(ctx("container", { plan: "{}", local: true }))).state).toBe("success");
+  expect((await runner(ctx("gvisor", { plan: "{}", local: false }))).state).toBe("success");
 });

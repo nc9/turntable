@@ -251,3 +251,74 @@ export function decideRun(input: {
 
 /** Runs of these classes wait for a human before any job starts. */
 export const needsApproval = (klass: TrustClass): boolean => klass === "untrusted_pr";
+
+const TRUSTED_CLASSES: readonly string[] = ["protected", "release", "trusted_pr"];
+
+/**
+ * Whether a run's code is trusted, for isolation and egress. Fails closed: only a stored class of
+ * protected, release or trusted_pr is trusted, and anything missing, unknown or unparseable is
+ * untrusted. The one exception is a local run (`longshore run`, from the operator's own
+ * checkout). The decided class lives in `runs.trust`, with a copy in `run.plan.trust`; if either
+ * says untrusted the run is. A job that the demotion rule lowers (a privileged trigger handed a
+ * non-protected ref, or a step that checks out the PR head; the head-checkout jobs are listed in
+ * `plan.headCheckouts` at ingest) is untrusted too.
+ */
+export function isolationTrust(
+  job: { approvalKind?: string | null | undefined; jobKey?: string; planned?: string | null },
+  run: {
+    local?: boolean;
+    event?: string;
+    ref?: string;
+    trust?: string | null;
+    plan?: string | null;
+  },
+): "trusted" | "untrusted" {
+  if (job.approvalKind === "untrusted_author") return "untrusted";
+  if (run.local === true) return "trusted";
+  const classes: unknown[] = [];
+  let headCheckouts: string[] = [];
+  const read = (text: string | null | undefined, pick: (v: Record<string, unknown>) => unknown) => {
+    if (!text) return;
+    try {
+      const v = JSON.parse(text) as unknown;
+      if (v !== null && typeof v === "object") classes.push(pick(v as Record<string, unknown>));
+      else classes.push(undefined);
+    } catch {
+      classes.push(undefined);
+    }
+  };
+  read(run.trust, (v) => v.class);
+  // The plan copy is checked only when present: a missing copy adds no claim, an unknown one does.
+  if (run.plan) {
+    try {
+      const plan = JSON.parse(run.plan) as Record<string, unknown> | null;
+      if (plan && typeof plan === "object") {
+        if ("trust" in plan) classes.push(plan.trust);
+        if (Array.isArray(plan.headCheckouts)) {
+          headCheckouts = plan.headCheckouts.filter((x): x is string => typeof x === "string");
+        }
+      }
+    } catch {
+      classes.push(undefined);
+    }
+  }
+  if (classes.length === 0) return "untrusted";
+  if (!classes.every((c) => typeof c === "string" && TRUSTED_CLASSES.includes(c))) {
+    return "untrusted";
+  }
+  let plannedId: string | undefined;
+  try {
+    plannedId = job.planned ? (JSON.parse(job.planned) as { id?: string }).id : undefined;
+  } catch {
+    plannedId = undefined;
+  }
+  const id = plannedId ?? job.jobKey;
+  // The demotion rule (see assessJob): a privileged trigger handed a non-protected ref, or whose
+  // job checks out the PR head, is untrusted. Only this rule lowers the stored class here: a plain
+  // pull_request assessed without forge facts must not override what ingest decided.
+  const event = run.event ?? "";
+  const ref = run.ref ?? "";
+  const headCheckout = id !== undefined && headCheckouts.includes(id);
+  const nonProtected = !isProtectedRef(ref) && !isReleaseRef(ref);
+  return isPrivilegedEvent(event) && (nonProtected || headCheckout) ? "untrusted" : "trusted";
+}

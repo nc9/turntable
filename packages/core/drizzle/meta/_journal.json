@@ -71,6 +71,13 @@
       "when": 1795352229854,
       "tag": "0009_youthful_gladiator",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795365759673,
+      "tag": "0010_loose_smasher",
+      "breakpoints": true
     }
   ]
 }

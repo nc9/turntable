@@ -339,7 +339,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         plan = await resolvePlanActions(jobPlan, {
           db: o.db,
           scope: ctx.scope,
-          klass: trust.klass,
+          klass,
           base: o.resolver ?? githubResolver(),
           readFile: checkout.readFile,
           ...(o.reachable ? { reachable: o.reachable } : {}),

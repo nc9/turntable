@@ -50,6 +50,11 @@ export const pollConfigSchema = z
              */
             egress: z.enum(["none", "open", "allowlist"]).optional(),
             /**
+             * Egress for runs classified untrusted_pr, whatever `egress` says: never `open`
+             * (untrusted code with network is a mining and exfiltration vector). Default `none`.
+             */
+            untrustedEgress: z.enum(["none", "allowlist"]).default("none"),
+            /**
              * Most pull requests from authors who are not on `authors` that one poll will look at
              * (each costs forge API calls). The rest wait for the next poll.
              */

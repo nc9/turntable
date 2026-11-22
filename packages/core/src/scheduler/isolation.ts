@@ -1,12 +1,14 @@
 import { type IsolationClass, isolationAtLeast } from "@longshore/provider-sdk";
 import { appendAudit, type Scope } from "../db/repos";
 import type { Db } from "../db";
+import { isolationTrust } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
 /**
- * Isolation minimums by trust. A run is `untrusted` when its code comes from someone the project
- * has not vouched for: a job that needed the untrusted-author approval, or a run whose plan says
- * `"trust": "untrusted"` or the trust module's `"untrusted_pr"` class. Everything else is `trusted` (default-branch and local runs).
+ * Isolation minimums by trust. A run is `trusted` only when its stored class (decided at ingest)
+ * is protected, release or trusted_pr, or it is a local run; anything else, including a missing or
+ * unknown class, is `untrusted`. A job needing untrusted-author approval, or demoted by the
+ * privileged-trigger rule, is untrusted too.
  *
  * - untrusted: gVisor or stronger.
  * - hosted instance (many tenants): microVM or VM, for every run.
@@ -14,26 +16,12 @@ import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
  */
 export type IsolationTrust = "trusted" | "untrusted";
 
+/** Fails closed: see `isolationTrust` in the trust module. */
 export function trustOf(
-  job: { approvalKind?: string | null | undefined },
-  runPlan: string | null | undefined,
+  job: Parameters<typeof isolationTrust>[0],
+  run: Parameters<typeof isolationTrust>[1],
 ): IsolationTrust {
-  if (job.approvalKind === "untrusted_author") return "untrusted";
-  if (runPlan) {
-    try {
-      const plan = JSON.parse(runPlan) as { trust?: unknown } | null;
-      if (
-        plan !== null &&
-        typeof plan === "object" &&
-        (plan.trust === "untrusted" || plan.trust === "untrusted_pr")
-      ) {
-        return "untrusted";
-      }
-    } catch {
-      // an unreadable plan adds no claim of its own
-    }
-  }
-  return "trusted";
+  return isolationTrust(job, run);
 }
 
 export function requiredIsolation(trust: IsolationTrust, hosted: boolean): IsolationClass {
@@ -58,7 +46,7 @@ export type IsolationPolicy = {
 export function withIsolationPolicy(runner: AttemptRunner, policy: IsolationPolicy): AttemptRunner {
   const audit = policy.audit ?? ((scope, entry) => appendAudit(policy.db, scope, entry));
   return async (ctx: AttemptContext): Promise<AttemptOutcome> => {
-    const trust = trustOf(ctx.job, ctx.run.plan);
+    const trust = trustOf(ctx.job, ctx.run);
     const need = requiredIsolation(trust, policy.hosted);
     const have = ctx.provider.info.isolation;
     if (isolationAtLeast(have, need)) return runner(ctx);

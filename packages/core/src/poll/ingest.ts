@@ -2,6 +2,7 @@ import {
   githubContext,
   localActionDir,
   planWorkflow,
+  workflowHeadCheckouts,
   type Value,
   type WorkflowEvent,
 } from "@longshore/act-runner";
@@ -536,7 +537,13 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         ? `untrusted:pr-${c.prNumber ?? "x"}:${wp.concurrency.group}`
         : wp.concurrency.group
       : undefined;
-    const egress = cfg.egress ?? (await getProjectEgress(deps.db, scope));
+    // Untrusted code never gets open egress, whatever the repo or project allows.
+    const egress = hold
+      ? cfg.untrustedEgress
+      : (cfg.egress ?? (await getProjectEgress(deps.db, scope)));
+    const headCheckoutJobs = Object.entries(workflowHeadCheckouts(yaml))
+      .filter(([, v]) => v.length > 0)
+      .map(([k]) => k);
     const created = await createPolledRun(deps.db, scope, {
       repo,
       provider: deps.provider,
@@ -561,6 +568,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           // What isolation and egress policy read: the decided class, and the sandbox egress.
           trust: decision.class,
           egress,
+          // Jobs whose own steps check out the PR head: the demotion rule makes them untrusted.
+          ...(headCheckoutJobs.length > 0 ? { headCheckouts: headCheckoutJobs } : {}),
           ...(wp.concurrency ? { concurrency: wp.concurrency } : {}),
         }),
         ...(group ? { concurrencyGroup: group } : {}),

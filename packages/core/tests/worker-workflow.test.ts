@@ -22,7 +22,8 @@ import {
   updateAttempt,
 } from "../src/db";
 import { dispatch, registry } from "../src/ops";
-import { setPolicy, showPolicy } from "../src/ops/policy-cli";
+import { setEgressPolicy, setPolicy, showEgress, showPolicy } from "../src/ops/policy-cli";
+import { egressForRun } from "../src/scheduler/egress";
 import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
 import { GithubClient, pollConfigSchema, pollRepo, type PollRepoConfig } from "../src/poll";
@@ -1266,7 +1267,8 @@ jobs:
     gh4.state.pulls = [PR({ headRepo: "evil/web" })];
     await ingestAs(gh4);
     const held = (await prRuns())[0]!;
-    expect(JSON.parse(held.plan!)).toMatchObject({ trust: "untrusted_pr", egress: "allowlist" });
+    // The project allows an allowlist, but untrusted runs are held at none unless untrustedEgress says so.
+    expect(JSON.parse(held.plan!)).toMatchObject({ trust: "untrusted_pr", egress: "none" });
   });
 
   test("a flood of fork PRs is bounded before any forge call: waiting cap first, a per-poll budget, a memo", async () => {
@@ -1380,5 +1382,85 @@ jobs:
     const tool = mcpTools(registry).find((t) => t.name === "approve_run")!;
     expect(tool.description).toContain("release_operator, or operator if the org lowered it");
     expect(tool.description).not.toContain("Requires role operator.");
+  });
+
+  test("untrusted runs never get open egress, whatever the repo or project allows", async () => {
+    const planOf = (r: { plan: string | null }) => JSON.parse(r.plan!);
+    // Config says open for the repo and the project: trusted runs get it, the fork's run does not.
+    await setProjectEgress(db, scope, "open");
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh, APPROVAL_CFG({ egress: "open" }));
+    const [push] = (await listRuns(db, scope)).filter((r) => r.event === "push");
+    expect(planOf(push!)).toMatchObject({ trust: "protected", egress: "open" });
+    const [held] = await prRuns();
+    expect(planOf(held!)).toMatchObject({ trust: "untrusted_pr", egress: "none" });
+
+    // An explicit untrustedEgress may allow an allowlist, never open.
+    gh.state.pulls = [PR({ number: 8, headSha: SHA("8"), headRepo: "evil/web" })];
+    await ingestAs(gh, APPROVAL_CFG({ egress: "open", untrustedEgress: "allowlist" }));
+    const eight = (await prRuns()).find((r) => r.prNumber === 8)!;
+    expect(planOf(eight).egress).toBe("allowlist");
+    expect(() =>
+      pollConfigSchema.parse({
+        allowUnauthenticated: true,
+        repos: [
+          {
+            repo: "acme/web",
+            workflow: ".github/workflows/ci.yml",
+            defaultBranch: "main",
+            untrustedEgress: "open",
+          },
+        ],
+      }),
+    ).toThrow();
+
+    // The worker applies the same cap to a plan that says otherwise.
+    expect(egressForRun('{"trust":"untrusted_pr","egress":"open"}')).toBe("none");
+    expect(egressForRun('{"trust":"untrusted_pr","egress":"allowlist"}')).toBe("allowlist");
+    expect(egressForRun('{"trust":"trusted_pr","egress":"open"}')).toBe("open");
+  });
+
+  test("longshore policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
+    await expect(setEgressPolicy(db, "local", undefined, "wide")).rejects.toThrow();
+    await expect(setEgressPolicy(db, "local", "nope", "open")).rejects.toThrow();
+    const changed = await setEgressPolicy(db, "local", "local", "open");
+    expect(changed).toEqual([{ project: "local", from: "none", to: "open" }]);
+    expect(await showEgress(db, "local")).toEqual([{ project: "local", egress: "open" }]);
+    const gh = ghWithWorkflow();
+    await ingestAs(gh);
+    expect(JSON.parse((await listRuns(db, scope))[0]!.plan!).egress).toBe("open");
+    const { listAudit } = await import("../src/db");
+    const audit = (await listAudit(db, scope)).filter((a) => a.op === "policy_set");
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.input).toContain('"to":"open"');
+    // Every project of the org when none is named.
+    expect((await setEgressPolicy(db, "local", undefined, "none"))[0]).toMatchObject({
+      from: "open",
+      to: "none",
+    });
+  });
+
+  test("jobs that check out the PR head are listed in the plan for the isolation demotion", async () => {
+    const gh = makeGithub();
+    gh.state.files.set(
+      "*",
+      `name: ci
+on: [push, pull_request]
+jobs:
+  risky:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.pull_request.head.sha }}
+  safe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`,
+    );
+    await ingestAs(gh);
+    expect(JSON.parse((await listRuns(db, scope))[0]!.plan!).headCheckouts).toEqual(["risky"]);
   });
 });
