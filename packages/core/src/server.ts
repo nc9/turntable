@@ -71,6 +71,8 @@ export type ServeOptions = {
   allowedOrigins?: readonly string[];
   /** GitHub webhook endpoint, when a master key is configured. */
   webhooks?: { handle(req: Request): Promise<Response | undefined> };
+  /** Per-org OIDC issuer endpoints, when a master key and a public URL are configured. */
+  oidc?: { handle(req: Request): Promise<Response | undefined> };
   /** The secrets vault, when a master key is configured. */
   vault?: SecretVault;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
@@ -91,6 +93,8 @@ export function startServer(options: ServeOptions) {
     async fetch(req, srv) {
       const hook = await options.webhooks?.handle(req);
       if (hook) return hook;
+      const idp = await options.oidc?.handle(req);
+      if (idp) return idp;
       const upgraded = await realtime.handle(req, srv);
       if (upgraded === "upgraded") return undefined;
       if (upgraded) return upgraded;

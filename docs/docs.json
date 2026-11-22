@@ -16,6 +16,7 @@
           "providers",
           "security",
           "secrets-vault",
+          "oidc",
           "github-app"
         ]
       },
