@@ -162,7 +162,7 @@ export type JobDigest = {
     index: number;
     result: string | null;
   } | null;
-  basis: "annotation" | "error_pattern" | "tail" | null;
+  basis: "failure_marker" | "annotation" | "error_pattern" | "tail" | null;
   /** Plain text from the job's log. Never rendered as markup. */
   excerpt: string;
   truncated: boolean;
