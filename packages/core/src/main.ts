@@ -6,6 +6,7 @@ import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
+import { registerCredentialRevoker } from "./incident";
 import { createForgeToken } from "./pins/forge-token";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import { startCheckpointer } from "./audit/checkpoint";
@@ -57,6 +58,7 @@ Usage:
   longshore policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
   longshore policy set --checks-mode <off|shadow|live> [--org local] [--project <slug>]
   longshore mcp [--token-file <path>] [--data-dir ./data]
+  longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore version
@@ -308,6 +310,12 @@ async function serve(args: string[]): Promise<void> {
       log: (m) => console.log(`[longshore] checks: ${m}`),
     });
     appAuth = auth;
+    // An incident freeze drops the cached installation tokens. GitHub tokens still live until
+    // they expire (within an hour); this stops the server handing them out again.
+    registerCredentialRevoker({
+      name: "github-installation-tokens",
+      revoke: () => auth.dropCached(),
+    });
     webhooks = createWebhookHandler({
       db,
       store,
@@ -477,6 +485,10 @@ async function main(argv: string[]): Promise<void> {
     case "mcp": {
       const { mcpCommand } = await import("./mcp/cli");
       return await mcpCommand(rest);
+    }
+    case "incident": {
+      const { incidentCommand } = await import("./incident/cli");
+      process.exit(await incidentCommand(rest));
     }
     case "channel": {
       const { channelCommand } = await import("./channel/cli");

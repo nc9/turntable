@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { IncidentBanner } from "./incident-banner";
 import {
   Dialog,
   DialogClose,
@@ -475,6 +476,7 @@ function ShellInner() {
           <SidebarNav />
         </aside>
         <main id="main" className="min-w-0 flex-1">
+          <IncidentBanner />
           <Outlet />
         </main>
       </div>

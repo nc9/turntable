@@ -60,6 +60,13 @@ export class AppAuth {
     this.#o = o;
   }
 
+  /** Forgets every cached installation token (incident freeze). Returns how many were held. */
+  dropCached(): number {
+    const n = this.#cache.size;
+    this.#cache.clear();
+    return n;
+  }
+
   get apiBase(): string {
     return this.#o.apiBase ?? "https://api.github.com";
   }

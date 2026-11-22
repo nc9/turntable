@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clearRotationFlagIfRotated } from "../../db/repos";
 import { type SecretView, VaultInputError, type SecretVault } from "../../secrets/vault";
 import { decodeCursor, encodeCursor, nextCursor, pageInput } from "../common";
 import { defineOp, type OpContext } from "../define";
@@ -119,6 +120,9 @@ export const setSecretOp = defineOp({
         destinations: i.destinations,
       }),
     );
+    // A new value for an existing secret is a rotation: close the incident flag if every scope of
+    // the name has been replaced since it was raised.
+    if (!r.created) await clearRotationFlagIfRotated(ctx.db, ctx.scope, i.name, ctx.now());
     return { created: r.created, entry: r.secret };
   },
 });
@@ -167,6 +171,7 @@ export const rotateSecretOp = defineOp({
       ),
     );
     if (!r) throw new OpError("not_found", "no secret with that name and scope");
+    await clearRotationFlagIfRotated(ctx.db, ctx.scope, i.name, ctx.now());
     return r;
   },
 });
