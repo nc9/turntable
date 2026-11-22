@@ -111,6 +111,7 @@ const BLOCKED_V6: [string, number, string][] = [
   ["100::", 64, "discard-only"],
   ["2001::", 23, "IETF protocol assignments (Teredo, ORCHID)"],
   ["2001:db8::", 32, "documentation"],
+  ["3fff::", 20, "documentation (RFC 9637)"],
   ["fc00::", 7, "unique local (ULA)"],
   ["fe80::", 10, "link-local"],
   ["fec0::", 10, "site-local"],
@@ -144,5 +145,8 @@ export function blockedReason(ip: string): string | undefined {
     return r ? `6to4 of ${r}` : undefined;
   }
   for (const [base, bits, label] of BLOCKED_V6) if (inCidr(b, v6(base), bits)) return label;
+  // Default deny: only global unicast (2000::/3) is public. This also refuses IPv4-translated
+  // (::ffff:0:a.b.c.d) and any other space a table might miss.
+  if (!inCidr(b, v6("2000::"), 3)) return "not global unicast";
   return undefined;
 }
