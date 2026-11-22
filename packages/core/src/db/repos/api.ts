@@ -1,6 +1,6 @@
 // Repos for agent access (tokens, audit) and the read queries behind the operations registry.
 // Like index.ts, this is part of the only code allowed to name tenant tables.
-import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { AgentRole, JobState } from "../schema";
@@ -98,6 +98,18 @@ export function revokeApiToken(db: Db, scope: Scope, id: string, at: number): Pr
       .where(scoped(scope, TOKEN_COLS, eq(s.apiTokens.id, id), isNull(s.apiTokens.revokedAt)))
       .returning({ id: s.apiTokens.id });
     return rows.length > 0;
+  });
+}
+
+/** One token by id, within a scope: the principal asking about itself. */
+export function getApiToken(db: Db, scope: Scope, id: string): Promise<ApiToken | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.apiTokens)
+      .where(scoped(scope, TOKEN_COLS, eq(s.apiTokens.id, id)))
+      .limit(1);
+    return row;
   });
 }
 
@@ -293,5 +305,60 @@ export function readLogRange(
       if (end > start) parts.push(c.bytes.subarray(start, end));
     }
     return Buffer.concat(parts);
+  });
+}
+
+// ---- projects ----
+
+export type ProjectWithRepos = {
+  id: string;
+  slug: string;
+  name: string;
+  repos: { forge: string; owner: string; repo: string }[];
+};
+
+/** Projects in scope (a project-narrowed scope lists only that project), by id, with bound repos. */
+export function queryProjects(
+  db: Db,
+  scope: Scope,
+  opts: { afterId?: string | undefined; limit: number },
+): Promise<ProjectWithRepos[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select()
+      .from(s.projects)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.projects.orgId },
+          scope.projectId === undefined ? undefined : eq(s.projects.id, scope.projectId),
+          opts.afterId === undefined ? undefined : gt(s.projects.id, opts.afterId),
+        ),
+      )
+      .orderBy(asc(s.projects.id))
+      .limit(opts.limit);
+    if (rows.length === 0) return [];
+    const repos = await h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.projectRepos.orgId },
+          inArray(
+            s.projectRepos.projectId,
+            rows.map((r) => r.id),
+          ),
+        ),
+      )
+      .orderBy(asc(s.projectRepos.owner), asc(s.projectRepos.repo));
+    return rows.map((p) => ({
+      id: p.id,
+      slug: p.slug,
+      name: p.name,
+      repos: repos
+        .filter((r) => r.projectId === p.id)
+        .map((r) => ({ forge: r.forge, owner: r.owner, repo: r.repo })),
+    }));
   });
 }

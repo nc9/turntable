@@ -36,6 +36,18 @@ test("a table-rebuild migration keeps existing rows and their foreign keys", () 
   expect(sqlite.query("SELECT count(*) AS n FROM job_attempts").get()).toEqual({ n: 1 });
   expect(sqlite.query("SELECT count(*) AS n FROM log_chunks").get()).toEqual({ n: 1 });
   expect(sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  // columns added later arrive with their defaults on old rows
+  expect(
+    sqlite.query("SELECT needs, matrix, approval_kind FROM jobs WHERE id = 'j1'").get(),
+  ).toEqual({
+    needs: "[]",
+    matrix: null,
+    approval_kind: null,
+  });
+  expect(sqlite.query("SELECT workflow_name, pr_number FROM runs WHERE id = 'r1'").get()).toEqual({
+    workflow_name: null,
+    pr_number: null,
+  });
 
   // enforcement is back on, and the new state is accepted by the new CHECK
   expect(sqlite.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });

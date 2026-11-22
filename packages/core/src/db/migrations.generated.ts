@@ -82,5 +82,20 @@ export const migrations: Migration[] = [
       "CREATE INDEX `runs_sha_idx` ON `runs` (`org_id`,`sha`);",
       "CREATE UNIQUE INDEX `runs_id_org_project_unique` ON `runs` (`id`,`org_id`,`project_id`);"
     ]
+  },
+  {
+    "tag": "0004_ordinary_mad_thinker",
+    "when": 1795347268539,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `rerun_reason` text;",
+      "ALTER TABLE `jobs` ADD `needs` text DEFAULT '[]' NOT NULL;",
+      "ALTER TABLE `jobs` ADD `matrix` text;",
+      "ALTER TABLE `jobs` ADD `approval_kind` text;",
+      "ALTER TABLE `runs` ADD `workflow_name` text;",
+      "ALTER TABLE `runs` ADD `commit_message` text;",
+      "ALTER TABLE `runs` ADD `actor` text;",
+      "ALTER TABLE `runs` ADD `head_branch` text;",
+      "ALTER TABLE `runs` ADD `pr_number` integer;"
+    ]
   }
 ];

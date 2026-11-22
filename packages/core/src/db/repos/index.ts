@@ -16,6 +16,7 @@ import { requireProject, type Scope, scoped } from "./scope";
 export type { Scope } from "./scope";
 export * from "./api";
 export * from "./events";
+export * from "./rerun";
 
 export type Project = typeof s.projects.$inferSelect;
 export type ProjectRepo = typeof s.projectRepos.$inferSelect;
@@ -24,6 +25,22 @@ export type Job = typeof s.jobs.$inferSelect;
 export type JobAttempt = typeof s.jobAttempts.$inferSelect;
 
 const now = () => Date.now();
+
+/** Metadata `turntable run` or the forge supplies with a run. Free text is length-capped. */
+export type RunInput = {
+  workflowPath: string;
+  event: string;
+  ref: string;
+  sha?: string;
+  workflowName?: string | undefined;
+  commitMessage?: string | undefined;
+  actor?: string | undefined;
+  headBranch?: string | undefined;
+  prNumber?: number | undefined;
+};
+
+const cap = (value: string | undefined, max: number): string | null =>
+  value === undefined ? null : value.slice(0, max);
 
 // ---- tenancy ----
 
@@ -260,11 +277,7 @@ function ensureLocalTenantOnce(db: Db): Promise<Required<Scope>> {
 
 // ---- runs ----
 
-export function createRun(
-  db: Db,
-  scope: Scope,
-  input: { workflowPath: string; event: string; ref: string; sha?: string },
-): Promise<Run> {
+export function createRun(db: Db, scope: Scope, input: RunInput): Promise<Run> {
   return db.transaction(async (h) => {
     const { projectId } = requireProject(scope);
     const id = ulid();
@@ -276,6 +289,11 @@ export function createRun(
       event: input.event,
       ref: input.ref,
       sha: input.sha ?? null,
+      workflowName: cap(input.workflowName, 200),
+      commitMessage: cap(input.commitMessage, 2000),
+      actor: cap(input.actor, 100),
+      headBranch: cap(input.headBranch, 255),
+      prNumber: input.prNumber ?? null,
     });
     await appendEvent(h, scope, {
       type: "run.queued",
@@ -365,14 +383,36 @@ export class InvalidTransitionError extends Error {
 export function createJob(
   db: Db,
   scope: Scope,
-  input: { runId: string; jobKey: string; name: string },
+  input: {
+    runId: string;
+    jobKey: string;
+    name: string;
+    /** Job keys this job waits for. */
+    needs?: readonly string[] | undefined;
+    /** This leg's matrix values. */
+    matrix?: Record<string, unknown> | undefined;
+    approvalKind?: s.ApprovalKind | undefined;
+  },
 ): Promise<Job | undefined> {
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
+    if (input.approvalKind !== undefined && !s.APPROVAL_KINDS.includes(input.approvalKind)) {
+      throw new Error(`invalid approval kind: ${String(input.approvalKind)}`);
+    }
     // Parent must be in scope; the composite FK is the backstop, this gives a clean undefined.
     if (!(await getRun(h, scope, input.runId))) return undefined;
     const id = ulid();
-    await h.orm.insert(s.jobs).values({ id, orgId: scope.orgId, projectId, ...input });
+    await h.orm.insert(s.jobs).values({
+      id,
+      orgId: scope.orgId,
+      projectId,
+      runId: input.runId,
+      jobKey: input.jobKey,
+      name: input.name,
+      needs: JSON.stringify(input.needs ?? []),
+      matrix: input.matrix === undefined ? null : JSON.stringify(input.matrix),
+      approvalKind: input.approvalKind ?? null,
+    });
     return getJob(h, scope, id);
   });
 }
@@ -468,7 +508,7 @@ const LOG_COLS = { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId };
 export function createAttempt(
   db: Db,
   scope: Scope,
-  input: { jobId: string; provider: string },
+  input: { jobId: string; provider: string; rerunReason?: string | undefined },
 ): Promise<JobAttempt | undefined> {
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
@@ -487,6 +527,7 @@ export function createAttempt(
       jobId: input.jobId,
       attempt: (last?.attempt ?? 0) + 1,
       provider: input.provider,
+      rerunReason: input.rerunReason ?? null,
     });
     return getAttempt(h, scope, id);
   });

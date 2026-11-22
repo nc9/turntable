@@ -29,6 +29,13 @@
       "when": 1795346651112,
       "tag": "0003_wide_marrow",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795347268539,
+      "tag": "0004_ordinary_mad_thinker",
+      "breakpoints": true
     }
   ]
 }

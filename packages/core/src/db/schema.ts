@@ -49,6 +49,10 @@ export type StepStage = (typeof STEP_STAGES)[number];
 export const STEP_RESULTS = ["success", "failure", "skipped", "cancelled"] as const;
 export type StepResult = (typeof STEP_RESULTS)[number];
 
+/** Why a job waits for a human: an untrusted PR author, or a protected environment. */
+export const APPROVAL_KINDS = ["untrusted_author", "environment"] as const;
+export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
+
 export const MEMBER_ROLES = ["owner", "admin", "member", "viewer"] as const;
 export type MemberRole = (typeof MEMBER_ROLES)[number];
 
@@ -157,6 +161,13 @@ export const runs = sqliteTable(
     event: text("event").notNull(),
     ref: text("ref").notNull(),
     sha: text("sha"),
+    /** Metadata the forge (or `turntable run`) supplies. All forge text: untrusted when shown. */
+    workflowName: text("workflow_name"),
+    commitMessage: text("commit_message"),
+    /** Forge login of whoever triggered it. */
+    actor: text("actor"),
+    headBranch: text("head_branch"),
+    prNumber: integer("pr_number"),
     /** Aggregate of its jobs; same vocabulary as job state. */
     status: text("status").notNull().default("queued"),
     createdAt: createdAt(),
@@ -181,6 +192,12 @@ export const jobs = sqliteTable(
     runId: text("run_id").notNull(),
     jobKey: text("job_key").notNull(),
     name: text("name").notNull(),
+    /** Job keys this job waits for, as a JSON array text. */
+    needs: text("needs").notNull().default("[]"),
+    /** This leg's matrix values as a JSON object text; null when the job has no matrix. */
+    matrix: text("matrix"),
+    /** One of APPROVAL_KINDS or null. Validated in createJob, not by a CHECK: a CHECK would force a table rebuild. */
+    approvalKind: text("approval_kind"),
     state: text("state").notNull().default("queued"),
     /** Set only for `success` and `failure`. */
     exitCode: integer("exit_code"),
@@ -214,6 +231,8 @@ export const jobAttempts = sqliteTable(
     sandboxId: text("sandbox_id"),
     exitCode: integer("exit_code"),
     errorClass: text("error_class"),
+    /** Set when a person or agent asked for this attempt (a rerun); the reason they gave. */
+    rerunReason: text("rerun_reason"),
     createdAt: createdAt(),
     startedAt: integer("started_at", { mode: "number" }),
     finishedAt: integer("finished_at", { mode: "number" }),

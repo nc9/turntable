@@ -11,7 +11,7 @@ import {
   upsertStep,
 } from "../src/db";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
-import { MAX_WAITERS, waitingCount } from "../src/ops/definitions/events";
+import { waiterLimits, waitingCount } from "../src/ops/definitions/events";
 import { createRestApi } from "../src/ops/rest";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
@@ -154,18 +154,21 @@ test("events: a rolled-back change never wakes or reaches a waiter", async () =>
 });
 
 test("events: the number of concurrent waiters is capped", async () => {
+  const saved = { ...waiterLimits };
+  waiterLimits.perOrg = 1000; // this test is about the global cap
   const cursor = (await run("events")).next_after;
-  const waiters = Array.from({ length: MAX_WAITERS }, () =>
+  const waiters = Array.from({ length: waiterLimits.global }, () =>
     run("events", { after: cursor, wait_ms: 400 }),
   );
   await Bun.sleep(100);
-  expect(waitingCount()).toBe(MAX_WAITERS);
+  expect(waitingCount()).toBe(waiterLimits.global);
   const t0 = Date.now();
   const over = await run("events", { after: cursor, wait_ms: 5000 });
   expect(over.events).toEqual([]);
   expect(Date.now() - t0).toBeLessThan(1000); // returned at once instead of waiting
   await Promise.all(waiters);
   expect(waitingCount()).toBe(0);
+  Object.assign(waiterLimits, saved);
 });
 
 test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async () => {
