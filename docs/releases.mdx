@@ -1,0 +1,85 @@
+---
+title: Releases
+description: How Longshore versions its releases, how to verify a download, and what the release pipeline guarantees.
+---
+
+<Note>
+  Pre-alpha. The first release has not been published yet. This page describes what each release will carry, and the commands below work once a tag exists. Replace `nc9/longshore` with the repository you downloaded from if it differs.
+</Note>
+
+## Versions
+
+Releases are tagged `v<major>.<minor>.<patch>`. Until 1.0, prereleases are `v0.x.y-alpha.N`, for example `v0.1.0-alpha.1`. A tag with a hyphen is published as a GitHub prerelease, and its image does not get the `latest` tag. Expect breaking changes between alphas. The release notes list them, along with every database migration in the release.
+
+Migrations run on start and only go forward. Back up the data directory (SQLite) or snapshot the database (Postgres) before upgrading. To roll back, restore the backup and start the previous version.
+
+## What a release contains
+
+| Asset | What it is |
+| --- | --- |
+| `longshore-linux-x64`, `longshore-linux-arm64`, `longshore-darwin-arm64` | The single-file binaries. The web UI is embedded. |
+| `SHA256SUMS` | Checksums of the binaries and the SBOM. |
+| `longshore-<version>.cdx.json` | CycloneDX SBOM of the packages bundled in the binaries, with hashes from the lockfile. |
+| `longshore-image.cdx.json` | CycloneDX SBOM of the container image (base image packages and the binary), made with a pinned Syft. |
+| Image `ghcr.io/nc9/longshore:<version>` | Distroless image, linux/amd64 and linux/arm64. |
+
+Binaries, `SHA256SUMS`, both SBOMs and the image carry GitHub artifact attestations signed through GitHub's Sigstore. The attestation names the repository, workflow and commit that built them.
+
+## Verify a binary
+
+Download the binary and `SHA256SUMS` into one directory.
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+That proves the file matches the published list. The list itself comes from the same release, so also check the attestation, which is signed by the build and not by whoever can edit the release page:
+
+```sh
+gh attestation verify longshore-linux-x64 --repo nc9/longshore
+```
+
+A pass prints the workflow, the tag and the commit. A failure means the file was not built by this repository's release workflow. Do not run it.
+
+To check the SBOM is the one the build attested:
+
+```sh
+gh attestation verify longshore-linux-x64 --repo nc9/longshore \
+  --predicate-type https://cyclonedx.org/bom
+```
+
+On macOS, use `shasum -a 256 -c SHA256SUMS --ignore-missing` if `sha256sum` is not installed.
+
+## Verify the image
+
+Pin by digest, not by tag. Tags can move; a digest cannot.
+
+```sh
+docker buildx imagetools inspect ghcr.io/nc9/longshore:0.1.0-alpha.1
+# note the Digest: sha256:...
+gh attestation verify oci://ghcr.io/nc9/longshore@sha256:<digest> --repo nc9/longshore
+```
+
+Then run or deploy `ghcr.io/nc9/longshore@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
+
+## The darwin binary and Gatekeeper
+
+`longshore-darwin-arm64` is signed ad hoc and is not notarized. Apple Silicon requires some signature to run a binary, and the release re-signs after the compile so the signature matches the file. An ad-hoc signature is not an identity: it proves nothing about who built the file. Use the checksum and attestation above for that.
+
+What to expect: a binary downloaded in a browser carries a quarantine flag, and Gatekeeper refuses to open it because it is not notarized ("cannot be verified" or "cannot be opened"). Verify it first, then clear the flag:
+
+```sh
+xattr -d com.apple.quarantine longshore-darwin-arm64
+chmod +x longshore-darwin-arm64
+```
+
+You can also allow it once under System Settings, Privacy and Security, "Open Anyway". A binary fetched with `curl` or `gh release download` is not quarantined and runs directly. Notarization needs a paid Apple Developer identity and is not planned for the alphas.
+
+## What the pipeline guarantees
+
+- Third-party actions are pinned by commit SHA, and base images by digest. Downloaded tools (the darwin signer, `act`) are pinned by SHA-256.
+- A new dependency version in `bun.lock` must have been published at least 14 days ago. CI fails a pull request that adds a younger one, using the npm registry's publish time. Exceptions go in `.github/dep-age-allowlist.json` with a reason and an optional expiry.
+- An OpenSSF Scorecard run reports weekly and on every push to `main`, to the repository's code scanning.
+- Release notes are drafted from conventional commits, grouped by type, with breaking changes and migration files listed apart. `scripts/release-notes.ts` makes them from the git history, and `.github/release-notes-template.md` is the frame to edit before publishing.
+
+Report a vulnerability through the repository's private security advisories, not a public issue.
