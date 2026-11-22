@@ -8,6 +8,8 @@ import {
 import type { Provider } from "@longshore/provider-sdk";
 import { SecretRegistry } from "@longshore/redact";
 import { parse } from "yaml";
+import type { Db, Scope } from "../db";
+import { pinClassForEvent, resolvePlanActions } from "../pins";
 import { DEFAULT_IMAGE, EXIT, executeJob, type ExitCode, type Verdict } from "./job-exec";
 import type { RunStore } from "./store";
 
@@ -34,6 +36,8 @@ export interface RunLocalOptions {
   /** Reads repo files so local composite actions are always scanned and pinned. */
   readFile: (path: string) => string | undefined;
   resolver?: ActionRefResolver;
+  /** Apply the project action policy and remember pins (needs the database and a project scope). */
+  pins?: { db: Db; scope: Required<Scope> };
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
   egress?: "none" | "open";
   /** Probe a `none` sandbox for a real network path before the job runs (see egress-canary). */
@@ -75,7 +79,14 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
     readFile: o.readFile,
   });
   for (const w of planned.warnings) o.out(`warning: ${w.message}\n`);
-  const plan = await resolveActions(planned, o.resolver);
+  const plan = o.pins
+    ? await resolvePlanActions(planned, {
+        ...o.pins,
+        klass: pinClassForEvent(o.event),
+        ...(o.resolver ? { base: o.resolver } : {}),
+        warn: (m) => o.out(`warning: ${m}\n`),
+      })
+    : await resolveActions(planned, o.resolver);
 
   const workflowName = workflowNameOf(o.workflowYaml);
   const { runId } = await o.store.beginRun({

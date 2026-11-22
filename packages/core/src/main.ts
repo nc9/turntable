@@ -32,6 +32,8 @@ Usage:
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
                    [--isolation-override <reason>]]
                   [--poll <config.json>]
+  longshore policy show | set [--org local] [--project local] [--require-sha-pins true|false]
+                              [--allow-owners a,b | --clear-allowlist] [--data-dir ./data]
   longshore keys init [--file <path>] [--data-dir ./data]
   longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
                               [--longshore-org local] [--master-key-file <path>]
@@ -384,6 +386,10 @@ async function main(argv: string[]): Promise<void> {
       return await serve(rest);
     case "token":
       return await token(rest);
+    case "policy": {
+      const { policyCommand } = await import("./pins/cli");
+      return await policyCommand(rest);
+    }
     case "keys": {
       const { keysCommand } = await import("./github/cli");
       return await keysCommand(rest);

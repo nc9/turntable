@@ -70,6 +70,14 @@ For **protected and release** runs a finding fails planning with the list of fin
 
 The workspace is a tarball the controller delivered at one sha. The checkout stand-in only copies it and never touches the network, and a sandbox has no network unless an operator opts in. A job therefore cannot fetch a different ref, a fork, or the PR head on its own. Remote actions are fetched by sha by the controller, not the job.
 
+## Action pins and moved tags
+
+Before a run starts, every `uses:` reference is resolved to a commit sha, and the action is fetched by that sha. Longshore also remembers, per project, every tag-to-sha resolution it has made (`action_pins`: repository, ref, sha, first and last seen).
+
+If a tag later resolves to a different commit, it has moved. The pin does not change on its own. A protected or release run fails with an error that names the action and both shas, until an operator accepts the move. A pull request run only gets a warning and keeps using the old pinned commit. An operator reviews the new commit (`get_action_pins` shows it as `pending_sha`), then calls `accept_action_move` with that exact sha. The call needs the operator role and is audited, and a wrong sha is refused, so accepting never blesses a commit nobody looked at. Until trust classes land, a push counts as protected and every other event as a pull request class.
+
+Two optional project policies tighten this further. `require_sha_pins` refuses any `uses:` that is not already a full commit sha. The org's action owner allowlist refuses actions from any owner not on it (`longshore policy set --allow-owners actions,oven-sh`). Both are off by default and apply to nested actions inside local composite actions too.
+
 ## Scoped per-job GitHub token
 
 Each job gets a short-lived GitHub token limited to its repository and the permissions its workflow declares. Issue [#18](https://github.com/nc9/turntable/issues/18).

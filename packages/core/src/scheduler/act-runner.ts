@@ -16,7 +16,6 @@ import {
   PlanError,
   type PlannedJob,
   planJob,
-  resolveActions,
   splitJob,
   workflowHeadCheckouts,
 } from "@longshore/act-runner";
@@ -28,6 +27,7 @@ import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
+import { pinClassForEvent, resolvePlanActions } from "../pins";
 import { type RunStore, stepInputOf } from "../run/store";
 import { assessJob, lintFailsFor } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
@@ -301,7 +301,13 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               failOnLint,
               ...root,
             });
-        plan = await resolveActions(jobPlan, o.resolver ?? githubResolver());
+        plan = await resolvePlanActions(jobPlan, {
+          db: o.db,
+          scope: ctx.scope,
+          klass: pinClassForEvent(dbRun.event),
+          base: o.resolver ?? githubResolver(),
+          warn: (m) => console.warn(`action pins: ${m}`),
+        });
       } catch (err) {
         if (err instanceof PlanError) {
           const msg = `plan rejected: ${err.message}`;
