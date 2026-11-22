@@ -392,8 +392,49 @@ export const auditLog = sqliteTable(
     /** Input as JSON, truncated; never output. */
     input: text("input").notNull(),
     createdAt: createdAt(),
+    /**
+     * The hash chain (see src/audit): position in the org's chain, the previous entry's hash and
+     * this entry's own. Null on rows written before chaining existed; those are not covered.
+     */
+    seq: integer("seq"),
+    prevHash: text("prev_hash"),
+    hash: text("hash"),
   },
-  (t) => [index("audit_log_org_created_idx").on(t.orgId, t.createdAt)],
+  (t) => [
+    index("audit_log_org_created_idx").on(t.orgId, t.createdAt),
+    // NULLs are distinct in SQLite unique indexes, so unchained legacy rows do not collide.
+    unique("audit_log_org_seq_unique").on(t.orgId, t.seq),
+  ],
+);
+
+/** An ed25519 signature over the head of an org's chain at `seq`. The key is not in this database. */
+export const auditCheckpoints = sqliteTable(
+  "audit_checkpoints",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    seq: integer("seq").notNull(),
+    hash: text("hash").notNull(),
+    signedAt: integer("signed_at", { mode: "number" }).notNull(),
+    keyId: text("key_id").notNull(),
+    signature: text("signature").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.seq] })],
+);
+
+/** How far each org's chain has been exported to each sink (at-least-once delivery). */
+export const auditExportCursors = sqliteTable(
+  "audit_export_cursors",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    sink: text("sink").notNull(),
+    lastSeq: integer("last_seq").notNull().default(0),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.sink] })],
 );
 
 // ---- events, steps, cuts ----

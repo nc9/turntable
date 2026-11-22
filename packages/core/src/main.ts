@@ -7,6 +7,8 @@ import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
+import { startCheckpointer } from "./audit/checkpoint";
+import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
 import { SecretStore } from "./secrets/store";
@@ -35,6 +37,7 @@ Usage:
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
                    [--isolation-override <reason>]]
                   [--poll <config.json>]
+  longshore audit verify [--org <slug>] [--public-key <file>] | checkpoint | export | public-key
   longshore policy show | set [--org local] [--project local] [--require-sha-pins true|false]
                               [--allow-owners a,b | --clear-allowlist] [--data-dir ./data]
   longshore keys init [--file <path>] [--data-dir ./data]
@@ -62,6 +65,8 @@ Environment:
   LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
   LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
                     required for the GitHub App and its webhook endpoint
+  LONGSHORE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
+  LONGSHORE_AUDIT_WEBHOOK_URL  POST audit batches here (HMAC with LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE)
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
@@ -268,6 +273,7 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let checks: CheckReporter | undefined;
+  const auditStops: (() => void)[] = [];
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const store = new SecretStore(db, loadMasterKey(keyFile));
@@ -288,7 +294,19 @@ async function serve(args: string[]): Promise<void> {
       trustForwardedFor: process.env.LONGSHORE_TRUST_FORWARDED_FOR === "1",
     });
     void webhooks.retryUnfinished().catch(() => {});
+    // Signed audit checkpoints need the store's key; export sinks are opt in.
+    auditStops.push(startCheckpointer(db, store));
   }
+  const sinks: AuditSink[] = [];
+  const exportDir = process.env.LONGSHORE_AUDIT_EXPORT_DIR?.trim();
+  if (exportDir) sinks.push(jsonlSink(resolve(exportDir)));
+  const exportUrl = process.env.LONGSHORE_AUDIT_WEBHOOK_URL?.trim();
+  if (exportUrl) {
+    const secretFile = process.env.LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE?.trim();
+    const secret = secretFile ? (await Bun.file(secretFile).text()).trim() : undefined;
+    sinks.push(webhookSink(exportUrl, secret ? { secret } : {}));
+  }
+  if (sinks.length > 0) auditStops.push(startExporter(db, sinks));
   const server = startServer({
     port,
     host: values.host,
@@ -301,6 +319,7 @@ async function serve(args: string[]): Promise<void> {
   const background = await startBackground(db, values, checks);
 
   const stop = () => {
+    for (const s of auditStops) s();
     void background
       .stop()
       .then(() => server.stop())
@@ -419,6 +438,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "audit": {
+      const { auditCommand } = await import("./audit/cli");
+      process.exit(await auditCommand(rest));
     }
     case "policy": {
       const { policyCommand } = await import("./ops/policy-command");

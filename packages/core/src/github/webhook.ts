@@ -10,6 +10,7 @@
 //  5. Events nobody handles are stored as ignored and acknowledged.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readCapped } from "@longshore/net";
+import { auditAggregate, auditFailure } from "../audit/failures";
 import type { Db } from "../db";
 import {
   finishDelivery,
@@ -161,6 +162,21 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
       }
       if (!secrets.some((s) => signatureMatches(s, raw, header))) {
         noteFailure(key);
+        // A client the limiter already refuses is counted in aggregate; others get an entry
+        // (throttled per client address).
+        if (throttled) await auditAggregate(o.db, app.orgId, "github_webhook_throttled");
+        else {
+          await auditFailure(o.db, {
+            orgId: app.orgId,
+            principalKind: "webhook",
+            principalId: key,
+            source: key,
+            kind: "bad_signature",
+            op: "github_webhook",
+            outcome: "error:bad_signature",
+            detail: { event: req.headers.get("x-github-event") ?? null },
+          });
+        }
         return throttled
           ? json(429, { error: "too many invalid requests" })
           : json(401, { error: "invalid signature" });

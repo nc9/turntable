@@ -1,7 +1,7 @@
 import { type SafeFetch, safeFetch } from "@longshore/net";
 import { randomBytes } from "node:crypto";
 import type { Db } from "../db";
-import { getGithubApp, setPreviousSecretExpiry } from "../db/repos";
+import { appendAudit, getGithubApp, setPreviousSecretExpiry } from "../db/repos";
 import type { SecretStore as SecretSeal } from "../secrets/store";
 import type { AppAuth } from "./app-auth";
 import { SECRET_WEBHOOK, SECRET_WEBHOOK_PREVIOUS } from "./app-auth";
@@ -47,5 +47,17 @@ export async function rotateWebhookSecret(
     await setPreviousSecretExpiry(db, app.appId, null);
     throw e;
   }
+  await appendAudit(
+    db,
+    { orgId: app.orgId },
+    {
+      principalKind: "cli",
+      principalId: "local",
+      op: "github_webhook_secret_rotate",
+      effect: "write",
+      outcome: "ok",
+      input: { app_id: app.appId, overlap_until: until },
+    },
+  );
   return { overlapUntil: until };
 }

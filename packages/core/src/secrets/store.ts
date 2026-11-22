@@ -1,5 +1,11 @@
 import type { Db } from "../db";
-import { deleteSecretRecord, getSecretRecord, listSecretNames, putSecretRecord } from "../db/repos";
+import {
+  appendAudit,
+  deleteSecretRecord,
+  getSecretRecord,
+  listSecretNames,
+  putSecretRecord,
+} from "../db/repos";
 import { open, seal, secretAad } from "./crypto";
 
 /**
@@ -24,6 +30,8 @@ export class SecretStore {
       name,
       seal(this.#key, value, secretAad(orgId, name)),
     );
+    // Audited by name only: a value never goes near the log.
+    await this.#audit(orgId, "secret_set", name);
   }
 
   /** Throws SecretDecryptError if the record was tampered with or the key is wrong. */
@@ -36,8 +44,25 @@ export class SecretStore {
     return (await getSecretRecord(this.#db, { orgId }, name)) !== undefined;
   }
 
-  delete(orgId: string, name: string): Promise<boolean> {
-    return deleteSecretRecord(this.#db, { orgId }, name);
+  async delete(orgId: string, name: string): Promise<boolean> {
+    const removed = await deleteSecretRecord(this.#db, { orgId }, name);
+    if (removed) await this.#audit(orgId, "secret_delete", name);
+    return removed;
+  }
+
+  #audit(orgId: string, op: string, name: string): Promise<void> {
+    return appendAudit(
+      this.#db,
+      { orgId },
+      {
+        principalKind: "system",
+        principalId: "secret-store",
+        op,
+        effect: "write",
+        outcome: "ok",
+        input: { name },
+      },
+    );
   }
 
   list(orgId: string): Promise<string[]> {
