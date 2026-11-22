@@ -13,7 +13,7 @@ Usage:
                          --name <name> [--expires-days 90] [--data-dir ./data]
   turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
   turntable token revoke <id> [--data-dir ./data]
-  turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push]
+  turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
   turntable version
 
 Environment:

@@ -38,10 +38,10 @@ bun run dev
   --repo path/to/repo --data-dir ./data
 ```
 
-Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the repository root), `--image <ref>` (default: `node:22-bookworm` pinned by digest, which has bash, git and node), `--event push`, `--data-dir ./data`.
+Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the repository root), `--image <ref>` (default: `node:22-bookworm` pinned by digest, which has bash, git and node), `--event push`, `--egress none|open` (default `none`), `--data-dir ./data`.
 
 - **What is delivered.** The committed tree (`git archive HEAD`) plus `.git`, which act's checkout stand-in copies into the workspace. Untracked and ignored files (such as `node_modules` or `.env`) and uncommitted edits are never sent. You get a warning when tracked files have uncommitted changes.
-- **No network.** The sandbox has no network access. act is downloaded and checked against a pinned sha256 on the host, and every `uses:` action is resolved to a commit sha and delivered by sha, so a moved tag cannot change what runs.
+- **No network by default.** The sandbox has no network access. `--egress open` is an explicit opt-in that prints a warning. act is downloaded and checked against a pinned sha256 on the host, and every `uses:` action is resolved to a commit sha and delivered by sha, so a moved tag cannot change what runs.
 - **Logs.** Output streams to your terminal as it happens and is stored in the database, after secret redaction, with byte offsets.
 - **One job only.** Workflows with `needs`, a matrix, `services`, `container`, `docker://` actions or non-Linux runners are refused before anything runs. See the act-runner README for the full support matrix.
 - **Cancel.** Ctrl-C destroys the sandbox and marks the attempt cancelled. The sandbox is always destroyed when the run ends.

@@ -50,6 +50,7 @@ async function setup(wf: string = WF) {
   const { id } = await p.create(spec);
   const plan = planJob(wf, "hello", {
     workflowPath: ".github/workflows/ci.yml",
+    readFile: () => undefined,
     root: `${world.sandboxDir(id)}/tt`,
   });
   const repoTarball = await tarWith({ "README.md": "hi\n" });

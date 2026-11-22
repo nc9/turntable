@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PlanError, sha256Hex, tarDirectory } from "@turntable/act-runner";
+import { SecretRegistry } from "@turntable/redact";
+import { InfraError } from "@turntable/provider-sdk";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
 import {
   type Db,
@@ -72,6 +74,7 @@ async function go(
     image: "unused",
     out: (t) => out.push(t),
     planRoot: root,
+    readFile: () => undefined,
     act,
     pollMs: 30,
     ...extra,
@@ -210,8 +213,80 @@ describe("runLocal", () => {
         image: "unused",
         out: () => {},
         planRoot: root,
+        readFile: () => undefined,
       }),
     ).rejects.toBeInstanceOf(PlanError);
     expect(await listRuns(db, scope)).toHaveLength(0);
+  });
+
+  test("registered secrets are redacted from step names, stored steps, and stored error text", async () => {
+    const secret = "s3cr3t-deploy-token-xyz";
+    const registry = new SecretRegistry({ warn: () => {} });
+    expect(registry.register(secret).ok).toBe(true);
+    const ev = (extra: object) =>
+      JSON.stringify({
+        jobID: "hello",
+        level: "info",
+        stage: "Main",
+        time: "t",
+        stepID: ["0"],
+        ...extra,
+      });
+    const name = `deploy to ${secret}`;
+    const lines = [
+      ev({ msg: `\u2b50 Run Main ${name}`, step: name }),
+      ev({ msg: "x", step: name, stepResult: "failure", executionTime: 1e6 }),
+      JSON.stringify({ jobID: "hello", jobResult: "failure", msg: "failed", time: "t" }),
+    ];
+    const { db, scope, result, out, logText } = await go(
+      await fakeAct(lines.join("\n") + "\n", 1),
+      { registry },
+    );
+    expect(result.state).toBe("failure");
+    expect(result.reason).not.toContain(secret);
+    expect(out).not.toContain(secret);
+    expect(await logText()).not.toContain(secret);
+    const steps = await listSteps(db, scope, result.attemptId);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]?.name).toBe("deploy to ***");
+    expect(JSON.stringify(steps)).not.toContain(secret);
+  });
+
+  test("an infra_error's stored error class is redacted", async () => {
+    const secret = "another-secret-value-123";
+    const registry = new SecretRegistry({ warn: () => {} });
+    registry.register(secret);
+    world.failNext("create", 1, new InfraError(`quota exceeded for ${secret}`));
+    const { db, scope, result } = await go(await fakeAct("", 0), { registry });
+    expect(result.state).toBe("infra_error");
+    const [attempt] = await listAttempts(db, scope, result.jobId);
+    expect(attempt?.errorClass).not.toContain(secret);
+    expect(result.reason).not.toContain(secret);
+  });
+
+  test.each([
+    [undefined, "none"],
+    ["none", "none"],
+    ["open", "open"],
+  ] as const)("egress %p creates the sandbox with %p", async (egress, expected) => {
+    const base = world.provider();
+    const seen: string[] = [];
+    const provider = {
+      ...base,
+      info: base.info,
+      exec: base.exec,
+      files: base.files,
+      healthcheck: () => base.healthcheck(),
+      create: (spec: Parameters<typeof base.create>[0]) => {
+        seen.push(spec.network.egress);
+        return base.create(spec);
+      },
+      destroy: (id: string) => base.destroy(id),
+      destroyByLabels: (l: Parameters<typeof base.destroyByLabels>[0]) => base.destroyByLabels(l),
+      list: (f: Parameters<typeof base.list>[0]) => base.list(f),
+      count: (f: Parameters<typeof base.count>[0]) => base.count(f),
+    };
+    await go(await fakeAct("", 0), { provider, ...(egress ? { egress } : {}) });
+    expect(seen).toEqual([expected]);
   });
 });

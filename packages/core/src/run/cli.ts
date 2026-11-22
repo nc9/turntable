@@ -10,7 +10,7 @@ import { dbRunStore } from "./store";
 
 export const RUN_USAGE = `Usage:
   turntable run <workflow-path> -j <job> [--repo <dir>] [--provider docker] [--image <ref>]
-                [--data-dir ./data] [--event push]
+                [--data-dir ./data] [--event push] [--egress none|open]
 
 Runs one job in a fresh sandbox with act (host mode) and records the run in the database.
 The committed tree of --repo (git archive HEAD, plus .git) is delivered; uncommitted and
@@ -28,6 +28,7 @@ export async function runCommand(args: string[]): Promise<number> {
       image: { type: "string", default: DEFAULT_IMAGE },
       "data-dir": { type: "string", default: "./data" },
       event: { type: "string", default: "push" },
+      egress: { type: "string", default: "none" },
     },
     allowPositionals: true,
     strict: true,
@@ -36,6 +37,13 @@ export async function runCommand(args: string[]): Promise<number> {
   if (!workflowArg || !values.j) {
     console.error(RUN_USAGE);
     return 2;
+  }
+  if (values.egress !== "none" && values.egress !== "open") {
+    console.error(`--egress must be none or open, got ${values.egress}`);
+    return 2;
+  }
+  if (values.egress === "open") {
+    console.error("warning: --egress open gives the sandbox network access to the internet");
   }
   if (values.provider !== "docker") {
     console.error(`unsupported --provider ${values.provider} (only docker)`);
@@ -87,6 +95,7 @@ export async function runCommand(args: string[]): Promise<number> {
         const f = join(repoDir, p);
         return existsSync(f) ? readFileSync(f, "utf8") : undefined;
       },
+      egress: values.egress,
       resolver: githubResolver(),
       signal: ac.signal,
     });

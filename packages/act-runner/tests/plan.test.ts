@@ -11,9 +11,14 @@ import {
   untrustedIn,
 } from "../src/plan";
 
+const noFiles = (): undefined => undefined;
 const CO = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 const wf = (job: string): string => `name: t\non: push\njobs:\n  j:\n${job}`;
-const plan = (job: string) => planJob(wf(job), "j", { workflowPath: ".github/workflows/ci.yml" });
+const plan = (job: string) =>
+  planJob(wf(job), "j", {
+    workflowPath: ".github/workflows/ci.yml",
+    readFile: noFiles,
+  });
 const feature = (job: string): string | undefined => {
   try {
     plan(job);
@@ -72,9 +77,12 @@ describe("planJob rejects, naming the feature", () => {
   });
   test("unknown job and bad yaml", () => {
     expect(() =>
-      planJob(wf("    runs-on: ubuntu-latest\n    steps: []\n"), "nope", { workflowPath: "w" }),
+      planJob(wf("    runs-on: ubuntu-latest\n    steps: []\n"), "nope", {
+        workflowPath: "w",
+        readFile: noFiles,
+      }),
     ).toThrow(PlanError);
-    expect(() => planJob("a: [", "j", { workflowPath: "w" })).toThrow(PlanError);
+    expect(() => planJob("a: [", "j", { workflowPath: "w", readFile: noFiles })).toThrow(PlanError);
   });
 });
 

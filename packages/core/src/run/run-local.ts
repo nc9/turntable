@@ -8,7 +8,7 @@ import {
   type ActEvent,
 } from "@turntable/act-runner";
 import type { Provider } from "@turntable/provider-sdk";
-import { Redactor } from "@turntable/redact";
+import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { RunStore, StepRecord } from "./store";
 
@@ -31,9 +31,13 @@ export interface RunLocalOptions {
   image: string;
   /** Sink for the (redacted) log text, for example the terminal. */
   out: (text: string) => void;
-  /** Reads repo files so local composite actions are scanned and pinned. */
-  readFile?: (path: string) => string | undefined;
+  /** Reads repo files so local composite actions are always scanned and pinned. */
+  readFile: (path: string) => string | undefined;
   resolver?: ActionRefResolver;
+  /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
+  egress?: "none" | "open";
+  /** Secrets to redact everywhere: log text, step names, stored error text. */
+  registry?: SecretRegistry;
   /** Aborting cancels: the sandbox is destroyed and the attempt marked cancelled. */
   signal?: AbortSignal;
   /** Idle flush interval for the redactor's held partial line. Default 1000 ms. */
@@ -76,7 +80,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
     workflowPath: o.workflowPath,
     event: o.event,
     ...(o.planRoot ? { root: o.planRoot } : {}),
-    ...(o.readFile ? { readFile: o.readFile } : {}),
+    readFile: o.readFile,
   });
   for (const w of planned.warnings) o.out(`warning: ${w.message}\n`);
   const plan = await resolveActions(planned, o.resolver);
@@ -92,11 +96,16 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
   });
   await o.store.markRunning(ids);
 
+  // One registry for everything act-derived that we show or store.
+  const registry = o.registry ?? new SecretRegistry();
+  const clean = (text: string): string => redactString(text, registry);
+
   const finish = async (
     state: RunLocalResult["state"],
-    reason: string,
+    rawReason: string,
     code?: number,
   ): Promise<RunLocalResult> => {
+    const reason = clean(rawReason);
     const dbState = state;
     const exitCode =
       dbState === "success"
@@ -113,7 +122,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
     return { state, exitCode: EXIT[state], reason, ...ids };
   };
 
-  const log = new LogPipe(o, ids.attemptId);
+  const log = new LogPipe(o, ids.attemptId, registry);
   const idle = setInterval(() => log.idleFlush(o.idleFlushMs ?? 1000), 250);
 
   const steps = new Map<string, StepRecord>();
@@ -123,7 +132,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
         stepKey: e.stepKey,
         stage: e.stage,
         index: steps.size,
-        name: stepLabel(e.name, e.stage),
+        name: clean(stepLabel(e.name, e.stage)),
         startedAt: Date.now(),
         logOffset: log.stored,
       };
@@ -169,7 +178,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
       ttlSeconds: (o.timeoutSeconds ?? 3600) + 900,
       // TODO(#16): egress none works for host-mode jobs with sha-delivered actions (proved in
       // the act-runner e2e), so local runs get no network.
-      network: { egress: "none" },
+      network: { egress: o.egress ?? "none" },
     });
     sandboxId = sb.id;
     await o.store.setSandbox(ids.attemptId, sb.id);
@@ -217,13 +226,14 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
 /** Redacts text, shows it, and stores it in order with byte offsets (offsets of what is stored). */
 class LogPipe {
   stored = 0;
-  readonly #redactor = new Redactor();
+  readonly #redactor: Redactor;
   readonly #o: RunLocalOptions;
   readonly #attemptId: string;
   #lastPush = Date.now();
   #writes: Promise<void> = Promise.resolve();
 
-  constructor(o: RunLocalOptions, attemptId: string) {
+  constructor(o: RunLocalOptions, attemptId: string, registry: SecretRegistry) {
+    this.#redactor = new Redactor({ registry });
     this.#o = o;
     this.#attemptId = attemptId;
   }
