@@ -26,6 +26,7 @@ import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
+import { buildActEvent } from "../run/act-event";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
 import { resolvePlanActions } from "../pins";
@@ -92,6 +93,19 @@ async function git(cwd: string, argv: string[]): Promise<void> {
   if (code !== 0) throw new Error(`git ${argv[0]} failed: ${err.trim().split("\n")[0]}`);
 }
 
+/** A remote URL with a user or password in it would be stored in the repo's config. */
+export function assertNoCredentials(u: string): void {
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(u);
+  } catch {
+    return; // a local path, as tests use
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error("the remote URL must not carry credentials");
+  }
+}
+
 /**
  * Fetches exactly the run's commit from a public repo with git (a depth-1 fetch by sha) and packs
  * it the way `longshore run` does: the committed tree plus .git.
@@ -110,6 +124,12 @@ export function gitRepoSource(
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
       try {
         await git(dir, ["init", "-q"]);
+        // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
+        // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
+        // Never with credentials in the URL.
+        const remote = o.cloneUrl ? url(owner, repo) : `https://github.com/${owner}/${repo}`;
+        assertNoCredentials(remote);
+        await git(dir, ["remote", "add", "origin", remote]);
         await git(dir, ["fetch", "-q", "--depth", "1", url(owner, repo), run.sha]);
         await git(dir, ["checkout", "-q", "--detach", "FETCH_HEAD"]);
         const snap = await snapshotRepo(dir);
@@ -345,6 +365,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
                 readFile: checkout.readFile,
                 split: true,
                 failOnLint,
+                eventPayload: buildActEvent(dbRun),
                 ...root,
               },
             )
@@ -353,6 +374,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               event: dbRun.event,
               readFile: checkout.readFile,
               failOnLint,
+              eventPayload: buildActEvent(dbRun),
               ...root,
             });
         // The run's own GitHub credential (never an unauthenticated 60-per-hour budget when one

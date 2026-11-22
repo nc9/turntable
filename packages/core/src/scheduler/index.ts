@@ -9,6 +9,7 @@ export type {
 } from "./types";
 export {
   createActRunner,
+  assertNoCredentials,
   gitRepoSource,
   localRepoSource,
   type ActRunnerOptions,

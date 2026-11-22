@@ -13,6 +13,8 @@ export interface Layout {
   shims: string;
   /** Where the generated export step writes job outputs, one file per output name. */
   outputsDir: string;
+  /** The event payload act reads with --eventpath, when the plan has one. */
+  eventFile: string;
 }
 
 export function layoutFor(root: string = DEFAULT_ROOT): Layout {
@@ -25,5 +27,6 @@ export function layoutFor(root: string = DEFAULT_ROOT): Layout {
     stubs: `${root}/stubs`,
     shims: `${root}/shims`,
     outputsDir: `${root}/outputs`,
+    eventFile: `${root}/event.json`,
   };
 }

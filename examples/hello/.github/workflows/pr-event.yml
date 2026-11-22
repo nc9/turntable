@@ -1,0 +1,19 @@
+name: pr-event
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  event:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The event payload and the delivered repo
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "base-sha=${BASE_SHA}"
+          echo "pr-number=${PR_NUMBER}"
+          echo "origin=$(git remote get-url origin)"
+          git fsck --no-dangling
+          echo "repo-ok"

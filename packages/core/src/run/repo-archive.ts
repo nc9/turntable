@@ -3,8 +3,37 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/**
+ * macOS tar (bsdtar) adds AppleDouble `._*` entries for files with extended attributes (for
+ * example `.git/objects/pack/._pack-*.idx`), and git in the sandbox then reports "index file ...
+ * is too small". The env variable stops it on macOS, and `--no-mac-metadata` on bsdtar builds
+ * that have the option.
+ */
+export const TAR_ENV = { COPYFILE_DISABLE: "1" } as const;
+
+let noMeta: boolean | undefined;
+/** True when this tar takes --no-mac-metadata (bsdtar does; GNU tar does not). Probed once. */
+function tarHasNoMacMetadata(): boolean {
+  noMeta ??= (() => {
+    try {
+      const p = Bun.spawnSync(
+        ["tar", "--no-mac-metadata", "--no-xattrs", "-cf", "/dev/null", "-T", "/dev/null"],
+        { env: scrubbedEnv(TAR_ENV), stdout: "ignore", stderr: "ignore" },
+      );
+      return p.exitCode === 0;
+    } catch {
+      return false;
+    }
+  })();
+  return noMeta;
+}
+
+/** Arguments that keep platform metadata out of an archive, for the tar in use. */
+export const tarMetadataArgs = (supported: boolean = tarHasNoMacMetadata()): string[] =>
+  supported ? ["--no-mac-metadata", "--no-xattrs"] : [];
+
 async function sh(cwd: string, argv: string[]): Promise<string> {
-  const p = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env: scrubbedEnv() });
+  const p = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env: scrubbedEnv(TAR_ENV) });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(),
     new Response(p.stderr).text(),
@@ -57,7 +86,8 @@ export async function snapshotRepo(repoDir: string): Promise<RepoSnapshot> {
   try {
     const tar = join(tmp, "repo.tar");
     await sh(repoDir, ["git", "archive", "--format=tar", "--output", tar, "HEAD"]);
-    await sh(repoDir, ["tar", "rf", tar, ".git"]);
+    // Mode and file first: bsdtar rejects "tar --opt rf file" (it wants a mode before the old-style letters).
+    await sh(repoDir, ["tar", "-r", "-f", tar, ...tarMetadataArgs(), ".git"]);
     const gz = Bun.gzipSync(new Uint8Array(await Bun.file(tar).arrayBuffer()));
     return {
       tarball: gz,

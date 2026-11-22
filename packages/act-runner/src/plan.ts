@@ -45,6 +45,12 @@ export interface PlanOptions {
    * into a PlanError. Set it for protected and release runs.
    */
   failOnLint?: boolean;
+  /**
+   * The `github.event` payload act should see (`--eventpath`): forge facts only, built by the
+   * caller from what was fetched at ingest. Stored in the plan, so a re-attach or rerun hands
+   * act exactly the same bytes.
+   */
+  eventPayload?: Record<string, unknown>;
 }
 
 export interface PlannedAction {
@@ -135,6 +141,8 @@ export interface JobPlan {
   stubIds: string[];
   /** Non-fatal findings. Failing lints come later. */
   warnings: PlanWarning[];
+  /** The event payload act reads from `layout.eventFile`; absent when there is none. */
+  eventJson?: string;
   /** Full command: act binary then args. Run with cwd = layout.repo. */
   argv: string[];
   cwd: string;
@@ -301,6 +309,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     stubIds: opts.split ? [needs ?? []].flat().map(String) : [],
     labels,
     event: opts.event ?? "push",
+    ...(opts.eventPayload ? { eventJson: JSON.stringify(opts.eventPayload) } : {}),
     argv: [],
     cwd: layout.repo,
   };
@@ -328,6 +337,7 @@ function withArgv(plan: JobPlan): JobPlan {
     "--concurrent-jobs",
     "1",
     "--no-skip-checkout",
+    ...(plan.eventJson === undefined ? [] : ["--eventpath", plan.layout.eventFile]),
     // act's artifact and cache servers bind the outbound IP by default and fail with no network
     // ("lookup <nil>"). Loopback works with egress none.
     "--artifact-server-addr",

@@ -187,6 +187,14 @@ export async function* runJob(
     );
     if (shims.exitCode !== 0) return fail(`cannot install step shims: ${shims.output.trim()}`);
 
+    // The event payload, byte for byte as the plan stored it.
+    if (plan.eventJson !== undefined) {
+      await withRetry(
+        () => provider.files.put(sandboxId, L.eventFile, enc.encode(plan.eventJson as string)),
+        maxErr,
+        pollMs,
+      );
+    }
     // Pin every `uses:` to its sha in the files act will read.
     for (const [i, f] of plan.files.entries()) {
       // The workflow itself is always uploaded: for a split job it exists only here.

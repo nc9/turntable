@@ -1,3 +1,4 @@
+import { buildActEvent } from "../src/run/act-event";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -378,6 +379,21 @@ describe("trigger router at ingest", () => {
     expect(new Set(gh.state.calls.map((c) => c.method))).toEqual(new Set(["GET"]));
   });
 
+  test("a push stores the commit before it, and act is given ref, before and after", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", PIPELINE);
+    await ingest(gh);
+    gh.state.head = { sha: SHA("c"), message: "feat: second", login: "octocat" };
+    await ingest(gh);
+    const second = (await listRuns(db, scope)).find((r) => r.sha === SHA("c"));
+    expect(buildActEvent(second!)).toEqual({
+      ref: "refs/heads/main",
+      before: SHA("a"),
+      after: SHA("c"),
+      repository: { full_name: "acme/web" },
+    });
+  });
+
   test("a pull request compares its base branch to its head", async () => {
     const gh = makeGithub();
     gh.state.files.set("*", PATHS.replace("push:", "pull_request:"));
@@ -392,6 +408,18 @@ describe("trigger router at ingest", () => {
     expect((await ingest(gh)).created).toHaveLength(1);
     const [run] = await listRuns(db, scope);
     expect(run).toMatchObject({ event: "pull_request", prNumber: 5, sha: SHA("e") });
+    // the event act will be given carries the forge facts stored at ingest, base sha included
+    const ev = buildActEvent(run!);
+    expect(ev).toMatchObject({
+      number: 5,
+      repository: { full_name: "acme/web" },
+      pull_request: {
+        number: 5,
+        base: { ref: "main", sha: SHA("b"), repo: { full_name: "acme/web" } },
+        head: { sha: SHA("e"), repo: { full_name: "acme/web" } },
+        draft: false,
+      },
+    });
   });
 
   test("an unreachable or oversized comparison runs the workflow (paths unknown)", async () => {

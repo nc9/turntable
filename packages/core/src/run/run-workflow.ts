@@ -38,6 +38,8 @@ export interface RunWorkflowOptions {
   workflowPath: string;
   workflowYaml: string;
   event: WorkflowEvent;
+  /** The base branch commit, for `github.event.pull_request.base.sha`. */
+  baseSha?: string;
   sha?: string;
   commitMessage?: string;
   actor?: string;
@@ -96,7 +98,7 @@ function eventPayload(o: RunWorkflowOptions): Value {
     return {
       ...(e.action ? { action: e.action } : {}),
       pull_request: {
-        base: { ref: e.baseRef ?? "" },
+        base: { ref: e.baseRef ?? "", ...(o.baseSha ? { sha: o.baseSha } : {}) },
         head: { ref: o.headBranch ?? "", sha: o.sha ?? "" },
         draft: false,
       },
