@@ -962,3 +962,14 @@ test("collaboratorPermission: role_name wins, a custom role gets at most the leg
   expect(await odd.collaboratorPermission("acme/web", "../../x")).toBe("none");
   expect(seen).toEqual([]);
 });
+
+test("prNumbers limits pull request ingest to the listed numbers", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = [
+    { number: 3, user: "octocat", headSha: SHA("3"), headRepo: "acme/web" },
+    { number: 7, user: "octocat", headSha: SHA("7"), headRepo: "acme/web" },
+  ];
+  await poll(gh, config({ prNumbers: [7] }));
+  const prRuns = (await listRuns(db, scope)).filter((r) => r.event === "pull_request");
+  expect(prRuns.map((r) => r.prNumber)).toEqual([7]);
+});
