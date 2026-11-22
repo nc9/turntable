@@ -180,5 +180,13 @@ export const migrations: Migration[] = [
       "ALTER TABLE `audit_log` ADD `hash` text;",
       "CREATE UNIQUE INDEX `audit_log_org_seq_unique` ON `audit_log` (`org_id`,`seq`);"
     ]
+  },
+  {
+    "tag": "0013_clear_sugar_man",
+    "when": 1795367825278,
+    "statements": [
+      "CREATE TABLE `action_verdicts` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`kind` text NOT NULL,\n\t`repo` text NOT NULL,\n\t`ref` text DEFAULT '' NOT NULL,\n\t`sha` text NOT NULL,\n\t`verdict` integer NOT NULL,\n\t`checked_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`project_id`, `kind`, `repo`, `ref`, `sha`),\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `action_verdicts_checked_idx` ON `action_verdicts` (`checked_at`);"
+    ]
   }
 ];

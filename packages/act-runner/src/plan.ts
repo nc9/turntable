@@ -1,5 +1,12 @@
 import { parse } from "yaml";
-import { SsrfError, safeFetch } from "@longshore/net";
+import {
+  type Backoff,
+  fetchWithBackoff,
+  RateLimitedError,
+  type SafeFetch,
+  SsrfError,
+  safeFetch,
+} from "@longshore/net";
 import { InfraError } from "@longshore/provider-sdk";
 import { layoutFor, type Layout } from "./layout";
 import { classifyActionRuntime } from "./action-runtime";
@@ -417,22 +424,29 @@ export function untrustedIn(step: string, script: string): PlanWarning[] {
 export type ActionRefResolver = (owner: string, repo: string, ref: string) => Promise<string>;
 
 /** Default resolver: the GitHub API, which also dereferences annotated tags. */
-export function githubResolver(token?: string): ActionRefResolver {
+export function githubResolver(
+  token?: string,
+  opts: { backoff?: Backoff; fetch?: SafeFetch } = {},
+): ActionRefResolver {
+  const f = opts.fetch ?? safeFetch;
   return async (owner, repo, ref) => {
     let res: Response;
     try {
-      res = await safeFetch(
-        `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
-        {
-          headers: {
-            Accept: "application/vnd.github.sha",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          timeoutMs: 30_000,
-          maxBytes: 4096,
+      const url = `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`;
+      const init = {
+        headers: {
+          Accept: "application/vnd.github.sha",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-      );
+        timeoutMs: 30_000,
+        maxBytes: 4096,
+      };
+      // A rate limit waits as GitHub asks (within the job's shared budget) before it fails.
+      res = opts.backoff ? await fetchWithBackoff(f, url, init, opts.backoff) : await f(url, init);
     } catch (e) {
+      if (e instanceof RateLimitedError) {
+        throw new InfraError(`resolving ${owner}/${repo}@${ref}: ${e.message}`);
+      }
       // The network, not the workflow: retryable. A refused address is not.
       if (e instanceof SsrfError) throw new PlanError("outbound-address", e.message);
       throw new InfraError(`cannot reach GitHub to resolve ${owner}/${repo}@${ref}`, e);

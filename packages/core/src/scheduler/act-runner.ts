@@ -28,10 +28,19 @@ import { prefixedOut } from "../run/prefixed-out";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
 import { resolvePlanActions } from "../pins";
+import type { ForgeToken } from "../pins/forge-token";
+import {
+  actionCredentials,
+  credentialedReachability,
+  credentialedResolver,
+} from "../pins/action-credentials";
+import { githubReachability } from "../pins/reachability";
+import { cachedReachability, cachedResolver, type VerdictTtl } from "../pins/verdict-cache";
+import { createBackoff, type SafeFetch } from "@longshore/net";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
-import { parseTrust } from "../db/repos";
+import { getActionPolicy, parseTrust } from "../db/repos";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -137,6 +146,18 @@ export type ActRunnerOptions = {
   /** Verifies an action sha belongs to its repo (default: the GitHub API). */
   reachable?: ReachabilityChecker;
   pollMs?: number;
+  /**
+   * The GitHub credential for resolving and verifying actions (see pins/forge-token). Without it
+   * those requests are unauthenticated and hit GitHub's 60-per-hour limit.
+   */
+  forgeToken?: ForgeToken;
+  /** How long one job may wait out GitHub rate limits in total. Default 2 minutes. */
+  backoff?: { budgetMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number };
+  /** How long action verdicts are remembered (see pins/verdict-cache). */
+  verdictTtl?: Partial<VerdictTtl>;
+  now?: () => number;
+  /** Test seam: the HTTP client for action resolution and reachability (default: safeFetch). */
+  fetch?: SafeFetch;
   /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
   planRoot?: string;
   /** Live terminal output of a job, line by line (`longshore run` prints it with a key prefix). */
@@ -336,13 +357,62 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               failOnLint,
               ...root,
             });
+        // The run's own GitHub credential (never an unauthenticated 60-per-hour budget when one
+        // exists), a rate-limit wait shared by everything this job fetches, and verdicts kept in
+        // the database so a restart or a parallel job does not ask again.
+        const token = await o.forgeToken?.({ run: dbRun, scope: ctx.scope });
+        const backoff = createBackoff({
+          ...o.backoff,
+          onWait: (ms, why) =>
+            o.out?.(
+              job.jobKey,
+              `[${job.jobKey}] waiting ${Math.ceil(ms / 1000)}s for GitHub's rate limit (${why})\n`,
+            ),
+        });
+        const cacheOpts = {
+          db: o.db,
+          scope: ctx.scope,
+          ...(o.verdictTtl ? { ttl: o.verdictTtl } : {}),
+          ...(o.now ? { now: o.now } : {}),
+        };
+        // The credential is for the run's own repo and the org's allowlisted owners only, and
+        // never for an untrusted run (see pins/action-credentials); every other action is
+        // resolved anonymously, so a private repo a workflow names just looks not found.
+        const policy = await getActionPolicy(o.db, ctx.scope);
+        const creds = actionCredentials({
+          token,
+          ownRepo: dbRun.repo,
+          allowedOwners: policy.allowedOwners,
+          untrusted: klass === "untrusted_pr",
+          backoff,
+          ...(o.fetch ? { fetch: o.fetch } : {}),
+        });
+        const fetchOpt = o.fetch ? { fetch: o.fetch } : {};
         plan = await resolvePlanActions(jobPlan, {
           db: o.db,
           scope: ctx.scope,
           klass,
-          base: o.resolver ?? githubResolver(),
+          // The credential and privacy decision is OUTSIDE the cache, so a cache hit can never
+          // skip it, and verdicts learned with a token are kept apart from anonymous ones.
+          base:
+            o.resolver ??
+            credentialedResolver(creds, (tk) =>
+              cachedResolver({
+                ...cacheOpts,
+                credentialed: tk !== undefined,
+                base: githubResolver(tk, { backoff, ...fetchOpt }),
+              }),
+            ),
           readFile: checkout.readFile,
-          ...(o.reachable ? { reachable: o.reachable } : {}),
+          reachable:
+            o.reachable ??
+            credentialedReachability(creds, (tk) =>
+              cachedReachability({
+                ...cacheOpts,
+                credentialed: tk !== undefined,
+                base: githubReachability({ ...(tk ? { token: tk } : {}), backoff, ...fetchOpt }),
+              }),
+            ),
           ...(o.fetchAction ? { fetchTarball: o.fetchAction } : {}),
           warn: (m) => console.warn(`action pins: ${m}`),
         });

@@ -6,6 +6,7 @@ import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
+import { createForgeToken } from "./pins/forge-token";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
@@ -89,8 +90,11 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
+  extras: { auth?: AppAuth } = {},
 ): Promise<{ stop(): Promise<void> }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
+  // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
+  const pollConfig = v.poll ? loadPollConfig(v.poll) : undefined;
   let scheduler: Scheduler | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   let poller: Poller | undefined;
@@ -135,6 +139,15 @@ async function startBackground(
           createActRunner({
             db,
             source: gitRepoSource(),
+            // Actions are resolved and verified with the run's own GitHub credential: the poll
+            // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
+            forgeToken: createForgeToken({
+              db,
+              poll: pollConfig,
+              auth: extras.auth,
+              envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+              log: (m) => console.warn(`[longshore] ${m}`),
+            }),
             canary: true,
             ...(v.image ? { image: v.image } : {}),
           }),
@@ -177,8 +190,7 @@ async function startBackground(
     log("worker started");
   }
 
-  if (v.poll) {
-    const pollConfig = loadPollConfig(v.poll);
+  if (pollConfig) {
     if (v.worker && pollConfig.provider !== (v.provider ?? "docker")) {
       throw new Error(
         `poll config provider "${pollConfig.provider}" does not match --provider ${v.provider ?? "docker"}`,
@@ -274,6 +286,7 @@ async function serve(args: string[]): Promise<void> {
   let webhooks: WebhookHandler | undefined;
   let checks: CheckReporter | undefined;
   const auditStops: (() => void)[] = [];
+  let appAuth: AppAuth | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const store = new SecretStore(db, loadMasterKey(keyFile));
@@ -287,6 +300,7 @@ async function serve(args: string[]): Promise<void> {
       publicUrl: values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
       log: (m) => console.log(`[longshore] checks: ${m}`),
     });
+    appAuth = auth;
     webhooks = createWebhookHandler({
       db,
       store,
@@ -316,7 +330,7 @@ async function serve(args: string[]): Promise<void> {
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
-  const background = await startBackground(db, values, checks);
+  const background = await startBackground(db, values, checks, appAuth ? { auth: appAuth } : {});
 
   const stop = () => {
     for (const s of auditStops) s();

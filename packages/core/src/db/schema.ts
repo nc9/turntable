@@ -663,3 +663,29 @@ export const actionPins = sqliteTable(
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
   ],
 );
+
+/**
+ * Verdicts about actions that took network calls to learn, kept so a restart or a parallel job
+ * does not ask again. `resolve`: a tag or branch resolved to a sha (`ref` set, `sha` the result,
+ * short life, since refs move). `reach`: a sha is, or is not, reachable from a branch or tag of
+ * its own repo (`ref` empty, `sha` the key, `verdict` 1 or 0). Rows expire by age at read time.
+ */
+export const actionVerdicts = sqliteTable(
+  "action_verdicts",
+  {
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    kind: text("kind").notNull(),
+    /** `owner/repo`, lowercase. */
+    repo: text("repo").notNull(),
+    ref: text("ref").notNull().default(""),
+    sha: text("sha").notNull(),
+    verdict: integer("verdict").notNull(),
+    checkedAt: integer("checked_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    primaryKey({ columns: [t.projectId, t.kind, t.repo, t.ref, t.sha] }),
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    index("action_verdicts_checked_idx").on(t.checkedAt),
+  ],
+);
