@@ -11,6 +11,7 @@ import {
   archFromUname,
   fetchAct,
   fetchActionTarball,
+  sha256Hex,
   type ActTarball,
   type ActionFetcher,
 } from "./act-install";
@@ -102,6 +103,61 @@ async function sleep(ms: number): Promise<void> {
   await Bun.sleep(ms);
 }
 
+/** Assembles uploaded parts into one file and checks it. Args: path, part count, sha256. */
+export const ASSEMBLE_SH = `set -eu
+p=$1; n=$2; want=$3
+: > "$p"
+i=0
+while [ "$i" -lt "$n" ]; do
+  cat "$p.part$i" >> "$p"
+  rm -f "$p.part$i"
+  i=$((i + 1))
+done
+if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$p" | cut -d' ' -f1)
+else got=$(shasum -a 256 "$p" | cut -d' ' -f1); fi
+[ "$got" = "$want" ] || { echo "delivered file checksum mismatch: $got" >&2; exit 3; }
+`;
+
+/**
+ * Uploads one file. A file over the provider's per-file cap goes up in parts under the cap and is
+ * put back together in the sandbox, checked against its digest, so a repository larger than the
+ * cap is still delivered whole. Returns a failure reason, or undefined on success.
+ */
+export async function putChunked(
+  provider: Provider,
+  sandboxId: string,
+  path: string,
+  bytes: Uint8Array,
+  retry: { max: number; pollMs: number },
+): Promise<string | undefined> {
+  const cap = provider.info.files.maxBytes;
+  if (cap === undefined || bytes.length <= cap) {
+    await withRetry(() => provider.files.put(sandboxId, path, bytes), retry.max, retry.pollMs);
+    return undefined;
+  }
+  // Half the cap leaves room for any framing the provider adds.
+  const size = Math.max(1, Math.floor(cap / 2));
+  const parts = Math.ceil(bytes.length / size);
+  for (let i = 0; i < parts; i++) {
+    await withRetry(
+      () =>
+        provider.files.put(sandboxId, `${path}.part${i}`, bytes.subarray(i * size, (i + 1) * size)),
+      retry.max,
+      retry.pollMs,
+    );
+  }
+  const r = await execShort(
+    provider,
+    sandboxId,
+    ASSEMBLE_SH,
+    [path, String(parts), sha256Hex(bytes)],
+    retry,
+  );
+  return r.exitCode === 0
+    ? undefined
+    : `cannot assemble ${path} from ${parts} parts: ${r.output.trim()}`;
+}
+
 /** Runs a short command to completion and returns its output. Setup only. */
 async function execShort(
   p: Provider,
@@ -170,11 +226,14 @@ export async function* runJob(
       act = await fetchAct(arch);
     }
     await withRetry(() => provider.files.put(sandboxId, L.actTarball, act.bytes), maxErr, pollMs);
-    await withRetry(
-      () => provider.files.put(sandboxId, L.repoTarball, input.repoTarball),
-      maxErr,
-      pollMs,
+    const delivered = await putChunked(
+      provider,
+      sandboxId,
+      L.repoTarball,
+      input.repoTarball,
+      retry,
     );
+    if (delivered !== undefined) return fail(delivered);
     for (const dir of plan.stubDirs) {
       const bytes = enc.encode(checkoutStubAction(L.repo));
       await withRetry(

@@ -165,6 +165,83 @@ describe("the secrets-proxy environment", () => {
   });
 });
 
+describe("a repository larger than the provider's per-file cap", () => {
+  test("is delivered in parts, reassembled and checked in the sandbox", async () => {
+    const small = new FakeWorld({ exec: { tickSeconds: 1 }, maxFileBytes: 20_000 });
+    try {
+      const p = small.provider();
+      const { id } = await p.create(spec);
+      const plan = planJob(WF, "hello", {
+        workflowPath: ".github/workflows/ci.yml",
+        readFile: () => undefined,
+        root: `${small.sandboxDir(id)}/tt`,
+      });
+      // Incompressible content, so the tarball is well over the cap.
+      const big = new Uint8Array(100_000);
+      crypto.getRandomValues(big);
+      const d = mkdtempSync(join(tmp, "big-"));
+      writeFileSync(join(d, "blob.bin"), big);
+      writeFileSync(join(d, "README.md"), "hi\n");
+      const repoTarball = await tarDirectory(d, ["blob.bin", "README.md"]);
+      expect(repoTarball.length).toBeGreaterThan(20_000 * 4);
+      // The provider really refuses a single file this big.
+      await expect(p.files.put(id, `${plan.layout.root}/x`, repoTarball)).rejects.toThrow();
+      const act = await fakeAct(
+        await fixture("success.jsonl"),
+        0,
+        `cd '${plan.layout.repo}' && echo "blob=$(wc -c < blob.bin | tr -d " ")" && echo "readme=$(cat README.md)" && ls '${plan.layout.root}' | grep -c part || true`,
+      );
+      const events: RunEvent[] = [];
+      const result = await drain(runJob(p, id, plan, { repoTarball, act }, { pollMs: 50 }), (e) =>
+        events.push(e),
+      );
+      const log = events
+        .filter((e) => e.kind === "log")
+        .map((e) => new TextDecoder().decode(e.bytes))
+        .join("");
+      expect(result.state).toBe("success");
+      expect(log).toContain("blob=100000");
+      expect(log).toContain("readme=hi");
+      // No part file is left behind.
+      expect(log).toMatch(/\n0\n?$/m);
+    } finally {
+      small.dispose();
+    }
+  });
+
+  test("a part that arrives damaged fails the job instead of running a broken repository", async () => {
+    const small = new FakeWorld({ exec: { tickSeconds: 1 }, maxFileBytes: 20_000 });
+    try {
+      const p = small.provider();
+      const { id } = await p.create(spec);
+      const plan = planJob(WF, "hello", {
+        workflowPath: ".github/workflows/ci.yml",
+        readFile: () => undefined,
+        root: `${small.sandboxDir(id)}/tt`,
+      });
+      const big = new Uint8Array(100_000);
+      crypto.getRandomValues(big);
+      const d = mkdtempSync(join(tmp, "big-"));
+      writeFileSync(join(d, "blob.bin"), big);
+      const repoTarball = await tarDirectory(d, ["blob.bin"]);
+      const put = p.files.put.bind(p.files);
+      p.files.put = (sid, path, bytes) =>
+        path.endsWith(".part1")
+          ? put(sid, path, new Uint8Array(bytes.length))
+          : put(sid, path, bytes);
+      const act = await fakeAct("", 0);
+      const result = await drain(
+        runJob(p, id, plan, { repoTarball, act }, { pollMs: 50 }),
+        () => {},
+      );
+      expect(result.state).toBe("infra_error");
+      expect(result.reason).toContain("checksum mismatch");
+    } finally {
+      small.dispose();
+    }
+  });
+});
+
 describe("runJob against the fake provider", () => {
   test("success: events, contiguous log offsets, success verdict", async () => {
     const out = await fixture("success.jsonl");

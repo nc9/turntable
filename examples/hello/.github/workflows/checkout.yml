@@ -1,0 +1,27 @@
+name: checkout
+on: push
+jobs:
+  checkout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: app
+          fetch-depth: 0
+      - name: The inputs were honoured
+        run: |
+          test -f app/README.md
+          echo "branch=$(git -C app rev-parse --abbrev-ref HEAD)"
+          echo "count=$(git -C app rev-list --count HEAD)"
+      - name: A ref that was not delivered
+        id: missing
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: no-such-branch
+          path: other
+      - name: It failed, and nothing was fetched
+        run: |
+          echo "missing-outcome=${{ steps.missing.outcome }}"
+          test ! -e other/README.md
