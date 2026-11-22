@@ -36,3 +36,4 @@ export function ensureInstance(db: Db): string {
 }
 
 export { schema };
+export * from "./repos";

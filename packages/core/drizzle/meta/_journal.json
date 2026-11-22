@@ -8,6 +8,13 @@
       "when": 1795337303087,
       "tag": "0000_curvy_slayback",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795343074188,
+      "tag": "0001_special_randall",
+      "breakpoints": true
     }
   ]
 }
