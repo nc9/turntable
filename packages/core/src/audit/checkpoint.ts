@@ -367,10 +367,17 @@ export async function checkpointDue(
   for (const orgId of await auditedOrgIds(db, anchor)) {
     const head = await auditHead(db, orgId);
     let state: AnchorState | undefined;
+    // An unreadable state, or no state for an org that holds a signing key, is a problem to
+    // alert on every pass: createCheckpoint refuses both, with an alert. Treating either as "no
+    // state, nothing to do" would let a deleted or corrupted file switch the checks off.
+    let stateProblem = false;
     try {
       state = anchor.read(orgId);
     } catch {
-      state = undefined; // createCheckpoint refuses a corrupt state, with an alert
+      stateProblem = true;
+    }
+    if (state === undefined && !stateProblem && (await store.has(orgId, AUDIT_KEY_SECRET))) {
+      stateProblem = true;
     }
     const truncated =
       state !== undefined &&
@@ -379,8 +386,9 @@ export async function checkpointDue(
     const last = await latestCheckpoint(db, orgId);
     const behind = (head?.seq ?? 0) - (last?.seq ?? 0);
     const age = last ? now() - last.signedAt : Number.POSITIVE_INFINITY;
-    // A truncation or an unreadable state is checked every pass, never waited out.
-    const due = truncated || (behind > 0 && (behind >= everyEntries || age >= everyMs));
+    // A truncation or a state problem is checked every pass, never waited out.
+    const due =
+      truncated || stateProblem || (behind > 0 && (behind >= everyEntries || age >= everyMs));
     if (!due) continue;
     try {
       if (await createCheckpoint(db, store, anchor, orgId, now)) signed += 1;

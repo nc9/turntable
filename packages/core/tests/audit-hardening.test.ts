@@ -472,3 +472,47 @@ describe("a truncated chain is never silently skipped", () => {
     expect(await systemAlerts()).toEqual([]);
   });
 });
+
+describe("a state problem is checked on every pass", () => {
+  const alerts = async (t: Tenant) =>
+    (await chainedAudit(db, t.orgId, 0, 1000)).filter((r) => r.op === "audit_checkpoint");
+
+  test("a corrupt state file: refused and alerted on the next pass, even with nothing due", async () => {
+    await add(a, 3);
+    await initAuditKey(db, store, anchor, a.orgId);
+    await sign(a);
+    writeFileSync(join(dir, readdirSync(dir)[0]!), "not sealed");
+    const signed = await checkpointDue(db, store, anchor, {
+      everyEntries: 1_000_000,
+      everyMs: 1e12,
+    });
+    expect(signed).toBe(0);
+    expect((await alerts(a)).at(-1)?.outcome).toBe("error:state_corrupt");
+  });
+
+  test("a signing key whose state file was deleted: alerted on the next pass, even with nothing due", async () => {
+    await add(a, 3);
+    await initAuditKey(db, store, anchor, a.orgId);
+    await sign(a);
+    rmSync(join(dir, readdirSync(dir)[0]!));
+    await checkpointDue(db, store, anchor, { everyEntries: 1_000_000, everyMs: 1e12 });
+    expect((await alerts(a)).at(-1)?.outcome).toBe("error:state_missing");
+  });
+
+  test("an org with no key and no state is left alone, with no alert", async () => {
+    await add(b, 3);
+    await checkpointDue(db, store, anchor, { everyEntries: 1 });
+    expect(await alerts(b)).toEqual([]);
+  });
+
+  test("the other orgs are still signed while one has a state problem", async () => {
+    await initAuditKey(db, store, anchor, a.orgId);
+    await initAuditKey(db, store, anchor, b.orgId);
+    await add(a, 2);
+    await add(b, 2);
+    rmSync(join(dir, `${a.orgId}.state`));
+    expect(await checkpointDue(db, store, anchor, { everyEntries: 1 })).toBe(1);
+    expect((await listCheckpoints(db, b.orgId)).length).toBe(1);
+    expect((await alerts(a)).at(-1)?.outcome).toBe("error:state_missing");
+  });
+});
