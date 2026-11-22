@@ -82,6 +82,11 @@ export function parseHead(text: string): Head | string {
   };
 }
 
+/** Longest chunk-size line, longest trailer line, and all trailers together. */
+const MAX_CHUNK_LINE = 1024;
+const MAX_TRAILER_LINE = 8192;
+const MAX_TRAILER_BYTES = 16 * 1024;
+
 function readChunked(
   buf: Buffer,
   max: number,
@@ -91,20 +96,24 @@ function readChunked(
   let total = 0;
   for (;;) {
     const eol = buf.indexOf("\r\n", pos);
-    if (eol < 0) return buf.length - pos > 1024 ? "bad_chunk" : "need_more";
+    // A line that is already too long and still has no end is refused now, not waited for.
+    if (eol < 0) return buf.length - pos > MAX_CHUNK_LINE ? "bad_chunk" : "need_more";
+    if (eol - pos > MAX_CHUNK_LINE) return "bad_chunk";
     const sizeText = buf.subarray(pos, eol).toString("latin1").split(";", 1)[0]!.trim();
     if (!/^[0-9a-fA-F]{1,8}$/.test(sizeText)) return "bad_chunk";
     const size = Number.parseInt(sizeText, 16);
     pos = eol + 2;
     if (size === 0) {
-      // Trailers are read and dropped, up to the terminating empty line.
+      // Trailers are read and dropped, up to the terminating empty line, within a fixed budget.
+      let trailerBytes = 0;
       for (;;) {
         const e = buf.indexOf("\r\n", pos);
-        if (e < 0) return "need_more";
-        const line = buf.subarray(pos, e).length;
+        if (e < 0) return buf.length - pos > MAX_TRAILER_LINE ? "bad_trailer" : "need_more";
+        const lineLength = e - pos;
         pos = e + 2;
-        if (line === 0) return { body: Buffer.concat(parts), consumed: pos };
-        if (pos > buf.length || e - pos > 8192) return "bad_chunk";
+        if (lineLength === 0) return { body: Buffer.concat(parts), consumed: pos };
+        trailerBytes += lineLength + 2;
+        if (lineLength > MAX_TRAILER_LINE || trailerBytes > MAX_TRAILER_BYTES) return "bad_trailer";
       }
     }
     total += size;
@@ -120,16 +129,25 @@ export class RequestReader {
   #buf: Buffer = Buffer.alloc(0);
   readonly #limits: Limits;
   #head: (Head & { continued: boolean }) | undefined;
+  #overflow = false;
 
   constructor(limits: Limits = DEFAULT_LIMITS) {
     this.#limits = limits;
   }
 
+  /** Everything buffered, however it is framed, stays within one request's worth of bytes. */
   feed(chunk: Buffer): void {
+    const cap = this.#limits.headerBytes + this.#limits.bodyBytes + 64 * 1024;
+    if (this.#buf.length + chunk.length > cap) {
+      this.#overflow = true;
+      this.#buf = Buffer.alloc(0);
+      return;
+    }
     this.#buf = this.#buf.length === 0 ? chunk : Buffer.concat([this.#buf, chunk]);
   }
 
   next(): ReadResult {
+    if (this.#overflow) return { kind: "error", reason: "buffer_too_large" };
     if (!this.#head) {
       const end = this.#buf.indexOf("\r\n\r\n");
       if (end < 0) {

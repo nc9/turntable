@@ -599,3 +599,90 @@ describe("the per-job CA", () => {
     expect(outcome).not.toBe("connected");
   });
 });
+
+describe("scanning covers the whole attempt", () => {
+  const twoRules = (): Rule[] => [
+    ...rules(),
+    {
+      id: "public",
+      host: HOST,
+      methods: ["GET"],
+      pathPrefix: "/public/",
+      inject: { type: "none" },
+    },
+  ];
+
+  test("partial-content requests are stripped once the attempt has injected, and a 206 is refused", async () => {
+    const { cred } = newAttempt(twoRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    // The injecting request itself, asking for a range.
+    await t.request(get("/v1/a", "Range: bytes=0-10\r\nIf-Range: x\r\n"));
+    expect(seen[0]!.headers.get("range")).toBeNull();
+    expect(seen[0]!.headers.get("if-range")).toBeNull();
+    // A later request on a rule that injects nothing: same attempt, same rule.
+    await t.request(get("/public/a", "Range: bytes=0-10\r\nIf-None-Match: *\r\nIf-Match: x\r\n"));
+    expect(seen[1]!.headers.get("range")).toBeNull();
+    expect(seen[1]!.headers.get("if-none-match")).toBeNull();
+    expect(seen[1]!.headers.get("if-match")).toBeNull();
+    handler = () =>
+      new Response("part", { status: 206, headers: { "content-range": "bytes 0-3/9" } });
+    const r = await t.request(get("/public/b"));
+    expect(r.status).toBe(502);
+    expect(reasons()).toContain("partial_response");
+  });
+
+  test("an attempt that has injected nothing is not touched by these rules", async () => {
+    const { cred } = newAttempt(twoRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    handler = () =>
+      new Response("part", { status: 206, headers: { "content-range": "bytes 0-3/9" } });
+    const r = await t.request(get("/public/a", "Range: bytes=0-3\r\n"));
+    expect(r.status).toBe(206);
+    expect(seen[0]!.headers.get("range")).toBe("bytes=0-3");
+  });
+
+  test("a long piece of an injected value left in a response is refused", async () => {
+    handler = () => new Response(`prefix ${SECRET.slice(0, 16)} and more`);
+    const { cred } = newAttempt();
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    const r = await t.request(get("/v1/a"));
+    expect(r.status).toBe(502);
+    expect(r.raw).not.toContain(SECRET.slice(0, 16));
+    expect(reasons()).toContain("partial_secret_in_response");
+    // The end of the value, too.
+    handler = () => new Response(`tail ${SECRET.slice(-16)}`);
+    const t2 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t2.request(get("/v1/a"))).status).toBe(502);
+  });
+
+  test("after an injection, a compressed response to any request of the attempt is refused", async () => {
+    const { cred } = newAttempt(twoRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    handler = () =>
+      new Response(gzipSync(Buffer.from("fine")), { headers: { "content-encoding": "gzip" } });
+    // Before anything was injected: passed through, still labelled as compressed.
+    const before = await t.request(get("/public/a"));
+    expect(before.status).toBe(200);
+    expect(before.headers["content-encoding"]).toBe("gzip");
+    handler = () => new Response("ok");
+    expect((await t.request(get("/v1/a"))).status).toBe(200);
+    // Now every later response must be readable by the scrubber.
+    handler = () =>
+      new Response(gzipSync(Buffer.from(SECRET)), { headers: { "content-encoding": "gzip" } });
+    const after = await t.request(get("/public/a"));
+    expect(after.status).toBe(502);
+    expect(after.raw).not.toContain(SECRET);
+    expect(reasons()).toContain("encoded_response");
+  });
+
+  test("a chunk trailer with no end is refused rather than buffered", async () => {
+    const { cred } = newAttempt();
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    const r = await t.request(
+      `POST /v1/a HTTP/1.1\r\nHost: ${HOST}\r\ntransfer-encoding: chunked\r\n\r\n0\r\n${"x".repeat(20_000)}`,
+    );
+    expect(r.status).toBe(400);
+    expect(seen).toHaveLength(0);
+    expect(reasons()).toContain("bad_request_bad_trailer");
+  });
+});

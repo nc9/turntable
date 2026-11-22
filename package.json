@@ -49,7 +49,7 @@
     "test:pins": "bun test packages/core/tests/action-pins.test.ts packages/core/tests/forge-token.test.ts",
     "typecheck:net": "bun run --cwd packages/net typecheck",
     "typecheck:proxy": "bun run --cwd packages/proxy typecheck",
-    "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/proxy.test.ts",
+    "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/http.test.ts packages/proxy/tests/proxy.test.ts",
     "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts"
   },
   "devDependencies": {

@@ -56,6 +56,17 @@ const HOP = new Set([
   "upgrade",
 ]);
 const DROP_REQUEST = new Set([...HOP, "host", "content-length", "accept-encoding", "expect"]);
+/** Dropped once an attempt has injected anything: they ask for part of a representation. */
+const PARTIAL_REQUEST = new Set([
+  "range",
+  "if-range",
+  "if-match",
+  "if-none-match",
+  "if-modified-since",
+  "if-unmodified-since",
+]);
+/** A response fragment this long of an injected value is treated as the value leaking. */
+const FRAGMENT = 16;
 const DROP_RESPONSE = new Set([...HOP, "content-length"]);
 
 const text = (status: number, reason: string, extra: string[] = [], body = ""): string =>
@@ -270,7 +281,14 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       const rule = m.rule;
 
       const headers = new Headers();
-      for (const [k, v] of req.headers) if (!DROP_REQUEST.has(k)) headers.append(k, v);
+      // After anything was injected in this attempt, no request may ask for part of a
+      // representation: a fragment of an echo would slip past a scrubber that looks for whole
+      // values. (The request that injects is held to the same rule.)
+      const guarded = injected.has(attempt) || rule.inject.type !== "none";
+      for (const [k, v] of req.headers) {
+        if (DROP_REQUEST.has(k) || (guarded && PARTIAL_REQUEST.has(k))) continue;
+        headers.append(k, v);
+      }
       headers.set("accept-encoding", "identity");
       let injectedHere = false;
       if (rule.inject.type !== "none") {
@@ -334,9 +352,16 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
         return refuse(502, blocked ? "upstream_blocked" : "upstream_error", { ruleId: rule.id });
       }
       const encoding = (res.headers.get("content-encoding") ?? "identity").toLowerCase();
-      if (injectedHere && encoding !== "identity") {
+      // Once an attempt has injected anything, a compressed response to ANY of its requests is
+      // refused: a later request could fetch an echo that cannot be scanned.
+      const scanning = injectedHere || injected.has(attempt);
+      if (scanning && encoding !== "identity") {
         void res.body?.cancel();
         return refuse(502, "encoded_response", { ruleId: rule.id });
+      }
+      if (scanning && (res.status === 206 || res.headers.has("content-range"))) {
+        void res.body?.cancel();
+        return refuse(502, "partial_response", { ruleId: rule.id });
       }
       const raw = Buffer.from(await res.arrayBuffer());
       // Everything injected in this attempt is scrubbed, not only this rule's value.
@@ -350,10 +375,20 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
         lines.push(`${k}: ${s.text.replaceAll(/[\r\n]+/g, " ")}`);
       };
       for (const [k, v] of res.headers) {
-        if (DROP_RESPONSE.has(k) || k === "content-encoding" || k === "set-cookie") continue;
+        if (
+          DROP_RESPONSE.has(k) ||
+          (k === "content-encoding" && encoding === "identity") ||
+          k === "set-cookie"
+        )
+          continue;
         addHeader(k, v);
       }
       for (const c of res.headers.getSetCookie()) addHeader("set-cookie", c);
+      // Defence in depth: whole values are gone by now, so a long piece of one that is still
+      // present is a partial echo.
+      if (scanning && leaksFragment(body.bytes, lines, forms)) {
+        return refuse(502, "partial_secret_in_response", { ruleId: rule.id });
+      }
       if (scrubbed > 0) {
         try {
           await record({
@@ -394,6 +429,23 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
         for (const s of open) s.destroy();
       }),
   };
+}
+
+/** True when a prefix or suffix of a registered form (16 characters or more) remains in the response. */
+function leaksFragment(
+  body: Buffer,
+  headerLines: readonly string[],
+  forms: readonly string[],
+): boolean {
+  const headerText = Buffer.from(headerLines.join("\n"), "latin1");
+  for (const form of forms) {
+    if (form.length < FRAGMENT) continue;
+    for (const piece of [form.slice(0, FRAGMENT), form.slice(-FRAGMENT)]) {
+      const needle = Buffer.from(piece);
+      if (body.includes(needle) || headerText.includes(needle)) return true;
+    }
+  }
+  return false;
 }
 
 /** Reads the head of the CONNECT request: its line, headers, and any bytes after it. */
