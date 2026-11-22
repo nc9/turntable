@@ -775,6 +775,143 @@ export const vaultSecretVersions = sqliteTable(
   ],
 );
 
+// ---- human approvals (#46) ----
+
+export const APPROVER_KINDS = ["webauthn", "ed25519"] as const;
+export type ApproverKind = (typeof APPROVER_KINDS)[number];
+
+/**
+ * An enrolled approval key. A person can hold several (a passkey, a security key, an offline
+ * ed25519 key); distinctness for the two-person rule is by `person`. `public_key` is the SPKI DER
+ * in base64 for every kind. Revoked keys stay for the audit trail and never verify again.
+ */
+export const approvers = sqliteTable(
+  "approvers",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    /** The human this key belongs to; the unit the two-person rule counts. */
+    person: text("person").notNull(),
+    /** The person's forge login, so a run's author cannot approve it. Null when not given. */
+    forgeLogin: text("forge_login"),
+    kind: text("kind").notNull(),
+    /** WebAuthn credential id, base64url. Null for ed25519. */
+    credentialId: text("credential_id"),
+    publicKey: text("public_key").notNull(),
+    /** `ES256` or `EdDSA`. */
+    alg: text("alg").notNull(),
+    signCount: integer("sign_count", { mode: "number" }).notNull().default(0),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [
+    unique("approvers_org_key_unique").on(t.orgId, t.publicKey),
+    unique("approvers_id_org_unique").on(t.id, t.orgId),
+    index("approvers_org_person_idx").on(t.orgId, t.person),
+  ],
+);
+
+/** Per-environment approval policy. Without a row: production and release need 2, others 1. */
+export const approvalPolicies = sqliteTable(
+  "approval_policies",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    environment: text("environment").notNull(),
+    required: integer("required", { mode: "number" }).notNull(),
+    /** 1: the run's author may approve it. Off by default; for solo setups only. */
+    allowAuthorApproval: integer("allow_author_approval", { mode: "number" }).notNull().default(0),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.environment] })],
+);
+
+/**
+ * A server-issued, single-use challenge: the nonce inside a statement for the WebAuthn flow, and
+ * the registration challenge. `id` is the nonce (random, base64url).
+ */
+export const approvalChallenges = sqliteTable(
+  "approval_challenges",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    /** `approve`, `enrol` or `register`. */
+    kind: text("kind").notNull(),
+    /** The statement hash the challenge was issued for (sha256 hex); empty for `register`. */
+    statementHash: text("statement_hash").notNull(),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    usedAt: integer("used_at", { mode: "number" }),
+  },
+  (t) => [index("approval_challenges_org_idx").on(t.orgId, t.expiresAt)],
+);
+
+/** A request to enrol a key, waiting for the existing approvers' quorum. */
+export const approverEnrolments = sqliteTable(
+  "approver_enrolments",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    person: text("person").notNull(),
+    forgeLogin: text("forge_login"),
+    kind: text("kind").notNull(),
+    credentialId: text("credential_id"),
+    publicKey: text("public_key").notNull(),
+    alg: text("alg").notNull(),
+    signCount: integer("sign_count", { mode: "number" }).notNull().default(0),
+    requestedBy: text("requested_by").notNull(),
+    createdAt: createdAt(),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    /** Set when the quorum signed and the key became an approver. */
+    activatedAt: integer("activated_at", { mode: "number" }),
+  },
+  (t) => [index("approver_enrolments_org_idx").on(t.orgId, t.createdAt)],
+);
+
+/**
+ * A verified, signed statement: an environment approval or an enrolment approval. The statement
+ * and the signature are kept so the release lane can verify them again against its own keys.
+ */
+export const approvalRecords = sqliteTable(
+  "approval_records",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id"),
+    /** `environment` or `enrol`. */
+    kind: text("kind").notNull(),
+    runId: text("run_id"),
+    environment: text("environment"),
+    enrolmentId: text("enrolment_id"),
+    /** sha256 hex of the canonical statement. Unique per org: a statement is accepted once. */
+    statementHash: text("statement_hash").notNull(),
+    /** Canonical JSON. */
+    statement: text("statement").notNull(),
+    method: text("method").notNull(),
+    approverId: text("approver_id").notNull(),
+    person: text("person").notNull(),
+    /** JSON: what the approver's key produced (kind-specific). */
+    signature: text("signature").notNull(),
+    createdAt: createdAt(),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+  },
+  (t) => [
+    unique("approval_records_hash_unique").on(t.orgId, t.statementHash),
+    index("approval_records_run_idx").on(t.orgId, t.runId, t.environment),
+    index("approval_records_enrol_idx").on(t.orgId, t.enrolmentId),
+  ],
+);
+
 /**
  * Secret names an incident freeze flagged as needing rotation. One open row per (org, name);
  * `cleared_at` is set when someone rotates it. Kept apart from the secret stores so a freeze

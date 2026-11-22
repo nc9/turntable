@@ -1,5 +1,12 @@
 import type { ChangeEvent } from "../realtime";
 import type {
+  ApprovalChallenge,
+  ApprovalStatement,
+  ApprovalStatus,
+  ApproversOverview,
+  EnrolStatement,
+  EnvironmentApprovalResult,
+  WebAuthnSignature,
   ApproveResult,
   GrepResult,
   IncidentStatus,
@@ -795,6 +802,207 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     return { hits, matches, nextOffset: null, totalBytes: offset };
   }
 
+  // ---- human approvals (the fixture's stand-in for the server) ----
+  const APPROVERS = [
+    { id: "ap_alice", person: "alice", forgeLogin: "alice-gh", kind: "webauthn" as const },
+    { id: "ap_bob", person: "bob", forgeLogin: "bob-gh", kind: "webauthn" as const },
+    { id: "ap_carol", person: "carol", forgeLogin: "carol-gh", kind: "ed25519" as const },
+  ];
+  const approvalsByRun = new Map<string, { person: string; at: number; expiresAt: number }[]>();
+  const pendingEnrolments = [
+    {
+      id: "en_dave",
+      person: "dave",
+      approvers: new Set<string>(),
+      expiresAt: now() + 5 * 86_400_000,
+    },
+  ];
+  const REQUIRED = 2;
+
+  const gatedEnvironment = (runId: string): string | null =>
+    jobsOf(runId).some((j) => j.state === "awaiting_approval" && j.approval === "environment")
+      ? "production"
+      : null;
+
+  function approvalStatus(runId: string): ApprovalStatus {
+    const run = runs.get(runId);
+    if (!run) throw new Error(`run not found: ${runId}`);
+    const env = gatedEnvironment(runId);
+    const recs = approvalsByRun.get(runId) ?? [];
+    return {
+      runId,
+      headSha: run.sha,
+      workflowHash: run.trust?.workflowHash ?? "ab".repeat(32),
+      author: run.actor,
+      environments: env
+        ? [
+            {
+              environment: env,
+              required: REQUIRED,
+              allowAuthorApproval: false,
+              waiting: true,
+              approvals: recs.map((r) => ({
+                person: r.person,
+                method: "webauthn" as const,
+                approvedAt: r.at,
+                expiresAt: r.expiresAt,
+              })),
+            },
+          ]
+        : [],
+    };
+  }
+
+  function approversOverview(): ApproversOverview {
+    return {
+      approvers: APPROVERS.map((a, i) => ({
+        id: a.id,
+        person: a.person,
+        forgeLogin: a.forgeLogin,
+        kind: a.kind,
+        passkeyId: a.kind === "webauthn" ? `cred_${a.person}_${"x".repeat(18)}` : null,
+        createdAt: now() - (30 - i) * 86_400_000,
+      })),
+      pendingEnrolments: pendingEnrolments.map((e) => ({
+        id: e.id,
+        person: e.person,
+        kind: "webauthn" as const,
+        keyFingerprint: "9f".repeat(32),
+        approvals: e.approvers.size,
+        required: REQUIRED,
+        expiresAt: e.expiresAt,
+      })),
+      policies: [
+        {
+          environment: "production",
+          required: REQUIRED,
+          allowAuthorApproval: false,
+          source: "default" as const,
+        },
+        {
+          environment: "release",
+          required: REQUIRED,
+          allowAuthorApproval: false,
+          source: "default" as const,
+        },
+      ],
+      warnings: [],
+    };
+  }
+
+  const nonce = (): string => `n${id(now()).toLowerCase()}`.padEnd(24, "x").slice(0, 24);
+
+  function approvalChallenge(
+    runId: string,
+    environment: string,
+    approver: string,
+  ): ApprovalChallenge {
+    const run = runs.get(runId);
+    if (!run) throw new Error(`run not found: ${runId}`);
+    if (gatedEnvironment(runId) !== environment)
+      throw new Error("no job of this run waits for approval in that environment");
+    if (!APPROVERS.some((a) => a.id === approver)) throw new Error("no such approver");
+    const p = projects.find((x) => x.id === run.projectId)!;
+    const org = orgs.find((o) => o.id === p.orgId)!;
+    const statement: ApprovalStatement = {
+      type: "longshore.approve_environment.v1",
+      org: org.slug,
+      project: p.slug,
+      run_id: runId,
+      head_sha: run.sha ?? "",
+      workflow_hash: run.trust?.workflowHash ?? "ab".repeat(32),
+      environment,
+      approver,
+      expires_at: now() + 86_400_000,
+      nonce: nonce(),
+    };
+    return {
+      statement,
+      canonical: JSON.stringify(statement),
+      statementHash: "5e".repeat(32),
+      challenge: "XmFueS1jaGFsbGVuZ2UtZm9yLXRoZS1maXh0dXJl",
+      rpId: "localhost",
+      passkeyId: `cred_x_${"x".repeat(18)}`,
+      challengeExpiresAt: now() + 600_000,
+    };
+  }
+
+  function approveEnvironment(
+    statement: ApprovalStatement,
+    _signature: WebAuthnSignature | { kind: "ed25519"; signature: string },
+  ): EnvironmentApprovalResult {
+    const run = runs.get(statement.run_id);
+    if (!run) throw new Error("run not found");
+    if (run.sha !== statement.head_sha) throw new Error("head_sha is not the sha of this run");
+    if (gatedEnvironment(run.id) !== statement.environment)
+      throw new Error("no job of this run waits for approval in that environment");
+    const person = APPROVERS.find((a) => a.id === statement.approver)?.person;
+    if (!person) throw new Error("signature not accepted");
+    const recs = approvalsByRun.get(run.id) ?? [];
+    if (!recs.some((r) => r.person === person))
+      recs.push({ person, at: now(), expiresAt: statement.expires_at });
+    approvalsByRun.set(run.id, recs);
+    const people = new Set(recs.map((r) => r.person)).size;
+    let released = 0;
+    if (people >= REQUIRED) {
+      for (const j of jobsOf(run.id)) {
+        if (j.state === "awaiting_approval" && j.approval === "environment") {
+          j.state = "queued";
+          emit("job", j);
+          released += 1;
+        }
+      }
+      run.status = "running";
+      emit("run", run);
+    }
+    return {
+      runId: run.id,
+      environment: statement.environment,
+      approvals: people,
+      required: REQUIRED,
+      releasedJobs: released,
+      state: run.status,
+    };
+  }
+
+  function enrolmentChallenge(
+    enrolmentId: string,
+    approver: string,
+  ): ApprovalChallenge<EnrolStatement> {
+    const e = pendingEnrolments.find((x) => x.id === enrolmentId);
+    if (!e) throw new Error("no pending enrolment with that id");
+    const statement: EnrolStatement = {
+      type: "longshore.approve_enrolment.v1",
+      org: orgs[0]!.slug,
+      enrolment_id: e.id,
+      person: e.person,
+      key_fingerprint: "9f".repeat(32),
+      approver,
+      expires_at: now() + 86_400_000,
+      nonce: nonce(),
+    };
+    return {
+      statement,
+      canonical: JSON.stringify(statement),
+      statementHash: "7a".repeat(32),
+      challenge: "ZW5yb2wtY2hhbGxlbmdlLWZvci10aGUtZml4dHVyZQ",
+      rpId: "localhost",
+      passkeyId: null,
+      challengeExpiresAt: now() + 600_000,
+    };
+  }
+
+  function approveEnrolment(statement: EnrolStatement) {
+    const e = pendingEnrolments.find((x) => x.id === statement.enrolment_id);
+    if (!e) throw new Error("no pending enrolment with that id");
+    const person = APPROVERS.find((a) => a.id === statement.approver)?.person;
+    if (!person) throw new Error("signature not accepted");
+    e.approvers.add(person);
+    const activated = e.approvers.size >= REQUIRED;
+    if (activated) pendingEnrolments.splice(pendingEnrolments.indexOf(e), 1);
+    return { enrolmentId: e.id, approvals: e.approvers.size, required: REQUIRED, activated };
+  }
+
   /** `?incident=1` in the dev server's URL shows the frozen banner. */
   function incidentStatus(): IncidentStatus {
     const frozen = typeof location !== "undefined" && location.search.includes("incident=1");
@@ -888,6 +1096,12 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     failureDigest,
     grepLog,
     ingestStatus,
+    approvalStatus,
+    approversOverview,
+    approvalChallenge,
+    approveEnvironment,
+    enrolmentChallenge,
+    approveEnrolment,
     incidentStatus,
     cancel,
     cursor,

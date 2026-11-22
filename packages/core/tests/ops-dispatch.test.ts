@@ -228,7 +228,7 @@ test("admin-only: no token role can create tokens, a member admin can", async ()
   expect(!cross.ok && cross.error.code).toBe("not_found");
 });
 
-test("signature ops are refused for every principal, and absent from every token adapter", async () => {
+test("signature ops are refused for every principal and token, and absent from the token adapters", async () => {
   const approve = defineOp({
     name: "approve_release",
     summary: "Placeholder human approval for tests.",
@@ -239,7 +239,7 @@ test("signature ops are refused for every principal, and absent from every token
     auth: { type: "signature", minRole: "owner" },
     untrustedOutput: false,
     scope: "org",
-    http: { method: "POST", path: "/approvals" },
+    http: { method: "POST", path: "/placeholder-approvals" },
     async handler() {
       throw new Error("must never run");
     },
@@ -271,17 +271,27 @@ test("signature ops are refused for every principal, and absent from every token
   expect(mcpTools(testRegistry).map((t) => t.name)).not.toContain("approve_release");
   expect(JSON.stringify(buildOpenApi(testRegistry, "x"))).not.toContain("approve_release");
   const res = await createRestApi(testEnv)(
-    new Request("http://x/api/v1/approvals", {
+    new Request("http://x/api/v1/placeholder-approvals", {
       method: "POST",
       headers: { authorization: `Bearer ${token.secret}` },
       body: JSON.stringify({ release: "1" }),
     }),
   );
+  // A signature op that takes no signed statement (a placeholder, sign_release) has no REST route.
   expect(res?.status).toBe(404);
-  // The shipped registry has exactly one: sign_release.
-  expect(registry.ops.filter((o) => o.auth.type === "signature").map((o) => o.name)).toEqual([
-    "sign_release",
-  ]);
+  // The signed path is the only one that reaches a signature op, and only with a valid statement.
+  const unsigned = await dispatch(testEnv, { kind: "signed" }, "approve_release", { release: "1" });
+  expect(!unsigned.ok && unsigned.error.code).toBe("invalid_input");
+  // Token ops refuse a signed credential.
+  const wrongWay = await dispatch(testEnv, { kind: "signed" }, "list_runs", {});
+  expect(!wrongWay.ok && wrongWay.error.code).toBe("forbidden");
+  // The shipped registry's signature ops: the human approvals, and sign_release (a refusal).
+  expect(
+    registry.ops
+      .filter((o) => o.auth.type === "signature")
+      .map((o) => o.name)
+      .toSorted(),
+  ).toEqual(["approve_enrolment", "approve_environment", "sign_release"]);
 });
 
 test("input is strict and validated; output is validated and stripped", async () => {

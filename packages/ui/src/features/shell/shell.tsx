@@ -9,6 +9,7 @@ import {
   PlayCircle,
   Search,
   Settings,
+  ShieldCheck,
   Sun,
   Wifi,
   WifiOff,
@@ -118,6 +119,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           {...(onNavigate ? { onNavigate } : {})}
         >
           Ingest status
+        </NavLink>
+        <NavLink
+          to="/$org/-/approvers"
+          params={{ org: orgSlug }}
+          icon={<ShieldCheck />}
+          active={path === `${base}/-/approvers`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Approvers
         </NavLink>
       </div>
       <div className="flex flex-col gap-0.5">

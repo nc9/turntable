@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Db } from "../db";
 import type { Scope } from "../db/repos";
+import type { RelyingParty } from "../approvals/webauthn";
 import type { SecretVault } from "../secrets/vault";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
@@ -29,6 +30,8 @@ export type OpContext = {
   now: () => number;
   /** The secrets vault; absent when the server has no master key. Vault ops refuse without it. */
   vault?: SecretVault | undefined;
+  /** WebAuthn relying party (id and allowed origins); absent when not configured. */
+  webauthn?: RelyingParty | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {

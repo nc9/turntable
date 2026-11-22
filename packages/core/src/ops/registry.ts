@@ -7,6 +7,8 @@ export type OpRegistry = {
   get(name: string): Op | undefined;
   /** Ops a bearer token may call. Excludes every `signature` op. */
   tokenOps(): Op[];
+  /** Ops that take no token: the signed statement in the request is the credential. */
+  signatureOps(): Op[];
   /**
    * Ops worth listing for an agent: token ops that at least one token role can actually call. An
    * op that needs a role no token holds (create_api_token needs admin) can only be refused, so
@@ -38,6 +40,15 @@ export function createRegistry(ops: readonly Op[]): OpRegistry {
     mcpOps: () => documented().filter((op) => op.mcp),
     get: (name) => byName.get(name),
     tokenOps: () => ops.filter((op) => op.auth.type === "token"),
+    // Only signature ops that take a signed statement are routed and documented. Others (such
+    // as sign_release, which only refuses) have no unauthenticated route.
+    signatureOps: () =>
+      ops.filter(
+        (op) =>
+          op.auth.type === "signature" &&
+          "statement" in op.input.shape &&
+          "signature" in op.input.shape,
+      ),
     documentedOps: () =>
       ops.filter(
         (op) =>

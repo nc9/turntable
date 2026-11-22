@@ -8,6 +8,7 @@ import {
   Moon,
   PlayCircle,
   Settings,
+  ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
 import { StateIcon } from "@/components/state-badge";
@@ -116,6 +117,15 @@ export function CommandPalette({
                 >
                   <Activity />
                   Ingest status
+                </CommandItem>
+                <CommandItem
+                  value="approvers"
+                  onSelect={go(
+                    () => void navigate({ to: "/$org/-/approvers", params: { org: orgSlug } }),
+                  )}
+                >
+                  <ShieldCheck />
+                  Approvers
                 </CommandItem>
                 {projectSlug ? (
                   <CommandItem

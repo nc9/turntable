@@ -248,7 +248,12 @@ describe("mapping", () => {
 
   test("capabilities: rerun and approve are available", () => {
     const { api } = make(() => json({}));
-    expect(api.capabilities).toEqual({ rerun: true, approve: true });
+    expect(api.capabilities).toEqual({
+      rerun: true,
+      approve: true,
+      humanApproval: true,
+      simulatedCeremony: false,
+    });
   });
 
   test("events is empty until the feed exists", async () => {
@@ -623,6 +628,88 @@ describe("operations added for trust, digests, search and ingest", () => {
       nextPollAt: null,
       consecutiveFailures: 3,
     });
+  });
+
+  test("approval calls: signature routes carry the statement in the body, the challenge maps to data", async () => {
+    const { api, calls } = make((url) => {
+      if (url.pathname.endsWith("/approvals/challenge"))
+        return json({
+          statement: { run_id: "run1", environment: "production" },
+          canonical: "{}",
+          statement_hash: "ab",
+          challenge: "YWI",
+          rp_id: "ci.example.com",
+          passkey_id: "cred",
+          challenge_expires_at: "2026-11-23T10:10:00.000Z",
+        });
+      if (url.pathname.endsWith("/approvals"))
+        return json({
+          run_id: "run1",
+          environment: "production",
+          approvals: 1,
+          required: 2,
+          released_jobs: 0,
+          state: "queued",
+        });
+      if (url.pathname.endsWith("/approvals/status"))
+        return json({
+          run_id: "run1",
+          head_sha: "c".repeat(40),
+          workflow_hash: "ab".repeat(32),
+          author: "octo",
+          environments: [
+            {
+              environment: "production",
+              required: 2,
+              allow_author_approval: false,
+              waiting: true,
+              approvals: [
+                {
+                  person: "alice",
+                  method: "webauthn",
+                  approved_at: "2026-11-23T10:00:00.000Z",
+                  expires_at: "2026-11-24T10:00:00.000Z",
+                },
+              ],
+            },
+          ],
+        });
+      return json({});
+    });
+    const ch = await api.approvalChallenge({
+      runId: "run1",
+      environment: "production",
+      approver: "ap1",
+      project: "app",
+    });
+    expect(ch).toMatchObject({ challenge: "YWI", rpId: "ci.example.com", passkeyId: "cred" });
+    const post = calls.find((c) => c.url.pathname.endsWith("/approvals/challenge"))!;
+    expect(JSON.parse(String(post.init.body))).toEqual({
+      run_id: "run1",
+      environment: "production",
+      approver: "ap1",
+      org: "acme",
+      project: "app",
+    });
+    const r = await api.approveEnvironment({
+      statement: ch.statement,
+      signature: { kind: "ed25519", signature: "AAAA" },
+    });
+    expect(r).toMatchObject({ approvals: 1, required: 2, releasedJobs: 0 });
+    const sent = calls.find((c) => c.url.pathname === "/api/v1/approvals")!;
+    expect(sent.init.method).toBe("POST");
+    expect(JSON.parse(String(sent.init.body))).toEqual({
+      statement: ch.statement,
+      signature: { kind: "ed25519", signature: "AAAA" },
+    });
+    const st = await api.approvalStatus({ runId: "run1" });
+    expect(st.environments[0]).toMatchObject({
+      environment: "production",
+      required: 2,
+      waiting: true,
+    });
+    expect(st.environments[0]!.approvals[0]!.person).toBe("alice");
+    expect(st.author).toBe("octo");
   });
 
   test("incident status maps the freeze, its reason as data, and the rotation list", async () => {

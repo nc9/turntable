@@ -1,3 +1,14 @@
+import {
+  approvalChallenge,
+  approvalStatus,
+  approveEnrolment,
+  approveEnvironment,
+  enrolmentChallenge,
+  approversOverview,
+  registerChallenge,
+  requestEnrolment,
+  submitApproval,
+} from "./definitions/approvals";
 import { approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { checksForSha } from "./definitions/checks-for-sha";
@@ -54,6 +65,15 @@ export const registry = createRegistry([
   rotateSecretOp,
   deleteSecretOp,
   listSecretsOp,
+  approvalStatus,
+  approversOverview,
+  approvalChallenge,
+  enrolmentChallenge,
+  registerChallenge,
+  requestEnrolment,
+  submitApproval,
+  approveEnvironment,
+  approveEnrolment,
   incidentFreeze,
   incidentUnfreeze,
   incidentStatus,

@@ -1,5 +1,12 @@
 import type { ChangeEvent } from "./realtime";
 import type {
+  ApprovalChallenge,
+  ApprovalStatement,
+  ApprovalStatus,
+  ApproversOverview,
+  EnrolStatement,
+  EnvironmentApprovalResult,
+  WebAuthnSignature,
   CheckSummary,
   LogSlice,
   Org,
@@ -25,6 +32,10 @@ import type {
  * `listOrgs` and `listProjects` are navigation helpers the registry will need to expose.
  */
 export type ApiCapabilities = {
+  /** The API has human approvals (statements signed with a passkey). */
+  humanApproval: boolean;
+  /** Fixture only: the page fakes the passkey ceremony, since no authenticator exists. */
+  simulatedCeremony: boolean;
   /** The API can rerun jobs of a run (`rerun`). */
   rerun: boolean;
   /** The API can approve a held run (`approve_run`). */
@@ -71,6 +82,35 @@ export interface LongshoreApi {
   }): Promise<GrepResult>;
   /** Per-repo poll ingest status and the forge rate budget. */
   ingestStatus(): Promise<IngestStatus>;
+  /** Environments of a run waiting on a human, the policy and who approved so far. */
+  approvalStatus(args: { runId: string }): Promise<ApprovalStatus>;
+  approversOverview(): Promise<ApproversOverview>;
+  /** The statement to sign for a run and environment, with its single-use challenge. */
+  approvalChallenge(args: {
+    runId: string;
+    environment: string;
+    approver: string;
+    project: string;
+  }): Promise<ApprovalChallenge>;
+  /** Sends a statement a human signed. No bearer token is needed: the signature is the credential. */
+  approveEnvironment(args: {
+    statement: ApprovalStatement;
+    signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
+  }): Promise<EnvironmentApprovalResult>;
+  registerChallenge(): Promise<{ challenge: string; rpId: string; expiresAt: number }>;
+  requestEnrolment(args: {
+    person: string;
+    forgeLogin: string;
+    webauthn: { challenge: string; clientDataJson: string; attestationObject: string };
+  }): Promise<{ enrolmentId: string; keyFingerprint: string; required: number; expiresAt: number }>;
+  enrolmentChallenge(args: {
+    enrolmentId: string;
+    approver: string;
+  }): Promise<ApprovalChallenge<EnrolStatement>>;
+  approveEnrolment(args: {
+    statement: EnrolStatement;
+    signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
+  }): Promise<{ enrolmentId: string; approvals: number; required: number; activated: boolean }>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

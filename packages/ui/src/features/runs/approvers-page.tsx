@@ -1,0 +1,289 @@
+import { KeyRound, ShieldCheck } from "lucide-react";
+import { useState } from "react";
+import { getBackend } from "@/api";
+import type { Approver } from "@/api/types";
+import { ErrorState } from "@/components/empty-state";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useScope } from "@/features/shell/scope";
+import { formatDateTime, formatRelative } from "@/lib/format";
+import { useAsync } from "@/lib/use-async";
+import { createPasskey, signWithPasskey, webauthnAvailable } from "@/lib/webauthn";
+import { sanitize } from "@/log/parser";
+
+/** Approver keys, the approval policy, and enrolling a new passkey (which needs a quorum). */
+export function ApproversPage() {
+  const scope = useScope();
+  const { api } = getBackend();
+  const q = useAsync(() => api.approversOverview(), [scope.orgSlug]);
+  const [person, setPerson] = useState("");
+  const [forge, setForge] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [signer, setSigner] = useState<Record<string, string>>({});
+  const simulated = api.capabilities.simulatedCeremony;
+  const canCeremony = simulated || webauthnAvailable();
+
+  if (q.error && !q.data)
+    return <ErrorState title="Could not load approvers" message={q.error} onRetry={q.reload} />;
+  if (!q.data)
+    return (
+      <div className="mx-auto w-full max-w-4xl space-y-4 p-5" role="status" aria-label="Loading">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-48 w-full" />
+      </div>
+    );
+  const d = q.data;
+  const passkeyPeople = d.approvers.filter((a: Approver) => a.kind === "webauthn");
+
+  const run = async (f: () => Promise<string>) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      setMsg({ ok: true, text: await f() });
+      q.reload();
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "That was not accepted." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const register = () =>
+    run(async () => {
+      if (person.trim() === "") throw new Error("Enter the person's name first.");
+      if (forge.trim() === "")
+        throw new Error("Enter their forge login: approvals are refused without it.");
+      const rc = await api.registerChallenge();
+      const created = simulated
+        ? { clientDataJson: "fixture", attestationObject: "fixture" }
+        : await createPasskey({ challenge: rc.challenge, rpId: rc.rpId, person: person.trim() });
+      const r = await api.requestEnrolment({
+        person: person.trim(),
+        forgeLogin: forge.trim(),
+        webauthn: { challenge: rc.challenge, ...created },
+      });
+      setPerson("");
+      setForge("");
+      return `Requested. It becomes an approver when ${r.required} existing ${r.required === 1 ? "approver signs" : "approvers sign"} it.`;
+    });
+
+  const approveEnrolment = (enrolmentId: string) =>
+    run(async () => {
+      const approverId = signer[enrolmentId];
+      const who = passkeyPeople.find((a) => a.id === approverId);
+      if (!who || who.passkeyId === null) throw new Error("Choose who is signing first.");
+      const ch = await api.enrolmentChallenge({ enrolmentId, approver: who.id });
+      const signature = simulated
+        ? ({
+            kind: "webauthn",
+            credential_id: "fixture",
+            client_data_json: "fixture",
+            authenticator_data: "fixture",
+            signature: "fixture",
+          } as const)
+        : await signWithPasskey({
+            challenge: ch.challenge,
+            rpId: ch.rpId ?? "",
+            passkeyId: ch.passkeyId ?? who.passkeyId,
+          });
+      const r = await api.approveEnrolment({ statement: ch.statement, signature });
+      return r.activated
+        ? "Approved. The new key is now an approver."
+        : `Approved. ${r.approvals} of ${r.required} signatures.`;
+    });
+
+  return (
+    <div className="mx-auto w-full max-w-4xl px-4 pb-16 pt-6 sm:px-5">
+      <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+        <ShieldCheck className="size-5 text-st-approval" aria-hidden="true" />
+        Approvers
+      </h1>
+      <p className="mt-0.5 text-sm text-dim">
+        People whose keys can approve a release. A run needs approvals from distinct people, and its
+        author cannot approve it.
+      </p>
+
+      {d.warnings.length > 0 ? (
+        <div
+          role="note"
+          className="mt-5 rounded-lg border border-st-infra/40 bg-st-infra-bg p-3.5 text-sm"
+        >
+          {d.warnings.map((w) => (
+            <p key={w} className="text-foreground">
+              {sanitize(w)}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      <section aria-labelledby="keys-h" className="mt-6">
+        <h2 id="keys-h" className="mb-2 text-sm font-semibold">
+          Enrolled keys
+        </h2>
+        {d.approvers.length === 0 ? (
+          <p className="rounded-xl border border-line p-4 text-sm text-dim">
+            No approver is enrolled. The first one is enrolled from the server:{" "}
+            <code className="font-mono text-xs">longshore approvals bootstrap</code>. After that,
+            new keys need a quorum of existing approvers.
+          </p>
+        ) : (
+          <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+            {d.approvers.map((a) => (
+              <li
+                key={a.id}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm"
+              >
+                <span className="min-w-0 flex-1 basis-40 font-medium">{sanitize(a.person)}</span>
+                <span className="text-dim">
+                  {a.kind === "webauthn" ? "Passkey" : "Offline ed25519 key"}
+                </span>
+                <span className="text-xs text-dim" title={formatDateTime(a.createdAt)}>
+                  {a.forgeLogin ? `${sanitize(a.forgeLogin)}, ` : "no forge login, "}
+                  enrolled {formatRelative(a.createdAt)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section aria-labelledby="pol-h" className="mt-6">
+        <h2 id="pol-h" className="mb-2 text-sm font-semibold">
+          Approvals required
+        </h2>
+        <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line text-sm">
+          {d.policies.map((p) => (
+            <li key={p.environment} className="flex flex-wrap items-center gap-x-4 px-4 py-2.5">
+              <span className="flex-1 font-mono text-[13px]">{sanitize(p.environment)}</span>
+              <span>
+                {p.required} {p.required === 1 ? "person" : "people"}
+              </span>
+              <span className="text-xs text-dim">
+                {p.source === "default" ? "default" : "configured"}
+                {p.allowAuthorApproval ? ", the author may approve" : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {d.pendingEnrolments.length > 0 ? (
+        <section aria-labelledby="pend-h" className="mt-6">
+          <h2 id="pend-h" className="mb-2 text-sm font-semibold">
+            Waiting for approval
+          </h2>
+          <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line text-sm">
+            {d.pendingEnrolments.map((e) => (
+              <li key={e.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                <span className="min-w-0 flex-1 basis-48">
+                  <span className="block font-medium">{sanitize(e.person)}</span>
+                  <span className="block font-mono text-xs text-dim">
+                    key {e.keyFingerprint.slice(0, 16)}, {e.approvals} of {e.required} signatures
+                  </span>
+                </span>
+                <label className="sr-only" htmlFor={`signer-${e.id}`}>
+                  Sign as
+                </label>
+                <select
+                  id={`signer-${e.id}`}
+                  value={signer[e.id] ?? ""}
+                  onChange={(ev) => setSigner({ ...signer, [e.id]: ev.target.value })}
+                  className="h-8 rounded-md border border-line-strong bg-surface px-2 text-[13px]"
+                >
+                  <option value="">Sign as</option>
+                  {passkeyPeople
+                    .filter((a) => a.person !== e.person)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.person}
+                      </option>
+                    ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy || !signer[e.id] || !canCeremony}
+                  onClick={() => void approveEnrolment(e.id)}
+                >
+                  <KeyRound />
+                  Approve with passkey
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <section aria-labelledby="reg-h" className="mt-6">
+        <h2 id="reg-h" className="mb-2 text-sm font-semibold">
+          Register a passkey
+        </h2>
+        {d.approvers.length === 0 ? (
+          <p className="text-sm text-dim">Enrol the first approver from the server CLI first.</p>
+        ) : (
+          <form
+            onSubmit={(ev) => {
+              ev.preventDefault();
+              void register();
+            }}
+            className="grid gap-3 rounded-xl border border-line p-4 sm:grid-cols-2"
+          >
+            <div>
+              <label htmlFor="ap-person" className="text-sm font-medium">
+                Person
+              </label>
+              <Input
+                id="ap-person"
+                value={person}
+                onChange={(e) => setPerson(e.target.value)}
+                className="mt-1.5"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <div>
+              <label htmlFor="ap-forge" className="text-sm font-medium">
+                Forge login
+              </label>
+              <Input
+                id="ap-forge"
+                required
+                value={forge}
+                onChange={(e) => setForge(e.target.value)}
+                className="mt-1.5"
+                autoComplete="off"
+                spellCheck={false}
+                aria-describedby="ap-forge-help"
+              />
+              <p id="ap-forge-help" className="mt-1 text-xs text-dim">
+                Required. Lets the rule that authors cannot approve their own runs recognise them.
+              </p>
+            </div>
+            <div className="sm:col-span-2">
+              <Button type="submit" size="sm" disabled={busy || !canCeremony}>
+                <KeyRound />
+                Register passkey
+              </Button>
+              {!canCeremony ? (
+                <p className="mt-2 text-xs text-dim">
+                  Passkeys need a current browser and an https address.
+                </p>
+              ) : null}
+            </div>
+          </form>
+        )}
+      </section>
+
+      {msg ? (
+        <p
+          role={msg.ok ? "status" : "alert"}
+          className={`mt-4 text-sm ${msg.ok ? "text-st-success" : "text-st-failure"}`}
+        >
+          {msg.text}
+        </p>
+      ) : null}
+    </div>
+  );
+}

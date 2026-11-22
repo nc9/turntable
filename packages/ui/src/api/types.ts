@@ -214,6 +214,110 @@ export type IngestStatus = {
   repos: IngestRepoStatus[];
 };
 
+/** What a human signs to approve a run in an environment. Mirrors the server's statement. */
+export type ApprovalStatement = {
+  type: string;
+  org: string;
+  project: string;
+  run_id: string;
+  head_sha: string;
+  workflow_hash: string;
+  environment: string;
+  approver: string;
+  /** Epoch milliseconds. */
+  expires_at: number;
+  nonce: string;
+};
+
+export type EnrolStatement = {
+  type: string;
+  org: string;
+  enrolment_id: string;
+  person: string;
+  key_fingerprint: string;
+  approver: string;
+  expires_at: number;
+  nonce: string;
+};
+
+export type ApprovalChallenge<S = ApprovalStatement> = {
+  statement: S;
+  canonical: string;
+  statementHash: string;
+  /** base64url of the statement hash: the WebAuthn challenge. */
+  challenge: string;
+  rpId: string | null;
+  passkeyId: string | null;
+  challengeExpiresAt: number;
+};
+
+export type WebAuthnSignature = {
+  kind: "webauthn";
+  credential_id: string;
+  client_data_json: string;
+  authenticator_data: string;
+  signature: string;
+};
+
+export type ApprovalStatus = {
+  runId: string;
+  headSha: string | null;
+  workflowHash: string | null;
+  /** Forge login of the run's author: untrusted text. */
+  author: string | null;
+  environments: {
+    environment: string;
+    required: number;
+    allowAuthorApproval: boolean;
+    waiting: boolean;
+    approvals: {
+      person: string;
+      method: "webauthn" | "ed25519";
+      approvedAt: number;
+      expiresAt: number;
+    }[];
+  }[];
+};
+
+export type Approver = {
+  id: string;
+  person: string;
+  forgeLogin: string | null;
+  kind: "webauthn" | "ed25519";
+  passkeyId: string | null;
+  createdAt: number;
+};
+
+export type ApproversOverview = {
+  approvers: Approver[];
+  pendingEnrolments: {
+    id: string;
+    person: string;
+    kind: "webauthn" | "ed25519";
+    keyFingerprint: string;
+    approvals: number;
+    required: number;
+    expiresAt: number;
+  }[];
+  policies: {
+    environment: string;
+    required: number;
+    allowAuthorApproval: boolean;
+    source: "configured" | "default";
+  }[];
+  /** Ways the approval setup is weaker than it looks, such as too few approvers. */
+  warnings: string[];
+};
+
+export type EnvironmentApprovalResult = {
+  runId: string;
+  environment: string;
+  approvals: number;
+  required: number;
+  releasedJobs: number;
+  state: string;
+};
+
 /** The freeze that applies to a scope, and the secrets still waiting for rotation. */
 export type IncidentStatus = {
   frozen: boolean;

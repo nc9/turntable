@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { KeyRound, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { getBackend } from "@/api";
@@ -6,15 +7,18 @@ import { isSubmitKey, SubmitHint } from "@/components/submit-hint";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useScope } from "@/features/shell/scope";
 import { useCanApprove } from "@/lib/permissions";
 import { toast } from "@/lib/toast";
 
 /**
  * Why a run is waiting for a human. Two gates, handled differently:
  * - untrusted author: an operator approves from the UI, bound to the head sha and workflow hash
- * - release or environment: a WebAuthn security-key flow (#46), so no button here yet
+ * - release or environment: signed with a passkey on the approval page (#46); a statement bound to
+ *   the commit and workflow, and a quorum of distinct people
  */
 export function ApprovalNotice({ run, jobs }: { run: Run; jobs: Job[] }) {
+  const scope = useScope();
   const waiting = jobs.filter((j) => j.state === "awaiting_approval");
   const author = waiting.filter((j) => j.approval === "untrusted_author");
   const env = waiting.filter((j) => j.approval === "environment");
@@ -32,6 +36,15 @@ export function ApprovalNotice({ run, jobs }: { run: Run; jobs: Job[] }) {
             Approval required: approve with your security key.
             <span className="ml-1 text-dim">Waiting: {env.map((j) => j.name).join(", ")}.</span>
           </p>
+          {getBackend().api.capabilities.humanApproval && scope.orgSlug && scope.projectSlug ? (
+            <Link
+              to="/$org/$project/runs/$runId/approve"
+              params={{ org: scope.orgSlug, project: scope.projectSlug, runId: run.id }}
+              className="ml-auto shrink-0 rounded-md border border-line-strong bg-surface px-3 py-1.5 text-[13px] font-medium hover:bg-muted"
+            >
+              Review and approve
+            </Link>
+          ) : null}
         </div>
       ) : null}
     </div>

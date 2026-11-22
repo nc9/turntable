@@ -42,6 +42,9 @@ export function assertMintable(
   request: { role: AgentRole; projectId: string | undefined },
 ): void {
   if (creator.kind === "member") return;
+  if (creator.kind === "approver") {
+    throw new OpError("forbidden", "an approver key cannot create tokens");
+  }
   if (ROLE_RANK[request.role] > ROLE_RANK[creator.role]) {
     throw new OpError("forbidden", "a token cannot create a token with a higher role than its own");
   }

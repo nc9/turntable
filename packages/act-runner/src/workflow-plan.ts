@@ -40,6 +40,8 @@ export interface PlannedJob {
   failFast: boolean;
   /** strategy.max-parallel, when set. */
   maxParallel?: number;
+  /** The job's `environment:` (a name, or `name` of the mapping), when it is a literal. */
+  environment?: string;
 }
 
 export interface WorkflowPlan {
@@ -336,6 +338,14 @@ export function planWorkflow(
         runsOnReason(job["runs-on"], ctx);
       if (dynamicMatrix)
         unsupported ??= "matrix built from an expression (fromJSON) is not supported yet";
+      // A literal environment can be gated by approval policy. One built from an expression
+      // cannot be known at plan time, so the job is refused rather than run ungated.
+      let environment: string | undefined;
+      if (job.environment !== undefined) {
+        const raw = isObj(job.environment) ? job.environment.name : job.environment;
+        if (typeof raw === "string" && raw !== "" && !raw.includes("${{")) environment = raw;
+        else unsupported ??= "environment: must be a literal name (an expression cannot be gated)";
+      }
       let coe = false;
       if (job["continue-on-error"] !== undefined) {
         const v = job["continue-on-error"];
@@ -359,6 +369,7 @@ export function planWorkflow(
         outputs,
         failFast,
         ...(maxParallel !== undefined ? { maxParallel } : {}),
+        ...(environment !== undefined ? { environment } : {}),
       };
       // Static `if:` is decided now; one that reads needs waits for schedule time.
       if (job.if !== undefined && !unsupported) {

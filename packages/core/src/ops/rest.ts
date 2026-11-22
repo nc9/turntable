@@ -118,7 +118,9 @@ export function createRestApi(
   env: DispatchEnv,
   opts: RestOptions = {},
 ): (req: Request, peer?: string) => Promise<Response | undefined> {
-  const routes = env.registry.tokenOps().map(compile);
+  // Signature ops are routed too, but never with a bearer token: the signed statement in the
+  // body is their credential, and the dispatcher refuses a token for them.
+  const routes = [...env.registry.tokenOps(), ...env.registry.signatureOps()].map(compile);
   return async (req, peer) => {
     const url = new URL(req.url);
     if (url.pathname !== API_PREFIX && !url.pathname.startsWith(`${API_PREFIX}/`)) return undefined;
@@ -160,6 +162,11 @@ export function createRestApi(
         input[name] = coerce(decodeURIComponent(values[i]!), route.types[name]);
       });
 
+      if (route.op.auth.type === "signature") {
+        const signed = await dispatch(env, { kind: "signed" }, route.op.name, input);
+        if (!signed.ok) return failure(signed.error);
+        return json(signed.output, 200);
+      }
       if (!bearer) {
         return failure(new OpError("unauthenticated", "missing bearer token"), {
           "www-authenticate": 'Bearer realm="longshore"',

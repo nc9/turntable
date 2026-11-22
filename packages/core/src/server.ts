@@ -3,6 +3,7 @@ import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
 import { createRestApi } from "./ops/rest";
+import type { RelyingParty } from "./approvals/webauthn";
 import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { serveUi } from "./ui-assets";
@@ -75,12 +76,14 @@ export type ServeOptions = {
   oidc?: { handle(req: Request): Promise<Response | undefined> };
   /** The secrets vault, when a master key is configured. */
   vault?: SecretVault;
+  /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
+  webauthn?: RelyingParty;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
   trustForwardedProto?: boolean;
 };
 
 export function startServer(options: ServeOptions) {
-  const env = { registry, db: options.db, vault: options.vault };
+  const env = { registry, db: options.db, vault: options.vault, webauthn: options.webauthn };
   const api = createRestApi(env, { trustForwardedProto: options.trustForwardedProto === true });
   const mcp = createMcpHttp(env);
   const realtime = createRealtime({
