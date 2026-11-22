@@ -542,10 +542,12 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
           kind: a.kind,
           passkeyId: a.passkey_id,
           createdAt: ms(a.created_at) ?? 0,
+          notCounting: a.not_counting,
         })),
         pendingEnrolments: w.pending_enrolments.map((e) => ({
           id: e.id,
           person: e.person,
+          forgeLogin: e.forge_login,
           kind: e.kind,
           keyFingerprint: e.key_fingerprint,
           approvals: e.approvals,

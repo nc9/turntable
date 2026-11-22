@@ -813,6 +813,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     {
       id: "en_dave",
       person: "dave",
+      forgeLogin: "dave-gh",
       approvers: new Set<string>(),
       expiresAt: now() + 5 * 86_400_000,
     },
@@ -856,6 +857,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
   function approversOverview(): ApproversOverview {
     return {
       approvers: APPROVERS.map((a, i) => ({
+        notCounting: null,
         id: a.id,
         person: a.person,
         forgeLogin: a.forgeLogin,
@@ -866,6 +868,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       pendingEnrolments: pendingEnrolments.map((e) => ({
         id: e.id,
         person: e.person,
+        forgeLogin: e.forgeLogin,
         kind: "webauthn" as const,
         keyFingerprint: "9f".repeat(32),
         approvals: e.approvers.size,
@@ -976,6 +979,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       org: orgs[0]!.slug,
       enrolment_id: e.id,
       person: e.person,
+      forge_login: e.forgeLogin,
       key_fingerprint: "9f".repeat(32),
       approver,
       expires_at: now() + 86_400_000,

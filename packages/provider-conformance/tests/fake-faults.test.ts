@@ -31,7 +31,19 @@ describe("fake scripted failures", () => {
   test("lost exec reports lost", async () => {
     const p = world.provider();
     const { id } = await p.create(spec);
-    const { execId } = await p.exec.start(id, { argv: ["sleep", "30"], timeoutSeconds: 60 });
+    const { execId } = await p.exec.start(id, {
+      argv: ["sh", "-c", "echo up; sleep 30"],
+      timeoutSeconds: 60,
+    });
+    // Wait until the command has really started: under load the launcher may still be writing
+    // into the exec directory, and would recreate it after it is removed.
+    let up = "";
+    for (let i = 0; i < 200 && !up.includes("up"); i += 1) {
+      const l = await p.exec.logs(id, execId, { fromOffset: 0, maxBytes: 100 });
+      up = Buffer.from(l.bytes).toString();
+      if (!up.includes("up")) await Bun.sleep(50);
+    }
+    expect(up).toContain("up");
     expect((await p.exec.status(id, execId)).state).toBe("running");
     world.loseExec(id, execId);
     expect((await p.exec.status(id, execId)).state).toBe("lost");
@@ -68,14 +80,17 @@ describe("fake scripted failures", () => {
   test("a finished exec leaves no timeout watcher behind", async () => {
     const p = world.provider();
     const { id } = await p.create(spec);
-    const { execId } = await p.exec.start(id, { argv: ["true"], timeoutSeconds: 7777 });
+    // A timeout no other test or suite uses, so the process list can be matched exactly: the
+    // watcher is `sleep <timeoutSeconds>`, and `ps` is machine-global.
+    const sentinel = 1_000_000 + Math.floor(Math.random() * 8_000_000);
+    const { execId } = await p.exec.start(id, { argv: ["true"], timeoutSeconds: sentinel });
     for (let i = 0; i < 100; i += 1) {
       if ((await p.exec.status(id, execId)).state !== "running") break;
       await Bun.sleep(50);
     }
     await Bun.sleep(300);
     const ps = Bun.spawnSync(["ps", "-A", "-o", "command="]).stdout.toString();
-    expect(ps).not.toContain("sleep 7777");
+    expect(ps.split("\n").map((l) => l.trim())).not.toContain(`sleep ${sentinel}`);
     await p.destroy(id);
   });
 });

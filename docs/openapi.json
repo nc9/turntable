@@ -4444,6 +4444,10 @@
                           },
                           "created_at": {
                             "type": "string"
+                          },
+                          "not_counting": {
+                            "description": "Why this key counts toward no approval or quorum; null when it does.",
+                            "type": ["string", "null"]
                           }
                         },
                         "required": [
@@ -4452,7 +4456,8 @@
                           "forge_login",
                           "kind",
                           "passkey_id",
-                          "created_at"
+                          "created_at",
+                          "not_counting"
                         ],
                         "additionalProperties": false
                       }
@@ -4467,6 +4472,9 @@
                           },
                           "person": {
                             "type": "string"
+                          },
+                          "forge_login": {
+                            "type": ["string", "null"]
                           },
                           "kind": {
                             "type": "string",
@@ -4492,6 +4500,7 @@
                         "required": [
                           "id",
                           "person",
+                          "forge_login",
                           "kind",
                           "key_fingerprint",
                           "approvals",
@@ -5176,7 +5185,7 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
-                      "description": "Distinct people with a valid approval now."
+                      "description": "Distinct approvers (by verified forge login) with a valid approval now."
                     },
                     "required": {
                       "type": "integer",
@@ -6291,7 +6300,7 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
-                      "description": "Distinct people with a valid approval now."
+                      "description": "Distinct approvers (by verified forge login) with a valid approval now."
                     },
                     "required": {
                       "type": "integer",
@@ -6374,6 +6383,11 @@
                         "minLength": 1,
                         "maxLength": 200
                       },
+                      "forge_login": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
                       "key_fingerprint": {
                         "type": "string",
                         "pattern": "^[0-9a-f]{64,64}$"
@@ -6398,6 +6412,7 @@
                       "org",
                       "enrolment_id",
                       "person",
+                      "forge_login",
                       "key_fingerprint",
                       "approver",
                       "expires_at",
