@@ -54,13 +54,19 @@ issues cite them.
    forwards the pipe to act's pty; everything the step starts inherits it. Found by a parity
    run of the squirrelscan CLI tests: its `fmt` colours when `process.stdout.isTTY &&
    TERM !== "dumb"`, and two tests that assert the output has no escape sequence failed.
-   Known limits: the shim stays as the step's parent so output is fully flushed before act
-   moves on, which means act's step-timeout kill (SIGKILL of the direct child only) stops the
-   shim and not the interpreter; the sandbox is destroyed at job end. The interpreter still has
-   a controlling terminal (`/dev/tty` opens): dropping it needs a new session, which would stop
-   act's kill from reaching the step at all; git prompts are off (`GIT_TERMINAL_PROMPT=0`). An interpreter that a step puts ahead of the shims (a `node`
-   from `setup-node`) is not wrapped; it still inherits the wrapped step's pipes when started
-   from a shimmed shell.
+   The shim stays as the step's parent so output is fully flushed before act moves on, which
+   would make act's step-timeout SIGKILL (sent to the direct child only) hit the shim and leave
+   the interpreter running. So the shim guards it: the interpreter runs in its own process group
+   (perl `setpgrp` then `exec`; perl is in Debian's base set), a TERM, INT or HUP sent to the shim
+   goes to that group with KILL after a grace period (`LONGSHORE_STEP_GRACE`, default 5 s), and
+   a small watcher takes the group down (TERM, then KILL) if the shim disappears while the
+   interpreter still runs. When the interpreter ended normally, a daemon it left behind on
+   purpose is left alone, as on GitHub. Without perl the interpreter runs in the shim's own
+   group with no watchdog. Known limits: the interpreter still has a controlling terminal
+   (`/dev/tty` opens), since dropping it would need a new session; git prompts are off
+   (`GIT_TERMINAL_PROMPT=0`). An interpreter that a step puts ahead of the shims (a `node` from
+   `setup-node`) is not wrapped; it still inherits the wrapped step's pipes when started from a
+   shimmed shell.
 2. **P2: `CI=true` and `GITHUB_ACTIONS=true`.** act sets both for every step (`env["CI"] = "true"`
    and `env["GITHUB_ACTIONS"] = "true"` in `pkg/runner/run_context.go`, v0.2.97). Pinned by the
    end-to-end parity job.
