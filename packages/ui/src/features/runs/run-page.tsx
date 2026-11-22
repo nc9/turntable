@@ -8,20 +8,16 @@ import { StateBadge, StateIcon } from "@/components/state-badge";
 import { getBackend } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cancelAction, rerunAction } from "@/db/collections";
+import { cancelAction } from "@/db/collections";
 import { useRunSync } from "@/db/sync";
 import { useScope } from "@/features/shell/scope";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { isActive, STATE_META } from "@/lib/states";
 import { toast } from "@/lib/toast";
 import { ApprovalNotice, approvalLabel } from "./approval";
+import { RerunButton } from "./rerun-dialog";
+import { EgressBadge, TrustBadge } from "./trust";
 import { JobGraph } from "./job-graph";
 import { RefChip, ShaChip, useRunAttempts, useRunJobs, useRunRow } from "./common";
 
@@ -49,14 +45,6 @@ export function AttemptChip({ attempt, job }: { attempt: JobAttempt; job?: Job }
 function RunActions({ run, jobs }: { run: Run; jobs: Job[] }) {
   const canRerun = getBackend().api.capabilities.rerun;
   const active = isActive(run.status);
-  const failedJobs = jobs.filter((j) => j.state === "failure" || j.state === "infra_error");
-  const doRerun = (jobId?: string) => {
-    const tx = rerunAction(jobId ? { runId: run.id, jobId } : { runId: run.id });
-    tx.isPersisted.promise.then(
-      () => toast(jobId ? "Job requeued" : "New run started"),
-      () => toast("Could not rerun. Nothing was changed.", "error"),
-    );
-  };
   const doCancel = () => {
     const tx = cancelAction({ runId: run.id });
     tx.isPersisted.promise.then(
@@ -73,24 +61,7 @@ function RunActions({ run, jobs }: { run: Run; jobs: Job[] }) {
         </Button>
       ) : null}
       {canRerun ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="secondary" size="sm" disabled={run.id.startsWith("pending_")}>
-              <RotateCw />
-              Rerun
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => doRerun()}>
-              Rerun everything (new run)
-            </DropdownMenuItem>
-            {failedJobs.length > 0 ? (
-              <DropdownMenuItem onSelect={() => failedJobs.forEach((j) => doRerun(j.id))}>
-                Rerun failed jobs ({failedJobs.length})
-              </DropdownMenuItem>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <RerunButton run={run} jobs={jobs} />
       ) : (
         <Tooltip label="Rerun is not available through the API yet">
           <span tabIndex={0} className="inline-flex rounded-md">
@@ -159,6 +130,8 @@ export function RunPage() {
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-xl font-semibold tracking-tight">{run.commitMessage}</h1>
             <StateBadge state={run.status} />
+            <TrustBadge run={run} />
+            <EgressBadge run={run} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-dim">
             <span>{run.workflowName}</span>
@@ -182,7 +155,7 @@ export function RunPage() {
         <RunActions run={run} jobs={jobs} />
       </div>
 
-      <ApprovalNotice jobs={jobs} />
+      <ApprovalNotice run={run} jobs={jobs} />
 
       {infraAttempts.length > 0 ? (
         <div

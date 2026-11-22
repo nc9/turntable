@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { getBackend } from "@/api";
-import type { Org, Project } from "@/api/types";
+import type { Org, Project, Whoami } from "@/api/types";
 
 // Orgs and projects change rarely, so they live in a tiny cache rather than live collections.
 let orgsCache: Promise<Org[]> | null = null;
 const projectsCache = new Map<string, Promise<Project[]>>();
+let whoamiCache: Promise<Whoami> | null = null;
 
 function loadOrgs(): Promise<Org[]> {
   orgsCache ??= getBackend().api.listOrgs();
@@ -24,6 +25,7 @@ function loadProjects(orgId: string): Promise<Project[]> {
 export function resetDirectory(): void {
   orgsCache = null;
   projectsCache.clear();
+  whoamiCache = null;
 }
 
 type Loaded<T> = { data: T | null; error: string | null };
@@ -73,4 +75,17 @@ export function lastOrg(): string | null {
   } catch {
     return null;
   }
+}
+
+/** The caller's identity and role. Cached; a failed lookup is retried on the next mount. */
+export function useWhoami(): Loaded<Whoami> {
+  return useCached("whoami", () => {
+    whoamiCache ??= getBackend()
+      .api.whoami()
+      .catch((e: unknown) => {
+        whoamiCache = null;
+        throw e;
+      });
+    return whoamiCache;
+  });
 }

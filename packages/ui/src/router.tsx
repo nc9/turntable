@@ -6,6 +6,7 @@ import { OrgPage } from "@/features/runs/org-page";
 import { RunsPage } from "@/features/runs/runs-page";
 import { RunPage } from "@/features/runs/run-page";
 import { JobPage } from "@/features/runs/job-page";
+import { IngestPage } from "@/features/runs/ingest-page";
 import { SettingsPage } from "@/features/runs/settings-page";
 
 export type RunsSearch = {
@@ -27,6 +28,12 @@ const orgRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$org",
   component: OrgPage,
+});
+
+const ingestRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/ingest",
+  component: IngestPage,
 });
 
 const runsRoute = createRoute({
@@ -68,6 +75,7 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   orgRoute,
+  ingestRoute,
   runsRoute,
   runRoute,
   jobRoute,

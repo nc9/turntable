@@ -98,35 +98,31 @@ async function waitFor(check: () => boolean, timeoutMs = 4000): Promise<void> {
   while (!check() && Date.now() - start < timeoutMs) await new Promise((r) => setTimeout(r, 40));
 }
 
-/** Rerun a whole run (new run) or one job (new attempt). Optimistic: shows queued at once. */
-export const rerunAction = createOptimisticAction<{ runId: string; jobId?: string }>({
-  onMutate: ({ runId, jobId }) => {
-    if (jobId) {
-      const jobRow = jobsCollection.get(jobId);
-      if (jobRow && jobsCollection.has(jobId))
-        jobsCollection.update(jobId, (d) => void (d.state = "queued"));
-      if (runsCollection.has(runId))
-        runsCollection.update(runId, (d) => void (d.status = "running"));
-      return;
+/**
+ * Rerun the failed jobs of a run, or the named jobs, with an audited reason. Optimistic: the
+ * targeted jobs show queued at once. The run keeps its id; the jobs get a new attempt.
+ */
+export const rerunAction = createOptimisticAction<{
+  runId: string;
+  jobKeys?: string[];
+  reason: string;
+}>({
+  onMutate: ({ runId, jobKeys }) => {
+    for (const [key, job] of jobsCollection.entries()) {
+      if (job.runId !== runId) continue;
+      const hit = jobKeys
+        ? jobKeys.includes(job.jobKey)
+        : job.state === "failure" || job.state === "infra_error";
+      if (hit) jobsCollection.update(key, (d) => void (d.state = "queued"));
     }
-    const src = runsCollection.get(runId);
-    if (!src) return;
-    runsCollection.insert({
-      ...src,
-      id: `pending_${runId}`,
-      status: "queued",
-      event: "workflow_dispatch",
-      createdAt: Date.now(),
-      startedAt: null,
-      finishedAt: null,
-    });
+    if (runsCollection.has(runId)) runsCollection.update(runId, (d) => void (d.status = "running"));
   },
-  mutationFn: async ({ runId, jobId }) => {
-    const result = await getBackend().api.rerun(jobId ? { runId, jobId } : { runId });
-    await waitFor(
-      () =>
-        runs.mirror.has(result.runId) && (!jobId || jobs.mirror.get(jobId)?.state !== "failure"),
+  mutationFn: async ({ runId, jobKeys, reason }) => {
+    const result = await getBackend().api.rerun(
+      jobKeys ? { runId, jobKeys, reason } : { runId, reason },
     );
+    const ids = new Set(result.reruns.map((r) => r.jobId));
+    await waitFor(() => [...ids].every((id) => jobs.mirror.get(id)?.state !== "failure"));
   },
 });
 

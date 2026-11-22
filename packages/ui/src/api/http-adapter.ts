@@ -1,8 +1,16 @@
 import type { ApiCapabilities, LongshoreApi } from "./client";
+import { stepEvents } from "./step-events";
 import type {
+  ApproveResult,
   CheckSummary,
   CutRecord,
+  GrepHit,
+  GrepResult,
+  IngestStatus,
   Job,
+  JobDigest,
+  RerunResult,
+  Whoami,
   JobAttempt,
   JobState,
   LogSlice,
@@ -15,12 +23,21 @@ import type {
 import type {
   WireAttempt,
   WireChecks,
+  WireApprove,
+  WireCuts,
   WireError,
+  WireFailureDigest,
+  WireIngestStatus,
   WireJob,
   WireLog,
+  WireOrgs,
+  WireProjects,
+  WireRerun,
   WireRun,
   WireRunDetail,
   WireRunList,
+  WireSteps,
+  WireWhoami,
 } from "./wire";
 
 export class ApiError extends Error {
@@ -60,12 +77,26 @@ function workflowName(path: string): string {
   return base.replace(/\.(ya?ml)$/i, "");
 }
 
+/**
+ * Parses `job_log` mode=grep text: one `<byte offset><sep><line>` per row, with `:` for a hit and
+ * `-` for context, and `--` between groups. The line text is untrusted and shown as text.
+ */
+export function parseGrep(text: string): GrepHit[] {
+  const hits: GrepHit[] = [];
+  for (const row of text.split("\n")) {
+    const m = /^(\d+)([:-])(.*)$/.exec(row);
+    if (m) hits.push({ offset: Number(m[1]), text: m[3] ?? "", context: m[2] === "-" });
+  }
+  return hits;
+}
+
 function branchOf(ref: string): string {
   return ref.replace(/^refs\/(heads|tags)\//, "");
 }
 
 export function mapRun(w: WireRun, org: string): Run {
-  const name = workflowName(w.workflow_path);
+  const name = w.workflow_name ?? workflowName(w.workflow_path);
+  const branch = w.head_branch ?? branchOf(w.ref);
   return {
     id: w.id,
     orgId: org,
@@ -75,10 +106,20 @@ export function mapRun(w: WireRun, org: string): Run {
     event: w.event,
     ref: w.ref,
     sha: w.sha,
-    // The API reports no commit message or actor yet; show the workflow and branch instead.
-    commitMessage: `${name} on ${branchOf(w.ref)}`,
-    actor: "",
+    // Forge text (untrusted; rendered as text). A run with no message shows its workflow and branch.
+    commitMessage: w.commit_message ?? `${name} on ${branch}`,
+    actor: w.actor ?? "",
     status: w.state,
+    prNumber: w.pr_number,
+    headBranch: w.head_branch,
+    trustClass: w.trust_class ?? null,
+    trust: w.trust
+      ? {
+          reasons: w.trust.reasons,
+          workflowHash: w.trust.workflow_hash,
+          decidedAt: ms(w.trust.decided_at),
+        }
+      : null,
     createdAt: ms(w.created_at) ?? 0,
     startedAt: ms(w.started_at),
     finishedAt: ms(w.finished_at),
@@ -112,11 +153,13 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
     jobKey: j.job_key,
     name: j.name,
     state: j.state,
-    // Not in the API yet: the dependency graph, matrix legs and the kind of approval gate.
-    needs: [],
-    matrix: null,
-    matrixGroup: null,
-    approval: null,
+    needs: j.needs,
+    matrix: j.matrix
+      ? Object.fromEntries(Object.entries(j.matrix).map(([k, v]) => [k, String(v)]))
+      : null,
+    // Legs of one matrix share the name before " (": "test (ubuntu, 20)" belongs to "test".
+    matrixGroup: j.matrix ? j.name.replace(/\s*\(.*\)$/, "") : null,
+    approval: j.approval_kind,
     exitCode: j.exit_code,
     createdAt: ms(run.created_at) ?? 0,
     startedAt: ms(j.started_at),
@@ -124,7 +167,7 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
   };
 }
 
-const FINISHED: readonly JobState[] = ["success", "failure", "infra_error", "cancelled"];
+const FINISHED: readonly JobState[] = ["success", "failure", "infra_error", "cancelled", "skipped"];
 
 export function createHttpApi(options: HttpApiOptions): LongshoreApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -177,20 +220,29 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
     return (await res.json()) as T;
   }
 
+  const known = (attemptId: string) => {
+    const k = attempts.get(attemptId);
+    if (!k) throw new ApiError(404, "not_found", "Open the run first so the attempt is known");
+    return k;
+  };
+
   const api: LongshoreApi = {
-    capabilities: { rerun: false } satisfies ApiCapabilities,
+    capabilities: { rerun: true, approve: true } satisfies ApiCapabilities,
 
     async listOrgs(): Promise<Org[]> {
-      // No list_orgs operation: a token is bound to one org, which the user named when connecting.
-      const slug = org();
-      return [{ id: slug, slug, name: slug }];
+      const w = await call<WireOrgs>("GET", "/orgs", { limit: 100 });
+      return w.orgs.map((o) => ({ id: o.slug, slug: o.slug, name: o.name }));
     },
 
     async listProjects(orgId: string): Promise<Project[]> {
-      // No list_projects operation either: derive the projects from recent runs.
-      const page = await call<WireRunList>("GET", "/runs", { org: orgId, limit: 100 });
-      const slugs = [...new Set(page.runs.map((r) => r.project))].toSorted();
-      return slugs.map((slug) => ({ id: slug, orgId, slug, name: slug, repo: "" }));
+      const w = await call<WireProjects>("GET", "/projects", { org: orgId, limit: 100 });
+      return w.projects.map((p) => ({
+        id: p.slug,
+        orgId,
+        slug: p.slug,
+        name: p.name,
+        repo: p.repos[0] ? `${p.repos[0].owner}/${p.repos[0].repo}` : "",
+      }));
     },
 
     async listRuns(f) {
@@ -225,9 +277,7 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
     },
 
     async jobLog({ attemptId, offset, limit }): Promise<LogSlice> {
-      const known = attempts.get(attemptId);
-      if (!known)
-        throw new ApiError(404, "not_found", "Open the run first so the attempt is known");
+      const k = known(attemptId);
       const slug = org();
       const chunks: Uint8Array[] = [];
       let at = offset;
@@ -235,9 +285,9 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
       let more = true;
       const enc = new TextEncoder();
       while (more && at - offset < limit) {
-        const page = await call<WireLog>("GET", `/jobs/${encodeURIComponent(known.jobId)}/log`, {
+        const page = await call<WireLog>("GET", `/jobs/${encodeURIComponent(k.jobId)}/log`, {
           org: slug,
-          attempt: known.attempt,
+          attempt: k.attempt,
           mode: "range",
           offset: at,
           max_bytes: Math.min(LOG_PAGE_BYTES, limit - (at - offset)),
@@ -261,16 +311,36 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         joined.set(c, p);
         p += c.length;
       }
-      const finished = FINISHED.includes(known.state);
+      const finished = FINISHED.includes(k.state);
       return { attemptId, offset, bytes: joined, size, done: finished && at >= size };
     },
 
-    async jobSteps(): Promise<StepEvent[]> {
-      return []; // not in the API yet (steps arrive out of band with the log pipeline)
+    async jobSteps({ attemptId }): Promise<StepEvent[]> {
+      const k = known(attemptId);
+      const w = await call<WireSteps>("GET", `/jobs/${encodeURIComponent(k.jobId)}/steps`, {
+        org: org(),
+        attempt: k.attempt,
+      });
+      return stepEvents(attemptId, w.steps).flatMap((m) => {
+        if (m.type !== "step") return [];
+        const { type: _t, ...rest } = m;
+        return [rest];
+      });
     },
 
-    async jobCuts(): Promise<CutRecord[]> {
-      return []; // not in the API yet
+    async jobCuts({ attemptId }): Promise<CutRecord[]> {
+      const k = known(attemptId);
+      const w = await call<WireCuts>("GET", `/jobs/${encodeURIComponent(k.jobId)}/cuts`, {
+        org: org(),
+        attempt: k.attempt,
+      });
+      return w.cuts.map((c) => ({
+        attemptId,
+        kind: "cut" as const,
+        atOffset: c.at_offset,
+        omittedBytes: c.omitted_bytes,
+        reason: c.reason,
+      }));
     },
 
     async checksForSha({ projectId, sha }): Promise<CheckSummary> {
@@ -290,8 +360,124 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
       };
     },
 
-    async rerun(): Promise<{ runId: string }> {
-      throw new ApiError(501, "not_supported", "Rerun is not available through the API yet");
+    async rerun({ runId, jobKeys, reason }): Promise<RerunResult> {
+      const w = await call<WireRerun>(
+        "POST",
+        `/runs/${encodeURIComponent(runId)}/rerun`,
+        {},
+        { reason, org: org(), ...(jobKeys && jobKeys.length > 0 ? { jobs: jobKeys } : {}) },
+      );
+      return {
+        runId: w.run_id,
+        state: w.state,
+        reruns: w.reruns.map((r) => ({
+          jobId: r.job_id,
+          jobKey: r.job_key,
+          attempt: r.attempt,
+          previousState: r.previous_state,
+          state: r.state,
+        })),
+      };
+    },
+
+    async whoami(): Promise<Whoami> {
+      // No org parameter: the answer says which org the token belongs to.
+      const w = await call<WireWhoami>("GET", "/whoami");
+      return { kind: w.kind, id: w.id, name: w.name, role: w.role, org: w.org, project: w.project };
+    },
+
+    async approveRun({ runId, headSha, workflowHash }): Promise<ApproveResult> {
+      const w = await call<WireApprove>(
+        "POST",
+        `/runs/${encodeURIComponent(runId)}/approve`,
+        {},
+        { head_sha: headSha, workflow_hash: workflowHash, org: org() },
+      );
+      return {
+        runId: w.run_id,
+        state: w.state,
+        releasedJobs: w.released_jobs,
+        approvedBy: w.approved_by,
+        headSha: w.head_sha,
+        workflowHash: w.workflow_hash,
+      };
+    },
+
+    async failureDigest({ runId, jobId }): Promise<{ failingJobs: number; digests: JobDigest[] }> {
+      const w = await call<WireFailureDigest>("GET", "/failure-digest", {
+        org: org(),
+        run_id: runId,
+        job_id: jobId,
+      });
+      return {
+        failingJobs: w.failing_jobs,
+        digests: w.digests.map((d) => ({
+          jobId: d.job_id,
+          jobKey: d.job_key,
+          state: d.state,
+          attempt: d.attempt,
+          step: d.step,
+          basis: d.basis,
+          excerpt: d.excerpt,
+          truncated: d.truncated,
+          infraErrorReason: d.infra_error_reason,
+        })),
+      };
+    },
+
+    async grepLog({
+      attemptId,
+      pattern,
+      regex,
+      ignoreCase,
+      context,
+      maxMatches,
+      fromOffset,
+    }): Promise<GrepResult> {
+      const k = known(attemptId);
+      const w = await call<WireLog>("GET", `/jobs/${encodeURIComponent(k.jobId)}/log`, {
+        org: org(),
+        attempt: k.attempt,
+        mode: "grep",
+        pattern,
+        regex: regex ? "true" : undefined,
+        ignore_case: ignoreCase ? "true" : undefined,
+        context,
+        max_matches: maxMatches,
+        offset: fromOffset,
+      });
+      return {
+        hits: parseGrep(w.text),
+        matches: w.matches,
+        nextOffset: w.next_offset,
+        totalBytes: w.total_bytes,
+      };
+    },
+
+    async ingestStatus(): Promise<IngestStatus> {
+      const w = await call<WireIngestStatus>("GET", "/ingest/status", { org: org() });
+      return {
+        running: w.running,
+        rateLimit: w.rate_limit
+          ? {
+              limit: w.rate_limit.limit,
+              remaining: w.rate_limit.remaining,
+              resetAt: ms(w.rate_limit.reset_at),
+              resource: w.rate_limit.resource,
+              observedAt: ms(w.rate_limit.observed_at) ?? 0,
+            }
+          : null,
+        repos: w.repos.map((r) => ({
+          repo: r.repo,
+          project: r.project,
+          lastPollAt: ms(r.last_poll_at),
+          lastOutcome: r.last_outcome,
+          lastError: r.last_error,
+          nextPollAt: ms(r.next_poll_at),
+          consecutiveFailures: r.consecutive_failures,
+          runsCreated: r.runs_created,
+        })),
+      };
     },
 
     async cancel({ runId }): Promise<void> {

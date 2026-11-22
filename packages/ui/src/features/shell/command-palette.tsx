@@ -1,6 +1,14 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate } from "@tanstack/react-router";
-import { CircleHelp, GitBranch, LayoutDashboard, Moon, PlayCircle, Settings } from "lucide-react";
+import {
+  Activity,
+  CircleHelp,
+  GitBranch,
+  LayoutDashboard,
+  Moon,
+  PlayCircle,
+  Settings,
+} from "lucide-react";
 import { useState } from "react";
 import { StateIcon } from "@/components/state-badge";
 import { useTheme } from "@/components/theme";
@@ -100,6 +108,15 @@ export function CommandPalette({
                     {p.name} runs
                   </CommandItem>
                 ))}
+                <CommandItem
+                  value="ingest status"
+                  onSelect={go(
+                    () => void navigate({ to: "/$org/-/ingest", params: { org: orgSlug } }),
+                  )}
+                >
+                  <Activity />
+                  Ingest status
+                </CommandItem>
                 {projectSlug ? (
                   <CommandItem
                     value="settings"

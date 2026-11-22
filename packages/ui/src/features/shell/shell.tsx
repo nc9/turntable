@@ -1,5 +1,6 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  Activity,
   Check,
   ChevronsUpDown,
   LayoutDashboard,
@@ -107,6 +108,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           {...(onNavigate ? { onNavigate } : {})}
         >
           Overview
+        </NavLink>
+        <NavLink
+          to="/$org/-/ingest"
+          params={{ org: orgSlug }}
+          icon={<Activity />}
+          active={path === `${base}/-/ingest`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Ingest status
         </NavLink>
       </div>
       <div className="flex flex-col gap-0.5">

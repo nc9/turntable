@@ -24,7 +24,7 @@
     "typecheck:ui": "bun run --cwd packages/ui typecheck",
     "typecheck:daytona": "bun run --cwd packages/provider-daytona typecheck",
     "test:daytona": "bun test packages/provider-daytona/tests/policy.test.ts packages/provider-daytona/tests/provider.test.ts packages/provider-daytona/tests/env-file.test.ts packages/provider-daytona/tests/conformance-mock.test.ts",
-    "test:ui": "bun test packages/ui/tests/log-parser.test.ts packages/ui/tests/fixture.test.ts packages/ui/tests/http-adapter.test.ts packages/ui/tests/openapi-contract.test.ts packages/ui/tests/polling-realtime.test.ts packages/ui/tests/ws-adapter.test.ts packages/core/tests/ui-assets.test.ts",
+    "test:ui": "bun test packages/ui/tests/log-parser.test.ts packages/ui/tests/fixture.test.ts packages/ui/tests/http-adapter.test.ts packages/ui/tests/openapi-contract.test.ts packages/ui/tests/polling-realtime.test.ts packages/ui/tests/ws-adapter.test.ts packages/ui/tests/ui-lib.test.ts packages/core/tests/ui-assets.test.ts",
     "test:redact": "bun test packages/redact/tests/redact.test.ts",
     "test:docker": "TT_DOCKER_CONFORMANCE=1 bun test packages/provider-docker/tests/conformance.test.ts",
     "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts packages/core/tests/db-transaction.test.ts",

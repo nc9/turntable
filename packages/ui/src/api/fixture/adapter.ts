@@ -7,7 +7,7 @@ import type {
   SubscribeOptions,
   Topic,
 } from "../realtime";
-import type { CheckSummary, RunDetail } from "../types";
+import type { CheckSummary, RunDetail, Whoami } from "../types";
 import { createRng } from "./prng";
 import { createWorld, type World } from "./world";
 
@@ -17,6 +17,8 @@ export type FixtureOptions = {
   /** Simulation tick interval in ms. */
   tickMs?: number;
   seed?: string;
+  /** Role the fixture session holds; decides whether approval is allowed. */
+  role?: Whoami["role"];
 };
 
 export type Fixture = {
@@ -69,7 +71,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
   }, options.tickMs ?? 1000);
 
   const api: LongshoreApi = {
-    capabilities: { rerun: true },
+    capabilities: { rerun: true, approve: true },
     listOrgs: () => delay(() => world.orgs.map((o) => ({ ...o }))),
     listProjects: (orgId) =>
       delay(() => world.projects.filter((p) => p.orgId === orgId).map((p) => ({ ...p }))),
@@ -127,7 +129,29 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
           runs: rows.map((r) => ({ runId: r.id, workflowName: r.workflowName, status: r.status })),
         };
       }),
-    rerun: ({ runId, jobId }) => delay(() => world.rerun(runId, jobId)),
+    rerun: ({ runId, jobKeys }) => delay(() => world.rerun(runId, jobKeys)),
+    whoami: () =>
+      delay((): Whoami => ({
+        kind: "member",
+        id: "01FIXTUREMEMBER",
+        name: "Fixture user",
+        role: options.role ?? "owner",
+        org: world.orgs[0]?.slug ?? "org",
+        project: null,
+      })),
+    approveRun: ({ runId, headSha, workflowHash }) =>
+      delay(() => world.approve(runId, headSha, workflowHash)),
+    failureDigest: ({ runId, jobId }) => delay(() => world.failureDigest(runId, jobId)),
+    grepLog: ({ attemptId, pattern, regex, ignoreCase, context, maxMatches }) =>
+      delay(() =>
+        world.grepLog(attemptId, pattern, {
+          ...(regex !== undefined ? { regex } : {}),
+          ...(ignoreCase !== undefined ? { ignoreCase } : {}),
+          ...(context !== undefined ? { context } : {}),
+          ...(maxMatches !== undefined ? { maxMatches } : {}),
+        }),
+      ),
+    ingestStatus: () => delay(() => world.ingestStatus()),
     cancel: ({ runId }) => delay(() => void world.cancel(runId)),
     events: ({ cursor, limit }) =>
       delay(() => {
