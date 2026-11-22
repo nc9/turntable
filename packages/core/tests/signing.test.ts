@@ -269,6 +269,34 @@ describe("policy refusals (nothing reaches the signer)", () => {
     expect(await denials()).toContain(`denied:${reason}`);
   });
 
+  test("byproducts in the statement are release-class artifacts only (#39)", async () => {
+    const run = await releaseRun();
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.artifacts)
+        .set({ klass: "trusted_pr" })
+        .where(eq(s.artifacts.name, "sbom.json"));
+    });
+    const out = await service().signRelease(a.scope, req(run.id));
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const p = JSON.parse(Buffer.from(out.envelope.payload, "base64").toString()).predicate;
+    expect(p.runDetails.byproducts).toEqual([]);
+    // And with the same artifact at release class it is listed, as before.
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.artifacts)
+        .set({ klass: "release" })
+        .where(eq(s.artifacts.name, "sbom.json"));
+    });
+    const again = await service().signRelease(a.scope, req(run.id));
+    if (!again.ok) throw new Error(again.reason);
+    const q = JSON.parse(Buffer.from(again.envelope.payload, "base64").toString()).predicate;
+    expect(q.runDetails.byproducts).toEqual([
+      { name: "sbom.json", digest: { sha256: "d".repeat(64) } },
+    ]);
+  });
+
   test("a release-class run whose attempt ran as trusted_pr produces an artifact the signer refuses (#39)", async () => {
     const run = await releaseRun({ attemptClass: "trusted_pr" });
     const out = await service().signRelease(a.scope, req(run.id));

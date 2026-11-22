@@ -183,7 +183,9 @@ export class SigningService {
     const byproducts = req.verified
       ? []
       : (await listRunArtifacts(db, scope, run.id))
-          .filter((a) => !chosen.has(a.name))
+          // A statement vouches only for what a release-class attempt wrote: a lower-class
+          // artifact of the same run is left out, not listed next to the signed ones.
+          .filter((a) => !chosen.has(a.name) && a.klass === "release")
           .map((a) => ({ name: a.name, sha256: a.sha256 }));
     const actions = req.verified ? [] : await this.#actions(scope, run.id);
 
