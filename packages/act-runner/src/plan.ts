@@ -250,6 +250,12 @@ function withArgv(plan: JobPlan): JobPlan {
     "--concurrent-jobs",
     "1",
     "--no-skip-checkout",
+    // act's artifact and cache servers bind the outbound IP by default and fail with no network
+    // ("lookup <nil>"). Loopback works with egress none.
+    "--artifact-server-addr",
+    "127.0.0.1",
+    "--cache-server-addr",
+    "127.0.0.1",
     // Never hand the job a container socket.
     "--container-daemon-socket",
     "-",

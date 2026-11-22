@@ -35,6 +35,8 @@ describe("planJob accepts", () => {
     expect(p.argv).toContain("--concurrent-jobs");
     expect(p.argv).toContain("--json");
     expect(p.argv).toContain("--no-skip-checkout");
+    expect(p.argv[p.argv.indexOf("--artifact-server-addr") + 1]).toBe("127.0.0.1");
+    expect(p.argv[p.argv.indexOf("--cache-server-addr") + 1]).toBe("127.0.0.1");
     expect(p.argv).toContain("ubuntu-latest=-self-hosted");
     for (const bad of ["-n", "--dryrun"]) expect(p.argv).not.toContain(bad);
     expect(p.checkoutRefs).toEqual([CO]);
