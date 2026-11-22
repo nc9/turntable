@@ -152,6 +152,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         }),
       ),
     ingestStatus: () => delay(() => world.ingestStatus()),
+    incidentStatus: () => delay(() => world.incidentStatus()),
     cancel: ({ runId }) => delay(() => void world.cancel(runId)),
     events: ({ cursor, limit }) =>
       delay(() => {

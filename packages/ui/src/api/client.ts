@@ -11,6 +11,7 @@ import type {
   CutRecord,
   ApproveResult,
   GrepResult,
+  IncidentStatus,
   IngestStatus,
   JobDigest,
   RerunResult,
@@ -70,6 +71,8 @@ export interface LongshoreApi {
   }): Promise<GrepResult>;
   /** Per-repo poll ingest status and the forge rate budget. */
   ingestStatus(): Promise<IngestStatus>;
+  /** Whether scheduling is frozen for the org (or the project, when given), and why. */
+  incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;
   /** Event feed from a cursor (the same events the realtime transport pushes). */
   events(args: {

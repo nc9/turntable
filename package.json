@@ -34,7 +34,7 @@
     "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/run-job.test.ts packages/act-runner/tests/expr.test.ts packages/act-runner/tests/triggers.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
     "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts",
-    "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts packages/core/tests/mcp.test.ts packages/core/tests/failure-digest.test.ts packages/core/tests/channel.test.ts packages/core/tests/checks.test.ts",
+    "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts packages/core/tests/mcp.test.ts packages/core/tests/incident.test.ts packages/core/tests/failure-digest.test.ts packages/core/tests/channel.test.ts packages/core/tests/checks.test.ts",
     "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts packages/core/tests/run-workflow.test.ts packages/core/tests/safe-read.test.ts",
     "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts",
     "test:act2": "bun test packages/act-runner/tests/workflow-plan.test.ts packages/act-runner/tests/split.test.ts packages/act-runner/tests/readiness.test.ts packages/act-runner/tests/squirrelscan-plan.test.ts packages/act-runner/tests/step-env.test.ts",

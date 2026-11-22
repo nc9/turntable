@@ -11,6 +11,8 @@ import { rerun } from "./definitions/rerun";
 import { whoami } from "./definitions/whoami";
 import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
+import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
+import { secretUsage } from "./definitions/secret-usage";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
@@ -50,4 +52,8 @@ export const registry = createRegistry([
   rotateSecretOp,
   deleteSecretOp,
   listSecretsOp,
+  incidentFreeze,
+  incidentUnfreeze,
+  incidentStatus,
+  secretUsage,
 ]);

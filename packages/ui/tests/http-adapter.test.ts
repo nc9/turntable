@@ -624,4 +624,34 @@ describe("operations added for trust, digests, search and ingest", () => {
       consecutiveFailures: 3,
     });
   });
+
+  test("incident status maps the freeze, its reason as data, and the rotation list", async () => {
+    const { api, calls } = make(() =>
+      json({
+        frozen: true,
+        level: "org",
+        reason: "<script>alert(1)</script> key leaked",
+        frozen_at: 1_700_000_000_000,
+        frozen_by: "member:maya",
+        rotation_required: [
+          {
+            name: "DEPLOY_KEY",
+            reason: "leaked",
+            flagged_by: "member:maya",
+            flagged_at: 1_700_000_000_000,
+          },
+        ],
+      }),
+    );
+    const s = await api.incidentStatus({ project: "api" });
+    expect(calls[0]!.url.pathname).toBe("/api/v1/incident");
+    expect(calls[0]!.url.searchParams.get("project")).toBe("api");
+    expect(s).toMatchObject({
+      frozen: true,
+      level: "org",
+      reason: "<script>alert(1)</script> key leaked",
+      frozenBy: "member:maya",
+      rotationRequired: [{ name: "DEPLOY_KEY", flaggedBy: "member:maya" }],
+    });
+  });
 });

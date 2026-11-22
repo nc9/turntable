@@ -154,6 +154,40 @@ Longshore acts as an OIDC issuer so jobs can authenticate to cloud providers wit
 
 A signing service signs release artifacts and emits provenance, so signing keys never enter a sandbox. It is the planned substitute for GitHub artifact attestations.
 
+## Incident response
+
+Unlike the sections above, this one is implemented. When a secret may have leaked or a runner is compromised, one operation stops the bleeding and a second tells you how far it reached.
+
+### Freeze
+
+`incident_freeze` (REST `POST /api/v1/incident/freeze`, MCP tool, or `longshore incident freeze --org acme [--project api] --reason "..."`) needs the release_operator role. It freezes the org, or one project, and in one audited step:
+
+1. **Pauses scheduling.** A persisted flag on the org or project. The claim path checks it on every claim, so no worker, in any process, starts a job of the scope until it is lifted. Runs that arrive while frozen (webhooks, polling) are created and wait in `queued`.
+2. **Kills running jobs.** Every run with a running job is cancelled through the same path as `cancel`: workers stop and sandboxes are destroyed. A worker in another process stops at its next heartbeat. Runs that have only queued jobs stay queued and resume after unfreeze.
+3. **Drops cached credentials.** The GitHub installation tokens held in the server process's cache are dropped, so the server mints fresh ones only after you unfreeze. GitHub does not let the server revoke an installation token early: a token already handed to a job lives until it expires, within an hour. A freeze run from the CLI is a different process and cannot reach the server's cache; use the API to drop it. Agent API tokens are not revoked by a freeze, so you can still operate. Revoke the ones you do not trust with `longshore token revoke`.
+4. **Flags secrets.** Every secret name in scope is flagged `rotation_required`. Names only: a freeze never reads or changes a value. The built-in store (the GitHub App's key and webhook secret) is org-wide, so only an org freeze flags it. Vault secrets are flagged by name too: an org freeze flags every vault secret name in the org, a project freeze those of the project. One name can be several scoped secrets, and the flag is by name. Rotating (`rotate_secret`, or `set_secret` on an existing scope) closes the flag only once every vault secret of that name has a newer version than the flag.
+5. **Writes an audit entry** with the reason, the principal and the outcome.
+
+The reason is shown in the web UI to everyone on the org or project. Freezing a frozen scope keeps the first reason and time and still kills, drops and flags.
+
+`incident_unfreeze` clears the pause only. Killed runs stay cancelled and secrets stay flagged until they are rotated. If the org is frozen, unfreezing one project does not resume it.
+
+`incident_status` (reader) reports the freeze and the open rotation flags.
+
+### Blast radius
+
+`secret_usage` takes a secret name and a time range and lists each recorded use from the audit log: when, the run, job and attempt, the destination host, the version and the trust class it ran as. Start the range at the earliest time the secret could have leaked. It reads the per-use records the vault writes to the audit log (`secret_use`: secret name, run, job, attempt, destination). Values are never in the audit log. Denied uses are throttled samples and are not listed. Results are capped; narrow the range when `truncated` is true.
+
+### Runbook
+
+1. **Freeze.** `longshore incident freeze --org acme --reason "deploy key printed in a build log"`. Read the counts it returns.
+2. **Scope it.** Run `secret_usage` for each affected secret from before the first suspect run. Note every destination: each is a place the secret may now be.
+3. **Rotate at the source.** Replace the credential where it is issued (the registry, the cloud account, the forge). Then store the new value (`longshore secret rotate`). Anything flagged in `incident_status` is on your list until rotated.
+4. **Rotate Longshore's own secrets** if they were in scope: the GitHub App private key and webhook secret (`longshore github-app rotate-webhook-secret`), the master key.
+5. **Revoke agent tokens** you do not trust, and review the audit log for the window (`longshore audit verify`, `longshore audit export`).
+6. **Review the runs** that used the secret: logs, artifacts, and what the destinations received.
+7. **Unfreeze** with `longshore incident unfreeze --org acme`. Queued work resumes. Keep the rotation flags open until each secret is rotated.
+
 ## Reporting vulnerabilities
 
 See `SECURITY.md` in the repository.
