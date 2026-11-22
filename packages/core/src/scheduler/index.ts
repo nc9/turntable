@@ -7,3 +7,10 @@ export type {
   AttemptStore,
   ProviderResolver,
 } from "./types";
+export {
+  createActRunner,
+  gitRepoSource,
+  type ActRunnerOptions,
+  type Checkout,
+  type RepoSource,
+} from "./act-runner";

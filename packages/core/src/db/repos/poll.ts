@@ -23,6 +23,8 @@ export function createPolledRun(
     run: RunInput & { sha: string };
     jobs: readonly PolledJob[];
     provider: string;
+    /** Epoch ms stamped on the marker; the hourly cap counts by it. Default: the clock. */
+    now?: number | undefined;
   },
 ): Promise<Run | undefined> {
   return db.transaction(async (tx) => {
@@ -61,6 +63,7 @@ export function createPolledRun(
       orgId: scope.orgId,
       ...key,
       runId: run.id,
+      ...(input.now === undefined ? {} : { createdAt: input.now }),
     });
     return run;
   });

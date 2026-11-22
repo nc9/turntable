@@ -1,11 +1,13 @@
 import { parse } from "yaml";
 import type { Db } from "../db";
 import {
+  bindRepo,
   countPolledSince,
   createPolledRun,
   ensureLocalTenant,
   getOrgBySlug,
   getProjectBySlug,
+  listRepos,
   type PolledJob,
   type Scope,
 } from "../db/repos";
@@ -107,6 +109,13 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   const scope = await targetScope(deps.db, cfg);
   const repo = cfg.repo;
 
+  // The worker finds the repo to fetch through the project's binding.
+  const [owner, name] = repo.toLowerCase().split("/") as [string, string];
+  const bound = await listRepos(deps.db, scope);
+  if (!bound.some((r) => r.forge === "github" && r.owner === owner && r.repo === name)) {
+    await bindRepo(deps.db, scope, { forge: "github", owner, repo: name });
+  }
+
   const candidates: Candidate[] = [];
   const head = await deps.github.branchHead(repo, cfg.defaultBranch);
   candidates.push({
@@ -166,6 +175,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     const run = await createPolledRun(deps.db, scope, {
       repo,
       provider: deps.provider,
+      now,
       jobs: wf.jobs,
       run: {
         workflowPath: cfg.workflow,

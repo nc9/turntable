@@ -1,6 +1,7 @@
 import {
   type Db,
   type Scope,
+  type StepInput,
   createAttempt,
   createJob,
   createRun,
@@ -88,17 +89,7 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
       await appendLog(db, scope, attemptId, offset, bytes);
     },
     async recordStep(attemptId, step) {
-      await upsertStep(db, scope, {
-        attemptId,
-        stepKey: step.stepKey,
-        stage: stageOf(step.stage),
-        index: step.index,
-        name: step.name,
-        result: resultOf(step.result),
-        startedAt: step.startedAt ?? null,
-        finishedAt: step.endedAt ?? null,
-        logOffset: step.logOffset,
-      });
+      await upsertStep(db, scope, stepInputOf(attemptId, step));
     },
     async finish(ids, state, opts) {
       const code = opts.exitCode ?? null;
@@ -110,6 +101,21 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
       });
       await setRunStatus(db, scope, ids.runId, aggregateRunStatus([state]));
     },
+  };
+}
+
+/** The persisted shape of a step the runner reported. Shared by the CLI and the worker. */
+export function stepInputOf(attemptId: string, step: StepRecord): StepInput {
+  return {
+    attemptId,
+    stepKey: step.stepKey,
+    stage: stageOf(step.stage),
+    index: step.index,
+    name: step.name,
+    result: resultOf(step.result),
+    startedAt: step.startedAt ?? null,
+    finishedAt: step.endedAt ?? null,
+    logOffset: step.logOffset,
   };
 }
 
