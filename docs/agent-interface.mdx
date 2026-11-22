@@ -13,6 +13,26 @@ Turntable is MCP-first. Everything it can do is drivable through MCP and through
 
 Each capability is defined once in an operations registry, with a name, typed input and output schemas, a required scope and a handler. The MCP server, REST API, CLI and UI are generated from or built on that registry. A new operation appears everywhere at once, and the surfaces cannot drift apart. Issue [#22](https://github.com/nc9/turntable/issues/22).
 
+## First operations
+
+The first planned operations:
+
+| Operation | Purpose |
+| --- | --- |
+| `checks_for_sha` | Check status for a commit SHA. |
+| `list_runs` | List runs, filtered by project, branch, status. |
+| `get_run` | One run with its jobs. |
+| `job_log` | Read a job log: head, tail, grep with context, or offset paging. |
+| `failure_digest` | A short summary of why a run failed. |
+| `rerun` | Rerun a run or a failed job. |
+| `cancel` | Cancel a run. |
+| `events` | Read the event feed from a cursor. |
+| `cost_summary` | Sandbox time and cost per project or run. |
+
+## Human-only actions
+
+Release and environment approvals are human-only. They are never callable over MCP, REST or any agent token. No operation ever returns secret values.
+
 ## MCP server
 
 The MCP server exposes registry operations as tools. It supports streamable HTTP for remote agents and stdio for local ones. Issue [#23](https://github.com/nc9/turntable/issues/23).
