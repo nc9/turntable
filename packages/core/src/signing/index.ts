@@ -1,4 +1,10 @@
-export { type ApprovalDecision, type ApprovalVerifier, denyAllApprovals } from "./approvals";
+export {
+  type ApprovalSubject,
+  type ApprovalVerdict,
+  type ApprovalVerifier,
+  denyAllApprovals,
+  type VerifiedApproval,
+} from "./approvals";
 export {
   decideSigning,
   type SigningDecision,

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a21514c1-3a5a-4562-9e79-bc1c1f244e9e",
+  "id": "280f6d82-91e7-4873-9553-7b2c3b5587e0",
   "prevId": "cc19e74d-ffa2-4495-b8f8-b3f0efa37c8e",
   "tables": {
     "action_pins": {
@@ -424,6 +424,8 @@
         "artifacts_run_name_unique": {
           "name": "artifacts_run_name_unique",
           "columns": [
+            "org_id",
+            "project_id",
             "run_id",
             "name"
           ],
@@ -442,6 +444,40 @@
           "columnsTo": [
             "id",
             "org_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "artifacts_run_id_org_id_project_id_runs_id_org_id_project_id_fk": {
+          "name": "artifacts_run_id_org_id_project_id_runs_id_org_id_project_id_fk",
+          "tableFrom": "artifacts",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id",
+            "org_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "artifacts_attempt_id_org_id_project_id_job_attempts_id_org_id_project_id_fk": {
+          "name": "artifacts_attempt_id_org_id_project_id_job_attempts_id_org_id_project_id_fk",
+          "tableFrom": "artifacts",
+          "tableTo": "job_attempts",
+          "columnsFrom": [
+            "attempt_id",
+            "org_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "org_id",
+            "project_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"

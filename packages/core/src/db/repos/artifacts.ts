@@ -11,6 +11,8 @@ export type ArtifactRow = typeof s.artifacts.$inferSelect;
 const COLS = { orgId: s.artifacts.orgId, projectId: s.artifacts.projectId };
 
 export class ArtifactConflict extends Error {}
+/** The run or the attempt is not in the caller's scope, or the attempt is not the run's. */
+export class ArtifactScopeError extends Error {}
 
 /**
  * Records an artifact of a run. Idempotent for the same name and digest; a different digest under
@@ -28,6 +30,33 @@ export function recordArtifact(
   }
   return db.transaction(async (tx) => {
     const { projectId } = requireProject(scope);
+    // Through the scoped tables: the run and the attempt must be in this org and project, and the
+    // attempt must belong to this run. Anything else looks like "not found".
+    const [run] = await tx.orm
+      .select({ id: s.runs.id })
+      .from(s.runs)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.runs.orgId, projectId: s.runs.projectId },
+          eq(s.runs.id, input.runId),
+        ),
+      )
+      .limit(1);
+    const [attempt] = await tx.orm
+      .select({ id: s.jobAttempts.id })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, input.attemptId),
+          eq(s.jobs.runId, input.runId),
+        ),
+      )
+      .limit(1);
+    if (!run || !attempt) throw new ArtifactScopeError("no such run and attempt in scope");
     const [existing] = await tx.orm
       .select()
       .from(s.artifacts)

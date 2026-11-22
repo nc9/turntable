@@ -84,7 +84,22 @@ export class SigningService {
     if (!run) return deny("unknown_run");
     const project = await getProjectSigning(db, scope);
     const recorded = await getRunArtifactsByName(db, scope, run.id, req.artifacts);
-    const approval = await this.#o.approvals.verify(run, req.environment);
+    // The verifier re-checks the signed statements itself, for exactly this run, sha, workflow
+    // and environment. A run with no sha or no recorded workflow hash cannot have been approved.
+    const workflowHash = parseTrust(run)?.workflowHash;
+    const approval =
+      run.sha === null || workflowHash === undefined
+        ? undefined
+        : await this.#o.approvals.verify(
+            {
+              orgId: scope.orgId,
+              projectId: scope.projectId,
+              runId: run.id,
+              headSha: run.sha,
+              workflowHash,
+            },
+            req.environment,
+          );
     const decision = decideSigning({
       klass: parseTrust(run)?.class,
       status: run.status,
@@ -94,7 +109,7 @@ export class SigningService {
       signingKey: project.signingKey,
       requested: req.artifacts,
       recorded: recorded.map((a) => a.name),
-      approvalOk: approval.ok,
+      approvalOk: approval?.approved === true,
     });
     if (!decision.ok) return deny(decision.reason, decision.detail);
 
@@ -137,7 +152,7 @@ export class SigningService {
       environment: req.environment,
       keyid,
       artifacts: subjects,
-      approvers: approval.ok ? approval.approvers : [],
+      approvers: approval?.approved ? approval.approvals.map((a) => a.person) : [],
     });
     return { ok: true, envelope, keyid, subjects };
   }

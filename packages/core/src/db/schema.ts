@@ -820,7 +820,16 @@ export const artifacts = sqliteTable(
   },
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
-    unique("artifacts_run_name_unique").on(t.runId, t.name),
+    // The run and the attempt must be in this org and project: no row can point across tenants.
+    foreignKey({
+      columns: [t.runId, t.orgId, t.projectId],
+      foreignColumns: [runs.id, runs.orgId, runs.projectId],
+    }),
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+    unique("artifacts_run_name_unique").on(t.orgId, t.projectId, t.runId, t.name),
     check("artifacts_sha256_check", sql`length(${t.sha256}) = 64`),
     index("artifacts_sha256_idx").on(t.orgId, t.sha256),
   ],

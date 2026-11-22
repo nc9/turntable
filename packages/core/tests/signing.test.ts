@@ -12,6 +12,8 @@ import {
 } from "@longshore/signer";
 import {
   ArtifactConflict,
+  ArtifactScopeError,
+  createProject,
   createAttempt,
   createJob,
   createRun,
@@ -46,8 +48,21 @@ let vault: KeyVault;
 let local: LocalSigner;
 let signCalls: number;
 let spy: Signer;
+const person = (name: string) => ({
+  approverId: `ap-${name}`,
+  person: name,
+  method: "ed25519" as const,
+  statementHash: "s".repeat(64),
+  approvedAt: 1,
+  expiresAt: 2,
+});
 const approve: ApprovalVerifier = {
-  verify: async () => ({ ok: true, approvers: ["alice", "bob"] }),
+  verify: async (_s, environment) => ({
+    approved: true,
+    environment,
+    required: 2,
+    approvals: [person("alice"), person("bob")],
+  }),
 };
 
 beforeEach(async () => {
@@ -128,7 +143,7 @@ async function releaseRun(
       size: 10,
     });
   }
-  return run;
+  return Object.assign(run, { attemptId: attempt.id });
 }
 
 const service = (
@@ -243,13 +258,60 @@ describe("policy refusals (nothing reaches the signer)", () => {
     expect(signCalls).toBe(0);
   });
 
-  test("the approval is asked for the run and its environment", async () => {
+  test("the approval is asked for exactly this org, project, run, sha, workflow hash and environment", async () => {
     const run = await releaseRun();
-    const asked: string[] = [];
-    await service({
-      verify: async (r, env) => (asked.push(`${r.id}:${env}`), { ok: false, reason: "no" }),
+    const asked: unknown[] = [];
+    const out = await service({
+      verify: async (subject, env) => {
+        asked.push({ ...subject, env });
+        return {
+          approved: false,
+          environment: env,
+          required: 2,
+          have: 1,
+          reason: "insufficient_approvals",
+        };
+      },
     }).signRelease(a.scope, req(run.id));
-    expect(asked).toEqual([`${run.id}:production`]);
+    expect(out).toMatchObject({ ok: false, reason: "no_approval" });
+    expect(asked).toEqual([
+      {
+        orgId: a.orgId,
+        projectId: a.projectId,
+        runId: run.id,
+        headSha: SHA,
+        workflowHash: "h",
+        env: "production",
+      },
+    ]);
+    expect(signCalls).toBe(0);
+  });
+
+  test("a run whose trust decision has no workflow hash is refused, and the verifier is not asked", async () => {
+    const run = await releaseRun();
+    await db.orm
+      .update(s.runs)
+      .set({ trust: JSON.stringify({ class: "release" }) })
+      .where(eq(s.runs.id, run.id));
+    let asked = 0;
+    const out = await service({
+      verify: async (subject, env) => {
+        asked++;
+        return approve.verify(subject, env);
+      },
+    }).signRelease(a.scope, req(run.id));
+    // Its class cannot be read from an incomplete decision, so it is not a release run at all.
+    expect(out).toMatchObject({ ok: false, reason: "not_release_class" });
+    expect(asked).toBe(0);
+    expect(signCalls).toBe(0);
+  });
+
+  test("the approvers' names are in the audit record", async () => {
+    const run = await releaseRun();
+    await service().signRelease(a.scope, req(run.id));
+    const rows = (await listAudit(db, a.scope)).filter((x) => x.op === "sign_release");
+    expect(rows[0]!.input).toContain("alice");
+    expect(rows[0]!.input).toContain("bob");
   });
 
   test("a project with no signing key, and a key naming a backend the instance lacks, cannot sign", async () => {
@@ -378,7 +440,7 @@ describe("the built-in key", () => {
 describe("the artifact store", () => {
   test("a name is recorded once per run: the same digest is idempotent, another digest is refused", async () => {
     const run = await releaseRun({ record: false });
-    const attemptId = "att";
+    const attemptId = run.attemptId;
     const first = await recordArtifact(db, a.scope, {
       runId: run.id,
       attemptId,
@@ -432,6 +494,54 @@ describe("the artifact store", () => {
         }),
       ).rejects.toThrow();
     }
+  });
+
+  test("an attempt or run from another org, another project, or another run is refused", async () => {
+    const run = await releaseRun({ record: false });
+    const other = await releaseRun({ record: false });
+    const rec = (scope: Required<typeof a.scope>, runId: string, attemptId: string) =>
+      recordArtifact(db, scope, {
+        runId,
+        attemptId,
+        name: "x.bin",
+        sha256: "e".repeat(64),
+        size: 1,
+      });
+    // Another org's attempt id, under this org's run.
+    await expect(rec(a.scope, run.id, b.attemptId)).rejects.toBeInstanceOf(ArtifactScopeError);
+    // This org's run, recorded from another org's scope.
+    await expect(rec(b.scope, run.id, run.attemptId)).rejects.toBeInstanceOf(ArtifactScopeError);
+    // Another project of the same org: the run and attempt exist, but not in that project.
+    const p2 = await createProject(db, { orgId: a.orgId }, { slug: "second", name: "Second" });
+    const scope2 = { orgId: a.orgId, projectId: p2.id };
+    await expect(rec(scope2, run.id, run.attemptId)).rejects.toBeInstanceOf(ArtifactScopeError);
+    // An attempt of a different run of the same project.
+    await expect(rec(a.scope, run.id, other.attemptId)).rejects.toBeInstanceOf(ArtifactScopeError);
+    // Nothing was recorded by any of them.
+    expect(await listRunArtifacts(db, a.scope, run.id)).toEqual([]);
+    expect(await rec(a.scope, run.id, run.attemptId)).toMatchObject({ name: "x.bin" });
+  });
+
+  test("the database itself refuses a row that points across tenants", async () => {
+    const run = await releaseRun({ record: false });
+    const row = {
+      id: "01X",
+      projectId: a.projectId,
+      runId: run.id,
+      attemptId: b.attemptId,
+      name: "n",
+      sha256: "e".repeat(64),
+      size: 1,
+    };
+    // Skipping the repo: another org's attempt id under this org's own run and project.
+    const insert = async (values: typeof row & { orgId: string }): Promise<void> => {
+      await db.orm.insert(s.artifacts).values(values);
+    };
+    await expect(insert({ ...row, orgId: a.orgId })).rejects.toThrow();
+    // And a run id from another org.
+    await expect(
+      insert({ ...row, id: "01Y", orgId: a.orgId, runId: b.runId, attemptId: run.attemptId }),
+    ).rejects.toThrow();
   });
 
   test("the store has no way to change or remove a recorded artifact", async () => {
