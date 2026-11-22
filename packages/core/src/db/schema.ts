@@ -1059,6 +1059,15 @@ export const artifacts = sqliteTable(
     /** Lower-case hex. */
     sha256: text("sha256").notNull(),
     size: integer("size", { mode: "number" }).notNull(),
+    /**
+     * Provenance (#39), set by the control plane when the row is recorded and never by the
+     * caller: the trust class of the producing run (from its stored trust decision; an unknown
+     * run is `untrusted_pr`, the fail-closed reading) and the commit it ran at.
+     */
+    klass: text("klass").notNull().default("untrusted_pr"),
+    runSha: text("run_sha"),
+    /** `reported` when the caller supplied the digest, `computed` when the control plane hashed the bytes. */
+    digestSource: text("digest_source").notNull().default("reported"),
     createdAt: createdAt(),
   },
   (t) => [
