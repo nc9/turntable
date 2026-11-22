@@ -15,6 +15,12 @@ Longshore promises that unsupported features fail loudly at parse or plan time. 
   Nothing is implemented yet. The classification below is the plan for v1, and every row is planned.
 </Note>
 
+## Pull request events
+
+Steps see the event as they do on GitHub where it matters: act is given a `github.event` payload built only from forge facts fetched at poll time (for a pull request: `number`, `pull_request.number`, `base.{ref, sha, repo.full_name}`, `head.{ref, sha, repo.full_name}`, `draft`, and `repository.full_name`; for a push: `ref`, `before`, `after`, `repository.full_name`). It is stored with the run, so a re-attach or a rerun sees the same bytes. Titles, bodies, tokens and anything else are never included. The delivered checkout has an `origin` remote (`https://github.com/<owner>/<repo>`, never with credentials), as `actions/checkout` leaves it, so `git fetch origin <sha>` works when the job has network egress.
+
+**Known difference:** GitHub runs `pull_request` workflows on the merge commit (`refs/pull/N/merge`). Longshore runs the pull request head sha. This is deliberate for now, and `github.sha` is the head sha.
+
 ## Planned support
 
 | Feature | Status |

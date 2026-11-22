@@ -182,6 +182,40 @@ describe.skipIf(!enabled)("longshore run (compiled binary, docker)", () => {
     expect(JSON.parse(jobs.find((j) => j.jobKey === "test")?.needs ?? "[]")).toEqual(["build"]);
   }, 900_000);
 
+  test("pull_request: the step sees the event payload, an origin remote, and an intact .git", async () => {
+    const { repo, data } = await exampleRepo("prevent");
+    await git(repo, "remote", "add", "origin", "https://github.com/acme/hello");
+    const base = "b".repeat(40);
+    const p = Bun.spawn(
+      [
+        bin,
+        "run",
+        join(repo, ".github/workflows/pr-event.yml"),
+        "--repo",
+        repo,
+        "--data-dir",
+        data,
+        "--event",
+        "pull_request",
+        "--base-ref",
+        "main",
+        "--base-sha",
+        base,
+      ],
+      { stdout: "pipe", stderr: "inherit" },
+    );
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    if (code !== 0) {
+      console.log(out);
+      console.log(await failedAttempts(data));
+    }
+    expect(code).toBe(0);
+    expect(out).toContain(`base-sha=${base}`);
+    expect(out).toContain("origin=https://github.com/acme/hello");
+    expect(out).toContain("repo-ok");
+  }, 900_000);
+
   test("a workflow that does not trigger exits 0 and stores nothing", async () => {
     const { repo, data } = await exampleRepo("notrigger");
     const p = Bun.spawn(

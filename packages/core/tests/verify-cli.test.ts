@@ -162,18 +162,24 @@ describe("longshore policy: signing", () => {
     const out = await setSigningPolicy(db, "acme", "app", {
       releaseRefs: ["refs/tags/v*", "refs/heads/release/*"],
       signingKey: "builtin:release",
+      environment: "production",
     });
     expect(out).toEqual([
       {
         project: "app",
         releaseRefs: ["refs/tags/v*", "refs/heads/release/*"],
         signingKey: "builtin:release",
+        environment: "production",
       },
     ]);
     expect(await getProjectSigning(db, scope)).toEqual({
       releaseRefs: ["refs/tags/v*", "refs/heads/release/*"],
       signingKey: "builtin:release",
+      environment: "production",
     });
+    await expect(
+      setSigningPolicy(db, "acme", "app", { environment: "bad env!" }),
+    ).rejects.toThrow();
     // An empty key unsets it.
     await setSigningPolicy(db, "acme", "app", { signingKey: "" });
     expect((await getProjectSigning(db, scope)).signingKey).toBeNull();

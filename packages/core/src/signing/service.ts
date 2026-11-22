@@ -40,8 +40,11 @@ export interface SignRequest {
   runId: string;
   /** Names of artifacts recorded for the run. */
   artifacts: readonly string[];
-  /** The environment whose approval is required, for example `production`. */
-  environment: string;
+  /**
+   * Optional, and never trusted: the approval environment is the project's own setting. A request
+   * that names a different one is refused.
+   */
+  environment?: string | undefined;
 }
 
 export type SignOutcome =
@@ -83,6 +86,11 @@ export class SigningService {
     const run = await getRun(db, scope, req.runId);
     if (!run) return deny("unknown_run");
     const project = await getProjectSigning(db, scope);
+    // The approval policy comes from the project, not from the caller.
+    const environment = project.environment;
+    if (req.environment !== undefined && req.environment !== environment) {
+      return deny("environment_mismatch", undefined, { required: environment });
+    }
     const recorded = await getRunArtifactsByName(db, scope, run.id, req.artifacts);
     // The verifier re-checks the signed statements itself, for exactly this run, sha, workflow
     // and environment. A run with no sha or no recorded workflow hash cannot have been approved.
@@ -98,7 +106,7 @@ export class SigningService {
               headSha: run.sha,
               workflowHash,
             },
-            req.environment,
+            environment,
           );
     const decision = decideSigning({
       klass: parseTrust(run)?.class,
@@ -133,6 +141,7 @@ export class SigningService {
       sha: run.sha ?? "",
       event: run.event,
       inputs: {},
+      environment,
       actions,
       subjects,
       byproducts,
@@ -149,7 +158,7 @@ export class SigningService {
     // The signature is returned only after the record of it is written.
     await this.#audit(scope, "ok", {
       runId: run.id,
-      environment: req.environment,
+      environment,
       keyid,
       artifacts: subjects,
       approvers: approval?.approved ? approval.approvals.map((a) => a.person) : [],

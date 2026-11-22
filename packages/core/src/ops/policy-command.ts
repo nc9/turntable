@@ -24,6 +24,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       "checks-mode": { type: "string" },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
+      "signing-environment": { type: "string" },
       "data-dir": { type: "string", default: "./data" },
     },
     allowPositionals: true,
@@ -43,12 +44,16 @@ async function ownPolicy(args: string[]): Promise<void> {
         console.log(`egress ${e.project}: ${e.egress}`);
       for (const x of await showSigning(db, values.org)) {
         console.log(
-          `signing ${x.project}: release refs ${x.releaseRefs.join(", ")}; key ${x.signingKey ?? "(none)"}`,
+          `signing ${x.project}: release refs ${x.releaseRefs.join(", ")}; key ${x.signingKey ?? "(none)"}; approval environment ${x.environment}`,
         );
       }
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
-    } else if (values["release-refs"] !== undefined || values["signing-key"] !== undefined) {
+    } else if (
+      values["release-refs"] !== undefined ||
+      values["signing-key"] !== undefined ||
+      values["signing-environment"] !== undefined
+    ) {
       const refs = values["release-refs"];
       for (const r of await setSigningPolicy(db, values.org, values.project, {
         releaseRefs:
@@ -59,9 +64,10 @@ async function ownPolicy(args: string[]): Promise<void> {
                 .map((x) => x.trim())
                 .filter(Boolean),
         signingKey: values["signing-key"],
+        environment: values["signing-environment"],
       })) {
         console.error(
-          `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}`,
+          `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}; approval environment ${r.environment}`,
         );
       }
     } else if (values["checks-mode"] !== undefined) {
@@ -96,7 +102,9 @@ export async function policyCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const ours =
     rest.includes("approve-run-min-role") ||
-    rest.some((a) => /^--(egress|checks-mode|release-refs|signing-key)(=|$)/.test(a));
+    rest.some((a) =>
+      /^--(egress|checks-mode|release-refs|signing-key|signing-environment)(=|$)/.test(a),
+    );
   if (sub === "set" && ours) return ownPolicy(args);
   if (sub === "show") {
     await actionPolicyCommand(args);

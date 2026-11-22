@@ -15,12 +15,12 @@ export const signRelease = defineOp({
   description:
     "Signs named, recorded artifacts of a finished release run and returns DSSE-signed SLSA " +
     "provenance. It needs a human-signed assertion: a bearer token or agent can never call it. " +
-    "The run must be of class release, on a release ref, with its environment's approval; " +
+    "The run must be of class release, on a release ref, with the approval environment the project requires (the project's own setting, never the caller's); " +
     "artifacts are taken from the artifact store, never supplied by the caller.",
   input: z.object({
     run_id: z.string().min(1).max(64),
     artifacts: z.array(z.string().min(1).max(200)).min(1).max(50),
-    environment: z.string().min(1).max(64),
+    environment: z.string().min(1).max(64).optional(),
   }),
   output: z.object({ signed: z.boolean() }),
   effect: "write",
