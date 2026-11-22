@@ -5,11 +5,11 @@ description: Process model, storage, migrations and the tenancy model.
 
 ## Process model
 
-Longshore is one process. `longshore serve` opens the database, applies migrations, then starts an HTTP server. The scheduler, log pipeline and provider supervisor are planned to run in the same process. Sandboxes are separate, disposable environments created by providers, one per job.
+Longshore is one process. `longshore serve` opens the database, applies migrations, then starts an HTTP server. Depending on `--roles`, the same process also runs the poller, workers (scheduler, log pipeline, provider supervisor) and the realtime feed. Signing and publishing run in a separate release process, see [Release lane](/release-lane). Sandboxes are separate, disposable environments created by providers, one per job.
 
 ## Operations registry
 
-Planned. Every capability is defined once in an operations registry. The MCP server, REST API, CLI and UI all sit on that single layer, so no surface has capabilities the others lack. See [Agent interface](/agent-interface).
+Every capability is defined once in an operations registry. The MCP server, REST API, CLI and UI all sit on that single layer, so no surface has capabilities the others lack. See [Agent interface](/agent-interface).
 
 ```mermaid
 flowchart TD
@@ -23,7 +23,7 @@ flowchart TD
 
 ## Storage
 
-SQLite is the default and lives at `<data-dir>/longshore.db`. Postgres is planned for scale. Access goes through Drizzle ORM, and the schema uses portable column types (ULID text ids, epoch-ms integers, text plus CHECK for enums, no arrays) so the Postgres port stays mechanical.
+SQLite is the default and lives at `<data-dir>/longshore.db`. Postgres is not built yet. Access goes through Drizzle ORM, and the schema uses portable column types (ULID text ids, epoch-ms integers, text plus CHECK for enums, no arrays) so the Postgres port stays mechanical.
 
 ## Embedded migrations
 
@@ -60,4 +60,4 @@ One Longshore instance serves many orgs. An org is the tenant. Isolation is enfo
 
 ### Scope of the guarantee
 
-These rules cover the database layer. As later milestones land, the same org boundary applies to secrets, caches and sandboxes: none of them may be shared across orgs. Webhook routing (`resolveRepoScope`) is the one deliberately unscoped lookup, because the caller has no tenant yet. When a binding has an `installation_id`, the incoming installation must match it, so a same-named repo under another installation cannot route into the bound org.
+These rules cover the database layer. The same org boundary applies to secrets, caches, artifacts and sandboxes: none of them is shared across orgs. [Tenant isolation](/tenant-isolation) lists the tests and which keys are per org. Webhook routing (`resolveRepoScope`) is the one deliberately unscoped lookup, because the caller has no tenant yet. When a binding has an `installation_id`, the incoming installation must match it, so a same-named repo under another installation cannot route into the bound org.

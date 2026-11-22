@@ -349,6 +349,14 @@ export const jobAttempts = sqliteTable(
     createdAt: createdAt(),
     startedAt: integer("started_at", { mode: "number" }),
     finishedAt: integer("finished_at", { mode: "number" }),
+    /**
+     * When the provider's create returned: the sandbox exists and is billed from here. An attempt's
+     * own duration (started to finished) also covers time spent waiting for provider capacity, so
+     * sandbox-minutes are counted from these two columns, not from that.
+     */
+    sandboxCreatedAt: integer("sandbox_created_at", { mode: "number" }),
+    /** When the provider confirmed the destroy. Null: never confirmed (the provider's own TTL ended it). */
+    sandboxDestroyedAt: integer("sandbox_destroyed_at", { mode: "number" }),
   },
   (t) => [
     foreignKey({
@@ -359,6 +367,7 @@ export const jobAttempts = sqliteTable(
     unique("job_attempts_job_attempt_unique").on(t.jobId, t.attempt),
     check("job_attempts_state_check", inList("state", JOB_STATES)),
     index("job_attempts_state_idx").on(t.state, t.id),
+    index("job_attempts_sandbox_idx").on(t.orgId, t.sandboxCreatedAt),
   ],
 );
 

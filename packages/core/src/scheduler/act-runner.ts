@@ -212,7 +212,12 @@ function workerStore(ctx: AttemptContext): RunStore {
     recordLaunch: async () => {},
     finishRun: async () => {},
     finishJob: async () => {},
-    setSandbox: (_id, sandboxId) => ctx.store.setExec({ sandboxId }),
+    setSandbox: (_id, sandboxId, createdAt) =>
+      ctx.store.setExec({
+        sandboxId,
+        ...(createdAt === undefined ? {} : { sandboxCreatedAt: createdAt }),
+      }),
+    setSandboxDestroyed: (_id, at) => ctx.store.setExec({ sandboxDestroyedAt: at }),
     setExec: (_id, execId) => ctx.store.setExec({ execId }),
     resetOutput: () => ctx.store.reset(),
     appendLog: (_id, offset, bytes) => ctx.store.appendLog(offset, bytes),

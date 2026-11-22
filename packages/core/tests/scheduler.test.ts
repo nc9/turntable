@@ -450,7 +450,11 @@ test("reconcile: an expired lease is resolved after probing and destroying the s
       argv: ["sleep", "30"],
       timeoutSeconds: 60,
     });
-    await recordExec(db, s, q.build.attemptId, "dead-worker", { sandboxId: sb.id, execId });
+    await recordExec(db, s, q.build.attemptId, "dead-worker", {
+      sandboxId: sb.id,
+      execId,
+      sandboxCreatedAt: T0 - 1000,
+    });
 
     // lease still alive: untouched
     expect((await reconcileExpired(db, () => provider, { now: () => T0 + 500 })).resolved).toEqual(
@@ -469,6 +473,10 @@ test("reconcile: an expired lease is resolved after probing and destroying the s
     const att = (await listAttempts(db, s, q.build.jobId))[0]!;
     expect(att).toMatchObject({ state: "infra_error", leaseOwner: null });
     expect(att.errorClass).toBe("controller_lost (exec running)");
+    // the reconciler destroyed the sandbox and says when: the end of its billed life
+    expect(att.sandboxCreatedAt).toBe(T0 - 1000);
+    expect(att.sandboxDestroyedAt).toBeNumber();
+    expect(att.sandboxDestroyedAt!).toBeGreaterThanOrEqual(att.sandboxCreatedAt!);
     expect((await getJob(db, s, q.build.jobId))?.state).toBe("infra_error");
     expect((await getRun(db, s, q.run.id))?.status).toBe("infra_error");
     const events = (await listEvents(db, s, { after: 0, limit: 100 })).map((e) => e.type);
