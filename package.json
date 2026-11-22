@@ -21,7 +21,7 @@
     "test:provider": "bun test packages/provider-sdk/tests/sdk.test.ts packages/provider-conformance/tests/fake.test.ts packages/provider-conformance/tests/fake-faults.test.ts packages/provider-docker/tests/commands.test.ts",
     "typecheck:provider-docker": "bun run --cwd packages/provider-docker typecheck",
     "test:docker": "TT_DOCKER_CONFORMANCE=1 bun test packages/provider-docker/tests/conformance.test.ts",
-    "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts"
+    "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts packages/core/tests/db-transaction.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",

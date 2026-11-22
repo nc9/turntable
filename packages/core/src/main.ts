@@ -14,7 +14,7 @@ Environment:
   TURNTABLE_HOST  default for --host (the container image sets 0.0.0.0)
 `;
 
-function serve(args: string[]): void {
+async function serve(args: string[]): Promise<void> {
   const { values } = parseArgs({
     args,
     options: {
@@ -30,7 +30,7 @@ function serve(args: string[]): void {
   }
   const dataDir = resolve(values["data-dir"]);
   const db = openDatabase(join(dataDir, "turntable.db"));
-  ensureInstance(db);
+  await ensureInstance(db);
 
   const server = startServer({ port, host: values.host, db });
   console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
@@ -45,11 +45,11 @@ function serve(args: string[]): void {
   process.on("SIGTERM", stop);
 }
 
-function main(argv: string[]): void {
+async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   switch (command) {
     case "serve":
-      return serve(rest);
+      return await serve(rest);
     case "version":
     case "--version":
       console.log(VERSION);
@@ -65,9 +65,7 @@ function main(argv: string[]): void {
   }
 }
 
-try {
-  main(process.argv.slice(2));
-} catch (err) {
+main(process.argv.slice(2)).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
-}
+});
