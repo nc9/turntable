@@ -1,25 +1,21 @@
 ---
 title: Secrets and security
-description: The planned security design for secrets, egress, trust and signing.
+description: "The security model: trust classes, secrets, egress, signing, approvals, audit and incident response."
 ---
 
-<Warning>
-  This page describes a planned design. None of it is implemented yet. Tracking issues are linked per section.
-</Warning>
-
-The goal is one instance that safely runs PR CI, website publishing and signed releases, with no second instance needed.
+The goal is one instance that safely runs PR CI, website publishing and signed releases, with no second instance needed. [How the pieces fit](/overview) shows the order the controls apply in; this page is the reference for each. Each section says what is built. Where a section says "not built", that part is still to do.
 
 ## Secrets vault
 
-Secrets live in a vault with pluggable stores and scopes, so a secret is available only to the org, project, environment or job that needs it. Issue [#14](https://github.com/nc9/turntable/issues/14).
+Scoped, versioned secrets with policy evaluated by the core: bound to an org (and optionally a project, environment and ref pattern), usable only by the trust classes named (never `untrusted_pr`) and only toward named destination hosts. Values are sealed under a per-org, per-domain key derived from the master key, are never returned by any operation, and every use and denial is audited with the run, job, attempt and destination. Child processes the server starts get an allowlisted environment only. Design and threat model: [Secrets vault](/secrets-vault).
 
 ## Secrets proxy
 
-Sandboxes never hold raw secrets. A proxy sits on the sandbox's network path and injects credentials into outbound requests, per allowed host. Job code and third-party actions see placeholders at most. Issue [#15](https://github.com/nc9/turntable/issues/15).
+Sandboxes never hold raw secrets. A proxy sits on the sandbox's only network path and injects credentials into outbound requests, per allowed host and rule. Job code and third-party actions see placeholders at most, and a proxied job is verified from inside its sandbox before it runs. Docker and Daytona sandboxes are both supported. See [Secrets proxy](/secrets-proxy).
 
-## Egress lockdown
+## Egress
 
-Sandboxes get an egress policy: outbound traffic is denied by default and allowed per host. This backs the proxy, because a secret can be injected only toward hosts the policy allows. Issue [#16](https://github.com/nc9/turntable/issues/16).
+Egress is deny by default for every trust class, and `untrusted_pr` runs are held at `none` whatever the project allows. A job that holds secrets or a token never runs on `open` egress: its sandbox is `deny-all-except-proxy`, and an egress canary checks that from inside before the job starts. See [Configuration](/configuration#egress) and [Secrets proxy](/secrets-proxy#wiring-into-job-execution).
 
 ## Trust classes and fork PR gating
 
@@ -128,10 +124,6 @@ Everything the control plane fetches (the GitHub API and codeload, the Daytona A
 
 An address the guard refuses ends the job as a `policy:` failure, not an infrastructure error.
 
-## Secrets vault
-
-Scoped, versioned secrets with policy evaluated by the core: bound to an org (and optionally a project, environment and ref pattern), usable only by the trust classes named (never `untrusted_pr`) and only toward named destination hosts. Values are sealed under a per-domain key derived from the master key, are never returned by any operation, and every use and denial is audited with the run, job, attempt and destination. Child processes the server starts get an allowlisted environment only. Delivery to jobs comes with the secrets proxy (#15). Design and threat model: [Secrets vault](/secrets-vault).
-
 ## OIDC identity for jobs
 
 Each org is its own OpenID Connect issuer (`<public url>/oidc/<org slug>`), so a job can prove who it is to a cloud or to Vault and receive short-lived credentials, with no long-lived cloud secret in CI. Tokens are signed ES256 by per-org keys sealed in their own key domain, last at most 5 minutes, carry a mandatory per-request audience, are never issued to `untrusted_pr` (or `trusted_pr`) by default, and every mint is audited. See [OIDC](/oidc).
@@ -171,13 +163,9 @@ When the GitHub App is configured, each job gets its own installation token as `
 - **Delivery.** With the [secrets proxy](/secrets-proxy) the job holds only a placeholder in `GITHUB_TOKEN` (and in act's `secrets.GITHUB_TOKEN`). The proxy attaches the real token to requests for the repository's own API paths (`/repos/<owner>/<repo>`), GraphQL, and git over HTTPS for that repository; every other path and repository gets nothing. Without the proxy, a `protected` or `release` job gets the real token in its environment (written to a `0600` file the launcher sources and deletes, never an argument, and registered with the log redactor); every other class gets none. A job whose token could not be minted still runs, and its log says there is no token.
 - **A job that gets a token is secret-bearing.** Its sandbox's egress is probed from inside before it runs, whether or not the canary is switched on for other jobs, and a probe that cannot give an answer refuses the job (the token is revoked) instead of letting it run. With the proxy it runs behind the proxy (deny-all-except-proxy, with the canaries), and it cannot use open egress: a plan that asks for `open` is refused, and the token is revoked at once. It reaches `github.com` only for its own repository; the other repositories its actions or submodules name must be pre-staged or listed as [passthrough hosts](/secrets-proxy). This is the trade-off for a write token or a private repository, and why a public repository's read-only job gets no token.
 
-## OIDC issuer
-
-Longshore acts as an OIDC issuer so jobs can authenticate to cloud providers without stored keys. It replaces GitHub OIDC claims. npm trusted publishing does not accept self-hosted issuers, so npm uses proxy-injected tokens.
-
 ## Signing service
 
-A signing service signs release artifacts and emits provenance, so signing keys never enter a sandbox. It is the planned substitute for GitHub artifact attestations.
+A signing service signs release artifacts and writes the provenance that says how they were built, so signing keys never enter a sandbox. It runs in the release lane, refuses artifacts that are not release class, and needs the environment's approvals first. It is the substitute for GitHub artifact attestations. npm trusted publishing does not accept self-hosted OIDC issuers, so npm publishing uses proxy-injected tokens. See [Signing and provenance](/signing) and [Release lane](/release-lane).
 
 ## Human approvals
 
@@ -248,7 +236,11 @@ The core invariant: a release build consumes nothing a lower trust class could w
 - **Upgrading.** Artifacts recorded before this change have no stored class, so they default to `untrusted_pr` and must be re-recorded to be signable. This is in the release notes.
 - Everything is tenant scoped: another org's run or artifact is "no such".
 
-Not built yet: the transport that delivers a quarantined artifact into a job (no job consumes another run's artifacts today). When it exists it must call the same decision, mount quarantined files non-executable, and never mount any into a release job.
+Read the class and the consumption decision with `longshore artifacts list|check` or the Artifacts tab on the run page. Not built: the transport that delivers a quarantined artifact into a job (no job consumes another run's artifacts today). When it exists it must call the same decision, mount quarantined files non-executable, and never mount any into a release job.
+
+## Per-org quotas
+
+An instance operator can cap an org's concurrent attempts, runs per hour, sandbox time per day, stored log bytes and stored artifact and cache bytes, so one tenant cannot starve the others. Quotas are set on the host only (`longshore quotas set`), never over the API, and a stored concurrency limit can only lower the instance's per-org cap. See [Configuration](/configuration#per-org-quotas).
 
 ## Incident response
 
