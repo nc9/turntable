@@ -336,5 +336,14 @@ export const migrations: Migration[] = [
       "CREATE TABLE `org_quotas` (\n\t`org_id` text PRIMARY KEY NOT NULL,\n\t`max_concurrent` integer,\n\t`max_runs_per_hour` integer,\n\t`max_sandbox_minutes_per_day` integer,\n\t`max_log_bytes` integer,\n\t`max_stored_bytes` integer,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE TABLE `quota_notices` (\n\t`org_id` text NOT NULL,\n\t`metric` text NOT NULL,\n\t`level` text NOT NULL,\n\t`window` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`org_id`, `metric`, `level`, `window`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);"
     ]
+  },
+  {
+    "tag": "0029_lean_wendell_rand",
+    "when": 1795389779259,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `sandbox_created_at` integer;",
+      "ALTER TABLE `job_attempts` ADD `sandbox_destroyed_at` integer;",
+      "CREATE INDEX `job_attempts_sandbox_idx` ON `job_attempts` (`org_id`,`sandbox_created_at`);"
+    ]
   }
 ];

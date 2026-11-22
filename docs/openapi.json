@@ -676,6 +676,18 @@
                                       "type": "null"
                                     }
                                   ]
+                                },
+                                "sandbox_created_at": {
+                                  "description": "When the provider's create returned: the sandbox is billed from here.",
+                                  "type": ["string", "null"]
+                                },
+                                "sandbox_destroyed_at": {
+                                  "description": "When the provider confirmed the destroy; null if never confirmed.",
+                                  "type": ["string", "null"]
+                                },
+                                "sandbox_seconds": {
+                                  "description": "Exact sandbox time (create to confirmed destroy); null until both are known. Unlike duration_ms it excludes time waiting for provider capacity.",
+                                  "type": ["number", "null"]
                                 }
                               },
                               "required": [
@@ -687,7 +699,10 @@
                                 "error_class",
                                 "started_at",
                                 "finished_at",
-                                "duration_ms"
+                                "duration_ms",
+                                "sandbox_created_at",
+                                "sandbox_destroyed_at",
+                                "sandbox_seconds"
                               ],
                               "additionalProperties": false
                             }
@@ -6436,6 +6451,127 @@
         "x-longshore-effect": "read",
         "x-longshore-min-role": "release_operator",
         "x-longshore-untrusted-output": true
+      }
+    },
+    "/usage/sandbox": {
+      "get": {
+        "operationId": "sandbox_usage",
+        "summary": "Exact sandbox time per UTC day: from the provider's create to its confirmed destroy.",
+        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. Read-only.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "How many UTC days, ending today.",
+            "schema": {
+              "default": 7,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 92
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string",
+                            "description": "UTC day, YYYY-MM-DD."
+                          },
+                          "sandbox_seconds": {
+                            "type": "number"
+                          },
+                          "sandbox_minutes": {
+                            "type": "number"
+                          },
+                          "attempts": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "estimated_attempts": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "sandbox_seconds",
+                          "sandbox_minutes",
+                          "attempts",
+                          "estimated_attempts"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "total_seconds": {
+                      "type": "number"
+                    },
+                    "total_minutes": {
+                      "type": "number"
+                    }
+                  },
+                  "required": ["days", "total_seconds", "total_minutes"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "reader",
+        "x-longshore-untrusted-output": false
       }
     },
     "/release-requests": {
