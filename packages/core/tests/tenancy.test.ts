@@ -208,7 +208,9 @@ test("db rejects a job pointing at a run in another project of the same org", ()
 
 test("repo owner and name are case-insensitive; forge repo id survives renames", () => {
   bindRepo(db, a, { forge: "github", owner: "Acme", repo: "Web", forgeRepoId: "999" });
-  expect(resolveRepoScope(db, { forge: "github", owner: "ACME", repo: "WEB" })).toEqual(a);
+  expect(
+    resolveRepoScope(db, { forge: "github", owner: "ACME", repo: "WEB", forgeRepoId: "999" }),
+  ).toEqual(a);
   expect(listRepos(db, a)[0]).toMatchObject({ owner: "acme", repo: "web" });
   // renamed upstream: the id still routes
   expect(
