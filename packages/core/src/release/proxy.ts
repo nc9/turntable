@@ -17,6 +17,7 @@ import {
   type SecretScope,
 } from "@longshore/proxy";
 import type { SafeFetch } from "@longshore/net";
+import type { ProxyEndpoint } from "@longshore/provider-sdk";
 import type net from "node:net";
 import type { Db } from "../db";
 import { appendAudit, getFreeze } from "../db/repos";
@@ -24,6 +25,7 @@ import type { SecretVault } from "../secrets/vault";
 import type { AttestationStore } from "./attest";
 import { compatRules, RELEASE_GITHUB_SECRET } from "./compat";
 import type { ForgeFacts } from "./forge";
+import { ensureDraft } from "./publish/github-release";
 
 export interface ReleaseProxyOptions {
   db: Db;
@@ -37,6 +39,12 @@ export interface ReleaseProxyOptions {
   port?: number;
   /** How a sandbox reaches this listener. Default: the bind address. */
   advertiseHost?: string;
+  advertisePort?: number;
+  advertiseAddresses?: readonly string[];
+  /** A public TLS listener, for sandboxes in another provider's network. */
+  tls?: { key: string; cert: string };
+  /** Where the lane creates the GitHub draft (tests point it elsewhere). */
+  github?: { api?: string; fetch?: SafeFetch };
   /** Test seams: where requests and tunnels really go. */
   upstream?: SafeFetch;
   tunnel?: (host: string, port: number) => Promise<net.Socket>;
@@ -49,13 +57,15 @@ export type RegisterRefusal =
   | "not_approved"
   | "repo_mismatch"
   | "tag_moved"
+  | "draft_unavailable"
+  | "already_registered"
   | "no_compat_targets";
 
 export type RegisterResult =
   | {
       ok: true;
       credential: AttemptCredential;
-      listen: { host: string; port: number };
+      listen: ProxyEndpoint;
       /** Ids of the rules the job was given, for the audit trail and the status page. */
       rules: string[];
     }
@@ -87,6 +97,7 @@ export class ReleaseProxy {
       audit: { record: (e) => p.#audit(e) },
       host: o.bindHost ?? "127.0.0.1",
       port: o.port ?? 0,
+      ...(o.tls ? { tls: o.tls } : {}),
       ...(o.upstream ? { upstream: o.upstream } : {}),
       ...(o.tunnel ? { tunnel: o.tunnel } : {}),
       ...(o.now ? { now: o.now } : {}),
@@ -133,6 +144,7 @@ export class ReleaseProxy {
       });
       return { ok: false, reason };
     };
+    if (this.#live.has(a.attemptId)) return refuse("already_registered");
     if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
     const approved = this.#o.attest.approvedRelease({ ...scope, runId: a.runId });
     if (!approved) return refuse("not_approved");
@@ -146,8 +158,25 @@ export class ReleaseProxy {
       tag: approved.tag,
     });
     const targets = this.#o.attest.publishTargets(a.orgId, a.projectId);
+    // The lane creates the GitHub draft itself, before the job runs, and pins the job's upload
+    // rule to that draft's id: a job can never attach anything to a published release.
+    let githubDraftId: number | undefined;
+    const wantsDraft = Object.values(targets).some(
+      (t) => t.kind === "github-release" && t.mode === "compat",
+    );
+    if (wantsDraft) {
+      const token = await this.#o.githubToken();
+      const d = token
+        ? await ensureDraft(approved.repo, approved.tag, token, this.#o.github ?? {})
+        : ({ ok: false, reason: "no_github_credential" } as const);
+      if (!d.ok) {
+        this.#o.log?.(`release proxy: no draft for ${approved.tag}: ${d.reason}`);
+        return refuse("draft_unavailable");
+      }
+      githubDraftId = d.id;
+    }
     const rules: Rule[] = Object.entries(targets).flatMap(([key, t]) =>
-      compatRules(key, t, { repo: approved.repo, tag: approved.tag, digests }),
+      compatRules(key, t, { repo: approved.repo, tag: approved.tag, digests, githubDraftId }),
     );
     if (rules.length === 0) return refuse("no_compat_targets");
     this.#live.set(a.attemptId, {
@@ -182,7 +211,12 @@ export class ReleaseProxy {
     return {
       ok: true,
       credential,
-      listen: { host: this.#o.advertiseHost ?? this.host, port: this.port },
+      listen: {
+        host: this.#o.advertiseHost ?? this.host,
+        port: this.#o.advertisePort ?? this.port,
+        ...(this.#o.tls ? { tlsName: this.#o.advertiseHost ?? this.host } : {}),
+        ...(this.#o.advertiseAddresses ? { addresses: this.#o.advertiseAddresses } : {}),
+      },
       rules: rules.map((r) => r.id),
     };
   }

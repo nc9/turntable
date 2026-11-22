@@ -1,4 +1,5 @@
 // `longshore serve --roles release`: the release lane as its own process.
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { LocalSigner } from "@longshore/signer";
 import { createApprovalVerifier } from "../approvals/verifier";
@@ -13,6 +14,7 @@ import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
 import type { PublishWiring } from "./publish/types";
 import { fileKeyVault } from "./key-vault";
+import { startChannel } from "./channel";
 import { ReleaseProxy } from "./proxy";
 import { ReleaseLane, type ArtifactRecords, type ReleaseSigner } from "./lane";
 
@@ -112,10 +114,46 @@ export async function serveRelease(
         bindHost: cfg.proxy.bind,
         port: cfg.proxy.port,
         ...(cfg.proxy.advertiseHost ? { advertiseHost: cfg.proxy.advertiseHost } : {}),
+        ...(cfg.proxy.advertisePort ? { advertisePort: cfg.proxy.advertisePort } : {}),
+        ...(cfg.proxy.advertiseAddresses
+          ? { advertiseAddresses: cfg.proxy.advertiseAddresses }
+          : {}),
+        ...(cfg.proxy.tlsCertFile && cfg.proxy.tlsKeyFile
+          ? {
+              tls: {
+                cert: readFileSync(cfg.proxy.tlsCertFile, "utf8"),
+                key: readFileSync(cfg.proxy.tlsKeyFile, "utf8"),
+              },
+            }
+          : {}),
         log,
       })
     : undefined;
   if (proxy) log(`release proxy listening on ${proxy.host}:${proxy.port}`);
+  // How the worker asks for a job's proxy credential: the lane re-verifies each request itself.
+  const channel =
+    proxy && cfg.channel
+      ? await startChannel({
+          db,
+          proxy,
+          key: readFileSync(cfg.channel.keyFile, "utf8").trim(),
+          listen: cfg.channel.tcp
+            ? {
+                tcp: {
+                  host: cfg.channel.tcp.host,
+                  port: cfg.channel.tcp.port,
+                  tls: {
+                    cert: readFileSync(cfg.channel.tcp.certFile, "utf8"),
+                    key: readFileSync(cfg.channel.tcp.keyFile, "utf8"),
+                    ca: readFileSync(cfg.channel.tcp.caFile, "utf8"),
+                  },
+                },
+              }
+            : { unix: cfg.channel.socket || join(resolve(cfg.dataDir), "channel.sock") },
+          log,
+        })
+      : undefined;
+  if (channel) log("release channel listening");
   // A freeze revokes the credentials of running publish jobs, not only the next request.
   const sweep = proxy
     ? setInterval(
@@ -128,6 +166,7 @@ export async function serveRelease(
   return {
     stop() {
       if (sweep) clearInterval(sweep);
+      channel?.stop();
       void proxy?.stop();
       lane.stop();
       attest.close();

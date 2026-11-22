@@ -14,6 +14,8 @@ export interface CompatRelease {
   /** The pinned repository, `owner/name`. */
   repo: string;
   tag: string;
+  /** The draft release the lane created for the tag: the only release a job may upload to. */
+  githubDraftId?: number | undefined;
   /** Digests the lane attested, by artifact name (lower-case hex sha256). */
   digests: Readonly<Record<string, string>>;
 }
@@ -39,7 +41,7 @@ function npmRules(key: string, t: NpmTarget, r: CompatRelease): Rule[] {
 }
 
 function githubRules(key: string, t: GithubReleaseTarget, r: CompatRelease): Rule[] {
-  if (t.assets.some((a) => !r.digests[a])) return [];
+  if (t.assets.some((a) => !r.digests[a]) || r.githubDraftId === undefined) return [];
   const base = `/repos/${r.repo}/releases`;
   const common = {
     inject: bearer,
@@ -49,22 +51,14 @@ function githubRules(key: string, t: GithubReleaseTarget, r: CompatRelease): Rul
   return [
     // Read releases and their assets (to find the draft, and what is attached).
     { id: `${key}:read`, host: "api.github.com", methods: ["GET"], pathPrefix: base, ...common },
-    // Create a release, but only a draft: the lane publishes it after checking the assets.
-    {
-      id: `${key}:draft`,
-      host: "api.github.com",
-      methods: ["POST"],
-      pathPrefix: base,
-      pathExact: true,
-      bodyCheck: { type: "json", field: "draft", equals: true },
-      ...common,
-    },
-    // Attach assets (to a draft: the lane refuses to publish a draft that holds anything else).
+    // Attach assets to the one draft the lane created, and to nothing else. A job creates no
+    // release and changes none: the lane checks the draft and publishes it.
     {
       id: `${key}:upload`,
       host: "uploads.github.com",
       methods: ["POST"],
-      pathPrefix: base,
+      pathPrefix: `${base}/${r.githubDraftId}/assets`,
+      pathExact: true,
       ...common,
     },
   ];

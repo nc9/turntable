@@ -1,11 +1,11 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { tarDirectory } from "@longshore/act-runner";
-import type { SafeFetch } from "@longshore/net";
+import { controlPost, type SafeFetch } from "@longshore/net";
 import { checkBody, compileRules } from "@longshore/proxy";
 import { chainedAudit, createReleaseRequest, setFreeze, clearFreeze, type Db } from "../src/db";
 import * as s from "../src/db/schema";
@@ -17,7 +17,16 @@ import { ReleaseLane, type ReleaseSigner } from "../src/release/lane";
 import { parseTarget } from "../src/release/publish/config";
 import { integrityOf } from "../src/release/publish/npm";
 import type { PublishTarget } from "../src/release/publish/types";
+import {
+  channelMac,
+  registerFields,
+  startChannel,
+  type RunningChannel,
+} from "../src/release/channel";
+import { createChannelClient, withReleaseChannel } from "../src/release/channel-client";
 import { ReleaseProxy } from "../src/release/proxy";
+import type { AttemptContext, AttemptOutcome } from "../src/scheduler/types";
+import { releaseConfigFromEnv } from "../src/roles";
 import { seedWorld, type Tenant } from "./ops-helpers";
 
 const SHA = "b".repeat(40);
@@ -78,19 +87,17 @@ describe("rules for compat targets", () => {
     expect(() => compileRules(rules)).not.toThrow();
   });
 
-  test("github: read, draft-only create, upload; the lane's own credential", () => {
-    const rules = compatRules("gh", GH, rel);
+  test("github: read, and upload to the one draft the lane created; no create, no edit", () => {
+    const rules = compatRules("gh", GH, { ...rel, githubDraftId: 101 });
     expect(rules.map((r) => `${r.host} ${r.methods.join(",")} ${r.pathPrefix}`)).toEqual([
       "api.github.com GET /repos/acme/web/releases",
-      "api.github.com POST /repos/acme/web/releases",
-      "uploads.github.com POST /repos/acme/web/releases",
+      "uploads.github.com POST /repos/acme/web/releases/101/assets",
     ]);
     expect(rules.every((r) => r.secret === RELEASE_GITHUB_SECRET)).toBe(true);
-    expect(rules[1]).toMatchObject({
-      pathExact: true,
-      bodyCheck: { field: "draft", equals: true },
-    });
+    expect(rules[1]).toMatchObject({ pathExact: true });
     expect(() => compileRules(rules)).not.toThrow();
+    // no draft, no rules
+    expect(compatRules("gh", GH, rel)).toEqual([]);
   });
 
   test("oci: ping, blobs, manifest reads, and a manifest write only for the attested digest under the approved references", () => {
@@ -332,6 +339,92 @@ describe("the release proxy", () => {
     expect(proxy!.active).toBe(0);
     expect(await outcomes()).toContain("release_proxy_revoke:frozen");
   });
+
+  describe("the GitHub draft the lane creates before the job runs", () => {
+    let release: { id: number; draft: boolean } | undefined;
+    let created = 0;
+    const gh: SafeFetch = async (input, init) => {
+      const u = new URL(String(input));
+      const method = init?.method ?? "GET";
+      if (u.pathname.startsWith("/repos/acme/web/releases/tags/")) {
+        return release ? Response.json(release) : new Response("{}", { status: 404 });
+      }
+      if (method === "POST" && u.pathname === "/repos/acme/web/releases") {
+        created += 1;
+        release = { id: 101, draft: true };
+        return Response.json(release, { status: 201 });
+      }
+      return new Response("{}", { status: 404 });
+    };
+    const ghProxy = async (token: string | null = "ghp_write_token_5521ab") => {
+      await proxy?.stop();
+      attest.removePublishTarget(a.orgId, a.projectId, "npm");
+      attest.setPublishTarget(a.orgId, a.projectId, "rel", { ...GH, assets: ["web-1.0.0.tgz"] }, 0);
+      proxy = await ReleaseProxy.start({
+        db,
+        vault,
+        attest,
+        forge: { tagCommit: async () => ({ found: true, sha: tagSha }) },
+        githubToken: async () => token ?? undefined,
+        github: { api: "https://api.gh.test", fetch: gh },
+        upstream,
+      });
+    };
+    beforeEach(() => {
+      release = undefined;
+      created = 0;
+    });
+
+    test("the lane creates the draft and the job may upload to that release id only", async () => {
+      await sign();
+      await ghProxy();
+      const r = await reg();
+      if (!r.ok) throw new Error(`not registered: ${r.reason}`);
+      expect(created).toBe(1);
+      expect(r.rules).toEqual(["rel:read", "rel:upload"]);
+      const call = (url: string, method = "POST") =>
+        fetch(url, {
+          method,
+          body: method === "GET" ? undefined : "asset bytes",
+          proxy: r.credential.proxyUrl(r.listen.host, r.listen.port),
+          tls: { ca: r.credential.caPem },
+        });
+      const base = "https://uploads.github.com/repos/acme/web/releases";
+      expect((await call(`${base}/101/assets?name=cli-linux`)).status).toBe(201);
+      expect(seen.at(-1)!.auth).toBe("Bearer ghp_write_token_5521ab");
+      // another release (a published one), a create, an edit and a delete are not in the rules
+      expect((await call(`${base}/102/assets?name=cli-linux`)).status).toBe(403);
+      expect((await call("https://api.github.com/repos/acme/web/releases")).status).toBe(403);
+      expect(
+        (await call("https://api.github.com/repos/acme/web/releases/101", "PATCH")).status,
+      ).toBe(403);
+      expect(
+        (await call("https://api.github.com/repos/acme/web/releases/101", "DELETE")).status,
+      ).toBe(403);
+      expect(seen).toHaveLength(1);
+    });
+
+    test("a release already published for the tag, or no credential to make a draft, gives no rules", async () => {
+      await sign();
+      await ghProxy();
+      release = { id: 7, draft: false };
+      expect(await reg("p1")).toEqual({ ok: false, reason: "draft_unavailable" });
+      expect(created).toBe(0);
+      await ghProxy(null);
+      release = undefined;
+      expect(await reg("p2")).toEqual({ ok: false, reason: "draft_unavailable" });
+      expect(created).toBe(0);
+    });
+
+    test("an existing draft is reused, not duplicated", async () => {
+      await sign();
+      await ghProxy();
+      release = { id: 55, draft: true };
+      const r = await reg();
+      expect(r.ok && r.rules.includes("rel:upload")).toBe(true);
+      expect(created).toBe(0);
+    });
+  });
 });
 
 describe("finishing a compat release", () => {
@@ -450,5 +543,312 @@ describe("finishing a compat release", () => {
     expect(await lane().finalize({ ...a.scope, runId: a.runId })).toMatchObject([
       { reason: "not_approved" },
     ]);
+  });
+});
+
+describe("the release channel", () => {
+  const key = Buffer.from("k".repeat(32));
+  let db: Db;
+  let a: Tenant;
+  let attest: AttestationStore;
+  let proxy: ReleaseProxy;
+  let channel: RunningChannel;
+  let socket: string;
+  let tagSha = SHA;
+  let clock = 1_800_000_000_000;
+  let npmTar: Uint8Array;
+  const ids = () => ({
+    orgId: a.orgId,
+    projectId: a.projectId,
+    runId: a.runId,
+    jobId: a.jobId,
+    attemptId: a.attemptId,
+  });
+  const post = (path: string, body: unknown) => controlPost({ unix: socket }, path, body);
+  const signedRegister = (over: Record<string, unknown> = {}, ts = clock) => {
+    const b = { ...ids(), ...over };
+    return post("/v1/register", {
+      ...b,
+      ts,
+      mac: channelMac(key, "register", registerFields(b as ReturnType<typeof ids>), ts),
+    });
+  };
+  const asAttempt = (state: string, klass: string | null) =>
+    db.orm
+      .update(s.jobAttempts)
+      .set({ state, trustClass: klass })
+      .where(eq(s.jobAttempts.id, a.attemptId));
+
+  beforeEach(async () => {
+    ({ db, a } = await seedWorld());
+    resetFailureThrottle();
+    tagSha = SHA;
+    clock = Date.now();
+    npmTar = await tarball({ name: "@acme/web", version: "1.0.0" });
+    attest = new AttestationStore(":memory:");
+    attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
+    attest.setPublishTarget(a.orgId, a.projectId, "npm", NPM, 0);
+    const masterKey = randomBytes(32);
+    await new SecretVault({ db, masterKey }).set(a.orgId, "t", { name: "NPM_TOKEN" }, TOKEN_NPM, {
+      destinations: ["registry.npmjs.org"],
+      trustClasses: ["release"],
+    });
+    await db.orm
+      .update(s.runs)
+      .set({ repo: "acme/web", ref: "refs/tags/v1.0.0", sha: SHA, status: "success" })
+      .where(eq(s.runs.id, a.runId));
+    await createReleaseRequest(db, a.scope, {
+      runId: a.runId,
+      tag: "v1.0.0",
+      artifacts: ["web-1.0.0.tgz"],
+      requestedBy: "t",
+    });
+    await new ReleaseLane({
+      db,
+      forge: { tagCommit: async () => ({ found: true, sha: SHA }) },
+      bytes: { read: async () => npmTar },
+      records: {
+        async recorded(_s, _r, names) {
+          return names.map((n) => ({ name: n, sha256: sha256(npmTar) }));
+        },
+      },
+      attest,
+      signer: {
+        async signRelease(_s, req) {
+          return {
+            ok: true,
+            envelope: {},
+            keyid: "k",
+            subjects: req.verified.subjects.map((x) => ({ ...x })),
+          };
+        },
+      },
+      owner: "lane-1",
+    }).processNext();
+    proxy = await ReleaseProxy.start({
+      db,
+      vault: new SecretVault({ db, masterKey, lane: "release" }),
+      attest,
+      forge: { tagCommit: async () => ({ found: true, sha: tagSha }) },
+      githubToken: async () => undefined,
+    });
+    socket = join(mkdtempSync(join(tmp, "chan-")), "run", "channel.sock");
+    channel = await startChannel({ db, proxy, key, listen: { unix: socket }, now: () => clock });
+    await asAttempt("running", "release");
+  });
+  afterEach(async () => {
+    channel.stop();
+    await proxy.stop();
+    attest.close();
+  });
+
+  test("a running release attempt of a signed run gets an endpoint and a proxy credential, nothing else", async () => {
+    const r = await signedRegister();
+    expect(r.status).toBe(200);
+    const b = r.json as Record<string, unknown>;
+    expect(Object.keys(b).sort()).toEqual([
+      "caPem",
+      "endpoint",
+      "expiresAt",
+      "ok",
+      "password",
+      "username",
+    ]);
+    expect(b.username).toBe(a.attemptId);
+    expect(JSON.stringify(b)).not.toContain(TOKEN_NPM);
+    expect(proxy.active).toBe(1);
+  });
+
+  test("the socket is private to its owner", () => {
+    expect(statSync(socket).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(socket)).mode & 0o777).toBe(0o700);
+  });
+
+  test("a bad MAC, a stale time and a replay are refused before anything is looked up", async () => {
+    const bad = await post("/v1/register", { ...ids(), ts: clock, mac: "0".repeat(64) });
+    expect(bad).toMatchObject({ status: 401, json: { reason: "bad_mac" } });
+    const stale = await signedRegister({}, clock - 5 * 60_000);
+    expect(stale).toMatchObject({ status: 401, json: { reason: "bad_mac" } });
+    const other = await post("/v1/register", {
+      ...ids(),
+      ts: clock,
+      mac: channelMac("another key entirely", "register", registerFields(ids()), clock),
+    });
+    expect(other.status).toBe(401);
+    expect((await signedRegister()).status).toBe(200);
+    expect(await signedRegister()).toMatchObject({ status: 401, json: { reason: "replay" } });
+    expect(proxy.active).toBe(1);
+  });
+
+  test("a field changed after signing fails the MAC", async () => {
+    const b = ids();
+    const ts = clock;
+    const mac = channelMac(key, "register", registerFields(b), ts);
+    const r = await post("/v1/register", { ...b, runId: "another-run", ts, mac });
+    expect(r.status).toBe(401);
+  });
+
+  test("the lane checks the attempt itself: running, release class, in this job and run", async () => {
+    await asAttempt("queued", "release");
+    expect(await signedRegister()).toMatchObject({
+      status: 403,
+      json: { reason: "attempt_not_release_running" },
+    });
+    await asAttempt("running", "protected");
+    expect(await signedRegister({}, clock + 1)).toMatchObject({
+      status: 403,
+      json: { reason: "attempt_not_release_running" },
+    });
+    await asAttempt("running", null);
+    expect((await signedRegister({}, clock + 2)).status).toBe(403);
+    await asAttempt("running", "release");
+    expect(
+      (await signedRegister({ jobId: "someone-elses-job" }, clock + 3)) as { status: number },
+    ).toMatchObject({ status: 403 });
+    expect(proxy.active).toBe(0);
+  });
+
+  test("the lane's own file decides: a moved tag or no approval gives nothing", async () => {
+    tagSha = "d".repeat(40);
+    expect(await signedRegister()).toMatchObject({ status: 403, json: { reason: "tag_moved" } });
+    tagSha = SHA;
+    attest.removePublishTarget(a.orgId, a.projectId, "npm");
+    expect(await signedRegister({}, clock + 1)).toMatchObject({
+      status: 403,
+      json: { reason: "no_compat_targets" },
+    });
+  });
+
+  test("a second registration for the same attempt is refused", async () => {
+    expect((await signedRegister()).status).toBe(200);
+    expect(await signedRegister({}, clock + 1)).toMatchObject({
+      status: 403,
+      json: { reason: "already_registered" },
+    });
+  });
+
+  test("revoke ends the credential; an unsigned revoke does not", async () => {
+    await signedRegister();
+    expect(proxy.active).toBe(1);
+    const ts = clock;
+    expect(
+      (await post("/v1/revoke", { attemptId: a.attemptId, ts, mac: "f".repeat(64) })).status,
+    ).toBe(401);
+    expect(proxy.active).toBe(1);
+    const ok = await post("/v1/revoke", {
+      attemptId: a.attemptId,
+      ts,
+      mac: channelMac(key, "revoke", [a.attemptId], ts),
+    });
+    expect(ok.status).toBe(200);
+    expect(proxy.active).toBe(0);
+  });
+
+  test("malformed bodies and unknown paths", async () => {
+    expect((await post("/v1/register", { orgId: "x" })).status).toBe(400);
+    expect((await post("/v1/other", {})).status).toBe(404);
+    expect(
+      (await post("/v1/register", { ...ids(), attemptId: "bad id!", ts: clock, mac: "a" })).status,
+    ).toBe(400);
+  });
+
+  describe("the worker's wrapper", () => {
+    const client = () => createChannelClient({ target: { unix: socket }, key, now: () => clock });
+    const ctx = (klass: string): AttemptContext =>
+      ({
+        run: { id: a.runId, trust: JSON.stringify({ class: klass, workflowHash: "h" }) },
+        scope: a.scope,
+        job: { id: a.jobId },
+        attempt: { id: a.attemptId },
+        signal: new AbortController().signal,
+      }) as unknown as AttemptContext;
+    const outcome = { state: "success" } as unknown as AttemptOutcome;
+
+    test("a release job runs behind the release proxy, and the credential is revoked after", async () => {
+      let seenProxy: AttemptContext["proxy"];
+      const run = withReleaseChannel(
+        async (c) => {
+          seenProxy = c.proxy;
+          expect(proxy.active).toBe(1);
+          return outcome;
+        },
+        { client: client() },
+      );
+      expect(await run(ctx("release"))).toBe(outcome);
+      expect(seenProxy?.vaultRules).toBe(true);
+      expect(seenProxy?.credential.username).toBe(a.attemptId);
+      expect(seenProxy?.listen.port).toBe(proxy.port);
+      expect(proxy.active).toBe(0);
+    });
+
+    test("other classes never ask; a refusal or a dead channel leaves the job as it was", async () => {
+      let asked = 0;
+      const spy = createChannelClient({ target: { unix: socket }, key, now: () => clock });
+      const counting = {
+        ...spy,
+        register: async (x: Parameters<typeof spy.register>[0]) => {
+          asked += 1;
+          return spy.register(x);
+        },
+      };
+      const seenProxy: unknown[] = [];
+      const run = withReleaseChannel(
+        async (c) => {
+          seenProxy.push(c.proxy);
+          return outcome;
+        },
+        { client: counting },
+      );
+      await run(ctx("protected"));
+      expect(asked).toBe(0);
+      tagSha = "e".repeat(40);
+      await run(ctx("release"));
+      expect(asked).toBe(1);
+      channel.stop();
+      await run(ctx("release"));
+      expect(seenProxy).toEqual([undefined, undefined, undefined]);
+    });
+  });
+});
+
+describe("release proxy and channel configuration", () => {
+  const base = {
+    LONGSHORE_RELEASE_MASTER_KEY_FILE: "/k",
+    LONGSHORE_RELEASE_DATA_DIR: "/d",
+    LONGSHORE_RELEASE_GITHUB_TOKEN: "t",
+    LONGSHORE_RELEASE_ARTIFACT_DIR: "/a",
+    LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+  };
+  test("off by default; the channel needs the proxy", () => {
+    expect(releaseConfigFromEnv(base)).not.toHaveProperty("proxy");
+    expect(releaseConfigFromEnv(base)).not.toHaveProperty("channel");
+    expect(() =>
+      releaseConfigFromEnv({ ...base, LONGSHORE_RELEASE_CHANNEL_KEY_FILE: "/ck" }),
+    ).toThrow("release proxy");
+    expect(() =>
+      releaseConfigFromEnv({ ...base, LONGSHORE_RELEASE_PROXY_PORT: "70000" }),
+    ).toThrow();
+  });
+  test("a unix socket by default, TCP only with all three TLS files", () => {
+    const withProxy = {
+      ...base,
+      LONGSHORE_RELEASE_PROXY_PORT: "0",
+      LONGSHORE_RELEASE_CHANNEL_KEY_FILE: "/ck",
+    };
+    expect(releaseConfigFromEnv(withProxy)).toMatchObject({
+      proxy: { bind: "127.0.0.1", port: 0 },
+      channel: { keyFile: "/ck", tcp: undefined },
+    });
+    const tcp = { ...withProxy, LONGSHORE_RELEASE_CHANNEL_TCP: "10.0.0.2:7443" };
+    expect(() => releaseConfigFromEnv(tcp)).toThrow("LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE");
+    expect(
+      releaseConfigFromEnv({
+        ...tcp,
+        LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE: "/c",
+        LONGSHORE_RELEASE_CHANNEL_TLS_KEY_FILE: "/k",
+        LONGSHORE_RELEASE_CHANNEL_TLS_CA_FILE: "/ca",
+      }).channel?.tcp,
+    ).toMatchObject({ host: "10.0.0.2", port: 7443 });
+    expect(() => releaseConfigFromEnv({ ...tcp, LONGSHORE_RELEASE_CHANNEL_TCP: "nope" })).toThrow();
   });
 });

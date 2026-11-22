@@ -77,12 +77,22 @@ The lane hosts a **release proxy** (`LONGSHORE_RELEASE_PROXY_PORT`, optionally `
 | Target | What the job may do, and only this |
 | --- | --- |
 | npm | `GET` and `PUT` on the exact package path (`/@scope%2Fname`, the one encoded slash the proxy accepts), and the `PUT` body must hold one tarball whose sha256 is the attested one, with matching `dist.integrity`. |
-| GitHub release | Read releases of the one repository, create a release only with `"draft": true`, upload assets on `uploads.github.com`. The credential is the lane's own, never the job's. |
+| GitHub release | Read releases of the one repository, and upload assets on `uploads.github.com` to one release only: the draft the lane itself created for the tag before the job ran, pinned by its release id. A job creates no release, edits none, and can never attach to a published one. The credential is the lane's own, never the job's. |
 | Container image | Registry version ping, blobs and manifest reads of the one repository, and `PUT` of a manifest only under the approved references and only if its sha256 is the attested one. The proxy answers the registry's token challenge itself, so the job never sees a bearer token. |
 
 After the job, `ReleaseLane.finalize` checks the result against the lane's own record: a GitHub draft is verified asset by asset and published (assets that are missing or differ are replaced from the verified bytes first), an npm version that exists is accepted only with the approved integrity and is published by the lane if the job did not. A version or published release with other bytes is refused, never accepted.
 
-Not done yet: the transport that lets the worker ask the lane for a job's credential (`ReleaseProxy.register`), the lane-side check of an image after the push, and a check that an asset was not added to an already published release by a job with an upload rule. Blob uploads for images are not pinned: they are content-addressed, and the manifest decides what a tag means.
+#### How a job gets its credential: the release channel
+
+The worker does not hold or see any publish credential. For an attempt of a release-class run it asks the lane over the **release channel**, and runs the job behind the release proxy if the lane agrees (replacing the worker's own proxy for that job; such a job runs with the same no-other-route egress as any secret-bearing job). Because the lane grants rules per run, every job of that run that starts after the lane signed is eligible, so keep jobs that should not publish out of a release-class run's tail or give them no network.
+
+- **Transport.** A unix socket by default (`LONGSHORE_RELEASE_CHANNEL_SOCKET`, default `<data dir>/channel.sock`, mode 0600 in a 0700 directory), or TCP with mutual TLS for split hosts (`LONGSHORE_RELEASE_CHANNEL_TCP=host:port` with `_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`).
+- **Request key.** Lane and worker share a key (`LONGSHORE_RELEASE_CHANNEL_KEY_FILE` on the lane, `LONGSHORE_PUBLISH_CHANNEL_KEY_FILE` on the worker, plus `LONGSHORE_PUBLISH_CHANNEL_SOCKET` or `_URL` with `_TLS_*_FILE`). Every request carries an HMAC over its fields and a timestamp; a stale, forged, altered or replayed request is refused. The key lets a process ask. It cannot publish.
+- **The lane re-verifies.** The attempt must be running, in that job and run, with the release trust class. Then the lane's own file decides: it signed this run, the pin holds, the tag still points at the signed commit, a compat target exists, no freeze is on, and (for GitHub) the draft exists or can be created. Nothing the worker says counts for those.
+- **The reply** is the proxy endpoint and an attempt-scoped proxy credential. Never a publish credential.
+- **Ending.** The worker revokes at the end of the attempt (and when it is aborted); the proxy credential also expires on its own TTL, and a freeze revokes it at once.
+
+Not done yet: the lane-side check of an image after the push. Blob uploads for images are not pinned: they are content-addressed, and the manifest decides what a tag means.
 
 ## Deployment
 

@@ -46,6 +46,7 @@ import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, resolveRoles } from "./roles";
+import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
@@ -221,6 +222,29 @@ async function startBackground(
       extras.auth && process.env.LONGSHORE_JOB_TOKENS !== "off"
         ? new JobTokens(extras.auth, { isPublic: publicRepoCheck({ auth: extras.auth }) })
         : undefined;
+    // Compat publishing: a release-class job may ask the release lane for a release-proxy
+    // credential. This process holds only the request key, never a publish credential.
+    const channelKey = process.env.LONGSHORE_PUBLISH_CHANNEL_KEY_FILE?.trim();
+    const publishChannel = channelKey
+      ? createChannelClient({
+          key: readFileSync(channelKey, "utf8").trim(),
+          target: process.env.LONGSHORE_PUBLISH_CHANNEL_URL?.trim()
+            ? {
+                url: process.env.LONGSHORE_PUBLISH_CHANNEL_URL.trim(),
+                tls: {
+                  cert: readFileSync(
+                    requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
+                    "utf8",
+                  ),
+                  key: readFileSync(requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_KEY_FILE"), "utf8"),
+                  ca: readFileSync(requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_CA_FILE"), "utf8"),
+                },
+              }
+            : { unix: requiredEnv("LONGSHORE_PUBLISH_CHANNEL_SOCKET") },
+        })
+      : undefined;
+    const released = (r: AttemptRunner): AttemptRunner =>
+      publishChannel ? withReleaseChannel(r, { client: publishChannel }) : r;
     const proxied = (r: AttemptRunner): AttemptRunner =>
       secretsProxy
         ? withSecretsProxy(r, {
@@ -236,25 +260,27 @@ async function startBackground(
         // Egress is none by default and refused where it cannot be enforced; each `none`
         // sandbox is probed for a real way out before the job starts.
         proxied(
-          withEgressPolicy(
-            createActRunner({
-              db,
-              source: gitRepoSource(),
-              // Actions are resolved and verified with the run's own GitHub credential: the poll
-              // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
-              forgeToken: createForgeToken({
+          released(
+            withEgressPolicy(
+              createActRunner({
                 db,
-                poll: pollConfig,
-                auth: extras.auth,
-                envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
-                log: (m) => console.warn(`[longshore] ${m}`),
+                source: gitRepoSource(),
+                // Actions are resolved and verified with the run's own GitHub credential: the poll
+                // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
+                forgeToken: createForgeToken({
+                  db,
+                  poll: pollConfig,
+                  auth: extras.auth,
+                  envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+                  log: (m) => console.warn(`[longshore] ${m}`),
+                }),
+                canary: true,
+                ...(jobTokens ? { jobTokens } : {}),
+                ...(v.image ? { image: v.image } : {}),
               }),
-              canary: true,
-              ...(jobTokens ? { jobTokens } : {}),
-              ...(v.image ? { image: v.image } : {}),
-            }),
-            // A job behind the proxy holds secrets: it never runs with open egress.
-            { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
+              // A job behind the proxy holds secrets: it never runs with open egress.
+              { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
+            ),
           ),
         ),
         {
@@ -340,6 +366,12 @@ async function startBackground(
 }
 
 /** The proxy's TLS certificate and key, from their files: both or neither. */
+function requiredEnv(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) throw new Error(`${name} is required`);
+  return v;
+}
+
 function readProxyTls(): { key: string; cert: string } {
   const certFile = process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim();
   const keyFile = process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim();

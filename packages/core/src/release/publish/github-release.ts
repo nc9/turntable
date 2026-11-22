@@ -202,3 +202,56 @@ export async function publishGithubRelease(
   if (pub.status !== 200) return failed(`http_${pub.status}`, "publishing the draft");
   return { target: key, state: "published", facts: { release: draft.id, assets: expected } };
 }
+
+/**
+ * The draft release for a tag, created by the lane itself when there is none. Compat publishing
+ * pins a job's upload rule to this release's id, so a job can never attach anything to a
+ * published release. A release for the tag that is already published is refused.
+ */
+export async function ensureDraft(
+  repo: string,
+  tag: string,
+  token: string,
+  o: GithubReleaseOptions = {},
+): Promise<{ ok: true; id: number } | { ok: false; reason: string }> {
+  const api = (o.api ?? "https://api.github.com").replace(/\/+$/, "");
+  const f = o.fetch ?? safeFetch;
+  const headers = {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "longshore",
+  };
+  const call = async (method: string, path: string, body?: unknown) => {
+    const res = await f(`${api}${path}`, {
+      method,
+      headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      timeoutMs: 30_000,
+      maxBytes: 4 * 1024 * 1024,
+    });
+    let json: Release | undefined;
+    try {
+      json = (await res.json()) as Release;
+    } catch {
+      json = undefined;
+    }
+    return { status: res.status, json };
+  };
+  const found = await call("GET", `/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`);
+  if (found.status === 200 && found.json) {
+    return found.json.draft
+      ? { ok: true, id: found.json.id }
+      : { ok: false, reason: "already_published" };
+  }
+  if (found.status !== 404) return { ok: false, reason: `http_${found.status}` };
+  const made = await call("POST", `/repos/${repo}/releases`, {
+    tag_name: tag,
+    name: tag,
+    draft: true,
+    prerelease: tag.includes("-"),
+  });
+  return made.status === 201 && made.json
+    ? { ok: true, id: made.json.id }
+    : { ok: false, reason: `http_${made.status}` };
+}
