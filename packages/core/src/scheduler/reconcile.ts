@@ -1,4 +1,4 @@
-import { finishAttempt, listExpiredLeases } from "../db/repos";
+import { finishAttempt, listExpiredLeases, type Readiness } from "../db/repos";
 import type { Db } from "../db";
 import type { ProviderResolver } from "./types";
 
@@ -21,7 +21,12 @@ export type ReconcileReport = {
 export async function reconcileExpired(
   db: Db,
   providers: ProviderResolver,
-  opts: { now?: () => number; owner?: string; log?: (message: string) => void } = {},
+  opts: {
+    now?: () => number;
+    owner?: string;
+    readiness?: Readiness;
+    log?: (message: string) => void;
+  } = {},
 ): Promise<ReconcileReport> {
   const now = (opts.now ?? Date.now)();
   const log = opts.log ?? (() => {});
@@ -59,6 +64,7 @@ export async function reconcileExpired(
       state: "infra_error",
       errorClass: `controller_lost (${probe})`.slice(0, 200),
       expiredBefore: now,
+      ...(opts.readiness ? { readiness: opts.readiness } : {}),
     });
     if (done) report.resolved.push({ attemptId: attempt.id, sandboxId: attempt.sandboxId, probe });
     else report.skipped++;

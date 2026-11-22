@@ -75,7 +75,18 @@ async function queueRun(
     | "skip"
     | "exited"
     | "bare"
-    | "noprov";
+    | "noprov"
+    | "d0"
+    | "docs"
+    | "lint"
+    | "extra"
+    | "root"
+    | "cleanup"
+    | "x"
+    | "y"
+    | "a"
+    | "b"
+    | "c";
   return { run, ...out } as { run: typeof run } & Record<Key, { jobId: string; attemptId: string }>;
 }
 
@@ -218,7 +229,7 @@ test("needs: a job waits for its dependencies, and never runs behind a failed on
     }),
   ).toBe(true);
   expect(await claim("w")).toBeUndefined(); // deploy never runs behind a failure
-  expect((await getJob(db, s, q.deploy.jobId))?.state).toBe("queued");
+  expect((await getJob(db, s, q.deploy.jobId))?.state).toBe("skipped"); // and leaves the queue
 });
 
 test("heartbeat extends the lease, and reports false once the attempt is gone", async () => {
@@ -661,4 +672,215 @@ test("the act runner reports a rejected plan, a missing repo binding and a missi
   } finally {
     world.dispose();
   }
+});
+
+// ---- fairness, readiness and dependents ----
+
+/** A run whose first job is claimed (running) and whose `n` dependents therefore cannot run yet. */
+async function blockedRun(scope: Required<Scope>, n: number) {
+  const keys = ["root", ...Array.from({ length: n }, (_, i) => `d${i}`)];
+  const needs = Object.fromEntries(keys.slice(1).map((k) => [k, ["root"]]));
+  return queueRun(scope, keys, needs);
+}
+
+test("an org with many attempts that cannot run yet does not starve another org", async () => {
+  const a = await seedOrg("a");
+  const b = await seedOrg("b");
+  const blocked = await blockedRun(a, 100); // older: 101 queued attempts, 100 of them waiting
+  const lone = await queueRun(b); // younger, ready
+  // both orgs have one attempt running, so only age would order them
+  const rootClaim = (await claim("w", { perOrgCap: 5 }))!;
+  expect(rootClaim.scope.orgId).toBe(a.orgId);
+  expect(rootClaim.job.jobKey).toBe("root");
+
+  // the old oldest-50 window would now be all of A's waiting jobs and find nothing
+  const next = (await claim("w", { perOrgCap: 5 }))!;
+  expect(next).toBeDefined();
+  expect(next.scope.orgId).toBe(b.orgId);
+  expect(next.attempt.id).toBe(lone.build.attemptId);
+  // A's dependents are still waiting for root, untouched
+  expect(await claim("w", { perOrgCap: 5 })).toBeUndefined();
+  expect((await getJob(db, a, blocked.d0.jobId))?.state).toBe("queued");
+});
+
+test("the scan is bounded, and still reaches work behind it within the bound", async () => {
+  const a = await seedOrg("a");
+  const blocked = await blockedRun(a, 60);
+  await claim("w", { perOrgCap: 5 }); // root
+  // a ready job queued after 60 waiting ones
+  const late = await queueRun(a);
+  const small = await claim("w", { perOrgCap: 5, scanLimit: 30, pageSize: 10 });
+  expect(small).toBeUndefined(); // bounded: gave up after 30 rows rather than scanning forever
+  const full = await claim("w", { perOrgCap: 5 });
+  expect(full?.attempt.id).toBe(late.build.attemptId);
+  void blocked;
+});
+
+test("orgs are served round-robin, the least busy first, oldest first within an org", async () => {
+  const a = await seedOrg("a");
+  const b = await seedOrg("b");
+  for (let i = 0; i < 3; i++) await queueRun(a);
+  for (let i = 0; i < 3; i++) await queueRun(b);
+  const order: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const c = (await claim("w", { perOrgCap: 10 }))!;
+    order.push(c.scope.orgId === a.orgId ? "a" : "b");
+  }
+  // A is older, so it goes first, but then B is the less busy org and gets its turn: alternating
+  expect(order.join("")).toBe("ababab");
+});
+
+test("a failed dependency skips its dependents at once, transitively, in the same transaction", async () => {
+  const s = await seedOrg("a");
+  const q = await queueRun(s, ["build", "test", "deploy", "lint", "docs"], {
+    test: ["build"],
+    deploy: ["test"],
+    docs: ["lint"],
+  });
+  await claim("w"); // build
+  await claim("w"); // lint (independent)
+  expect(
+    await finishAttempt(db, s, {
+      attemptId: q.build.attemptId,
+      owner: "w",
+      state: "failure",
+      exitCode: 1,
+    }),
+  ).toBe(true);
+  // no claim happened since: the dependents were resolved by the finish itself
+  expect((await getJob(db, s, q.test.jobId))?.state).toBe("skipped");
+  expect((await getJob(db, s, q.deploy.jobId))?.state).toBe("skipped"); // behind a skipped one
+  expect((await getJob(db, s, q.docs.jobId))?.state).toBe("queued"); // lint is still running
+  expect((await listAttempts(db, s, q.test.jobId))[0]).toMatchObject({
+    state: "skipped",
+    errorClass: "dependency:failure",
+  });
+  expect((await listAttempts(db, s, q.deploy.jobId))[0]).toMatchObject({ state: "skipped" });
+  const events = (await listEvents(db, s, { after: 0, limit: 200 })).filter(
+    (e) => e.type === "job.state_changed" && e.jobId === q.test.jobId,
+  );
+  expect(events.map((e) => JSON.parse(e.payload).to)).toContain("skipped");
+  // docs still runs once lint succeeds, and the run ends failed (skipped is neutral)
+  expect(
+    await finishAttempt(db, s, {
+      attemptId: q.lint.attemptId,
+      owner: "w",
+      state: "success",
+      exitCode: 0,
+    }),
+  ).toBe(true);
+  expect((await claim("w"))?.job.jobKey).toBe("docs");
+  expect(await claim("w")).toBeUndefined(); // nothing left to claim
+  expect((await getRun(db, s, q.run.id))?.status).toBe("running");
+  expect(
+    await finishAttempt(db, s, {
+      attemptId: q.docs.attemptId,
+      owner: "w",
+      state: "success",
+      exitCode: 0,
+    }),
+  ).toBe(true);
+  expect((await getRun(db, s, q.run.id))?.status).toBe("failure");
+});
+
+test("cancelled and infra_error dependencies skip dependents too", async () => {
+  const s = await seedOrg("a");
+  for (const end of ["cancelled", "infra_error"] as const) {
+    const q = await queueRun(s, ["a", "b"], { b: ["a"] });
+    const c = (await claim("w"))!;
+    expect(c.job.jobKey).toBe("a");
+    expect(await finishAttempt(db, s, { attemptId: q.a.attemptId, owner: "w", state: end })).toBe(
+      true,
+    );
+    expect((await getJob(db, s, q.b.jobId))?.state).toBe("skipped");
+    expect((await listAttempts(db, s, q.b.jobId))[0]!.errorClass).toBe(`dependency:${end}`);
+  }
+});
+
+test("a job a filter skipped satisfies its dependents; one skipped for a dependency does not", async () => {
+  const s = await seedOrg("a");
+  const q = await queueRun(s, ["a", "b", "c"], { b: ["a"], c: ["b"] });
+  await claim("w");
+  // `a` is skipped by the runner (nothing to do): b may still run
+  expect(
+    await finishAttempt(db, s, { attemptId: q.a.attemptId, owner: "w", state: "skipped" }),
+  ).toBe(true);
+  expect((await getJob(db, s, q.b.jobId))?.state).toBe("queued");
+  expect((await claim("w"))?.job.jobKey).toBe("b");
+});
+
+test("the readiness interface is pluggable: always(), and a cancel policy", async () => {
+  const s = await seedOrg("a");
+  // always(): run after any outcome of the dependencies
+  const alwaysRun = (job: { needs: string }, deps: { state: string }[]) =>
+    deps.every((d) =>
+      ["success", "failure", "skipped", "cancelled", "infra_error"].includes(d.state),
+    )
+      ? "ready"
+      : "wait";
+  const q = await queueRun(s, ["build", "cleanup"], { cleanup: ["build"] });
+  await claim("w", { readiness: alwaysRun as never });
+  expect(
+    await finishAttempt(db, s, {
+      attemptId: q.build.attemptId,
+      owner: "w",
+      state: "failure",
+      exitCode: 1,
+      readiness: alwaysRun as never,
+    }),
+  ).toBe(true);
+  expect((await getJob(db, s, q.cleanup.jobId))?.state).toBe("queued"); // not skipped
+  expect((await claim("w", { readiness: alwaysRun as never }))?.job.jobKey).toBe("cleanup");
+
+  // a policy that cancels instead of skipping
+  const cancelPolicy = (job: { needs: string }, deps: { state: string }[]) =>
+    deps.some((d) => d.state === "failure")
+      ? "cancel"
+      : deps.every((d) => d.state === "success")
+        ? "ready"
+        : "wait";
+  const q2 = await queueRun(s, ["x", "y"], { y: ["x"] });
+  const c2 = (await claim("w", { readiness: cancelPolicy as never }))!;
+  expect(c2.job.jobKey).toBe("x");
+  await finishAttempt(db, s, {
+    attemptId: q2.x.attemptId,
+    owner: "w",
+    state: "failure",
+    exitCode: 1,
+    readiness: cancelPolicy as never,
+  });
+  expect((await getJob(db, s, q2.y.jobId))?.state).toBe("cancelled");
+});
+
+test("rerunning a failed job brings back the dependents that were skipped because of it", async () => {
+  const s = await seedOrg("a");
+  const q = await queueRun(s, ["build", "test", "deploy", "extra"], {
+    test: ["build"],
+    deploy: ["test"],
+  });
+  await claim("w"); // build
+  await claim("w"); // extra
+  await finishAttempt(db, s, {
+    attemptId: q.build.attemptId,
+    owner: "w",
+    state: "failure",
+    exitCode: 1,
+  });
+  await finishAttempt(db, s, { attemptId: q.extra.attemptId, owner: "w", state: "skipped" }); // filter skip
+  expect((await getJob(db, s, q.deploy.jobId))?.state).toBe("skipped");
+
+  const re = await rerunJobs(db, s, { runId: q.run.id, jobs: "failed", reason: "fix pushed" });
+  expect(re!.reruns.map((r) => r.job.jobKey).toSorted()).toEqual(["build", "deploy", "test"]);
+  expect((await getJob(db, s, q.test.jobId))?.state).toBe("queued");
+  expect((await getJob(db, s, q.extra.jobId))?.state).toBe("skipped"); // a filter skip stays
+  // and the chain runs in order again
+  expect((await claim("w"))?.job.jobKey).toBe("build");
+  expect(await claim("w")).toBeUndefined();
+  await finishAttempt(db, s, {
+    attemptId: (await listAttempts(db, s, q.build.jobId)).at(-1)!.id,
+    owner: "w",
+    state: "success",
+    exitCode: 0,
+  });
+  expect((await claim("w"))?.job.jobKey).toBe("test");
 });

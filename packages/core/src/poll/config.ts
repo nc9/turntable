@@ -9,8 +9,13 @@ const repoName = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "owner/n
  */
 export const pollConfigSchema = z
   .object({
-    /** File holding a GitHub token. Optional: unauthenticated works for public repos. */
+    /**
+     * File holding a GitHub token (mode 0600, outside the repo). Required: polling is
+     * authenticated so the rate limit is not shared with every other unauthenticated client.
+     */
     tokenFile: z.string().min(1).optional(),
+    /** Explicitly allow polling with no token (tests, a tiny setup). Default false. */
+    allowUnauthenticated: z.boolean().default(false),
     /** For tests and GitHub Enterprise. */
     apiBaseUrl: z.url().default("https://api.github.com"),
     /** Provider name stamped on the attempts the poller creates. */
@@ -25,7 +30,8 @@ export const pollConfigSchema = z
             project: z.string().min(1).default("local"),
             workflow: z.string().min(1).describe("Workflow path, e.g. .github/workflows/ci.yml"),
             defaultBranch: z.string().min(1),
-            intervalSeconds: z.int().min(5).default(60),
+            /** Seconds between polls of this repo. 60 to 120 is the intended range. */
+            intervalSeconds: z.int().min(30).max(3600).default(60),
             /** `off`: pull requests are never run. `allowlist`: same-repo PRs by listed authors. */
             prMode: z.enum(["off", "allowlist"]).default("off"),
             /** GitHub logins allowed to have PRs run. Compared case-insensitively. */
@@ -36,7 +42,11 @@ export const pollConfigSchema = z
       )
       .min(1),
   })
-  .strict();
+  .strict()
+  .refine((c) => c.tokenFile !== undefined || c.allowUnauthenticated, {
+    path: ["tokenFile"],
+    message: "required (polling must be authenticated); set allowUnauthenticated to opt out",
+  });
 
 export type PollConfig = z.infer<typeof pollConfigSchema>;
 export type PollRepoConfig = PollConfig["repos"][number];

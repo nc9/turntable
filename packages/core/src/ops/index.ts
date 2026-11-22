@@ -7,6 +7,7 @@ import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
 import { whoami } from "./definitions/whoami";
 import { getRun } from "./definitions/get-run";
+import { ingestStatusOp } from "./definitions/ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
@@ -35,5 +36,6 @@ export const registry = createRegistry([
   whoami,
   listOrgs,
   listProjects,
+  ingestStatusOp,
   createApiToken,
 ]);

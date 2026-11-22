@@ -10,6 +10,7 @@ import {
   listRepos,
   type PolledJob,
   type Scope,
+  validateJobGraph,
 } from "../db/repos";
 import type { PollConfig, PollRepoConfig } from "./config";
 import type { GithubClient } from "./github";
@@ -28,12 +29,16 @@ export type GateVerdict = { ok: true } | { ok: false; reason: string };
 
 const lower = (s: string | null | undefined): string => (s ?? "").toLowerCase();
 
+const allowed = (cfg: Pick<PollRepoConfig, "authors">, login: string | null): boolean =>
+  login !== null && cfg.authors.some((a) => lower(a) === lower(login));
+
 /**
- * The pull request gate. A PR runs only if its head repo IS the configured repo (never a fork,
- * never a deleted fork) and its author is on the allowlist. Both are read from the API response,
- * never from the PR's own text. Anything else is refused, whatever else is true.
+ * First half of the pull request gate, from the PR list alone: the head repo must BE the
+ * configured repo (never a fork, never a deleted fork), the base must be it too, and whoever
+ * opened the PR must be on the allowlist. Facts come from the API response, never from PR text.
+ * A bot is allowed only if its exact login is listed.
  */
-export function gatePullRequest(
+export function gatePullRequestOpener(
   cfg: Pick<PollRepoConfig, "repo" | "prMode" | "authors">,
   pr: { headRepo: string | null; baseRepo: string; author: string | null },
 ): GateVerdict {
@@ -44,10 +49,38 @@ export function gatePullRequest(
   if (pr.headRepo === null) return { ok: false, reason: "head repo is gone (deleted fork)" };
   if (lower(pr.headRepo) !== repo) return { ok: false, reason: "head repo is a fork" };
   if (pr.author === null) return { ok: false, reason: "no author login" };
-  if (!cfg.authors.some((a) => lower(a) === lower(pr.author))) {
-    return { ok: false, reason: "author is not on the allowlist" };
-  }
+  if (!allowed(cfg, pr.author)) return { ok: false, reason: "author is not on the allowlist" };
   return { ok: true };
+}
+
+/**
+ * Second half: whoever AUTHORED the head commit must also be on the allowlist. The opener can be
+ * trusted while the commit that would run was written by someone else (someone pushed to the
+ * branch, or the PR was opened by a maintainer for another's work). GitHub linking no account
+ * to the commit (null) is refused: we cannot say who wrote the code we would run.
+ */
+export function gateHeadCommit(
+  cfg: Pick<PollRepoConfig, "authors">,
+  headAuthor: string | null,
+): GateVerdict {
+  if (headAuthor === null) return { ok: false, reason: "head commit has no linked GitHub account" };
+  if (!allowed(cfg, headAuthor))
+    return { ok: false, reason: "head commit author is not on the allowlist" };
+  return { ok: true };
+}
+
+/** The whole gate, given the head commit's author. */
+export function gatePullRequest(
+  cfg: Pick<PollRepoConfig, "repo" | "prMode" | "authors">,
+  pr: {
+    headRepo: string | null;
+    baseRepo: string;
+    author: string | null;
+    headAuthor: string | null;
+  },
+): GateVerdict {
+  const opener = gatePullRequestOpener(cfg, pr);
+  return opener.ok ? gateHeadCommit(cfg, pr.headAuthor) : opener;
 }
 
 /** Job keys, display name and `needs` of a workflow, or undefined when it does not parse. */
@@ -129,7 +162,11 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
 
   if (cfg.prMode === "allowlist") {
     for (const pr of await deps.github.openPulls(repo)) {
-      const verdict = gatePullRequest(cfg, pr);
+      let verdict = gatePullRequestOpener(cfg, pr);
+      if (verdict.ok) {
+        // Only now spend an API call (ETag-cached, immutable) on who wrote the head commit.
+        verdict = gateHeadCommit(cfg, await deps.github.commitAuthor(repo, pr.headSha));
+      }
       if (!verdict.ok) {
         result.refused.push({ what: `pr #${pr.number}`, reason: verdict.reason });
         continue;
@@ -170,6 +207,12 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         what: `${c.event} ${c.sha.slice(0, 7)}`,
         reason: "workflow has no jobs or is not valid YAML",
       });
+      continue;
+    }
+    // Unknown needs, cycles and absurd job counts never become a run.
+    const invalid = validateJobGraph(wf.jobs);
+    if (invalid) {
+      result.refused.push({ what: `${c.event} ${c.sha.slice(0, 7)}`, reason: invalid });
       continue;
     }
     const run = await createPolledRun(deps.db, scope, {

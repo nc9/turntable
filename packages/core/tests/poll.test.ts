@@ -15,8 +15,12 @@ import {
   type Scope,
 } from "../src/db";
 import {
+  backoffMs,
+  gateHeadCommit,
   gatePullRequest,
   GithubClient,
+  ingestStatus,
+  resetIngestStatus,
   loadPollConfig,
   type PollConfig,
   Poller,
@@ -51,6 +55,8 @@ type PullStub = {
   headRef?: string;
   headRepo: string | null;
   baseRepo?: string;
+  /** Login of the head commit's author; defaults to the opener. null: no linked account. */
+  headAuthor?: string | null;
 };
 
 /** A GitHub API stand-in served through fetch. */
@@ -84,6 +90,16 @@ function makeGithub(repo = "acme/web") {
           author: state.head.login === null ? null : { login: state.head.login },
         }),
         `"head-${state.head.sha}"`,
+        "application/json",
+      );
+    }
+    const commit = new RegExp(`^/repos/${repo}/commits/([0-9a-f]{40})$`).exec(u.pathname);
+    if (commit) {
+      const pull = state.pulls.find((p) => p.headSha === commit[1]);
+      const author = pull ? (pull.headAuthor === undefined ? pull.user : pull.headAuthor) : null;
+      return etagged(
+        JSON.stringify({ sha: commit[1], author: author === null ? null : { login: author } }),
+        `"c-${commit[1]}"`,
         "application/json",
       );
     }
@@ -121,6 +137,7 @@ function config(
   top: Partial<PollConfig> = {},
 ): PollConfig {
   return pollConfigSchema.parse({
+    allowUnauthenticated: true,
     ...top,
     repos: [
       {
@@ -234,7 +251,12 @@ test("a same-repo PR by an allowlisted author runs, with its PR metadata", async
 
 test("the PR gate: a fork is never run, whatever else is true", () => {
   const cfg = { repo: "acme/web", prMode: "allowlist" as const, authors: ["octocat"] };
-  const ok = { baseRepo: "acme/web", headRepo: "acme/web", author: "octocat" };
+  const ok = {
+    baseRepo: "acme/web",
+    headRepo: "acme/web",
+    author: "octocat",
+    headAuthor: "octocat",
+  };
   expect(gatePullRequest(cfg, ok).ok).toBe(true);
   expect(gatePullRequest(cfg, { ...ok, author: "OCTOCAT" }).ok).toBe(true); // logins are case-insensitive
   expect(gatePullRequest({ ...cfg, repo: "Acme/Web" }, ok).ok).toBe(true); // so are repo names
@@ -261,6 +283,7 @@ test("the PR gate: a fork is never run, whatever else is true", () => {
     baseRepo: "acme/web",
     headRepo: "octocat/web",
     author: "octocat",
+    headAuthor: "octocat",
   });
   expect(fork).toEqual({ ok: false, reason: "head repo is a fork" });
   // and PR mode off refuses everything, even a perfect PR
@@ -435,6 +458,7 @@ test("config: strict, defaults to safe values, and refuses an inline token", () 
       return p;
     };
     const base = {
+      allowUnauthenticated: true,
       repos: [{ repo: "acme/web", workflow: ".github/workflows/ci.yml", defaultBranch: "main" }],
     };
     const cfg = loadPollConfig(write(base));
@@ -474,6 +498,7 @@ test("a poll that fails on one repo does not stop the others, and is retried", a
   const gh = makeGithub();
   const logs: string[] = [];
   const cfg = pollConfigSchema.parse({
+    allowUnauthenticated: true,
     repos: [
       { repo: "acme/missing", workflow: ".github/workflows/ci.yml", defaultBranch: "main" },
       { repo: "acme/web", workflow: ".github/workflows/ci.yml", defaultBranch: "main" },
@@ -483,4 +508,341 @@ test("a poll that fails on one repo does not stop the others, and is retried", a
   await poller.pollAll();
   expect(logs.some((l) => l.includes("acme/missing failed"))).toBe(true);
   expect(await listRuns(db, scope)).toHaveLength(1);
+});
+
+// ---- head commit author ----
+
+test("the gate also needs the HEAD COMMIT's author on the allowlist", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = [
+    // opened by an allowlisted login, but the commit that would run was written by someone else
+    { number: 1, user: "octocat", headSha: SHA("1"), headRepo: "acme/web", headAuthor: "mallory" },
+    // no GitHub account linked to the head commit's author email
+    { number: 2, user: "octocat", headSha: SHA("2"), headRepo: "acme/web", headAuthor: null },
+    // a bot that is not listed
+    { number: 3, user: "octocat", headSha: SHA("3"), headRepo: "acme/web", headAuthor: "nc9[bot]" },
+    // opener not allowlisted, commit author is: still refused (both must pass)
+    { number: 4, user: "mallory", headSha: SHA("4"), headRepo: "acme/web", headAuthor: "octocat" },
+    // both allowlisted: runs
+    { number: 5, user: "hubot", headSha: SHA("5"), headRepo: "acme/web", headAuthor: "octocat" },
+  ];
+  const res = await poll(gh);
+  expect(
+    (await listRuns(db, scope)).filter((r) => r.event === "pull_request").map((r) => r.prNumber),
+  ).toEqual([5]);
+  const why = Object.fromEntries(res.refused.map((r) => [r.what, r.reason]));
+  expect(why["pr #1"]).toBe("head commit author is not on the allowlist");
+  expect(why["pr #2"]).toBe("head commit has no linked GitHub account");
+  expect(why["pr #3"]).toBe("head commit author is not on the allowlist");
+  expect(why["pr #4"]).toBe("author is not on the allowlist");
+  // the head commit is only fetched for PRs that passed the cheap checks, and cached by ETag
+  const commitCalls = gh.state.calls.filter((c) => /\/commits\/[0-9a-f]{40}$/.test(c.path));
+  expect(commitCalls.map((c) => c.path.slice(-40)).toSorted()).toEqual([
+    SHA("1"),
+    SHA("2"),
+    SHA("3"),
+    SHA("5"),
+  ]);
+  // the workflow of a refused PR is never fetched
+  for (const sha of ["1", "2", "3", "4"]) {
+    expect(gh.state.calls.some((c) => c.path.includes(`ref=${SHA(sha)}`))).toBe(false);
+  }
+  // a listed bot is accepted only because its exact login is listed
+  const cfg = config({ authors: ["octocat", "dependabot[bot]"] });
+  gh.state.pulls = [
+    {
+      number: 6,
+      user: "dependabot[bot]",
+      headSha: SHA("6"),
+      headRepo: "acme/web",
+      headAuthor: "dependabot[bot]",
+    },
+  ];
+  await pollRepo({ db, github: clientFor(gh), provider: "docker" }, cfg.repos[0]!);
+  expect((await listRuns(db, scope)).some((r) => r.prNumber === 6)).toBe(true);
+  expect(gateHeadCommit({ authors: ["nc9"] }, "NC9").ok).toBe(true);
+  expect(gateHeadCommit({ authors: ["nc9"] }, "nc9[bot]").ok).toBe(false);
+});
+
+// ---- the client is read-only and keeps the token out of URLs ----
+
+test("the GitHub client only ever sends GET, never puts the token in a URL, and has no write methods", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = [{ number: 1, user: "octocat", headSha: SHA("1"), headRepo: "acme/web" }];
+  const secret = `tok-${randomUUID()}`;
+  const seen: { url: string; method: string | undefined; headers: Record<string, string> }[] = [];
+  const spying = async (url: string, init?: RequestInit) => {
+    seen.push({
+      url,
+      method: init?.method,
+      headers: { ...((init?.headers ?? {}) as Record<string, string>) },
+    });
+    return gh.fetch(url, init);
+  };
+  const client = new GithubClient({
+    fetch: spying,
+    baseUrl: "https://api.github.com",
+    token: secret,
+  });
+  await client.branchHead("acme/web", "main");
+  await client.openPulls("acme/web");
+  await client.commitAuthor("acme/web", SHA("1"));
+  await client.fileAt("acme/web", ".github/workflows/ci.yml", SHA("a"));
+  await client.branchHead("acme/web", "main"); // a conditional repeat
+  expect(seen.length).toBeGreaterThanOrEqual(5);
+  for (const s of seen) {
+    expect(s.method).toBe("GET");
+    expect(s.url.startsWith("https://api.github.com/")).toBe(true);
+    expect(s.url).not.toContain(secret);
+    expect(s.headers.authorization).toBe(`Bearer ${secret}`);
+  }
+  // the public surface offers nothing that writes
+  const methods = Object.getOwnPropertyNames(GithubClient.prototype).filter(
+    (m) => m !== "constructor",
+  );
+  expect(methods.toSorted()).toEqual([
+    "branchHead",
+    "commitAuthor",
+    "fileAt",
+    "openPulls",
+    "rateLimit",
+  ]);
+  for (const m of methods)
+    expect(m).not.toMatch(/post|put|patch|delete|create|update|merge|comment|dispatch/i);
+  // a sha that is not hex cannot be smuggled into a path
+  await expect(client.commitAuthor("acme/web", "../../user")).rejects.toThrow();
+  expect(seen.every((s) => !s.url.includes(".."))).toBe(true);
+  // the whole poll path obeys the same rule
+  const all: string[] = [];
+  const poller = new Poller({
+    db,
+    config: config(),
+    fetch: async (u, i) => {
+      all.push(i?.method ?? "");
+      return gh.fetch(u, i);
+    },
+  });
+  await poller.pollAll();
+  expect(all.length).toBeGreaterThan(0);
+  expect(new Set(all)).toEqual(new Set(["GET"]));
+});
+
+// ---- backoff, Retry-After, budget ----
+
+test("backoff is exponential, capped, and never shorter than the server asked", () => {
+  const base = { intervalMs: 60_000, now: 1_000_000 };
+  expect(backoffMs({ ...base, failures: 1 })).toBe(60_000);
+  expect(backoffMs({ ...base, failures: 2 })).toBe(120_000);
+  expect(backoffMs({ ...base, failures: 3 })).toBe(240_000);
+  expect(backoffMs({ ...base, failures: 20 })).toBe(3_600_000); // capped
+  expect(backoffMs({ ...base, failures: 20, capMs: 900_000 })).toBe(900_000);
+  expect(backoffMs({ ...base, failures: 1, retryAfterMs: 300_000 })).toBe(300_000);
+  expect(backoffMs({ ...base, failures: 1, resetAt: base.now + 500_000 })).toBe(500_000);
+  expect(backoffMs({ ...base, failures: 3, retryAfterMs: 10_000 })).toBe(240_000); // exponential wins
+  expect(backoffMs({ ...base, failures: 1, resetAt: base.now - 5 })).toBe(60_000); // reset already passed
+});
+
+test("the poller honours Retry-After on a secondary limit and backs off harder on repeats", async () => {
+  resetIngestStatus();
+  const gh = makeGithub();
+  const logs: string[] = [];
+  let now = 1_800_000_000_000;
+  const poller = new Poller({
+    db,
+    config: config(),
+    fetch: gh.fetch,
+    now: () => now,
+    log: (m) => logs.push(m),
+  });
+  gh.state.fail = { status: 403, headers: { "retry-after": "240" } }; // no x-ratelimit-remaining at all
+  await poller.pollAll();
+  expect(logs.at(-1)).toContain("rate limited, backing off 240s");
+  expect(ingestStatus.repos.get("acme/web")).toMatchObject({
+    lastOutcome: "rate_limited",
+    consecutiveFailures: 1,
+  });
+  await poller.pollAll();
+  gh.state.fail = { status: 500 };
+  await poller.pollAll();
+  expect(ingestStatus.repos.get("acme/web")?.consecutiveFailures).toBe(3);
+  expect(ingestStatus.repos.get("acme/web")?.lastError).toBe(
+    "GitHub API 500 for /repos/acme/web/commits/main",
+  );
+  const st = ingestStatus.repos.get("acme/web")!;
+  expect(st.nextPollAt! - now).toBe(240_000); // 3rd failure: 60s * 4
+  // a success resets it
+  gh.state.fail = undefined;
+  now += 1000;
+  await poller.pollAll();
+  expect(ingestStatus.repos.get("acme/web")).toMatchObject({
+    lastOutcome: "ok",
+    consecutiveFailures: 0,
+    runsCreated: 1,
+  });
+});
+
+test("the remaining budget is tracked from the headers, and a nearly spent budget stops polling", async () => {
+  resetIngestStatus();
+  const gh = makeGithub();
+  const logs: string[] = [];
+  const now = 1_800_000_000_000;
+  const resetAt = now + 1_800_000;
+  const withBudget = async (url: string, init?: RequestInit) => {
+    const res = await gh.fetch(url, init);
+    const headers = new Headers(res.headers);
+    headers.set("x-ratelimit-limit", "5000");
+    headers.set("x-ratelimit-remaining", String(budget));
+    headers.set("x-ratelimit-reset", String(resetAt / 1000));
+    headers.set("x-ratelimit-resource", "core");
+    return new Response(res.status === 304 ? null : await res.text(), {
+      status: res.status,
+      headers,
+    });
+  };
+  let budget = 4000;
+  const poller = new Poller({
+    db,
+    config: config(),
+    fetch: withBudget,
+    now: () => now,
+    log: (m) => logs.push(m),
+  });
+  await poller.pollAll();
+  expect(ingestStatus.rateLimit).toMatchObject({
+    limit: 5000,
+    remaining: 4000,
+    resetAt,
+    resource: "core",
+  });
+  const calls = gh.state.calls.length;
+
+  budget = 3; // at or below the reserve
+  await poller.pollAll(); // observes 3 via a real request
+  const afterObserve = gh.state.calls.length;
+  expect(afterObserve).toBeGreaterThan(calls);
+  await poller.pollAll(); // now it should not spend the rest
+  expect(gh.state.calls.length).toBe(afterObserve);
+  expect(logs.at(-1)).toContain("waiting 1800s for the reset");
+  expect(ingestStatus.repos.get("acme/web")).toMatchObject({ lastOutcome: "rate_limited" });
+});
+
+test("ingest_status reports the caller's org repos and the budget over the ops registry", async () => {
+  resetIngestStatus();
+  const { dispatch, registry } = await import("../src/ops");
+  const { mintToken } = await import("./ops-helpers");
+  const org = (await import("../src/db")).getOrgById;
+  const o = (await org(db, scope.orgId))!;
+  const gh = makeGithub();
+  const poller = new Poller({
+    db,
+    config: config(),
+    fetch: gh.fetch,
+    now: () => 1_800_000_000_000,
+  });
+  await poller.pollAll();
+  const tok = (await mintToken(db, { orgId: scope.orgId }, "reader")).secret;
+  const res = await dispatch({ registry, db }, { kind: "bearer", token: tok }, "ingest_status", {});
+  expect(res.ok).toBe(true);
+  if (res.ok) {
+    const out = res.output as {
+      running: boolean;
+      repos: { repo: string; last_outcome: string; runs_created: number }[];
+      rate_limit: unknown;
+    };
+    expect(out.repos).toEqual([
+      expect.objectContaining({ repo: "acme/web", last_outcome: "ok", runs_created: 1 }),
+    ]);
+    expect(JSON.stringify(out)).not.toContain("tokenFile");
+  }
+  // another org sees nothing, and no budget either
+  const other = await (await import("../src/db")).createOrg(db, { slug: "other", name: "o" });
+  const otherTok = (await mintToken(db, { orgId: other.id }, "reader")).secret;
+  const none = await dispatch(
+    { registry, db },
+    { kind: "bearer", token: otherTok },
+    "ingest_status",
+    {},
+  );
+  expect(none.ok && none.output).toEqual({ running: false, rate_limit: null, repos: [] });
+  void o;
+});
+
+// ---- config: authenticated, sane interval ----
+
+test("polling must be authenticated unless explicitly opted out, and intervals are sane", () => {
+  const repo = { repo: "acme/web", workflow: "w.yml", defaultBranch: "main" };
+  expect(() => pollConfigSchema.parse({ repos: [repo] })).toThrow(/authenticated/);
+  expect(() => pollConfigSchema.parse({ tokenFile: "/x/token", repos: [repo] })).not.toThrow();
+  expect(() => pollConfigSchema.parse({ allowUnauthenticated: true, repos: [repo] })).not.toThrow();
+  expect(() =>
+    pollConfigSchema.parse({ tokenFile: "/x", repos: [{ ...repo, intervalSeconds: 5 }] }),
+  ).toThrow();
+  expect(() =>
+    pollConfigSchema.parse({ tokenFile: "/x", repos: [{ ...repo, intervalSeconds: 120 }] }),
+  ).not.toThrow();
+});
+
+// ---- job graph validation at ingest ----
+
+test("ingest refuses unknown needs, cycles, self-dependencies and more than 256 jobs", async () => {
+  const wf = (jobs: Record<string, string[]>) =>
+    `name: g\non: push\njobs:\n${Object.entries(jobs)
+      .map(
+        ([k, n]) =>
+          `  ${k}:\n    runs-on: x\n${n.length ? `    needs: [${n.join(", ")}]\n` : ""}    steps:\n      - run: echo\n`,
+      )
+      .join("")}`;
+  const cases: [string, string, RegExp][] = [
+    ["unknown need", wf({ a: ["ghost"] }), /needs unknown job ghost/],
+    ["self dependency", wf({ a: ["a"] }), /dependency cycle: a -> a/],
+    ["two-cycle", wf({ a: ["b"], b: ["a"] }), /dependency cycle/],
+    ["long cycle", wf({ a: ["c"], b: ["a"], c: ["b"], d: [] }), /dependency cycle/],
+    [
+      "too many",
+      wf(Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`j${i}`, []]))),
+      /257 jobs; the limit is 256/,
+    ],
+  ];
+  for (const [name, yaml, reason] of cases) {
+    const gh = makeGithub();
+    gh.state.files.set("*", yaml);
+    const fresh = openDatabase(":memory:");
+    const sc = await ensureLocalTenant(fresh);
+    const res = await pollRepo(
+      { db: fresh, github: clientFor(gh), provider: "docker" },
+      config().repos[0]!,
+    );
+    expect(res.created, name).toEqual([]);
+    expect(res.refused[0]?.reason, name).toMatch(reason);
+    expect(await listRuns(fresh, sc), name).toHaveLength(0);
+  }
+  // the limit itself and a valid diamond are fine
+  const ok = makeGithub();
+  ok.state.files.set(
+    "*",
+    wf(Object.fromEntries(Array.from({ length: 256 }, (_, i) => [`j${i}`, []]))),
+  );
+  expect((await poll(ok)).created).toHaveLength(1);
+  const diamond = makeGithub();
+  diamond.state.files.set("*", wf({ a: [], b: ["a"], c: ["a"], d: ["b", "c"] }));
+  const d2 = openDatabase(":memory:");
+  await ensureLocalTenant(d2);
+  expect(
+    (await pollRepo({ db: d2, github: clientFor(diamond), provider: "docker" }, config().repos[0]!))
+      .created,
+  ).toHaveLength(1);
+  // the repo layer refuses too, so no other caller can create a cyclic run
+  const { validateJobGraph } = await import("../src/db");
+  expect(
+    validateJobGraph([
+      { key: "a", needs: ["b"] },
+      { key: "b", needs: ["a"] },
+    ]),
+  ).toMatch(/cycle/);
+  expect(
+    validateJobGraph([
+      { key: "a", needs: [] },
+      { key: "a", needs: [] },
+    ]),
+  ).toMatch(/duplicate/);
 });

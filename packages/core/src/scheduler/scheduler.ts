@@ -7,6 +7,7 @@ import {
   claimNextAttempt,
   finishAttempt,
   heartbeatAttempt,
+  type Readiness,
   recordExec,
   upsertStep,
 } from "../db/repos";
@@ -32,6 +33,8 @@ export type SchedulerOptions = {
   pollMs?: number;
   globalCap?: number;
   perOrgCap?: number;
+  /** Decides when a queued job may run and what becomes of dependents of a failed one. */
+  readiness?: Readiness;
   now?: () => number;
   log?: (message: string) => void;
 };
@@ -46,8 +49,9 @@ const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reaso
  */
 export class Scheduler {
   readonly owner: string;
-  readonly #o: Required<Omit<SchedulerOptions, "owner" | "log">> & {
+  readonly #o: Required<Omit<SchedulerOptions, "owner" | "log" | "readiness">> & {
     log: (message: string) => void;
+    readiness: Readiness | undefined;
   };
   readonly #active = new Map<string, { controller: AbortController; done: Promise<void> }>();
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,6 +70,7 @@ export class Scheduler {
       pollMs: o.pollMs ?? 1000,
       globalCap: o.globalCap ?? 4,
       perOrgCap: o.perOrgCap ?? 2,
+      readiness: o.readiness,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
     };
@@ -89,6 +94,7 @@ export class Scheduler {
         now: this.#o.now(),
         globalCap: this.#o.globalCap,
         perOrgCap: this.#o.perOrgCap,
+        ...(this.#o.readiness ? { readiness: this.#o.readiness } : {}),
       });
       if (!claim) return started;
       this.#launch(claim);
@@ -209,6 +215,7 @@ export class Scheduler {
           state: outcome.state,
           exitCode,
           errorClass: outcome.state === "infra_error" ? outcome.reason.slice(0, 200) : null,
+          ...(this.#o.readiness ? { readiness: this.#o.readiness } : {}),
         });
         if (!done)
           this.#o.log(`attempt ${attempt.id} was already resolved elsewhere; dropped result`);

@@ -1,13 +1,29 @@
-// A minimal, read-only GitHub REST client for polling. The token, when there is one, is added to
-// the request and nowhere else: it is not stored in errors, logs or returned values.
+// A minimal, READ-ONLY GitHub REST client for polling. Every request is a GET, enforced in
+// `#get` (the only place a request is made) and covered by a test. The token, when there is
+// one, goes into the Authorization header and nowhere else: never a URL, an error, a log line
+// or a returned value.
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** What GitHub last said about the rate limit, from the `x-ratelimit-*` headers. */
+export type RateLimitInfo = {
+  limit: number | undefined;
+  remaining: number | undefined;
+  /** Epoch ms when the window resets. */
+  resetAt: number | undefined;
+  resource: string | undefined;
+  /** Epoch ms when we saw these headers. */
+  observedAt: number;
+};
 
 export class RateLimited extends Error {
   /** Epoch ms when the limit resets, when GitHub said. */
   readonly resetAt: number | undefined;
-  constructor(resetAt: number | undefined) {
+  /** Milliseconds GitHub asked us to wait (`Retry-After`), when it said. */
+  readonly retryAfterMs: number | undefined;
+  constructor(resetAt: number | undefined, retryAfterMs?: number) {
     super("GitHub API rate limit reached");
     this.resetAt = resetAt;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -29,6 +45,7 @@ export type BranchHead = {
 export type PullRequest = {
   number: number;
   title: string;
+  /** Who opened it. */
   author: string | null;
   headSha: string;
   headRef: string;
@@ -39,21 +56,54 @@ export type PullRequest = {
 
 type Cached = { etag: string; body: unknown };
 
+const num = (v: string | null): number | undefined => {
+  if (v === null || v.trim() === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+};
+
 export class GithubClient {
   readonly #fetch: FetchLike;
   readonly #base: string;
   readonly #token: string | undefined;
+  readonly #now: () => number;
   readonly #cache = new Map<string, Cached>();
+  #rate: RateLimitInfo | undefined;
 
-  constructor(o: { fetch?: FetchLike; baseUrl: string; token?: string | undefined }) {
+  constructor(o: {
+    fetch?: FetchLike;
+    baseUrl: string;
+    token?: string | undefined;
+    now?: () => number;
+  }) {
     this.#fetch = o.fetch ?? ((url, init) => fetch(url, init));
     this.#base = o.baseUrl.replace(/\/$/, "");
     this.#token = o.token;
+    this.#now = o.now ?? Date.now;
+  }
+
+  /** The latest rate-limit headers seen (304 responses carry them too), or undefined. */
+  get rateLimit(): RateLimitInfo | undefined {
+    return this.#rate;
+  }
+
+  #observe(res: Response): void {
+    const limit = num(res.headers.get("x-ratelimit-limit"));
+    const remaining = num(res.headers.get("x-ratelimit-remaining"));
+    const reset = num(res.headers.get("x-ratelimit-reset"));
+    if (limit === undefined && remaining === undefined && reset === undefined) return;
+    this.#rate = {
+      limit,
+      remaining,
+      resetAt: reset === undefined ? undefined : reset * 1000,
+      resource: res.headers.get("x-ratelimit-resource") ?? undefined,
+      observedAt: this.#now(),
+    };
   }
 
   /**
-   * GET with a conditional request: a 304 reuses the cached body, which GitHub does not count
-   * against the rate limit, so a steady poll of an idle repo is nearly free.
+   * The only request path, and it only ever sends GET. A conditional request: a 304 reuses the
+   * cached body, which GitHub does not count against the rate limit.
    */
   async #get(path: string, accept = "application/vnd.github+json"): Promise<unknown> {
     const cached = this.#cache.get(path);
@@ -64,13 +114,22 @@ export class GithubClient {
       ...(this.#token ? { authorization: `Bearer ${this.#token}` } : {}),
       ...(cached ? { "if-none-match": cached.etag } : {}),
     };
-    const res = await this.#fetch(`${this.#base}${path}`, { headers });
+    const url = `${this.#base}${path}`;
+    if (this.#token && url.includes(this.#token))
+      throw new Error("refusing to put a token in a URL");
+    const res = await this.#fetch(url, { method: "GET", headers });
+    this.#observe(res);
     if (res.status === 304 && cached) return cached.body;
     if (res.status === 403 || res.status === 429) {
       const remaining = res.headers.get("x-ratelimit-remaining");
-      if (res.status === 429 || remaining === "0") {
-        const reset = Number(res.headers.get("x-ratelimit-reset"));
-        throw new RateLimited(Number.isFinite(reset) && reset > 0 ? reset * 1000 : undefined);
+      const retryAfter = num(res.headers.get("retry-after"));
+      // Primary limit (remaining 0), secondary limit (a Retry-After) or a plain 429.
+      if (res.status === 429 || remaining === "0" || retryAfter !== undefined) {
+        const reset = num(res.headers.get("x-ratelimit-reset"));
+        throw new RateLimited(
+          reset === undefined || reset <= 0 ? undefined : reset * 1000,
+          retryAfter === undefined ? undefined : retryAfter * 1000,
+        );
       }
     }
     if (!res.ok) throw new GithubError(res.status, path);
@@ -92,6 +151,18 @@ export class GithubClient {
       message: body.commit?.message ?? "",
       author: body.author?.login ?? null,
     };
+  }
+
+  /**
+   * Login of the account GitHub links to a commit's author, or null when it has none (an email
+   * that matches no account). Commits are immutable, so the ETag cache makes repeats free.
+   */
+  async commitAuthor(repo: string, sha: string): Promise<string | null> {
+    if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new GithubError(400, "/commits/<invalid sha>");
+    const body = (await this.#get(`/repos/${repo}/commits/${sha.toLowerCase()}`)) as {
+      author?: { login?: string } | null;
+    };
+    return body.author?.login ?? null;
   }
 
   async openPulls(repo: string): Promise<PullRequest[]> {

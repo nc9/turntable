@@ -7,6 +7,54 @@ import { requireProject, type Scope, scoped } from "./scope";
 
 const SEEN_COLS = { orgId: s.pollSeen.orgId, projectId: s.pollSeen.projectId };
 
+/** Most jobs one run may have. A workflow with more is refused at ingest. */
+export const MAX_JOBS_PER_RUN = 256;
+
+/**
+ * Checks a run's job graph: at most MAX_JOBS_PER_RUN jobs, unique keys, every `needs` entry names
+ * a job of the run, and no cycles (a self-dependency is one). Returns the first problem, or
+ * undefined when the graph is sound.
+ */
+export function validateJobGraph(
+  jobs: readonly { key: string; needs: readonly string[] }[],
+): string | undefined {
+  if (jobs.length > MAX_JOBS_PER_RUN) {
+    return `workflow has ${jobs.length} jobs; the limit is ${MAX_JOBS_PER_RUN}`;
+  }
+  const byKey = new Map<string, readonly string[]>();
+  for (const job of jobs) {
+    if (byKey.has(job.key)) return `duplicate job key ${job.key}`;
+    byKey.set(job.key, job.needs);
+  }
+  for (const job of jobs) {
+    for (const need of job.needs) {
+      if (!byKey.has(need)) return `job ${job.key} needs unknown job ${need}`;
+    }
+  }
+  // Depth-first search with colours: grey on the current path, black when finished.
+  const colour = new Map<string, "grey" | "black">();
+  const visit = (key: string, path: string[]): string | undefined => {
+    colour.set(key, "grey");
+    for (const need of byKey.get(key) ?? []) {
+      if (colour.get(need) === "grey")
+        return `dependency cycle: ${[...path, key, need].join(" -> ")}`;
+      if (!colour.has(need)) {
+        const found = visit(need, [...path, key]);
+        if (found) return found;
+      }
+    }
+    colour.set(key, "black");
+    return undefined;
+  };
+  for (const job of jobs) {
+    if (!colour.has(job.key)) {
+      const found = visit(job.key, []);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 export type PolledJob = { key: string; name: string; needs: readonly string[] };
 
 /**
@@ -27,6 +75,8 @@ export function createPolledRun(
     now?: number | undefined;
   },
 ): Promise<Run | undefined> {
+  const invalid = validateJobGraph(input.jobs);
+  if (invalid) return Promise.reject(new Error(`invalid job graph: ${invalid}`));
   return db.transaction(async (tx) => {
     const { projectId } = requireProject(scope);
     const key = {
