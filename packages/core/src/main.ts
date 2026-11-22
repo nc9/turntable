@@ -219,7 +219,12 @@ async function serve(args: string[]): Promise<void> {
   if (keyFile) {
     const store = new SecretStore(db, loadMasterKey(keyFile));
     const auth = new AppAuth({ db, store });
-    webhooks = createWebhookHandler({ db, store, facts: githubFacts(auth) });
+    webhooks = createWebhookHandler({
+      db,
+      store,
+      facts: githubFacts(auth),
+      trustForwardedFor: process.env.LONGSHORE_TRUST_FORWARDED_FOR === "1",
+    });
     void webhooks.retryUnfinished().catch(() => {});
   }
   const server = startServer({
