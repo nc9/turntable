@@ -20,7 +20,14 @@ import {
 } from "../src/audit/checkpoint";
 import { resetFailureThrottle } from "../src/audit/failures";
 import { verifyAudit } from "../src/audit/verify";
-import { type Db, appendAudit, chainedAudit, listCheckpoints, putCheckpoint } from "../src/db";
+import {
+  type Db,
+  appendAudit,
+  chainedAudit,
+  getOrgBySlug,
+  listCheckpoints,
+  putCheckpoint,
+} from "../src/db";
 import * as s from "../src/db/schema";
 import { SecretStore } from "../src/secrets/store";
 import { seedWorld, type Tenant } from "./ops-helpers";
@@ -401,5 +408,67 @@ describe("adopting an org that signed before the anchor existed", () => {
     await db.orm.update(s.auditLog).set({ outcome: "edited" }).where(eq(s.auditLog.id, row.id));
     await expect(adoptAuditKey(db, store, anchor, a.orgId)).rejects.toBeInstanceOf(AuditRefusal);
     expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
+  });
+});
+
+describe("a truncated chain is never silently skipped", () => {
+  const setup = async () => {
+    await add(a, 3);
+    await initAuditKey(db, store, anchor, a.orgId);
+    await sign(a);
+    await add(a, 4);
+    await sign(a);
+  };
+  const systemAlerts = async () => {
+    const sys = await getOrgBySlug(db, "_system");
+    return sys
+      ? (await chainedAudit(db, sys.id, 0, 100)).filter((r) => r.op === "audit_checkpoint")
+      : [];
+  };
+
+  test("every audit row deleted: the checkpointer refuses and alerts in the system chain", async () => {
+    await setup();
+    await db.orm.delete(s.auditLog).where(eq(s.auditLog.orgId, a.orgId));
+    expect(await refusal(a)).toBe("chain_invalid");
+    const alert = (await systemAlerts()).at(-1)!;
+    expect(alert.outcome).toBe("error:chain_invalid");
+    expect(JSON.parse(alert.input)).toMatchObject({ org_id: a.orgId });
+    // nothing was written into the truncated org's own chain
+    expect(await chainedAudit(db, a.orgId, 0, 10)).toEqual([]);
+  });
+
+  test("rows below the last signed entry deleted: refused and alerted", async () => {
+    await setup();
+    const last = (await listCheckpoints(db, a.orgId)).at(-1)!;
+    await db.orm
+      .delete(s.auditLog)
+      .where(and(eq(s.auditLog.orgId, a.orgId), gte(s.auditLog.seq, last.seq - 2)));
+    expect(await refusal(a)).toBe("chain_invalid");
+    expect((await systemAlerts()).length).toBeGreaterThan(0);
+  });
+
+  test("checkpointDue still looks at an org whose rows are all gone, and keeps going with the others", async () => {
+    await setup();
+    await initAuditKey(db, store, anchor, b.orgId);
+    await add(b, 3);
+    await db.orm.delete(s.auditLog).where(eq(s.auditLog.orgId, a.orgId));
+    // the org is no longer in orgsWithAudit, yet the pass checks it and still signs the other
+    expect(await checkpointDue(db, store, anchor, { everyEntries: 1 })).toBe(1);
+    expect((await systemAlerts()).at(-1)?.outcome).toBe("error:chain_invalid");
+    expect((await listCheckpoints(db, b.orgId)).length).toBe(1);
+  });
+
+  test("it is checked on every pass, not only when a checkpoint would be due", async () => {
+    await setup();
+    await db.orm.delete(s.auditLog).where(eq(s.auditLog.orgId, a.orgId));
+    await checkpointDue(db, store, anchor, { everyEntries: 1_000_000, everyMs: 1e12 });
+    const first = (await systemAlerts()).length;
+    expect(first).toBeGreaterThan(0);
+  });
+
+  test("a freshly set-up org (its first row is the key) signs normally, with no alert", async () => {
+    await initAuditKey(db, store, anchor, b.orgId);
+    expect(await checkpointDue(db, store, anchor, { everyEntries: 1 })).toBe(1);
+    expect(await systemAlerts()).toEqual([]);
   });
 });
