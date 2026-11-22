@@ -5,7 +5,7 @@ description: Per-org OpenID Connect issuer so jobs can assume cloud roles withou
 
 Each org on a Longshore instance is its own OpenID Connect (OIDC) issuer. A running job asks for an identity token for a named audience; a cloud (AWS, GCP) or Vault that trusts the issuer exchanges the token for short-lived credentials, matching on claims such as `sub`. No long-lived cloud secret is stored in CI.
 
-**Status.** The issuer and the mint endpoint are built and tested. Delivery of the credential and `ACTIONS_ID_TOKEN_REQUEST_URL` into a sandbox comes with the secrets proxy (#15), so for now tokens are minted by whatever holds an attempt credential.
+**Status.** The issuer, the mint endpoint and delivery to jobs are built and tested. A job that asks gets GitHub's request variables, with the credential kept outside the sandbox (see [How a job asks for a token](#how-a-job-asks-for-a-token)). Checks against a real cloud provider and Vault are still manual.
 
 ## Issuer
 
@@ -35,6 +35,22 @@ Every org has its own keys, so a key that signs for one org never signs for anot
 ## Who gets a token
 
 Only a running attempt, proven by its attempt credential (an HMAC bound to one attempt and org, expiring, in its own key domain), and only as the class the scheduler recorded for it. `untrusted_pr` and `trusted_pr` get nothing by default; `LONGSHORE_OIDC_ALLOW_CLASSES` widens that and you should not widen it to `untrusted_pr`. An unrecorded class, an attempt that is not running, a missing or malformed audience and a credential for another org are all refused. Every mint and every refusal is audited (attempt, run, job, audience, `jti`, never the token).
+
+## How a job asks for a token
+
+A job gets a token the way it does on GitHub. Give the job (or the workflow, when the job has no `permissions` of its own) `permissions: id-token: write`:
+
+```yaml
+permissions:
+  id-token: write
+```
+
+Then `actions/core`'s `getIDToken`, the cloud login actions and plain `curl` work as they do on GitHub: Longshore sets `ACTIONS_ID_TOKEN_REQUEST_URL` (the org's mint endpoint, with a query already on it, so `&audience=` can be appended) and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
+
+- **The request token is a placeholder.** The real attempt credential never enters the sandbox. The [secrets proxy](/secrets-proxy) adds it to requests for exactly the org's mint path, on that host and nothing else, and it replaces any `Authorization` header the job sends. The job's egress stays deny-all-except-proxy.
+- **Only when all of these hold:** the job asked with `id-token: write`; its trust class may mint (`protected` and `release` by default, never `untrusted_pr` unless an operator allows it with `LONGSHORE_OIDC_ALLOW_CLASSES`); a secrets proxy runs (`LONGSHORE_SECRETS_PROXY=1`); the issuer URL is https. Otherwise the job gets neither variable, and its log says why (silently, when it never asked).
+- **A job that can mint is secret-bearing,** so it never runs on `open` egress and its sandbox is probed from inside before it starts.
+- The credential lasts at most 6 hours and works only while the attempt is running, so it dies with the job.
 
 ## Rotation
 

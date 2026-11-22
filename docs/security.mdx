@@ -126,7 +126,7 @@ An address the guard refuses ends the job as a `policy:` failure, not an infrast
 
 ## OIDC identity for jobs
 
-Each org is its own OpenID Connect issuer (`<public url>/oidc/<org slug>`), so a job can prove who it is to a cloud or to Vault and receive short-lived credentials, with no long-lived cloud secret in CI. Tokens are signed ES256 by per-org keys sealed in their own key domain, last at most 5 minutes, carry a mandatory per-request audience, are never issued to `untrusted_pr` (or `trusted_pr`) by default, and every mint is audited. See [OIDC](/oidc).
+Each org is its own OpenID Connect issuer (`<public url>/oidc/<org slug>`), so a job can prove who it is to a cloud or to Vault and receive short-lived credentials, with no long-lived cloud secret in CI. Tokens are signed ES256 by per-org keys sealed in their own key domain, last at most 5 minutes, carry a mandatory per-request audience, are never issued to `untrusted_pr` (or `trusted_pr`) by default, and every mint is audited. A job asks for one with `permissions: id-token: write`, and the credential stays outside its sandbox behind the secrets proxy. See [OIDC](/oidc).
 
 ## Transport: https only
 

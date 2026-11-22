@@ -82,6 +82,11 @@ export class OidcIssuer {
     this.#now = o.now ?? Date.now;
   }
 
+  /** Whether a trust class may get a token at all (the operator's allow list). */
+  allowsClass(klass: string): boolean {
+    return this.#allow.includes(klass);
+  }
+
   issuerUrl(orgSlug: string): string {
     return `${this.#o.baseUrl.replace(/\/+$/, "")}/${orgSlug}`;
   }

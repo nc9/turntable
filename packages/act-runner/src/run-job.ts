@@ -65,6 +65,12 @@ export interface RunInput {
    * and the proxy attaches the real token.
    */
   githubToken?: string;
+  /**
+   * GitHub's OIDC request variables for the steps (`ACTIONS_ID_TOKEN_REQUEST_URL` and
+   * `ACTIONS_ID_TOKEN_REQUEST_TOKEN`). The token is a placeholder: the secrets proxy attaches the
+   * real credential to requests for that URL, so the sandbox never holds a usable one.
+   */
+  oidc?: { requestUrl: string; requestToken: string };
 }
 
 export interface RunOptions {
@@ -293,6 +299,12 @@ export async function* runJob(
     }
     if (input.githubToken !== undefined)
       envText += envFileOf([["GITHUB_TOKEN", input.githubToken]]);
+    if (input.oidc) {
+      envText += envFileOf([
+        ["ACTIONS_ID_TOKEN_REQUEST_URL", input.oidc.requestUrl],
+        ["ACTIONS_ID_TOKEN_REQUEST_TOKEN", input.oidc.requestToken],
+      ]);
+    }
     let envFile = "";
     if (envText !== "") {
       envFile = `${L.root}/job.env`;
