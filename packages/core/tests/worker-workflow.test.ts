@@ -862,10 +862,14 @@ jobs:
     await drain(await makeScheduler(gh));
     const [run] = await listRuns(db, scope);
     const [job] = await listJobs(db, scope, run!.id);
-    expect(job?.state).toBe("infra_error");
+    // A lint failure is deterministic and user-actionable: a failure with a policy reason, not
+    // an infra_error (which would be retried).
+    expect(job?.state).toBe("failure");
     const [att] = await listAttempts(db, scope, job!.id);
-    expect(att?.errorClass).toContain("workflow lint failed");
-    expect(att?.errorClass).toContain("github.event.pull_request.title");
+    expect(att).toMatchObject({ state: "failure", errorClass: null });
+    const text = Buffer.concat((await readLog(db, scope, att!.id)).map((c) => c.bytes)).toString();
+    expect(text).toContain("lint: workflow lint failed");
+    expect(text).toContain("github.event.pull_request.title");
   });
 
   test("the server path: an untrusted pull request run only warns and holds no credentials", async () => {

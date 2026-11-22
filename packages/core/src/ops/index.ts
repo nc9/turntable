@@ -1,5 +1,6 @@
 import { cancel } from "./definitions/cancel";
 import { checksForSha } from "./definitions/checks-for-sha";
+import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { createApiToken } from "./definitions/create-api-token";
 import { events } from "./definitions/events";
 import { failureDigest } from "./definitions/failure-digest";
@@ -40,4 +41,6 @@ export const registry = createRegistry([
   listProjects,
   ingestStatusOp,
   createApiToken,
+  listActionPinsOp,
+  acceptActionMoveOp,
 ]);

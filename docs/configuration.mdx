@@ -10,6 +10,7 @@ description: Flags and environment variables supported today.
 | `longshore serve` | Start the server. |
 | `longshore token generate` | Print a new token (stdout) and its sha256 (stderr). Touches no database. |
 | `longshore token create \| list \| revoke` | Manage tokens in a data directory. See the quickstart. |
+| `longshore policy show \| set` | Per-project action policy: `--require-sha-pins`, `--allow-owners` / `--clear-allowlist`. See [Security](/security). |
 | `longshore keys init` | Create the master key file for the encrypted secret store. |
 | `longshore github-app create \| rotate-webhook-secret \| status` | Create and manage the GitHub App. See [GitHub App](/github-app). |
 | `longshore version` | Print the version. `--version` also works. |

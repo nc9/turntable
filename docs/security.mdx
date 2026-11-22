@@ -70,6 +70,24 @@ For **protected and release** runs a finding fails planning with the list of fin
 
 The workspace is a tarball the controller delivered at one sha. The checkout stand-in only copies it and never touches the network, and a sandbox has no network unless an operator opts in. A job therefore cannot fetch a different ref, a fork, or the PR head on its own. Remote actions are fetched by sha by the controller, not the job.
 
+## Action pins and moved tags
+
+Before a run starts, every `uses:` reference is resolved to a commit sha, and the action is fetched by that sha. Longshore also remembers, per project, every tag-to-sha resolution it has made (`action_pins`: repository, ref, sha, first and last seen).
+
+If a tag later resolves to a different commit, it has moved. The pin does not change on its own. A protected or release run fails with an error that names the action and both shas, until an operator accepts the move. A pull request run only gets a warning and keeps using the old pinned commit. An operator reviews the new commit (`get_action_pins` shows it as `pending_sha`), then calls `accept_action_move` with that exact sha. The call needs the operator role and is audited, and a wrong sha is refused, so accepting never blesses a commit nobody looked at. Until trust classes land, a push counts as protected and every other event as a pull request class.
+
+### Impostor commits and nested actions
+
+GitHub serves commits from a repository's whole fork network under the parent's name, so `uses: owner/repo@<sha>` can name a commit that exists only in an attacker's fork. Every sha, given or resolved from a tag, must therefore be reachable from a branch or tag of the named repository itself (the compare API against the default branch, then its tags and branches). An unreachable sha is refused with an error that says it may exist only in a fork. Results are cached per repository and sha. If GitHub cannot be reached, the plan is retried; it is never treated as reachable. Set `LONGSHORE_GITHUB_TOKEN` (read-only is enough) to lift the unauthenticated API rate limit.
+
+Remote composite actions can contain `uses:` of their own, which act would otherwise fetch by tag over the network. So after pinning, each remote action is read at its sha. A composite's nested actions go through the same resolution: pinned by sha, checked for reachability, the owner allowlist and moved tags, and delivered locally, down to five levels. A composite whose nested actions cannot all be resolved, a docker action (top-level or nested), or a chain deeper than five levels refuses the plan. `require_sha_pins` is about what the project writes; nested tags in someone else's action do not trip it, because Longshore pins them.
+
+### Policy rejections are failures, not infrastructure errors
+
+A moved tag, a refused owner, an unpinned or unreachable action and the other deterministic plan rejections end the job as `failure` with the reason `policy: <message>`. They are not retried: the user can act on them. `infra_error` is kept for transient causes only (GitHub unreachable or rate limited while resolving, a provider down), which are retried.
+
+Two optional project policies tighten this further. `require_sha_pins` refuses any `uses:` that is not already a full commit sha. The org's action owner allowlist refuses actions from any owner not on it (`longshore policy set --allow-owners actions,oven-sh`). Both are off by default and apply to nested actions inside local composite actions too.
+
 ## Scoped per-job GitHub token
 
 Each job gets a short-lived GitHub token limited to its repository and the permissions its workflow declares. Issue [#18](https://github.com/nc9/turntable/issues/18).

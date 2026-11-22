@@ -17,6 +17,7 @@ export type { Scope } from "./scope";
 export * from "./api";
 export * from "./github";
 export * from "./cancel";
+export * from "./pins";
 export * from "./events";
 export * from "./lease";
 export * from "./poll";

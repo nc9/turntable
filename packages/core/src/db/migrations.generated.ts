@@ -140,5 +140,14 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `runs` ADD `local` integer DEFAULT false NOT NULL;"
     ]
+  },
+  {
+    "tag": "0009_youthful_gladiator",
+    "when": 1795352229854,
+    "statements": [
+      "CREATE TABLE `action_pins` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`repo` text NOT NULL,\n\t`ref` text NOT NULL,\n\t`sha` text NOT NULL,\n\t`pending_sha` text,\n\t`first_seen` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_seen` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`accepted_at` integer,\n\tPRIMARY KEY(`project_id`, `repo`, `ref`),\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "ALTER TABLE `orgs` ADD `action_owner_allowlist` text;",
+      "ALTER TABLE `projects` ADD `require_sha_pins` integer DEFAULT 0 NOT NULL;"
+    ]
   }
 ];

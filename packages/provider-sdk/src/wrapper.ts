@@ -65,10 +65,17 @@ HB=$!
 TW=
 if [ "$T" -gt 0 ] 2>/dev/null; then
   (
-    sleep "$T"
+    # Killing this subshell must also end its sleep, or every finished exec leaves a
+    # sleep behind.
+    trap 'kill "$SP" 2>/dev/null; exit 0' TERM
+    sleep "$T" &
+    SP=$!
+    wait "$SP"
     : > "$D/timedout"
     sigall TERM
-    sleep 5
+    sleep 5 &
+    SP=$!
+    wait "$SP"
     sigall KILL
   ) </dev/null >/dev/null 2>&1 &
   TW=$!
