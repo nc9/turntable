@@ -4,6 +4,8 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  KeyPolicy,
+  PolicyStatement,
   EnrolStatement,
   EnvironmentApprovalResult,
   WebAuthnSignature,
@@ -854,10 +856,56 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
   }
 
+  let keyPolicy: KeyPolicy = { mode: "any", presets: [], aaguids: [] };
+  function keyPolicyChallenge(a: {
+    mode: "any" | "hardware";
+    presets: string[];
+    aaguids: string[];
+    approver: string;
+  }): ApprovalChallenge<PolicyStatement> {
+    // Like the server: a change that leaves nobody counted is refused, and none of the fixture
+    // keys carry a hardware attestation.
+    if (a.mode === "hardware")
+      throw new Error(
+        "this policy would leave 0 counted people, fewer than the 2 the current quorum needs: enrol keys that satisfy it first, while the current policy is in force",
+      );
+    const statement: PolicyStatement = {
+      type: "longshore.approve_key_policy.v1",
+      org: orgs[0]!.slug,
+      old: { ...keyPolicy },
+      new: { mode: a.mode, presets: a.presets, aaguids: a.aaguids },
+      allowlist_hash: "5c".repeat(32),
+      approver: a.approver,
+      expires_at: now() + 86_400_000,
+      nonce: nonce(),
+    };
+    return {
+      statement,
+      canonical: JSON.stringify(statement),
+      statementHash: "7a".repeat(32),
+      challenge: "cG9saWN5LWNoYWxsZW5nZS1mb3ItdGhlLWZpeHR1cmU",
+      rpId: "localhost",
+      passkeyId: null,
+      challengeExpiresAt: now() + 600_000,
+    };
+  }
+  function approveKeyPolicy(statement: PolicyStatement) {
+    keyPolicy = { ...statement.new };
+    return { approvals: 2, required: 2, applied: true };
+  }
+
   function approversOverview(): ApproversOverview {
     return {
+      keyPolicy: {
+        mode: keyPolicy.mode,
+        presets: [...keyPolicy.presets],
+        aaguids: [...keyPolicy.aaguids],
+      },
       approvers: APPROVERS.map((a, i) => ({
-        notCounting: null,
+        notCounting:
+          keyPolicy.mode === "hardware" ? "the key has no verified hardware attestation" : null,
+        attested: false,
+        aaguid: null,
         id: a.id,
         person: a.person,
         forgeLogin: a.forgeLogin,
@@ -1102,6 +1150,8 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     ingestStatus,
     approvalStatus,
     approversOverview,
+    keyPolicyChallenge,
+    approveKeyPolicy,
     approvalChallenge,
     approveEnvironment,
     enrolmentChallenge,

@@ -4,6 +4,8 @@ import {
   approvalWarnings,
   applyEnrolmentApproval,
   applyEnvironmentApproval,
+  applyKeyPolicyApproval,
+  buildKeyPolicyStatement,
   enrolmentQuorum,
   liveEnvironmentRecords,
 } from "../../approvals/apply";
@@ -14,12 +16,14 @@ import {
   ENROL_STATEMENT_TYPE,
   ENV_STATEMENT_TYPE,
   enrolStatementSchema,
+  policyStatementSchema,
   envStatementSchema,
   keyFingerprint,
   MAX_STATEMENT_TTL_MS,
   statementHash,
 } from "../../approvals/statement";
 import { approverIdentity, normalizeLogin, notCountingReason } from "../../approvals/identity";
+import { KeyPolicyError, keyPolicyViolation } from "../../approvals/key-policy";
 import { parseEd25519PublicKey } from "../../approvals/keys";
 import { dbKeyStore } from "../../approvals/store";
 import { signatureSchema, verifySignature, VerifyError } from "../../approvals/verify";
@@ -33,6 +37,7 @@ import {
   getApprover,
   getEnrolment,
   getEnvPolicy,
+  getKeyPolicy,
   getOrgById,
   getProject,
   getRun,
@@ -162,6 +167,12 @@ export const approvalStatus = defineOp({
   },
 });
 
+const keyPolicyOutput = z.object({
+  mode: z.enum(["any", "hardware"]),
+  presets: z.array(z.string()),
+  aaguids: z.array(z.string()),
+});
+
 export const approversOverview = defineOp({
   name: "approvers_overview",
   summary: "Enrolled approvers, pending enrolments and the per-environment approval policies.",
@@ -183,9 +194,14 @@ export const approversOverview = defineOp({
         not_counting: z
           .string()
           .nullable()
-          .describe("Why this key counts toward no approval or quorum; null when it does."),
+          .describe(
+            "Why this key counts toward no approval or quorum (no forge login, or it does not satisfy the key policy); null when it does.",
+          ),
+        attested: z.boolean().describe("A pinned vendor attestation chain verified at enrolment."),
+        aaguid: z.string().nullable(),
       }),
     ),
+    key_policy: keyPolicyOutput,
     pending_enrolments: z.array(
       z.object({
         id: z.string(),
@@ -219,6 +235,7 @@ export const approversOverview = defineOp({
     const orgId = ctx.scope.orgId;
     const now = ctx.now();
     const approvers = await listApprovers(ctx.db, orgId);
+    const keyPolicy = await getKeyPolicy(ctx.db, orgId);
     const pending = [];
     for (const e of await listPendingEnrolments(ctx.db, orgId, now)) {
       const recs = (await listEnrolmentRecords(ctx.db, orgId, e.id)).filter(
@@ -230,7 +247,7 @@ export const approversOverview = defineOp({
         forge_login: e.forgeLogin,
         kind: e.kind as "webauthn" | "ed25519",
         key_fingerprint: keyFingerprint(e),
-        approvals: (await recordIdentities(ctx.db, orgId, recs)).size,
+        approvals: (await recordIdentities(ctx.db, orgId, recs, keyPolicy)).size,
         required: await enrolmentQuorum(ctx.db, orgId, approverIdentity(e)),
         expires_at: iso(e.expiresAt)!,
       });
@@ -255,8 +272,11 @@ export const approversOverview = defineOp({
         kind: a.kind as "webauthn" | "ed25519",
         passkey_id: a.credentialId,
         created_at: iso(a.createdAt)!,
-        not_counting: notCountingReason(a),
+        not_counting: notCountingReason(a) ?? keyPolicyViolation(keyPolicy, a),
+        attested: a.attested,
+        aaguid: a.aaguid,
       })),
+      key_policy: keyPolicy,
       pending_enrolments: pending,
       policies,
       warnings: await approvalWarnings(ctx.db, orgId, [...names]),
@@ -278,7 +298,7 @@ const challengeOutput = z.object({
 
 async function openChallenge(
   ctx: OpContext,
-  kind: "approve" | "enrol",
+  kind: "approve" | "enrol" | "policy",
   statement: { nonce: string },
   hash: string,
   approverId: string,
@@ -295,7 +315,7 @@ async function openChallenge(
  */
 async function storeChallenge(
   ctx: OpContext,
-  kind: "approve" | "enrol" | "register",
+  kind: "approve" | "enrol" | "register" | "policy",
   id: string,
   hash: string,
 ): Promise<void> {
@@ -427,6 +447,90 @@ export const enrolmentChallenge = defineOp({
   },
 });
 
+// ---- key policy (#152) ----
+
+export const keyPolicyChallenge = defineOp({
+  name: "key_policy_challenge",
+  summary: "Issue the statement an approver signs to change the key policy.",
+  description:
+    "Builds the policy-change statement (the policy being replaced, the new one, the hash of the " +
+    "allowlist it expands to, an expiry and a nonce) and the single-use challenge for one " +
+    "approver to sign. The change applies when a quorum of the currently counted approvers has " +
+    "signed it with approve_key_policy. Refused when the change would leave fewer counted people " +
+    "than the current quorum needs. Needs release_operator. Not available over MCP.",
+  input: z.object({
+    mode: z.enum(["any", "hardware"]),
+    presets: z.array(z.string().max(40)).max(10).optional(),
+    aaguids: z.array(z.string().max(40)).max(200).optional(),
+    approver: z.string().min(1).max(64),
+  }),
+  output: challengeOutput,
+  effect: "write",
+  auth: { type: "token", minRole: "release_operator" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/approvers/key-policy/challenge" },
+  mcp: false,
+  async handler(ctx, input) {
+    const now = ctx.now();
+    const org = await getOrgById(ctx.db, ctx.scope.orgId);
+    let statement;
+    try {
+      statement = policyStatementSchema.parse(
+        await buildKeyPolicyStatement(ctx.db, ctx.scope.orgId, org!.slug, input, {
+          approver: input.approver,
+          expiresAt: now + DEFAULT_APPROVAL_TTL_MS,
+          nonce: nonce(),
+        }),
+      );
+    } catch (e) {
+      if (e instanceof KeyPolicyError) throw new OpError(e.code, e.message);
+      throw e;
+    }
+    const hash = statementHash(statement);
+    const approver = await openChallenge(ctx, "policy", statement, hash, input.approver);
+    return {
+      statement,
+      canonical: canonicalStatement(statement),
+      statement_hash: hash,
+      challenge: challengeOf(statement),
+      rp_id: ctx.webauthn?.rpId ?? null,
+      passkey_id: approver.credentialId,
+      challenge_expires_at: iso(now + CHALLENGE_TTL_MS)!,
+    };
+  },
+});
+
+export const approveKeyPolicy = defineOp({
+  name: "approve_key_policy",
+  summary: "Approve a key policy change with a signed statement. Human only.",
+  description:
+    "Records one approver's signed policy-change statement. A policy change is a change of what " +
+    "counts as an approval, so it needs the same quorum as enrolling a key: when enough distinct " +
+    "people among the currently counted approvers have signed the same statement (the production " +
+    "policy's count, capped by how many could sign, computed before the change), the policy " +
+    "changes. Takes no bearer token: the signature is the credential.",
+  input: z.object({ statement: policyStatementSchema, signature: signatureSchema }),
+  output: z.object({
+    approvals: z.int(),
+    required: z.int(),
+    applied: z.boolean(),
+    policy: keyPolicyOutput,
+  }),
+  effect: "write",
+  auth: { type: "signature", minRole: "viewer" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/approvers/key-policy" },
+  async handler(ctx, input) {
+    return applyKeyPolicyApproval(
+      { db: ctx.db, scope: ctx.scope, now: ctx.now(), rp: ctx.webauthn },
+      input.statement,
+      input.signature,
+    );
+  },
+});
+
 // ---- enrolment ----
 
 export const registerChallenge = defineOp({
@@ -441,6 +545,11 @@ export const registerChallenge = defineOp({
     challenge: z.string(),
     rp_id: z.string(),
     expires_at: z.string(),
+    attestation: z
+      .enum(["none", "direct"])
+      .describe(
+        "The attestation conveyance to request in navigator.credentials.create: direct under the hardware key policy.",
+      ),
   }),
   effect: "write",
   auth: { type: "token", minRole: "release_operator" },
@@ -453,7 +562,13 @@ export const registerChallenge = defineOp({
     const now = ctx.now();
     const id = nonce();
     await storeChallenge(ctx, "register", id, "");
-    return { challenge: id, rp_id: rpv.rpId, expires_at: iso(now + CHALLENGE_TTL_MS)! };
+    const kp = await getKeyPolicy(ctx.db, ctx.scope.orgId);
+    return {
+      challenge: id,
+      rp_id: rpv.rpId,
+      expires_at: iso(now + CHALLENGE_TTL_MS)!,
+      attestation: kp.mode === "hardware" ? ("direct" as const) : ("none" as const),
+    };
   },
 });
 
@@ -461,8 +576,10 @@ export const requestEnrolment = defineOp({
   name: "request_enrolment",
   summary: "Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum.",
   description:
-    "Creates a pending enrolment for a person's key: a WebAuthn registration (attestation none) " +
-    "made with the challenge from register_challenge, or an ed25519 public key. Nothing is " +
+    "Creates a pending enrolment for a person's key: a WebAuthn registration made with the " +
+    "challenge from register_challenge (attestation none, or direct and verified against pinned " +
+    "vendor roots under the hardware key policy), or an ed25519 public key (refused under the " +
+    "hardware policy). Nothing is " +
     "enrolled until a quorum of existing approvers signs it. Refused while no approver exists: " +
     "the first approver is enrolled from the server's CLI (the local trust root). Needs " +
     "release_operator. Not available over MCP.",
@@ -509,14 +626,22 @@ export const requestEnrolment = defineOp({
         "no approver is enrolled yet: the first approver is enrolled from the server CLI (longshore approvals bootstrap)",
       );
     }
+    const keyPolicy = await getKeyPolicy(ctx.db, orgId);
     let key: {
       kind: "webauthn" | "ed25519";
       credentialId: string | null;
       publicKey: string;
       alg: string;
       signCount: number;
+      aaguid: string | null;
+      attested: boolean;
     };
     if (input.ed25519_public_key !== undefined) {
+      if (keyPolicy.mode === "hardware")
+        throw new OpError(
+          "invalid_input",
+          "this org's key policy is hardware: an offline ed25519 key cannot be enrolled",
+        );
       try {
         key = {
           kind: "ed25519",
@@ -524,6 +649,8 @@ export const requestEnrolment = defineOp({
           publicKey: parseEd25519PublicKey(input.ed25519_public_key),
           alg: "EdDSA",
           signCount: 0,
+          aaguid: null,
+          attested: false,
         };
       } catch {
         throw new OpError("invalid_input", "ed25519_public_key is not a valid ed25519 public key");
@@ -540,7 +667,12 @@ export const requestEnrolment = defineOp({
       try {
         const r = verifyRegistration(
           { clientDataJSON: w.client_data_json, attestationObject: w.attestation_object },
-          { challenge: w.challenge, rp: rp(ctx) },
+          {
+            challenge: w.challenge,
+            rp: rp(ctx),
+            ...(ctx.attestationAnchors ? { anchors: ctx.attestationAnchors } : {}),
+            now,
+          },
         );
         key = {
           kind: "webauthn",
@@ -548,7 +680,15 @@ export const requestEnrolment = defineOp({
           publicKey: r.publicKey,
           alg: r.alg,
           signCount: r.signCount,
+          aaguid: r.attestation.verified ? r.attestation.aaguid : null,
+          attested: r.attestation.verified,
         };
+        const violation = keyPolicyViolation(keyPolicy, key);
+        if (violation !== null)
+          throw new OpError(
+            "invalid_input",
+            `registration refused by the key policy: ${violation}`,
+          );
       } catch (e) {
         if (e instanceof WebAuthnError)
           throw new OpError("invalid_input", `registration refused: ${e.message}`);
