@@ -7,6 +7,7 @@ import {
   allowHostsFromEnv,
   blockedReason,
   createHttpClient,
+  interleaveFamilies,
   readCapped,
 } from "../src/index";
 
@@ -426,5 +427,111 @@ describe("request bodies", () => {
       body: new URLSearchParams({ a: "1" }),
     });
     expect(((await echo.json()) as { body: string }).body).toBe("a=1");
+  });
+});
+
+describe("address fallback", () => {
+  const mk = (resolve: string[], extra: { connectAttemptMs?: number; timeoutMs?: number } = {}) =>
+    createHttpClient({ allowHosts: ["a.test"], resolve: async () => resolve, ...extra });
+
+  test("interleaves the families, starting with the family listed first, deduplicated", () => {
+    expect(interleaveFamilies(["2606:4700::1", "2606:4700::2", "1.1.1.1", "1.0.0.1"])).toEqual([
+      "2606:4700::1",
+      "1.1.1.1",
+      "2606:4700::2",
+      "1.0.0.1",
+    ]);
+    expect(interleaveFamilies(["1.1.1.1", "2606:4700::1", "1.1.1.1"])).toEqual([
+      "1.1.1.1",
+      "2606:4700::1",
+    ]);
+    expect(interleaveFamilies(["1.1.1.1"])).toEqual(["1.1.1.1"]);
+    expect(interleaveFamilies([])).toEqual([]);
+  });
+
+  test("an IPv6 answer with no route falls back to the working IPv4 address", async () => {
+    // ::1 has no listener (the server is IPv4 only): the connection is refused or unroutable.
+    const c = mk(["::1", "127.0.0.1"]);
+    const res = await c.fetch(`${origin}/ok`);
+    expect(await res.text()).toBe("hello");
+  });
+
+  test("the first address is tried first, so a working one is not delayed", async () => {
+    const c = mk(["127.0.0.1", "::1"]);
+    expect((await c.fetch(`${origin}/ok`)).status).toBe(200);
+  });
+
+  test("an unreachable or blackholed first address falls back within the attempt budget", async () => {
+    // 203.0.113.1 is TEST-NET-3: it either hangs (the attempt timer moves on) or is refused fast.
+    const c = mk(["203.0.113.1", "127.0.0.1"], { connectAttemptMs: 300 });
+    const t0 = Date.now();
+    expect((await c.fetch(`${origin}/ok`)).status).toBe(200);
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+
+  test("when every address fails the error is the connect error, not a hang", async () => {
+    const dead = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("x") });
+    const port = dead.port;
+    dead.stop(true);
+    const c = mk(["::1", "127.0.0.1"], { connectAttemptMs: 300 });
+    const err = (await c
+      .fetch(`http://a.test:${port}/ok`)
+      .catch((e) => e)) as NodeJS.ErrnoException;
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SsrfError);
+    expect(["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EADDRNOTAVAIL"]).toContain(
+      err.code as string,
+    );
+  });
+
+  test("every answer is still validated before any attempt: a private one anywhere is refused", async () => {
+    let attempts = 0;
+    const probe = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => {
+        attempts += 1;
+        return new Response("x");
+      },
+    });
+    const strict = createHttpClient({
+      resolve: async () => ["8.8.8.8", "2606:4700::1", "127.0.0.1"],
+    });
+    expect(await strict.fetch("https://example.test/").catch((e) => e)).toBeInstanceOf(SsrfError);
+    const strict6 = createHttpClient({ resolve: async () => ["8.8.8.8", "fd00::1"] });
+    expect(await strict6.fetch("https://example.test/").catch((e) => e)).toBeInstanceOf(SsrfError);
+    expect(attempts).toBe(0);
+    probe.stop(true);
+  });
+
+  test("after a connection is made there is no retry on another address, even for a POST", async () => {
+    let accepted = 0;
+    const raw = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        open(s) {
+          accepted += 1;
+          s.end(); // accept, then close without answering
+        },
+        data() {},
+      },
+    });
+    const c = mk(["127.0.0.1", "::1"]);
+    const err = (await c
+      .fetch(`http://a.test:${raw.port}/x`, { method: "POST", body: "payload" })
+      .catch((e) => e)) as NodeJS.ErrnoException;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).not.toBe("ECONNREFUSED"); // it would be, had ::1 been tried
+    expect(accepted).toBe(1);
+    raw.stop(true);
+  });
+
+  test("the overall deadline bounds every attempt together", async () => {
+    const c = mk(["203.0.113.1", "198.51.100.1"], { connectAttemptMs: 300, timeoutMs: 700 });
+    const t0 = Date.now();
+    const err = await c.fetch(`http://a.test:81/x`).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(Date.now() - t0).toBeLessThan(3000);
   });
 });
