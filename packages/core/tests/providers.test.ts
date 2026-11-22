@@ -30,9 +30,24 @@ test("daytona is selectable and its options are validated strictly", () => {
   expect(() => createProvider("daytona", { maxLive: 0 })).toThrow();
   expect(() => createProvider("daytona", { maxLive: "2" })).toThrow();
   expect(() => createProvider("daytona", { ttlSeconds: 3600 })).toThrow(/ttlSeconds/);
-  expect(() => createProvider("daytona", { ownerCiPreflight: false })).toThrow(
-    /cannot be turned off/,
-  );
+  // The org CPU check: true is the defaults, an object sets its parts, false turns that check off.
+  for (const ok of [true, false, {}, { cpuLimit: 150, region: "eu", sandboxClass: "container" }]) {
+    expect(() => createProvider("daytona", { ownerCiPreflight: ok })).not.toThrow();
+  }
+  for (const bad of [
+    "yes",
+    1,
+    [],
+    { cpuLimit: 0 },
+    { cpuLimit: 1.5 },
+    { cpuLimit: "200" },
+    { region: "" },
+    { region: "US East" },
+    { sandboxClass: 3 },
+    { limit: 5 },
+  ]) {
+    expect(() => createProvider("daytona", { ownerCiPreflight: bad })).toThrow();
+  }
   expect(() => createProvider("daytona", { apiKeyFile: "/k", apiKeyEnv: "K" })).toThrow(
     /only one of/,
   );
@@ -122,3 +137,32 @@ test("isolation is declared from what the provider really is: docker is a contai
   expect(createProvider("docker", { runtime: "runsc" }).info.isolation).toBe("gvisor");
   expect(createProvider("daytona", {}).info.isolation).toBe("container");
 });
+
+test(
+  "the org CPU check's settings from the config reach the provider: a low limit holds a create back, false lets it through",
+  { timeout: 30_000 },
+  async () => {
+    const keyFile = join(dir, "key-usage");
+    writeFileSync(keyFile, `${MOCK_KEY}\n`);
+    // Somebody else's sandbox in the account, so the org id is known, and 40 vCPU in use.
+    mock.addForeign("their-sandbox", { project: "other" }, "stopped");
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container", currentCpuUsage: 40 }];
+    const spec = {
+      name: "tt-run-x",
+      labels: { "longshore.run": "r1" },
+      ttlSeconds: 600,
+      network: { egress: "none" as const },
+    };
+    const base = { baseUrl: mock.url, apiKeyFile: keyFile, capacityWaitSeconds: 1 };
+    // A limit of 30 is below what is in use: the create waits out its second and fails.
+    const tight = createProvider("daytona", { ...base, ownerCiPreflight: { cpuLimit: 30 } });
+    await expect(tight.create(spec)).rejects.toThrow(/vCPU in use/);
+    // Defaults (200) leave room; `false` skips the check, and then no usage is read for it.
+    const roomy = createProvider("daytona", { ...base, ownerCiPreflight: true });
+    await roomy.destroy((await roomy.create(spec)).id);
+    const before = mock.usage.calls;
+    const off = createProvider("daytona", { ...base, ownerCiPreflight: false });
+    await off.destroy((await off.create({ ...spec, name: "tt-run-y" })).id);
+    expect(mock.usage.calls).toBe(before);
+  },
+);

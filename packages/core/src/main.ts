@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
@@ -196,6 +197,21 @@ async function startBackground(
         ...(process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()
           ? { advertiseHost: process.env.LONGSHORE_PROXY_ADVERTISE_HOST.trim() }
           : {}),
+        // A public TLS listener, for sandboxes in another provider's network (Daytona).
+        ...(process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim() ||
+        process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim()
+          ? { tls: readProxyTls() }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_PORT?.trim()
+          ? { advertisePort: Number(process.env.LONGSHORE_PROXY_ADVERTISE_PORT.trim()) }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_ADDRESSES?.trim()
+          ? {
+              advertiseAddresses: process.env.LONGSHORE_PROXY_ADVERTISE_ADDRESSES.split(",")
+                .map((a) => a.trim())
+                .filter(Boolean),
+            }
+          : {}),
         log,
       });
       log(`secrets proxy listening on port ${secretsProxy.port}`);
@@ -323,6 +339,21 @@ async function startBackground(
       await secretsProxy?.stop();
     },
   };
+}
+
+/** The proxy's TLS certificate and key, from their files: both or neither. */
+function readProxyTls(): { key: string; cert: string } {
+  const certFile = process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim();
+  const keyFile = process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim();
+  if (!certFile || !keyFile) {
+    throw new Error(
+      "LONGSHORE_PROXY_TLS_CERT_FILE and LONGSHORE_PROXY_TLS_KEY_FILE must be set together",
+    );
+  }
+  if (!process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()) {
+    throw new Error("a TLS proxy listener needs LONGSHORE_PROXY_ADVERTISE_HOST (its public name)");
+  }
+  return { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
 }
 
 async function serve(args: string[]): Promise<void> {

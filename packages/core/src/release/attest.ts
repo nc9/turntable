@@ -6,6 +6,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { parseTarget } from "./publish/config";
+import type { PublishTarget } from "./publish/types";
 
 export type AttestCheck = { state: "new" } | { state: "same" } | { state: "mismatch"; why: string };
 
@@ -25,10 +27,93 @@ export class AttestationStore {
          PRIMARY KEY (org_id, project_id, repo, tag, name))`,
     );
     this.#db.run(
+      `CREATE TABLE IF NOT EXISTS publish_targets (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, key TEXT NOT NULL,
+         config TEXT NOT NULL, set_at INTEGER NOT NULL, PRIMARY KEY (org_id, project_id, key))`,
+    );
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS publish_state (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL, tag TEXT NOT NULL,
+         target TEXT NOT NULL, state TEXT NOT NULL, detail TEXT, updated INTEGER NOT NULL,
+         PRIMARY KEY (org_id, project_id, repo, tag, target))`,
+    );
+    this.#db.run(
       `CREATE TABLE IF NOT EXISTS pinned_repos (
          org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL,
          pinned_at INTEGER NOT NULL, PRIMARY KEY (org_id, project_id))`,
     );
+  }
+
+  /**
+   * The project's publish declaration, set by the operator in this file. A pull request cannot
+   * touch it, and neither can the main process.
+   */
+  setPublishTarget(
+    orgId: string,
+    projectId: string,
+    key: string,
+    target: PublishTarget,
+    now: number,
+  ): void {
+    this.#db
+      .query(
+        "INSERT INTO publish_targets VALUES (?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, key) DO UPDATE SET config = excluded.config, set_at = excluded.set_at",
+      )
+      .run(orgId, projectId, key, JSON.stringify(target), now);
+  }
+
+  removePublishTarget(orgId: string, projectId: string, key: string): boolean {
+    return (
+      this.#db
+        .query("DELETE FROM publish_targets WHERE org_id = ? AND project_id = ? AND key = ?")
+        .run(orgId, projectId, key).changes > 0
+    );
+  }
+
+  /** The declared targets by key, validated again as they are read. A bad row is skipped, not trusted. */
+  publishTargets(orgId: string, projectId: string): Record<string, PublishTarget> {
+    const rows = this.#db
+      .query<{ key: string; config: string }, [string, string]>(
+        "SELECT key, config FROM publish_targets WHERE org_id = ? AND project_id = ? ORDER BY key",
+      )
+      .all(orgId, projectId);
+    const out: Record<string, PublishTarget> = {};
+    for (const r of rows) {
+      try {
+        out[r.key] = parseTarget(JSON.parse(r.config));
+      } catch {
+        // an unreadable declaration publishes nothing
+      }
+    }
+    return out;
+  }
+
+  /** What happened to a target for a release: kept so a re-run resumes instead of repeating. */
+  publishState(
+    id: { orgId: string; projectId: string; repo: string; tag: string },
+    target: string,
+  ): { state: string; detail: string | null } | undefined {
+    return (
+      this.#db
+        .query<{ state: string; detail: string | null }, [string, string, string, string, string]>(
+          "SELECT state, detail FROM publish_state WHERE org_id = ? AND project_id = ? AND repo = ? AND tag = ? AND target = ?",
+        )
+        .get(id.orgId, id.projectId, id.repo.toLowerCase(), id.tag, target) ?? undefined
+    );
+  }
+
+  setPublishState(
+    id: { orgId: string; projectId: string; repo: string; tag: string },
+    target: string,
+    state: string,
+    detail: string | null,
+    now: number,
+  ): void {
+    this.#db
+      .query(
+        "INSERT INTO publish_state VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, repo, tag, target) DO UPDATE SET state = excluded.state, detail = excluded.detail, updated = excluded.updated",
+      )
+      .run(id.orgId, id.projectId, id.repo.toLowerCase(), id.tag, target, state, detail, now);
   }
 
   /**
