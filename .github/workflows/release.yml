@@ -28,6 +28,13 @@ jobs:
       - run: bun run build
         env:
           TURNTABLE_VERSION: ${{ github.ref_name }}
+          # Re-sign darwin with the pinned rcodesign BEFORE hashing, so SHA256SUMS matches
+          # what users download.
+          TURNTABLE_SIGN_DARWIN: "1"
+      - name: Verify the darwin signature and SHA256SUMS
+        run: |
+          bun run scripts/rcodesign.ts verify dist/turntable-darwin-arm64
+          (cd dist && sha256sum -c SHA256SUMS)
       - run: scripts/smoke.sh dist/turntable-linux-x64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

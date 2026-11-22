@@ -1,11 +1,13 @@
 // Cross-compiles the single-file binary for each supported target.
 //   bun run scripts/build.ts                 all targets
 //   bun run scripts/build.ts bun-darwin-arm64  one or more named targets
+// TURNTABLE_SIGN_DARWIN=1 re-signs the darwin binary with rcodesign (ad-hoc) and verifies it.
 // Version comes from TURNTABLE_VERSION (a leading "v" is stripped) or root package.json.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareCompileEntry } from "../packages/ui/scripts/compile-entry";
+import { signAdhoc, verifySignature } from "./rcodesign";
 
 const TARGETS = ["bun-linux-x64", "bun-linux-arm64", "bun-darwin-arm64"] as const;
 
@@ -42,6 +44,13 @@ for (const target of targets) {
   if (!result.success) {
     for (const log of result.logs) console.error(log);
     throw new Error(`build failed for ${target}`);
+  }
+  // Re-sign darwin BEFORE hashing, so SHA256SUMS matches what users download. Release and CI
+  // set TURNTABLE_SIGN_DARWIN=1; a plain local build skips the rcodesign download.
+  if (target.includes("darwin") && process.env.TURNTABLE_SIGN_DARWIN === "1") {
+    await signAdhoc(outfile, name);
+    const facts = await verifySignature(outfile, name);
+    console.log(`${name}  re-signed (${facts.flags})`);
   }
   const bytes = readFileSync(outfile);
   sums.push(`${createHash("sha256").update(bytes).digest("hex")}  ${name}`);

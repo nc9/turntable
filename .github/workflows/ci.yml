@@ -39,6 +39,13 @@ jobs:
           fi
       - run: bun run test
       - run: bun run build
+        env:
+          # Re-signs the darwin binary with the pinned rcodesign and verifies the signature.
+          TURNTABLE_SIGN_DARWIN: "1"
+      - name: Darwin signature is fresh ad-hoc, and SHA256SUMS matches the signed files
+        run: |
+          bun run scripts/rcodesign.ts verify dist/turntable-darwin-arm64
+          (cd dist && sha256sum -c SHA256SUMS)
       - name: Smoke the linux-x64 binary
         run: scripts/smoke.sh dist/turntable-linux-x64
 
@@ -98,3 +105,13 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+      - name: Build the amd64 image for a smoke run
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: turntable:smoke
+      - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token)
+        run: scripts/smoke-image.sh turntable:smoke
