@@ -491,7 +491,12 @@ async function serve(args: string[]): Promise<void> {
     };
     cache = createCacheService({
       db,
-      store: new FsCacheStore(join(dataDir, "cache")),
+      // With a master key the blobs are encrypted at rest, per org (cache/blob-crypto.ts).
+      store: new FsCacheStore(join(dataDir, "cache"), {
+        masterKey: process.env.LONGSHORE_MASTER_KEY_FILE?.trim()
+          ? loadMasterKey(process.env.LONGSHORE_MASTER_KEY_FILE.trim())
+          : undefined,
+      }),
       grants: new CacheGrants(),
       orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
