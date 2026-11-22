@@ -9,7 +9,7 @@
 // provider is not involved (the run is created the way the poller creates it, and its job is
 // recorded as finished). It is slower than a unit test, so it has its own CI job.
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,10 +24,14 @@ import {
   createOrg,
   createPolledRun,
   createProject,
+  getProjectBySlug,
   getReleaseRequest,
   insertApprover,
   listAudit,
+  listJobs,
+  listRuns,
   openDatabase,
+  setGithubApp,
   recordArtifact,
   setEnvPolicy,
   setFreeze,
@@ -36,7 +40,13 @@ import {
   setRunStatus,
   type Db,
 } from "../src/db";
+import { setApproveRunMinRole } from "../src/db/repos";
+import { createWebhookHandler } from "../src/github/webhook";
+import { SECRET_WEBHOOK } from "../src/github/app-auth";
 import { dispatch, registry } from "../src/ops";
+import { Poller, pollConfigSchema } from "../src/poll";
+import { SecretStore } from "../src/secrets/store";
+import { makeGithub } from "./github-stub";
 import { AttestationStore } from "../src/release/attest";
 import { dirArtifacts } from "../src/release/artifacts";
 import { githubForge } from "../src/release/forge";
@@ -167,6 +177,9 @@ interface World {
   request(artifacts?: string[]): Promise<string>;
   state(id: string): Promise<{ status: string; reason: string | null; result: any }>;
   signAudits(): Promise<string[]>;
+  /** Set when the run came from a signed tag push webhook through the poller. */
+  ingested?: Ingested;
+  stop(): void;
 }
 
 async function npmTarball(): Promise<Uint8Array> {
@@ -179,6 +192,174 @@ async function npmTarball(): Promise<Uint8Array> {
   return tarDirectory(d, ["package"]);
 }
 
+// ---- ingest: a signed tag push webhook, the poller's nudge, and the tag's run ----
+
+const TAG_WORKFLOW = `name: Release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  release:
+    needs: build
+    environment: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo release
+`;
+
+export interface Ingested {
+  runId: string;
+  buildJobId: string;
+  releaseJobId: string;
+  trust: { class: string; workflowHash: string; facts: Record<string, unknown>; reasons: string[] };
+  webhookStatus: number;
+  gh: ReturnType<typeof makeGithub>;
+  stop(): void;
+}
+
+const until = async <T>(what: string, f: () => Promise<T | undefined>): Promise<T> => {
+  for (let i = 0; i < 200; i += 1) {
+    const v = await f();
+    if (v !== undefined) return v;
+    await Bun.sleep(25);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+};
+
+/**
+ * Starts a poller for acme/web (the tag patterns opted in), lets it take the default branch, then
+ * creates the tag at GitHub and sends the signed push webhook for it. The webhook handler is the
+ * real one: its only effect is to nudge the poller, which then reads the facts from GitHub itself
+ * and creates the tag's run. `protect` says whether a ruleset restricts creating the tag.
+ */
+async function ingestTag(
+  db: Db,
+  orgId: string,
+  o: { protect: boolean; tagCommit?: string; lightweight?: boolean },
+): Promise<Ingested> {
+  const gh = makeGithub();
+  gh.state.files.set("*", TAG_WORKFLOW);
+  gh.state.history = [{ sha: SHA, parents: [] }];
+  gh.state.rulesets = o.protect
+    ? [
+        {
+          id: 1,
+          include: ["refs/tags/v*"],
+          bypass: [{ actor_type: "RepositoryRole", actor_id: 5 }],
+        },
+      ]
+    : [];
+  const clock = { t: 1_800_000_000_000 };
+  const poller = new Poller({
+    db,
+    config: pollConfigSchema.parse({
+      allowUnauthenticated: true,
+      repos: [
+        {
+          repo: "acme/web",
+          org: "acme",
+          project: "web",
+          workflow: ".github/workflows/ci.yml",
+          defaultBranch: "main",
+          tagRefs: ["refs/tags/v*"],
+          intervalSeconds: 3600,
+          maxRunsPerHour: 1000,
+          maxWaitingRuns: 500,
+        },
+      ],
+    }),
+    fetch: gh.fetch,
+    now: () => clock.t,
+  });
+  // The real webhook handler, with the App's webhook secret in the real secret store.
+  const masterKey = randomBytes(32);
+  const store = new SecretStore(db, masterKey);
+  await setGithubApp(
+    db,
+    { orgId },
+    {
+      appId: "42",
+      slug: "longshore-test",
+      name: "Longshore",
+      ownerLogin: "acme",
+      htmlUrl: "https://github.com/apps/x",
+      clientId: "Iv1.abc",
+    },
+  );
+  const secret = ["whsec", "golden", "7731"].join("_");
+  await store.set(orgId, SECRET_WEBHOOK, secret);
+  const handler = createWebhookHandler({
+    db,
+    store,
+    facts: { getInstallation: async () => undefined, listInstallationRepos: async () => [] },
+    onRepoEvent: (repo) => void poller.nudge(repo),
+    log: () => {},
+  });
+
+  poller.start();
+  const scope = await (async () => {
+    const proj = await getProjectBySlug(db, { orgId }, "web");
+    return { orgId, projectId: proj!.id };
+  })();
+  // The first poll takes the default branch: no tag run yet.
+  await until("the first poll", async () =>
+    (await listRuns(db, scope)).some((r) => r.ref === "refs/heads/main") ? true : undefined,
+  );
+  expect((await listRuns(db, scope)).some((r) => r.ref.startsWith("refs/tags/"))).toBe(false);
+
+  // The tag is created at GitHub, and GitHub tells us with a signed push webhook. The payload
+  // lies about the commit and the pusher: none of it is read.
+  // An annotated tag by default, so the run has a creator (its tagger) the approvers differ from.
+  gh.state.tags.set(
+    TAG,
+    o.lightweight
+      ? { sha: o.tagCommit ?? SHA }
+      : { sha: o.tagCommit ?? SHA, annotatedAs: "9".repeat(40), tagger: "Release Bot" },
+  );
+  clock.t += 60_000;
+  const body = JSON.stringify({
+    ref: `refs/tags/${TAG}`,
+    after: "f".repeat(40),
+    pusher: { name: "mallory" },
+    repository: { full_name: "acme/web" },
+  });
+  const res = await handler.handle(
+    new Request("http://x/api/v1/webhooks/github", {
+      method: "POST",
+      body,
+      headers: {
+        "x-github-event": "push",
+        "x-github-delivery": "11111111-2222-3333-4444-555555555555",
+        "x-hub-signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+      },
+    }),
+    "203.0.113.5",
+  );
+  const webhookStatus = res!.status;
+  const run = await until("the tag's run", async () =>
+    (await listRuns(db, scope)).find((r) => r.ref === `refs/tags/${TAG}`),
+  ).catch(() => undefined);
+  if (!run) {
+    poller.stop();
+    throw new Error("the tag was not ingested");
+  }
+  const jobs = await listJobs(db, scope, run.id);
+  return {
+    runId: run.id,
+    buildJobId: jobs.find((j) => j.jobKey === "build")!.id,
+    releaseJobId: jobs.find((j) => j.jobKey === "release")!.id,
+    trust: JSON.parse(run.trust!),
+    webhookStatus,
+    gh,
+    stop: () => poller.stop(),
+  };
+}
+
 async function world(
   o: {
     fork?: boolean;
@@ -186,6 +367,19 @@ async function world(
     tamperBytes?: boolean;
     /** The attempt that wrote the tarball ran as this lower class. */
     lowerTarball?: string;
+    /** Create the run from a signed tag push webhook through the poller, not directly. */
+    ingest?: {
+      protect: boolean;
+      lightweight?: boolean;
+      allowAuthorApproval?: boolean;
+      /** Distinct approvers the environment needs (default 1, the solo setup). */
+      quorum?: number;
+      /**
+       * Distinct approvers who sign. Default: what the run needs: the quorum, plus one when the
+       * author is unknown and author approval is not allowed.
+       */
+      approvers?: number;
+    };
   } = {},
 ): Promise<World> {
   const db = openDatabase(":memory:");
@@ -197,63 +391,15 @@ async function world(
   const binary = enc("the linux binary, built from the tag");
   const tarball = await npmTarball();
 
-  // 1. A tag push becomes a run, classified by the same decision the poller makes. A fork's
-  //    pull request that happens to name a tag ref is the untrusted case.
-  const trust = o.fork
-    ? decideRun({
-        event: "pull_request",
-        ref: `refs/tags/${TAG}`,
-        sameRepo: false,
-        actor: "stranger",
-        permission: "none",
-        workflowHash: WF_HASH,
-        now: Date.now(),
-      })
-    : decideRun({
-        event: "push",
-        ref: `refs/tags/${TAG}`,
-        sameRepo: true,
-        actor: "pusher",
-        permission: "write",
-        workflowHash: WF_HASH,
-        now: Date.now(),
-      });
-  const planned = {
-    key: "release",
-    id: "release",
-    name: "release",
-    needs: [],
-    needsIds: [],
-    environment: "release",
-    continueOnError: false,
-    outputs: {},
-    failFast: true,
-  };
-  const created = await createPolledRun(db, scope, {
-    repo: "acme/web",
-    provider: "test",
-    run: {
-      workflowPath: ".github/workflows/release.yml",
-      event: o.fork ? "pull_request" : "push",
-      ref: `refs/tags/${TAG}`,
-      sha: SHA,
-      actor: o.fork ? "stranger" : "pusher",
-      trust: JSON.stringify(trust),
-    },
-    jobs: [{ key: "release", name: "release", needs: [], planned }],
-    ...(o.fork ? { hold: true } : {}),
-  });
-  const runId = created!.run.id;
-  const jobId = (await db.orm.query.jobs.findFirst({ where: (j, { eq }) => eq(j.runId, runId) }))!
-    .id;
-
-  // 2. The project's release policy, the approval quorum (one enrolled key, a solo policy) and
+  // 1. The project's release policy, the approval quorum (one enrolled key, a solo policy) and
   //    the tokens an operator would hold.
   await setProjectSigning(db, scope, { signingKey: "builtin:release", environment: "release" });
   await setEnvPolicy(db, org.id, {
     environment: "release",
-    required: 1,
-    allowAuthorApproval: false,
+    required: o.ingest?.quorum ?? 1,
+    // A tag run has no known author, so the "author cannot approve" rule cannot be met: a
+    // release from an ingested tag needs the environment's policy to allow author approval.
+    allowAuthorApproval: o.ingest ? (o.ingest.allowAuthorApproval ?? true) : false,
     by: "test",
     now: Date.now(),
   });
@@ -262,34 +408,114 @@ async function world(
   const env = { registry, db };
   const call = (tok: string, op: string, input: unknown) =>
     dispatch(env, { kind: "bearer", token: tok }, op, input);
-  if (o.approve !== false && !o.fork) {
-    const key = generateEd25519();
-    const approver = await insertApprover(
-      db,
-      org.id,
-      {
-        person: "rel",
-        forgeLogin: "releaser",
-        kind: "ed25519",
-        publicKey: key.publicSpki,
-        alg: "EdDSA",
-        createdBy: "test",
-      },
-      Date.now(),
-    );
-    const c = await call(operatorTok, "approval_challenge", {
-      run_id: runId,
+
+  // 2. A tag push becomes a run. Directly: classified by the same decision the poller makes (a
+  //    fork's pull request that happens to name a tag ref is the untrusted case). Or through the
+  //    real path: a signed push webhook wakes the poller, which ingests the tag.
+  let runId: string;
+  let jobId: string;
+  let ingested: Ingested | undefined;
+  if (o.ingest) {
+    ingested = await ingestTag(db, org.id, o.ingest);
+    runId = ingested.runId;
+    jobId = ingested.releaseJobId;
+    // A tag no ruleset protects was created held: a release operator approves it first.
+    if (!o.ingest.protect) {
+      const r = await call(releaseTok, "approve_run", {
+        run_id: runId,
+        head_sha: SHA,
+        workflow_hash: ingested.trust.workflowHash,
+      });
+      if (!r.ok) throw new Error(`approve_run: ${r.error.message}`);
+    }
+  } else {
+    const trust = o.fork
+      ? decideRun({
+          event: "pull_request",
+          ref: `refs/tags/${TAG}`,
+          sameRepo: false,
+          actor: "stranger",
+          permission: "none",
+          workflowHash: WF_HASH,
+          now: Date.now(),
+        })
+      : decideRun({
+          event: "push",
+          ref: `refs/tags/${TAG}`,
+          sameRepo: true,
+          actor: "pusher",
+          permission: "write",
+          workflowHash: WF_HASH,
+          now: Date.now(),
+        });
+    const planned = {
+      key: "release",
+      id: "release",
+      name: "release",
+      needs: [],
+      needsIds: [],
       environment: "release",
-      approver: approver.id,
-      project: "web",
+      continueOnError: false,
+      outputs: {},
+      failFast: true,
+    };
+    const created = await createPolledRun(db, scope, {
+      repo: "acme/web",
+      provider: "test",
+      run: {
+        workflowPath: ".github/workflows/release.yml",
+        event: o.fork ? "pull_request" : "push",
+        ref: `refs/tags/${TAG}`,
+        sha: SHA,
+        actor: o.fork ? "stranger" : "pusher",
+        trust: JSON.stringify(trust),
+      },
+      jobs: [{ key: "release", name: "release", needs: [], planned }],
+      ...(o.fork ? { hold: true } : {}),
     });
-    if (!c.ok) throw new Error(`challenge: ${c.error.message}`);
-    const ch = c.output as { statement: unknown; canonical: string };
-    const r = await dispatch(env, { kind: "signed" }, "approve_environment", {
-      statement: ch.statement,
-      signature: { kind: "ed25519", signature: signEd25519(key.privatePem, ch.canonical) },
-    });
-    if (!r.ok) throw new Error(`approve: ${r.error.message}`);
+    runId = created!.run.id;
+    jobId = (await db.orm.query.jobs.findFirst({ where: (j, { eq }) => eq(j.runId, runId) }))!.id;
+  }
+
+  if (o.approve !== false && !o.fork) {
+    // One approver per required identity: distinct forge logins, none of them the (unknown) author.
+    const quorum = o.ingest?.quorum ?? 1;
+    const needed = quorum + (o.ingest && o.ingest.allowAuthorApproval === false ? 1 : 0);
+    for (let n = 0; n < (o.ingest?.approvers ?? needed); n += 1) {
+      const key = generateEd25519();
+      const approver = await insertApprover(
+        db,
+        org.id,
+        {
+          person: `rel${n}`,
+          forgeLogin: `releaser${n}`,
+          kind: "ed25519",
+          publicKey: key.publicSpki,
+          alg: "EdDSA",
+          createdBy: "test",
+        },
+        Date.now(),
+      );
+      const c = await call(operatorTok, "approval_challenge", {
+        run_id: runId,
+        environment: "release",
+        approver: approver.id,
+        project: "web",
+      });
+      if (!c.ok) {
+        ingested?.stop();
+        throw new Error(`challenge: ${c.error.message}`);
+      }
+      const ch = c.output as { statement: unknown; canonical: string };
+      const r = await dispatch(env, { kind: "signed" }, "approve_environment", {
+        statement: ch.statement,
+        signature: { kind: "ed25519", signature: signEd25519(key.privatePem, ch.canonical) },
+      });
+      if (!r.ok) {
+        ingested?.stop();
+        throw new Error(`approve: ${r.error.message}`);
+      }
+    }
   }
 
   // 3. The job finished and recorded its artifacts; the bytes sit where the lane reads them.
@@ -433,11 +659,18 @@ async function world(
         .filter((x) => x.op === "sign_release")
         .map((x) => x.outcome);
     },
+    ...(ingested ? { ingested } : {}),
+    stop() {
+      ingested?.stop();
+    },
   };
 }
 
 let w: World;
-afterEach(() => w?.attest.close());
+afterEach(() => {
+  w?.stop();
+  w?.attest.close();
+});
 
 /** Runs `longshore verify` and returns its exit code with what it printed. */
 async function verify(
@@ -467,64 +700,255 @@ async function verify(
   }
 }
 
+/** Request, sign, publish, download and verify: the release flow, whatever created the run. */
+async function releaseAndVerify(): Promise<void> {
+  const id = await w.request();
+  expect(await w.lane.processNext()).toBe(true);
+  const done = await w.state(id);
+  expect(done).toMatchObject({ status: "signed" });
+  expect(done.result.keyid).toBeTruthy();
+
+  // strict publish: npm holds the verified tarball's integrity; GitHub holds a published
+  // release with the binary and the lane's provenance
+  expect(done.result.published).toMatchObject([
+    { target: "npm", state: "published" },
+    { target: "release", state: "published" },
+  ]);
+  expect(w.net.npm.get("1.0.0")).toBe(
+    `sha512-${createHash("sha512").update(w.tarball).digest("base64")}`,
+  );
+  expect(w.net.release!.draft).toBe(false);
+  const held = new Map([...w.net.release!.assets.values()].map((x) => [x.name, x.bytes]));
+  expect([...held.keys()].sort()).toEqual(["cli-linux", "provenance.intoto.json"]);
+
+  // the downloaded asset verifies against the downloaded provenance and the lane's public key
+  const d = mkdtempSync(join(tmp, "dl-"));
+  writeFileSync(join(d, "cli-linux"), held.get("cli-linux")!);
+  writeFileSync(join(d, "provenance.intoto.json"), held.get("provenance.intoto.json")!);
+  writeFileSync(join(d, "release.pub"), w.publicKeyPem);
+  const good = await verify(
+    join(d, "cli-linux"),
+    join(d, "provenance.intoto.json"),
+    join(d, "release.pub"),
+  );
+  expect(good.code).toBe(0);
+  expect(good.out).toContain("cli-linux");
+
+  // a tampered download does not
+  const bad = Buffer.from(held.get("cli-linux")!);
+  bad[0] = bad[0]! ^ 0xff;
+  writeFileSync(join(d, "tampered"), bad);
+  const no = await verify(
+    join(d, "tampered"),
+    join(d, "provenance.intoto.json"),
+    join(d, "release.pub"),
+  );
+  expect(no.code).not.toBe(0);
+  expect(no.out).toContain("NOT VERIFIED");
+
+  // the audit trail has the request, the signature and both publishes, and no credential
+  const audit = JSON.stringify(await listAudit(w.db, w.scope));
+  expect(audit).toContain("publish:npm:published");
+  expect(audit).toContain("publish:release:published");
+  expect(audit).not.toContain(NPM_TOKEN);
+  expect(audit).not.toContain(GH_TOKEN);
+  expect(readFileSync(join(d, "provenance.intoto.json"), "utf8")).not.toContain(NPM_TOKEN);
+}
+
 describe("the golden path", () => {
   test("tag push to a verified, published, signed release", async () => {
     w = await world();
     // the run is a release-class run, held for nobody, with its job released by the quorum
     const run = (await w.db.orm.query.runs.findFirst({ where: (r, { eq }) => eq(r.id, w.runId) }))!;
     expect(JSON.parse(run.trust!).class).toBe("release");
+    await releaseAndVerify();
+  });
+});
 
+describe("the same path, from a signed tag push webhook through the poller", () => {
+  test("a tag protected by a ruleset: the webhook nudges the poller, the run is release and starts, and the release flow completes", async () => {
+    w = await world({ ingest: { protect: true } });
+    const ing = w.ingested!;
+    expect(ing.webhookStatus).toBe(202);
+    // ingested from GitHub's facts, not the webhook's payload (which named another commit)
+    const run = (await w.db.orm.query.runs.findFirst({ where: (r, { eq }) => eq(r.id, w.runId) }))!;
+    expect(run).toMatchObject({
+      event: "push",
+      ref: `refs/tags/${TAG}`,
+      sha: SHA,
+      repo: "acme/web",
+    });
+    // no actor: the tagger is free text, kept only as a display label in the facts
+    expect(run.actor).toBeNull();
+    expect(ing.trust.facts).toMatchObject({ taggerLabel: "Release Bot" });
+    expect(ing.trust.class).toBe("release");
+    expect(ing.trust.facts).toMatchObject({ tagProtection: "ruleset" });
+    // not held for the tag itself: only the environment's quorum gates the release job
+    const jobs = await listJobs(w.db, w.scope, w.runId);
+    expect(jobs.find((j) => j.jobKey === "build")!.approvalKind).toBeNull();
+    const audit = (await listAudit(w.db, w.scope)).find((x) => x.op === "poll_tag_run")!;
+    expect(audit).toMatchObject({ outcome: "release" });
+    await releaseAndVerify();
+  });
+
+  test("a tag no ruleset protects is created held; only a release operator's approval lets it run, then the release flow completes", async () => {
+    // First, the held state on its own: nothing runs until approval.
+    const db = openDatabase(":memory:");
+    const org = await createOrg(db, { slug: "acme", name: "Acme" });
+    const project = await createProject(db, { orgId: org.id }, { slug: "web", name: "Web" });
+    const scope = { orgId: org.id, projectId: project.id };
+    const ing = await ingestTag(db, org.id, { protect: false });
+    try {
+      expect(ing.webhookStatus).toBe(202);
+      expect(ing.trust.class).toBe("release");
+      expect(ing.trust.facts).toMatchObject({ tagProtection: "none" });
+      expect(ing.trust.reasons.join(" ")).toContain("held for approval by a release operator");
+      const build = (await listJobs(db, scope, ing.runId)).find((j) => j.jobKey === "build")!;
+      expect(build).toMatchObject({ state: "awaiting_approval", approvalKind: "untrusted_author" });
+      expect((await listAudit(db, scope)).find((x) => x.op === "poll_tag_run")).toMatchObject({
+        outcome: "held",
+      });
+      // an operator cannot release it, even when the org lowered approve_run to operator
+      await setApproveRunMinRole(db, org.id, "operator");
+      const op = (await mintToken(db, { orgId: org.id }, "operator")).secret;
+      const refused = await dispatch(
+        { registry, db },
+        { kind: "bearer", token: op },
+        "approve_run",
+        {
+          run_id: ing.runId,
+          head_sha: SHA,
+          workflow_hash: ing.trust.workflowHash,
+        },
+      );
+      expect(!refused.ok && refused.error.code).toBe("forbidden");
+      expect((await listJobs(db, scope, ing.runId)).find((j) => j.jobKey === "build")!.state).toBe(
+        "awaiting_approval",
+      );
+    } finally {
+      ing.stop();
+    }
+
+    // Then the whole flow: a release operator approves, and the release goes through.
+    w = await world({ ingest: { protect: false } });
+    expect(w.ingested!.trust.facts).toMatchObject({ tagProtection: "none" });
+    const jobs = await listJobs(w.db, w.scope, w.runId);
+    expect(jobs.find((j) => j.jobKey === "build")!.state).toBe("queued");
+    await releaseAndVerify();
+  });
+
+  test.each([
+    ["an annotated tag", false],
+    ["a lightweight tag", true],
+  ])(
+    "%s: with a quorum of two and an unknown author, three distinct approvers release it",
+    async (_kind, lightweight) => {
+      w = await world({
+        ingest: { protect: true, lightweight, allowAuthorApproval: false, quorum: 2 },
+      });
+      expect(w.ingested!.trust.facts).toMatchObject({ tagProtection: "ruleset" });
+      const run = (await w.db.orm.query.runs.findFirst({
+        where: (r, { eq }) => eq(r.id, w.runId),
+      }))!;
+      expect(run.actor).toBeNull();
+      // the audit says why three were needed
+      const note = (await listAudit(w.db, w.scope)).find(
+        (x) => x.op === "approval_author_unknown",
+      )!;
+      expect(JSON.parse(note.input).note).toBe(
+        "author unknown; required 3 distinct approvers (2+1)",
+      );
+      await releaseAndVerify();
+    },
+  );
+
+  test("with a quorum of two, two approvers are not enough for a tag run: the signer refuses", async () => {
+    w = await world({
+      ingest: { protect: true, allowAuthorApproval: false, quorum: 2, approvers: 2 },
+    });
     const id = await w.request();
-    expect(await w.lane.processNext()).toBe(true);
-    const done = await w.state(id);
-    expect(done).toMatchObject({ status: "signed" });
-    expect(done.result.keyid).toBeTruthy();
+    await w.lane.processNext();
+    expect(await w.state(id)).toMatchObject({ status: "refused" });
+    expect(w.net.writes).toEqual([]);
+    expect(w.net.npm.size).toBe(0);
+  });
 
-    // strict publish: npm holds the verified tarball's integrity; GitHub holds a published
-    // release with the binary and the lane's provenance
-    expect(done.result.published).toMatchObject([
-      { target: "npm", state: "published" },
-      { target: "release", state: "published" },
-    ]);
-    expect(w.net.npm.get("1.0.0")).toBe(
-      `sha512-${createHash("sha512").update(w.tarball).digest("base64")}`,
+  test("with a quorum of one and no allowAuthorApproval, one approver is not enough but two are", async () => {
+    for (const lightweight of [false, true]) {
+      w?.stop();
+      w?.attest.close();
+      w = await world({
+        ingest: {
+          protect: true,
+          lightweight,
+          allowAuthorApproval: false,
+          quorum: 1,
+          approvers: 1,
+        },
+      });
+      const id = await w.request();
+      await w.lane.processNext();
+      expect(await w.state(id)).toMatchObject({ status: "refused" });
+      w.stop();
+      w.attest.close();
+      w = await world({
+        ingest: { protect: true, lightweight, allowAuthorApproval: false, quorum: 1 },
+      });
+      await releaseAndVerify();
+    }
+  });
+
+  test("the solo policy (a quorum of one, author approval allowed) passes, annotated or not", async () => {
+    for (const lightweight of [false, true]) {
+      w?.stop();
+      w?.attest.close();
+      w = await world({ ingest: { protect: true, lightweight, quorum: 1 } });
+      await releaseAndVerify();
+    }
+  });
+
+  test("a forged webhook signature ingests nothing", async () => {
+    // The handler is the real one: a bad signature is refused before anything is read.
+    const db = openDatabase(":memory:");
+    const org = await createOrg(db, { slug: "acme", name: "Acme" });
+    await createProject(db, { orgId: org.id }, { slug: "web", name: "Web" });
+    const store = new SecretStore(db, randomBytes(32));
+    await setGithubApp(
+      db,
+      { orgId: org.id },
+      {
+        appId: "42",
+        slug: "longshore-test",
+        name: "Longshore",
+        ownerLogin: "acme",
+        htmlUrl: "https://github.com/apps/x",
+        clientId: "Iv1.abc",
+      },
     );
-    expect(w.net.release!.draft).toBe(false);
-    const held = new Map([...w.net.release!.assets.values()].map((x) => [x.name, x.bytes]));
-    expect([...held.keys()].sort()).toEqual(["cli-linux", "provenance.intoto.json"]);
-
-    // the downloaded asset verifies against the downloaded provenance and the lane's public key
-    const d = mkdtempSync(join(tmp, "dl-"));
-    writeFileSync(join(d, "cli-linux"), held.get("cli-linux")!);
-    writeFileSync(join(d, "provenance.intoto.json"), held.get("provenance.intoto.json")!);
-    writeFileSync(join(d, "release.pub"), w.publicKeyPem);
-    const good = await verify(
-      join(d, "cli-linux"),
-      join(d, "provenance.intoto.json"),
-      join(d, "release.pub"),
+    await store.set(org.id, SECRET_WEBHOOK, ["whsec", "real", "1"].join("_"));
+    const woken: string[] = [];
+    const handler = createWebhookHandler({
+      db,
+      store,
+      facts: { getInstallation: async () => undefined, listInstallationRepos: async () => [] },
+      onRepoEvent: (repo) => void woken.push(repo),
+      log: () => {},
+    });
+    const body = JSON.stringify({ ref: `refs/tags/${TAG}`, repository: { full_name: "acme/web" } });
+    const res = await handler.handle(
+      new Request("http://x/api/v1/webhooks/github", {
+        method: "POST",
+        body,
+        headers: {
+          "x-github-event": "push",
+          "x-github-delivery": "99999999-2222-3333-4444-555555555555",
+          "x-hub-signature-256": `sha256=${createHmac("sha256", "wrong").update(body).digest("hex")}`,
+        },
+      }),
+      "203.0.113.9",
     );
-    expect(good.code).toBe(0);
-    expect(good.out).toContain("cli-linux");
-
-    // a tampered download does not
-    const bad = Buffer.from(held.get("cli-linux")!);
-    bad[0] = bad[0]! ^ 0xff;
-    writeFileSync(join(d, "tampered"), bad);
-    const no = await verify(
-      join(d, "tampered"),
-      join(d, "provenance.intoto.json"),
-      join(d, "release.pub"),
-    );
-    expect(no.code).not.toBe(0);
-    expect(no.out).toContain("NOT VERIFIED");
-
-    // the audit trail has the request, the signature and both publishes, and no credential
-    const audit = JSON.stringify(await listAudit(w.db, w.scope));
-    expect(audit).toContain("publish:npm:published");
-    expect(audit).toContain("publish:release:published");
-    expect(audit).not.toContain(NPM_TOKEN);
-    expect(audit).not.toContain(GH_TOKEN);
-    expect(readFileSync(join(d, "provenance.intoto.json"), "utf8")).not.toContain(NPM_TOKEN);
+    expect(res!.status).toBe(401);
+    expect(woken).toEqual([]);
   });
 });
 
