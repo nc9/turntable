@@ -15,6 +15,8 @@ import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
+import type { DoctorReport } from "./doctor/types";
+import type { ForwardedObserver } from "./doctor/observe";
 import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { createEventStream } from "./realtime/sse";
@@ -106,6 +108,10 @@ export type ServeOptions = {
   outboundWebhooks?: WebhookService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
   trustForwardedProto?: boolean;
+  /** The readiness checks, served by the `doctor` operation. */
+  doctor?: () => Promise<DoctorReport>;
+  /** Counts the forwarded headers requests carry, for doctor to compare with the settings. */
+  forwarded?: ForwardedObserver;
 };
 
 export function startServer(options: ServeOptions) {
@@ -117,6 +123,7 @@ export function startServer(options: ServeOptions) {
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
+    doctor: options.doctor,
   };
   const api = createRestApi(env, {
     trustForwardedProto:
@@ -136,6 +143,7 @@ export function startServer(options: ServeOptions) {
     port: options.port,
     hostname: options.host,
     async fetch(req, srv) {
+      options.forwarded?.record(req);
       const t = decideTransport(req, transport);
       if (t.action === "redirect") return redirectResponse(t.location);
       if (t.action === "reject") return rejectResponse();

@@ -602,6 +602,8 @@ const UNREACHABLE: Record<string, string> = {
     "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
   start_installation_claim:
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
+  doctor:
+    "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

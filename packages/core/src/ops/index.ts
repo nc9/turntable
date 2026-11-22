@@ -13,6 +13,7 @@ import {
 } from "./definitions/approvals";
 import { approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
+import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
@@ -85,6 +86,7 @@ export const registry = createRegistry([
   approveRunOp,
   signRelease,
   whoami,
+  doctor,
   listOrgs,
   listProjects,
   ingestStatusOp,

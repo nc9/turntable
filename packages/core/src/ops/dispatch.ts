@@ -13,6 +13,7 @@ import {
   touchApiToken,
   touchInstanceToken,
 } from "../db/repos";
+import type { DoctorReport } from "../doctor/types";
 import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
@@ -45,6 +46,8 @@ export type DispatchEnv = {
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
+  /** The readiness checks, for the `doctor` operation. */
+  doctor?: (() => Promise<DoctorReport>) | undefined;
 };
 
 export type DispatchResult =
@@ -325,6 +328,7 @@ export async function dispatch(
       webauthn: env.webauthn,
       instanceOrgCap: env.instanceOrgCap,
       attestationAnchors: env.attestationAnchors,
+      doctor: env.doctor,
     });
     const target = op;
     if (!audited) {

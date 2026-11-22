@@ -69,6 +69,9 @@ export function startMock(
     calls: 0,
   };
 
+  /** Names of the snapshots that exist in the mock account. */
+  const snapshots = new Set<string>();
+
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -86,6 +89,13 @@ export function startMock(
         usage.calls += 1;
         if (usage.status !== 200) return Response.json({ message: "no" }, { status: usage.status });
         return Response.json({ regionUsage: usage.rows });
+      }
+      const snap = /^\/api\/snapshots\/([^/]+)$/.exec(url.pathname);
+      if (snap && req.method === "GET") {
+        const name = decodeURIComponent(snap[1]!);
+        return snapshots.has(name)
+          ? Response.json({ name, state: "active" })
+          : Response.json({ message: "no such snapshot" }, { status: 404 });
       }
       const m = /^\/api\/sandbox(?:\/([^/]+))?$/.exec(url.pathname);
       if (m) {
@@ -279,6 +289,7 @@ export function startMock(
     requests,
     failNext,
     usage,
+    snapshots,
     stats,
     setHugeList(v: boolean) {
       hugeList = v;

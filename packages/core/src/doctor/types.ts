@@ -1,0 +1,97 @@
+// `longshore doctor`: a read-only readiness check an operator runs before going live. Each check
+// says pass, warn or fail with a hint for fixing it. Nothing here creates, starts or changes
+// anything, and nothing carries a secret value: a check says a key is present and has the right
+// shape, never what it is.
+export type CheckStatus = "pass" | "warn" | "fail";
+
+export interface DoctorCheck {
+  /** Stable id, for example `master_key`. */
+  id: string;
+  area: string;
+  status: CheckStatus;
+  /** A fixed sentence: never carries text from an exception or an upstream error. */
+  summary: string;
+  /** Raw error text, for the local CLI only. `forApi` removes it. */
+  detail?: string;
+  /** What to do about it, when it is not a pass. */
+  fix?: string;
+}
+
+export interface DoctorReport {
+  /** The worst status of any check. */
+  status: CheckStatus;
+  counts: { pass: number; warn: number; fail: number };
+  checks: DoctorCheck[];
+}
+
+export function report(checks: DoctorCheck[]): DoctorReport {
+  const counts = { pass: 0, warn: 0, fail: 0 };
+  for (const c of checks) counts[c.status] += 1;
+  return {
+    status: counts.fail > 0 ? "fail" : counts.warn > 0 ? "warn" : "pass",
+    counts,
+    checks,
+  };
+}
+
+/** The report as the API returns it: the same checks without the raw error text. */
+export function forApi(r: DoctorReport): DoctorReport {
+  return {
+    ...r,
+    checks: r.checks.map(({ detail: _detail, ...c }) => c),
+  };
+}
+
+export interface FileFacts {
+  uid: number;
+  gid: number;
+  /** Permission bits only (0o600). */
+  mode: number;
+  size: number;
+  isDirectory: boolean;
+}
+
+/** The filesystem as the checks see it, so a test can describe one. */
+export interface DoctorFs {
+  stat(path: string): FileFacts | undefined;
+  /** Whether this process can write there. */
+  writable(path: string): boolean;
+  /** At most `maxBytes` of a file, or undefined if it cannot be read. */
+  read(path: string, maxBytes: number): Buffer | undefined;
+}
+
+/** The part of a SQLite handle the checks use (read-only queries). */
+export interface SqliteReader {
+  all(sql: string, ...params: string[]): Record<string, unknown>[];
+}
+
+export type ChannelProbe = { ok: true } | { ok: false; reason: string; detail?: string };
+
+export interface ForwardedSnapshot {
+  /** Requests seen since the server started. */
+  requests: number;
+  withForwardedProto: number;
+  withForwardedFor: number;
+}
+
+export interface DoctorInputs {
+  env: Record<string, string | undefined>;
+  dataDir: string;
+  hosted: boolean;
+  fs: DoctorFs;
+  proc: { uid: number; gid: number };
+  /** Undefined when the database could not be opened: `openError` says why. */
+  sqlite: SqliteReader | undefined;
+  openError?: string | undefined;
+  /** The migration tags this binary carries. */
+  expectedMigrations: readonly string[];
+  /** The master key, for checking that sealed records open; never printed. */
+  masterKey: () => Buffer | undefined;
+  /** The providers' own read-only checks (`Provider.diagnose`). */
+  providerChecks: () => Promise<DoctorCheck[]>;
+  /** Whether the release channel answers, when one is configured. */
+  channel: (() => Promise<ChannelProbe>) | undefined;
+  /** What the running server has seen of forwarded headers; absent from the command line. */
+  observed: ForwardedSnapshot | undefined;
+  now: () => number;
+}
