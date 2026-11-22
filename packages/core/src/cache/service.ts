@@ -311,7 +311,7 @@ export function createCacheService(o: CacheOptions): CacheService {
         if (!room.fits) return await bad(413, "cache quota for this trust class is full");
       }
       // Served only once renamed from the staging name; the row flips after the bytes are in place.
-      await o.store.promote(id);
+      await o.store.promote(id, g.own.orgId);
       await completeCacheEntry(o.db, g.own, id, canonSize, now());
       states.delete(id);
       finishPending(g.attemptId, id);
@@ -331,6 +331,7 @@ export function createCacheService(o: CacheOptions): CacheService {
       const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.get("range") ?? "");
       const res = await o.store.read(
         id,
+        ns.orgId,
         m ? { start: Number(m[1]), end: m[2] ? Number(m[2]) : Number.MAX_SAFE_INTEGER } : undefined,
       );
       return res ?? json(404, { error: "not found" });
