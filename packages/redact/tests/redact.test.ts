@@ -608,6 +608,11 @@ describe("url userinfo", () => {
     ];
     for (const c of clean) expect(redactString(c)).toBe(c);
   });
+  test("a long port-like password with an @ later in the token is redacted", () => {
+    const pass = `1234/${"p".repeat(300)}`;
+    const out = redactString(`x ${urlOf(`user:${pass}`, "host.io/x")} y`);
+    expect(out).not.toContain("p".repeat(20));
+  });
 });
 
 describe("differential: streaming at every split equals one shot", () => {
