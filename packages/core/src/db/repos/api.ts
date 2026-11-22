@@ -1,6 +1,6 @@
 // Repos for agent access (tokens, audit) and the read queries behind the operations registry.
 // Like index.ts, this is part of the only code allowed to name tenant tables.
-import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { AgentRole, JobState } from "../schema";
@@ -62,6 +62,24 @@ export function findApiTokenByHash(db: Db, tokenHash: string): Promise<ApiToken 
   });
 }
 
+/** Tokens of an org (or one project), newest first. Never includes the secret; the hash is not selected out. */
+export function listApiTokens(db: Db, scope: Scope): Promise<ApiToken[]> {
+  return db.run((h) =>
+    h.orm.select().from(s.apiTokens).where(scoped(scope, TOKEN_COLS)).orderBy(desc(s.apiTokens.id)),
+  );
+}
+
+/**
+ * CLI only: finds a token by id across orgs. The caller is the local operator holding the data
+ * directory, the trust root; no network path may use this.
+ */
+export function findApiTokenById(db: Db, id: string): Promise<ApiToken | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm.select().from(s.apiTokens).where(eq(s.apiTokens.id, id)).limit(1);
+    return row;
+  });
+}
+
 export function touchApiToken(db: Db, scope: Scope, id: string, at: number): Promise<void> {
   return db.run(async (h) => {
     await h.orm
@@ -71,12 +89,13 @@ export function touchApiToken(db: Db, scope: Scope, id: string, at: number): Pro
   });
 }
 
+/** Revokes a token. Returns false when it is not in scope or was already revoked. */
 export function revokeApiToken(db: Db, scope: Scope, id: string, at: number): Promise<boolean> {
   return db.run(async (h) => {
     const rows = await h.orm
       .update(s.apiTokens)
       .set({ revokedAt: at })
-      .where(scoped(scope, TOKEN_COLS, eq(s.apiTokens.id, id)))
+      .where(scoped(scope, TOKEN_COLS, eq(s.apiTokens.id, id), isNull(s.apiTokens.revokedAt)))
       .returning({ id: s.apiTokens.id });
     return rows.length > 0;
   });

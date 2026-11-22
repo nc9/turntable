@@ -51,3 +51,29 @@ The response is JSON with `ok` and the running `version`.
 ## Network binding
 
 `--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `TURNTABLE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
+
+## Create your first API token
+
+Agents and scripts call the [REST API](/agent-interface) with a bearer token. Create the first one from the command line, because creating tokens over the network needs an org admin and sessions do not exist yet. Local access to the data directory is the trust root.
+
+```sh
+TOKEN=$(./dist/turntable-darwin-arm64 token create \
+  --org local --project local --role reader --name my-agent --data-dir ./data)
+```
+
+The secret goes to stdout, and the details go to stderr. It is shown once and only its hash is stored, so keep it. Roles are `reader` (read-only), `operator` (also cancels runs) and `release_operator`. Tokens expire after 90 days unless you pass `--expires-days N` (1 to 365). `--project` narrows a token to one project. On a fresh data directory, `--org local` creates the built-in `local` org and project.
+
+Use it against a running server:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/runs
+```
+
+List and revoke tokens the same way:
+
+```sh
+./dist/turntable-darwin-arm64 token list --org local --data-dir ./data
+./dist/turntable-darwin-arm64 token revoke <id> --data-dir ./data
+```
+
+A revoked or expired token stops working at once. The OpenAPI document is at `/openapi.json`.

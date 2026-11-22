@@ -98,10 +98,10 @@ Agents authenticate with a token (`tt_` plus 32 random bytes, base64url) with on
 The first token comes from the command line, because creating one over the network needs an org admin and sessions do not exist yet:
 
 ```sh
-turntable token create --org <slug> [--project <slug>] --role <reader|operator> --name <name> [--expires-in-days 90] [--data-dir ./data]
+turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator> --name <name> [--expires-days 90] [--data-dir ./data]
 ```
 
-Local access to the data directory is the trust root. The command writes through the same repos, audits the creation, prints the secret alone on stdout (so `TOKEN=$(turntable token create ...)` works) and the details on stderr. A token can never create a token with a higher role or a wider scope than its own.
+Local access to the data directory is the trust root. The command writes through the same repos, audits the creation, prints the secret alone on stdout (so `TOKEN=$(turntable token create ...)` works) and the details on stderr. `turntable token list` and `turntable token revoke <id>` manage them. A token can never create a token with a higher role or a wider scope than its own.
 
 ## Event feed and webhooks
 
