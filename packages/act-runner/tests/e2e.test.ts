@@ -97,6 +97,18 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(log).toContain("initial example commit");
   }, 600_000);
 
+  // The checkout stub works from the delivered repository: ref, path and fetch-depth are honoured,
+  // and a ref that was not delivered fails the step instead of reaching for the network.
+  test("checkout honours ref, path and fetch-depth, and refuses an undelivered ref", async () => {
+    const { result, log } = await runExample("checkout.yml", "checkout");
+    if (result.state !== "success") console.log(JSON.stringify(result), "\n" + log);
+    expect(result.state).toBe("success");
+    expect(log).toContain("branch=main");
+    expect(log).toContain("count=1");
+    expect(log).toContain("missing-outcome=failure");
+    expect(log).toContain("is not in the delivered repository");
+  }, 600_000);
+
   test("failing job is a failure, not infra_error", async () => {
     const { result, log } = await runExample("fail.yml", "fail");
     if (result.state !== "failure") console.log(result, log);
