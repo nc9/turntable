@@ -8,6 +8,7 @@ import {
   Download,
   Link2,
   ListTree,
+  Scissors,
   Search,
   WrapText,
   X,
@@ -33,13 +34,28 @@ import { formatBytes } from "@/lib/format";
 import { modKey } from "@/lib/hotkeys";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { isCollapsed, visibleLines, type LogLine } from "@/log/parser";
+import { isCollapsed, visibleLines, type LogLine, type LogParser } from "@/log/parser";
 import { findMatches, type Match } from "@/log/search";
 import { LogRow } from "./log-row";
 import { LogSidebar } from "./log-sidebar";
 import { downloadRawLog, VIEW_CAP, useAttemptLog } from "./use-log";
 
 const LINE_H = 20;
+
+/** For each cut, the position in `rows` it precedes (rows.length when it follows every line). */
+function computeCutPos(parser: LogParser, rows: Int32Array): number[] {
+  return parser.cuts.map((c) => {
+    const target = parser.firstLineAtOrAfter(c.atOffset);
+    let lo = 0;
+    let hi = rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((rows[mid] as number) < target) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  });
+}
 
 type Selection = { a: number; b: number } | null;
 
@@ -135,9 +151,27 @@ export function LogViewer({
   }, [attemptId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => visibleLines(parser, overrides), [parser, version, overrides]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Output-cap cuts are metadata, not log lines: each becomes a row of its own, placed before
+  // the first visible line that starts at or after the cut's byte offset.
+  const cutPos = useMemo(
+    () => computeCutPos(parser, rows),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    [parser, version, rows],
+  );
+  const merged = useMemo(() => {
+    const out = new Int32Array(rows.length + cutPos.length);
+    let r = 0;
+    let c = 0;
+    let o = 0;
+    while (r < rows.length || c < cutPos.length) {
+      if (c < cutPos.length && (cutPos[c] as number) <= r) out[o++] = ~c++;
+      else out[o++] = r++;
+    }
+    return out;
+  }, [rows, cutPos]);
   const pendingText = parser.pendingText;
   const footerCount = log.truncated || log.loadingMore ? 1 : 0;
-  const total = rows.length + (pendingText ? 1 : 0) + footerCount;
+  const total = merged.length + (pendingText ? 1 : 0) + footerCount;
   const numberWidth = String(Math.max(parser.lineCount, 1)).length;
   const { matches, byLine, token } = useMatches(parser.lines, version, deferredQuery);
   const safeIdx = matches.length === 0 ? 0 : Math.min(matchIdx, matches.length - 1);
@@ -196,7 +230,8 @@ export function LogViewer({
         else hi = mid;
       }
       setFollow(false);
-      requestAnimationFrame(() => scrollToRow(lo, align));
+      const cutsBefore = computeCutPos(parser, visible).filter((p) => p <= lo).length;
+      requestAnimationFrame(() => scrollToRow(lo + cutsBefore, align));
     },
     [parser, overrides, rows, scrollToRow],
   );
@@ -315,7 +350,6 @@ export function LogViewer({
     const out: string[] = [];
     for (let i = a; i <= b && i < parser.lineCount; i++) {
       const l = parser.lines[i] as LogLine;
-      if (l.kind === "cut") continue;
       out.push(showTime && l.ts !== null ? `${new Date(l.ts).toISOString()} ${l.text}` : l.text);
     }
     return out.join("\n");
@@ -465,11 +499,13 @@ export function LogViewer({
   const items = virtualizer.getVirtualItems();
   const firstRow = items[0]?.index ?? 0;
   useEffect(() => {
-    const lineIdx = rows[Math.min(firstRow, rows.length - 1)];
+    const m = merged[Math.min(firstRow, merged.length - 1)] ?? 0;
+    const pos = m >= 0 ? m : (cutPos[~m] ?? 0);
+    const lineIdx = rows[Math.min(pos, rows.length - 1)];
     const step =
       lineIdx === undefined ? 0 : parser.stepAtOffset(parser.lines[lineIdx]?.offset ?? 0);
     setActiveStep((s) => (s === step ? s : step));
-  }, [firstRow, rows, parser]);
+  }, [firstRow, merged, cutPos, rows, parser]);
   const widthCh = Math.min(parser.maxCols, 600) + numberWidth + 3 + (showTime ? 13 : 0) + 4;
 
   const sidebar = (
@@ -687,8 +723,8 @@ export function LogViewer({
                   }}
                 >
                   {items.map((v) => {
-                    if (v.index >= rows.length) {
-                      const isPending = pendingText && v.index === rows.length;
+                    if (v.index >= merged.length) {
+                      const isPending = pendingText && v.index === merged.length;
                       if (isPending) {
                         return (
                           <div
@@ -733,7 +769,26 @@ export function LogViewer({
                         </div>
                       );
                     }
-                    const lineIdx = rows[v.index] as number;
+                    const m = merged[v.index] as number;
+                    if (m < 0) {
+                      const cut = parser.cuts[~m] as (typeof parser.cuts)[number];
+                      return (
+                        <div
+                          key={`cut-${cut.atOffset}`}
+                          data-index={v.index}
+                          data-kind="cut"
+                          className="log-row items-center font-sans"
+                          style={{ transform: `translateY(${v.start}px)` }}
+                        >
+                          <div className="sticky left-0 flex w-full items-center justify-center gap-2 text-[13px]">
+                            <Scissors className="size-3.5" aria-hidden="true" />
+                            {formatBytes(cut.omittedBytes)} of output omitted to stay within the
+                            size cap
+                          </div>
+                        </div>
+                      );
+                    }
+                    const lineIdx = rows[m] as number;
                     const line = parser.lines[lineIdx] as LogLine;
                     const ms = byLine.get(lineIdx);
                     return (

@@ -226,18 +226,32 @@ describe("steps (out of band) and cuts", () => {
     expect(p.lines[0]?.kind).toBe("text");
   });
 
-  test("the cut marker is exactly what cutMarker() in the provider SDK produces", () => {
-    const p = parseAll(
-      bytes(`head of output${new TextDecoder().decode(cutMarker(4096))}tail of output\n`),
-    );
-    expect(p.lines.map((l) => l.kind)).toEqual(["text", "cut", "text"]);
-    expect(p.lines[1]).toMatchObject({ kind: "cut", cutBytes: 4096 });
-    // also with a timestamp prefix, and a near-miss stays text
-    expect(
-      parseAll(bytes("2026-11-22T10:00:00.000Z [turntable: 12 bytes of output omitted]\n")).lines[0]
-        ?.kind,
-    ).toBe("cut");
-    expect(parseAll(bytes("[turntable: x bytes of output omitted]\n")).lines[0]?.kind).toBe("text");
+  test("the SDK cut-marker text and ::tt-step/::tt-cut lines in a log are ordinary text", () => {
+    const forged = [
+      new TextDecoder().decode(cutMarker(4096)),
+      '::tt-step::{"phase":"start","index":9,"name":"Deploy to prod"}',
+      '::tt-cut::{"bytes":1,"reason":"x"}',
+      "[turntable: 12 bytes of output omitted]",
+    ].join("\n");
+    const p = parseAll(bytes(`${forged}\n`));
+    expect(p.steps).toHaveLength(0);
+    expect(p.cuts).toHaveLength(0);
+    expect(p.lines.every((l) => l.kind === "text")).toBe(true);
+    expect(p.lines.map((l) => l.text)).toContain("[turntable: 4096 bytes of output omitted]");
+    expect(p.lines.map((l) => l.text)).toContain('::tt-cut::{"bytes":1,"reason":"x"}');
+  });
+
+  test("cuts come from out-of-band records, idempotent, placed by byte offset", () => {
+    const text = "head1\nhead2\ntail1\n";
+    const p = parseAll(bytes(text));
+    const at = text.indexOf("tail1");
+    const cut = { atOffset: at, omittedBytes: 4096, reason: "middle" };
+    p.applyCut(cut);
+    p.applyCut(cut);
+    expect(p.cuts).toEqual([cut]);
+    expect(p.lines.map((l) => l.text)).toEqual(["head1", "head2", "tail1"]); // no marker text
+    expect(p.firstLineAtOrAfter(at)).toBe(2);
+    expect(p.firstLineAtOrAfter(at + 1)).toBe(3);
   });
 });
 

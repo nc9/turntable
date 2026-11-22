@@ -567,9 +567,13 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
   }
 
   /** The log for an attempt and how many bytes of it exist right now. */
-  function logOf(
-    attemptId: string,
-  ): { log: GeneratedLog; available: number; done: boolean; steps: GeneratedLog["steps"] } | null {
+  function logOf(attemptId: string): {
+    log: GeneratedLog;
+    available: number;
+    done: boolean;
+    steps: GeneratedLog["steps"];
+    cuts: GeneratedLog["cuts"];
+  } | null {
     const a = attempts.get(attemptId);
     if (!a || a.startedAt == null) return null;
     const plan = planOfAttempt(a);
@@ -582,7 +586,8 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       durationMs,
     });
     const finished = a.finishedAt != null;
-    if (finished) return { log, available: log.bytes.length, done: true, steps: log.steps };
+    if (finished)
+      return { log, available: log.bytes.length, done: true, steps: log.steps, cuts: log.cuts };
     const p = Math.min(1, Math.max(0, (now() - a.startedAt) / durationMs));
     const lines = Math.floor(log.lineCount * p);
     const available = lines === 0 ? 0 : (log.lineEnds[lines - 1] ?? 0);
@@ -591,6 +596,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       available,
       done: false,
       steps: log.steps.filter((st) => st.logOffset <= available),
+      cuts: log.cuts.filter((c) => c.atOffset <= available),
     };
   }
 

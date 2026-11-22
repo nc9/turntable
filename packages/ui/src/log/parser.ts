@@ -7,18 +7,17 @@
 //   - ANSI SGR colours and styles (state carries across chunks and lines); other escapes are dropped
 //   - "::group::title" / "::endgroup::" folding (nestable)
 //   - "::error|warning|notice|debug <props>::message" annotations
-//   - the cut marker the output cap inserts (`cutMarker()` in @turntable/provider-sdk):
-//     "[turntable: N bytes of output omitted]" on its own line
 //
-// Step boundaries are NOT read from the log text. The server stores act's step events separately
-// and delivers them out of band; feed them with `applyStep`, keyed by the log byte offset where
-// the step starts. A log can therefore never forge a step.
+// Step boundaries and output-cap cuts are NOT read from the log text. The server stores act's
+// step events and the cap's cut records as metadata and delivers them out of band; feed them with
+// `applyStep` and `applyCut`, keyed by log byte offset. Every line of log text is plain text, so
+// a log can never forge a step or a cut.
 //
 // Everything else is untrusted text. Only SGR colours and styles survive: OSC (hyperlinks, titles),
 // other CSI (cursor movement, erase), lone escapes, C0/C1 controls and bidi overrides are dropped.
 
 export type Level = "error" | "warning" | "notice" | "debug";
-export type LineKind = "text" | "group" | "cut";
+export type LineKind = "text" | "group";
 export type StepResult = "success" | "failure" | "skipped";
 
 /** A run of text with one style. `style` indexes `LogParser.styles`; 0 is the default style. */
@@ -54,8 +53,6 @@ export type LogLine = {
   group: number;
   /** For kind "group": this line's own group id; otherwise 0. */
   ref: number;
-  /** Bytes omitted, for kind "cut". */
-  cutBytes: number;
 };
 
 export type GroupInfo = {
@@ -90,6 +87,9 @@ export type StepInfo = {
   result: StepResult | null;
 };
 
+/** An out-of-band cut record (see `CutRecord` in api/types). */
+export type CutInfo = { atOffset: number; omittedBytes: number; reason: string };
+
 export const MAX_LINE_BYTES = 64 * 1024;
 
 const FLAG_BOLD = 1;
@@ -107,8 +107,6 @@ const ESCAPE_RE =
 const STRAY_RE = /[\u001b\u0007]/g;
 const UNSAFE_RE =
   /[\u0000-\u0006\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
-// Exactly what `cutMarker()` in @turntable/provider-sdk writes (plus its surrounding newlines).
-const CUT_RE = /^\[turntable: (\d+) bytes of output omitted\]$/;
 const TS_RE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) /;
 const COMMAND_RE = /^::([A-Za-z-]+)(?: ([^\n]*?))?::(.*)$/;
 
@@ -168,6 +166,7 @@ export class LogParser {
     { id: 0, parent: 0, title: "", startLine: 0, endLine: null, hasError: false },
   ];
   readonly steps: StepInfo[] = [];
+  readonly cuts: CutInfo[] = [];
   readonly annotations: Annotation[] = [];
   readonly styles: StyleDef[] = [{ cls: "", color: null, background: null }];
   /** Longest line in characters, for sizing the horizontal scroller. */
@@ -230,6 +229,27 @@ export class LogParser {
     }
     this.steps.sort((a, b) => a.startOffset - b.startOffset || a.index - b.index);
     this.version += 1;
+  }
+
+  /** Apply an out-of-band cut record. Idempotent per `atOffset`. */
+  applyCut(c: CutInfo): void {
+    if (this.cuts.some((x) => x.atOffset === c.atOffset)) return;
+    this.cuts.push({ atOffset: c.atOffset, omittedBytes: c.omittedBytes, reason: c.reason });
+    this.cuts.sort((a, b) => a.atOffset - b.atOffset);
+    this.version += 1;
+  }
+
+  /** Index of the first line starting at or after byte `offset` (`lineCount` when none yet). */
+  firstLineAtOrAfter(offset: number): number {
+    const { lines } = this;
+    let lo = 0;
+    let hi = lines.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((lines[mid] as LogLine).offset < offset) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   /** Index of the line containing byte `offset`, or -1 when that part of the log is not loaded. */
@@ -488,13 +508,7 @@ export class LogParser {
       rest = rest.slice(tsMatch[0].length);
     }
 
-    const base = { offset, ts, level: null, segs: null, ref: 0, cutBytes: 0 } as const;
-
-    const cutMatch = CUT_RE.exec(rest);
-    if (cutMatch) {
-      this.push1({ ...base, kind: "cut", text: "omitted", cutBytes: Number(cutMatch[1]) });
-      return;
-    }
+    const base = { offset, ts, level: null, segs: null, ref: 0 } as const;
 
     if (rest.startsWith("::")) {
       const cmd = COMMAND_RE.exec(rest.replace(/\r$/, ""));
