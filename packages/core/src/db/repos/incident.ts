@@ -266,7 +266,7 @@ export function clearRotationFlagIfRotated(
       .select({ updatedAt: s.vaultSecrets.updatedAt })
       .from(s.vaultSecrets)
       .where(and(eq(s.vaultSecrets.orgId, scope.orgId), eq(s.vaultSecrets.name, name)));
-    if (rows.some((r) => r.updatedAt < flag.flaggedAt)) return false;
+    if (rows.some((r) => r.updatedAt <= flag.flaggedAt)) return false;
     await h.orm
       .update(s.incidentRotationFlags)
       .set({ clearedAt: now })

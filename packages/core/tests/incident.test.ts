@@ -286,6 +286,7 @@ describe("vault secrets", () => {
     await run("set_secret", { name: "DEPLOY_KEY", value: "v1-org" });
     await run("set_secret", { name: "DEPLOY_KEY", value: "v1-proj", project: a.projectSlug });
     await run("set_secret", { name: "NPM_TOKEN", value: "v1-npm" });
+    await sleep(5);
     const out = await run("incident_freeze", { reason: "vault leak" });
     expect(out.flagged_for_rotation).toBe(2);
     const names = async () =>
