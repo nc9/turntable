@@ -45,6 +45,12 @@ describe("address classification", () => {
     "2002:7f00:1::",
     "2002:a9fe:a9fe::1",
     "::127.0.0.1",
+    "::ffff:0:7f00:1",
+    "::ffff:0:a9fe:a9fe",
+    "::ffff:0:808:808",
+    "3fff::1",
+    "4000::1",
+    "e000::1",
   ])("%s is refused", (ip) => {
     expect(blockedReason(ip)).toBeString();
   });
