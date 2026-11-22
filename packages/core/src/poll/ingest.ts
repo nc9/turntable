@@ -35,6 +35,8 @@ import type { GithubClient } from "./github";
 export type Candidate = {
   /** For a pull request: the base branch it targets. */
   baseRef?: string;
+  /** The base branch commit at poll time, stored on the run for `github.event`. */
+  baseSha?: string;
   event: "push" | "pull_request";
   ref: string;
   sha: string;
@@ -180,18 +182,30 @@ export type IngestResult = {
   superseded: Superseded["running"];
 };
 
-/** The `github.event` payload `if:` expressions see (the parts we know). */
-function eventPayload(c: Candidate): Value {
+/**
+ * The `github.event` payload: what `if:` expressions see at plan time, and what act is given for
+ * the job. Forge facts only, each fetched at poll time.
+ */
+function eventPayload(c: Candidate, repo: string, before?: string): Value {
+  const repository = { full_name: repo };
   if (c.event === "pull_request") {
     return {
+      ...(c.prNumber === undefined ? {} : { number: c.prNumber }),
       pull_request: {
-        base: { ref: c.baseRef ?? "" },
-        head: { ref: c.headBranch, sha: c.sha },
+        ...(c.prNumber === undefined ? {} : { number: c.prNumber }),
+        base: { ref: c.baseRef ?? "", ...(c.baseSha ? { sha: c.baseSha } : {}), repo: repository },
+        head: { ref: c.headBranch, sha: c.sha, repo: repository },
         draft: false,
       },
+      repository,
     };
   }
-  return {};
+  return {
+    ref: c.ref,
+    ...(before ? { before } : {}),
+    after: c.sha,
+    repository,
+  };
 }
 
 /** Most local action directories read while planning one workflow. */
@@ -369,6 +383,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         headBranch: pr.headRef,
         prNumber: pr.number,
         baseRef: pr.baseRef,
+        ...(pr.baseSha ? { baseSha: pr.baseSha } : {}),
         sameRepo,
         allowlisted,
         ...(permission === undefined ? {} : { permission }),
@@ -411,6 +426,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         headBranch: pr.headRef,
         prNumber: pr.number,
         baseRef: pr.baseRef,
+        ...(pr.baseSha ? { baseSha: pr.baseSha } : {}),
         sameRepo: true,
         allowlisted: true,
       });
@@ -466,7 +482,13 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       ...(c.actor ? { actor: c.actor } : {}),
       ...(c.event === "pull_request" ? { head_ref: c.headBranch } : {}),
       ...(workflowName ? { workflow: workflowName } : {}),
-      event: eventPayload(c),
+      event: eventPayload(
+        c,
+        repo,
+        c.event === "push"
+          ? ((await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push")) ?? undefined)
+          : undefined,
+      ),
     };
 
     let wp;
