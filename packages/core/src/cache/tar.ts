@@ -79,8 +79,12 @@ export class ArchiveError extends Error {}
 /** The output or its expansion went past a cap: the commit is refused with 413. */
 export class ArchiveTooLargeError extends ArchiveError {}
 
-/** Normalises a tar path without touching the file system: collapses `.` and rejects `..`. */
-function checkPath(raw: string, rules: ArchiveRules): string {
+/**
+ * Normalises a tar path without touching the file system: collapses `.` and rejects `..`.
+ * `denied` says the path names a denied location (see `deniedPath`): an entry like that is
+ * dropped, but a link may not point at one, so the caller decides.
+ */
+function pathOf(raw: string, rules: ArchiveRules): { norm: string; denied: boolean } {
   if (raw.includes("\0")) throw new ArchiveError("path contains a NUL byte");
   if (raw.length === 0 || raw.length > 4096) throw new ArchiveError("path length is invalid");
   const absolute = raw.startsWith("/");
@@ -89,8 +93,13 @@ function checkPath(raw: string, rules: ArchiveRules): string {
   const norm = (absolute ? "/" : "") + parts.join("/");
   if (absolute && !rules.absoluteRoots.some((r) => norm.startsWith(r)))
     throw new ArchiveError(`absolute path outside the allowed roots: ${raw.slice(0, 120)}`);
-  if (deniedPath(parts))
-    throw new ArchiveError(`path is not allowed in a cache: ${raw.slice(0, 120)}`);
+  return { norm, denied: deniedPath(parts) };
+}
+
+/** A path that must not be denied: link targets. */
+function checkPath(raw: string, rules: ArchiveRules): string {
+  const { norm, denied } = pathOf(raw, rules);
+  if (denied) throw new ArchiveError(`path is not allowed in a cache: ${raw.slice(0, 120)}`);
   return norm;
 }
 
@@ -106,8 +115,16 @@ function checkSymlink(
   links: ReadonlySet<string>,
 ): void {
   if (target.includes("\0") || target === "") throw new ArchiveError("link target is invalid");
+  // An absolute entry sits under one of the allowed roots, and its link may not leave that root:
+  // not by an absolute target elsewhere, and not by climbing out with `..`.
+  const root = entryPath.startsWith("/")
+    ? rules.absoluteRoots.find((r) => entryPath.startsWith(r))
+    : undefined;
+  const within = (resolved: string): boolean =>
+    root === undefined || `${resolved}/`.startsWith(root);
   if (target.startsWith("/")) {
     const norm = checkPath(target, rules);
+    if (!within(norm)) throw new ArchiveError("link target leaves the root its entry is under");
     if (runsThroughLink(norm, links))
       throw new ArchiveError("link target runs through a link the archive made");
     return;
@@ -123,6 +140,8 @@ function checkSymlink(
         throw new ArchiveError(`link escapes its root: ${target.slice(0, 120)}`);
       stack.pop();
     } else stack.push(part);
+    if (!within(here()))
+      throw new ArchiveError(`link escapes the root its entry is under: ${target.slice(0, 120)}`);
     if (links.has(here()))
       throw new ArchiveError("link target runs through a link the archive made");
     if (deniedPath(stack)) throw new ArchiveError("link points at a path not allowed in a cache");
@@ -194,7 +213,7 @@ export type Sink = {
 export function validateArchive(
   file: string,
   rules: ArchiveRules = DEFAULT_RULES,
-): Promise<{ entries: number; bytes: number }> {
+): Promise<{ entries: number; bytes: number; skipped: number }> {
   return walkArchive(file, rules);
 }
 
@@ -202,11 +221,13 @@ export async function walkArchive(
   file: string,
   rules: ArchiveRules,
   sink?: Sink,
-): Promise<{ entries: number; bytes: number }> {
+): Promise<{ entries: number; bytes: number; skipped: number }> {
   const fd = await Bun.file(file).slice(0, 8).arrayBuffer();
   const stream = archiveStream(file, Buffer.from(fd));
   let buf: Buffer = Buffer.alloc(0);
   let dataLeft = 0; // file data bytes still to forward
+  let dropData = false; // the bytes of a dropped entry are read and discarded
+  let skipped = 0; // entries dropped for a denied path
   let padLeft = 0; // padding bytes still to drop
   let emit: CanonEntry | undefined;
   let paxMtime: number | undefined;
@@ -273,12 +294,26 @@ export async function walkArchive(
     paxMtime = undefined;
     entries++;
     if (entries > rules.maxEntries) throw new ArchiveError("too many entries");
-    const norm = checkPath(name, rules);
+    const { norm, denied } = pathOf(name, rules);
     // A name that normalises to nothing ("./", "/") is the archive root: a directory entry for it
     // is dropped, and anything else with such a name is refused. We never emit one.
     if (norm === "" || norm === "/") {
       if (type !== "5") throw new ArchiveError("an entry with an empty name is refused");
       entries--;
+      return;
+    }
+    if (denied) {
+      // An entry at a denied location (git state, CI config, keys, startup files; an npm package
+      // may ship a `.github` directory) is dropped from what is stored, and counted. What is
+      // never accepted is a link that points at one: that is checked on the link's target.
+      skipped++;
+      entries--;
+      total += size;
+      if (total > rules.maxUncompressed)
+        throw new ArchiveTooLargeError("archive is too large when unpacked");
+      dataLeft = size;
+      padLeft = (512 - (size % 512)) % 512;
+      dropData = size > 0;
       return;
     }
     if (runsThroughLink(norm, links))
@@ -355,10 +390,11 @@ export async function walkArchive(
       for (;;) {
         if (dataLeft > 0) {
           const n = Math.min(dataLeft, buf.length);
-          if (n > 0) await sink?.data(buf.subarray(0, n));
+          if (n > 0 && !dropData) await sink?.data(buf.subarray(0, n));
           dataLeft -= n;
           buf = buf.subarray(n);
           if (dataLeft > 0) break;
+          dropData = false;
         }
         if (padLeft > 0) {
           const n = Math.min(padLeft, buf.length);
@@ -385,8 +421,13 @@ export async function walkArchive(
         }
         if (zeroBlocks >= 2) {
           stream.destroy();
-          if (entries === 0) throw new ArchiveError("archive has no entries");
-          return { entries, bytes: total };
+          if (entries === 0)
+            throw new ArchiveError(
+              skipped > 0
+                ? `archive has no entries left after dropping ${skipped} at paths not allowed in a cache`
+                : "archive has no entries",
+            );
+          return { entries, bytes: total, skipped };
         }
       }
     }
@@ -395,6 +436,11 @@ export async function walkArchive(
     throw new ArchiveError(`unreadable archive: ${e instanceof Error ? e.message : "error"}`);
   }
   if (dataLeft > 0 || metaData) throw new ArchiveError("archive is truncated");
-  if (entries === 0) throw new ArchiveError("archive has no entries");
-  return { entries, bytes: total };
+  if (entries === 0)
+    throw new ArchiveError(
+      skipped > 0
+        ? `archive has no entries left after dropping ${skipped} at paths not allowed in a cache`
+        : "archive has no entries",
+    );
+  return { entries, bytes: total, skipped };
 }

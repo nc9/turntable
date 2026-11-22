@@ -1,4 +1,4 @@
-// Customer-account rules for sandboxes created in a shared Daytona account. These are enforced in
+// Rules for sandboxes created in a shared Daytona account. These are enforced in
 // code, not by convention: a spec or option that would break one is refused before any request.
 
 /** Every sandbox we create carries this label, and only sandboxes carrying it are ever listed or deleted. */
@@ -17,32 +17,25 @@ export const HARD_MAX_LIVE = 3;
 export const MAX_TTL_SECONDS = 30 * 60;
 
 /**
- * Names that mark the account owner's own CI sandboxes. They appear as a label value (for
- * example `project=squirrel-pub-ci`), as a label key, or as the snapshot a sandbox started from.
- * Before creating one of ours, if this many or more of them are running, we wait: our runs must
- * not crowd out their CI. They are only ever counted, never listed back, changed or deleted.
+ * How the account owner's own CI sandboxes are recognised, set by the operator: the label `key`
+ * with one of `values` (for example `project=acme-ci`), or a sandbox that started from a snapshot
+ * named one of `values`. Nothing is assumed: with none configured there is no label check.
+ * They are only ever counted, never listed back, changed or deleted.
  */
-export const FOREIGN_CI_LABELS: readonly string[] = [
-  "squirrel-pub-ci",
-  "squirrel-ci",
-  "squirrel-release",
-];
-export const FOREIGN_WAIT_AT = 8;
-
-/** The label key the account owner's CI uses, with one of FOREIGN_CI_LABELS as its value. */
-export const FOREIGN_CI_LABEL_KEY = "project";
+export type OwnerCiLabels = { key: string; values: readonly string[] };
 
 /**
- * True for one of the account owner's CI sandboxes: the label `project` set to exactly one of
- * the CI names, or a sandbox that started from a snapshot with one of those names.
+ * True for one of the account owner's CI sandboxes under `labels`: the label `key` set to exactly
+ * one of the values, or a sandbox that started from a snapshot with one of those names.
  */
-export function isForeignCi(s: {
-  labels?: Record<string, string> | undefined;
-  snapshot?: string | undefined;
-}): boolean {
-  if (s.snapshot !== undefined && FOREIGN_CI_LABELS.includes(s.snapshot)) return true;
-  const v = s.labels?.[FOREIGN_CI_LABEL_KEY];
-  return v !== undefined && FOREIGN_CI_LABELS.includes(v);
+export function isForeignCi(
+  s: { labels?: Record<string, string> | undefined; snapshot?: string | undefined },
+  labels: OwnerCiLabels | undefined,
+): boolean {
+  if (!labels) return false;
+  if (s.snapshot !== undefined && labels.values.includes(s.snapshot)) return true;
+  const v = s.labels?.[labels.key];
+  return v !== undefined && labels.values.includes(v);
 }
 
 /**

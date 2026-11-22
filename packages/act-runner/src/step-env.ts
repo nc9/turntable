@@ -6,7 +6,7 @@
 // it off), and sets the step's stdin, stdout and stderr to it. So `[ -t 1 ]` and
 // `process.stdout.isTTY` are true in a step, where on a GitHub runner they are false: a program
 // that colours its output, sizes a table or handles escapes by TTY-ness behaves differently
-// (squirrelscan's `fmt` colours when `process.stdout.isTTY && TERM !== "dumb"`, which broke two
+// (a real project's `fmt` colours when `process.stdout.isTTY && TERM !== "dumb"`, which broke two
 // of its tests that assert no escape sequence in the output).
 //
 // act cannot be told not to, so the commands it launches are wrapped. act resolves a step's
