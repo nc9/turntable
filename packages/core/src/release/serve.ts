@@ -13,6 +13,7 @@ import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
 import type { PublishWiring } from "./publish/types";
 import { fileKeyVault } from "./key-vault";
+import { ReleaseProxy } from "./proxy";
 import { ReleaseLane, type ArtifactRecords, type ReleaseSigner } from "./lane";
 
 /** What the lane needs from the signing service and the artifact records. */
@@ -87,9 +88,10 @@ export async function serveRelease(
       },
     },
   };
+  const forge = githubForge({ token: cfg.githubToken });
   const lane = new ReleaseLane({
     db,
-    forge: githubForge({ token: cfg.githubToken }),
+    forge,
     bytes: dirArtifacts(cfg.artifactDir),
     records,
     attest,
@@ -98,10 +100,35 @@ export async function serveRelease(
     owner: `release-lane:${process.pid}`,
     log,
   });
+  // Compat publishing: the release proxy, only when asked for. It is the lane's own listener, so
+  // the credential it injects stays in the process that can open it.
+  const proxy = cfg.proxy
+    ? await ReleaseProxy.start({
+        db,
+        vault,
+        attest,
+        forge,
+        githubToken: async () => cfg.githubPublishToken,
+        bindHost: cfg.proxy.bind,
+        port: cfg.proxy.port,
+        ...(cfg.proxy.advertiseHost ? { advertiseHost: cfg.proxy.advertiseHost } : {}),
+        log,
+      })
+    : undefined;
+  if (proxy) log(`release proxy listening on ${proxy.host}:${proxy.port}`);
+  // A freeze revokes the credentials of running publish jobs, not only the next request.
+  const sweep = proxy
+    ? setInterval(
+        () => void proxy.sweepFrozen().catch((e) => log(`sweep failed: ${String(e)}`)),
+        cfg.pollMs,
+      )
+    : undefined;
   lane.start(cfg.pollMs);
   log("release lane started");
   return {
     stop() {
+      if (sweep) clearInterval(sweep);
+      void proxy?.stop();
       lane.stop();
       attest.close();
       db.close();

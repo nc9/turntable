@@ -74,6 +74,11 @@ export interface ReleaseConfig {
   pollMs: number;
   /** A GitHub credential that may write releases, for publishing. Only the lane has it. */
   githubPublishToken?: string | undefined;
+  /**
+   * Where the release proxy (compat publishing) listens. Absent: no release proxy. The lane
+   * hosts it so the credential it injects never leaves the process that can open it.
+   */
+  proxy?: { bind: string; port: number; advertiseHost: string | undefined } | undefined;
 }
 
 /**
@@ -92,6 +97,12 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
       "LONGSHORE_RELEASE_POLL_MS must be a whole number of milliseconds, at least 100",
     );
   }
+  const proxyPort = env.LONGSHORE_RELEASE_PROXY_PORT?.trim();
+  if (proxyPort !== undefined && proxyPort !== "") {
+    const n = Number(proxyPort);
+    if (!Number.isInteger(n) || n < 0 || n > 65535)
+      throw new Error("LONGSHORE_RELEASE_PROXY_PORT must be a port number (0 for any free port)");
+  }
   return {
     masterKeyFile: need("LONGSHORE_RELEASE_MASTER_KEY_FILE"),
     dataDir: need("LONGSHORE_RELEASE_DATA_DIR"),
@@ -99,6 +110,15 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
     artifactDir: need("LONGSHORE_RELEASE_ARTIFACT_DIR"),
     builderId: need("LONGSHORE_RELEASE_BUILDER_ID"),
     githubPublishToken: env.LONGSHORE_RELEASE_GITHUB_PUBLISH_TOKEN?.trim() || undefined,
+    ...(proxyPort
+      ? {
+          proxy: {
+            bind: env.LONGSHORE_RELEASE_PROXY_BIND?.trim() || "127.0.0.1",
+            port: Number(proxyPort),
+            advertiseHost: env.LONGSHORE_RELEASE_PROXY_ADVERTISE_HOST?.trim() || undefined,
+          },
+        }
+      : {}),
     pollMs,
   };
 }

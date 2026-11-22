@@ -37,6 +37,14 @@ export class AttestationStore {
          target TEXT NOT NULL, state TEXT NOT NULL, detail TEXT, updated INTEGER NOT NULL,
          PRIMARY KEY (org_id, project_id, repo, tag, target))`,
     );
+    // Written by the lane when it signs: the only thing the release proxy trusts to hand out rules.
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS approved_releases (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL, repo TEXT NOT NULL,
+         tag TEXT NOT NULL, sha TEXT NOT NULL, artifacts TEXT NOT NULL, approved_at INTEGER NOT NULL,
+         envelope TEXT,
+         PRIMARY KEY (org_id, project_id, run_id))`,
+    );
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS pinned_repos (
          org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL,
@@ -143,6 +151,75 @@ export class AttestationStore {
       }
     }
     return { state: "same" };
+  }
+
+  /** The lane signed this run's release: remembered in this file, for the release proxy. */
+  approveRelease(
+    id: { orgId: string; projectId: string; runId: string },
+    r: {
+      repo: string;
+      tag: string;
+      sha: string;
+      artifacts: readonly string[];
+      /** The signed provenance, as JSON text, kept so a later publish attaches the lane's own. */
+      envelope?: string;
+    },
+    now: number,
+  ): void {
+    this.#db
+      .query(
+        "INSERT INTO approved_releases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, run_id) DO UPDATE SET repo = excluded.repo, tag = excluded.tag, sha = excluded.sha, artifacts = excluded.artifacts, approved_at = excluded.approved_at, envelope = excluded.envelope",
+      )
+      .run(
+        id.orgId,
+        id.projectId,
+        id.runId,
+        r.repo.toLowerCase(),
+        r.tag,
+        r.sha,
+        JSON.stringify(r.artifacts),
+        now,
+        r.envelope ?? null,
+      );
+  }
+
+  approvedRelease(id: {
+    orgId: string;
+    projectId: string;
+    runId: string;
+  }):
+    | { repo: string; tag: string; sha: string; artifacts: string[]; envelope: string | undefined }
+    | undefined {
+    const row = this.#db
+      .query<
+        { repo: string; tag: string; sha: string; artifacts: string; envelope: string | null },
+        [string, string, string]
+      >(
+        "SELECT repo, tag, sha, artifacts, envelope FROM approved_releases WHERE org_id = ? AND project_id = ? AND run_id = ?",
+      )
+      .get(id.orgId, id.projectId, id.runId);
+    return row
+      ? {
+          ...row,
+          artifacts: JSON.parse(row.artifacts) as string[],
+          envelope: row.envelope ?? undefined,
+        }
+      : undefined;
+  }
+
+  /** The digests attested for a release, by artifact name. */
+  attestedDigests(id: {
+    orgId: string;
+    projectId: string;
+    repo: string;
+    tag: string;
+  }): Record<string, string> {
+    const rows = this.#db
+      .query<{ name: string; sha256: string }, [string, string, string, string]>(
+        "SELECT name, sha256 FROM attested_releases WHERE org_id = ? AND project_id = ? AND repo = ? AND tag = ?",
+      )
+      .all(id.orgId, id.projectId, id.repo.toLowerCase(), id.tag);
+    return Object.fromEntries(rows.map((r) => [r.name, r.sha256]));
   }
 
   /** Records the digests of a release the first time; never overwrites. */

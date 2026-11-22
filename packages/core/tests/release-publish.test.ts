@@ -249,6 +249,7 @@ afterEach(async () => {
 
 const NPM = {
   kind: "npm" as const,
+  mode: "strict" as const,
   package: "@acme/web",
   artifact: "web-1.0.0.tgz",
   tag: "latest",
@@ -257,6 +258,7 @@ const NPM = {
 };
 const GH = {
   kind: "github-release" as const,
+  mode: "strict" as const,
   assets: ["cli-linux", "cli-darwin"],
   provenanceAsset: "provenance.intoto.json" as string | null,
 };

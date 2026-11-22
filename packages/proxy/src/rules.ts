@@ -1,8 +1,9 @@
 // The rule engine: pure functions. A rule says where a credential may go; a request either
 // matches one rule exactly or it matches none and is refused.
+import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { MIN_SECRET_LENGTH } from "@longshore/redact";
-import { type Inject, type Rule, RuleError } from "./types";
+import { type BodyCheck, type Inject, type Rule, RuleError } from "./types";
 
 const HOST =
   /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -48,9 +49,29 @@ export const INJECTING_ALLOWLIST: ReadonlySet<string> = new Set([
 
 /** A rule with defaults applied, or a RuleError saying what is wrong. */
 export interface CompiledRule extends Rule {
+  pathExact: boolean;
   port: number;
   methods: readonly string[];
   forwardHeaders: readonly string[];
+}
+
+const NPM_PACKAGE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+const HEX256 = /^[0-9a-f]{64}$/;
+
+/** The request path for a package: an unscoped name as is, `@scope/name` with its slash encoded. */
+export function npmPath(pkg: string): string {
+  return `/${pkg.replace("/", "%2F")}`;
+}
+
+function compileBodyCheck(c: BodyCheck, bad: (why: string) => never): void {
+  if (c.type === "npm-publish" || c.type === "sha256") {
+    if (c.digests.length === 0 || !c.digests.every((d) => HEX256.test(d)))
+      bad("bodyCheck digests must be lower-case hex sha256 values (at least one)");
+  } else if (c.type === "json") {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(c.field)) bad("bodyCheck field must be a plain name");
+  } else {
+    bad("unknown bodyCheck type");
+  }
 }
 
 export function compileRule(r: Rule): CompiledRule {
@@ -68,7 +89,13 @@ export function compileRule(r: Rule): CompiledRule {
   for (const m of r.methods)
     if (!METHOD.test(m)) bad(`method ${m} is not an upper-case method name`);
   if (!r.pathPrefix.startsWith("/")) bad("pathPrefix must start with /");
-  if (checkPath(r.pathPrefix) !== undefined) bad("pathPrefix must be a canonical path");
+  if (r.npmPackage !== undefined) {
+    if (!NPM_PACKAGE.test(r.npmPackage) || r.npmPackage.length > 214)
+      bad("npmPackage must be a valid npm package name");
+    if (r.pathPrefix !== npmPath(r.npmPackage))
+      bad(`pathPrefix for npmPackage ${r.npmPackage} must be ${npmPath(r.npmPackage)}`);
+  } else if (checkPath(r.pathPrefix) !== undefined) bad("pathPrefix must be a canonical path");
+  if (r.bodyCheck) compileBodyCheck(r.bodyCheck, bad);
   const inject: Inject = r.inject;
   if (inject.type === "header") {
     if (!HEADER.test(inject.name) || FORBIDDEN_HEADERS.has(inject.name.toLowerCase())) {
@@ -90,9 +117,21 @@ export function compileRule(r: Rule): CompiledRule {
       bad(`forwardHeaders entry ${h} is not allowed`);
     }
   }
+  if (inject.type === "oci-bearer") {
+    if (!/^[\x21-\x7e]{0,64}$/.test(inject.username) || inject.username.includes(":"))
+      bad("oci username must be printable and contain no colon");
+    if (!/^repository:[a-z0-9][a-z0-9._/-]{0,254}:(pull|push)(,(pull|push))?$/.test(inject.scope))
+      bad("oci scope must be repository:<name>:pull[,push]");
+    if (
+      inject.realmHost !== undefined &&
+      (!HOST.test(inject.realmHost) || isIP(inject.realmHost) !== 0)
+    )
+      bad("oci realmHost must be one lower-case hostname");
+  }
   if (inject.type !== "none" && !r.secret) bad("a rule that injects must name its secret");
   return {
     ...r,
+    pathExact: r.pathExact === true || r.npmPackage !== undefined,
     port,
     methods: [...new Set(r.methods)],
     forwardHeaders: [...new Set((r.forwardHeaders ?? []).map((h) => h.toLowerCase()))],
@@ -181,7 +220,7 @@ export function matchRule(
   if (forMethod.length === 0) return { ok: false, reason: "no_rule_for_method" };
   // The longest matching prefix wins, so a narrow rule beats a broad one.
   const hits = forMethod
-    .filter((r) => underPrefix(path, r.pathPrefix))
+    .filter((r) => (r.pathExact ? path === r.pathPrefix : underPrefix(path, r.pathPrefix)))
     .toSorted((a, b) => b.pathPrefix.length - a.pathPrefix.length);
   const best = hits[0];
   return best ? { ok: true, rule: best } : { ok: false, reason: "no_rule_for_path" };
@@ -190,6 +229,67 @@ export function matchRule(
 /** True when a host is named by any rule: the gate for CONNECT. */
 export function hostAllowed(rules: readonly CompiledRule[], host: string, port: number): boolean {
   return rules.some((r) => r.host === host && r.port === port);
+}
+
+/** The rule that lets an exact encoded-slash npm path through the canonical-path check, if any. */
+export function npmExactRule(
+  rules: readonly CompiledRule[],
+  host: string,
+  port: number,
+  path: string,
+): boolean {
+  return rules.some(
+    (r) =>
+      r.host === host && r.port === port && r.npmPackage !== undefined && r.pathPrefix === path,
+  );
+}
+
+export type BodyVerdict = { ok: true } | { ok: false; reason: string; detail?: string };
+
+/** Applies a rule's body check to a request body. */
+export function checkBody(c: BodyCheck, body: Buffer): BodyVerdict {
+  if (c.type === "sha256") {
+    const d = createHash("sha256").update(body).digest("hex");
+    return c.digests.includes(d)
+      ? { ok: true }
+      : { ok: false, reason: "digest_not_approved", detail: `seen ${d}` };
+  }
+  let doc: unknown;
+  try {
+    doc = JSON.parse(body.toString("utf8"));
+  } catch {
+    return { ok: false, reason: "not_json" };
+  }
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc))
+    return { ok: false, reason: "not_an_object" };
+  const o = doc as Record<string, unknown>;
+  if (c.type === "json") {
+    return Object.hasOwn(o, c.field) && o[c.field] === c.equals
+      ? { ok: true }
+      : { ok: false, reason: "field_mismatch", detail: c.field };
+  }
+  // npm publish: exactly one attachment, one version, and the metadata must say what the bytes are.
+  const att = o._attachments;
+  if (typeof att !== "object" || att === null || Array.isArray(att))
+    return { ok: false, reason: "no_attachment" };
+  const names = Object.keys(att);
+  if (names.length !== 1) return { ok: false, reason: "attachment_count" };
+  const data = (att as Record<string, { data?: unknown }>)[names[0]!]?.data;
+  if (typeof data !== "string") return { ok: false, reason: "no_attachment" };
+  const bytes = Buffer.from(data, "base64");
+  const d = createHash("sha256").update(bytes).digest("hex");
+  if (!c.digests.includes(d))
+    return { ok: false, reason: "digest_not_approved", detail: `seen ${d}` };
+  const versions = o.versions;
+  if (typeof versions !== "object" || versions === null || Object.keys(versions).length !== 1)
+    return { ok: false, reason: "version_count" };
+  const meta = Object.values(versions as Record<string, { dist?: { integrity?: unknown } }>)[0];
+  const integrity = meta?.dist?.integrity;
+  if (integrity !== undefined) {
+    const want = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    if (integrity !== want) return { ok: false, reason: "integrity_mismatch" };
+  }
+  return { ok: true };
 }
 
 /** What goes on the wire, and the values that must never come back in a response. */
@@ -201,7 +301,8 @@ export function wireValue(
     const value = (inject.format ?? "{secret}").replaceAll("{secret}", secret);
     return { header: inject.name.toLowerCase(), value, scrub: [secret, value] };
   }
-  if (inject.type === "basic") {
+  if (inject.type === "basic" || inject.type === "oci-bearer") {
+    // For oci-bearer this is the credential for the token exchange; the proxy swaps in the bearer.
     const pair = `${inject.username}:${secret}`;
     const value = `Basic ${Buffer.from(pair).toString("base64")}`;
     return { header: "authorization", value, scrub: [secret, pair, value] };

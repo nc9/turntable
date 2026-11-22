@@ -66,7 +66,23 @@ longshore release publish-target list --org acme --project web
 - A target names only artifacts the request asked for. Each target's state is stored per tag, so a partial publish resumes and a finished target is not repeated. An incident freeze stops publishing target by target.
 - Credentials are never audited or stored in results. Every outcome is audited as `publish:<key>:<state>`.
 
-Targets run in key order and a failed target does not undo a signed release. Compat mode (an approved job publishing through a lane-hosted proxy) is not implemented.
+Targets run in key order and a failed target does not undo a signed release.
+
+### Compat mode: the job publishes, the lane holds the credential
+
+A workflow that already runs `npm publish`, `docker push` or `gh release upload` can keep doing so. Declare the target with `--mode compat` (an image, `--kind oci-image`, is always compat). The lane signs as usual and records the target as `pending`. It also remembers, in its own file, that it signed this run's release.
+
+The lane hosts a **release proxy** (`LONGSHORE_RELEASE_PROXY_PORT`, optionally `_BIND` and `_ADVERTISE_HOST`): the worker's proxy code with the release vault as its secret source. A publish job is given a proxy credential and rules only by the lane, and only when all of these hold: the lane signed this run, the repository is still the pinned one, the tag still points at the signed commit at the forge, and no incident freeze is on. A freeze is checked again on every request and revokes running jobs' credentials. The rules come from the project's compat targets and the digests the lane attested, never from the workflow:
+
+| Target | What the job may do, and only this |
+| --- | --- |
+| npm | `GET` and `PUT` on the exact package path (`/@scope%2Fname`, the one encoded slash the proxy accepts), and the `PUT` body must hold one tarball whose sha256 is the attested one, with matching `dist.integrity`. |
+| GitHub release | Read releases of the one repository, create a release only with `"draft": true`, upload assets on `uploads.github.com`. The credential is the lane's own, never the job's. |
+| Container image | Registry version ping, blobs and manifest reads of the one repository, and `PUT` of a manifest only under the approved references and only if its sha256 is the attested one. The proxy answers the registry's token challenge itself, so the job never sees a bearer token. |
+
+After the job, `ReleaseLane.finalize` checks the result against the lane's own record: a GitHub draft is verified asset by asset and published (assets that are missing or differ are replaced from the verified bytes first), an npm version that exists is accepted only with the approved integrity and is published by the lane if the job did not. A version or published release with other bytes is refused, never accepted.
+
+Not done yet: the transport that lets the worker ask the lane for a job's credential (`ReleaseProxy.register`), the lane-side check of an image after the push, and a check that an asset was not added to an already published release by a job with an upload rule. Blob uploads for images are not pinned: they are content-addressed, and the manifest decides what a tag means.
 
 ## Deployment
 
