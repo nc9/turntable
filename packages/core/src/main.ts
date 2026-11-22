@@ -324,7 +324,10 @@ async function serve(args: string[]): Promise<void> {
   }
   const roles = resolveRoles(values.roles, { worker: values.worker, poll: values.poll });
   if (roles.has("release")) {
-    // The release lane is its own process with its own keys: nothing below runs for it.
+    // The release lane is its own process with its own keys: nothing below runs for it. It drops
+    // (or refuses) like every other process that opens a data dir, before any file is touched. It
+    // does not chown: its own directories belong to whoever provisions the lane.
+    enforceRootPolicy(resolve(values["data-dir"]), process.env, undefined, { chown: false });
     const lane = await serveRelease(values);
     const stopLane = () => {
       lane.stop();

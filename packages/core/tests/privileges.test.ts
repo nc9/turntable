@@ -323,3 +323,12 @@ test("main() calls the drop before any subcommand runs", () => {
     mainBody.indexOf("switch (command)"),
   );
 });
+
+test("the release lane branch drops (or refuses) before it opens anything, and does not chown", () => {
+  const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf8");
+  const branch = src.slice(src.indexOf('if (roles.has("release"))'));
+  const drop = branch.indexOf("enforceRootPolicy(");
+  expect(drop).toBeGreaterThan(0);
+  expect(drop).toBeLessThan(branch.indexOf("serveRelease(values)"));
+  expect(branch.slice(drop, drop + 140)).toContain("chown: false");
+});
