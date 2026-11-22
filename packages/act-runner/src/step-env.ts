@@ -166,7 +166,7 @@ const q = (v: string): string => `'${v.replaceAll("'", "'\\''")}'`;
  * one against the CA. Both spellings of the proxy variables are set, because tools disagree.
  */
 export function proxyEnvFile(url: string, bundle: string): string {
-  const vars: [string, string][] = [
+  return envFileOf([
     ["HTTP_PROXY", url],
     ["HTTPS_PROXY", url],
     ["http_proxy", url],
@@ -178,7 +178,11 @@ export function proxyEnvFile(url: string, bundle: string): string {
     ["REQUESTS_CA_BUNDLE", bundle],
     ["NODE_EXTRA_CA_CERTS", bundle],
     ["GIT_SSL_CAINFO", bundle],
-  ];
+  ]);
+}
+
+/** `export` lines for a file the launcher sources (see launcherArgv). Values are quoted. */
+export function envFileOf(vars: readonly (readonly [string, string])[]): string {
   return `${vars.map(([k, v]) => `export ${k}=${q(v)}`).join("\n")}\n`;
 }
 

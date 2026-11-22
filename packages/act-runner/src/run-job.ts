@@ -22,6 +22,7 @@ import {
   INSTALL_SHIMS_SH,
   launcherArgv,
   PROXY_BUNDLE_SH,
+  envFileOf,
   proxyEnvFile,
   SHIM_NAMES,
   STEP_ENV,
@@ -58,6 +59,12 @@ export interface RunInput {
    * act and so for every step; never a provider env field.
    */
   proxy?: { url: string; caPem: string };
+  /**
+   * The value of GITHUB_TOKEN for act and the steps (`secrets.GITHUB_TOKEN`, `github.token`). Put
+   * in the environment file, never in an argv. Behind the secrets proxy this is a placeholder
+   * and the proxy attaches the real token.
+   */
+  githubToken?: string;
 }
 
 export interface RunOptions {
@@ -268,7 +275,10 @@ export async function* runJob(
         pollMs,
       );
     }
-    let envFile = "";
+    // Anything the job needs in its environment that must not appear in an argv (the proxy URL
+    // carries the attempt's credential, GITHUB_TOKEN is a token) goes in one 0600 file the launcher
+    // sources and deletes before act starts.
+    let envText = "";
     if (input.proxy) {
       const caPath = `${L.root}/proxy-ca.pem`;
       const bundle = `${L.root}/proxy-bundle.pem`;
@@ -279,21 +289,20 @@ export async function* runJob(
       );
       const b = await execShort(provider, sandboxId, PROXY_BUNDLE_SH, [caPath, bundle], retry);
       if (b.exitCode !== 0) return fail(`cannot build the proxy trust bundle: ${b.output.trim()}`);
-      // The proxy URL carries the attempt's credential: it goes in a 0600 file the launcher
-      // sources and deletes, never into an argv.
-      envFile = `${L.root}/proxy.env`;
+      envText += proxyEnvFile(input.proxy.url, bundle);
+    }
+    if (input.githubToken !== undefined)
+      envText += envFileOf([["GITHUB_TOKEN", input.githubToken]]);
+    let envFile = "";
+    if (envText !== "") {
+      envFile = `${L.root}/job.env`;
       await withRetry(
-        () =>
-          provider.files.put(
-            sandboxId,
-            envFile,
-            enc.encode(proxyEnvFile(input.proxy?.url ?? "", bundle)),
-          ),
+        () => provider.files.put(sandboxId, envFile, enc.encode(envText)),
         maxErr,
         pollMs,
       );
       const m = await execShort(provider, sandboxId, 'chmod 600 "$1"', [envFile], retry);
-      if (m.exitCode !== 0) return fail("cannot protect the proxy environment file");
+      if (m.exitCode !== 0) return fail("cannot protect the job environment file");
     }
 
     // Pin every `uses:` to its sha in the files act will read.
@@ -318,7 +327,12 @@ export async function* runJob(
     const { execId } = await withRetry(
       () =>
         provider.exec.start(sandboxId, {
-          argv: launcherArgv(L.shims, plan.argv, envFile),
+          argv: launcherArgv(
+            L.shims,
+            // `-s GITHUB_TOKEN` takes the value from the environment: it is never in the argv.
+            input.githubToken === undefined ? plan.argv : [...plan.argv, "-s", "GITHUB_TOKEN"],
+            envFile,
+          ),
           cwd: plan.cwd,
           timeoutSeconds: opts.timeoutSeconds ?? 3600,
         }),

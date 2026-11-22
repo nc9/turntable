@@ -116,7 +116,7 @@ describe("the secrets-proxy environment", () => {
   const CRED = "cred-not-a-real-secret-4f9a";
   test("reaches act through a file the launcher sources and deletes, never through an argv", async () => {
     const { p, id, plan, repoTarball } = await setup();
-    const envFile = `${plan.layout.root}/proxy.env`;
+    const envFile = `${plan.layout.root}/job.env`;
     const act = await fakeAct(
       await fixture("success.jsonl"),
       0,

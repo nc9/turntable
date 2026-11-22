@@ -25,7 +25,8 @@ import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
-import { SecretsProxy, withSecretsProxy } from "./proxy";
+import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
+import { JobTokens, publicRepoCheck } from "./github/job-token";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
@@ -199,8 +200,18 @@ async function startBackground(
       });
       log(`secrets proxy listening on port ${secretsProxy.port}`);
     }
+    // A GitHub token per job (see github/job-token), when the App is configured.
+    const jobTokens =
+      extras.auth && process.env.LONGSHORE_JOB_TOKENS !== "off"
+        ? new JobTokens(extras.auth, { isPublic: publicRepoCheck({ auth: extras.auth }) })
+        : undefined;
     const proxied = (r: AttemptRunner): AttemptRunner =>
-      secretsProxy ? withSecretsProxy(r, { proxy: secretsProxy }) : r;
+      secretsProxy
+        ? withSecretsProxy(r, {
+            proxy: secretsProxy,
+            ...(jobTokens ? { github: githubTargetOf(db) } : {}),
+          })
+        : r;
     scheduler = new Scheduler({
       db,
       providers,
@@ -223,10 +234,11 @@ async function startBackground(
                 log: (m) => console.warn(`[longshore] ${m}`),
               }),
               canary: true,
+              ...(jobTokens ? { jobTokens } : {}),
               ...(v.image ? { image: v.image } : {}),
             }),
             // A job behind the proxy holds secrets: it never runs with open egress.
-            { secretBearing: (ctx) => ctx.proxy !== undefined },
+            { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
           ),
         ),
         {
