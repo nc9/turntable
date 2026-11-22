@@ -3550,9 +3550,13 @@
                           "held": {
                             "description": "Why new work is held because of this limit.",
                             "type": ["string", "null"]
+                          },
+                          "estimated": {
+                            "type": "boolean",
+                            "description": "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count."
                           }
                         },
-                        "required": ["metric", "used", "limit", "percent", "held"],
+                        "required": ["metric", "used", "limit", "percent", "held", "estimated"],
                         "additionalProperties": false
                       }
                     }

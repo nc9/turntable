@@ -157,6 +157,107 @@ describe("quota enforcement at claim", () => {
     expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(10);
   });
 
+  describe("sandbox minutes are never under-counted", () => {
+    const setup = async (label: string, patch: Partial<typeof s.jobAttempts.$inferInsert>) => {
+      const x = await queued(a, label);
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.jobAttempts)
+          .set({ state: "success", ...patch })
+          .where(eq(s.jobAttempts.id, x.attempt.id));
+      });
+    };
+    const used = async () => {
+      const u = await quotaUsage(db, a.orgId, NOW);
+      return [u.sandboxMinutesLastDay, u.sandboxEstimated] as const;
+    };
+
+    test("no confirmed destroy: counted to the finish plus the provider TTL, and marked estimated", async () => {
+      await setup("unconfirmed", {
+        startedAt: NOW - 70 * MIN,
+        finishedAt: NOW - 50 * MIN,
+        sandboxCreatedAt: NOW - 60 * MIN,
+      });
+      // 60 minutes ago to (50 minutes ago + 30) = 20 minutes ago: 40 minutes.
+      expect(await used()).toEqual([40, 1]);
+    });
+
+    test("the TTL grace never runs past now", async () => {
+      await setup("recent", {
+        startedAt: NOW - 20 * MIN,
+        finishedAt: NOW - 5 * MIN,
+        sandboxCreatedAt: NOW - 15 * MIN,
+      });
+      expect(await used()).toEqual([15, 1]);
+    });
+
+    test("a confirmed destroy is exact and not estimated", async () => {
+      await setup("confirmed", {
+        startedAt: NOW - 70 * MIN,
+        finishedAt: NOW - 50 * MIN,
+        sandboxCreatedAt: NOW - 60 * MIN,
+        sandboxDestroyedAt: NOW - 50 * MIN,
+      });
+      expect(await used()).toEqual([10, 0]);
+    });
+
+    test("no recorded create time: counted from when the attempt started, marked estimated", async () => {
+      // A row from before the column existed, or a crash between create and record.
+      await setup("legacy", {
+        startedAt: NOW - 50 * MIN,
+        finishedAt: NOW - 40 * MIN,
+        sandboxCreatedAt: null,
+        sandboxDestroyedAt: null,
+      });
+      expect(await used()).toEqual([40, 1]);
+      // Still running with no create time: to now.
+      const x = await queued(a, "live-legacy");
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.jobAttempts)
+          .set({ state: "running", startedAt: NOW - 12 * MIN })
+          .where(eq(s.jobAttempts.id, x.attempt.id));
+      });
+      expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(52);
+    });
+
+    test("an attempt that never started and has no sandbox counts nothing", async () => {
+      await queued(a, "never");
+      expect(await used()).toEqual([0, 0]);
+    });
+
+    test("a sandbox straddling the 24 hour boundary counts only the part inside the window", async () => {
+      await setup("straddle", {
+        startedAt: NOW - 25 * 60 * MIN,
+        finishedAt: NOW - 23 * 60 * MIN,
+        sandboxCreatedAt: NOW - 25 * 60 * MIN,
+        sandboxDestroyedAt: NOW - 23 * 60 * MIN,
+      });
+      expect(await used()).toEqual([60, 0]);
+    });
+
+    test("an unconfirmed attempt whose grace reaches into the window still counts", async () => {
+      // Finished 24h10m ago: its sandbox may have lived to 23h40m ago, 20 minutes inside.
+      await setup("grace-edge", {
+        startedAt: NOW - (24 * 60 + 40) * MIN,
+        finishedAt: NOW - (24 * 60 + 10) * MIN,
+        sandboxCreatedAt: NOW - (24 * 60 + 30) * MIN,
+      });
+      expect(await used()).toEqual([20, 1]);
+    });
+
+    test("the status says the figure is an estimate only when it includes one", async () => {
+      const st = async () => (await statuses(a)).find((x) => x.metric === "sandbox_minutes")!;
+      expect((await st()).estimated).toBe(false);
+      await setup("est", {
+        startedAt: NOW - 20 * MIN,
+        finishedAt: NOW - 10 * MIN,
+        sandboxCreatedAt: NOW - 20 * MIN,
+      });
+      expect((await st()).estimated).toBe(true);
+    });
+  });
+
   test("runs per hour: new runs wait, a run that already started finishes its jobs", async () => {
     await set(a, { maxRunsPerHour: 1 });
     const first = await queued(a, "r1");

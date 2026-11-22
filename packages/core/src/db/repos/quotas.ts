@@ -6,7 +6,7 @@ import type { Db } from "..";
 import * as s from "../schema";
 import { asBigint, greatestOf, leastOf } from "../sql-dialect";
 import { appendEvent } from "./events";
-import { sandboxSeconds } from "./usage";
+import { DEFAULT_SANDBOX_GRACE_MS, sandboxSeconds } from "./usage";
 
 export type OrgQuotas = {
   maxConcurrent: number | null;
@@ -87,13 +87,19 @@ export type QuotaUsage = {
   runsLastHour: number;
   /** Sandbox time in the last 24 hours, in whole minutes: create to confirmed destroy, a live or unconfirmed sandbox counted to the attempt's end or now. */
   sandboxMinutesLastDay: number;
+  /** Attempts in that figure with no confirmed destroy or no recorded create time (an estimate). */
+  sandboxEstimated: number;
   logBytes: number;
   storedBytes: number;
 };
 
 export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
   // The same exact figure the Usage page shows: provider create to confirmed destroy.
-  const sandbox = await sandboxSeconds(db, { orgId }, { from: now - DAY_MS, to: now, now });
+  const sandbox = await sandboxSeconds(
+    db,
+    { orgId },
+    { from: now - DAY_MS, to: now, now, graceMs: DEFAULT_SANDBOX_GRACE_MS },
+  );
   return db.run(async (h) => {
     const [conc] = await h.orm
       .select({ n: sql<number>`count(*)`.mapWith(Number) })
@@ -137,6 +143,7 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
       concurrent: Number(conc?.n ?? 0),
       runsLastHour: Number(runs?.n ?? 0),
       sandboxMinutesLastDay: Math.floor(sandbox.seconds / 60),
+      sandboxEstimated: sandbox.estimated,
       logBytes: Number(logs?.n ?? 0),
       storedBytes: Number(arts?.n ?? 0) + Number(cache?.n ?? 0),
     };
@@ -153,6 +160,12 @@ export type QuotaStatus = {
   percent: number | null;
   /** Set when a new claim is held because of this limit. */
   held: string | null;
+  /**
+   * The figure includes an estimate (sandbox minutes only): an attempt with no confirmed destroy
+   * counts to its finish plus the provider TTL, and one with no recorded create time counts from
+   * its start. It can over-count; it never under-counts.
+   */
+  estimated: boolean;
 };
 
 /** Each limit against its usage, with the reason new claims are held when one is reached. */
@@ -162,9 +175,11 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
     used: number,
     limit: number | null,
     what: string,
+    estimated = false,
   ): QuotaStatus => ({
     metric,
     used,
+    estimated,
     limit,
     percent: limit === null || limit === 0 ? null : Math.floor((used / limit) * 100),
     held:
@@ -180,6 +195,7 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
       u.sandboxMinutesLastDay,
       q.maxSandboxMinutesPerDay,
       "sandbox minutes in the last 24 hours",
+      u.sandboxEstimated > 0,
     ),
     mk("log_bytes", u.logBytes, q.maxLogBytes, "stored log bytes"),
     mk("stored_bytes", u.storedBytes, q.maxStoredBytes, "stored artifact and cache bytes"),

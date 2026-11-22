@@ -126,7 +126,7 @@ An org can live under limits. Quotas limit tenants, so the **instance operator**
 
 - `max_concurrent`: attempts running at once. It can only lower this org's cap: the effective cap is the smaller of it and the instance's per-org cap (`--org-cap`), whatever a stored row says. Raise `--org-cap` to raise everyone's.
 - `max_runs_per_hour`: runs that start in a rolling hour. A run that has already started finishes its jobs; new runs wait.
-- `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, counted from the provider's create to its confirmed destroy (the figure the Usage page shows; a sandbox with no confirmed destroy counts to the attempt's end, or to now while it runs).
+- `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, counted from the provider's create to its confirmed destroy. It never counts less than what ran. An attempt with no confirmed destroy counts to its finish plus 30 minutes (the provider's TTL), never past now, because a leaked sandbox still bills; one with no recorded create time (older rows, or a crash between create and record) counts from when it started. Those figures are marked `estimated` in the quota status and can over-count. The Usage page counts an unconfirmed attempt to its finish. The cap is checked when a claim is made, so it can overshoot by up to `max_concurrent` times a sandbox's lifetime (the attempts already past the check).
 - `max_log_bytes`: stored job log bytes.
 - `max_stored_bytes`: recorded artifact bytes plus control-plane cache bytes. (The cache also keeps its own per-class shares inside the org's cache quota; this is the org-wide total.)
 
