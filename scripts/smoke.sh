@@ -16,6 +16,17 @@ for _ in $(seq 1 100); do
     echo "healthz: $body"
     echo "cold start to healthy: $(( (end - start) / 1000000 )) ms"
     test -f "$work/data/turntable.db" || { echo "database file missing"; exit 1; }
+    # The embedded UI: the app shell, its CSP, an asset, and the SPA fallback for a deep route.
+    headers=$(curl -fsS -D - -o "$work/index.html" "http://127.0.0.1:$port/")
+    echo "$headers" | grep -iq '^content-security-policy:.*script-src .self.' || { echo "missing UI CSP on /"; echo "$headers"; exit 1; }
+    echo "$headers" | grep -iq '^content-security-policy:.*frame-ancestors .none.' || { echo "CSP lacks frame-ancestors"; exit 1; }
+    grep -q '<div id="root">' "$work/index.html" || { echo "/ is not the app shell"; exit 1; }
+    asset=$(grep -o '/assets/[^"]*\.js' "$work/index.html" | head -1)
+    test -n "$asset" || { echo "no script asset in index.html"; exit 1; }
+    curl -fsS -o /dev/null "http://127.0.0.1:$port$asset" || { echo "asset $asset not served"; exit 1; }
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/acme/api/runs/x")
+    test "$code" = "200" || { echo "deep route returned $code, expected the app shell"; exit 1; }
+    echo "ui: shell, csp, asset and spa fallback ok"
     exit 0
   fi
   sleep 0.1

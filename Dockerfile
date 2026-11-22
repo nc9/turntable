@@ -11,6 +11,8 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/provider-sdk/package.json packages/provider-sdk/package.json
 COPY packages/provider-conformance/package.json packages/provider-conformance/package.json
 COPY packages/provider-docker/package.json packages/provider-docker/package.json
+COPY packages/redact/package.json packages/redact/package.json
+COPY packages/ui/package.json packages/ui/package.json
 RUN bun install --frozen-lockfile
 COPY . .
 RUN case "${TARGETARCH}" in \
