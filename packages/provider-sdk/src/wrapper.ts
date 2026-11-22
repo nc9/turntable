@@ -103,31 +103,34 @@ else
 fi
 `;
 
-/** Status. Args: dir. Prints "<state> <a> <b> <hb>". */
+/** Status. Args: dir. Prints "<state> <code> <endedAt> <hb> <reason>". */
 export const STATUS_SH = String.raw`D=$1
 hb=0
 [ -f "$D/hb" ] && read hb < "$D/hb"
 report() {
   [ -f "$D/exit" ] || return 1
   read rc ts < "$D/exit"
-  st=exited
-  if [ "$rc" -ge 128 ] && { [ -f "$D/killed" ] || [ -f "$D/timedout" ] || [ -f "$D/outlimit" ]; }; then
-    st=killed
+  st=exited; why=-
+  if [ "$rc" -ge 128 ]; then
+    if [ -f "$D/outlimit" ]; then st=killed; why=output_limit
+    elif [ -f "$D/timedout" ]; then st=killed; why=timeout
+    elif [ -f "$D/killed" ]; then st=killed; why=killed
+    fi
   fi
-  echo "$st $rc $ts $hb"
+  echo "$st $rc $ts $hb $why"
 }
 report && exit 0
 if [ -f "$D/pid" ]; then
   read p < "$D/pid"
-  if kill -0 "$p" 2>/dev/null; then echo "running 0 0 $hb"; exit 0; fi
+  if kill -0 "$p" 2>/dev/null; then echo "running 0 0 $hb -"; exit 0; fi
   report && exit 0
-  echo "lost 0 0 $hb"; exit 0
+  echo "lost 0 0 $hb -"; exit 0
 fi
 if [ -f "$D/created" ]; then
   read c < "$D/created"
-  if [ $(( $(date +%s) - c )) -lt 30 ]; then echo "running 0 0 $hb"; exit 0; fi
+  if [ $(( $(date +%s) - c )) -lt 30 ]; then echo "running 0 0 $hb -"; exit 0; fi
 fi
-echo "lost 0 0 $hb"
+echo "lost 0 0 $hb -"
 `;
 
 /** Kill. Args: dir signal. Always exits 0. */

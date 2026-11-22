@@ -6,8 +6,11 @@
 
 export type Labels = Readonly<Record<string, string>>;
 
-/** `none` means unrestricted egress. */
-export type EgressPolicy = "none" | "allowlist" | "deny-all-except-proxy";
+/**
+ * `none`: no network egress at all. `open`: unrestricted egress. `allowlist`: only listed hosts.
+ * `deny-all-except-proxy`: only the controller-side proxy is reachable.
+ */
+export type EgressPolicy = "none" | "open" | "allowlist" | "deny-all-except-proxy";
 
 export interface ProviderInfo {
   /** Stable provider id, for example `docker`. */
@@ -94,8 +97,13 @@ export interface ExecStartOptions {
  */
 export type ExecState = "running" | "exited" | "killed" | "lost";
 
+/** Why a `killed` exec was stopped. */
+export type ExecReason = "timeout" | "killed" | "output_limit";
+
 export interface ExecStatus {
   state: ExecState;
+  /** Set when state is `killed`. */
+  reason?: ExecReason;
   exitCode?: number;
   /** Epoch milliseconds. */
   endedAt?: number;

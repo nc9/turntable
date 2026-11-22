@@ -38,6 +38,26 @@ describe("fake scripted failures", () => {
     await p.destroy(id);
   });
 
+  test("output ceiling kills with reason output_limit", async () => {
+    const w = new FakeWorld({ exec: { tickSeconds: 1, maxOutputBytes: 50_000 } });
+    try {
+      const p = w.provider();
+      const { id } = await p.create(spec);
+      const { execId } = await p.exec.start(id, {
+        argv: ["sh", "-c", "while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done"],
+        timeoutSeconds: 60,
+      });
+      let s = await p.exec.status(id, execId);
+      for (let i = 0; i < 100 && s.state === "running"; i += 1) {
+        await Bun.sleep(200);
+        s = await p.exec.status(id, execId);
+      }
+      expect(s).toMatchObject({ state: "killed", reason: "output_limit", exitCode: 137 });
+    } finally {
+      w.dispose();
+    }
+  });
+
   test("ttl expiry reaps sandboxes", async () => {
     const p = world.provider();
     const { id } = await p.create({ ...spec, ttlSeconds: 1 });

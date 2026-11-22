@@ -20,17 +20,59 @@ export function labelArgs(labels: Labels): string[] {
   });
 }
 
+/** Image reference: no leading dash, no whitespace or shell-ish characters. */
+const IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\-/:@]{0,254}$/;
+/** Container id or name. */
+const REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+const RUNTIME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
+const CAP_RE = /^[A-Z_]{2,32}$/;
+
+export function assertImage(image: string): string {
+  if (!IMAGE_RE.test(image))
+    throw new SpecError(`invalid image reference: ${JSON.stringify(image)}`);
+  return image;
+}
+
+/** Validates a container id or name before it reaches any docker CLI call. */
+export function assertRef(ref: string): string {
+  if (!REF_RE.test(ref)) throw new SpecError(`invalid container reference: ${JSON.stringify(ref)}`);
+  return ref;
+}
+
+export interface Hardening {
+  /** `--security-opt no-new-privileges`. Default true. */
+  noNewPrivileges: boolean;
+  /** `--pids-limit`. Default 4096. 0 disables. */
+  pidsLimit: number;
+  /** `--cap-drop`. Default `["NET_RAW"]`. */
+  capDrop: readonly string[];
+  /** `--runtime`, for example `runsc` (gVisor). Default unset. */
+  runtime?: string;
+}
+
+export const DEFAULT_HARDENING: Hardening = {
+  noNewPrivileges: true,
+  pidsLimit: 4096,
+  capDrop: ["NET_RAW"],
+};
+
 /**
  * `docker run` argv for a sandbox. No `-e`/`--env`/`--env-file`: env never passes through a
  * provider. The TTL backstop is the container's own main process: `sleep <ttl>` ends, and
- * `--rm` removes the container, even if the controller is gone.
+ * `--rm` removes the container, even if the controller is gone. Egress `none` becomes
+ * `--network none`; `open` keeps the default bridge. `--` stops option parsing before the image.
  */
-export function buildRunArgs(spec: SandboxSpec, nowMs: number): string[] {
+export function buildRunArgs(
+  spec: SandboxSpec,
+  nowMs: number,
+  hardening: Hardening = DEFAULT_HARDENING,
+): string[] {
   if (spec.image === undefined) throw new SpecError("docker provider needs spec.image");
+  const image = assertImage(spec.image);
   if (spec.snapshot !== undefined || spec.template !== undefined) {
     throw new SpecError("docker provider supports image only");
   }
-  if (spec.network.egress !== "none") {
+  if (spec.network.egress !== "none" && spec.network.egress !== "open") {
     throw new SpecError(`docker provider cannot enforce egress policy ${spec.network.egress}`);
   }
   if (!Number.isInteger(spec.ttlSeconds) || spec.ttlSeconds <= 0) {
@@ -46,6 +88,17 @@ export function buildRunArgs(spec: SandboxSpec, nowMs: number): string[] {
       [EXPIRES_LABEL]: String(nowMs + spec.ttlSeconds * 1000),
     }),
   );
+  if (spec.network.egress === "none") args.push("--network", "none");
+  if (hardening.noNewPrivileges) args.push("--security-opt", "no-new-privileges");
+  if (hardening.pidsLimit > 0) args.push("--pids-limit", String(hardening.pidsLimit));
+  for (const cap of hardening.capDrop) {
+    if (!CAP_RE.test(cap)) throw new SpecError(`invalid capability: ${cap}`);
+    args.push("--cap-drop", cap);
+  }
+  if (hardening.runtime !== undefined) {
+    if (!RUNTIME_RE.test(hardening.runtime)) throw new SpecError("invalid runtime name");
+    args.push("--runtime", hardening.runtime);
+  }
   if (r.cpus !== undefined) {
     if (!(r.cpus > 0)) throw new SpecError("cpus must be positive");
     args.push("--cpus", String(r.cpus));
@@ -54,7 +107,7 @@ export function buildRunArgs(spec: SandboxSpec, nowMs: number): string[] {
     if (!Number.isInteger(r.memoryMb) || r.memoryMb < 6) throw new SpecError("bad memoryMb");
     args.push("--memory", `${r.memoryMb}m`);
   }
-  args.push(spec.image, "sleep", String(spec.ttlSeconds));
+  args.push("--", image, "sleep", String(spec.ttlSeconds));
   return args;
 }
 
@@ -69,7 +122,15 @@ export function buildPsArgs(labels: Labels | undefined): string[] {
 
 /** `docker exec` argv for a short command. `-i` only when stdin is supplied. */
 export function buildExecArgs(id: string, argv: readonly string[], stdin: boolean): string[] {
-  return ["exec", ...(stdin ? ["-i"] : []), id, ...argv];
+  return ["exec", ...(stdin ? ["-i"] : []), "--", assertRef(id), ...argv];
+}
+
+export function buildRmArgs(id: string): string[] {
+  return ["rm", "-f", "--", assertRef(id)];
+}
+
+export function buildInspectArgs(ids: readonly string[]): string[] {
+  return ["inspect", "--format", "{{json .}}", "--", ...ids.map(assertRef)];
 }
 
 /** Script for files.put. Args: path. Reads the body from stdin. */

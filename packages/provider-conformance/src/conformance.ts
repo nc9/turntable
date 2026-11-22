@@ -26,6 +26,8 @@ export interface ConformanceOptions {
   dropConnection?: () => void | Promise<void>;
   /** Output retention the provider was configured with. Default: the SDK constants. */
   cap?: { head: number; tail: number; slack: number };
+  /** Command that must FAIL (non-zero, not 127) under egress `none`. Default: busybox wget. */
+  egressProbe?: string[];
 }
 
 const enc = new TextEncoder();
@@ -77,12 +79,14 @@ export function runConformance(
   const runId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
   const runLabels: Labels = { tt_conformance: runId };
   let seq = 0;
+  // Isolated by default when the provider can do it; the suite never needs outbound network.
+  let egressDefault: SandboxSpec["network"]["egress"] = "open";
 
   const spec = (extra: Labels = {}): SandboxSpec => ({
     name: `tt-conf-${runId}-${(seq += 1)}`,
     labels: { ...runLabels, ...extra },
     ttlSeconds: 1800,
-    network: { egress: "none" },
+    network: { egress: egressDefault },
     ...opts.spec,
   });
 
@@ -113,6 +117,7 @@ export function runConformance(
     let p: Provider;
     beforeAll(async () => {
       p = await makeProvider();
+      if (p.info.network.egressPolicy.includes("none")) egressDefault = "none";
     });
     afterAll(async () => {
       const cleaner = await makeProvider();
@@ -171,13 +176,46 @@ export function runConformance(
         await p.exec.kill(id, execId, sig);
         const s = await waitDone(p, id, execId, 30_000);
         expect(s.state).toBe("killed");
+        expect(s.reason).toBe("killed");
         expect(s.exitCode).toBe(code);
         await p.exec.kill(id, execId, sig); // idempotent after exit
       }
       const { execId } = await p.exec.start(id, { argv: ["sleep", "300"], timeoutSeconds: 1 });
       const s = await waitDone(p, id, execId, 30_000);
       expect(s.state).toBe("killed");
+      expect(s.reason).toBe("timeout");
       expect(s.exitCode).toBe(143);
+    });
+
+    t("egress none really blocks outbound connections", async () => {
+      if (!p.info.network.egressPolicy.includes("none")) return;
+      const id = await sandbox(p);
+      const probe = opts.egressProbe ?? [
+        "wget",
+        "-T",
+        "3",
+        "-q",
+        "-O",
+        "/dev/null",
+        "http://1.1.1.1",
+      ];
+      const { status } = await run(p, id, probe);
+      expect(status.state).toBe("exited");
+      expect(status.exitCode).not.toBe(0);
+      expect(status.exitCode).not.toBe(127);
+    });
+
+    t("exec waits for the real command: sleep then exit 7", async () => {
+      const id = await sandbox(p);
+      const started = Date.now();
+      const { execId } = await p.exec.start(id, {
+        argv: ["sh", "-c", `sleep ${Math.max(gap, 2)}; exit 7`],
+        timeoutSeconds: 60,
+      });
+      expect((await p.exec.status(id, execId)).state).toBe("running");
+      const s = await waitDone(p, id, execId);
+      expect(s).toMatchObject({ state: "exited", exitCode: 7 });
+      expect(Date.now() - started).toBeGreaterThanOrEqual(Math.max(gap, 2) * 1000 - 200);
     });
 
     t("unknown execId reports lost", async () => {

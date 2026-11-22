@@ -17,9 +17,13 @@ import {
   GET_SH,
   MANAGED_LABEL,
   PUT_SH,
+  DEFAULT_HARDENING,
   buildExecArgs,
+  buildInspectArgs,
   buildPsArgs,
+  buildRmArgs,
   buildRunArgs,
+  type Hardening,
 } from "./commands";
 
 export interface DockerProviderOptions {
@@ -28,6 +32,8 @@ export interface DockerProviderOptions {
   /** Per-file byte cap. Default 64 MiB. */
   maxFileBytes?: number;
   exec?: WrappedExecOptions;
+  /** Container hardening overrides. Defaults: no-new-privileges, pids-limit 4096, drop NET_RAW. */
+  hardening?: Partial<Hardening>;
 }
 
 interface Result {
@@ -54,16 +60,18 @@ export class DockerProvider implements Provider {
   readonly files: Provider["files"];
   private readonly bin: string;
   private readonly maxFileBytes: number;
+  private readonly hardening: Hardening;
 
   constructor(opts: DockerProviderOptions = {}) {
     this.bin = opts.docker ?? "docker";
     this.maxFileBytes = opts.maxFileBytes ?? 64 * 1024 * 1024;
+    this.hardening = { ...DEFAULT_HARDENING, ...opts.hardening };
     this.info = {
       name: "docker",
       createFrom: ["image"],
       exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
       files: { upload: true, download: true, maxBytes: this.maxFileBytes },
-      network: { egressPolicy: ["none"], ingress: false, proxyReachability: true },
+      network: { egressPolicy: ["none", "open"], ingress: false, proxyReachability: true },
       resources: { cpus: true, memoryMb: true, diskGb: false },
       ttl: true,
       labels: true,
@@ -153,7 +161,7 @@ export class DockerProvider implements Provider {
 
   async create(spec: SandboxSpec) {
     const now = Date.now();
-    const res = await this.cli(buildRunArgs(spec, now), undefined, 600_000);
+    const res = await this.cli(buildRunArgs(spec, now, this.hardening), undefined, 600_000);
     if (res.exitCode !== 0) this.fail("docker run", res);
     const id = dec.decode(res.stdout).trim().split("\n").pop() ?? "";
     if (!/^[0-9a-f]{64}$/.test(id)) throw new InfraError(`docker run: unexpected output`);
@@ -161,7 +169,7 @@ export class DockerProvider implements Provider {
   }
 
   async destroy(id: string): Promise<void> {
-    const res = await this.cli(["rm", "-f", id]);
+    const res = await this.cli(buildRmArgs(id));
     if (res.exitCode === 0) return;
     const err = dec.decode(res.stderr);
     if (/No such container|is already in progress/i.test(err)) return;
@@ -180,7 +188,7 @@ export class DockerProvider implements Provider {
     if (ps.exitCode !== 0) this.fail("docker ps", ps);
     const ids = dec.decode(ps.stdout).split("\n").filter(Boolean);
     if (ids.length === 0) return [];
-    const insp = await this.cli(["inspect", "--format", "{{json .}}", ...ids]);
+    const insp = await this.cli(buildInspectArgs(ids));
     // A container can vanish between ps and inspect (it is --rm); inspect then exits 1 but
     // still prints the rest.
     const out: SandboxInfo[] = [];

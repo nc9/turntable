@@ -203,7 +203,7 @@ const FAKE_INFO: ProviderInfo = {
   createFrom: ["image", "snapshot", "template"],
   exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
   files: { upload: true, download: true },
-  network: { egressPolicy: ["none"], ingress: false, proxyReachability: false },
+  network: { egressPolicy: ["open"], ingress: false, proxyReachability: false },
   resources: { cpus: false, memoryMb: false, diskGb: false },
   ttl: true,
   labels: true,

@@ -3,6 +3,7 @@ import { OUTPUT_HEAD_BYTES, OUTPUT_SLACK_BYTES, OUTPUT_TAIL_BYTES, cutMarker } f
 import type {
   ExecLogs,
   ExecLogsOptions,
+  ExecReason,
   ExecStartOptions,
   ExecStatus,
   KillSignal,
@@ -130,12 +131,13 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
         throw e;
       }
       if (res.exitCode !== 0) throw new InfraError(`status failed (${res.exitCode})`);
-      const [state, a, b, hb] = dec.decode(res.stdout).trim().split(" ");
+      const [state, a, b, hb, why] = dec.decode(res.stdout).trim().split(" ");
       const lastHeartbeatAt = Number(hb) > 0 ? Number(hb) * 1000 : undefined;
       const hbPart = lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt };
       if (state === "running" || state === "lost") return { state, ...hbPart };
       if (state === "exited" || state === "killed") {
-        return { state, exitCode: Number(a), endedAt: Number(b) * 1000, ...hbPart };
+        const reason = why === "-" ? {} : { reason: why as ExecReason };
+        return { state, exitCode: Number(a), endedAt: Number(b) * 1000, ...reason, ...hbPart };
       }
       throw new InfraError(`status: unparseable reply ${JSON.stringify(state)}`);
     },

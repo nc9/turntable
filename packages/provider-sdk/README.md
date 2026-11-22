@@ -76,6 +76,18 @@ While the command runs, the wrapper kills it (SIGKILL, state `killed`) once `out
 ceiling (default 1 GiB), checked every tick (5 s). In-sandbox disk use is therefore bounded by
 roughly that ceiling plus what is written in one tick.
 
+### Status reason
+
+A `killed` status carries `reason`: `timeout` (the `timeoutSeconds` limit), `killed` (an
+`exec.kill` call) or `output_limit` (the output ceiling), derived from the marker files.
+
+## Trust
+
+The exec dir lives inside the sandbox and is writable by the job's own code. A job can therefore
+forge its own exit code or kill the wrapper. That only lets it lie about itself, which its own
+code could already do. A killed wrapper shows up as `lost`, which the core treats as an infra
+error. Never use one job's self-reported result as a security gate for another trust class.
+
 ## Testing
 
 `@turntable/provider-sdk/testing` exports `FakeWorld`, which backs providers with temp dirs and
