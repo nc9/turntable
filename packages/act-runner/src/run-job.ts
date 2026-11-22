@@ -16,7 +16,7 @@ import {
 } from "./act-install";
 import { checkoutStubAction } from "./checkout-stub";
 import { createActParser, summarize, type ActEvent } from "./events";
-import { assertNoDockerAccess, type JobPlan } from "./plan";
+import { PlanError, assertNoDockerAccess, assertPinned, type JobPlan } from "./plan";
 
 export type JobState = "success" | "failure" | "skipped" | "infra_error";
 
@@ -139,6 +139,7 @@ export async function* runJob(
   try {
     // Every remote action must be pinned to a commit before anything runs.
     assertNoDockerAccess(plan.argv);
+    assertPinned(plan);
     const unresolved = plan.actions.filter((a) => !a.sha);
     if (unresolved.length > 0) {
       return fail(
@@ -251,6 +252,7 @@ export async function* runJob(
 
     return decide(status, summarize(events));
   } catch (e) {
+    if (e instanceof PlanError) return fail(`plan rejected: ${e.message}`);
     if (e instanceof SandboxNotFoundError) return fail("sandbox is gone (cancelled or expired)");
     if (e instanceof InfraError) return fail(e.message);
     throw e;

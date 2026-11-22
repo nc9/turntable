@@ -31,7 +31,7 @@ async function git(dir: string, ...args: string[]): Promise<void> {
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
-async function runExample(workflow: string, jobId: string, egress: "open" | "none" = "open") {
+async function runExample(workflow: string, jobId: string, egress: "open" | "none" = "none") {
   const repo = join(tmp, `${jobId}-${egress}-repo`);
   cpSync(join(import.meta.dir, "../../../examples/hello"), repo, { recursive: true });
   await git(repo, "init", "-q", "-b", "main");
@@ -107,8 +107,8 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
 
   // act is fetched controller-side and the checkout stub copies a local dir, so the job itself
   // should not need the network. This variant proves it (it matters for locked-down sandboxes).
-  test("hello job also succeeds with egress none", async () => {
-    const { result, log } = await runExample("ci.yml", "hello", "none");
+  test("hello job also succeeds with egress open", async () => {
+    const { result, log } = await runExample("ci.yml", "hello", "open");
     if (result.state !== "success") console.log(JSON.stringify(result), "\n" + log);
     expect(result).toMatchObject({ state: "success", exitCode: 0 });
     expect(log).toContain("output-check=hello-output");

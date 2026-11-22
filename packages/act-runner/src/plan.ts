@@ -112,7 +112,7 @@ const isLinuxLabel = (l: string): boolean => /^(ubuntu(-|$)|linux$|self-hosted$)
 export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions): JobPlan {
   let doc: unknown;
   try {
-    doc = parse(workflowYaml);
+    doc = parse(workflowYaml, { merge: true });
   } catch (e) {
     throw new PlanError("yaml", `workflow is not valid YAML: ${(e as Error).message}`);
   }
@@ -204,7 +204,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
       files.push({ path, source: text, text });
       let doc2: unknown;
       try {
-        doc2 = parse(text);
+        doc2 = parse(text, { merge: true });
       } catch (e) {
         throw new PlanError("yaml", `${path} is not valid YAML: ${(e as Error).message}`);
       }
@@ -260,8 +260,16 @@ function withArgv(plan: JobPlan): JobPlan {
     "--container-daemon-socket",
     "-",
     // Every action is served from a local dir: the checkout stub, or the sha-delivered copy.
+    // Both `repo@<ref as written>` and `repo@<sha>` map to it, so act never needs the network
+    // for a known action whatever the workflow text says (fail closed).
     ...[
-      ...new Map(plan.actions.map((a) => [`${a.repo}@${a.sha ?? a.ref}`, a.dir])).entries(),
+      ...new Map(
+        plan.actions.flatMap((a) =>
+          [`${a.repo}@${a.ref}`, ...(a.sha ? [`${a.repo}@${a.sha}`] : [])].map(
+            (k): [string, string] => [k, a.dir],
+          ),
+        ),
+      ).entries(),
     ].flatMap(([key, dir]) => ["--local-repository", `${key}=${dir}`]),
   ];
   assertNoDockerAccess(argv);
@@ -389,5 +397,57 @@ export async function resolveActions(
     }),
   );
   const files = plan.files.map((f) => ({ ...f, text: rewriteUses(f.source, actions) }));
-  return withArgv({ ...plan, actions, files });
+  const resolved = withArgv({ ...plan, actions, files });
+  assertPinned(resolved);
+  return resolved;
+}
+
+function collectUses(node: unknown, out: string[]): void {
+  if (Array.isArray(node)) {
+    for (const n of node) collectUses(n, out);
+  } else if (isObj(node)) {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "uses" && typeof v === "string") out.push(v.trim());
+      else collectUses(v, out);
+    }
+  }
+}
+
+/**
+ * Fail closed. Re-parses the files exactly as act will (YAML, so flow mappings, quoted keys,
+ * block scalars, anchors and aliases are all seen) and requires every remote `uses:` in the
+ * selected job and every scanned composite to have a registered `--local-repository` mapping.
+ * Anything else would make act fetch the action itself, by tag, over the network.
+ */
+export function assertPinned(plan: JobPlan): void {
+  const mapped = new Set<string>();
+  plan.argv.forEach((a, i) => {
+    if (a === "--local-repository") mapped.add((plan.argv[i + 1] ?? "").split("=")[0] ?? "");
+  });
+  for (const f of plan.files) {
+    let doc: unknown;
+    try {
+      doc = parse(f.text, { merge: true });
+    } catch (e) {
+      throw new PlanError("unpinned-action", `${f.path} no longer parses: ${(e as Error).message}`);
+    }
+    const root =
+      f.path === plan.workflowPath
+        ? isObj(doc) && isObj(doc.jobs)
+          ? doc.jobs[plan.jobId]
+          : undefined
+        : doc;
+    const uses: string[] = [];
+    collectUses(root, uses);
+    for (const u of uses) {
+      if (u.startsWith("./") || u.startsWith("../") || u.startsWith("docker://")) continue;
+      const m = /^([^/@\s]+\/[^/@\s]+)(?:\/[^@\s]+)?@(\S+)$/.exec(u);
+      if (!m || !mapped.has(`${m[1]}@${m[2]}`)) {
+        throw new PlanError(
+          "unpinned-action",
+          `${f.path}: "${u}" has no sha-delivered local copy; act would fetch it from the network`,
+        );
+      }
+    }
+  }
 }
