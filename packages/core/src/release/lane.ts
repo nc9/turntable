@@ -20,6 +20,7 @@ import type { AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
 import type { ForgeFacts } from "./forge";
 import { publishGithubRelease } from "./publish/github-release";
+import { verifyOciImage } from "./publish/oci";
 import { publishNpm } from "./publish/npm";
 import type { PublishWiring, TargetResult } from "./publish/types";
 
@@ -335,7 +336,11 @@ export class ReleaseLane {
   ): Promise<TargetResult[]> {
     const w = this.#o.publish;
     const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
-    const keys = Object.keys(targets);
+    // Images last: whether their provenance could go on a release asset depends on what happened
+    // to the release targets in this same pass.
+    const keys = Object.keys(targets).toSorted(
+      (a, b) => Number(targets[a]!.kind === "oci-image") - Number(targets[b]!.kind === "oci-image"),
+    );
     if (!w || keys.length === 0) return [];
     const now = this.#o.now ?? Date.now;
     const id = { orgId: scope.orgId, projectId: scope.projectId, repo: v.repo, tag: req.tag };
@@ -390,7 +395,7 @@ export class ReleaseLane {
       }
       // A target the job publishes itself: the lane signed and approved it, and the release proxy
       // will hand the job the rules. An image has no strict path at all.
-      if (t.kind === "oci-image" || (t.mode === "compat" && !ensureCompat)) {
+      if (t.mode === "compat" && !ensureCompat) {
         await record({ target: key, state: "pending", reason: "awaiting_job" });
         continue;
       }
@@ -412,6 +417,29 @@ export class ReleaseLane {
             await publishNpm(key, t, ctx, token, {
               ...(w.npmRegistry ? { registry: w.npmRegistry } : {}),
               ...(w.fetch ? { fetch: w.fetch } : {}),
+            }),
+          );
+        } else if (t.kind === "oci-image") {
+          // After a compat push: what the registry holds must be the attested image, and our
+          // provenance goes on it as a referrer.
+          const cred = await w.credentials.secret(scope, t.secret, t.registry, req.tag, req.id);
+          if (!cred) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await verifyOciImage(key, t, ctx, cred, {
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+              // Only if a release target that carries the provenance really did, in this pass or
+              // on record: published (assets read back and checked) or already there.
+              releaseAssetFallback: out.some((r) => {
+                const x = targets[r.target];
+                return (
+                  x?.kind === "github-release" &&
+                  x.provenanceAsset !== null &&
+                  (r.state === "published" || r.state === "already")
+                );
+              }),
             }),
           );
         } else {
