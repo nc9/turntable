@@ -107,7 +107,9 @@ export class OidcKeyStore {
     const name = nameOf(kid);
     const sealed = await getSecretRecord(this.#db, { orgId }, name);
     if (sealed === undefined) return undefined;
-    const rec = JSON.parse(open(this.#master, sealed, secretAad(orgId, name), "oidc")) as KeyRecord;
+    const rec = JSON.parse(
+      open(this.#master, sealed, secretAad(orgId, name), "oidc", orgId),
+    ) as KeyRecord;
     // The kid in the record must be the thumbprint of the key inside it.
     if (rec.v !== 1 || rec.kid !== kid || publicJwkOf(rec.privateKeyPem).kid !== kid) {
       throw new Error("oidc key record does not match its name");
@@ -121,7 +123,7 @@ export class OidcKeyStore {
       this.#db,
       { orgId },
       name,
-      seal(this.#master, JSON.stringify(rec), secretAad(orgId, name), "oidc"),
+      seal(this.#master, JSON.stringify(rec), secretAad(orgId, name), "oidc", orgId),
     );
   }
 

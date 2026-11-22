@@ -168,7 +168,7 @@ describe("discovery and JWKS", () => {
       SecretDecryptError,
     );
     expect(() => open(master, sealed, secretAad(a.orgId, name), "job")).toThrow(SecretDecryptError);
-    expect(JSON.parse(open(master, sealed, secretAad(a.orgId, name), "oidc")).kid).toBe(
+    expect(JSON.parse(open(master, sealed, secretAad(a.orgId, name), "oidc", a.orgId)).kid).toBe(
       keys[0]!.kid,
     );
     expect(keys[0]!.kid).toMatch(/^[A-Za-z0-9_-]{43}$/);
