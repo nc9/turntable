@@ -212,6 +212,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         out: sink ? sink.out : () => {},
         registry: new SecretRegistry(),
         signal: ctx.signal,
+        ...(ctx.notices ? { notices: ctx.notices } : {}),
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
         // `none` unless this run's plan (from the project's config) or the runner says `open`.
         egress: egressForRun(ctx.run.plan, o.egress),

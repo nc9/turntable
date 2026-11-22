@@ -48,6 +48,8 @@ export interface JobEnv {
   fetchAction?: ActionFetcher;
   pollMs?: number;
   timeoutSeconds?: number;
+  /** Lines written to the top of the log before anything else (a fresh run, not a re-attach). */
+  notices?: readonly string[];
 }
 
 export interface JobOutcome {
@@ -108,6 +110,7 @@ export async function executeJob(
 
   const log = new LogPipe(env, ids.attemptId);
   const idle = setInterval(() => log.idleFlush(env.idleFlushMs ?? 1000), 250);
+  if (!resume) for (const n of env.notices ?? []) log.push(`${n}\n`);
 
   const steps = new Map<string, StepRecord>();
   const hidden = new Set<string>();

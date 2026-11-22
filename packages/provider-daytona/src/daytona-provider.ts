@@ -160,6 +160,9 @@ export class DaytonaProvider implements Provider {
     // Declared only what has been exercised against the real service (see docs/providers.mdx).
     this.info = {
       name: "daytona",
+      // Verified live: sandboxes report `sandboxClass: container`. The `linux-vm` class exists but
+      // has not been exercised, so no stronger level is claimed.
+      isolation: "container",
       createFrom: ["snapshot"],
       exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
       files: { upload: true, download: true, maxBytes: this.maxFileBytes },

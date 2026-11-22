@@ -12,9 +12,28 @@ export type Labels = Readonly<Record<string, string>>;
  */
 export type EgressPolicy = "none" | "open" | "allowlist" | "deny-all-except-proxy";
 
+/**
+ * How strongly a sandbox is separated from the host and from other sandboxes, weakest first.
+ * - `container`: processes share the host kernel (Docker, Daytona containers).
+ * - `gvisor`: a user-space kernel intercepts system calls (Docker with runsc).
+ * - `microvm`: its own kernel in a lightweight VM (Firecracker, Cloud Hypervisor).
+ * - `vm`: a full virtual machine.
+ * A provider declares only what it has verified; the scheduler enforces minimums by trust class.
+ */
+export type IsolationClass = "container" | "gvisor" | "microvm" | "vm";
+
+export const ISOLATION_ORDER: readonly IsolationClass[] = ["container", "gvisor", "microvm", "vm"];
+
+/** True when `have` is at least as strong as `need`. */
+export function isolationAtLeast(have: IsolationClass, need: IsolationClass): boolean {
+  return ISOLATION_ORDER.indexOf(have) >= ISOLATION_ORDER.indexOf(need);
+}
+
 export interface ProviderInfo {
   /** Stable provider id, for example `docker`. */
   name: string;
+  /** How strongly its sandboxes are isolated. Declare only what is verified. */
+  isolation: IsolationClass;
   createFrom: readonly ("image" | "snapshot" | "template")[];
   exec: {
     /** Always true: start returns at once and the command outlives the control connection. */

@@ -17,6 +17,7 @@ import {
   loadProviderConfig,
   reconcileExpired,
   Scheduler,
+  withIsolationPolicy,
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { startServer } from "./server";
@@ -27,7 +28,8 @@ const USAGE = `longshore ${VERSION}
 Usage:
   longshore serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
-                   [--org-cap 2] [--lease-seconds 30] [--image <ref>]]
+                   [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
+                   [--isolation-override <reason>]]
                   [--poll <config.json>]
   longshore keys init [--file <path>] [--data-dir ./data]
   longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
@@ -64,6 +66,8 @@ async function startBackground(
     poll?: string | undefined;
     provider?: string | undefined;
     "provider-config"?: string | undefined;
+    hosted?: boolean | undefined;
+    "isolation-override"?: string | undefined;
   },
 ): Promise<{ stop(): Promise<void> }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
@@ -87,6 +91,13 @@ async function startBackground(
     }
     // One provider per server for now; the name stored on an attempt is the provider it was made for.
     const providers = () => provider;
+    const override = v["isolation-override"]?.trim();
+    if (v["isolation-override"] !== undefined && !override) {
+      throw new Error(
+        "--isolation-override needs a reason (it is audited and shown on affected runs)",
+      );
+    }
+    if (override) log(`isolation override ON: ${override}`);
     const leaseMs = Number(v["lease-seconds"]) * 1000;
     const num = (name: string, value: string | undefined): number => {
       const n = Number(value);
@@ -96,11 +107,19 @@ async function startBackground(
     scheduler = new Scheduler({
       db,
       providers,
-      runner: createActRunner({
-        db,
-        source: gitRepoSource(),
-        ...(v.image ? { image: v.image } : {}),
-      }),
+      // Jobs never start on a provider weaker than their trust class allows (see isolation.ts).
+      runner: withIsolationPolicy(
+        createActRunner({
+          db,
+          source: gitRepoSource(),
+          ...(v.image ? { image: v.image } : {}),
+        }),
+        {
+          db,
+          hosted: v.hosted === true || process.env.LONGSHORE_HOSTED === "1",
+          ...(override ? { override: { reason: override } } : {}),
+        },
+      ),
       leaseMs,
       globalCap: num("global-cap", v["global-cap"]),
       perOrgCap: num("org-cap", v["org-cap"]),
@@ -191,6 +210,8 @@ async function serve(args: string[]): Promise<void> {
       poll: { type: "string" },
       provider: { type: "string", default: "docker" },
       "provider-config": { type: "string" },
+      hosted: { type: "boolean", default: false },
+      "isolation-override": { type: "string" },
     },
     strict: true,
   });

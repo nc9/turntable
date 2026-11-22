@@ -142,6 +142,7 @@ export function runConformance(
 
     t("healthcheck resolves and info declares detached exec", async () => {
       await p.healthcheck();
+      expect(["container", "gvisor", "microvm", "vm"]).toContain(p.info.isolation);
       expect(p.info.exec.detached).toBe(true);
       expect(p.info.exec.logsByOffset).toBe(true);
     });

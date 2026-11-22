@@ -24,3 +24,10 @@ export {
   type ProviderName,
 } from "./providers";
 export { egressForRun, type Egress } from "./egress";
+export {
+  requiredIsolation,
+  trustOf,
+  withIsolationPolicy,
+  type IsolationPolicy,
+  type TrustClass,
+} from "./isolation";

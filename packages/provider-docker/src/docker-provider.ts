@@ -68,6 +68,8 @@ export class DockerProvider implements Provider {
     this.hardening = { ...DEFAULT_HARDENING, ...opts.hardening };
     this.info = {
       name: "docker",
+      // runsc is gVisor; any other runtime (or none) shares the host kernel.
+      isolation: this.hardening.runtime === "runsc" ? "gvisor" : "container",
       createFrom: ["image"],
       exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
       files: { upload: true, download: true, maxBytes: this.maxFileBytes },
