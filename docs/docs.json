@@ -21,7 +21,8 @@
           "signing",
           "release-lane",
           "github-app",
-          "hosted"
+          "hosted",
+          "tenant-isolation"
         ]
       },
       {
