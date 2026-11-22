@@ -1,6 +1,8 @@
 import { probeEgress } from "./egress-canary";
 import {
   EXPORT_STEP_NAME,
+  missingTool,
+  missingToolNotice,
   resumeJob,
   runJob,
   type ActEvent,
@@ -123,6 +125,9 @@ export async function executeJob(
 
   const steps = new Map<string, StepRecord>();
   const hidden = new Set<string>();
+  /** What each open step printed (a bounded tail), for the missing-tool notice. */
+  const stepOutput = new Map<string, string>();
+  const OUTPUT_KEEP = 8 * 1024;
   const onAct = (e: ActEvent): void => {
     // The generated output-export step is plumbing, not part of the user's job.
     if ((e.type === "step-start" || e.type === "step-end") && e.name === EXPORT_STEP_NAME) {
@@ -130,6 +135,11 @@ export async function executeJob(
       return;
     }
     if ((e.type === "output" || e.type === "command") && hidden.has(e.stepKey)) return;
+    if (e.type === "output") {
+      const kept = stepOutput.get(e.stepKey) ?? "";
+      // The tail is what shows the last error; keep a bounded window of it.
+      stepOutput.set(e.stepKey, `${kept}${e.text}`.slice(-OUTPUT_KEEP));
+    }
     if (e.type === "step-start") {
       const rec: StepRecord = {
         stepKey: e.stepKey,
@@ -151,6 +161,15 @@ export async function executeJob(
       }
     }
     log.push(renderEvent(e));
+    // A failed step whose output ends in a shell "not found" says which tool the image lacks. The
+    // result is act's, unchanged.
+    if (e.type === "step-end" && e.result === "failure") {
+      const tool = missingTool(stepOutput.get(e.stepKey) ?? "");
+      if (tool) log.push(missingToolNotice(tool));
+    }
+    if (e.type === "step-end") {
+      stepOutput.delete(e.stepKey);
+    }
   };
 
   const settle = async (
