@@ -62,7 +62,9 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `maxLive` | `2` | Live sandboxes of ours at once. At most `3`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
-| `ownerCiPreflight` | `true` | Waiting while the account owner's own CI is busy cannot be turned off; `false` is refused. |
+| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
+| `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
+| `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
 The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
 
@@ -84,6 +86,7 @@ With `--worker` and with `longshore run`:
 | `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | sha256 (64 hex characters) of a token made by `longshore token generate`. On boot, if the bootstrap org has no tokens, one operator token with this hash is created (365 days). The token itself is never in the environment or the logs. |
 | `LONGSHORE_BOOTSTRAP_ORG` | Org slug for the bootstrap token. Default `local`. The org is created when missing. |
 | `LONGSHORE_MASTER_KEY_FILE` | Path to the 32-byte master key file (`longshore keys init`). Required for the GitHub App and the webhook endpoint `POST /api/v1/webhooks/github`. |
+| `LONGSHORE_REQUIRE_ORG_KEYS` | Set to `1` after `longshore keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused. See [Secrets vault](/secrets-vault). |
 | `LONGSHORE_AUDIT_EXPORT_DIR` | Directory for rotating JSONL export of audit entries and checkpoints. Needs no master key; checkpoints do (`LONGSHORE_MASTER_KEY_FILE`). See [Security](/security). |
 | `LONGSHORE_AUDIT_WEBHOOK_URL` | URL that receives audit batches as signed JSON posts. Subject to the outbound address rules. |
 | `LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE` | File holding the HMAC secret for the audit webhook (never put the secret in the environment). |
