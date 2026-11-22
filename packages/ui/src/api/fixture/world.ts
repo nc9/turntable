@@ -2,6 +2,7 @@ import type { ChangeEvent } from "../realtime";
 import type {
   ApproveResult,
   GrepResult,
+  IncidentStatus,
   IngestStatus,
   Job,
   JobAttempt,
@@ -794,6 +795,34 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     return { hits, matches, nextOffset: null, totalBytes: offset };
   }
 
+  /** `?incident=1` in the dev server's URL shows the frozen banner. */
+  function incidentStatus(): IncidentStatus {
+    const frozen = typeof location !== "undefined" && location.search.includes("incident=1");
+    return {
+      frozen,
+      level: frozen ? "org" : null,
+      reason: frozen ? "Deploy key may have leaked in a build log" : null,
+      frozenAt: frozen ? now() - 14 * 60_000 : null,
+      frozenBy: frozen ? "member:maya" : null,
+      rotationRequired: frozen
+        ? [
+            {
+              name: "DEPLOY_KEY",
+              reason: "leaked key",
+              flaggedBy: "member:maya",
+              flaggedAt: now() - 14 * 60_000,
+            },
+            {
+              name: "NPM_TOKEN",
+              reason: "leaked key",
+              flaggedBy: "member:maya",
+              flaggedAt: now() - 14 * 60_000,
+            },
+          ]
+        : [],
+    };
+  }
+
   function ingestStatus(): IngestStatus {
     const t = now();
     return {
@@ -858,6 +887,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     failureDigest,
     grepLog,
     ingestStatus,
+    incidentStatus,
     cancel,
     cursor,
     now,

@@ -18,6 +18,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { notFrozen } from "./incident";
 import { groupBlocked } from "./poll";
 import {
   defaultReadiness,
@@ -108,6 +109,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           eq(s.jobs.state, "queued"),
           isNull(s.jobAttempts.leaseOwner),
           o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+          notFrozen(s.runs.orgId, s.runs.projectId),
         ),
       )
       .groupBy(s.jobAttempts.orgId);
@@ -138,6 +140,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
               eq(s.jobs.state, "queued"),
               isNull(s.jobAttempts.leaseOwner),
               o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+              notFrozen(s.runs.orgId, s.runs.projectId),
               gt(s.jobAttempts.id, cursor.get(orgId)!),
             ),
           )

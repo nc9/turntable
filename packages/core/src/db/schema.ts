@@ -86,6 +86,10 @@ export const orgs = sqliteTable("orgs", {
    * request's text, which is why the default is the stricter role.
    */
   approveRunMinRole: text("approve_run_min_role").notNull().default("release_operator"),
+  /** Incident freeze (`incident_freeze`): no attempt of this org is claimed while set. */
+  frozenAt: integer("frozen_at", { mode: "number" }),
+  frozenReason: text("frozen_reason"),
+  frozenBy: text("frozen_by"),
   createdAt: createdAt(),
 });
 
@@ -111,6 +115,10 @@ export const projects = sqliteTable(
      * only from the CLI (`longshore policy set --checks-mode`).
      */
     checksMode: text("checks_mode").notNull().default("off"),
+    /** Incident freeze for this project alone; the org's freeze applies on top of it. */
+    frozenAt: integer("frozen_at", { mode: "number" }),
+    frozenReason: text("frozen_reason"),
+    frozenBy: text("frozen_by"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -755,4 +763,28 @@ export const vaultSecretVersions = sqliteTable(
       foreignColumns: [vaultSecrets.id, vaultSecrets.orgId],
     }),
   ],
+);
+
+/**
+ * Secret names an incident freeze flagged as needing rotation. One open row per (org, name);
+ * `cleared_at` is set when someone rotates it. Kept apart from the secret stores so a freeze
+ * never touches a value, and so every store (the built-in one, the vault) can be flagged the
+ * same way. Names only.
+ */
+export const incidentRotationFlags = sqliteTable(
+  "incident_rotation_flags",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    /** The project whose freeze raised it; null for an org-wide freeze. */
+    projectId: text("project_id"),
+    name: text("name").notNull(),
+    reason: text("reason").notNull(),
+    flaggedBy: text("flagged_by").notNull(),
+    flaggedAt: integer("flagged_at", { mode: "number" }).notNull(),
+    clearedAt: integer("cleared_at", { mode: "number" }),
+  },
+  (t) => [index("incident_rotation_flags_org_idx").on(t.orgId, t.name)],
 );

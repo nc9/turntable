@@ -214,6 +214,17 @@ export type IngestStatus = {
   repos: IngestRepoStatus[];
 };
 
+/** The freeze that applies to a scope, and the secrets still waiting for rotation. */
+export type IncidentStatus = {
+  frozen: boolean;
+  level: "org" | "project" | null;
+  /** Text a person typed: untrusted. Render as text. */
+  reason: string | null;
+  frozenAt: number | null;
+  frozenBy: string | null;
+  rotationRequired: { name: string; reason: string; flaggedBy: string; flaggedAt: number }[];
+};
+
 export type RunDetail = { run: Run; jobs: Job[]; attempts: JobAttempt[] };
 
 export type CheckSummary = {

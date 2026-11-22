@@ -200,5 +200,19 @@ export const migrations: Migration[] = [
       "CREATE UNIQUE INDEX `vault_secrets_id_org_unique` ON `vault_secrets` (`id`,`org_id`);",
       "ALTER TABLE `job_attempts` ADD `trust_class` text;"
     ]
+  },
+  {
+    "tag": "0015_dizzy_ronan",
+    "when": 1795371272264,
+    "statements": [
+      "CREATE TABLE `incident_rotation_flags` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`name` text NOT NULL,\n\t`reason` text NOT NULL,\n\t`flagged_by` text NOT NULL,\n\t`flagged_at` integer NOT NULL,\n\t`cleared_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `incident_rotation_flags_org_idx` ON `incident_rotation_flags` (`org_id`,`name`);",
+      "ALTER TABLE `orgs` ADD `frozen_at` integer;",
+      "ALTER TABLE `orgs` ADD `frozen_reason` text;",
+      "ALTER TABLE `orgs` ADD `frozen_by` text;",
+      "ALTER TABLE `projects` ADD `frozen_at` integer;",
+      "ALTER TABLE `projects` ADD `frozen_reason` text;",
+      "ALTER TABLE `projects` ADD `frozen_by` text;"
+    ]
   }
 ];

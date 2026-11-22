@@ -119,6 +119,15 @@ export async function verifyAudit(
       problems.push(`checkpoint ${cp.seq} has an invalid signature`);
   }
   const lastCheckpointSeq = cps.at(-1)?.seq ?? 0;
+  // Without a public key pinned outside this database, nothing here is vouched for. The only
+  // evidence about when a key came to exist, or who made it, is rows an attacker who can rewrite
+  // the database can also write, so no row is ever allowed to settle it: with checkpoints
+  // present and no pinned key, verification fails, whatever the chain says about its own key.
+  if (!opts.keyPinned && cps.length > 0) {
+    problems.push(
+      "unanchored: the checkpoints are not vouched for without a public key pinned outside this database (--pubkey)",
+    );
+  }
   const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
   for (const an of anchors) {
     const key = publicKeys.get(an.keyId);

@@ -5,9 +5,13 @@ import { ensureInstance, getOrgById, getOrgBySlug, openDatabase, type Db } from 
 import { orgsWithAudit } from "../db/repos";
 import { loadMasterKey } from "../secrets/crypto";
 import { SecretStore } from "../secrets/store";
+import { AuditAnchor } from "./anchor";
 import {
+  AuditAlreadyInitialised,
+  AuditRefusal,
+  adoptAuditKey,
   createCheckpoint,
-  ensureAuditKey,
+  initAuditKey,
   loadAuditKey,
   parsePublicKeyFile,
   publicKeyFile,
@@ -17,10 +21,15 @@ import { verifyAudit, type AnchorCheckpoint } from "./verify";
 
 const USAGE = `usage:
   longshore audit verify [--org <slug>] [--pubkey <file>]... [--anchor <file>]... [--data-dir ./data]
+  longshore audit init-key --org <slug> --out <file>
+  longshore audit adopt --org <slug>
   longshore audit checkpoint [--org <slug>]
   longshore audit export-key --org <slug> --out <file>
   longshore audit export [--org <slug>] (--dir <path> | --webhook <url> [--webhook-secret-file <path>])
-checkpoint and export-key need LONGSHORE_MASTER_KEY_FILE (or --master-key-file).
+init-key is the only thing that ever creates an org's signing key (the checkpointer never does),
+and writes the public key file to keep off this server. adopt is for an org that signed
+checkpoints before the sealed anchor existed: it trusts the chain as it is, once, after it verifies.
+init-key, adopt, checkpoint and export-key need LONGSHORE_MASTER_KEY_FILE (or --master-key-file).
 Keep the export-key file and the exported checkpoints OFF this server. verify --pubkey rejects
 checkpoints signed by any other key; verify --anchor (an export file or a saved checkpoint)
 fails if the database lacks a checkpoint the anchor has. Without them, verify says
@@ -29,7 +38,7 @@ fails if the database lacks a checkpoint the anchor has. Without them, verify sa
 /** Returns the process exit code. */
 export async function auditCommand(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
-  if (!["verify", "checkpoint", "export", "export-key"].includes(sub ?? "")) {
+  if (!["verify", "checkpoint", "export", "export-key", "init-key", "adopt"].includes(sub ?? "")) {
     console.error(USAGE);
     return 2;
   }
@@ -52,7 +61,10 @@ export async function auditCommand(args: string[]): Promise<number> {
   try {
     await ensureInstance(db);
     const keyFile = values["master-key-file"] ?? process.env.LONGSHORE_MASTER_KEY_FILE;
-    const store = keyFile ? new SecretStore(db, loadMasterKey(keyFile)) : undefined;
+    const masterKey = keyFile ? loadMasterKey(keyFile) : undefined;
+    const store = keyFile && masterKey ? new SecretStore(db, masterKey) : undefined;
+    const anchor =
+      keyFile && masterKey ? new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey) : undefined;
     const orgs = await resolveOrgs(db, values.org);
 
     if (sub === "export-key") {
@@ -60,7 +72,9 @@ export async function auditCommand(args: string[]): Promise<number> {
       const org = orgs[0];
       if (!org || !values.org || !values.out)
         throw new Error("--org <slug> and --out <file> are required");
-      const key = await ensureAuditKey(db, store, org.id);
+      const key = await loadAuditKey(store, org.id);
+      if (!key)
+        throw new Error(`org ${org.slug} has no signing key; run: longshore audit init-key`);
       writeFileSync(
         values.out,
         `${JSON.stringify(publicKeyFile(org.id, org.slug, key), null, 2)}\n`,
@@ -73,15 +87,57 @@ export async function auditCommand(args: string[]): Promise<number> {
       return 0;
     }
 
-    if (sub === "checkpoint") {
-      if (!store) throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
-      for (const o of orgs) {
-        const cp = await createCheckpoint(db, store, o.id);
-        console.log(
-          cp ? `${o.slug}: signed checkpoint at entry ${cp.seq}` : `${o.slug}: already covered`,
+    if (sub === "init-key" || sub === "adopt") {
+      if (!store || !anchor)
+        throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+      const org = orgs[0];
+      if (!org || !values.org) throw new Error("--org <slug> is required");
+      try {
+        if (sub === "adopt") {
+          const st = await adoptAuditKey(db, store, anchor, org.id);
+          console.log(`${org.slug}: adopted; last signed entry ${st.lastSeq}`);
+          return 0;
+        }
+        if (!values.out)
+          throw new Error("--out <file> is required: the public key file to keep off this server");
+        const key = await initAuditKey(db, store, anchor, org.id);
+        writeFileSync(
+          values.out,
+          `${JSON.stringify(publicKeyFile(org.id, org.slug, key), null, 2)}\n`,
+          { mode: 0o644, flag: "wx" },
         );
+        console.log(
+          `${org.slug}: created key ${key.keyId}; wrote ${values.out}; keep it off this server`,
+        );
+        return 0;
+      } catch (e) {
+        if (e instanceof AuditAlreadyInitialised || e instanceof AuditRefusal) {
+          console.error(e.message);
+          return 1;
+        }
+        throw e;
       }
-      return 0;
+    }
+
+    if (sub === "checkpoint") {
+      if (!store || !anchor)
+        throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+      let refused = false;
+      for (const o of orgs) {
+        try {
+          const cp = await createCheckpoint(db, store, anchor, o.id);
+          console.log(
+            cp
+              ? `${o.slug}: signed checkpoint at entry ${cp.seq}`
+              : `${o.slug}: already covered, or signing is not set up (audit init-key)`,
+          );
+        } catch (e) {
+          if (!(e instanceof AuditRefusal)) throw e;
+          console.log(`${o.slug}: REFUSED (${e.reason}): ${e.message}`);
+          refused = true;
+        }
+      }
+      return refused ? 1 : 0;
     }
 
     if (sub === "export") {

@@ -6,6 +6,7 @@ import type {
   CutRecord,
   GrepHit,
   GrepResult,
+  IncidentStatus,
   IngestStatus,
   Job,
   JobDigest,
@@ -27,6 +28,7 @@ import type {
   WireCuts,
   WireError,
   WireFailureDigest,
+  WireIncident,
   WireIngestStatus,
   WireJob,
   WireLog,
@@ -451,6 +453,26 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         matches: w.matches,
         nextOffset: w.next_offset,
         totalBytes: w.total_bytes,
+      };
+    },
+
+    async incidentStatus(args): Promise<IncidentStatus> {
+      const w = await call<WireIncident>("GET", "/incident", {
+        org: org(),
+        project: args?.project,
+      });
+      return {
+        frozen: w.frozen,
+        level: w.level,
+        reason: w.reason,
+        frozenAt: w.frozen_at,
+        frozenBy: w.frozen_by,
+        rotationRequired: w.rotation_required.map((r) => ({
+          name: r.name,
+          reason: r.reason,
+          flaggedBy: r.flagged_by,
+          flaggedAt: r.flagged_at,
+        })),
       };
     },
 

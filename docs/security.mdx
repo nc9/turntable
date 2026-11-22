@@ -137,9 +137,11 @@ Each org is its own OpenID Connect issuer (`<public url>/oidc/<org slug>`), so a
 Every write, denied write, authentication failure, policy change, token create and revoke, approval, secret change and GitHub App change is recorded. A test walks the op registry and fails if any write op does not audit.
 
 - **Hash chain.** Each org has its own chain. An entry carries its position (`seq`), the hash of the entry before it and its own hash: sha256 over the previous hash and the canonical JSON of the entry. Editing, deleting or inserting a row breaks every hash after it. Entries written before the chain existed stay readable and are not chained.
-- **Signed checkpoints.** Every 100 entries or 10 minutes (whichever comes first, only when something changed) the server signs the chain head with an ed25519 key. The key is the secret `audit/signing-key` in the encrypted secret store, which uses a different master key from the database. Each checkpoint carries the key id. The server generates the key only while the org has never signed a checkpoint. After that, a missing key is an error and an `audit_signing_key` alert entry, never a reason to make a new key: a new key would let someone who deleted the old one re-sign a rewritten chain.
-- **Anchors outside the database.** Everything above lives where an attacker with database and store access can rewrite it, so verification needs two things kept elsewhere. Run `longshore audit export-key --org <slug> --out <file>` once and keep the file off the server. Ship the export sink's files off the server too: they hold every checkpoint. Then `longshore audit verify --pubkey <file> --anchor <exported file>` rejects checkpoints signed by any other key, fails if the chain lacks a checkpoint the anchor has, and fails if the database has fewer checkpoints than the anchor shows. Without them verify prints `unanchored: integrity only`: it still catches edits and deletions by anyone who cannot re-sign, but not a full rewrite by someone who can.
-- **Verify.** `longshore audit verify [--org <slug>] [--pubkey <file>] [--anchor <file>]` walks every chain and exits 1 on any problem, including entries older than twice the checkpoint interval that no checkpoint covers (checkpoints deleted or signing stopped). `longshore audit checkpoint` signs the head on demand.
+- **Signed checkpoints.** Every 100 entries or 10 minutes (whichever comes first, only when something changed) the server signs the chain head with an ed25519 key. The key is the secret `audit/signing-key` in the encrypted secret store, which uses a different master key from the database. Each checkpoint carries the key id.
+- **Explicit setup, never implicit.** Only `longshore audit init-key --org <slug> --out <file>` creates an org's signing key; the checkpointer never does. It also writes the public key file (keep it off the server) and a small sealed state file next to the master key file (`<master key file>.audit-state/<org id>.state`). An org that was never set up is simply not signed, quietly. The state file holds two things the database cannot be trusted with: that a key existed, and the last signed (seq, hash). Back it up with the master key. For an org that signed checkpoints before the state file existed, `longshore audit adopt --org <slug>` writes it after the whole chain and every checkpoint verify, once, on your say-so.
+- **Verify before sign.** Before each checkpoint the server re-derives the chain from the last signed position to the head (links and recomputed hashes), checks the stored latest checkpoint's signature and that the entry it covers is unchanged, and refuses, with an alert entry in the org's chain, if anything is off: a missing key (alert, never a new key), a missing, corrupt or mismatched state file, a key that is not the one the org was set up with, a checkpoints table that went backwards (rows deleted), or a chain that no longer extends what was signed.
+- **Anchors outside the database.** Everything in the database is where an attacker with database and store access can rewrite it, so verification needs facts kept elsewhere: the public key file from `init-key` (or `longshore audit export-key`), and the export sink's files off the server, which hold every checkpoint. Then `longshore audit verify --pubkey <file> --anchor <exported file>` rejects checkpoints signed by any other key, fails if the chain lacks a checkpoint the anchor has, and fails if the database has fewer checkpoints than the anchor shows. Without them verify prints `unanchored: integrity only`.
+- **Verify.** `longshore audit verify [--org <slug>] [--pubkey <file>] [--anchor <file>]` walks every chain and exits 1 on any problem, including entries older than twice the checkpoint interval that no checkpoint covers (checkpoints deleted or signing stopped), and any chain that has checkpoints when no public key is pinned. Without `--pubkey` nothing is vouched for: the chain's own rows (including any row that claims to record the key being created) can be written by whoever can rewrite the database, so none of them is trusted to settle it. `longshore audit checkpoint` signs the head on demand, under the same checks.
 - **Authentication failures** are audited in the token's org when the token is known (revoked or expired), and in a system org called `_system` otherwise. Throttling is per org, failure kind and source (a token id, a hashed unknown token or a client address), at 5 per minute per source, so one noisy source cannot hide another's failures; a per-chain ceiling of 300 a minute bounds many sources. The first failure of each distinct token id is always recorded, and a dropped count rides on the next entry. Webhook requests the rate limiter already refuses are recorded only in aggregate: one entry per minute with a count.
 - **Secrets** are audited by name only, never by value.
 - **Export.** Entries and checkpoints stream to a JSONL directory (rotated at 10 MiB, files mode 0600) or a webhook, with at-least-once delivery and a cursor per sink that moves only after the sink accepted the batch. Webhook posts go through the outbound client and carry an HMAC in `x-longshore-signature`. Ship the files off the host to make deletion on the server detectable. `longshore audit export` runs one pass by hand.
@@ -155,6 +157,40 @@ Longshore acts as an OIDC issuer so jobs can authenticate to cloud providers wit
 ## Signing service
 
 A signing service signs release artifacts and emits provenance, so signing keys never enter a sandbox. It is the planned substitute for GitHub artifact attestations.
+
+## Incident response
+
+Unlike the sections above, this one is implemented. When a secret may have leaked or a runner is compromised, one operation stops the bleeding and a second tells you how far it reached.
+
+### Freeze
+
+`incident_freeze` (REST `POST /api/v1/incident/freeze`, MCP tool, or `longshore incident freeze --org acme [--project api] --reason "..."`) needs the release_operator role. It freezes the org, or one project, and in one audited step:
+
+1. **Pauses scheduling.** A persisted flag on the org or project. The claim path checks it on every claim, so no worker, in any process, starts a job of the scope until it is lifted. Runs that arrive while frozen (webhooks, polling) are created and wait in `queued`.
+2. **Kills running jobs.** Every run with a running job is cancelled through the same path as `cancel`: workers stop and sandboxes are destroyed. A worker in another process stops at its next heartbeat. Runs that have only queued jobs stay queued and resume after unfreeze.
+3. **Drops cached credentials.** The GitHub installation tokens held in the server process's cache are dropped, so the server mints fresh ones only after you unfreeze. GitHub does not let the server revoke an installation token early: a token already handed to a job lives until it expires, within an hour. A freeze run from the CLI is a different process and cannot reach the server's cache; use the API to drop it. Agent API tokens are not revoked by a freeze, so you can still operate. Revoke the ones you do not trust with `longshore token revoke`.
+4. **Flags secrets.** Every secret name in scope is flagged `rotation_required`. Names only: a freeze never reads or changes a value. The built-in store (the GitHub App's key and webhook secret) is org-wide, so only an org freeze flags it. Vault secrets are flagged by name too: an org freeze flags every vault secret name in the org, a project freeze those of the project. One name can be several scoped secrets, and the flag is by name. Rotating (`rotate_secret`, or `set_secret` on an existing scope) closes the flag only once every vault secret of that name has a newer version than the flag.
+5. **Writes an audit entry** with the reason, the principal and the outcome.
+
+The reason is shown in the web UI to everyone on the org or project. Freezing a frozen scope keeps the first reason and time and still kills, drops and flags.
+
+`incident_unfreeze` clears the pause only. Killed runs stay cancelled and secrets stay flagged until they are rotated. If the org is frozen, unfreezing one project does not resume it.
+
+`incident_status` (reader) reports the freeze and the open rotation flags.
+
+### Blast radius
+
+`secret_usage` takes a secret name and a time range and lists each recorded use from the audit log: when, the run, job and attempt, the destination host, the version and the trust class it ran as. Start the range at the earliest time the secret could have leaked. It reads the per-use records the vault writes to the audit log (`secret_use`: secret name, run, job, attempt, destination). Values are never in the audit log. Denied uses are throttled samples and are not listed. Results are capped; narrow the range when `truncated` is true.
+
+### Runbook
+
+1. **Freeze.** `longshore incident freeze --org acme --reason "deploy key printed in a build log"`. Read the counts it returns.
+2. **Scope it.** Run `secret_usage` for each affected secret from before the first suspect run. Note every destination: each is a place the secret may now be.
+3. **Rotate at the source.** Replace the credential where it is issued (the registry, the cloud account, the forge). Then store the new value (`longshore secret rotate`). Anything flagged in `incident_status` is on your list until rotated.
+4. **Rotate Longshore's own secrets** if they were in scope: the GitHub App private key and webhook secret (`longshore github-app rotate-webhook-secret`), the master key.
+5. **Revoke agent tokens** you do not trust, and review the audit log for the window (`longshore audit verify`, `longshore audit export`).
+6. **Review the runs** that used the secret: logs, artifacts, and what the destinations received.
+7. **Unfreeze** with `longshore incident unfreeze --org acme`. Queued work resumes. Keep the rotation flags open until each secret is rotated.
 
 ## Reporting vulnerabilities
 
