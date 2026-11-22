@@ -33,6 +33,7 @@ import {
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { startServer } from "./server";
+import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
 
 const USAGE = `longshore ${VERSION}
@@ -83,8 +84,11 @@ Environment:
                     is <base>/<org slug>. Needs LONGSHORE_MASTER_KEY_FILE
   LONGSHORE_OIDC_ALLOW_CLASSES  trust classes that may get an OIDC token (default protected,release;
                     untrusted_pr is refused unless you list it, which you should not)
-  LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control, so secret values
-                    sent through it over x-forwarded-proto: https are accepted
+  LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control: plain-http requests it
+                    forwards get a 301 to https (GET and HEAD; 400 otherwise), and secret values
+                    sent over x-forwarded-proto: https are accepted
+  LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
+                    0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
@@ -385,6 +389,7 @@ async function serve(args: string[]): Promise<void> {
     ...(webauthn ? { webauthn } : {}),
     ...(oidc ? { oidc } : {}),
     trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
+    transport: transportOptionsFromEnv(process.env),
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
