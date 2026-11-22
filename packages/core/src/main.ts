@@ -495,6 +495,7 @@ async function serve(args: string[]): Promise<void> {
       orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
       baseUrl: cacheUrl,
+      onNotice: (g, m) => console.log(`[longshore] ${m} (attempt ${g.attemptId})`),
       // A grant works only while its attempt is running, whatever else the token says.
       isActive: async (g) =>
         (await getAttempt(db, { orgId: g.own.orgId, projectId: g.own.projectId }, g.attemptId))
