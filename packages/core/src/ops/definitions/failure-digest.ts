@@ -51,10 +51,14 @@ const digestSchema = z.object({
     .describe("Set for infra_error: the sandbox failed, the excerpt says nothing about the code."),
 });
 
-type Digest = z.infer<typeof digestSchema>;
+export type Digest = z.infer<typeof digestSchema>;
 
-async function digestJob(
-  ctx: OpContext,
+/**
+ * The digest of one job's latest attempt, read through the repos in `ctx` (a db and a scope).
+ * Shared with the check-run reporter, which posts the same extract.
+ */
+export async function digestJob(
+  ctx: Pick<OpContext, "db" | "scope">,
   job: { id: string; jobKey: string; state: string },
 ): Promise<Digest> {
   const base = {

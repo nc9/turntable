@@ -2,7 +2,15 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
 import { policyCommand as actionPolicyCommand } from "../pins/cli";
-import { POLICY_USAGE, setEgressPolicy, setPolicy, showEgress, showPolicy } from "./policy-cli";
+import {
+  POLICY_USAGE,
+  setChecksModePolicy,
+  showChecksMode,
+  setEgressPolicy,
+  setPolicy,
+  showEgress,
+  showPolicy,
+} from "./policy-cli";
 
 async function ownPolicy(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -11,6 +19,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       org: { type: "string", default: "local" },
       project: { type: "string" },
       egress: { type: "string" },
+      "checks-mode": { type: "string" },
       "data-dir": { type: "string", default: "./data" },
     },
     allowPositionals: true,
@@ -28,6 +37,17 @@ async function ownPolicy(args: string[]): Promise<void> {
       console.log(`approve-run-min-role: ${p.approveRunMinRole}`);
       for (const e of await showEgress(db, values.org))
         console.log(`egress ${e.project}: ${e.egress}`);
+      for (const c of await showChecksMode(db, values.org))
+        console.log(`checks-mode ${c.project}: ${c.mode}`);
+    } else if (values["checks-mode"] !== undefined) {
+      for (const r of await setChecksModePolicy(
+        db,
+        values.org,
+        values.project,
+        values["checks-mode"],
+      )) {
+        console.error(`checks-mode ${r.project}: ${r.from} -> ${r.to}`);
+      }
     } else if (values.egress !== undefined) {
       for (const r of await setEgressPolicy(db, values.org, values.project, values.egress)) {
         console.error(`egress ${r.project}: ${r.from} -> ${r.to}`);
@@ -49,7 +69,9 @@ async function ownPolicy(args: string[]): Promise<void> {
  */
 export async function policyCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
-  const ours = rest.includes("approve-run-min-role") || rest.some((a) => /^--egress(=|$)/.test(a));
+  const ours =
+    rest.includes("approve-run-min-role") ||
+    rest.some((a) => /^--(egress|checks-mode)(=|$)/.test(a));
   if (sub === "set" && ours) return ownPolicy(args);
   if (sub === "show") {
     await actionPolicyCommand(args);

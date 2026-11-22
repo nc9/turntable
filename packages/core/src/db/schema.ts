@@ -105,6 +105,12 @@ export const projects = sqliteTable(
      * `egress` in the poll config overrides it. Default `none`.
      */
     egress: text("egress").notNull().default("none"),
+    /**
+     * Whether the server reports job results to the forge as check runs: `off` (default),
+     * `shadow` (always neutral, the real result in the text) or `live` (real conclusions). Set
+     * only from the CLI (`longshore policy set --checks-mode`).
+     */
+    checksMode: text("checks_mode").notNull().default("off"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -282,6 +288,8 @@ export const jobAttempts = sqliteTable(
     errorClass: text("error_class"),
     /** Set when a person or agent asked for this attempt (a rerun); the reason they gave. */
     rerunReason: text("rerun_reason"),
+    /** The forge check run reporting this attempt, so a retry or a re-attach updates it. */
+    checkRunId: text("check_run_id"),
     /**
      * The resolved job plan (actions pinned to shas, layout, argv, files) as JSON text, stored
      * when the attempt starts, so a restarted controller can re-attach with no repo fetch.

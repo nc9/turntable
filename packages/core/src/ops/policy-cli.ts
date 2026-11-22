@@ -7,7 +7,11 @@ import {
   appendAudit,
   type ApproveRunRole,
   getApproveRunMinRole,
+  CHECKS_MODES,
+  type ChecksMode,
   type EgressMode,
+  getProjectChecksMode,
+  setProjectChecksMode,
   getOrgBySlug,
   getProjectBySlug,
   getProjectEgress,
@@ -19,6 +23,7 @@ import {
 export const POLICY_USAGE = `Usage:
   longshore policy show --org <slug> [--data-dir ./data]
   longshore policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
+  longshore policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
   longshore policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
@@ -127,6 +132,64 @@ export async function showEgress(
     out.push({
       project: p.slug,
       egress: await getProjectEgress(db, { orgId: org.id, projectId: p.id }),
+    });
+  }
+  return out;
+}
+
+/**
+ * Sets whether the server reports job results to the forge as check runs. `shadow` posts only
+ * neutral checks that cannot gate a merge; `live` posts real conclusions. Only this CLI can set
+ * it (no operation exists), so an agent cannot turn it on. Without --project, every project.
+ */
+export async function setChecksModePolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  value: string,
+): Promise<{ project: string; from: ChecksMode; to: ChecksMode }[]> {
+  if (!(CHECKS_MODES as readonly string[]).includes(value)) {
+    throw new Error(`--checks-mode must be one of: ${CHECKS_MODES.join(", ")}`);
+  }
+  const org = await orgOf(db, orgSlug);
+  const projects = projectSlug
+    ? [await getProjectBySlug(db, { orgId: org.id }, projectSlug)]
+    : await listProjects(db, { orgId: org.id });
+  if (projects.length === 0 || projects.some((p) => p === undefined)) {
+    throw new Error(
+      projectSlug ? `no project ${projectSlug} in org ${orgSlug}` : "org has no projects",
+    );
+  }
+  const out: { project: string; from: ChecksMode; to: ChecksMode }[] = [];
+  for (const p of projects) {
+    const scope = { orgId: org.id, projectId: p!.id };
+    const from = await getProjectChecksMode(db, scope);
+    await db.transaction(async (tx) => {
+      await setProjectChecksMode(tx, scope, value as ChecksMode);
+      await appendAudit(tx, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "ok",
+        input: { key: "checks_mode", project: p!.slug, from, to: value },
+      });
+    });
+    out.push({ project: p!.slug, from, to: value as ChecksMode });
+  }
+  return out;
+}
+
+export async function showChecksMode(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; mode: ChecksMode }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; mode: ChecksMode }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    out.push({
+      project: p.slug,
+      mode: await getProjectChecksMode(db, { orgId: org.id, projectId: p.id }),
     });
   }
   return out;
