@@ -318,11 +318,7 @@ async function serve(args: string[]): Promise<void> {
     void webhooks.retryUnfinished().catch(() => {});
     // Signed audit checkpoints need the store's key; export sinks are opt in.
     auditStops.push(
-      startCheckpointer(
-        db,
-        store,
-        new AuditAnchor(AuditAnchor.dirFor(keyFile), loadMasterKey(keyFile)),
-      ),
+      startCheckpointer(db, store, new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey)),
     );
   }
   const sinks: AuditSink[] = [];
