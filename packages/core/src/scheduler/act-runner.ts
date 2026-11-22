@@ -1,25 +1,32 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
 // it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
 // the same from the CLI and from the worker.
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  aggregateNeed,
   type ActionRefResolver,
   type ActTarball,
   type ActionFetcher,
   githubResolver,
+  type JobPlan,
+  type NeedResult,
+  type NeedStatus,
   PlanError,
+  type PlannedJob,
   planJob,
   resolveActions,
+  splitJob,
 } from "@longshore/act-runner";
 import type { Db } from "../db";
-import { listRepos, type Run } from "../db/repos";
+import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { snapshotRepo } from "../run/repo-archive";
+import { makeSafeReader } from "../run/safe-read";
 import { type RunStore, stepInputOf } from "../run/store";
-import type { AttemptContext, AttemptRunner } from "./types";
+import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
 /** The source of a run: a tarball to deliver and the files the planner reads. */
 export interface Checkout {
@@ -72,10 +79,8 @@ export function gitRepoSource(
         const snap = await snapshotRepo(dir);
         return {
           tarball: snap.tarball,
-          readFile: (p) => {
-            const f = join(dir, p);
-            return existsSync(f) ? readFileSync(f, "utf8") : undefined;
-          },
+          // Repo files are untrusted: no traversal, no symlinks, size-capped.
+          readFile: makeSafeReader(dir),
           dispose: () => rmSync(dir, { recursive: true, force: true }),
         };
       } catch (err) {
@@ -97,6 +102,8 @@ export type ActRunnerOptions = {
   act?: ActTarball;
   fetchAction?: ActionFetcher;
   pollMs?: number;
+  /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
+  planRoot?: string;
 };
 
 /**
@@ -128,63 +135,134 @@ function workerStore(ctx: AttemptContext): RunStore {
   };
 }
 
+const safeName = (key: string): string => key.replaceAll(/[^A-Za-z0-9_.-]/g, "_");
+
+/**
+ * What the dependents of a job see: for each needed job id, the folded result and outputs of its
+ * legs, from the states and outputs stored on the run's job rows.
+ */
+async function needResultsFor(
+  o: ActRunnerOptions,
+  ctx: AttemptContext,
+  planned: PlannedJob,
+): Promise<Record<string, NeedResult>> {
+  const siblings = await listJobs(o.db, ctx.scope, ctx.run.id);
+  const statusOf = (j: (typeof siblings)[number]): NeedStatus => {
+    const p = j.planned ? (JSON.parse(j.planned) as PlannedJob) : undefined;
+    return {
+      state: j.state as NeedStatus["state"],
+      ...(j.outputs ? { outputs: JSON.parse(j.outputs) as Record<string, string> } : {}),
+      ...(p?.continueOnError ? { continueOnError: true } : {}),
+    };
+  };
+  return Object.fromEntries(
+    planned.needsIds.map((id) => [
+      id,
+      aggregateNeed(
+        siblings
+          .filter((j) => j.planned && (JSON.parse(j.planned) as PlannedJob).id === id)
+          .map(statusOf),
+      ),
+    ]),
+  );
+}
+
 /** Builds the runner for the scheduler. Deterministic plan problems are infra_error with a reason. */
 export function createActRunner(o: ActRunnerOptions): AttemptRunner {
+  const run = async (
+    ctx: AttemptContext,
+    plan: JobPlan,
+    repoTarball: Uint8Array | undefined,
+  ): Promise<AttemptOutcome> => {
+    const res = await executeJob(
+      {
+        provider: ctx.provider,
+        store: workerStore(ctx),
+        out: () => {},
+        registry: new SecretRegistry(),
+        signal: ctx.signal,
+        ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
+        ...(o.egress ? { egress: o.egress } : {}),
+        ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
+        ...(o.act ? { act: o.act } : {}),
+        ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
+        ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
+      },
+      { runId: ctx.run.id, jobId: ctx.job.id, attemptId: ctx.attempt.id },
+      plan,
+      // A dead worker's exec: replay it for the real result instead of starting over. The plan
+      // says which events are this job's and which outputs to read.
+      ctx.resume,
+    );
+    return {
+      state: res.state,
+      ...(res.actExitCode === undefined ? {} : { exitCode: res.actExitCode }),
+      reason: res.reason,
+      ...(res.outputs ? { outputs: res.outputs } : {}),
+    };
+  };
+
   return async (ctx) => {
-    const { run, job } = ctx;
+    // Re-attach with the plan stored when the attempt started: no repo fetch, no network.
+    if (ctx.resume && ctx.attempt.plan) {
+      return run(ctx, JSON.parse(ctx.attempt.plan) as JobPlan, undefined);
+    }
+
+    const { run: dbRun, job } = ctx;
     const repo = (await listRepos(o.db, ctx.scope))[0];
     if (!repo) return { state: "infra_error", reason: "project has no bound repo to fetch from" };
-    if (run.sha === null) return { state: "infra_error", reason: "run has no sha" };
+    if (dbRun.sha === null) return { state: "infra_error", reason: "run has no sha" };
 
-    const checkout = await o.source.checkout(run, { owner: repo.owner, repo: repo.repo });
+    const checkout = await o.source.checkout(dbRun, { owner: repo.owner, repo: repo.repo });
     try {
-      const workflowYaml = checkout.readFile(run.workflowPath);
+      const workflowYaml = checkout.readFile(dbRun.workflowPath);
       if (workflowYaml === undefined) {
         return {
           state: "infra_error",
-          reason: `workflow ${run.workflowPath} not found at ${run.sha}`,
+          reason: `workflow ${dbRun.workflowPath} not found at ${dbRun.sha}`,
         };
       }
-      let plan;
+      let plan: JobPlan;
       try {
-        const planned = planJob(workflowYaml, job.jobKey, {
-          workflowPath: run.workflowPath,
-          event: run.event,
-          readFile: checkout.readFile,
-        });
-        plan = await resolveActions(planned, o.resolver ?? githubResolver());
+        const root = o.planRoot ? { root: o.planRoot } : {};
+        const planned = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+        const jobPlan = planned
+          ? // A whole-workflow job: a generated single-job workflow whose stub need jobs carry the
+            // real results and outputs of its dependencies.
+            planJob(
+              splitJob(workflowYaml, planned, await needResultsFor(o, ctx, planned), {
+                event: dbRun.event,
+                ...root,
+              }),
+              planned.id,
+              {
+                workflowPath: `.longshore/jobs/${safeName(planned.key)}.yml`,
+                event: dbRun.event,
+                readFile: checkout.readFile,
+                split: true,
+                ...root,
+              },
+            )
+          : planJob(workflowYaml, job.jobKey, {
+              workflowPath: dbRun.workflowPath,
+              event: dbRun.event,
+              readFile: checkout.readFile,
+              ...root,
+            });
+        plan = await resolveActions(jobPlan, o.resolver ?? githubResolver());
       } catch (err) {
         if (err instanceof PlanError) {
           return { state: "infra_error", reason: `plan rejected: ${err.message}` };
         }
         throw err;
       }
-      const ids = { runId: run.id, jobId: job.id, attemptId: ctx.attempt.id };
-      const res = await executeJob(
-        {
-          provider: ctx.provider,
-          store: workerStore(ctx),
-          out: () => {},
-          registry: new SecretRegistry(),
-          signal: ctx.signal,
-          ...(ctx.resume ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball: checkout.tarball }),
-          ...(o.egress ? { egress: o.egress } : {}),
-          ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
-          ...(o.act ? { act: o.act } : {}),
-          ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
-          ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
-        },
-        ids,
-        plan,
-        // A dead worker's exec: replay it for the real result instead of starting over. The plan
-        // (re-derived above) says which events are this job's and which outputs to read.
-        ctx.resume,
-      );
-      return {
-        state: res.state,
-        ...(res.actExitCode === undefined ? {} : { exitCode: res.actExitCode }),
-        reason: res.reason,
-      };
+      // Stored before anything runs: a re-attach after a restart then needs no repo.
+      await ctx.store.setPlan(JSON.stringify(plan));
+      if (ctx.resume) {
+        // A legacy attempt with no stored plan: it was just re-planned; replay its exec.
+        return run(ctx, plan, undefined);
+      }
+      return run(ctx, plan, checkout.tarball);
     } finally {
       checkout.dispose?.();
     }

@@ -7,6 +7,7 @@ import {
 } from "../db/repos";
 import type { Db } from "../db";
 import type { ProviderResolver } from "./types";
+import { workflowReadiness } from "./workflow-readiness";
 
 export type ReconcileReport = {
   /** Attempts whose lease had expired and that were marked infra_error. */
@@ -114,7 +115,7 @@ export async function reconcileExpired(
       state: "infra_error",
       errorClass: `controller_lost (${probe})`.slice(0, 200),
       expiredBefore: now,
-      ...(opts.readiness ? { readiness: opts.readiness } : {}),
+      readiness: opts.readiness ?? workflowReadiness,
     });
     if (done) report.resolved.push({ attemptId: attempt.id, sandboxId: attempt.sandboxId, probe });
     else report.skipped++;

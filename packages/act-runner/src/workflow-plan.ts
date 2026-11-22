@@ -8,7 +8,7 @@ import {
   type ExprContext,
   type Value,
 } from "./expr";
-import { PlanError, type PlanWarning, untrustedIn } from "./plan";
+import { localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
 import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers";
 
 type Obj = Record<string, unknown>;
@@ -140,10 +140,11 @@ function dockerReason(job: Obj, readFile: (p: string) => string | undefined): st
       const u = s.uses.trim();
       if (u.startsWith("docker://")) return `step uses ${u}`;
       if (DOCKER_OWNERS.test(u)) return `step uses ${u}, which needs a docker daemon`;
-      if (u.startsWith("./")) {
-        const dir = u.replace(/^\.\//, "").replace(/\/$/, "");
+      if (u.startsWith("./") || u.startsWith("../")) {
+        const dir = localActionDir(u);
+        if (dir === undefined) return `step uses ${u}, a path outside the repository`;
         for (const f of ["action.yml", "action.yaml"]) {
-          const text = readFile(`${dir}/${f}`);
+          const text = readFile(dir === "" ? f : `${dir}/${f}`);
           if (text === undefined) continue;
           try {
             const doc: unknown = parse(text);

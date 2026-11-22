@@ -168,6 +168,14 @@ export const runs = sqliteTable(
     actor: text("actor"),
     headBranch: text("head_branch"),
     prNumber: integer("pr_number"),
+    /**
+     * Run-level planning facts as JSON text: the workflow `env`, the `github` and `vars`
+     * contexts that `if:` expressions see, and the `concurrency` setting. The scheduler reads it
+     * to decide when a job may run.
+     */
+    plan: text("plan"),
+    /** The workflow's concurrency group (project-wide), for cancel-in-progress. */
+    concurrencyGroup: text("concurrency_group"),
     /** Aggregate of its jobs; same vocabulary as job state. */
     status: text("status").notNull().default("queued"),
     createdAt: createdAt(),
@@ -180,6 +188,7 @@ export const runs = sqliteTable(
     check("runs_status_check", inList("status", JOB_STATES)),
     index("runs_project_created_idx").on(t.orgId, t.projectId, t.createdAt),
     index("runs_sha_idx").on(t.orgId, t.sha),
+    index("runs_concurrency_idx").on(t.orgId, t.projectId, t.concurrencyGroup),
   ],
 );
 
@@ -198,6 +207,10 @@ export const jobs = sqliteTable(
     matrix: text("matrix"),
     /** One of APPROVAL_KINDS or null. Validated in createJob, not by a CHECK: a CHECK would force a table rebuild. */
     approvalKind: text("approval_kind"),
+    /** The planned job as JSON text (key, ids, if:, outputs, continue-on-error ...). */
+    planned: text("planned"),
+    /** The job's outputs as a JSON object text, written when it finishes. */
+    outputs: text("outputs"),
     state: text("state").notNull().default("queued"),
     /** Set only for `success` and `failure`. */
     exitCode: integer("exit_code"),
@@ -233,6 +246,11 @@ export const jobAttempts = sqliteTable(
     errorClass: text("error_class"),
     /** Set when a person or agent asked for this attempt (a rerun); the reason they gave. */
     rerunReason: text("rerun_reason"),
+    /**
+     * The resolved job plan (actions pinned to shas, layout, argv, files) as JSON text, stored
+     * when the attempt starts, so a restarted controller can re-attach with no repo fetch.
+     */
+    plan: text("plan"),
     /** The provider exec running the attempt, so a restarted controller can probe it. */
     execId: text("exec_id"),
     /**

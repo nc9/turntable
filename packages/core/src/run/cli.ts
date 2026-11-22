@@ -1,10 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { githubResolver } from "@longshore/act-runner";
 import { DockerProvider } from "@longshore/provider-docker";
 import { ensureInstance, ensureLocalTenant, openDatabase } from "../db";
 import { changedFiles, snapshotRepo } from "./repo-archive";
+import { makeSafeReader } from "./safe-read";
 import { DEFAULT_IMAGE, runLocal } from "./run-local";
 import { runWorkflowLocal } from "./run-workflow";
 import { dbRunStore } from "./store";
@@ -68,6 +69,21 @@ export async function runCommand(args: string[]): Promise<number> {
     return 2;
   }
 
+  // Repo files are read through one safe reader: no `..`, no symlinks, size-capped. The workflow
+  // file itself too: a symlinked workflow is refused, not followed.
+  const repoFile = makeSafeReader(repoDir);
+  let workflowText: string;
+  try {
+    const text = repoFile(workflowPath);
+    if (text === undefined) throw new Error("not found");
+    workflowText = text;
+  } catch (e) {
+    console.error(
+      `cannot read workflow ${workflowPath}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return 2;
+  }
+
   const snap = await snapshotRepo(repoDir);
   if (snap.dirty) {
     console.error("warning: uncommitted changes are not delivered; only HEAD is run");
@@ -98,7 +114,7 @@ export async function runCommand(args: string[]): Promise<number> {
         providerName: "docker",
         store: dbRunStore(db, scope),
         workflowPath,
-        workflowYaml: readFileSync(workflowAbs, "utf8"),
+        workflowYaml: workflowText,
         event: {
           name: values.event,
           ref: snap.ref,
@@ -113,10 +129,7 @@ export async function runCommand(args: string[]): Promise<number> {
         repoTarball: snap.tarball,
         image: values.image,
         out: (t) => process.stdout.write(t),
-        readFile: (p) => {
-          const f = join(repoDir, p);
-          return existsSync(f) ? readFileSync(f, "utf8") : undefined;
-        },
+        readFile: repoFile,
         egress: values.egress,
         resolver: githubResolver(),
         signal: ac.signal,
@@ -135,7 +148,7 @@ export async function runCommand(args: string[]): Promise<number> {
       providerName: "docker",
       store: dbRunStore(db, scope),
       workflowPath,
-      workflowYaml: readFileSync(workflowAbs, "utf8"),
+      workflowYaml: workflowText,
       job: values.j,
       event: values.event,
       ref: snap.ref,
@@ -146,10 +159,7 @@ export async function runCommand(args: string[]): Promise<number> {
       repoTarball: snap.tarball,
       image: values.image,
       out: (t) => process.stdout.write(t),
-      readFile: (p) => {
-        const f = join(repoDir, p);
-        return existsSync(f) ? readFileSync(f, "utf8") : undefined;
-      },
+      readFile: repoFile,
       egress: values.egress,
       resolver: githubResolver(),
       signal: ac.signal,

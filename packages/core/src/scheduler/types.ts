@@ -8,12 +8,16 @@ export type AttemptOutcome = {
   exitCode?: number | undefined;
   /** Short cause. Stored as the attempt's error class for infra_error. */
   reason: string;
+  /** The job's declared outputs, kept for its dependents. */
+  outputs?: Record<string, string> | undefined;
 };
 
 /** Persistence a runner may use while running. Every call is fenced by the attempt's lease. */
 export interface AttemptStore {
   /** Records the sandbox (and exec) so a restarted controller can find and probe them. */
   setExec(where: { sandboxId?: string; execId?: string }): Promise<void>;
+  /** Stores the resolved job plan (JSON), so a restarted controller can re-attach without the repo. */
+  setPlan(planJson: string): Promise<void>;
   /** Clears stored log, steps and cuts, before a re-attached run replays the whole exec log. */
   reset(): Promise<void>;
   appendLog(offset: number, bytes: Uint8Array): Promise<void>;

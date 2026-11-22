@@ -1,11 +1,18 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { DockerProvider } from "@longshore/provider-docker";
+import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, openDatabase } from "./db";
 import { bootstrapToken } from "./ops/bootstrap";
 import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
-import { createActRunner, gitRepoSource, reconcileExpired, Scheduler } from "./scheduler";
+import {
+  createActRunner,
+  createProvider,
+  gitRepoSource,
+  loadProviderConfig,
+  reconcileExpired,
+  Scheduler,
+} from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { startServer } from "./server";
 import { VERSION } from "./version";
@@ -14,7 +21,8 @@ const USAGE = `longshore ${VERSION}
 
 Usage:
   longshore serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
-                  [--worker [--global-cap 4] [--org-cap 2] [--lease-seconds 30] [--image <ref>]]
+                  [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
+                   [--org-cap 2] [--lease-seconds 30] [--image <ref>]]
                   [--poll <config.json>]
   longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
@@ -43,26 +51,28 @@ async function startBackground(
     "lease-seconds"?: string | undefined;
     image?: string | undefined;
     poll?: string | undefined;
+    provider?: string | undefined;
+    "provider-config"?: string | undefined;
   },
 ): Promise<{ stop(): Promise<void> }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   let scheduler: Scheduler | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   let poller: Poller | undefined;
+  let workerProvider: Provider | undefined;
 
   if (v.worker) {
-    const provider = new DockerProvider();
-    const providers = () => provider; // one provider for now; the name on an attempt is a label
+    const providerName = v.provider ?? "docker";
+    const provider = createProvider(providerName, loadProviderConfig(v["provider-config"]));
+    workerProvider = provider;
+    // One provider per server for now; the name stored on an attempt is the provider it was made for.
+    const providers = () => provider;
     const leaseMs = Number(v["lease-seconds"]) * 1000;
     const num = (name: string, value: string | undefined): number => {
       const n = Number(value);
       if (!Number.isInteger(n) || n < 1) throw new Error(`invalid --${name}: ${value}`);
       return n;
     };
-    // Boot reconcile first: anything a dead worker left running is resolved before new claims.
-    const report = await reconcileExpired(db, providers, { log });
-    if (report.resolved.length > 0)
-      log(`reconciled ${report.resolved.length} abandoned attempt(s)`);
     scheduler = new Scheduler({
       db,
       providers,
@@ -76,12 +86,26 @@ async function startBackground(
       perOrgCap: num("org-cap", v["org-cap"]),
       log,
     });
+    const sched = scheduler;
+    const reconcile = () =>
+      reconcileExpired(db, providers, {
+        log,
+        owner: sched.owner,
+        leaseMs,
+        // Re-attach to execs a dead worker left behind: the real result is recovered by replay.
+        adopt: (claim, resume) => sched.adopt(claim, resume),
+      });
+    // Boot reconcile before claiming: abandoned attempts are re-attached or resolved first.
+    const report = await reconcile();
+    if (report.resolved.length + report.adopted.length > 0) {
+      log(
+        `reconciled: ${report.adopted.length} re-attached, ${report.resolved.length} marked infra_error`,
+      );
+    }
     scheduler.start();
     reconcileTimer = setInterval(
       () => {
-        void reconcileExpired(db, providers, { log }).catch((e) =>
-          log(`reconcile failed: ${String(e)}`),
-        );
+        void reconcile().catch((e) => log(`reconcile failed: ${String(e)}`));
       },
       Math.max(leaseMs, 10_000),
     );
@@ -89,11 +113,29 @@ async function startBackground(
   }
 
   if (v.poll) {
+    const pollConfig = loadPollConfig(v.poll);
+    if (v.worker && pollConfig.provider !== (v.provider ?? "docker")) {
+      throw new Error(
+        `poll config provider "${pollConfig.provider}" does not match --provider ${v.provider ?? "docker"}`,
+      );
+    }
     poller = new Poller({
       db,
-      config: loadPollConfig(v.poll),
+      config: pollConfig,
       log,
       onQueued: () => scheduler?.nudge(),
+      // A newer cancel-in-progress run took over running attempts: stop their workers now and
+      // destroy their sandboxes (the worker's own cleanup is the same; this is the backstop).
+      onSuperseded: (running) => {
+        scheduler?.abort(running.map((r) => r.attemptId));
+        for (const r of running) {
+          if (r.sandboxId && workerProvider) {
+            void workerProvider
+              .destroy(r.sandboxId)
+              .catch((e) => log(`could not destroy sandbox: ${String(e)}`));
+          }
+        }
+      },
     });
     poller.start();
     log(`polling per ${v.poll}`);
@@ -105,7 +147,7 @@ async function startBackground(
       if (reconcileTimer) clearInterval(reconcileTimer);
       if (scheduler) {
         // Stop claiming, give running attempts a moment, then leave the rest: their leases
-        // expire and the next boot's reconcile resolves them as infra_error. Never abort them
+        // expire and the next boot's reconcile re-attaches to them. Never abort them
         // here, which would record a user cancel that never happened.
         await Promise.race([scheduler.stop(), Bun.sleep(10_000)]);
       }
@@ -127,6 +169,8 @@ async function serve(args: string[]): Promise<void> {
       "lease-seconds": { type: "string", default: "30" },
       image: { type: "string" },
       poll: { type: "string" },
+      provider: { type: "string", default: "docker" },
+      "provider-config": { type: "string" },
     },
     strict: true,
   });

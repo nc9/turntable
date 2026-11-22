@@ -13,6 +13,13 @@ export type PollerOptions = {
   log?: (message: string) => void;
   /** Called after a poll that queued runs, so the scheduler can start them at once. */
   onQueued?: () => void;
+  /**
+   * Called when a cancel-in-progress run took over running attempts of older runs: their workers
+   * must stop and their sandboxes be destroyed.
+   */
+  onSuperseded?: (
+    running: { attemptId: string; sandboxId: string | null; provider: string }[],
+  ) => void;
 };
 
 /** Below this many requests left in the window the poller stops asking until it resets. */
@@ -128,6 +135,7 @@ export class Poller {
       );
       this.#failures.delete(repo);
       status.runsCreated += res.created.length;
+      if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
       if (res.created.length > 0) this.#o.onQueued?.();
       return finish("ok", null, intervalMs);
     } catch (err) {

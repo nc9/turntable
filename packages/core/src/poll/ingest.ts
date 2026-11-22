@@ -1,9 +1,14 @@
+import { githubContext, planWorkflow, type Value, type WorkflowEvent } from "@longshore/act-runner";
 import { parse } from "yaml";
 import type { Db } from "../db";
 import {
   bindRepo,
   countPolledSince,
   createPolledRun,
+  lastPolledSha,
+  markPollSkipped,
+  pollSeen,
+  type Superseded,
   ensureLocalTenant,
   getOrgBySlug,
   getProjectBySlug,
@@ -16,6 +21,8 @@ import type { PollConfig, PollRepoConfig } from "./config";
 import type { GithubClient } from "./github";
 
 export type Candidate = {
+  /** For a pull request: the base branch it targets. */
+  baseRef?: string;
   event: "push" | "pull_request";
   ref: string;
   sha: string;
@@ -127,8 +134,6 @@ export type IngestDeps = {
   log?: (message: string) => void;
 };
 
-export type IngestResult = { created: string[]; refused: { what: string; reason: string }[] };
-
 async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
   if (cfg.org === "local" && cfg.project === "local") return ensureLocalTenant(db);
   const org = await getOrgBySlug(db, cfg.org);
@@ -138,15 +143,45 @@ async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>
   return { orgId: org.id, projectId: project.id };
 }
 
+/** What a poll found and what it did. */
+export type IngestResult = {
+  created: string[];
+  refused: { what: string; reason: string }[];
+  /** Attempts of older runs that a cancel-in-progress run took over while running. */
+  superseded: Superseded["running"];
+};
+
+/** The `github.event` payload `if:` expressions see (the parts we know). */
+function eventPayload(c: Candidate): Value {
+  if (c.event === "pull_request") {
+    return {
+      pull_request: {
+        base: { ref: c.baseRef ?? "" },
+        head: { ref: c.headBranch, sha: c.sha },
+        draft: false,
+      },
+    };
+  }
+  return {};
+}
+
+/** True when the workflow has a path filter, so changed files are worth an API call. */
+const hasPathFilter = (yaml: string): boolean => /^\s*paths(-ignore)?\s*:/m.test(yaml);
+
 /**
  * One poll of one repo: finds the default branch head and (when allowed) open same-repo PRs by
- * allowlisted authors, and creates a run for each (repo, workflow, event, sha) not seen before.
- * Idempotent. Honours the per-hour run cap. Rate limits propagate to the caller.
+ * allowlisted authors, and for each (repo, workflow, event, sha) not seen before plans the whole
+ * workflow: the trigger router (event, branch and path filters, with the changed files from the
+ * compare API), the job graph with matrices expanded, needs, and `if:` and unsupported flags per
+ * job. A workflow that does not trigger creates no run (and is remembered, so it is not looked at
+ * again). Otherwise one run is created with every job queued and the plan stored, and a run in
+ * the same concurrency group with cancel-in-progress supersedes the older ones. Idempotent.
+ * Honours the per-hour run cap. Rate limits propagate to the caller.
  */
 export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<IngestResult> {
   const now = (deps.now ?? Date.now)();
   const log = deps.log ?? (() => {});
-  const result: IngestResult = { created: [], refused: [] };
+  const result: IngestResult = { created: [], refused: [], superseded: [] };
   const scope = await targetScope(deps.db, cfg);
   const repo = cfg.repo;
 
@@ -170,6 +205,17 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
 
   if (cfg.prMode === "allowlist") {
     for (const pr of await deps.github.openPulls(repo)) {
+      // Already handled: no API call at all.
+      if (
+        await pollSeen(deps.db, scope, {
+          repo,
+          workflowPath: cfg.workflow,
+          event: "pull_request",
+          sha: pr.headSha,
+        })
+      ) {
+        continue;
+      }
       let verdict = gatePullRequestOpener(cfg, pr);
       let message = pr.title;
       if (verdict.ok) {
@@ -191,62 +237,126 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         message,
         headBranch: pr.headRef,
         prNumber: pr.number,
+        baseRef: pr.baseRef,
       });
     }
   }
 
   for (const c of candidates) {
+    const what = `${c.event} ${c.sha.slice(0, 7)}`;
+    const key = { repo, workflowPath: cfg.workflow, event: c.event, sha: c.sha };
+    if (await pollSeen(deps.db, scope, key)) continue;
     const used = await countPolledSince(deps.db, scope, repo, now - 3_600_000);
     if (used + result.created.length >= cfg.maxRunsPerHour) {
-      result.refused.push({
-        what: `${c.event} ${c.sha.slice(0, 7)}`,
-        reason: "hourly run cap reached",
-      });
+      result.refused.push({ what, reason: "hourly run cap reached" });
       log(`poll ${repo}: hourly cap of ${cfg.maxRunsPerHour} reached`);
       continue;
     }
     const yaml = await deps.github.fileAt(repo, cfg.workflow, c.sha);
     if (yaml === undefined) {
-      result.refused.push({
-        what: `${c.event} ${c.sha.slice(0, 7)}`,
-        reason: "workflow not found at that commit",
-      });
+      result.refused.push({ what, reason: "workflow not found at that commit" });
       continue;
     }
-    const wf = describeWorkflow(yaml);
-    if (!wf || wf.jobs.length === 0) {
-      result.refused.push({
-        what: `${c.event} ${c.sha.slice(0, 7)}`,
-        reason: "workflow has no jobs or is not valid YAML",
-      });
+
+    // Changed files, for path filters: base..head for a PR, before..after for a push. Unknown
+    // (no base, a force push, too many files) means the filters are not applied.
+    let changedFiles: string[] | undefined;
+    if (hasPathFilter(yaml)) {
+      if (c.event === "pull_request") {
+        changedFiles = c.baseRef
+          ? await deps.github.changedFiles(repo, c.baseRef, c.sha)
+          : undefined;
+      } else {
+        const before = await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push");
+        changedFiles =
+          before && before !== c.sha
+            ? await deps.github.changedFiles(repo, before, c.sha)
+            : undefined;
+      }
+    }
+    const event: WorkflowEvent = {
+      name: c.event,
+      ref: c.ref,
+      ...(c.baseRef ? { baseRef: c.baseRef } : {}),
+      ...(changedFiles ? { changedFiles } : {}),
+    };
+    const workflowName = describeWorkflow(yaml)?.name ?? undefined;
+    const githubExtra: Record<string, Value> = {
+      sha: c.sha,
+      ...(c.actor ? { actor: c.actor } : {}),
+      ...(c.event === "pull_request" ? { head_ref: c.headBranch } : {}),
+      ...(workflowName ? { workflow: workflowName } : {}),
+      event: eventPayload(c),
+    };
+
+    let wp;
+    try {
+      wp = planWorkflow(yaml, event, { readFile: () => undefined, github: githubExtra });
+    } catch (err) {
+      const reason = `plan rejected: ${err instanceof Error ? err.message : String(err)}`;
+      await markPollSkipped(deps.db, scope, { ...key, now });
+      result.refused.push({ what, reason });
       continue;
     }
+    if (!wp.trigger.matched) {
+      // Deterministic for this sha: remember it so the compare call is not repeated.
+      await markPollSkipped(deps.db, scope, { ...key, now });
+      result.refused.push({ what, reason: `not triggered: ${wp.trigger.reason}` });
+      log(`poll ${repo}: ${what} not triggered (${wp.trigger.reason})`);
+      continue;
+    }
+    if (wp.jobs.length === 0) {
+      result.refused.push({ what, reason: "workflow has no jobs" });
+      continue;
+    }
+    const jobs: PolledJob[] = wp.jobs.map((n) => ({
+      key: n.key,
+      name: n.name,
+      needs: n.needs,
+      ...(n.matrix ? { matrix: n.matrix } : {}),
+      planned: n,
+    }));
     // Unknown needs, cycles and absurd job counts never become a run.
-    const invalid = validateJobGraph(wf.jobs);
+    const invalid = validateJobGraph(jobs);
     if (invalid) {
-      result.refused.push({ what: `${c.event} ${c.sha.slice(0, 7)}`, reason: invalid });
+      result.refused.push({ what, reason: invalid });
       continue;
     }
-    const run = await createPolledRun(deps.db, scope, {
+    const created = await createPolledRun(deps.db, scope, {
       repo,
       provider: deps.provider,
       now,
-      jobs: wf.jobs,
+      jobs,
+      cancelInProgress: wp.concurrency?.cancelInProgress ?? false,
       run: {
         workflowPath: cfg.workflow,
         event: c.event,
         ref: c.ref,
         sha: c.sha,
-        workflowName: wf.name ?? undefined,
+        workflowName: workflowName ?? wp.name ?? undefined,
         commitMessage: c.message,
         actor: c.actor ?? undefined,
         headBranch: c.headBranch,
         prNumber: c.prNumber,
+        plan: JSON.stringify({
+          env: wp.env,
+          github: githubContext(event, githubExtra),
+          vars: {},
+          ...(wp.concurrency ? { concurrency: wp.concurrency } : {}),
+        }),
+        ...(wp.concurrency ? { concurrencyGroup: wp.concurrency.group } : {}),
       },
     });
-    if (run) {
-      result.created.push(run.id);
-      log(`poll ${repo}: queued ${c.event} ${c.sha.slice(0, 7)}`);
+    if (created) {
+      result.created.push(created.run.id);
+      result.superseded.push(...created.superseded.running);
+      log(
+        `poll ${repo}: queued ${what}, ${jobs.length} job(s)${
+          created.superseded.runIds.length > 0
+            ? `, superseded ${created.superseded.runIds.length} older run(s)`
+            : ""
+        }`,
+      );
     }
   }
   return result;

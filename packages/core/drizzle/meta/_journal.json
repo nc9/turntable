@@ -43,6 +43,13 @@
       "when": 1795347979398,
       "tag": "0005_pink_maximus",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795349771958,
+      "tag": "0006_fluffy_vance_astro",
+      "breakpoints": true
     }
   ]
 }

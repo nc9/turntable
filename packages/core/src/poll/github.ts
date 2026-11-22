@@ -52,9 +52,14 @@ export type PullRequest = {
   /** `owner/name` of the head repo; null when the fork was deleted. */
   headRepo: string | null;
   baseRepo: string;
+  /** The base branch the PR targets. */
+  baseRef: string;
 };
 
 type Cached = { etag: string; body: unknown };
+
+/** Pages of 100 files fetched per comparison (300 files, GitHub's own cap for this endpoint). */
+const MAX_COMPARE_PAGES = 3;
 
 const num = (v: string | null): number | undefined => {
   if (v === null || v.trim() === "") return undefined;
@@ -175,7 +180,7 @@ export class GithubClient {
       title?: string;
       user?: { login?: string } | null;
       head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
-      base?: { repo?: { full_name?: string } };
+      base?: { ref?: string; repo?: { full_name?: string } };
     }[];
     return body.flatMap((p) => {
       const baseRepo = p.base?.repo?.full_name;
@@ -189,9 +194,46 @@ export class GithubClient {
           headRef: p.head.ref ?? "",
           headRepo: p.head.repo?.full_name ?? null,
           baseRepo,
+          baseRef: p.base?.ref ?? "",
         },
       ];
     });
+  }
+
+  /**
+   * Files changed between two refs (`base...head`, the merge-base form, which is what GitHub's
+   * own path filters use for pull requests). Read-only and ETag-cached like every request.
+   * Returns undefined when the answer cannot be trusted: the comparison does not exist (a force
+   * push removed the base), or it is larger than what one poll will page through. The caller
+   * then treats the changed files as unknown, which runs the workflow.
+   */
+  async changedFiles(repo: string, base: string, head: string): Promise<string[] | undefined> {
+    const safe = /^[A-Za-z0-9._/-]{1,255}$/;
+    if (!safe.test(base) || !safe.test(head)) return undefined;
+    const spec = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+    const files: string[] = [];
+    try {
+      for (let page = 1; page <= MAX_COMPARE_PAGES; page++) {
+        const body = (await this.#get(
+          `/repos/${repo}/compare/${spec}?per_page=100&page=${page}`,
+        )) as {
+          files?: { filename?: string; previous_filename?: string }[];
+          total_commits?: number;
+        };
+        const got = body.files ?? [];
+        for (const f of got) {
+          if (typeof f.filename === "string") files.push(f.filename);
+          // A rename touches the old path too, and path filters match on it.
+          if (typeof f.previous_filename === "string") files.push(f.previous_filename);
+        }
+        if (got.length < 100) return files;
+      }
+      return undefined; // more files than we page through
+    } catch (err) {
+      if (err instanceof GithubError && (err.status === 404 || err.status === 422))
+        return undefined;
+      throw err;
+    }
   }
 
   /** Raw file content at a commit, or undefined when it does not exist there. */
