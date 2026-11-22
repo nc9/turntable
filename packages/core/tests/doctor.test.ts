@@ -442,14 +442,17 @@ describe("the https redirect", () => {
 
 describe("quotas", () => {
   test("a build without the table says so", () => {
-    expect(checkQuotas(inputs)).toMatchObject({ status: "pass" });
+    const noTable = { all: () => [] as Record<string, unknown>[] };
+    expect(checkQuotas(base({ sqlite: noTable }))).toMatchObject({ status: "pass" });
   });
-  test("with the table: none set warns when hosted, set passes", () => {
+  test("none set warns when hosted, set passes", () => {
     const raw = (db.orm as unknown as { $client: { run(s: string, p?: unknown[]): void } }).$client;
-    raw.run("CREATE TABLE org_quotas (org_id TEXT PRIMARY KEY, max_concurrent INTEGER)");
     expect(checkQuotas(inputs)).toMatchObject({ status: "pass" });
     expect(checkQuotas(base({ hosted: true }))).toMatchObject({ status: "warn" });
-    raw.run("INSERT INTO org_quotas VALUES (?, ?)", [orgId, 4]);
+    raw.run(
+      "INSERT INTO org_quotas (org_id, max_concurrent, updated_by, updated_at) VALUES (?, ?, ?, ?)",
+      [orgId, 4, "test", 0],
+    );
     expect(checkQuotas(base({ hosted: true }))).toMatchObject({ status: "pass" });
   });
 });
