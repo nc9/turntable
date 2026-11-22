@@ -112,6 +112,59 @@ describe("the step environment", () => {
   });
 });
 
+describe("the secrets-proxy environment", () => {
+  const CRED = "cred-not-a-real-secret-4f9a";
+  test("reaches act through a file the launcher sources and deletes, never through an argv", async () => {
+    const { p, id, plan, repoTarball } = await setup();
+    const envFile = `${plan.layout.root}/proxy.env`;
+    const act = await fakeAct(
+      await fixture("success.jsonl"),
+      0,
+      `echo "proxy=$HTTPS_PROXY"; echo "lower=$https_proxy"; echo "bundle=$SSL_CERT_FILE"; if [ -e '${envFile}' ]; then echo envfile-left; else echo envfile-gone; fi`,
+    );
+    const argvs: string[] = [];
+    const puts: string[] = [];
+    const start = p.exec.start.bind(p.exec);
+    p.exec.start = (sid, o) => {
+      argvs.push(o.argv.join("\u0000"));
+      return start(sid, o);
+    };
+    const put = p.files.put.bind(p.files);
+    p.files.put = (sid, path, bytes) => {
+      puts.push(path);
+      return put(sid, path, bytes);
+    };
+    const events: RunEvent[] = [];
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        plan,
+        { repoTarball, act, proxy: { url: `http://att:${CRED}@10.0.0.2:3128`, caPem: "CA" } },
+        { pollMs: 50 },
+      ),
+      (e) => events.push(e),
+    );
+    const log = events
+      .filter((e) => e.kind === "log")
+      .map((e) => new TextDecoder().decode(e.bytes))
+      .join("");
+    expect(result.state).toBe("success");
+    // act (and so every step) has the proxy in its environment, from the sourced file.
+    expect(log).toContain(`proxy=http://att:${CRED}@10.0.0.2:3128`);
+    expect(log).toContain(`lower=http://att:${CRED}@10.0.0.2:3128`);
+    expect(log).toMatch(/bundle=.*proxy-bundle\.pem/);
+    // The file was deleted before act started.
+    expect(log).toContain("envfile-gone");
+    expect(puts).toContain(envFile);
+    // No exec the provider was asked to run carries the credential.
+    expect(argvs.length).toBeGreaterThan(3);
+    for (const a of argvs) expect(a).not.toContain(CRED);
+    // The file was made private before the launcher read it.
+    expect(argvs.some((a) => a.includes("chmod 600"))).toBe(true);
+  });
+});
+
 describe("runJob against the fake provider", () => {
   test("success: events, contiguous log offsets, success verdict", async () => {
     const out = await fixture("success.jsonl");

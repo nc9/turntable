@@ -7,6 +7,7 @@ export {
   compileRule,
   compileRules,
   matchRule,
+  passthroughAllowed,
   underPrefix,
   type CompiledRule,
 } from "./rules";

@@ -141,6 +141,13 @@
       "when": 1795374299208,
       "tag": "0019_solid_next_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795375645191,
+      "tag": "0020_medical_shen",
+      "breakpoints": true
     }
   ]
 }

@@ -21,6 +21,14 @@ import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
 import { signRelease } from "./definitions/sign-release";
 import { whoami } from "./definitions/whoami";
+import {
+  addPassthroughHostOp,
+  deletePassthroughHostOp,
+  deleteProxyRuleOp,
+  listPassthroughHostsOp,
+  listProxyRulesOp,
+  setProxyRuleOp,
+} from "./definitions/proxy-rules";
 import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
@@ -64,6 +72,12 @@ export const registry = createRegistry([
   setSecretOp,
   rotateSecretOp,
   deleteSecretOp,
+  setProxyRuleOp,
+  listProxyRulesOp,
+  deleteProxyRuleOp,
+  addPassthroughHostOp,
+  listPassthroughHostsOp,
+  deletePassthroughHostOp,
   listSecretsOp,
   approvalStatus,
   approversOverview,

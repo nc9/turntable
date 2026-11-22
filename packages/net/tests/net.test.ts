@@ -535,3 +535,25 @@ describe("address fallback", () => {
     expect(Date.now() - t0).toBeLessThan(3000);
   });
 });
+
+describe("tunnel (raw TCP for a passthrough)", () => {
+  test("every refused address is refused before a connection, and an allowed host connects", async () => {
+    const refused = createHttpClient({ resolve: async () => ["10.0.0.1"] });
+    await expect(refused.tunnel("db.example.test", 443)).rejects.toBeInstanceOf(SsrfError);
+    const mixed = createHttpClient({ resolve: async () => ["93.184.216.34", "169.254.169.254"] });
+    await expect(mixed.tunnel("db.example.test", 443)).rejects.toBeInstanceOf(SsrfError);
+    await expect(refused.tunnel("localhost", 80)).rejects.toBeInstanceOf(SsrfError);
+    await expect(refused.tunnel("127.0.0.1", 80)).rejects.toBeInstanceOf(SsrfError);
+    await expect(refused.tunnel("x.example.test", 0)).rejects.toBeInstanceOf(SsrfError);
+
+    const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const allowed = createHttpClient({ allowHosts: ["127.0.0.1"] });
+      const s = await allowed.tunnel("127.0.0.1", server.port);
+      expect(s.remotePort).toBe(server.port);
+      s.destroy();
+    } finally {
+      server.stop(true);
+    }
+  });
+});

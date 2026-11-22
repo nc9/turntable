@@ -17,6 +17,8 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/transport.test.ts", // the real server, on 127.0.0.1
   "packages/provider-daytona/tests/provider.test.ts", // a mock Daytona, on 127.0.0.1
   "packages/proxy/tests/proxy.test.ts", // the proxy under test, dialled on 127.0.0.1
+  "packages/core/tests/proxy-wiring.test.ts", // the same proxy, dialled on 127.0.0.1
+  "packages/core/tests/proxy-e2e.test.ts", // the same proxy, dialled on 127.0.0.1 (CI only)
 ]);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "data", "drizzle"]);
