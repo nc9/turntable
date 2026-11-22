@@ -1,0 +1,49 @@
+---
+title: "Internals: Bun notes"
+description: Verified notes on embedding assets in a compiled binary and on Drizzle adapters for Bun.
+---
+
+Findings from issue [#12](https://github.com/nc9/turntable/issues/12), checked with Bun 1.4.5 and drizzle-orm 0.45.4.
+
+## Embedding assets in a compiled binary
+
+Import the file with the `file` import attribute. Bun bundles it into the executable, and the import resolves to a path in Bun's virtual filesystem:
+
+```ts
+import page from "./page.html" with { type: "file" };
+
+const html = await Bun.file(page).text();
+console.log(Bun.embeddedFiles.map((f) => f.name));
+```
+
+Compile with `bun build --compile --target=bun-darwin-arm64 main.ts --outfile app`.
+
+Verified results:
+
+- The import resolves to a path under `/$bunfs/root/`, such as `/$bunfs/root/page-1xq33tzy.html`. `Bun.file()` reads it.
+- `Bun.embeddedFiles` lists every embedded file as a `Blob` with a `name` and `size`.
+- The compiled binary ran from an empty directory and read its embedded files. Nothing is read from disk.
+- File names carry a content hash by default. Pass `--asset-naming="[name].[ext]"` for stable names.
+
+Sources: [Bun single-file executables](https://bun.com/docs/bundler/executables), which covers embedding files and `Bun.embeddedFiles`.
+
+## Drizzle adapters
+
+Both adapters ship in the pinned drizzle-orm 0.45.4. We confirmed the modules `drizzle-orm/bun-sqlite` and `drizzle-orm/bun-sql` exist in `node_modules`.
+
+| | `drizzle-orm/bun-sqlite` | `drizzle-orm/bun-sql` |
+| --- | --- | --- |
+| Driver | `bun:sqlite` | `Bun.sql` (`SQL` from `bun`) |
+| Dialect | SQLite | Postgres only |
+| Database class | `BunSQLiteDatabase`, synchronous (`'sync'`) | `BunSQLDatabase`, extends `PgDatabase`, asynchronous |
+| Migrator | `migrate` in `drizzle-orm/bun-sqlite/migrator` | `migrate` in `drizzle-orm/bun-sql/migrator` |
+| Transactions | Synchronous | `client.begin`, with `savepoint` for nested transactions |
+
+Notes and gaps:
+
+- `bun-sqlite` is what Turntable uses today (`packages/core/src/db/index.ts`). Its sync API means a Postgres port changes call sites from sync to async, so repos should expose async signatures from the start.
+- `bun-sql` is Postgres-only in drizzle, even though `Bun.sql` also speaks other databases.
+- `bun-sql` sends queries through `client.unsafe(query, params)`. We have not load-tested it, and we have not verified behavior across Postgres versions or poolers.
+- Turntable applies its own embedded migrations through a dialect-agnostic runner, so neither drizzle migrator is needed at runtime.
+
+Sources: [Drizzle with Bun SQLite](https://orm.drizzle.team/docs/connect-bun-sqlite), [Drizzle with Bun SQL](https://orm.drizzle.team/docs/connect-bun-sql), [Bun SQL](https://bun.com/docs/runtime/sql), and the type declarations in `drizzle-orm/bun-sql` and `drizzle-orm/bun-sqlite`.

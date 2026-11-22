@@ -1,0 +1,39 @@
+---
+title: Contributing
+description: Conventions for contributors and agents.
+---
+
+The repository is public. Never commit secrets, internal hostnames, customer data or details of any other company's private systems.
+
+## Conventions
+
+- Use bun for everything: `bun install`, `bun run <script>`, `bun test`. Do not use node or npm.
+- TypeScript only, strict mode, with explicit types at module boundaries.
+- Lint with `oxlint` (`bun run lint`). Format with `oxfmt` (`bun run format`, check with `bun run format:check`).
+- Typecheck with `tsgo --noEmit` from `@typescript/native-preview` (`bun run typecheck`).
+- File names are kebab-case, for example `run-queue.ts`.
+- Commits use conventional commits: `type(scope): message`, with a required scope.
+- Tests live in `packages/<name>/tests/` and run with `bun test <file>`.
+- Prose uses sentence-case headings and no em-dashes.
+
+## Database schema
+
+The schema lives in `packages/core/src/db/schema.ts`. After changing it, run:
+
+```sh
+bun run --cwd packages/core db:generate
+```
+
+This runs drizzle-kit and re-embeds the migrations into `migrations.generated.ts`. Commit both. CI fails if the embedded module is stale.
+
+## Embedded assets
+
+The compiled binary must work from an empty directory, so never read runtime assets from disk. Embed them. See [Bun notes](/internals/bun-notes).
+
+## Docs
+
+Docs ship with each feature. This site lives in `docs/` and is built with Tangly. Run `bun run dev` in `docs/` to preview, and `bun run check` before you push. Do not run `oxfmt` on `.mdx` files.
+
+## Branches and PRs
+
+Work on a branch and open a PR for anything beyond a trivial fix. Keep `main` green.

@@ -1,0 +1,53 @@
+---
+title: Quickstart
+description: Run the Turntable server from a binary or a container.
+---
+
+Only what works today is listed here. There is no workflow execution yet.
+
+## Binary
+
+Build the binaries into `dist/` from a checkout:
+
+```sh
+bun install
+bun run build
+```
+
+Then run one:
+
+```sh
+./dist/turntable-darwin-arm64 version
+./dist/turntable-darwin-arm64 serve --port 8080 --data-dir ./data
+```
+
+The binary works from an empty directory. Migrations and assets are embedded.
+
+To run from source without building:
+
+```sh
+bun run dev
+```
+
+## Docker
+
+Build and run the image:
+
+```sh
+docker build -t turntable .
+docker run --rm -p 8080:8080 -v turntable-data:/data turntable
+```
+
+The image is distroless and runs as a non-root user. It stores data in `/data` and sets `TURNTABLE_HOST=0.0.0.0` so the published port is reachable.
+
+## Check that it is up
+
+```sh
+curl http://127.0.0.1:8080/healthz
+```
+
+The response is JSON with `ok` and the running `version`.
+
+## Network binding
+
+`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `TURNTABLE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.

@@ -1,0 +1,39 @@
+---
+title: Providers
+description: The provider plugin model and the detached exec contract.
+---
+
+<Warning>
+  In progress. The provider SDK, conformance suite and first providers are tracked in issues [#4](https://github.com/nc9/turntable/issues/4), [#5](https://github.com/nc9/turntable/issues/5), [#6](https://github.com/nc9/turntable/issues/6) and [#7](https://github.com/nc9/turntable/issues/7). Details here may change.
+</Warning>
+
+A provider creates and destroys sandboxes and runs commands in them. Turntable runs one job per sandbox.
+
+## Plugin model
+
+- **First-party providers** (Docker, Daytona) are compiled into the binary.
+- **Third-party providers** run out of process and talk JSON-RPC over stdio. Any language works, and a crashing plugin cannot take down the server.
+
+## Capability handshake
+
+On start, the core and the provider exchange a handshake. The provider declares which capabilities it supports, and the core refuses to schedule work that needs a capability the provider lacks.
+
+## Detached exec
+
+Correctness never depends on a long-lived stream. A command runs detached, and the core reads its progress by polling:
+
+| Call | Purpose |
+| --- | --- |
+| `exec.start` | Start a command and return a handle. |
+| `exec.status` | Report whether the command is running and, when done, its exit code. |
+| `exec.logs` | Return output from a byte offset, so the core resumes where it left off. |
+
+A dropped connection loses nothing, and a silent stream is not mistaken for a finished job. Live streaming is an optimization on top of this contract.
+
+## No env in the sandbox spec
+
+The sandbox spec has no environment variable field. Providers never receive secrets or other job environment through the spec. This keeps secrets out of provider APIs and logs. See [Secrets and security](/security).
+
+## Conformance suite
+
+A provider conformance suite will exercise the contract: detached exec, offset logs, exit code recovery and cleanup. First-party and third-party providers must pass it.

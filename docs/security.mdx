@@ -1,0 +1,42 @@
+---
+title: Secrets and security
+description: The planned security design for secrets, egress, trust and signing.
+---
+
+<Warning>
+  This page describes a planned design. None of it is implemented yet. Tracking issues are linked per section.
+</Warning>
+
+The goal is one instance that safely runs PR CI, website publishing and signed releases, with no second instance needed.
+
+## Secrets vault
+
+Secrets live in a vault with pluggable stores and scopes, so a secret is available only to the org, project, environment or job that needs it. Issue [#14](https://github.com/nc9/turntable/issues/14).
+
+## Secrets proxy
+
+Sandboxes never hold raw secrets. A proxy sits on the sandbox's network path and injects credentials into outbound requests, per allowed host. Job code and third-party actions see placeholders at most. Issue [#15](https://github.com/nc9/turntable/issues/15).
+
+## Egress lockdown
+
+Sandboxes get an egress policy: outbound traffic is denied by default and allowed per host. This backs the proxy, because a secret can be injected only toward hosts the policy allows. Issue [#16](https://github.com/nc9/turntable/issues/16).
+
+## Trust classes and fork PR gating
+
+Runs are classified by trust, for example a push to a protected branch versus a pull request from a fork. Untrusted runs get no secrets, and fork PRs wait in `awaiting_approval` until a maintainer approves. Issue [#17](https://github.com/nc9/turntable/issues/17).
+
+## Scoped per-job GitHub token
+
+Each job gets a short-lived GitHub token limited to its repository and the permissions its workflow declares. Issue [#18](https://github.com/nc9/turntable/issues/18).
+
+## OIDC issuer
+
+Turntable acts as an OIDC issuer so jobs can authenticate to cloud providers without stored keys. It replaces GitHub OIDC claims. npm trusted publishing does not accept self-hosted issuers, so npm uses proxy-injected tokens.
+
+## Signing service
+
+A signing service signs release artifacts and emits provenance, so signing keys never enter a sandbox. It is the planned substitute for GitHub artifact attestations.
+
+## Reporting vulnerabilities
+
+See `SECURITY.md` in the repository.

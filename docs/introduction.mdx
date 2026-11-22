@@ -1,0 +1,24 @@
+---
+title: Introduction
+description: Turntable is an open source CI system that runs GitHub Actions workflows outside GitHub.
+---
+
+Turntable reads GitHub Actions workflow YAML and runs it outside GitHub. Each job runs in its own disposable sandbox, on the provider you choose. It ships as a single Bun binary with a built-in web UI.
+
+<Warning>
+  Turntable is pre-alpha. Nothing here is ready for real use, and interfaces change without notice. Pages mark planned work as planned.
+</Warning>
+
+## Why Turntable
+
+- **Secrets never enter sandboxes.** A secrets proxy injects credentials into outbound requests per allowed host, so job code and third-party actions never hold raw secrets. Planned, see [Secrets and security](/security).
+- **Pluggable providers.** Docker and Daytona come first. Anyone can write a provider that runs out of process over JSON-RPC. See [Providers](/providers).
+- **One binary, SQLite to Postgres.** Start with a single file and a SQLite database. Move to Postgres when you need to scale. See [Architecture](/architecture).
+- **Agent-friendly.** One operations registry is planned to drive the REST API, MCP server, CLI and UI.
+- **Honest compatibility.** Unsupported workflow features fail loudly at parse or plan time. They are never silently ignored. See [Compatibility](/compatibility).
+
+## What exists today
+
+A skeleton: a server with `GET /healthz` and a placeholder page, an embedded SQLite migration, the tenancy data model, and a build pipeline that produces binaries and a container image. There is no workflow execution yet.
+
+Next: start with the [Quickstart](/quickstart).

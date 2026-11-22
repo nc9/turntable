@@ -1,0 +1,14 @@
+{
+  "name": "turntable-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tangly dev",
+    "check": "tangly check --strict",
+    "build": "tangly build"
+  },
+  "devDependencies": {
+    "tangly": "0.6.0"
+  }
+}
