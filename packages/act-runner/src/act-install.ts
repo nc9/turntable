@@ -41,7 +41,7 @@ export async function fetchAct(arch: ActArch): Promise<ActTarball> {
   const url = `https://github.com/nektos/act/releases/download/${ACT_VERSION}/${rel.asset}`;
   let res: Response;
   try {
-    res = await fetch(url);
+    res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   } catch (e) {
     throw new InfraError(`cannot download ${url}`, e);
   }

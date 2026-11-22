@@ -43,7 +43,17 @@ async function runExample(workflow: string, jobId: string) {
   });
   try {
     const events: RunEvent[] = [];
-    const result = await drain(runJob(provider, id, plan, { repoTarball }), (e) => events.push(e));
+    const result = await drain(
+      runJob(provider, id, plan, { repoTarball }, { timeoutSeconds: 240 }),
+      (e) => {
+        events.push(e);
+        // Live progress so a hang is diagnosable from the CI log.
+        if (e.kind === "phase") console.log(`[${jobId}] phase ${e.phase}`);
+        if (e.kind === "act" && e.event.type === "step-end") {
+          console.log(`[${jobId}] step ${e.event.name}: ${e.event.result}`);
+        }
+      },
+    );
     const log = events
       .filter((e) => e.kind === "log")
       .map((e) => new TextDecoder().decode(e.bytes))
@@ -58,7 +68,7 @@ async function runExample(workflow: string, jobId: string) {
 describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
   test("hello job succeeds: step events, output, env propagation, composite, summary", async () => {
     const { result, log, act } = await runExample("ci.yml", "hello");
-    if (result.state !== "success") console.log(result, log);
+    if (result.state !== "success") console.log(JSON.stringify(result), "\n" + log);
     expect(result).toMatchObject({ state: "success", exitCode: 0 });
     const names = act.filter((e) => e.type === "step-end").map((e) => `${e.name}:${e.result}`);
     expect(names).toContain("Set up job:success");

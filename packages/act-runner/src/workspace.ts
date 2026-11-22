@@ -1,6 +1,6 @@
 /** Packs a directory (including .git) into a gzip tarball using the local `tar`. */
-export async function tarDirectory(dir: string): Promise<Uint8Array> {
-  const proc = Bun.spawn(["tar", "czf", "-", "-C", dir, "."], {
+export async function tarDirectory(dir: string, entries: string[] = ["."]): Promise<Uint8Array> {
+  const proc = Bun.spawn(["tar", "czf", "-", "-C", dir, ...entries], {
     stdout: "pipe",
     stderr: "pipe",
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COPYFILE_DISABLE: "1" },

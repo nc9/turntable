@@ -26,7 +26,7 @@ const fixture = (n: string): Promise<string> => Bun.file(`${import.meta.dir}/fix
 async function tarWith(files: Record<string, string>): Promise<Uint8Array> {
   const d = mkdtempSync(join(tmp, "t-"));
   for (const [n, c] of Object.entries(files)) writeFileSync(join(d, n), c, { mode: 0o755 });
-  return tarDirectory(d);
+  return tarDirectory(d, Object.keys(files));
 }
 
 /** A fake `act`: prints `stdout` then runs `tail`, then exits with `code`. */
