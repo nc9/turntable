@@ -46,79 +46,83 @@ let db: Db;
 let scope: { orgId: string; projectId: string };
 let jobId: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   db = openDatabase(":memory:");
-  const org = createOrg(db, { slug: "o", name: "o" });
-  const p = createProject(db, { orgId: org.id }, { slug: "p", name: "p" });
+  const org = await createOrg(db, { slug: "o", name: "o" });
+  const p = await createProject(db, { orgId: org.id }, { slug: "p", name: "p" });
   scope = { orgId: org.id, projectId: p.id };
-  const run = createRun(db, scope, { workflowPath: "w", event: "push", ref: "main" });
-  jobId = createJob(db, scope, { runId: run.id, jobKey: "build", name: "build" })!.id;
+  const run = await createRun(db, scope, { workflowPath: "w", event: "push", ref: "main" });
+  jobId = (await createJob(db, scope, { runId: run.id, jobKey: "build", name: "build" }))!.id;
 });
 
-test("success path stamps timestamps and exit code", () => {
-  const running = transitionJob(db, scope, jobId, "running")!;
+test("success path stamps timestamps and exit code", async () => {
+  const running = (await transitionJob(db, scope, jobId, "running"))!;
   expect(running.startedAt).not.toBeNull();
-  const done = transitionJob(db, scope, jobId, "success", { exitCode: 0 })!;
+  const done = (await transitionJob(db, scope, jobId, "success", { exitCode: 0 }))!;
   expect(done).toMatchObject({ state: "success", exitCode: 0 });
   expect(done.finishedAt).not.toBeNull();
 });
 
-test("failure needs a non-zero exit; success needs zero; infra_error has none", () => {
-  transitionJob(db, scope, jobId, "running");
-  expect(() => transitionJob(db, scope, jobId, "failure", { exitCode: 0 })).toThrow(
+test("failure needs a non-zero exit; success needs zero; infra_error has none", async () => {
+  await transitionJob(db, scope, jobId, "running");
+  await expect(transitionJob(db, scope, jobId, "failure", { exitCode: 0 })).rejects.toThrow(
     InvalidTransitionError,
   );
-  expect(() => transitionJob(db, scope, jobId, "failure")).toThrow(InvalidTransitionError);
-  expect(() => transitionJob(db, scope, jobId, "success", { exitCode: 1 })).toThrow(
+  await expect(transitionJob(db, scope, jobId, "failure")).rejects.toThrow(InvalidTransitionError);
+  await expect(transitionJob(db, scope, jobId, "success", { exitCode: 1 })).rejects.toThrow(
     InvalidTransitionError,
   );
-  expect(() => transitionJob(db, scope, jobId, "infra_error", { exitCode: 2 })).toThrow(
+  await expect(transitionJob(db, scope, jobId, "infra_error", { exitCode: 2 })).rejects.toThrow(
     InvalidTransitionError,
   );
-  expect(getJob(db, scope, jobId)!.state).toBe("running");
-  expect(transitionJob(db, scope, jobId, "failure", { exitCode: 2 })!.state).toBe("failure");
+  expect((await getJob(db, scope, jobId))!.state).toBe("running");
+  expect((await transitionJob(db, scope, jobId, "failure", { exitCode: 2 }))!.state).toBe(
+    "failure",
+  );
 });
 
-test("illegal transitions throw and leave state alone", () => {
-  expect(() => transitionJob(db, scope, jobId, "success", { exitCode: 0 })).toThrow(
+test("illegal transitions throw and leave state alone", async () => {
+  await expect(transitionJob(db, scope, jobId, "success", { exitCode: 0 })).rejects.toThrow(
     InvalidTransitionError,
   );
-  transitionJob(db, scope, jobId, "running");
-  transitionJob(db, scope, jobId, "failure", { exitCode: 1 });
-  expect(() => transitionJob(db, scope, jobId, "queued")).toThrow(InvalidTransitionError);
-  expect(getJob(db, scope, jobId)!.state).toBe("failure");
+  await transitionJob(db, scope, jobId, "running");
+  await transitionJob(db, scope, jobId, "failure", { exitCode: 1 });
+  await expect(transitionJob(db, scope, jobId, "queued")).rejects.toThrow(InvalidTransitionError);
+  expect((await getJob(db, scope, jobId))!.state).toBe("failure");
 });
 
-test("approval gate and infra_error retry flow", () => {
-  transitionJob(db, scope, jobId, "awaiting_approval");
-  transitionJob(db, scope, jobId, "queued");
-  transitionJob(db, scope, jobId, "running");
-  const infra = transitionJob(db, scope, jobId, "infra_error")!;
+test("approval gate and infra_error retry flow", async () => {
+  await transitionJob(db, scope, jobId, "awaiting_approval");
+  await transitionJob(db, scope, jobId, "queued");
+  await transitionJob(db, scope, jobId, "running");
+  const infra = (await transitionJob(db, scope, jobId, "infra_error"))!;
   expect(infra.exitCode).toBeNull();
-  transitionJob(db, scope, jobId, "queued");
-  transitionJob(db, scope, jobId, "running");
-  expect(transitionJob(db, scope, jobId, "cancelled")!.state).toBe("cancelled");
+  await transitionJob(db, scope, jobId, "queued");
+  await transitionJob(db, scope, jobId, "running");
+  expect((await transitionJob(db, scope, jobId, "cancelled"))!.state).toBe("cancelled");
 });
 
-test("attempts number per job and follow the same transition rules", () => {
-  const a1 = createAttempt(db, scope, { jobId, provider: "local-docker" })!;
-  const a2 = createAttempt(db, scope, { jobId, provider: "local-docker" })!;
+test("attempts number per job and follow the same transition rules", async () => {
+  const a1 = (await createAttempt(db, scope, { jobId, provider: "local-docker" }))!;
+  const a2 = (await createAttempt(db, scope, { jobId, provider: "local-docker" }))!;
   expect([a1.attempt, a2.attempt]).toEqual([1, 2]);
-  updateAttempt(db, scope, a1.id, { state: "running", sandboxId: "sb-1" });
-  const failed = updateAttempt(db, scope, a1.id, {
+  await updateAttempt(db, scope, a1.id, { state: "running", sandboxId: "sb-1" });
+  const failed = (await updateAttempt(db, scope, a1.id, {
     state: "infra_error",
     errorClass: "sandbox_create",
-  })!;
+  }))!;
   expect(failed).toMatchObject({
     state: "infra_error",
     errorClass: "sandbox_create",
     sandboxId: "sb-1",
   });
-  expect(() => updateAttempt(db, scope, a1.id, { state: "success", exitCode: 0 })).toThrow(
+  await expect(updateAttempt(db, scope, a1.id, { state: "success", exitCode: 0 })).rejects.toThrow(
     InvalidTransitionError,
   );
 });
 
-test("db rejects an unknown state via CHECK", () => {
-  expect(() => db.orm.update(schema.jobs).set({ state: "bogus" }).run()).toThrow();
+test("db rejects an unknown state via CHECK", async () => {
+  await expect(
+    Promise.resolve(db.orm.update(schema.jobs).set({ state: "bogus" })),
+  ).rejects.toThrow();
 });

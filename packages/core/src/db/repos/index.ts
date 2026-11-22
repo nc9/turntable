@@ -1,5 +1,9 @@
 // The ONLY place tenant-owned tables are queried. Every function takes a Scope and filters on
 // org_id (and project_id when the scope has one). tests/tenancy-guard.test.ts enforces this.
+//
+// Every public function is async and wraps its body in `db.run` (see `Db` in ../index.ts). Inside
+// the callback, use the handle it receives (`h`) for nested repo calls. Queries are written
+// `await orm.select()...` with no `.get()/.all()/.run()` so they run on sync and async drivers.
 import { and, asc, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "..";
 import { canTransition, exitCodeValid } from "../job-state";
@@ -21,61 +25,80 @@ const now = () => Date.now();
 // ---- tenancy ----
 
 export function createOrg(db: Db, input: { slug: string; name: string }) {
-  const row = { id: ulid(), ...input };
-  db.orm.insert(s.orgs).values(row).run();
-  return db.orm.select().from(s.orgs).where(eq(s.orgs.id, row.id)).get()!;
+  return db.run(async (h) => {
+    const row = { id: ulid(), ...input };
+    await h.orm.insert(s.orgs).values(row);
+    const [org] = await h.orm.select().from(s.orgs).where(eq(s.orgs.id, row.id)).limit(1);
+    return org!;
+  });
 }
 
 export function getOrgBySlug(db: Db, slug: string) {
-  return db.orm.select().from(s.orgs).where(eq(s.orgs.slug, slug)).get();
+  return db.run(async (h) => {
+    const [org] = await h.orm.select().from(s.orgs).where(eq(s.orgs.slug, slug)).limit(1);
+    return org;
+  });
 }
 
 export function createProject(
   db: Db,
   scope: Scope,
   input: { slug: string; name: string },
-): Project {
-  const id = ulid();
-  db.orm
-    .insert(s.projects)
-    .values({ id, orgId: scope.orgId, ...input })
-    .run();
-  return getProject(db, { orgId: scope.orgId }, id)!;
+): Promise<Project> {
+  return db.run(async (h) => {
+    const id = ulid();
+    await h.orm.insert(s.projects).values({ id, orgId: scope.orgId, ...input });
+    return (await getProject(h, { orgId: scope.orgId }, id))!;
+  });
 }
 
-export function getProject(db: Db, scope: Scope, id: string): Project | undefined {
-  return db.orm
-    .select()
-    .from(s.projects)
-    .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, id)))
-    .get();
+export function getProject(db: Db, scope: Scope, id: string): Promise<Project | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.projects)
+      .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, id)))
+      .limit(1);
+    return row;
+  });
 }
 
-export function getProjectBySlug(db: Db, scope: Scope, slug: string): Project | undefined {
-  return db.orm
-    .select()
-    .from(s.projects)
-    .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.slug, slug)))
-    .get();
+export function getProjectBySlug(db: Db, scope: Scope, slug: string): Promise<Project | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.projects)
+      .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.slug, slug)))
+      .limit(1);
+    return row;
+  });
 }
 
-export function listProjects(db: Db, scope: Scope): Project[] {
-  // A project-narrowed scope lists only that project.
-  const where =
-    scope.projectId === undefined
-      ? scoped(scope, { orgId: s.projects.orgId })
-      : scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, scope.projectId));
-  return db.orm.select().from(s.projects).where(where).orderBy(asc(s.projects.slug)).all();
+export function listProjects(db: Db, scope: Scope): Promise<Project[]> {
+  return db.run(async (h) => {
+    // A project-narrowed scope lists only that project.
+    const where =
+      scope.projectId === undefined
+        ? scoped(scope, { orgId: s.projects.orgId })
+        : scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, scope.projectId));
+    return h.orm.select().from(s.projects).where(where).orderBy(asc(s.projects.slug));
+  });
 }
 
-export function renameProject(db: Db, scope: Scope, id: string, name: string): Project | undefined {
-  const rows = db.orm
-    .update(s.projects)
-    .set({ name })
-    .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, id)))
-    .returning({ id: s.projects.id })
-    .all();
-  return rows.length ? getProject(db, scope, id) : undefined;
+export function renameProject(
+  db: Db,
+  scope: Scope,
+  id: string,
+  name: string,
+): Promise<Project | undefined> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.projects)
+      .set({ name })
+      .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, id)))
+      .returning({ id: s.projects.id });
+    return rows.length ? getProject(h, scope, id) : undefined;
+  });
 }
 
 // TODO(#19): prove the caller controls this repo/installation at bind time (GitHub App work).
@@ -89,12 +112,11 @@ export function bindRepo(
     installationId?: string;
     forgeRepoId?: string;
   },
-): ProjectRepo {
-  const { projectId } = requireProject(scope);
-  const id = ulid();
-  db.orm
-    .insert(s.projectRepos)
-    .values({
+): Promise<ProjectRepo> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const id = ulid();
+    await h.orm.insert(s.projectRepos).values({
       id,
       orgId: scope.orgId,
       projectId,
@@ -103,17 +125,23 @@ export function bindRepo(
       repo: input.repo.toLowerCase(),
       installationId: input.installationId ?? null,
       forgeRepoId: input.forgeRepoId ?? null,
-    })
-    .run();
-  return db.orm.select().from(s.projectRepos).where(eq(s.projectRepos.id, id)).get()!;
+    });
+    const [row] = await h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(eq(s.projectRepos.id, id))
+      .limit(1);
+    return row!;
+  });
 }
 
-export function listRepos(db: Db, scope: Scope): ProjectRepo[] {
-  return db.orm
-    .select()
-    .from(s.projectRepos)
-    .where(scoped(scope, { orgId: s.projectRepos.orgId, projectId: s.projectRepos.projectId }))
-    .all();
+export function listRepos(db: Db, scope: Scope): Promise<ProjectRepo[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(scoped(scope, { orgId: s.projectRepos.orgId, projectId: s.projectRepos.projectId })),
+  );
 }
 
 /**
@@ -130,85 +158,99 @@ export function resolveRepoScope(
     /** Installation the event came from. Required to match when the binding has one. */
     installationId?: string;
   },
-): Required<Scope> | undefined {
-  // Prefer the stable forge id (survives renames); fall back to case-insensitive owner/repo.
-  const byId = input.forgeRepoId
-    ? db.orm
-        .select()
-        .from(s.projectRepos)
-        .where(
-          and(
-            eq(s.projectRepos.forge, input.forge),
-            eq(s.projectRepos.forgeRepoId, input.forgeRepoId),
-          ),
-        )
-        .get()
-    : undefined;
-  const row =
-    byId ??
-    db.orm
-      .select()
-      .from(s.projectRepos)
-      .where(
-        and(
-          eq(s.projectRepos.forge, input.forge),
-          eq(s.projectRepos.owner, input.owner.toLowerCase()),
-          eq(s.projectRepos.repo, input.repo.toLowerCase()),
-        ),
-      )
-      .get();
-  if (!row) return undefined;
-  // Name fallback only for rows with no stable id. A row bound to a different forge repo id
-  // means the repo was deleted and recreated, or the name was taken over: do not route.
-  if (row.forgeRepoId !== null && row.forgeRepoId !== input.forgeRepoId) return undefined;
-  // A bound installation must match: a same-named repo under another installation must not
-  // route into this org. A missing incoming installation counts as a mismatch.
-  if (row.installationId !== null && row.installationId !== input.installationId) return undefined;
-  return { orgId: row.orgId, projectId: row.projectId };
+): Promise<Required<Scope> | undefined> {
+  return db.run(async (h) => {
+    // Prefer the stable forge id (survives renames); fall back to case-insensitive owner/repo.
+    const [byId] = input.forgeRepoId
+      ? await h.orm
+          .select()
+          .from(s.projectRepos)
+          .where(
+            and(
+              eq(s.projectRepos.forge, input.forge),
+              eq(s.projectRepos.forgeRepoId, input.forgeRepoId),
+            ),
+          )
+          .limit(1)
+      : [];
+    const row =
+      byId ??
+      (
+        await h.orm
+          .select()
+          .from(s.projectRepos)
+          .where(
+            and(
+              eq(s.projectRepos.forge, input.forge),
+              eq(s.projectRepos.owner, input.owner.toLowerCase()),
+              eq(s.projectRepos.repo, input.repo.toLowerCase()),
+            ),
+          )
+          .limit(1)
+      )[0];
+    if (!row) return undefined;
+    // Name fallback only for rows with no stable id. A row bound to a different forge repo id
+    // means the repo was deleted and recreated, or the name was taken over: do not route.
+    if (row.forgeRepoId !== null && row.forgeRepoId !== input.forgeRepoId) return undefined;
+    // A bound installation must match: a same-named repo under another installation must not
+    // route into this org. A missing incoming installation counts as a mismatch.
+    if (row.installationId !== null && row.installationId !== input.installationId) {
+      return undefined;
+    }
+    return { orgId: row.orgId, projectId: row.projectId };
+  });
 }
 
-export function addMember(db: Db, scope: Scope, input: { userId: string; role: s.MemberRole }) {
-  db.orm
-    .insert(s.orgMembers)
-    .values({ orgId: scope.orgId, ...input })
-    .run();
+export function addMember(
+  db: Db,
+  scope: Scope,
+  input: { userId: string; role: s.MemberRole },
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm.insert(s.orgMembers).values({ orgId: scope.orgId, ...input });
+  });
 }
 
 export function listMembers(db: Db, scope: Scope) {
-  return db.orm
-    .select()
-    .from(s.orgMembers)
-    .where(scoped(scope, { orgId: s.orgMembers.orgId }))
-    .all();
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.orgMembers)
+      .where(scoped(scope, { orgId: s.orgMembers.orgId })),
+  );
 }
 
 export function createUser(db: Db, input: { email?: string; displayName: string }) {
-  const id = ulid();
-  db.orm
-    .insert(s.users)
-    .values({ id, email: input.email ?? null, displayName: input.displayName })
-    .run();
-  return db.orm.select().from(s.users).where(eq(s.users.id, id)).get()!;
+  return db.run(async (h) => {
+    const id = ulid();
+    await h.orm
+      .insert(s.users)
+      .values({ id, email: input.email ?? null, displayName: input.displayName });
+    const [user] = await h.orm.select().from(s.users).where(eq(s.users.id, id)).limit(1);
+    return user!;
+  });
 }
 
-/** Idempotently creates the built-in `local` org and project used by local runs. */
-export function ensureLocalTenant(db: Db): Required<Scope> {
+/**
+ * Idempotently creates the built-in `local` org and project used by local runs. Uses a
+ * transaction, so call it with the root handle and never from inside `db.run`.
+ */
+export async function ensureLocalTenant(db: Db): Promise<Required<Scope>> {
   try {
-    return ensureLocalTenantOnce(db);
+    return await ensureLocalTenantOnce(db);
   } catch {
     // A concurrent boot created the rows between our read and insert: reread.
-    return ensureLocalTenantOnce(db);
+    return await ensureLocalTenantOnce(db);
   }
 }
 
-function ensureLocalTenantOnce(db: Db): Required<Scope> {
-  return db.orm.transaction((tx) => {
-    const inner = { orm: tx, close: () => {} } as unknown as Db;
-    let org = getOrgBySlug(inner, "local");
-    if (!org) org = createOrg(inner, { slug: "local", name: "Local" });
+function ensureLocalTenantOnce(db: Db): Promise<Required<Scope>> {
+  return db.transaction(async (tx) => {
+    let org = await getOrgBySlug(tx, "local");
+    if (!org) org = await createOrg(tx, { slug: "local", name: "Local" });
     const scope = { orgId: org.id };
-    let project = getProjectBySlug(inner, scope, "local");
-    if (!project) project = createProject(inner, scope, { slug: "local", name: "Local" });
+    let project = await getProjectBySlug(tx, scope, "local");
+    if (!project) project = await createProject(tx, scope, { slug: "local", name: "Local" });
     return { orgId: org.id, projectId: project.id };
   });
 }
@@ -219,12 +261,11 @@ export function createRun(
   db: Db,
   scope: Scope,
   input: { workflowPath: string; event: string; ref: string; sha?: string },
-): Run {
-  const { projectId } = requireProject(scope);
-  const id = ulid();
-  db.orm
-    .insert(s.runs)
-    .values({
+): Promise<Run> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const id = ulid();
+    await h.orm.insert(s.runs).values({
       id,
       orgId: scope.orgId,
       projectId,
@@ -232,44 +273,54 @@ export function createRun(
       event: input.event,
       ref: input.ref,
       sha: input.sha ?? null,
-    })
-    .run();
-  return getRun(db, scope, id)!;
+    });
+    return (await getRun(h, scope, id))!;
+  });
 }
 
-export function getRun(db: Db, scope: Scope, id: string): Run | undefined {
-  return db.orm
-    .select()
-    .from(s.runs)
-    .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, id)))
-    .get();
+export function getRun(db: Db, scope: Scope, id: string): Promise<Run | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.runs)
+      .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, id)))
+      .limit(1);
+    return row;
+  });
 }
 
-export function listRuns(db: Db, scope: Scope, opts: { limit?: number } = {}): Run[] {
-  return db.orm
-    .select()
-    .from(s.runs)
-    .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }))
-    .orderBy(desc(s.runs.id))
-    .limit(opts.limit ?? 50)
-    .all();
+export function listRuns(db: Db, scope: Scope, opts: { limit?: number } = {}): Promise<Run[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.runs)
+      .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }))
+      .orderBy(desc(s.runs.id))
+      .limit(opts.limit ?? 50),
+  );
 }
 
-export function setRunStatus(db: Db, scope: Scope, id: string, status: JobState): Run | undefined {
-  const t = now();
-  const rows = db.orm
-    .update(s.runs)
-    .set({
-      status,
-      startedAt: status === "running" ? t : undefined,
-      finishedAt: ["success", "failure", "infra_error", "cancelled"].includes(status)
-        ? t
-        : undefined,
-    })
-    .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, id)))
-    .returning({ id: s.runs.id })
-    .all();
-  return rows.length ? getRun(db, scope, id) : undefined;
+export function setRunStatus(
+  db: Db,
+  scope: Scope,
+  id: string,
+  status: JobState,
+): Promise<Run | undefined> {
+  return db.run(async (h) => {
+    const t = now();
+    const rows = await h.orm
+      .update(s.runs)
+      .set({
+        status,
+        startedAt: status === "running" ? t : undefined,
+        finishedAt: ["success", "failure", "infra_error", "cancelled"].includes(status)
+          ? t
+          : undefined,
+      })
+      .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, id)))
+      .returning({ id: s.runs.id });
+    return rows.length ? getRun(h, scope, id) : undefined;
+  });
 }
 
 // ---- jobs ----
@@ -288,35 +339,42 @@ export function createJob(
   db: Db,
   scope: Scope,
   input: { runId: string; jobKey: string; name: string },
-): Job | undefined {
-  const { projectId } = requireProject(scope);
-  // Parent must be in scope; the composite FK is the backstop, this gives a clean undefined.
-  if (!getRun(db, scope, input.runId)) return undefined;
-  const id = ulid();
-  db.orm
-    .insert(s.jobs)
-    .values({ id, orgId: scope.orgId, projectId, ...input })
-    .run();
-  return getJob(db, scope, id);
+): Promise<Job | undefined> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    // Parent must be in scope; the composite FK is the backstop, this gives a clean undefined.
+    if (!(await getRun(h, scope, input.runId))) return undefined;
+    const id = ulid();
+    await h.orm.insert(s.jobs).values({ id, orgId: scope.orgId, projectId, ...input });
+    return getJob(h, scope, id);
+  });
 }
 
-export function getJob(db: Db, scope: Scope, id: string): Job | undefined {
-  return db.orm
-    .select()
-    .from(s.jobs)
-    .where(scoped(scope, { orgId: s.jobs.orgId, projectId: s.jobs.projectId }, eq(s.jobs.id, id)))
-    .get();
+export function getJob(db: Db, scope: Scope, id: string): Promise<Job | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.jobs)
+      .where(scoped(scope, { orgId: s.jobs.orgId, projectId: s.jobs.projectId }, eq(s.jobs.id, id)))
+      .limit(1);
+    return row;
+  });
 }
 
-export function listJobs(db: Db, scope: Scope, runId: string): Job[] {
-  return db.orm
-    .select()
-    .from(s.jobs)
-    .where(
-      scoped(scope, { orgId: s.jobs.orgId, projectId: s.jobs.projectId }, eq(s.jobs.runId, runId)),
-    )
-    .orderBy(asc(s.jobs.id))
-    .all();
+export function listJobs(db: Db, scope: Scope, runId: string): Promise<Job[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.jobs)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobs.orgId, projectId: s.jobs.projectId },
+          eq(s.jobs.runId, runId),
+        ),
+      )
+      .orderBy(asc(s.jobs.id)),
+  );
 }
 
 /**
@@ -330,35 +388,36 @@ export function transitionJob(
   id: string,
   to: JobState,
   opts: { exitCode?: number | null } = {},
-): Job | undefined {
-  const job = getJob(db, scope, id);
-  if (!job) return undefined;
-  const from = job.state as JobState;
-  if (!canTransition(from, to)) throw new InvalidTransitionError(from, to);
-  if (!exitCodeValid(to, opts.exitCode)) {
-    throw new InvalidTransitionError(from, to, `exit code ${String(opts.exitCode)} invalid`);
-  }
-  const t = now();
-  const rows = db.orm
-    .update(s.jobs)
-    .set({
-      state: to,
-      exitCode: opts.exitCode ?? null,
-      startedAt: to === "running" ? t : undefined,
-      finishedAt: ["success", "failure", "infra_error", "cancelled"].includes(to) ? t : null,
-    })
-    .where(
-      scoped(
-        scope,
-        { orgId: s.jobs.orgId, projectId: s.jobs.projectId },
-        eq(s.jobs.id, id),
-        eq(s.jobs.state, from),
-      ),
-    )
-    .returning({ id: s.jobs.id })
-    .all();
-  if (!rows.length) throw new InvalidTransitionError(from, to, "state changed concurrently");
-  return getJob(db, scope, id);
+): Promise<Job | undefined> {
+  return db.run(async (h) => {
+    const job = await getJob(h, scope, id);
+    if (!job) return undefined;
+    const from = job.state as JobState;
+    if (!canTransition(from, to)) throw new InvalidTransitionError(from, to);
+    if (!exitCodeValid(to, opts.exitCode)) {
+      throw new InvalidTransitionError(from, to, `exit code ${String(opts.exitCode)} invalid`);
+    }
+    const t = now();
+    const rows = await h.orm
+      .update(s.jobs)
+      .set({
+        state: to,
+        exitCode: opts.exitCode ?? null,
+        startedAt: to === "running" ? t : undefined,
+        finishedAt: ["success", "failure", "infra_error", "cancelled"].includes(to) ? t : null,
+      })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobs.orgId, projectId: s.jobs.projectId },
+          eq(s.jobs.id, id),
+          eq(s.jobs.state, from),
+        ),
+      )
+      .returning({ id: s.jobs.id });
+    if (!rows.length) throw new InvalidTransitionError(from, to, "state changed concurrently");
+    return getJob(h, scope, id);
+  });
 }
 
 // ---- attempts ----
@@ -370,46 +429,48 @@ export function createAttempt(
   db: Db,
   scope: Scope,
   input: { jobId: string; provider: string },
-): JobAttempt | undefined {
-  const { projectId } = requireProject(scope);
-  if (!getJob(db, scope, input.jobId)) return undefined;
-  const last = db.orm
-    .select({ attempt: s.jobAttempts.attempt })
-    .from(s.jobAttempts)
-    .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, input.jobId)))
-    .orderBy(desc(s.jobAttempts.attempt))
-    .limit(1)
-    .get();
-  const id = ulid();
-  db.orm
-    .insert(s.jobAttempts)
-    .values({
+): Promise<JobAttempt | undefined> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    if (!(await getJob(h, scope, input.jobId))) return undefined;
+    const [last] = await h.orm
+      .select({ attempt: s.jobAttempts.attempt })
+      .from(s.jobAttempts)
+      .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, input.jobId)))
+      .orderBy(desc(s.jobAttempts.attempt))
+      .limit(1);
+    const id = ulid();
+    await h.orm.insert(s.jobAttempts).values({
       id,
       orgId: scope.orgId,
       projectId,
       jobId: input.jobId,
       attempt: (last?.attempt ?? 0) + 1,
       provider: input.provider,
-    })
-    .run();
-  return getAttempt(db, scope, id);
+    });
+    return getAttempt(h, scope, id);
+  });
 }
 
-export function getAttempt(db: Db, scope: Scope, id: string): JobAttempt | undefined {
-  return db.orm
-    .select()
-    .from(s.jobAttempts)
-    .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.id, id)))
-    .get();
+export function getAttempt(db: Db, scope: Scope, id: string): Promise<JobAttempt | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.id, id)))
+      .limit(1);
+    return row;
+  });
 }
 
-export function listAttempts(db: Db, scope: Scope, jobId: string): JobAttempt[] {
-  return db.orm
-    .select()
-    .from(s.jobAttempts)
-    .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, jobId)))
-    .orderBy(asc(s.jobAttempts.attempt))
-    .all();
+export function listAttempts(db: Db, scope: Scope, jobId: string): Promise<JobAttempt[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, jobId)))
+      .orderBy(asc(s.jobAttempts.attempt)),
+  );
 }
 
 export function updateAttempt(
@@ -422,43 +483,44 @@ export function updateAttempt(
     exitCode?: number | null;
     errorClass?: string | null;
   },
-): JobAttempt | undefined {
-  const cur = getAttempt(db, scope, id);
-  if (!cur) return undefined;
-  if (patch.state) {
-    const from = cur.state as JobState;
-    if (!canTransition(from, patch.state)) throw new InvalidTransitionError(from, patch.state);
-    if (!exitCodeValid(patch.state, patch.exitCode)) {
-      throw new InvalidTransitionError(from, patch.state, "exit code invalid");
+): Promise<JobAttempt | undefined> {
+  return db.run(async (h) => {
+    const cur = await getAttempt(h, scope, id);
+    if (!cur) return undefined;
+    if (patch.state) {
+      const from = cur.state as JobState;
+      if (!canTransition(from, patch.state)) throw new InvalidTransitionError(from, patch.state);
+      if (!exitCodeValid(patch.state, patch.exitCode)) {
+        throw new InvalidTransitionError(from, patch.state, "exit code invalid");
+      }
     }
-  }
-  const t = now();
-  const from = cur.state as JobState;
-  const rows = db.orm
-    .update(s.jobAttempts)
-    .set({
-      ...patch,
-      startedAt: patch.state === "running" ? t : undefined,
-      finishedAt:
-        patch.state && ["success", "failure", "infra_error", "cancelled"].includes(patch.state)
-          ? t
-          : undefined,
-    })
-    .where(
-      scoped(
-        scope,
-        ATTEMPT_COLS,
-        eq(s.jobAttempts.id, id),
-        // Compare-and-set on state so heartbeat and reconcile cannot overwrite each other.
-        patch.state ? eq(s.jobAttempts.state, from) : undefined,
-      ),
-    )
-    .returning({ id: s.jobAttempts.id })
-    .all();
-  if (!rows.length) {
-    throw new InvalidTransitionError(from, patch.state ?? from, "state changed concurrently");
-  }
-  return getAttempt(db, scope, id);
+    const t = now();
+    const from = cur.state as JobState;
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({
+        ...patch,
+        startedAt: patch.state === "running" ? t : undefined,
+        finishedAt:
+          patch.state && ["success", "failure", "infra_error", "cancelled"].includes(patch.state)
+            ? t
+            : undefined,
+      })
+      .where(
+        scoped(
+          scope,
+          ATTEMPT_COLS,
+          eq(s.jobAttempts.id, id),
+          // Compare-and-set on state so heartbeat and reconcile cannot overwrite each other.
+          patch.state ? eq(s.jobAttempts.state, from) : undefined,
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    if (!rows.length) {
+      throw new InvalidTransitionError(from, patch.state ?? from, "state changed concurrently");
+    }
+    return getAttempt(h, scope, id);
+  });
 }
 
 // ---- logs ----
@@ -470,20 +532,21 @@ export function appendLog(
   attemptId: string,
   offset: number,
   bytes: Uint8Array,
-): boolean {
-  if (!getAttempt(db, scope, attemptId)) return false;
-  db.orm
-    .insert(s.logChunks)
-    .values({
-      orgId: scope.orgId,
-      projectId: requireProject(scope).projectId,
-      attemptId,
-      offset,
-      bytes: Buffer.from(bytes),
-    })
-    .onConflictDoNothing()
-    .run();
-  return true;
+): Promise<boolean> {
+  return db.run(async (h) => {
+    if (!(await getAttempt(h, scope, attemptId))) return false;
+    await h.orm
+      .insert(s.logChunks)
+      .values({
+        orgId: scope.orgId,
+        projectId: requireProject(scope).projectId,
+        attemptId,
+        offset,
+        bytes: Buffer.from(bytes),
+      })
+      .onConflictDoNothing();
+    return true;
+  });
 }
 
 /** Chunks with offset >= `fromOffset`, in order. Empty when the attempt is not in scope. */
@@ -492,18 +555,19 @@ export function readLog(
   scope: Scope,
   attemptId: string,
   fromOffset = 0,
-): { offset: number; bytes: Buffer }[] {
-  return db.orm
-    .select({ offset: s.logChunks.offset, bytes: s.logChunks.bytes })
-    .from(s.logChunks)
-    .where(
-      scoped(
-        scope,
-        LOG_COLS,
-        eq(s.logChunks.attemptId, attemptId),
-        gte(s.logChunks.offset, fromOffset),
-      ),
-    )
-    .orderBy(asc(s.logChunks.offset))
-    .all();
+): Promise<{ offset: number; bytes: Buffer }[]> {
+  return db.run((h) =>
+    h.orm
+      .select({ offset: s.logChunks.offset, bytes: s.logChunks.bytes })
+      .from(s.logChunks)
+      .where(
+        scoped(
+          scope,
+          LOG_COLS,
+          eq(s.logChunks.attemptId, attemptId),
+          gte(s.logChunks.offset, fromOffset),
+        ),
+      )
+      .orderBy(asc(s.logChunks.offset)),
+  );
 }
