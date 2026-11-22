@@ -1,7 +1,7 @@
 import { afterAll } from "bun:test";
 import { runConformance } from "@longshore/provider-conformance";
 import { DaytonaProvider } from "../src/index";
-import { MOCK_KEY, startMock } from "./mock-daytona";
+import { MOCK_KEY, startMock } from "../src/testing/mock-daytona";
 
 // The full provider conformance suite against the in-process Daytona stand-in. Commands run for
 // real in scratch directories, so this checks the exec wrapper, framing, files and the account

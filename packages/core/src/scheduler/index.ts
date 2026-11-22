@@ -23,3 +23,4 @@ export {
   PROVIDER_NAMES,
   type ProviderName,
 } from "./providers";
+export { egressForRun, type Egress } from "./egress";

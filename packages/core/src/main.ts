@@ -78,6 +78,15 @@ async function startBackground(
     const providerName = v.provider ?? "docker";
     const provider = createProvider(providerName, loadProviderConfig(v["provider-config"]));
     workerProvider = provider;
+    // Fail at startup, with the provider named, instead of at the first job.
+    try {
+      await provider.healthcheck();
+    } catch (err) {
+      throw new Error(
+        `provider ${providerName} is not usable: ${err instanceof Error ? err.message : "error"}`,
+        { cause: err },
+      );
+    }
     // One provider per server for now; the name stored on an attempt is the provider it was made for.
     const providers = () => provider;
     const leaseMs = Number(v["lease-seconds"]) * 1000;

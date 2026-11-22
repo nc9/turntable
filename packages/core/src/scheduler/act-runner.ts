@@ -20,6 +20,7 @@ import {
   splitJob,
   workflowHeadCheckouts,
 } from "@longshore/act-runner";
+import { egressForRun } from "./egress";
 import type { Db } from "../db";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@longshore/redact";
@@ -214,7 +215,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         registry: new SecretRegistry(),
         signal: ctx.signal,
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
-        ...(o.egress ? { egress: o.egress } : {}),
+        // `none` unless this run's plan (from the project's config) or the runner says `open`.
+        egress: egressForRun(ctx.run.plan, o.egress),
         ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
         ...(o.act ? { act: o.act } : {}),
         ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
