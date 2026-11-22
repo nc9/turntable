@@ -233,3 +233,18 @@ test("resolveRepoScope requires a matching installation when the binding has one
   bindRepo(db, b, { forge: "github", owner: "acme", repo: "legacy" });
   expect(resolveRepoScope(db, { forge: "github", owner: "acme", repo: "legacy" })).toEqual(b);
 });
+
+test("name fallback never routes to a row bound to a different forge repo id", () => {
+  bindRepo(db, a, { forge: "github", owner: "acme", repo: "svc", forgeRepoId: "1" });
+  const q = { forge: "github", owner: "acme", repo: "svc" } as const;
+  // recreated or taken-over name: different id finds no row, name match has another id
+  expect(resolveRepoScope(db, { ...q, forgeRepoId: "2" })).toBeUndefined();
+  // no id on the event: cannot prove identity of an id-bound row
+  expect(resolveRepoScope(db, q)).toBeUndefined();
+  expect(resolveRepoScope(db, { ...q, forgeRepoId: "1" })).toEqual(a);
+  // id-less rows still route by name, with or without an incoming id
+  bindRepo(db, b, { forge: "github", owner: "acme", repo: "old" });
+  expect(
+    resolveRepoScope(db, { forge: "github", owner: "acme", repo: "old", forgeRepoId: "7" }),
+  ).toEqual(b);
+});

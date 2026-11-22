@@ -158,6 +158,9 @@ export function resolveRepoScope(
       )
       .get();
   if (!row) return undefined;
+  // Name fallback only for rows with no stable id. A row bound to a different forge repo id
+  // means the repo was deleted and recreated, or the name was taken over: do not route.
+  if (row.forgeRepoId !== null && row.forgeRepoId !== input.forgeRepoId) return undefined;
   // A bound installation must match: a same-named repo under another installation must not
   // route into this org. A missing incoming installation counts as a mismatch.
   if (row.installationId !== null && row.installationId !== input.installationId) return undefined;
