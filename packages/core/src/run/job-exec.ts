@@ -11,7 +11,7 @@ import {
   type ActionFetcher,
   type JobPlan,
 } from "@longshore/act-runner";
-import type { Provider } from "@longshore/provider-sdk";
+import type { Provider, ProxyEndpoint } from "@longshore/provider-sdk";
 import { Redactor, SecretRegistry, redactString } from "@longshore/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
@@ -68,7 +68,7 @@ export interface JobEnv {
    * before the job runs: the direct path must be closed and the proxy open, or the job is not
    * run. `listen` is the proxy as the provider's host reaches it.
    */
-  proxy?: { listen: { host: string; port: number }; credential: AttemptCredential };
+  proxy?: { listen: ProxyEndpoint; credential: AttemptCredential };
   /**
    * The value of GITHUB_TOKEN inside the job. The real token for a trusted class with no proxy
    * (the caller has registered it with `registry`), or a placeholder behind the proxy, which
@@ -224,7 +224,10 @@ export async function executeJob(
         throw new Error("plan, image and repoTarball are required to start a job");
       }
       const proxied = env.proxy;
-      if (proxied && !env.provider.info.network.egressPolicy.includes("deny-all-except-proxy")) {
+      const pick = proxied
+        ? proxyEgress(env.provider.info.network.egressPolicy, proxied.listen)
+        : undefined;
+      if (proxied && pick === undefined) {
         return await settle(
           "infra_error",
           `provider ${env.provider.info.name} cannot confine a sandbox to the secrets proxy; the job was not run`,
@@ -235,9 +238,10 @@ export async function executeJob(
         labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
         image: env.image,
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
-        network: proxied
-          ? { egress: "deny-all-except-proxy", proxy: proxied.listen }
-          : { egress: env.egress ?? "none" },
+        network:
+          proxied && pick
+            ? { egress: pick, proxy: proxied.listen }
+            : { egress: env.egress ?? "none" },
       });
       sandboxId = sb.id;
       await env.store.setSandbox(ids.attemptId, sb.id);
@@ -414,4 +418,20 @@ export class LogPipe {
     this.stored += bytes.length;
     this.chain(() => this.#env.store.appendLog(this.#attemptId, at, bytes));
   }
+}
+
+/**
+ * The confinement a proxied job asks its provider for. The strict one, whenever the provider has
+ * it, unless the proxy endpoint has no stable address and the provider also offers the
+ * domain-filtered one (which its operator enabled on purpose): then that. A provider with neither
+ * cannot run a proxied job.
+ */
+export function proxyEgress(
+  offered: readonly string[],
+  listen: { addresses?: readonly string[] | undefined },
+): "deny-all-except-proxy" | "proxy-domain-filtered" | undefined {
+  const hasAddresses = (listen.addresses?.length ?? 0) > 0;
+  if (!hasAddresses && offered.includes("proxy-domain-filtered")) return "proxy-domain-filtered";
+  if (offered.includes("deny-all-except-proxy")) return "deny-all-except-proxy";
+  return undefined;
 }

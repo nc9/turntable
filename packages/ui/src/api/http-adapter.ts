@@ -5,6 +5,7 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  PolicyStatement,
   ApproveResult,
   EnrolStatement,
   EnvironmentApprovalResult,
@@ -542,10 +543,15 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
           kind: a.kind,
           passkeyId: a.passkey_id,
           createdAt: ms(a.created_at) ?? 0,
+          notCounting: a.not_counting,
+          attested: a.attested,
+          aaguid: a.aaguid,
         })),
+        keyPolicy: w.key_policy,
         pendingEnrolments: w.pending_enrolments.map((e) => ({
           id: e.id,
           person: e.person,
+          forgeLogin: e.forge_login,
           kind: e.kind,
           keyFingerprint: e.key_fingerprint,
           approvals: e.approvals,
@@ -597,7 +603,31 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         {},
         { org: org() },
       );
-      return { challenge: w.challenge, rpId: w.rp_id, expiresAt: ms(w.expires_at) ?? 0 };
+      return {
+        challenge: w.challenge,
+        rpId: w.rp_id,
+        expiresAt: ms(w.expires_at) ?? 0,
+        attestation: w.attestation,
+      };
+    },
+
+    async keyPolicyChallenge({ mode, presets, aaguids, approver }) {
+      const w = await call<WireChallenge>(
+        "POST",
+        "/approvers/key-policy/challenge",
+        {},
+        { mode, presets, aaguids, approver, org: org() },
+      );
+      return challengeOf<PolicyStatement>(w);
+    },
+
+    async approveKeyPolicy({ statement, signature }) {
+      return call<{ approvals: number; required: number; applied: boolean }>(
+        "POST",
+        "/approvers/key-policy",
+        {},
+        { statement, signature },
+      );
     },
 
     async requestEnrolment({ person, forgeLogin, webauthn }) {

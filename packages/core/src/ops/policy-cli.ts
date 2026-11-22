@@ -2,6 +2,7 @@
 // directory is the trust root (like `longshore token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
   APPROVE_RUN_ROLES,
   appendAudit,
@@ -16,10 +17,14 @@ import {
   getProjectBySlug,
   getProjectSigning,
   setProjectSigning,
+  signingKeyUsedByOtherOrg,
   getProjectEgress,
   listProjects,
   setApproveRunMinRole,
   setProjectEgress,
+  getProjectIngest,
+  listRepos,
+  setProjectIngest,
 } from "../db/repos";
 
 export const POLICY_USAGE = `Usage:
@@ -27,6 +32,9 @@ export const POLICY_USAGE = `Usage:
   longshore policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
   longshore policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
   longshore policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
+  longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
+      [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
+      [--merge-queue] [--data-dir ./data]
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
 Default release_operator. operator lets any operator token approve, including an agent that has
@@ -119,6 +127,93 @@ export async function setEgressPolicy(
       });
     });
     out.push({ project: p!.slug, from, to: value as EgressMode });
+  }
+  return out;
+}
+
+/**
+ * Turns ingest from the project's installation binding on or off, with the knobs a poll repo has.
+ * `on` replaces the stored settings. Nothing is ingested for a bound repo until this is set, and
+ * it decides who is trusted (`authors`), so it is a local, audited, CLI-only change.
+ */
+export async function setIngestPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  mode: string,
+  opts: {
+    workflow?: string | undefined;
+    defaultBranch?: string | undefined;
+    prMode?: string | undefined;
+    authors?: string[] | undefined;
+    mergeQueue?: boolean | undefined;
+    /** Asks GitHub for a repo's default branch, once, when `defaultBranch` is not given. */
+    resolveDefaultBranch?: ((repo: string) => Promise<string>) | undefined;
+  } = {},
+): Promise<{ project: string; from: IngestSettings | null; to: IngestSettings | null }> {
+  if (mode !== "on" && mode !== "off") throw new Error("--ingest must be on or off");
+  if (!projectSlug) throw new Error("--ingest needs --project");
+  const org = await orgOf(db, orgSlug);
+  const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
+  if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+  const scope = { orgId: org.id, projectId: project.id };
+  const stored = await getProjectIngest(db, scope);
+  const from =
+    stored === null ? null : (ingestSettingsSchema.safeParse(JSON.parse(stored)).data ?? null);
+  let to: IngestSettings | null = null;
+  if (mode === "on") {
+    // The default branch is fixed here and never re-resolved by the poller (see ingestSettingsSchema).
+    let defaultBranch = opts.defaultBranch;
+    if (!defaultBranch) {
+      const bound = (await listRepos(db, scope)).find((r) => r.forge === "github");
+      if (!bound || !opts.resolveDefaultBranch) {
+        throw new Error(
+          "give --default-branch: it is fixed when ingest is turned on and no bound repository could be asked",
+        );
+      }
+      defaultBranch = await opts.resolveDefaultBranch(`${bound.owner}/${bound.repo}`);
+    }
+    const parsed = ingestSettingsSchema.safeParse({
+      defaultBranch,
+      ...(opts.workflow ? { workflow: opts.workflow } : {}),
+      ...(opts.prMode ? { prMode: opts.prMode } : {}),
+      ...(opts.authors ? { authors: opts.authors } : {}),
+      ...(opts.mergeQueue ? { mergeQueue: true } : {}),
+    });
+    if (!parsed.success) {
+      throw new Error(
+        `invalid ingest settings: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+      );
+    }
+    to = parsed.data;
+  }
+  await db.transaction(async (tx) => {
+    await setProjectIngest(tx, scope, to === null ? null : JSON.stringify(to));
+    await appendAudit(tx, scope, {
+      principalKind: "cli",
+      principalId: "local",
+      op: "policy_set",
+      effect: "write",
+      outcome: "ok",
+      input: { key: "ingest", project: project.slug, from, to },
+    });
+  });
+  return { project: project.slug, from, to };
+}
+
+/** Each project's ingest settings, for `policy show`. */
+export async function showIngest(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; ingest: IngestSettings | null }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; ingest: IngestSettings | null }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    const v = await getProjectIngest(db, { orgId: org.id, projectId: p.id });
+    out.push({
+      project: p.slug,
+      ingest: v === null ? null : (ingestSettingsSchema.safeParse(JSON.parse(v)).data ?? null),
+    });
   }
   return out;
 }
@@ -218,6 +313,12 @@ export async function setSigningPolicy(
   if (patch.signingKey !== undefined && patch.signingKey !== "" && !parseKeyRef(patch.signingKey)) {
     throw new Error("--signing-key must be builtin:<name>, aws-kms:<key> or gcp-kms:<key version>");
   }
+  if (
+    patch.signingKey?.startsWith("builtin:") &&
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(patch.signingKey.slice(8))
+  ) {
+    throw new Error("a builtin key name is 1 to 64 letters, digits, dots, dashes or underscores");
+  }
   if (patch.environment !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(patch.environment)) {
     throw new Error(
       "--signing-environment must be 1 to 64 letters, digits, dots, dashes or underscores",
@@ -243,6 +344,16 @@ export async function setSigningPolicy(
     signingKey: string | null;
     environment: string;
   }[] = [];
+  // A builtin key is looked up inside the org (its id is part of the stored name), so the same
+  // `builtin:<name>` in two orgs is two keys. Any other reference (a KMS key) names one key
+  // outside Longshore: an org may not name one that another org already does.
+  if (
+    patch.signingKey &&
+    !patch.signingKey.startsWith("builtin:") &&
+    (await signingKeyUsedByOtherOrg(db, org.id, patch.signingKey))
+  ) {
+    throw new Error("that signing key is already used by another org; a key belongs to one org");
+  }
   for (const p of projects) {
     const scope = { orgId: org.id, projectId: p!.id };
     await db.transaction(async (tx) => {

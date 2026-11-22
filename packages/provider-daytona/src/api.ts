@@ -28,6 +28,8 @@ export type DaytonaSandbox = {
   createdAt?: string;
   toolboxProxyUrl?: string;
   organizationId?: string;
+  networkAllowList?: string | null;
+  domainAllowList?: string | null;
   errorReason?: string;
   sandboxClass?: string;
   networkBlockAll?: boolean;

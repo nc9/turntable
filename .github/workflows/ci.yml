@@ -25,6 +25,8 @@ jobs:
         with:
           bun-version: 1.4.5
       - run: bun install --frozen-lockfile
+      - name: Everything fetched is pinned by digest, commit or checksum
+        run: bun run scripts/check-pins.ts
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
@@ -133,7 +135,7 @@ jobs:
       - name: Build the runner image (not pushed)
         run: docker build -t longshore-runner:ci images/runner
       - name: pwsh runs
-        run: docker run --rm --network none longshore-runner:ci pwsh -NoProfile -Command 'Write-Output "pwsh-ok"'
+        run: docker run --rm --network none longshore-runner:ci pwsh -NoProfile -Command 'Write-Output "pwsh-ok"' # pin-ok: the image built by the step above
       - name: The compatibility table matches the image
         run: bun run scripts/runner-toolset.ts --image longshore-runner:ci --check
 

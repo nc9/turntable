@@ -4444,6 +4444,17 @@
                           },
                           "created_at": {
                             "type": "string"
+                          },
+                          "not_counting": {
+                            "description": "Why this key counts toward no approval or quorum (no forge login, or it does not satisfy the key policy); null when it does.",
+                            "type": ["string", "null"]
+                          },
+                          "attested": {
+                            "type": "boolean",
+                            "description": "A pinned vendor attestation chain verified at enrolment."
+                          },
+                          "aaguid": {
+                            "type": ["string", "null"]
                           }
                         },
                         "required": [
@@ -4452,10 +4463,36 @@
                           "forge_login",
                           "kind",
                           "passkey_id",
-                          "created_at"
+                          "created_at",
+                          "not_counting",
+                          "attested",
+                          "aaguid"
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "key_policy": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": ["any", "hardware"]
+                        },
+                        "presets": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "aaguids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": ["mode", "presets", "aaguids"],
+                      "additionalProperties": false
                     },
                     "pending_enrolments": {
                       "type": "array",
@@ -4467,6 +4504,9 @@
                           },
                           "person": {
                             "type": "string"
+                          },
+                          "forge_login": {
+                            "type": ["string", "null"]
                           },
                           "kind": {
                             "type": "string",
@@ -4492,6 +4532,7 @@
                         "required": [
                           "id",
                           "person",
+                          "forge_login",
                           "kind",
                           "key_fingerprint",
                           "approvals",
@@ -4534,7 +4575,13 @@
                       "description": "Ways the approval setup is weaker than it looks, such as too few approvers."
                     }
                   },
-                  "required": ["approvers", "pending_enrolments", "policies", "warnings"],
+                  "required": [
+                    "approvers",
+                    "key_policy",
+                    "pending_enrolments",
+                    "policies",
+                    "warnings"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4855,9 +4902,145 @@
                     },
                     "expires_at": {
                       "type": "string"
+                    },
+                    "attestation": {
+                      "type": "string",
+                      "enum": ["none", "direct"],
+                      "description": "The attestation conveyance to request in navigator.credentials.create: direct under the hardware key policy."
                     }
                   },
-                  "required": ["challenge", "rp_id", "expires_at"],
+                  "required": ["challenge", "rp_id", "expires_at", "attestation"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
+    "/approvers/key-policy/challenge": {
+      "post": {
+        "operationId": "key_policy_challenge",
+        "summary": "Issue the statement an approver signs to change the key policy.",
+        "description": "Builds the policy-change statement (the policy being replaced, the new one, the hash of the allowlist it expands to, an expiry and a nonce) and the single-use challenge for one approver to sign. The change applies when a quorum of the currently counted approvers has signed it with approve_key_policy. Refused when the change would leave fewer counted people than the current quorum needs. Needs release_operator. Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": ["any", "hardware"]
+                  },
+                  "presets": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 40
+                    }
+                  },
+                  "aaguids": {
+                    "maxItems": 200,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 40
+                    }
+                  },
+                  "approver": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["mode", "approver"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "statement": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
+                    "canonical": {
+                      "type": "string",
+                      "description": "The exact text an offline ed25519 key signs."
+                    },
+                    "statement_hash": {
+                      "type": "string"
+                    },
+                    "challenge": {
+                      "type": "string",
+                      "description": "base64url of the statement hash: the WebAuthn challenge."
+                    },
+                    "rp_id": {
+                      "type": ["string", "null"]
+                    },
+                    "passkey_id": {
+                      "description": "The approver's passkey id (WebAuthn credential id).",
+                      "type": ["string", "null"]
+                    },
+                    "challenge_expires_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "statement",
+                    "canonical",
+                    "statement_hash",
+                    "challenge",
+                    "rp_id",
+                    "passkey_id",
+                    "challenge_expires_at"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4890,7 +5073,7 @@
       "post": {
         "operationId": "request_enrolment",
         "summary": "Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum.",
-        "description": "Creates a pending enrolment for a person's key: a WebAuthn registration (attestation none) made with the challenge from register_challenge, or an ed25519 public key. Nothing is enrolled until a quorum of existing approvers signs it. Refused while no approver exists: the first approver is enrolled from the server's CLI (the local trust root). Needs release_operator. Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "description": "Creates a pending enrolment for a person's key: a WebAuthn registration made with the challenge from register_challenge (attestation none, or direct and verified against pinned vendor roots under the hardware key policy), or an ed25519 public key (refused under the hardware policy). Nothing is enrolled until a quorum of existing approvers signs it. Refused while no approver exists: the first approver is enrolled from the server's CLI (the local trust root). Needs release_operator. Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -5176,7 +5359,7 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
-                      "description": "Distinct people with a valid approval now."
+                      "description": "Distinct approvers (by verified forge login) with a valid approval now."
                     },
                     "required": {
                       "type": "integer",
@@ -6125,6 +6308,263 @@
         "x-longshore-untrusted-output": false
       }
     },
+    "/approvers/key-policy": {
+      "post": {
+        "operationId": "approve_key_policy",
+        "summary": "Approve a key policy change with a signed statement. Human only.",
+        "description": "Records one approver's signed policy-change statement. A policy change is a change of what counts as an approval, so it needs the same quorum as enrolling a key: when enough distinct people among the currently counted approvers have signed the same statement (the production policy's count, capped by how many could sign, computed before the change), the policy changes. Takes no bearer token: the signature is the credential.\n\nNo bearer token: the request carries a statement signed by an enrolled approver. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "statement": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "longshore.approve_key_policy.v1"
+                      },
+                      "org": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "generation": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "old": {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "enum": ["any", "hardware"]
+                          },
+                          "presets": {
+                            "maxItems": 10,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 40
+                            }
+                          },
+                          "aaguids": {
+                            "maxItems": 200,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 40
+                            }
+                          }
+                        },
+                        "required": ["mode", "presets", "aaguids"],
+                        "additionalProperties": false
+                      },
+                      "new": {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "enum": ["any", "hardware"]
+                          },
+                          "presets": {
+                            "maxItems": 10,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 40
+                            }
+                          },
+                          "aaguids": {
+                            "maxItems": 200,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 40
+                            }
+                          }
+                        },
+                        "required": ["mode", "presets", "aaguids"],
+                        "additionalProperties": false
+                      },
+                      "allowlist_hash": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64,64}$"
+                      },
+                      "approver": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "expires_at": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{16,128}$"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "org",
+                      "generation",
+                      "old",
+                      "new",
+                      "allowlist_hash",
+                      "approver",
+                      "expires_at",
+                      "nonce"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "signature": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "ed25519"
+                          },
+                          "signature": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                          }
+                        },
+                        "required": ["kind", "signature"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "webauthn"
+                          },
+                          "credential_id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                          },
+                          "client_data_json": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                          },
+                          "authenticator_data": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                          },
+                          "signature": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{1,8192}$"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "credential_id",
+                          "client_data_json",
+                          "authenticator_data",
+                          "signature"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["statement", "signature"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approvals": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "required": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "policy": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": ["any", "hardware"]
+                        },
+                        "presets": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "aaguids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": ["mode", "presets", "aaguids"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["approvals", "required", "applied", "policy"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "viewer",
+        "x-longshore-untrusted-output": false
+      }
+    },
     "/approvals": {
       "post": {
         "operationId": "approve_environment",
@@ -6291,7 +6731,7 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
-                      "description": "Distinct people with a valid approval now."
+                      "description": "Distinct approvers (by verified forge login) with a valid approval now."
                     },
                     "required": {
                       "type": "integer",
@@ -6374,6 +6814,11 @@
                         "minLength": 1,
                         "maxLength": 200
                       },
+                      "forge_login": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
                       "key_fingerprint": {
                         "type": "string",
                         "pattern": "^[0-9a-f]{64,64}$"
@@ -6398,6 +6843,7 @@
                       "org",
                       "enrolment_id",
                       "person",
+                      "forge_login",
                       "key_fingerprint",
                       "approver",
                       "expires_at",

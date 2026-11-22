@@ -17,6 +17,13 @@ import {
   type WrappedExecOptions,
 } from "@longshore/provider-sdk";
 import { type DaytonaSandbox, DaytonaApi, DEFAULT_BASE_URL, readJson } from "./api";
+import {
+  mustNotReachFor,
+  networkSettingFor,
+  type NetworkSetting,
+  RELAY_JS,
+  RELAY_PORT,
+} from "./relay";
 import type { ApiKeySource } from "./key";
 import {
   DEFAULT_ORG_CLASS,
@@ -90,6 +97,19 @@ export interface DaytonaProviderOptions {
    * usage endpoint does not exist (404), the check is skipped and the label count still applies.
    */
   ownerCiPreflight?: OwnerCiPreflight | false;
+  /** The interpreter that runs the proxy relay in a proxied sandbox. Default `node`. */
+  relayInterpreter?: string;
+  /**
+   * Allow confining a sandbox to the proxy by a domain list. Daytona enforces it on the TLS server
+   * name and HTTP Host header, which holds in the measured behaviour but rests on its filter
+   * parsing the first bytes correctly, unlike the address allow list. Off by default; on, the
+   * provider also offers the weaker `proxy-domain-filtered` policy (never `deny-all-except-proxy`).
+   */
+  allowDomainListConfinement?: boolean;
+  /** The relay's port on the sandbox's loopback. Default 3128. */
+  relayPort?: number;
+  /** Test seam: a CA the relay trusts for the proxy endpoint, instead of the system roots. */
+  proxyTlsCaPem?: string;
   /** Poll interval while waiting for capacity or for a sandbox to start. Default 5 s. */
   pollMs?: number;
   /** How long a sandbox may take to reach `started`. Default 3 min. */
@@ -183,7 +203,18 @@ export class DaytonaProvider implements Provider {
       createFrom: ["snapshot"],
       exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
       files: { upload: true, download: true, maxBytes: this.maxFileBytes },
-      network: { egressPolicy: ["none", "open"], ingress: false, proxyReachability: false },
+      network: {
+        // The strict policy needs the endpoint's addresses (checked per create); the domain-filtered
+        // one is offered only when the operator has opted in.
+        egressPolicy: [
+          "none",
+          "open",
+          "deny-all-except-proxy",
+          ...(opts.allowDomainListConfinement ? (["proxy-domain-filtered"] as const) : []),
+        ],
+        ingress: false,
+        proxyReachability: true,
+      },
       resources: { cpus: true, memoryMb: true, diskGb: true },
       ttl: true,
       labels: true,
@@ -446,10 +477,32 @@ export class DaytonaProvider implements Provider {
       );
     }
     const ttlSeconds = Math.min(spec.ttlSeconds, this.maxTtl);
-    if (spec.network.egress !== "none" && spec.network.egress !== "open") {
+    const strict = spec.network.egress === "deny-all-except-proxy";
+    const domain = spec.network.egress === "proxy-domain-filtered";
+    const proxied = strict || domain;
+    if (spec.network.egress !== "none" && spec.network.egress !== "open" && !proxied) {
       throw new SpecError(
-        `egress policy ${spec.network.egress} is not supported by this provider (none, open)`,
+        `egress policy ${spec.network.egress} is not supported by this provider (none, open, deny-all-except-proxy)`,
       );
+    }
+    let setting: NetworkSetting | undefined;
+    if (proxied) {
+      if (!spec.network.proxy) throw new SpecError(`${spec.network.egress} needs network.proxy`);
+      if (domain && !this.opts.allowDomainListConfinement) {
+        throw new SpecError(
+          "proxy-domain-filtered is off: confining a sandbox by TLS server name depends on Daytona's filter reading it correctly, so it needs allowDomainListConfinement: true",
+        );
+      }
+      if (strict && !(spec.network.proxy.addresses && spec.network.proxy.addresses.length > 0)) {
+        throw new SpecError(
+          "deny-all-except-proxy on Daytona needs the proxy endpoint's stable IPv4 addresses (an allow list); without them the only option is proxy-domain-filtered, which the operator must enable",
+        );
+      }
+      try {
+        setting = networkSettingFor(spec.network.proxy, domain ? "domain" : "address");
+      } catch (e) {
+        throw new SpecError(`proxy endpoint: ${(e as Error).message}`);
+      }
     }
     if (spec.template !== undefined)
       throw new SpecError("templates are not supported by this provider");
@@ -465,7 +518,10 @@ export class DaytonaProvider implements Provider {
       name: ownName(spec.name),
       labels,
       public: false,
-      networkBlockAll: spec.network.egress === "none",
+      // One of the three mutually exclusive network settings: block all, or the proxy endpoint
+      // (an allow list of its addresses, or a domain list of its name), set in this same call so
+      // there is no moment with open egress.
+      ...(setting ?? { networkBlockAll: spec.network.egress === "none" }),
       // Three independent backstops, all within the limit: hard wall-clock TTL, auto-stop when
       // idle, and delete the moment it stops. No env field exists on a spec, so none is sent.
       ttlMinutes: minutes,
@@ -507,12 +563,36 @@ export class DaytonaProvider implements Provider {
           throw new InfraError("Daytona created a sandbox without our label; refusing to continue");
         // The org id for the next create's usage check, when the account had no sandbox to ask.
         this.orgId ??= sb.organizationId;
+        // A proxied sandbox must come back with the setting we asked for. A reply without it
+        // means the account did not apply it (a lower tier, an API change): never run on that.
+        const wantSetting = body.networkAllowList ?? body.domainAllowList;
+        if (wantSetting !== undefined) {
+          const got = (body.networkAllowList ? sb.networkAllowList : sb.domainAllowList) ?? "";
+          if (got.split(",").sort().join(",") !== String(wantSetting).split(",").sort().join(",")) {
+            throw new InfraError(
+              "Daytona did not apply the network allow list for the proxy; the sandbox was deleted",
+            );
+          }
+        }
         await this.waitStarted(sb.id);
         const base = await this.verify(sb.id, true);
         await this.waitToolbox(sb.id, base);
         // Listings lag behind creation. Wait until it shows up, so counts, caps and
         // destroyByLabels see this sandbox as soon as create returns.
         await this.waitListed(sb.id, true);
+        if (
+          (spec.network.egress === "deny-all-except-proxy" ||
+            spec.network.egress === "proxy-domain-filtered") &&
+          spec.network.proxy
+        ) {
+          await this.startRelay(sb.id, spec.network.proxy, spec.ttlSeconds);
+          return {
+            id: sb.id,
+            startedAt,
+            proxy: { host: "127.0.0.1", port: this.opts.relayPort ?? RELAY_PORT },
+            mustNotReach: mustNotReachFor(spec.network.proxy.port, spec.network.proxy.addresses),
+          };
+        }
         return { id: sb.id, startedAt };
       } catch (e) {
         // Never leave a half-created sandbox behind.
@@ -524,6 +604,51 @@ export class DaytonaProvider implements Provider {
     const next = this.createChain.then(run, run);
     this.createChain = next.catch(() => {});
     return next;
+  }
+
+  /**
+   * Starts the relay inside a proxied sandbox and waits until it listens. It connects to one of
+   * the endpoint's addresses when it has them (no resolver is reachable under an allow list), else
+   * to its name, and verifies the certificate against the endpoint's name.
+   */
+  private async startRelay(
+    id: string,
+    endpoint: NonNullable<SandboxSpec["network"]["proxy"]>,
+    ttlSeconds: number,
+  ): Promise<void> {
+    const target = endpoint.addresses?.[0] ?? endpoint.host;
+    const name = endpoint.tlsName ?? endpoint.host;
+    let caFile: string[] = [];
+    if (this.opts.proxyTlsCaPem !== undefined) {
+      const path = "/tmp/longshore-proxy-ca.pem";
+      await this.files.put(id, path, new TextEncoder().encode(this.opts.proxyTlsCaPem));
+      caFile = [path];
+    }
+    const { execId } = await this.exec.start(id, {
+      argv: [
+        this.opts.relayInterpreter ?? "node",
+        "-e",
+        RELAY_JS,
+        String(this.opts.relayPort ?? RELAY_PORT),
+        target,
+        String(endpoint.port),
+        name,
+        String(ttlSeconds),
+        ...caFile,
+      ],
+      timeoutSeconds: ttlSeconds,
+    });
+    const deadline = this.now() + 20_000;
+    for (;;) {
+      const logs = await this.exec.logs(id, execId, { fromOffset: 0, maxBytes: 4096 });
+      if (new TextDecoder().decode(logs.bytes).includes("ready")) return;
+      const st = await this.exec.status(id, execId);
+      if (st.state !== "running") {
+        throw new InfraError("the proxy relay in the sandbox exited (is node in the image?)");
+      }
+      if (this.now() > deadline) throw new InfraError("the proxy relay did not start");
+      await this.sleep(Math.min(this.pollMs, 250));
+    }
   }
 
   private async waitStarted(id: string): Promise<void> {

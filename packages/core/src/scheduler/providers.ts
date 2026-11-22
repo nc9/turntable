@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
-import { DaytonaProvider, HARD_MAX_LIVE } from "@longshore/provider-daytona";
+import { DaytonaProvider, HARD_MAX_LIVE, type OwnerCiPreflight } from "@longshore/provider-daytona";
 import { DockerProvider } from "@longshore/provider-docker";
 import type { Provider } from "@longshore/provider-sdk";
+import {
+  BUILTIN_CEILINGS,
+  checkProviderInfo,
+  parsePluginPins,
+  ProviderTrustError,
+  verifyExternalPlugin,
+  type PluginPin,
+} from "./provider-trust";
 
 /** Providers `serve --provider` knows. */
 export const PROVIDER_NAMES = ["docker", "daytona"] as const;
@@ -49,10 +57,28 @@ const DOCKER_KEYS = new Set(["docker", "maxFileBytes", "runtime"]);
  * Builds the provider named on the command line. It codes against the provider-sdk `Provider`
  * interface only, so the worker never knows which one it has.
  */
-export function createProvider(name: string, config: Record<string, unknown> = {}): Provider {
+export function createProvider(
+  name: string,
+  config: Record<string, unknown> = {},
+  opts: { hosted?: boolean; pins?: readonly PluginPin[] } = {},
+): Provider {
   if (!isProviderName(name)) {
-    throw new Error(`unknown provider ${name}; use one of: ${PROVIDER_NAMES.join(", ")}`);
+    // Not built in: gated by hosted mode and a digest pin, and no external loader exists yet.
+    const path = verifyExternalPlugin(name, {
+      hosted: opts.hosted === true,
+      pins: opts.pins ?? parsePluginPins(process.env.LONGSHORE_PROVIDER_PLUGINS),
+    });
+    throw new ProviderTrustError(
+      `plugin ${name} (${path}) matches its pinned digest, but this build has no external provider loader; use one of: ${PROVIDER_NAMES.join(", ")}`,
+    );
   }
+  const provider = build(name, config);
+  // The declaration is checked at registration, before the scheduler relies on it.
+  checkProviderInfo(name, provider.info, BUILTIN_CEILINGS[name]);
+  return provider;
+}
+
+function build(name: ProviderName, config: Record<string, unknown>): Provider {
   switch (name) {
     case "docker": {
       const unknown = Object.keys(config).filter((k) => !DOCKER_KEYS.has(k));
@@ -83,6 +109,7 @@ const DAYTONA_KEYS = new Set([
   "ttlSeconds",
   "capacityWaitSeconds",
   "ownerCiPreflight",
+  "allowDomainListConfinement",
 ]);
 
 function str(config: Record<string, unknown>, key: string): string | undefined {
@@ -108,6 +135,47 @@ function int(
 }
 
 /**
+ * `ownerCiPreflight` in the config: `true` (or absent) is the defaults; an object sets the org CPU
+ * check's `cpuLimit`, `region` and `sandboxClass`; `false` turns that org check off. The label
+ * count of the account owner's CI sandboxes is part of the provider and is never configurable.
+ */
+function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
+  if (v === undefined || v === true) return undefined;
+  if (v === false) return false;
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new Error(
+      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, region, sandboxClass }",
+    );
+  }
+  const o = v as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !["cpuLimit", "region", "sandboxClass"].includes(k));
+  if (unknown.length > 0) {
+    throw new Error(`unknown ownerCiPreflight option(s): ${unknown.join(", ")}`);
+  }
+  const out: OwnerCiPreflight = {};
+  if (o.cpuLimit !== undefined) {
+    if (
+      typeof o.cpuLimit !== "number" ||
+      !Number.isInteger(o.cpuLimit) ||
+      o.cpuLimit < 1 ||
+      o.cpuLimit > 10_000
+    ) {
+      throw new Error("ownerCiPreflight.cpuLimit must be an integer from 1 to 10000");
+    }
+    out.cpuLimit = o.cpuLimit;
+  }
+  for (const k of ["region", "sandboxClass"] as const) {
+    const x = o[k];
+    if (x === undefined) continue;
+    if (typeof x !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(x)) {
+      throw new Error(`ownerCiPreflight.${k} must be a short lower-case name`);
+    }
+    out[k] = x;
+  }
+  return out;
+}
+
+/**
  * Daytona, for a shared account. The key is never in the config: `apiKeyFile` names a file that
  * holds it (or `apiKeyEnv` an environment variable; default `DAYTONA_API_KEY`). The label and name
  * prefix `longshore-dev`, the 30 minute backstops, the owner-CI preflight and the cap of 3 live
@@ -120,8 +188,10 @@ function createDaytona(config: Record<string, unknown>): Provider {
       `unknown daytona provider option(s): ${unknown.join(", ")} (known: ${[...DAYTONA_KEYS].join(", ")})`,
     );
   }
-  if (config.ownerCiPreflight !== undefined && config.ownerCiPreflight !== true) {
-    throw new Error("daytona provider option ownerCiPreflight cannot be turned off");
+  const preflight = ownerCiPreflightOf(config.ownerCiPreflight);
+  const domainOk = config.allowDomainListConfinement;
+  if (domainOk !== undefined && typeof domainOk !== "boolean") {
+    throw new Error("daytona provider option allowDomainListConfinement must be true or false");
   }
   if (config.apiKeyFile !== undefined && config.apiKeyEnv !== undefined) {
     throw new Error("set only one of apiKeyFile and apiKeyEnv for the daytona provider");
@@ -143,6 +213,10 @@ function createDaytona(config: Record<string, unknown>): Provider {
     ...(wait !== undefined ? { capacityWaitMs: wait * 1000 } : {}),
     // The scheduler asks for job timeout plus slack, usually past 30 minutes: clamp instead of
     // refusing so jobs still run; the sandbox is reaped at the cap either way.
+    // Off unless the operator says so: a domain list rests on Daytona's filter reading the TLS
+    // server name, which the strict address allow list does not.
+    ...(domainOk === true ? { allowDomainListConfinement: true } : {}),
+    ...(preflight !== undefined ? { ownerCiPreflight: preflight } : {}),
     clampTtl: true,
     ...(ttl !== undefined ? { maxTtlSeconds: ttl } : {}),
   });

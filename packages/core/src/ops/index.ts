@@ -6,6 +6,8 @@ import {
   enrolmentChallenge,
   approversOverview,
   registerChallenge,
+  keyPolicyChallenge,
+  approveKeyPolicy,
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
@@ -86,6 +88,8 @@ export const registry = createRegistry([
   approvalChallenge,
   enrolmentChallenge,
   registerChallenge,
+  keyPolicyChallenge,
+  approveKeyPolicy,
   requestEnrolment,
   submitApproval,
   approveEnvironment,

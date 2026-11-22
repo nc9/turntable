@@ -8,12 +8,15 @@ import { openDatabase } from "../db";
 import {
   getOrgBySlug,
   insertApprover,
+  getKeyPolicy,
   listApprovers,
   listEnvPolicies,
   revokeApprover,
   setEnvPolicy,
 } from "../db/repos";
-import { approvalWarnings } from "./apply";
+import { approvalWarnings, setKeyPolicyBootstrap } from "./apply";
+import { notCountingReason } from "./identity";
+import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
 import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "./keys";
 
 export const APPROVALS_USAGE = `Usage:
@@ -30,6 +33,12 @@ export const APPROVALS_USAGE = `Usage:
       Sets how many distinct people an environment needs. Without --allow-author-approval the
       author of a run cannot approve it. Allowing it removes the two-person guarantee for that
       environment: use it only for a solo setup.
+  longshore approvals key-policy --org <slug> --policy any|hardware [--preset yubikey] [--aaguid <uuid>]
+      Bootstrap only: works while the org has no approver. Afterwards a change needs a statement
+      signed by a quorum of the counted approvers (key_policy_challenge and approve_key_policy).
+      Which keys approvers may use. hardware accepts only passkeys whose attestation chained to a
+      pinned vendor root at enrolment and whose AAGUID is on the allowlist (security keys; Touch ID
+      and Face ID passkeys give no attestation). Keys that do not satisfy it stop counting.
   longshore approvals list --org <slug>
   longshore approvals revoke --org <slug> --id <approver id>
 All but keygen and sign take --data-dir (default ./data).`;
@@ -46,6 +55,9 @@ export async function approvalsCommand(args: string[]): Promise<number> {
       statement: { type: "string" },
       org: { type: "string" },
       person: { type: "string" },
+      policy: { type: "string" },
+      preset: { type: "string", multiple: true },
+      aaguid: { type: "string", multiple: true },
       "forge-login": { type: "string" },
       "public-key": { type: "string" },
       environment: { type: "string" },
@@ -85,12 +97,26 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     } catch {
       // not JSON: the text is the canonical statement
     }
+    // Show what is being signed, so the signer sees the identity an enrolment would grant.
+    try {
+      const st = JSON.parse(canonical) as Record<string, unknown>;
+      const fields = ["type", "person", "forge_login", "run_id", "environment", "enrolment_id"];
+      console.error(
+        `signing: ${fields
+          .filter((f) => typeof st[f] === "string")
+          .map((f) => `${f}=${String(st[f])}`)
+          .join(" ")}`,
+      );
+    } catch {
+      // not JSON: nothing to summarise
+    }
     const sig = signEd25519(readFileSync(values.key, "utf8"), canonical);
     console.log(JSON.stringify({ kind: "ed25519", signature: sig }));
     return 0;
   }
 
-  if (!values.org || !["bootstrap", "policy", "list", "revoke"].includes(sub ?? "")) return usage();
+  if (!values.org || !["bootstrap", "policy", "key-policy", "list", "revoke"].includes(sub ?? ""))
+    return usage();
   const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
   try {
     const org = await getOrgBySlug(db, values.org);
@@ -142,7 +168,27 @@ export async function approvalsCommand(args: string[]): Promise<number> {
       console.log(JSON.stringify({ environment: values.environment, required: n }));
       return 0;
     }
+    if (sub === "key-policy") {
+      if (values.policy !== "any" && values.policy !== "hardware") return usage();
+      try {
+        const next = await setKeyPolicyBootstrap(
+          db,
+          org.id,
+          { mode: values.policy, presets: values.preset ?? [], aaguids: values.aaguid ?? [] },
+          now,
+        );
+        console.log(JSON.stringify(next));
+        return 0;
+      } catch (e) {
+        if (e instanceof KeyPolicyError) {
+          console.error(e.message);
+          return 1;
+        }
+        throw e;
+      }
+    }
     if (sub === "list") {
+      const keyPolicy = await getKeyPolicy(db, org.id);
       console.log(
         JSON.stringify(
           {
@@ -151,7 +197,11 @@ export async function approvalsCommand(args: string[]): Promise<number> {
               person: a.person,
               kind: a.kind,
               forge_login: a.forgeLogin,
+              attested: a.attested,
+              aaguid: a.aaguid,
+              not_counting: notCountingReason(a) ?? keyPolicyViolation(keyPolicy, a),
             })),
+            key_policy: keyPolicy,
             warnings: await approvalWarnings(db, org.id, [
               "production",
               "release",

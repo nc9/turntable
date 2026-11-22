@@ -48,6 +48,56 @@ Publish credentials are vault secrets for `release`-class jobs. The main lane's 
 
 A compromised main process can write any row it likes, including a finished, signed-looking request. The lane never reads results back as truth; whoever consumes a release verifies the envelope under the release public key (`longshore verify`), which a forged row cannot satisfy.
 
+## Publishing
+
+After signing, the lane publishes the bytes it verified to the targets declared for the project. Declarations live in the lane's own file, never in the main database:
+
+```sh
+longshore release publish-target set --org acme --project web --key npm \
+  --kind npm --package @acme/web --artifact web-1.0.0.tgz --secret NPM_TOKEN \
+  --accept-long-lived-token
+longshore release publish-target set --org acme --project web --key release \
+  --kind github-release --assets cli-linux,cli-darwin
+longshore release publish-target list --org acme --project web
+```
+
+- **npm** needs `--accept-long-lived-token`: npm trusted publishing does not accept self-hosted issuers, so the lane holds a long-lived granular token in the vault (release trust class, destination `registry.npmjs.org`, no environment). The lane builds the publish request from the tarball it hashed: the package name, the version and the tag must all match, private packages are refused, and an existing version is accepted only if its integrity equals ours.
+- **GitHub Releases** are created as a draft, the assets are uploaded, every asset is downloaded again and hashed, and only then is the draft published. The provenance envelope is attached as `provenance.intoto.json` unless disabled. A published release is never modified: it is accepted if its assets match, refused if not. The write credential is `LONGSHORE_RELEASE_GITHUB_PUBLISH_TOKEN`, held by the lane only.
+- A target names only artifacts the request asked for. Each target's state is stored per tag, so a partial publish resumes and a finished target is not repeated. An incident freeze stops publishing target by target.
+- Credentials are never audited or stored in results. Every outcome is audited as `publish:<key>:<state>`.
+
+Targets run in key order and a failed target does not undo a signed release.
+
+### Compat mode: the job publishes, the lane holds the credential
+
+A workflow that already runs `npm publish`, `docker push` or `gh release upload` can keep doing so. Declare the target with `--mode compat` (an image, `--kind oci-image`, is always compat). The lane signs as usual and records the target as `pending`. It also remembers, in its own file, that it signed this run's release.
+
+The lane hosts a **release proxy** (`LONGSHORE_RELEASE_PROXY_PORT`, optionally `_BIND` and `_ADVERTISE_HOST`): the worker's proxy code with the release vault as its secret source. A publish job is given a proxy credential and rules only by the lane, and only when all of these hold: the lane signed this run, the repository is still the pinned one, the tag still points at the signed commit at the forge, and no incident freeze is on. A freeze is checked again on every request and revokes running jobs' credentials. The rules come from the project's compat targets and the digests the lane attested, never from the workflow:
+
+| Target | What the job may do, and only this |
+| --- | --- |
+| npm | `GET` and `PUT` on the exact package path (`/@scope%2Fname`, the one encoded slash the proxy accepts), and the `PUT` body must be the document the lane derived from the verified tarball's own `package.json`: the one version, the name, a version manifest equal to that `package.json` plus `dist` (integrity required and correct), `dist-tags` exactly `{ <tag>: <version> }`, and no other field. The few fields the npm client adds on its own are each constrained: `_id` is exactly `<name>@<version>`; `readme` is empty or exactly the text of a top-level README file of the tarball (the lane reads them from the verified tarball; any of them is accepted, since the client picks one), `readmeFilename` names one of those files and goes with its text; `gitHead` is absent or the approved tag's commit; `_nodeVersion` and `_npmVersion` are semver-shaped only. Text shown on npmjs.com therefore always comes from the tarball. A package whose `package.json` `npm publish` rewrites (normalised `repository`, `bin`, `bugs`) will not match: publish it in strict mode. |
+| GitHub release | Read releases of the one repository, and upload assets on `uploads.github.com` to one release only: the draft the lane itself created for the tag before the job ran, pinned by its release id. A job creates no release, edits none, and can never attach to a published one. The credential is the lane's own, never the job's. |
+| Container image | Registry version ping, blobs and manifest reads of the one repository, and `PUT` of a manifest only under the approved references and only if its sha256 is the attested one. The proxy answers the registry's token challenge itself, so the job never sees a bearer token. |
+
+After the job, `ReleaseLane.finalize` checks the result against the lane's own record: a GitHub draft is listed in full and published only if its asset set equals the wanted one exactly, by name and digest (assets that are missing or differ are replaced from the verified bytes first; an extra asset a job attached makes the lane refuse, leave the draft and audit the names), an npm version that exists is accepted only with the approved integrity and is published by the lane if the job did not. A version or published release with other bytes is refused, never accepted.
+
+#### How a job gets its credential: the release channel
+
+The worker does not hold or see any publish credential. For an attempt of a release-class run it asks the lane over the **release channel**, and runs the job behind the release proxy if the lane agrees (replacing the worker's own proxy for that job; such a job runs with the same no-other-route egress as any secret-bearing job). Because the lane grants rules per run, every job of that run that starts after the lane signed is eligible, so keep jobs that should not publish out of a release-class run's tail or give them no network.
+
+- **Transport.** A unix socket by default (`LONGSHORE_RELEASE_CHANNEL_SOCKET`, default `<data dir>/channel.sock`, mode 0600 in a 0700 directory), or TCP with mutual TLS for split hosts (`LONGSHORE_RELEASE_CHANNEL_TCP=host:port` with `_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`). A client without a certificate from that CA is not served at all.
+- **Request key.** Lane and worker share a key (`LONGSHORE_RELEASE_CHANNEL_KEY_FILE` on the lane, `LONGSHORE_PUBLISH_CHANNEL_KEY_FILE` on the worker, plus `LONGSHORE_PUBLISH_CHANNEL_SOCKET` or `_URL` with `_TLS_*_FILE`). Every request carries an HMAC over its fields and a timestamp; a stale, forged, altered or replayed request is refused. The key lets a process ask. It cannot publish.
+- **The lane re-verifies.** The attempt must be running, in that job and run, with the release trust class. Then the lane's own file decides: it signed this run, the pin holds, the tag still points at the signed commit, a compat target exists, no freeze is on, and (for GitHub) the draft exists or can be created. Nothing the worker says counts for those.
+- **The reply** is the proxy endpoint and an attempt-scoped proxy credential. Never a publish credential.
+- **Ending.** The worker revokes at the end of the attempt (and when it is aborted); the proxy credential also expires on its own TTL, and a freeze revokes it at once.
+
+#### Checking an image after the push
+
+When the job is done, `finalize` looks at what the registry now holds for an image target. It answers the registry's token challenge with the release-class credential (the realm must be on the registry's host, or on the one exact host the target names with `--realm-host`, as for Docker Hub's `auth.docker.io`; always https), fetches the manifest by every approved tag and by the attested digest, and hashes the bytes itself. Every reference must hold exactly the attested manifest: a tag that was moved to other bytes is refused (`image_digest_mismatch`, with both digests audited), and an image the job never pushed is a failed target.
+
+The lane then attaches its own signed provenance as an OCI 1.1 referrer of the image: an artifact manifest (`artifactType: application/vnd.in-toto+json`) whose subject is the image manifest and whose one layer is the signed envelope. A repeat run finds the referrer already listed and pushes nothing. A registry that has no referrers API cannot carry it: the target still succeeds (the image is verified) and says what happened to the provenance. Images are processed after the project's release targets, and `provenance_as_release_asset` is recorded only when a GitHub release target that carries the provenance was published or is already on record as done in that pass, so the asset was uploaded and read back on the release. Otherwise (no such target, or it failed or was refused) it records `provenance_unattached`. Blob uploads for images are not pinned: they are content-addressed, and the manifest decides what a tag means.
+
 ## Deployment
 
 Run the release lane as its own service, with its own volume or directory and its own secrets. On Railway that is two services from the same image:
@@ -76,8 +126,12 @@ The release service's variables:
 
 **Database.** On SQLite the two processes read and write one file for the request queue, so they share a data directory mount; everything the lane itself holds (keys, attestations) is in its own files. A separate database role per process arrives with Postgres: the main role gets insert on `release_requests`, the release role gets read on runs and artifacts and update on `release_requests`, and neither gets the other's.
 
+## Upgrading
+
+Builtin signing keys are stored per org (the org's id is part of the stored name; see [Signing](/signing)). A key created with an earlier `longshore release init-key --name <key>` was stored under the bare name and is no longer found, and nothing falls back to it. Create it again with `longshore release init-key --org <slug> --name <key>` and pin the new public key. Releases signed with the old key still verify against the old public key.
+
 ## Limits
 
 - The lane's artifact attestation is first use: it protects against changes after the lane first saw an artifact, not against a build that recorded bad bytes in the first place. An independent record of digests written by the build is future work.
-- Only the built-in key backend is wired into the lane. Create its key once, on the release service, with `longshore release init-key --name release` (it prints the public key to pin; the private key is sealed under the release master key in the lane's own directory), and point the project at it with `longshore policy set --signing-key builtin:release`.
+- Only the built-in key backend is wired into the lane. Create its key once, on the release service, with `longshore release init-key --org <slug> --name release` (the key is stored under the org's id, so another org's `builtin:release` is a different key; it prints the public key to pin; the private key is sealed under the release master key in the lane's own directory), and point the project at it with `longshore policy set --signing-key builtin:release`.
 - Approvals are read from the main database and re-verified from their signatures, so the lane does not trust a stored "approved" flag either.

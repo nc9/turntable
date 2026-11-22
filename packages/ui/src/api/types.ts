@@ -234,6 +234,8 @@ export type EnrolStatement = {
   org: string;
   enrolment_id: string;
   person: string;
+  /** The forge login the key is enrolled under, lower-cased. */
+  forge_login: string;
   key_fingerprint: string;
   approver: string;
   expires_at: number;
@@ -286,13 +288,34 @@ export type Approver = {
   kind: "webauthn" | "ed25519";
   passkeyId: string | null;
   createdAt: number;
+  /** Why the key counts toward no approval or quorum; null when it does. */
+  notCounting: string | null;
+  /** A pinned vendor attestation chain verified when the key was enrolled. */
+  attested: boolean;
+  aaguid: string | null;
 };
+
+/** A key policy change, signed by a quorum of the counted approvers. */
+export type PolicyStatement = {
+  type: string;
+  org: string;
+  old: KeyPolicy;
+  new: KeyPolicy;
+  allowlist_hash: string;
+  approver: string;
+  expires_at: number;
+  nonce: string;
+};
+
+export type KeyPolicy = { mode: "any" | "hardware"; presets: string[]; aaguids: string[] };
 
 export type ApproversOverview = {
   approvers: Approver[];
+  keyPolicy: KeyPolicy;
   pendingEnrolments: {
     id: string;
     person: string;
+    forgeLogin: string | null;
     kind: "webauthn" | "ed25519";
     keyFingerprint: string;
     approvals: number;

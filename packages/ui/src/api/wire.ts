@@ -224,10 +224,15 @@ export type WireApprovers = {
     kind: "webauthn" | "ed25519";
     passkey_id: string | null;
     created_at: string;
+    not_counting: string | null;
+    attested: boolean;
+    aaguid: string | null;
   }[];
+  key_policy: { mode: "any" | "hardware"; presets: string[]; aaguids: string[] };
   pending_enrolments: {
     id: string;
     person: string;
+    forge_login: string | null;
     kind: "webauthn" | "ed25519";
     key_fingerprint: string;
     approvals: number;
@@ -262,7 +267,12 @@ export type WireEnvironmentApproval = {
   state: string;
 };
 
-export type WireRegisterChallenge = { challenge: string; rp_id: string; expires_at: string };
+export type WireRegisterChallenge = {
+  challenge: string;
+  rp_id: string;
+  expires_at: string;
+  attestation: "none" | "direct";
+};
 export type WireEnrolmentRequest = {
   enrolment_id: string;
   kind: "webauthn" | "ed25519";

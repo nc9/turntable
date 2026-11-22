@@ -34,7 +34,7 @@ import { fileKeyVault } from "../src/release/key-vault";
 import { releaseCommand } from "../src/release/cli";
 import { serveRelease, signingWiring } from "../src/release/serve";
 import { LocalSigner, verifyDigest } from "@longshore/signer";
-import { SigningService } from "../src/signing";
+import { builtinKeyRef, SigningService } from "../src/signing";
 import { mainRuntime, releaseConfigFromEnv, resolveRoles } from "../src/roles";
 import { initMasterKey } from "../src/secrets/crypto";
 import { SecretVault } from "../src/secrets/vault";
@@ -283,6 +283,7 @@ describe("what is signed is exactly what the lane verified", () => {
   describe("against the real signing service", () => {
     const person = {
       approverId: "ap",
+      identity: "login:ap-gh",
       person: "alice",
       method: "ed25519" as const,
       statementHash: "s".repeat(64),
@@ -304,7 +305,7 @@ describe("what is signed is exactly what the lane verified", () => {
         get: async (n) => map.get(n),
         set: async (n, v) => void map.set(n, v),
       });
-      await local.ensureKey("release");
+      await local.ensureKey(builtinKeyRef(a.orgId, "release"));
       const service = new SigningService({
         db,
         signers: { builtin: local },

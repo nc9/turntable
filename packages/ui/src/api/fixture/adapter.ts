@@ -163,7 +163,10 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         challenge: "cmVnaXN0ZXItY2hhbGxlbmdl",
         rpId: "localhost",
         expiresAt: Date.now() + 600_000,
+        attestation: "none" as const,
       })),
+    keyPolicyChallenge: (args) => delay(() => world.keyPolicyChallenge(args)),
+    approveKeyPolicy: ({ statement }) => delay(() => world.approveKeyPolicy(statement)),
     requestEnrolment: ({ person }) =>
       delay(() => ({
         enrolmentId: "en_new",

@@ -149,6 +149,16 @@ export class GithubClient {
     return body;
   }
 
+  /** The repo's default branch on GitHub, for a repo ingested from its installation binding. */
+  async repoDefaultBranch(repo: string): Promise<string> {
+    const body = (await this.#get(`/repos/${repo}`)) as { default_branch?: string };
+    const b = body.default_branch;
+    if (typeof b !== "string" || !/^[A-Za-z0-9._/-]{1,255}$/.test(b)) {
+      throw new GithubError(502, `/repos/${repo}`);
+    }
+    return b;
+  }
+
   async branchHead(repo: string, branch: string): Promise<BranchHead> {
     const body = (await this.#get(`/repos/${repo}/commits/${encodeURIComponent(branch)}`)) as {
       sha?: string;

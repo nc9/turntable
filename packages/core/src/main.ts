@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
@@ -45,6 +46,7 @@ import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, resolveRoles } from "./roles";
+import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
@@ -153,7 +155,9 @@ async function startBackground(
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
-    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]));
+    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]), {
+      hosted: v.hosted === true || process.env.LONGSHORE_HOSTED === "1",
+    });
     workerProvider = provider;
     // Fail at startup, with the provider named, instead of at the first job.
     try {
@@ -196,6 +200,21 @@ async function startBackground(
         ...(process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()
           ? { advertiseHost: process.env.LONGSHORE_PROXY_ADVERTISE_HOST.trim() }
           : {}),
+        // A public TLS listener, for sandboxes in another provider's network (Daytona).
+        ...(process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim() ||
+        process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim()
+          ? { tls: readProxyTls() }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_PORT?.trim()
+          ? { advertisePort: Number(process.env.LONGSHORE_PROXY_ADVERTISE_PORT.trim()) }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_ADDRESSES?.trim()
+          ? {
+              advertiseAddresses: process.env.LONGSHORE_PROXY_ADVERTISE_ADDRESSES.split(",")
+                .map((a) => a.trim())
+                .filter(Boolean),
+            }
+          : {}),
         log,
       });
       log(`secrets proxy listening on port ${secretsProxy.port}`);
@@ -205,6 +224,29 @@ async function startBackground(
       extras.auth && process.env.LONGSHORE_JOB_TOKENS !== "off"
         ? new JobTokens(extras.auth, { isPublic: publicRepoCheck({ auth: extras.auth }) })
         : undefined;
+    // Compat publishing: a release-class job may ask the release lane for a release-proxy
+    // credential. This process holds only the request key, never a publish credential.
+    const channelKey = process.env.LONGSHORE_PUBLISH_CHANNEL_KEY_FILE?.trim();
+    const publishChannel = channelKey
+      ? createChannelClient({
+          key: readFileSync(channelKey, "utf8").trim(),
+          target: process.env.LONGSHORE_PUBLISH_CHANNEL_URL?.trim()
+            ? {
+                url: process.env.LONGSHORE_PUBLISH_CHANNEL_URL.trim(),
+                tls: {
+                  cert: readFileSync(
+                    requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
+                    "utf8",
+                  ),
+                  key: readFileSync(requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_KEY_FILE"), "utf8"),
+                  ca: readFileSync(requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_CA_FILE"), "utf8"),
+                },
+              }
+            : { unix: requiredEnv("LONGSHORE_PUBLISH_CHANNEL_SOCKET") },
+        })
+      : undefined;
+    const released = (r: AttemptRunner): AttemptRunner =>
+      publishChannel ? withReleaseChannel(r, { client: publishChannel }) : r;
     const proxied = (r: AttemptRunner): AttemptRunner =>
       secretsProxy
         ? withSecretsProxy(r, {
@@ -220,25 +262,27 @@ async function startBackground(
         // Egress is none by default and refused where it cannot be enforced; each `none`
         // sandbox is probed for a real way out before the job starts.
         proxied(
-          withEgressPolicy(
-            createActRunner({
-              db,
-              source: gitRepoSource(),
-              // Actions are resolved and verified with the run's own GitHub credential: the poll
-              // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
-              forgeToken: createForgeToken({
+          released(
+            withEgressPolicy(
+              createActRunner({
                 db,
-                poll: pollConfig,
-                auth: extras.auth,
-                envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
-                log: (m) => console.warn(`[longshore] ${m}`),
+                source: gitRepoSource(),
+                // Actions are resolved and verified with the run's own GitHub credential: the poll
+                // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
+                forgeToken: createForgeToken({
+                  db,
+                  poll: pollConfig,
+                  auth: extras.auth,
+                  envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+                  log: (m) => console.warn(`[longshore] ${m}`),
+                }),
+                canary: true,
+                ...(jobTokens ? { jobTokens } : {}),
+                ...(v.image ? { image: v.image } : {}),
               }),
-              canary: true,
-              ...(jobTokens ? { jobTokens } : {}),
-              ...(v.image ? { image: v.image } : {}),
-            }),
-            // A job behind the proxy holds secrets: it never runs with open egress.
-            { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
+              // A job behind the proxy holds secrets: it never runs with open egress.
+              { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
+            ),
           ),
         ),
         {
@@ -288,6 +332,8 @@ async function startBackground(
     poller = new Poller({
       db,
       config: pollConfig,
+      // Repos bound by an installation are ingested once their project has ingest settings.
+      bindings: true,
       log,
       onQueued: () => scheduler?.nudge(),
       // A newer cancel-in-progress run took over running attempts: stop their workers now and
@@ -321,6 +367,27 @@ async function startBackground(
       await secretsProxy?.stop();
     },
   };
+}
+
+/** The proxy's TLS certificate and key, from their files: both or neither. */
+function requiredEnv(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) throw new Error(`${name} is required`);
+  return v;
+}
+
+function readProxyTls(): { key: string; cert: string } {
+  const certFile = process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim();
+  const keyFile = process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim();
+  if (!certFile || !keyFile) {
+    throw new Error(
+      "LONGSHORE_PROXY_TLS_CERT_FILE and LONGSHORE_PROXY_TLS_KEY_FILE must be set together",
+    );
+  }
+  if (!process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()) {
+    throw new Error("a TLS proxy listener needs LONGSHORE_PROXY_ADVERTISE_HOST (its public name)");
+  }
+  return { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
 }
 
 async function serve(args: string[]): Promise<void> {

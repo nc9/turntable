@@ -12,6 +12,7 @@ import {
   touchApiToken,
 } from "../db/repos";
 import type { Op, OpContext } from "./define";
+import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
@@ -31,6 +32,8 @@ export type DispatchEnv = {
   claims?: InstallationClaims | undefined;
   /** WebAuthn relying party for human approvals (LONGSHORE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
+  /** Attestation trust anchors; the pinned vendor roots when absent. */
+  attestationAnchors?: TrustAnchors | undefined;
 };
 
 export type DispatchResult =
@@ -273,6 +276,7 @@ export async function dispatch(
       vault: env.vault,
       claims: env.claims,
       webauthn: env.webauthn,
+      attestationAnchors: env.attestationAnchors,
     });
     const target = op;
     if (!audited) {

@@ -284,5 +284,30 @@ export const migrations: Migration[] = [
       "CREATE TABLE `installation_claims` (\n\t`nonce` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`started_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer,\n\t`installation_id` text,\n\t`expected_login` text,\n\t`github_user_id` text,\n\t`github_login` text,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `installation_claims_org_idx` ON `installation_claims` (`org_id`,`created_at`);"
     ]
+  },
+  {
+    "tag": "0023_numerous_emma_frost",
+    "when": 1795379194595,
+    "statements": [
+      "ALTER TABLE `projects` ADD `ingest_config` text;"
+    ]
+  },
+  {
+    "tag": "0024_minor_warstar",
+    "when": 1795381960988,
+    "statements": [
+      "ALTER TABLE `approval_challenges` ADD `principal` text;"
+    ]
+  },
+  {
+    "tag": "0025_magenta_magdalene",
+    "when": 1795382724371,
+    "statements": [
+      "CREATE TABLE `approval_key_policies` (\n\t`org_id` text PRIMARY KEY NOT NULL,\n\t`policy` text NOT NULL,\n\t`generation` integer DEFAULT 0 NOT NULL,\n\t`presets` text DEFAULT '[]' NOT NULL,\n\t`aaguids` text DEFAULT '[]' NOT NULL,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "ALTER TABLE `approver_enrolments` ADD `aaguid` text;",
+      "ALTER TABLE `approver_enrolments` ADD `attested` integer DEFAULT false NOT NULL;",
+      "ALTER TABLE `approvers` ADD `aaguid` text;",
+      "ALTER TABLE `approvers` ADD `attested` integer DEFAULT false NOT NULL;"
+    ]
   }
 ];
