@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError, createHttpApi } from "../src/api/http-adapter";
-import type { WireLog, WireRunDetail, WireRunList } from "../src/api/wire";
+import type { WireLog, WireRun, WireRunDetail } from "../src/api/wire";
 
 type Call = { url: URL; init: RequestInit };
 
@@ -17,13 +17,18 @@ function stub(handler: (url: URL, init: RequestInit) => Response | Promise<Respo
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const wireRun = (over: Partial<WireRunList["runs"][number]> = {}) => ({
+const wireRun = (over: Partial<WireRun> = {}): WireRun => ({
   id: "run1",
   project: "api",
   workflow_path: ".github/workflows/ci.yml",
   event: "push",
   ref: "refs/heads/main",
   sha: "abc1234",
+  workflow_name: null,
+  commit_message: null,
+  actor: null,
+  head_branch: null,
+  pr_number: null,
   state: "running" as const,
   created_at: "2026-11-22T10:00:00.000Z",
   started_at: "2026-11-22T10:00:05.000Z",
@@ -115,19 +120,68 @@ describe("mapping", () => {
     });
   });
 
-  test("derives projects from recent runs", async () => {
+  test("lists orgs and projects from the API", async () => {
+    const { api, calls } = make((url) =>
+      url.pathname === "/api/v1/orgs"
+        ? json({ orgs: [{ id: "o1", slug: "acme", name: "Acme" }], next_cursor: null })
+        : json({
+            projects: [
+              {
+                id: "p1",
+                slug: "api",
+                name: "API",
+                repos: [{ forge: "github", owner: "acme", repo: "api" }],
+              },
+              { id: "p2", slug: "web", name: "Web", repos: [] },
+            ],
+            next_cursor: null,
+          }),
+    );
+    expect(await api.listOrgs()).toEqual([{ id: "acme", slug: "acme", name: "Acme" }]);
+    const projects = await api.listProjects("acme");
+    expect(projects.map((p) => [p.id, p.slug, p.repo])).toEqual([
+      ["api", "api", "acme/api"],
+      ["web", "web", ""],
+    ]);
+    expect(calls.some((c) => c.url.pathname === "/api/v1/projects")).toBe(true);
+  });
+
+  test("maps run metadata and the trust decision", async () => {
     const { api } = make(() =>
       json({
         runs: [
-          wireRun({ project: "web" }),
-          wireRun({ project: "api" }),
-          wireRun({ project: "web" }),
+          wireRun({
+            workflow_name: "CI",
+            commit_message: "fix typo",
+            actor: "octo",
+            head_branch: "contrib/typo",
+            pr_number: 12,
+            trust_class: "untrusted_pr",
+            trust: {
+              class: "untrusted_pr",
+              reasons: ["no prior contribution"],
+              facts: {},
+              workflow_hash: "deadbeef",
+              decided_at: "2026-11-22T10:00:00.000Z",
+            },
+          }),
+          wireRun({ id: "run2" }),
         ],
         next_cursor: null,
       }),
     );
-    expect((await api.listProjects("acme")).map((p) => p.slug)).toEqual(["api", "web"]);
-    expect(await api.listOrgs()).toEqual([{ id: "acme", slug: "acme", name: "acme" }]);
+    const { runs } = await api.listRuns({ projectId: "api" });
+    expect(runs[0]).toMatchObject({
+      workflowName: "CI",
+      commitMessage: "fix typo",
+      actor: "octo",
+      headBranch: "contrib/typo",
+      prNumber: 12,
+      trustClass: "untrusted_pr",
+      trust: { reasons: ["no prior contribution"], workflowHash: "deadbeef" },
+    });
+    // An older server reports no trust: the UI sees null, not a guess.
+    expect(runs[1]).toMatchObject({ trustClass: null, trust: null });
   });
 
   const detail: WireRunDetail = {
@@ -138,6 +192,9 @@ describe("mapping", () => {
         job_key: "test",
         name: "test",
         state: "failure",
+        needs: [],
+        matrix: null,
+        approval_kind: null,
         exit_code: 1,
         started_at: "2026-11-22T10:00:10.000Z",
         finished_at: "2026-11-22T10:01:00.000Z",
@@ -189,13 +246,14 @@ describe("mapping", () => {
     ]);
   });
 
-  test("jobSteps, jobCuts and events are empty until the API has them; rerun is unsupported", async () => {
+  test("capabilities: rerun and approve are available", () => {
+    const { api } = make(() => json({}));
+    expect(api.capabilities).toEqual({ rerun: true, approve: true });
+  });
+
+  test("events is empty until the feed exists", async () => {
     const { api, calls } = make(() => json({}));
-    expect(await api.jobSteps({ attemptId: "a1" })).toEqual([]);
-    expect(await api.jobCuts({ attemptId: "a1" })).toEqual([]);
     expect(await api.events({ cursor: "5" })).toEqual({ events: [], cursor: "5" });
-    expect(api.capabilities.rerun).toBe(false);
-    await expect(api.rerun({ runId: "run1" })).rejects.toMatchObject({ code: "not_supported" });
     expect(calls).toHaveLength(0);
   });
 
@@ -245,6 +303,9 @@ describe("job log by offset", () => {
         job_key: "t",
         name: "t",
         state,
+        needs: [],
+        matrix: null,
+        approval_kind: null,
         exit_code: null,
         started_at: null,
         finished_at: null,
@@ -278,6 +339,7 @@ describe("job log by offset", () => {
         job_id: "job1",
         attempt: 2,
         mode: "range",
+        matches: 0,
         text: "x".repeat(bytes),
         offset,
         bytes,
@@ -347,5 +409,219 @@ describe("job log by offset", () => {
       status: 404,
     });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("operations added for trust, digests, search and ingest", () => {
+  const withRun =
+    (rest: (url: URL, init: RequestInit) => Response) => (url: URL, init: RequestInit) =>
+      url.pathname === "/api/v1/runs/run1"
+        ? json({
+            ...wireRun(),
+            jobs: [
+              {
+                id: "job1",
+                job_key: "t",
+                name: "t",
+                state: "failure",
+                needs: [],
+                matrix: null,
+                approval_kind: null,
+                exit_code: 1,
+                started_at: null,
+                finished_at: null,
+                duration_ms: null,
+                infra_error_reason: null,
+                log_path: null,
+                attempts: [
+                  {
+                    id: "a1",
+                    attempt: 3,
+                    state: "failure",
+                    provider: "docker",
+                    exit_code: 1,
+                    error_class: null,
+                    started_at: null,
+                    finished_at: null,
+                    duration_ms: null,
+                  },
+                ],
+              },
+            ],
+          })
+        : rest(url, init);
+
+  test("rerun posts the reason and job keys and maps the result", async () => {
+    const { api, calls } = make(() =>
+      json({
+        run_id: "run1",
+        state: "running",
+        reruns: [
+          {
+            job_id: "job1",
+            job_key: "t",
+            attempt: 4,
+            previous_state: "failure",
+            state: "queued",
+            reruns_used: 1,
+          },
+        ],
+      }),
+    );
+    const r = await api.rerun({ runId: "run1", jobKeys: ["t"], reason: "flaky" });
+    const { url, init } = calls[0]!;
+    expect(init.method).toBe("POST");
+    expect(url.pathname).toBe("/api/v1/runs/run1/rerun");
+    expect(JSON.parse(String(init.body))).toEqual({ reason: "flaky", org: "acme", jobs: ["t"] });
+    expect(r.reruns[0]).toMatchObject({ jobKey: "t", attempt: 4, previousState: "failure" });
+    await api.rerun({ runId: "run1", reason: "again" });
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ reason: "again", org: "acme" });
+  });
+
+  test("approve binds to the head sha and workflow hash; whoami carries the role", async () => {
+    const { api, calls } = make((url) =>
+      url.pathname.endsWith("/approve")
+        ? json({
+            run_id: "run1",
+            state: "queued",
+            released_jobs: 2,
+            approved_by: "me",
+            head_sha: "abc",
+            workflow_hash: "h1",
+          })
+        : json({
+            kind: "member",
+            id: "m1",
+            name: "Me",
+            role: "release_operator",
+            org: "acme",
+            project: null,
+            expires_at: null,
+          }),
+    );
+    expect((await api.whoami()).role).toBe("release_operator");
+    const res = await api.approveRun({ runId: "run1", headSha: "abc", workflowHash: "h1" });
+    expect(res).toMatchObject({
+      releasedJobs: 2,
+      approvedBy: "me",
+      headSha: "abc",
+      workflowHash: "h1",
+    });
+    const post = calls.find((c) => c.url.pathname.endsWith("/approve"))!;
+    expect(post.init.method).toBe("POST");
+    expect(JSON.parse(String(post.init.body))).toEqual({
+      head_sha: "abc",
+      workflow_hash: "h1",
+      org: "acme",
+    });
+    expect(String(post.url)).not.toContain("tt_secret");
+  });
+
+  test("failure digest maps the excerpt as plain data", async () => {
+    const { api, calls } = make(() =>
+      json({
+        failing_jobs: 1,
+        digests: [
+          {
+            job_id: "job1",
+            job_key: "t",
+            state: "failure",
+            attempt: 1,
+            step: { name: "Run tests", stage: "main", index: 3, result: "failure" },
+            basis: "annotation",
+            excerpt: "<img src=x onerror=alert(1)> boom",
+            truncated: true,
+            infra_error_reason: null,
+          },
+        ],
+      }),
+    );
+    const d = await api.failureDigest({ jobId: "job1" });
+    expect(calls[0]!.url.searchParams.get("job_id")).toBe("job1");
+    expect(d.failingJobs).toBe(1);
+    expect(d.digests[0]).toMatchObject({
+      jobKey: "t",
+      basis: "annotation",
+      truncated: true,
+      excerpt: "<img src=x onerror=alert(1)> boom",
+    });
+  });
+
+  test("grep sends mode=grep with the pattern and parses hits and context rows", async () => {
+    const { api, calls } = make(
+      withRun(() =>
+        json({
+          job_id: "job1",
+          attempt: 3,
+          mode: "grep",
+          matches: 2,
+          text: "120:error: boom\n150-  at file.ts:1\n9000:error: again",
+          offset: 0,
+          bytes: 50,
+          total_bytes: 12_000_000,
+          next_offset: 5_000_000,
+          truncated: true,
+        }),
+      ),
+    );
+    await api.getRun("run1");
+    const r = await api.grepLog({
+      attemptId: "a1",
+      pattern: "error",
+      ignoreCase: true,
+      context: 1,
+      maxMatches: 50,
+    });
+    const g = calls.find((c) => c.url.searchParams.get("mode") === "grep")!;
+    expect(g.url.pathname).toBe("/api/v1/jobs/job1/log");
+    expect(g.url.searchParams.get("pattern")).toBe("error");
+    expect(g.url.searchParams.get("attempt")).toBe("3");
+    expect(g.url.searchParams.get("ignore_case")).toBe("true");
+    expect(g.url.searchParams.get("context")).toBe("1");
+    expect(g.url.searchParams.get("max_matches")).toBe("50");
+    expect(r.matches).toBe(2);
+    expect(r.nextOffset).toBe(5_000_000);
+    expect(r.hits).toEqual([
+      { offset: 120, text: "error: boom", context: false },
+      { offset: 150, text: "  at file.ts:1", context: true },
+      { offset: 9000, text: "error: again", context: false },
+    ]);
+  });
+
+  test("ingest status maps times to epoch milliseconds", async () => {
+    const { api, calls } = make(() =>
+      json({
+        running: true,
+        rate_limit: {
+          limit: 5000,
+          remaining: 4000,
+          reset_at: "2026-11-22T11:00:00.000Z",
+          resource: "core",
+          observed_at: "2026-11-22T10:00:00.000Z",
+        },
+        repos: [
+          {
+            repo: "acme/api",
+            project: "api",
+            last_poll_at: "2026-11-22T10:00:00.000Z",
+            last_outcome: "error",
+            last_error: "502",
+            next_poll_at: null,
+            consecutive_failures: 3,
+            runs_created: 9,
+          },
+        ],
+      }),
+    );
+    const s = await api.ingestStatus();
+    expect(calls[0]!.url.pathname).toBe("/api/v1/ingest/status");
+    expect(s.rateLimit).toMatchObject({ limit: 5000, remaining: 4000, resource: "core" });
+    expect(s.rateLimit?.resetAt).toBe(Date.parse("2026-11-22T11:00:00.000Z"));
+    expect(s.repos[0]).toMatchObject({
+      repo: "acme/api",
+      lastOutcome: "error",
+      nextPollAt: null,
+      consecutiveFailures: 3,
+    });
   });
 });

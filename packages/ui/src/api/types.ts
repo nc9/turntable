@@ -25,6 +25,17 @@ export type Project = {
   repo: string;
 };
 
+/** How far a run is trusted, decided by the server from re-fetched forge facts. */
+export const TRUST_CLASSES = ["protected", "release", "trusted_pr", "untrusted_pr"] as const;
+export type TrustClass = (typeof TRUST_CLASSES)[number];
+
+/** The trust decision recorded on a run. `workflowHash` is what an approval is bound to. */
+export type RunTrust = {
+  reasons: string[];
+  workflowHash: string;
+  decidedAt: number | null;
+};
+
 export type Run = {
   id: string;
   orgId: string;
@@ -39,6 +50,14 @@ export type Run = {
   /** Empty when the API does not report who triggered the run. */
   actor: string;
   status: JobState;
+  /** Pull request number, when the run is for one. */
+  prNumber?: number | null;
+  headBranch?: string | null;
+  /** null when the server has not classified the run (older data). */
+  trustClass?: TrustClass | null;
+  trust?: RunTrust | null;
+  /** Network policy of the run's sandboxes when the API reports it; absent means not reported. */
+  egress?: "none" | "open" | "allowlist" | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -110,6 +129,89 @@ export type CutRecord = {
   atOffset: number;
   omittedBytes: number;
   reason: string;
+};
+
+/** The caller, from `whoami`. */
+export type Whoami = {
+  kind: "token" | "member";
+  id: string;
+  name: string | null;
+  role: "reader" | "operator" | "release_operator" | "owner" | "admin" | "member" | "viewer";
+  org: string;
+  project: string | null;
+};
+
+/** What `approve_run` reports back. */
+export type ApproveResult = {
+  runId: string;
+  state: JobState;
+  releasedJobs: number;
+  approvedBy: string;
+  headSha: string;
+  workflowHash: string;
+};
+
+export type JobDigest = {
+  jobId: string;
+  jobKey: string;
+  state: JobState;
+  attempt: number | null;
+  step: {
+    name: string;
+    stage: "pre" | "main" | "post";
+    index: number;
+    result: string | null;
+  } | null;
+  basis: "annotation" | "error_pattern" | "tail" | null;
+  /** Plain text from the job's log. Never rendered as markup. */
+  excerpt: string;
+  truncated: boolean;
+  infraErrorReason: string | null;
+};
+
+export type RerunResult = {
+  runId: string;
+  state: JobState;
+  reruns: {
+    jobId: string;
+    jobKey: string;
+    attempt: number;
+    previousState: JobState;
+    state: JobState;
+  }[];
+};
+
+/** One hit of a server-side log search. `offset` is the byte offset of the line in the log. */
+export type GrepHit = { offset: number; text: string; context: boolean };
+export type GrepResult = {
+  hits: GrepHit[];
+  matches: number;
+  /** Where the scan stopped, when the log was not fully scanned; search again from here. */
+  nextOffset: number | null;
+  totalBytes: number;
+};
+
+export type IngestRepoStatus = {
+  repo: string;
+  project: string;
+  lastPollAt: number | null;
+  lastOutcome: "ok" | "rate_limited" | "error" | null;
+  lastError: string | null;
+  nextPollAt: number | null;
+  consecutiveFailures: number;
+  runsCreated: number;
+};
+
+export type IngestStatus = {
+  running: boolean;
+  rateLimit: {
+    limit: number | null;
+    remaining: number | null;
+    resetAt: number | null;
+    resource: string | null;
+    observedAt: number;
+  } | null;
+  repos: IngestRepoStatus[];
 };
 
 export type RunDetail = { run: Run; jobs: Job[]; attempts: JobAttempt[] };

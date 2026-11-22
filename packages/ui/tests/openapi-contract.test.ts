@@ -1,12 +1,24 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type {
+  WireApprove,
   WireAttempt,
   WireChecks,
   WireCancel,
+  WireCuts,
+  WireDigest,
+  WireFailureDigest,
+  WireIngestStatus,
   WireJob,
   WireLog,
+  WireOrgs,
+  WireProjects,
+  WireRerun,
   WireRun,
+  WireSteps,
+  WireStep,
+  WireTrust,
+  WireWhoami,
 } from "../src/api/wire";
 
 // Keeps the hand-written wire types honest: if docs/openapi.json drops or renames a field the
@@ -58,13 +70,18 @@ test("list_runs: path, params and run fields", () => {
   expectKeys(body, ["runs", "next_cursor"]);
   expectKeys(
     body.properties!.runs!.items!,
-    keysOf<WireRun>({
+    keysOf<Omit<WireRun, "trust_class" | "trust">>({
       id: true,
       project: true,
       workflow_path: true,
       event: true,
       ref: true,
       sha: true,
+      workflow_name: true,
+      commit_message: true,
+      actor: true,
+      head_branch: true,
+      pr_number: true,
       state: true,
       created_at: true,
       started_at: true,
@@ -85,6 +102,9 @@ test("get_run: run, job and attempt fields", () => {
       job_key: true,
       name: true,
       state: true,
+      needs: true,
+      matrix: true,
+      approval_kind: true,
       exit_code: true,
       started_at: true,
       finished_at: true,
@@ -115,6 +135,10 @@ test("job_log: offset range reads fit the adapter's page size", () => {
   const params = Object.fromEntries((o.parameters ?? []).map((p) => [p.name, p]));
   for (const n of ["job_id", "attempt", "mode", "offset", "max_bytes", "org"])
     expect(params[n]).toBeDefined();
+  // Whole-log search in the log viewer.
+  for (const n of ["pattern", "regex", "ignore_case", "context", "max_matches"])
+    expect(params[n]).toBeDefined();
+  expect(params.mode!.schema).toMatchObject({ enum: expect.arrayContaining(["grep"]) });
   expect(params.max_bytes!.schema.maximum).toBeGreaterThanOrEqual(262_144);
   expectKeys(
     ok(o),
@@ -122,6 +146,7 @@ test("job_log: offset range reads fit the adapter's page size", () => {
       job_id: true,
       attempt: true,
       mode: true,
+      matches: true,
       text: true,
       offset: true,
       bytes: true,
@@ -147,13 +172,15 @@ test("checks_for_sha and cancel", () => {
   );
 });
 
-test("the spec has every operation the UI uses or will wire up next", () => {
-  const ids = Object.values(spec.paths).flatMap((p) => Object.values(p).map((o) => o.operationId));
-  for (const known of ["list_runs", "get_run", "job_log", "checks_for_sha", "cancel"]) {
-    expect(ids).toContain(known);
-  }
-  // Present since #66; the adapter flips the matching capabilities when it wires them in.
-  for (const added of [
+const ids = Object.values(spec.paths).flatMap((p) => Object.values(p).map((o) => o.operationId));
+
+test("the spec has every operation the UI uses", () => {
+  for (const known of [
+    "list_runs",
+    "get_run",
+    "job_log",
+    "checks_for_sha",
+    "cancel",
     "rerun",
     "events",
     "whoami",
@@ -161,9 +188,173 @@ test("the spec has every operation the UI uses or will wire up next", () => {
     "list_projects",
     "job_steps",
     "job_cuts",
+    "failure_digest",
+    "ingest_status",
   ]) {
-    expect(ids).toContain(added);
+    expect(ids).toContain(known);
   }
+});
+
+test("whoami, list_orgs and list_projects", () => {
+  expectKeys(
+    ok(op("/whoami", "get")),
+    keysOf<Omit<WireWhoami, never>>({
+      kind: true,
+      id: true,
+      name: true,
+      role: true,
+      org: true,
+      project: true,
+      expires_at: true,
+    }),
+  );
+  const orgs = ok(op("/orgs", "get"));
+  expectKeys(orgs, keysOf<WireOrgs>({ orgs: true, next_cursor: true }));
+  expectKeys(orgs.properties!.orgs!.items!, ["id", "slug", "name"]);
+  const projects = ok(op("/projects", "get"));
+  expectKeys(projects, keysOf<WireProjects>({ projects: true, next_cursor: true }));
+  expectKeys(projects.properties!.projects!.items!, ["id", "slug", "name", "repos"]);
+});
+
+test("job_steps and job_cuts", () => {
+  const steps = ok(op("/jobs/{job_id}/steps", "get"));
+  expectKeys(steps, keysOf<WireSteps>({ job_id: true, attempt: true, steps: true }));
+  expectKeys(
+    steps.properties!.steps!.items!,
+    keysOf<WireStep>({
+      key: true,
+      stage: true,
+      index: true,
+      name: true,
+      result: true,
+      started_at: true,
+      finished_at: true,
+      duration_ms: true,
+      log_offset: true,
+    }),
+  );
+  const cuts = ok(op("/jobs/{job_id}/cuts", "get"));
+  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true }));
+  expectKeys(cuts.properties!.cuts!.items!, ["at_offset", "omitted_bytes", "reason"]);
+});
+
+test("failure_digest", () => {
+  const o = op("/failure-digest", "get");
+  const names = (o.parameters ?? []).map((p) => p.name);
+  for (const n of ["org", "run_id", "job_id"]) expect(names).toContain(n);
+  const body = ok(o);
+  expectKeys(body, keysOf<WireFailureDigest>({ failing_jobs: true, digests: true }));
+  expectKeys(
+    body.properties!.digests!.items!,
+    keysOf<WireDigest>({
+      job_id: true,
+      job_key: true,
+      state: true,
+      attempt: true,
+      step: true,
+      basis: true,
+      excerpt: true,
+      truncated: true,
+      infra_error_reason: true,
+    }),
+  );
+});
+
+test("rerun takes a reason and optional jobs, and reports each rerun job", () => {
+  const o = op("/runs/{run_id}/rerun", "post");
+  const req = o.requestBody!.content["application/json"].schema;
+  for (const k of ["org", "reason", "jobs"]) expect(Object.keys(req.properties!)).toContain(k);
+  expect(req.required ?? []).toContain("reason");
+  const body = ok(o);
+  expectKeys(
+    body,
+    keysOf<Pick<WireRerun, "run_id" | "state" | "reruns">>({
+      run_id: true,
+      state: true,
+      reruns: true,
+    }),
+  );
+  expectKeys(body.properties!.reruns!.items!, [
+    "job_id",
+    "job_key",
+    "attempt",
+    "previous_state",
+    "state",
+  ]);
+});
+
+test("ingest_status", () => {
+  const body = ok(op("/ingest/status", "get"));
+  expectKeys(body, keysOf<WireIngestStatus>({ running: true, rate_limit: true, repos: true }));
+  expectKeys(body.properties!.repos!.items!, [
+    "repo",
+    "project",
+    "last_poll_at",
+    "last_outcome",
+    "last_error",
+    "next_poll_at",
+    "consecutive_failures",
+    "runs_created",
+  ]);
+  const rate = body.properties!.rate_limit!;
+  const rateProps = (rate.anyOf?.find((s) => s.properties) ?? rate).properties!;
+  for (const k of ["limit", "remaining", "reset_at", "resource", "observed_at"])
+    expect(Object.keys(rateProps)).toContain(k);
+});
+
+// Trust and approvals land with #98. The UI reads them optionally, so it works against a server
+// without them; once the spec has them they join the required lists above and these entries go.
+const PENDING_98 = {
+  runFields: ["trust_class", "trust"],
+  operations: ["approve_run"],
+};
+
+test("fields and operations pending #98 are either in the spec or still listed as pending", () => {
+  const run = ok(op("/runs/{run_id}", "get")).properties!;
+  const present = PENDING_98.runFields.filter((f) => f in run);
+  // When this fails, #98 has merged: move the fields into the key lists above, assert approve_run's
+  // schema in a real test, and delete PENDING_98.
+  expect(present).toEqual([]);
+  expect(ids.includes("approve_run")).toBe(false);
+});
+
+test("when the spec carries trust, it matches the wire types the adapter reads", () => {
+  const run = ok(op("/runs/{run_id}", "get")).properties!;
+  if (!("trust" in run)) return;
+  const trust = run.trust as Schema;
+  const props = (trust.anyOf?.find((s) => s.properties) ?? trust).properties ?? {};
+  for (const k of Object.keys({
+    class: 1,
+    reasons: 1,
+    workflow_hash: 1,
+    decided_at: 1,
+  } satisfies Record<
+    keyof Pick<WireTrust, "class" | "reasons" | "workflow_hash" | "decided_at">,
+    1
+  >))
+    expect(Object.keys(props)).toContain(k);
+});
+
+test("approve_run, once it exists, takes head_sha and workflow_hash", () => {
+  const path = Object.entries(spec.paths).find(([, m]) =>
+    Object.values(m).some((o) => o.operationId === "approve_run"),
+  );
+  if (!path) return;
+  const o = Object.values(path[1]).find((x) => x.operationId === "approve_run")!;
+  const req = o.requestBody!.content["application/json"].schema;
+  for (const k of ["org", "head_sha", "workflow_hash"])
+    expect(Object.keys(req.properties!)).toContain(k);
+  expectKeys(
+    ok(o),
+    keysOf<WireApprove>({
+      run_id: true,
+      state: true,
+      released_jobs: true,
+      approved_by: true,
+      head_sha: true,
+      workflow_hash: true,
+    }),
+  );
 });
 
 test("run and job metadata from #66 are in the spec", () => {

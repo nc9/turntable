@@ -5,10 +5,10 @@ import {
   type ClientMessage,
   type ServerMessage,
   type WireCut,
-  type WireStep,
 } from "@longshore/core/realtime-protocol";
 import type { LongshoreApi } from "./client";
 import { createSnapshotSource } from "./polling-realtime";
+import { stepEvents } from "./step-events";
 import {
   type ConnectionStatus,
   type Realtime,
@@ -80,37 +80,6 @@ function serverTopics(t: Topic): string[] {
 }
 
 const enc = new TextEncoder();
-
-/** Step snapshots become the start/end events the log parser takes, keyed by log offset. */
-function stepEvents(attemptId: string, steps: readonly WireStep[]): RealtimeMessage[] {
-  const out: RealtimeMessage[] = [];
-  steps.forEach((s, i) => {
-    const index = i + 1;
-    const at = (iso: string | null) => (iso ? Date.parse(iso) : 0);
-    out.push({
-      type: "step",
-      attemptId,
-      index,
-      name: s.name,
-      phase: "start",
-      at: at(s.started_at),
-      logOffset: s.log_offset,
-    });
-    if (s.result) {
-      out.push({
-        type: "step",
-        attemptId,
-        index,
-        name: s.name,
-        phase: "end",
-        result: s.result as "success" | "failure" | "skipped" | "cancelled",
-        at: at(s.finished_at),
-        logOffset: steps[i + 1]?.log_offset ?? Number.MAX_SAFE_INTEGER,
-      });
-    }
-  });
-  return out;
-}
 
 const cutEvents = (attemptId: string, cuts: readonly WireCut[]): RealtimeMessage[] =>
   cuts.map((c) => ({

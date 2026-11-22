@@ -1,7 +1,7 @@
 // Response shapes of the REST API (`/api/v1`), written to match docs/openapi.json. The contract
 // test in tests/openapi-contract.test.ts fails when the spec stops matching what is listed here,
 // so a server change cannot silently break the adapter.
-import type { JobState } from "./types";
+import type { JobState, TrustClass } from "./types";
 
 export type WireRun = {
   id: string;
@@ -10,11 +10,27 @@ export type WireRun = {
   event: string;
   ref: string;
   sha: string | null;
+  workflow_name: string | null;
+  commit_message: string | null;
+  actor: string | null;
+  head_branch: string | null;
+  pr_number: number | null;
   state: JobState;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
   duration_ms: number | null;
+  /** Added with trust classes (#98); absent from older servers. */
+  trust_class?: TrustClass | null;
+  trust?: WireTrust | null;
+};
+
+export type WireTrust = {
+  class: TrustClass;
+  reasons: string[];
+  facts: Record<string, unknown>;
+  workflow_hash: string;
+  decided_at: string;
 };
 
 export type WireAttempt = {
@@ -34,6 +50,9 @@ export type WireJob = {
   job_key: string;
   name: string;
   state: JobState;
+  needs: string[];
+  matrix: Record<string, unknown> | null;
+  approval_kind: "untrusted_author" | "environment" | null;
   exit_code: number | null;
   started_at: string | null;
   finished_at: string | null;
@@ -49,7 +68,8 @@ export type WireRunList = { runs: WireRun[]; next_cursor: string | null };
 export type WireLog = {
   job_id: string;
   attempt: number | null;
-  mode: "head" | "tail" | "range";
+  mode: "head" | "tail" | "range" | "grep";
+  matches: number;
   text: string;
   offset: number;
   bytes: number;
@@ -73,3 +93,106 @@ export type WireCancel = {
 };
 
 export type WireError = { error: { code: string; message: string; details?: unknown } };
+
+export type WireWhoami = {
+  kind: "token" | "member";
+  id: string;
+  name: string | null;
+  role: "reader" | "operator" | "release_operator" | "owner" | "admin" | "member" | "viewer";
+  org: string;
+  project: string | null;
+  expires_at: string | null;
+};
+
+export type WireOrgs = {
+  orgs: { id: string; slug: string; name: string }[];
+  next_cursor: string | null;
+};
+export type WireProjects = {
+  projects: {
+    id: string;
+    slug: string;
+    name: string;
+    repos: { forge: string; owner: string; repo: string }[];
+  }[];
+  next_cursor: string | null;
+};
+
+export type WireStep = {
+  key: string;
+  stage: "pre" | "main" | "post";
+  index: number;
+  name: string;
+  result: "success" | "failure" | "skipped" | "cancelled" | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  log_offset: number;
+};
+export type WireSteps = { job_id: string; attempt: number | null; steps: WireStep[] };
+export type WireCuts = {
+  job_id: string;
+  attempt: number | null;
+  cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+};
+
+export type WireDigest = {
+  job_id: string;
+  job_key: string;
+  state: JobState;
+  attempt: number | null;
+  step: {
+    name: string;
+    stage: "pre" | "main" | "post";
+    index: number;
+    result: "success" | "failure" | "skipped" | "cancelled" | null;
+  } | null;
+  basis: "annotation" | "error_pattern" | "tail" | null;
+  excerpt: string;
+  truncated: boolean;
+  infra_error_reason: string | null;
+};
+export type WireFailureDigest = { failing_jobs: number; digests: WireDigest[] };
+
+export type WireRerun = {
+  run_id: string;
+  state: JobState;
+  reruns: {
+    job_id: string;
+    job_key: string;
+    attempt: number;
+    previous_state: JobState;
+    state: JobState;
+    reruns_used: number;
+  }[];
+};
+
+export type WireApprove = {
+  run_id: string;
+  state: JobState;
+  released_jobs: number;
+  approved_by: string;
+  head_sha: string;
+  workflow_hash: string;
+};
+
+export type WireIngestStatus = {
+  running: boolean;
+  rate_limit: {
+    limit: number | null;
+    remaining: number | null;
+    reset_at: string | null;
+    resource: string | null;
+    observed_at: string;
+  } | null;
+  repos: {
+    repo: string;
+    project: string;
+    last_poll_at: string | null;
+    last_outcome: "ok" | "rate_limited" | "error" | null;
+    last_error: string | null;
+    next_poll_at: string | null;
+    consecutive_failures: number;
+    runs_created: number;
+  }[];
+};

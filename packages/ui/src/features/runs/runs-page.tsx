@@ -25,6 +25,7 @@ import { STATE_META } from "@/lib/states";
 import { cn } from "@/lib/utils";
 import type { RunsSearch } from "@/router";
 import { RefChip, RunLink, ShaChip } from "./common";
+import { TrustBadge } from "./trust";
 
 const EVENTS = ["push", "pull_request", "workflow_dispatch"];
 const FILTER_STATES: JobState[] = [
@@ -108,6 +109,7 @@ function RunRowItem({
           <ShaChip sha={run.sha} />
           <span>{run.event.replace("_", " ")}</span>
           {run.actor ? <span>{run.actor}</span> : null}
+          <TrustBadge run={run} plain className="py-0" />
         </div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-dim">

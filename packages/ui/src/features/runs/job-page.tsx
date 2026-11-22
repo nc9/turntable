@@ -1,6 +1,7 @@
 import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { ChevronRight, Info } from "lucide-react";
 import { useMemo } from "react";
+import { getBackend } from "@/api";
 import { EmptyState, ErrorState } from "@/components/empty-state";
 import { Duration } from "@/components/live-clock";
 import { StateBadge, StateIcon } from "@/components/state-badge";
@@ -12,6 +13,9 @@ import { STATE_META } from "@/lib/states";
 import { cn } from "@/lib/utils";
 import type { JobSearch } from "@/router";
 import { ApprovalNotice } from "./approval";
+import { FailureDigestPanel } from "./failure-digest";
+import { RerunButton } from "./rerun-dialog";
+import { EgressBadge, NoticeBadges, TrustBadge, useLogNotices } from "./trust";
 import { AttemptChip } from "./run-page";
 import { useRunAttempts, useRunJobs, useRunRow } from "./common";
 
@@ -29,6 +33,9 @@ export function JobPage() {
   const attempts = useRunAttempts(useMemo(() => (job ? [job.id] : []), [job]));
   const orgSlug = scope.orgSlug as string;
   const projectSlug = scope.projectSlug as string;
+  const notices = useLogNotices(
+    (attempts.find((a) => a.attempt === search.attempt) ?? attempts.at(-1))?.id ?? null,
+  );
 
   if (sync.error && !job)
     return (
@@ -97,9 +104,18 @@ export function JobPage() {
         {state === "failure" && selected?.exitCode != null ? (
           <span className="font-mono text-xs text-st-failure">exit {selected.exitCode}</span>
         ) : null}
+        <TrustBadge run={run} />
+        <EgressBadge run={run} />
+        <NoticeBadges notices={notices} />
+        {getBackend().api.capabilities.rerun ? (
+          <span className="ml-auto">
+            <RerunButton run={run} jobs={jobs} job={job} />
+          </span>
+        ) : null}
       </div>
 
-      <ApprovalNotice jobs={[job]} />
+      <ApprovalNotice run={run} jobs={[job]} />
+      <FailureDigestPanel job={job} attempt={selected} />
 
       {attempts.length > 1 ? (
         <div

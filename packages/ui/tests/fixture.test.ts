@@ -82,7 +82,7 @@ test("change events replay from a cursor, then go live, without gaps or duplicat
   }
 });
 
-test("rerun of a failed job requeues it; cancel stops unfinished jobs", async () => {
+test("cancel stops unfinished jobs; rerun requeues failed jobs with a reason", async () => {
   const fx = createFixture({ latency: [0, 0], tickMs: 1000, seed: "t3" });
   try {
     const active = [...fx.world.runs.values()].find(
@@ -91,14 +91,84 @@ test("rerun of a failed job requeues it; cancel stops unfinished jobs", async ()
     await fx.api.cancel({ runId: active.id });
     const detail = await fx.api.getRun(active.id);
     expect(detail.run.status).toBe("cancelled");
-    expect(
-      detail.jobs.every(
-        (j) => j.state === "cancelled" || j.state === "success" || j.state === "failure",
-      ),
-    ).toBe(true);
-    const { runId } = await fx.api.rerun({ runId: active.id });
-    expect(runId).not.toBe(active.id);
-    expect(fx.world.runs.get(runId)?.status).toBe("queued");
+    // Nothing failed, so there is nothing to rerun by default.
+    await expect(fx.api.rerun({ runId: active.id, reason: "try again" })).rejects.toThrow();
+
+    const failed = [...fx.world.runs.values()].find((r) => r.status === "failure")!;
+    const res = await fx.api.rerun({ runId: failed.id, reason: "flaky runner" });
+    expect(res.runId).toBe(failed.id);
+    expect(res.reruns.length).toBeGreaterThan(0);
+    for (const r of res.reruns) {
+      expect(r.previousState === "failure" || r.previousState === "infra_error").toBe(true);
+      expect(fx.world.jobs.get(r.jobId)?.state).toBe("queued");
+    }
+    expect(fx.world.runs.get(failed.id)?.status).toBe("running");
+  } finally {
+    fx.stop();
+  }
+});
+
+test("a held untrusted run approves only for the sha and workflow hash it shows", async () => {
+  const fx = createFixture({ latency: [0, 0], tickMs: 1000, seed: "t4" });
+  try {
+    const held = [...fx.world.runs.values()].find(
+      (r) => r.status === "awaiting_approval" && r.trustClass === "untrusted_pr",
+    )!;
+    expect(held.trustClass).toBe("untrusted_pr");
+    const hash = held.trust!.workflowHash;
+    await expect(
+      fx.api.approveRun({ runId: held.id, headSha: "0".repeat(40), workflowHash: hash }),
+    ).rejects.toThrow(/sha/);
+    await expect(
+      fx.api.approveRun({ runId: held.id, headSha: held.sha!, workflowHash: "bad" }),
+    ).rejects.toThrow(/workflow/);
+    expect(fx.world.runs.get(held.id)?.status).toBe("awaiting_approval");
+    const ok = await fx.api.approveRun({ runId: held.id, headSha: held.sha!, workflowHash: hash });
+    expect(ok.releasedJobs).toBeGreaterThan(0);
+    expect(fx.world.runs.get(held.id)?.status).toBe("running");
+    expect(fx.world.runs.get(held.id)?.trust?.decidedAt).not.toBeNull();
+    await expect(
+      fx.api.approveRun({ runId: held.id, headSha: held.sha!, workflowHash: hash }),
+    ).rejects.toThrow();
+  } finally {
+    fx.stop();
+  }
+});
+
+test("whoami reports the fixture role", async () => {
+  const fx = createFixture({ latency: [0, 0], tickMs: 1000, role: "operator" });
+  try {
+    expect((await fx.api.whoami()).role).toBe("operator");
+  } finally {
+    fx.stop();
+  }
+});
+
+test("failure digest, whole-log grep and ingest status answer from the fixture world", async () => {
+  const fx = createFixture({ latency: [0, 0], tickMs: 1000, seed: "t5" });
+  try {
+    const failed = [...fx.world.runs.values()].find((r) => r.status === "failure")!;
+    const d = await fx.api.failureDigest({ runId: failed.id });
+    expect(d.failingJobs).toBeGreaterThan(0);
+    expect(d.digests.every((x) => typeof x.excerpt === "string")).toBe(true);
+
+    const att = [...fx.world.attempts.values()].find((a) => a.finishedAt !== null)!;
+    const g = await fx.api.grepLog({
+      attemptId: att.id,
+      pattern: "e",
+      ignoreCase: true,
+      maxMatches: 5,
+    });
+    expect(g.matches).toBeGreaterThan(0);
+    expect(g.hits.length).toBeLessThanOrEqual(5);
+    expect(g.hits.every((h) => h.offset >= 0 && h.offset < g.totalBytes)).toBe(true);
+    await expect(
+      fx.api.grepLog({ attemptId: att.id, pattern: "(", regex: true }),
+    ).rejects.toThrow();
+
+    const ing = await fx.api.ingestStatus();
+    expect(ing.repos.length).toBeGreaterThan(0);
+    expect(ing.repos.some((r) => r.consecutiveFailures > 0)).toBe(true);
   } finally {
     fx.stop();
   }

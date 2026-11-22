@@ -36,6 +36,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { isCollapsed, visibleLines, type LogLine, type LogParser } from "@/log/parser";
 import { findMatches, type Match } from "@/log/search";
+import { LogGrepPanel } from "./log-grep";
 import { LogRow } from "./log-row";
 import { LogSidebar } from "./log-sidebar";
 import { downloadRawLog, VIEW_CAP, useAttemptLog } from "./use-log";
@@ -136,6 +137,8 @@ export function LogViewer({
   const deferredQuery = useDeferredValue(query);
   const [matchIdx, setMatchIdx] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [grepOpen, setGrepOpen] = useState(false);
+  const [pendingJump, setPendingJump] = useState<number | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
@@ -264,6 +267,18 @@ export function LogViewer({
       log.loadMore();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, version, log.truncated, log.loadingMore, log.status]);
+
+  // A whole-log search hit: scroll to it, pulling in more of the log until its line exists.
+  useEffect(() => {
+    if (pendingJump === null || log.status !== "ready") return;
+    const line = parser.lineAtOffset(pendingJump);
+    if (line >= 0) {
+      setPendingJump(null);
+      revealLine(line);
+    } else if (log.truncated && !log.loadingMore) log.loadMore();
+    else if (!log.truncated && !log.loadingMore) setPendingJump(null);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingJump, version, log.truncated, log.loadingMore, log.status]);
 
   // A finished attempt with no permalink opens at its first error.
   useEffect(() => {
@@ -588,12 +603,25 @@ export function LogViewer({
             >
               <ChevronDown />
             </Button>
+            {query && log.truncated ? (
+              <Tooltip label="Search the parts of the log that are not loaded here">
+                <Button
+                  variant={grepOpen ? "secondary" : "ghost"}
+                  size="xs"
+                  onClick={() => setGrepOpen((o) => !o)}
+                  aria-pressed={grepOpen}
+                >
+                  Whole log
+                </Button>
+              </Tooltip>
+            ) : null}
             <Button
               variant="ghost"
               size="icon-xs"
               onClick={() => {
                 setQuery("");
                 setSearchOpen(false);
+                setGrepOpen(false);
               }}
               aria-label="Close search"
             >
@@ -672,6 +700,16 @@ export function LogViewer({
           </Tooltip>
         </div>
       </div>
+
+      {grepOpen && query && attemptId ? (
+        <LogGrepPanel
+          attemptId={attemptId}
+          query={deferredQuery}
+          loadedBytes={parser.nextOffset}
+          onJump={setPendingJump}
+          onClose={() => setGrepOpen(false)}
+        />
+      ) : null}
 
       <div className="flex min-h-0 flex-1">
         <div className="hidden w-64 shrink-0 border-r border-line lg:block">{sidebar}</div>

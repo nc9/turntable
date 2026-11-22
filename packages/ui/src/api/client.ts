@@ -9,6 +9,12 @@ import type {
   RunFilter,
   StepEvent,
   CutRecord,
+  ApproveResult,
+  GrepResult,
+  IngestStatus,
+  JobDigest,
+  RerunResult,
+  Whoami,
 } from "./types";
 
 /**
@@ -18,8 +24,10 @@ import type {
  * `listOrgs` and `listProjects` are navigation helpers the registry will need to expose.
  */
 export type ApiCapabilities = {
-  /** The API has an operation to rerun a run or a job. */
+  /** The API can rerun jobs of a run (`rerun`). */
   rerun: boolean;
+  /** The API can approve a held run (`approve_run`). */
+  approve: boolean;
 };
 
 export interface LongshoreApi {
@@ -35,7 +43,33 @@ export interface LongshoreApi {
   /** Output-cap cuts for an attempt, as metadata (never text in the log). */
   jobCuts(args: { attemptId: string }): Promise<CutRecord[]>;
   checksForSha(args: { projectId: string; sha: string }): Promise<CheckSummary>;
-  rerun(args: { runId: string; jobId?: string }): Promise<{ runId: string }>;
+  /** Reruns jobs of a run (by job key; omit for the failed ones) with a reason that is audited. */
+  rerun(args: { runId: string; jobKeys?: string[]; reason: string }): Promise<RerunResult>;
+  /** The caller's role and scope. */
+  whoami(): Promise<Whoami>;
+  /** Releases a run held for an untrusted author, bound to the sha and workflow hash read. */
+  approveRun(args: {
+    runId: string;
+    headSha: string;
+    workflowHash: string;
+  }): Promise<ApproveResult>;
+  /** Why failing jobs failed: step, basis and an excerpt (plain text). */
+  failureDigest(args: {
+    runId?: string;
+    jobId?: string;
+  }): Promise<{ failingJobs: number; digests: JobDigest[] }>;
+  /** Server-side search of a job's whole log, for hits beyond the part loaded in the viewer. */
+  grepLog(args: {
+    attemptId: string;
+    pattern: string;
+    regex?: boolean;
+    ignoreCase?: boolean;
+    context?: number;
+    maxMatches?: number;
+    fromOffset?: number;
+  }): Promise<GrepResult>;
+  /** Per-repo poll ingest status and the forge rate budget. */
+  ingestStatus(): Promise<IngestStatus>;
   cancel(args: { runId: string }): Promise<void>;
   /** Event feed from a cursor (the same events the realtime transport pushes). */
   events(args: {

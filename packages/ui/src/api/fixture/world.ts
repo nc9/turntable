@@ -1,5 +1,18 @@
 import type { ChangeEvent } from "../realtime";
-import type { Job, JobAttempt, JobState, Org, Project, Run } from "../types";
+import type {
+  ApproveResult,
+  GrepResult,
+  IngestStatus,
+  Job,
+  JobAttempt,
+  JobDigest,
+  JobState,
+  Org,
+  Project,
+  RerunResult,
+  Run,
+  TrustClass,
+} from "../types";
 import { generateLog, type GeneratedLog, type LogKind, type LogOutcome } from "./log-gen";
 import { createRng, fakeUlid, type Rng } from "./prng";
 
@@ -244,6 +257,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
     if (run.event === "pull_request") run.ref = `refs/pull/${rng.int(40, 220)}/merge`;
     if (wf.name === "Release") run.ref = `refs/tags/v0.${rng.int(1, 9)}.${rng.int(0, 9)}`;
+    classify(run, false);
     return { run, templates };
   }
 
@@ -382,6 +396,28 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       .toSorted((a, b) => a.attempt - b.attempt);
   }
 
+  /** Trust class and the workflow hash a decision binds to, as the scheduler's trust module sets them. */
+  function classify(run: Run, untrustedAuthor: boolean): void {
+    const trustClass: TrustClass = untrustedAuthor
+      ? "untrusted_pr"
+      : run.ref.startsWith("refs/tags/")
+        ? "release"
+        : run.event === "pull_request"
+          ? "trusted_pr"
+          : "protected";
+    run.trustClass = trustClass;
+    run.prNumber = run.ref.startsWith("refs/pull/") ? Number(run.ref.split("/")[2]) : null;
+    run.headBranch = run.prNumber != null ? "contrib/fix-typo" : run.ref.replace("refs/heads/", "");
+    run.trust = {
+      reasons: untrustedAuthor
+        ? ["author has no prior merged contribution", "workflow files changed in this PR"]
+        : [],
+      workflowHash: sha() + sha().slice(0, 24),
+      decidedAt: null,
+    };
+    run.egress = trustClass === "release" ? "open" : "none";
+  }
+
   function startRunning(
     project: Project,
     wf: WorkflowTemplate,
@@ -411,6 +447,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       run.actor = "first-time-contributor";
       run.status = "awaiting_approval";
     }
+    classify(run, untrustedAuthor);
     failingRuns.set(run.id, failing);
     emit("run", run);
     for (const row of rows) emit("job", row);
@@ -602,40 +639,183 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
   }
 
   // ---- writes ----
-  function rerun(runId: string, jobId?: string): { runId: string } {
+  function rerun(runId: string, jobKeys?: string[]): RerunResult {
     const run = runs.get(runId);
     if (!run) throw new Error(`run not found: ${runId}`);
-    if (jobId) {
-      const job = jobs.get(jobId);
-      if (!job || job.runId !== runId) throw new Error(`job not found: ${jobId}`);
-      const ids = new Set<string>([job.id]);
-      // Re-queue the job and anything downstream that was cancelled.
-      for (const j of jobsOf(runId))
-        if (j.state === "cancelled" || j.state === "skipped") ids.add(j.id);
-      for (const jid of ids) {
-        const j = jobs.get(jid)!;
+    const all = jobsOf(runId);
+    const targets = jobKeys
+      ? all.filter((j) => jobKeys.includes(j.jobKey))
+      : all.filter((j) => j.state === "failure" || j.state === "infra_error");
+    if (targets.length === 0) throw new Error("no jobs to rerun");
+    const reruns: RerunResult["reruns"] = [];
+    const ids = new Set<string>(targets.map((j) => j.id));
+    // Anything downstream that was cancelled or skipped runs again too.
+    for (const j of all) if (j.state === "cancelled" || j.state === "skipped") ids.add(j.id);
+    for (const jid of ids) {
+      const j = jobs.get(jid)!;
+      const previousState = j.state;
+      j.state = "queued";
+      j.exitCode = null;
+      j.finishedAt = null;
+      retryAt.delete(jid);
+      emit("job", j);
+      if (targets.includes(j))
+        reruns.push({
+          jobId: j.id,
+          jobKey: j.jobKey,
+          attempt: attemptsOf(j.id).length + 1,
+          previousState,
+          state: "queued",
+        });
+    }
+    run.status = "running";
+    run.finishedAt = null;
+    failingRuns.set(runId, false);
+    emit("run", run);
+    return { runId, state: "running", reruns };
+  }
+
+  /** Approve a held run. Binds to the sha and workflow hash the approver saw, like `approve_run`. */
+  function approve(runId: string, headSha: string, workflowHash: string): ApproveResult {
+    const run = runs.get(runId);
+    if (!run) throw new Error(`run not found: ${runId}`);
+    if (run.status !== "awaiting_approval") throw new Error("run is not awaiting approval");
+    if (run.sha !== headSha) throw new Error("head sha changed since approval was requested");
+    if (run.trust?.workflowHash !== workflowHash)
+      throw new Error("workflow changed since approval was requested");
+    let released = 0;
+    for (const j of jobsOf(runId)) {
+      if (j.state === "awaiting_approval" && j.approval === "untrusted_author") {
         j.state = "queued";
-        j.exitCode = null;
-        j.finishedAt = null;
-        retryAt.delete(jid);
+        j.approval = null;
+        released += 1;
         emit("job", j);
       }
-      run.status = "running";
-      run.finishedAt = null;
-      failingRuns.set(runId, false);
-      emit("run", run);
-      return { runId };
     }
-    const project = projects.find((p) => p.id === run.projectId)!;
-    const wf = WORKFLOWS.find((w) => w.path === run.workflowPath) ?? WORKFLOWS[0]!;
-    const newId = startRunning(project, wf, false);
-    const created = runs.get(newId)!;
-    created.sha = run.sha;
-    created.ref = run.ref;
-    created.event = "workflow_dispatch";
-    created.commitMessage = run.commitMessage;
-    emit("run", created);
-    return { runId: newId };
+    run.status = "running";
+    if (run.trust) run.trust = { ...run.trust, decidedAt: now() };
+    emit("run", run);
+    return {
+      runId,
+      state: "queued",
+      releasedJobs: released,
+      approvedBy: "you",
+      headSha,
+      workflowHash,
+    };
+  }
+
+  const stripAnsi = (t: string): string =>
+    // oxlint-disable-next-line no-control-regex
+    t.replace(/\u001b\[[0-9;]*m/g, "");
+  const textOf = (attemptId: string): string[] => {
+    const l = logOf(attemptId);
+    if (!l) return [];
+    return stripAnsi(new TextDecoder().decode(l.log.bytes.slice(0, l.available))).split("\n");
+  };
+
+  function failureDigest(
+    runId?: string,
+    jobId?: string,
+  ): { failingJobs: number; digests: JobDigest[] } {
+    const rows = jobsOf(runId ?? jobs.get(jobId ?? "")?.runId ?? "").filter(
+      (j) => (j.state === "failure" || j.state === "infra_error") && (!jobId || j.id === jobId),
+    );
+    const digests = rows.map((j): JobDigest => {
+      const att = attemptsOf(j.id).at(-1);
+      const lines = att ? textOf(att.id) : [];
+      const err = lines.findIndex((l) => /error|✗|fail/i.test(l));
+      const from = err >= 0 ? Math.max(0, err - 1) : Math.max(0, lines.length - 8);
+      const excerpt = lines.slice(from, from + 8).join("\n");
+      const failedStep = (att ? logOf(att.id)?.steps : undefined)?.find(
+        (st) => st.phase === "end" && st.result === "failure",
+      );
+      return {
+        jobId: j.id,
+        jobKey: j.jobKey,
+        state: j.state,
+        attempt: att?.attempt ?? null,
+        step: failedStep
+          ? {
+              name: failedStep.name,
+              stage: "main" as const,
+              index: failedStep.index,
+              result: failedStep.result ?? null,
+            }
+          : null,
+        basis: j.state === "infra_error" ? null : err >= 0 ? "error_pattern" : "tail",
+        excerpt,
+        truncated: false,
+        infraErrorReason: j.state === "infra_error" ? (att?.errorClass ?? "sandbox_lost") : null,
+      };
+    });
+    return { failingJobs: digests.length, digests };
+  }
+
+  function grepLog(
+    attemptId: string,
+    pattern: string,
+    opts: { regex?: boolean; ignoreCase?: boolean; context?: number; maxMatches?: number },
+  ): GrepResult {
+    const lines = textOf(attemptId);
+    let re: RegExp;
+    try {
+      const src = opts.regex ? pattern : pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      re = new RegExp(src, opts.ignoreCase ? "i" : "");
+    } catch {
+      throw new Error("invalid regular expression");
+    }
+    const max = opts.maxMatches ?? 200;
+    const ctx = opts.context ?? 0;
+    const hits: GrepResult["hits"] = [];
+    let matches = 0;
+    let offset = 0;
+    const starts: number[] = [];
+    for (const l of lines) {
+      starts.push(offset);
+      offset += new TextEncoder().encode(l).length + 1;
+    }
+    const emitted = new Set<number>();
+    for (let i = 0; i < lines.length; i++) {
+      if (!re.test(lines[i]!)) continue;
+      matches += 1;
+      if (hits.filter((h) => !h.context).length >= max) continue;
+      for (let k = Math.max(0, i - ctx); k <= Math.min(lines.length - 1, i + ctx); k++) {
+        if (emitted.has(k)) {
+          const prior = hits.find((h) => h.offset === starts[k]);
+          if (prior && k === i) prior.context = false;
+          continue;
+        }
+        emitted.add(k);
+        hits.push({ offset: starts[k]!, text: lines[k]!, context: k !== i });
+      }
+    }
+    hits.sort((a, b) => a.offset - b.offset);
+    return { hits, matches, nextOffset: null, totalBytes: offset };
+  }
+
+  function ingestStatus(): IngestStatus {
+    const t = now();
+    return {
+      running: true,
+      rateLimit: {
+        limit: 5000,
+        remaining: 4312,
+        resetAt: t + 41 * 60_000,
+        resource: "core",
+        observedAt: t - 20_000,
+      },
+      repos: projects.map((p, i) => ({
+        repo: `${orgs.find((o) => o.id === p.orgId)?.slug ?? "org"}/${p.slug}`,
+        project: p.slug,
+        lastPollAt: t - (20 + i * 40) * 1000,
+        lastOutcome: i === 1 ? "rate_limited" : i === 2 ? "error" : "ok",
+        lastError: i === 2 ? "GitHub API returned 502 for /repos/…/actions/runs" : null,
+        nextPollAt: t + (10 + i * 15) * 1000,
+        consecutiveFailures: i === 2 ? 3 : 0,
+        runsCreated: 120 - i * 17,
+      })),
+    };
   }
 
   function cancel(runId: string): void {
@@ -674,6 +854,10 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     maybeSpawn,
     logOf,
     rerun,
+    approve,
+    failureDigest,
+    grepLog,
+    ingestStatus,
     cancel,
     cursor,
     now,

@@ -153,7 +153,7 @@ const toInt = (s: string | undefined): number | null => {
 };
 
 /** Plain-text view of a raw fragment: same neutralisation as a full line, no styling. */
-function sanitize(raw: string): string {
+export function sanitize(raw: string): string {
   let s = raw.replace(UNSAFE_RE, "");
   const cr = s.lastIndexOf("\r");
   if (cr !== -1) s = s.slice(cr + 1) || s.slice(0, cr);
