@@ -18,6 +18,11 @@ export interface PlanOptions {
   event?: string;
   /** Sandbox root dir. Default `/tmp/tt-act`. */
   root?: string;
+  /**
+   * Reads a repo file (path relative to the repo root) so local composite actions can be scanned
+   * for remote actions and untrusted expressions. Return undefined when the file is missing.
+   */
+  readFile?: (path: string) => string | undefined;
 }
 
 export interface PlannedAction {
@@ -37,9 +42,21 @@ export interface PlannedAction {
   dir: string;
 }
 
+/** A repo file the plan owns: the workflow and any local composite actions it reaches. */
+export interface PlanFile {
+  /** Path relative to the repo root. */
+  path: string;
+  /** Original text. */
+  source: string;
+  /** Text with every `uses: owner/repo@ref` rewritten to `@sha`. Same as source until resolved. */
+  text: string;
+}
+
 /** A step that interpolates attacker-controllable context straight into a script. */
 export interface PlanWarning {
   code: "untrusted-expression";
+  /** File the step is in. */
+  file?: string;
   step: string;
   expression: string;
   message: string;
@@ -58,6 +75,12 @@ export interface JobPlan {
    * resolveActions before runJob; runJob refuses an unresolved remote action.
    */
   actions: PlannedAction[];
+  /** Runner labels the job asks for. */
+  labels: string[];
+  /** act event name. */
+  event: string;
+  /** Files to overwrite in the delivered repo so every `uses:` is pinned to its sha. */
+  files: PlanFile[];
   /** Non-fatal findings. Failing lints come later. */
   warnings: PlanWarning[];
   /** Full command: act binary then args. Run with cwd = layout.repo. */
@@ -125,53 +148,102 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     }
   }
 
-  const steps = Array.isArray(job.steps) ? job.steps : [];
   const layout = layoutFor(opts.root);
-  const checkoutRefs: string[] = [];
   const actions: PlannedAction[] = [];
   const warnings: PlanWarning[] = [];
-  for (const [i, s] of steps.entries()) {
-    if (!isObj(s)) continue;
-    const stepName = typeof s.name === "string" ? s.name : `step ${i + 1}`;
-    if (typeof s.run === "string") warnings.push(...untrustedIn(stepName, s.run));
-    if (isObj(s.with) && typeof s.with.script === "string") {
-      warnings.push(...untrustedIn(stepName, s.with.script));
+  const files: PlanFile[] = [{ path: opts.workflowPath, source: workflowYaml, text: workflowYaml }];
+  const seenLocal = new Set<string>();
+
+  const scan = (file: string, steps: unknown[], depth: number): void => {
+    for (const [i, s] of steps.entries()) {
+      if (!isObj(s)) continue;
+      const stepName = typeof s.name === "string" ? s.name : `step ${i + 1}`;
+      const found: PlanWarning[] = [];
+      if (typeof s.run === "string") found.push(...untrustedIn(stepName, s.run));
+      if (isObj(s.with) && typeof s.with.script === "string") {
+        found.push(...untrustedIn(stepName, s.with.script));
+      }
+      warnings.push(...found.map((w) => ({ ...w, file })));
+      if (typeof s.uses !== "string") continue;
+      const uses = s.uses.trim();
+      if (uses.startsWith("docker://")) {
+        throw new PlanError(
+          "docker:// action",
+          `step uses ${uses}; docker actions are unsupported`,
+        );
+      }
+      if (uses.startsWith("./")) {
+        scanLocal(uses.replace(/^\.\//, "").replace(/\/$/, ""), depth + 1);
+        continue;
+      }
+      if (uses.startsWith("../")) continue;
+      if (actions.some((a) => a.uses === uses)) continue;
+      const m = /^([^/@\s]+\/[^/@\s]+)((?:\/[^@\s]+)?)@(\S+)$/.exec(uses);
+      if (!m) throw new PlanError("action ref", `cannot parse action reference "${uses}"`);
+      const [, repo = "", subpath = "", ref = ""] = m;
+      const kind = uses.startsWith("actions/checkout@") ? "checkout" : "remote";
+      actions.push({
+        uses,
+        repo,
+        subpath: subpath.replace(/^\//, ""),
+        ref,
+        ...(/^[0-9a-f]{40}$/.test(ref) ? { sha: ref } : {}),
+        kind,
+        dir: `${layout.stubs}/${kind === "checkout" ? "checkout" : "action"}-${actions.length}`,
+      });
     }
-    if (typeof s.uses !== "string") continue;
-    const uses = s.uses.trim();
-    if (uses.startsWith("docker://")) {
-      throw new PlanError("docker:// action", `step uses ${uses}; docker actions are unsupported`);
+  };
+
+  const scanLocal = (dir: string, depth: number): void => {
+    if (depth > 5 || seenLocal.has(dir) || !opts.readFile) return;
+    seenLocal.add(dir);
+    for (const name of ["action.yml", "action.yaml"]) {
+      const path = `${dir}/${name}`;
+      const text = opts.readFile(path);
+      if (text === undefined) continue;
+      files.push({ path, source: text, text });
+      let doc2: unknown;
+      try {
+        doc2 = parse(text);
+      } catch (e) {
+        throw new PlanError("yaml", `${path} is not valid YAML: ${(e as Error).message}`);
+      }
+      const runs = isObj(doc2) ? doc2.runs : undefined;
+      if (isObj(runs) && runs.using === "composite" && Array.isArray(runs.steps)) {
+        scan(path, runs.steps, depth);
+      }
+      return;
     }
-    if (uses.startsWith("./") || uses.startsWith("../")) continue;
-    if (actions.some((a) => a.uses === uses)) continue;
-    const m = /^([^/@\s]+\/[^/@\s]+)((?:\/[^@\s]+)?)@(\S+)$/.exec(uses);
-    if (!m) throw new PlanError("action ref", `cannot parse action reference "${uses}"`);
-    const [, repo = "", subpath = "", ref = ""] = m;
-    const kind = uses.startsWith("actions/checkout@") ? "checkout" : "remote";
-    if (kind === "checkout") checkoutRefs.push(uses);
-    const dir =
-      kind === "checkout"
-        ? `${layout.stubs}/checkout-${checkoutRefs.length - 1}`
-        : `${layout.stubs}/action-${actions.length}`;
-    actions.push({
-      uses,
-      repo,
-      subpath: subpath.replace(/^\//, ""),
-      ref,
-      ...(/^[0-9a-f]{40}$/.test(ref) ? { sha: ref } : {}),
-      kind,
-      dir,
-    });
-  }
-  const stubDirs = actions.filter((a) => a.kind === "checkout").map((a) => a.dir);
-  const argv = [
-    layout.act,
-    opts.event ?? "push",
-    "-W",
-    opts.workflowPath,
-    "-j",
+  };
+
+  scan(opts.workflowPath, Array.isArray(job.steps) ? job.steps : [], 0);
+  const plan: JobPlan = {
     jobId,
-    ...labels.filter((l) => l !== "self-hosted").flatMap((l) => ["-P", `${l}=-self-hosted`]),
+    workflowPath: opts.workflowPath,
+    layout,
+    checkoutRefs: actions.filter((a) => a.kind === "checkout").map((a) => a.uses),
+    stubDirs: actions.filter((a) => a.kind === "checkout").map((a) => a.dir),
+    actions,
+    files,
+    warnings,
+    labels,
+    event: opts.event ?? "push",
+    argv: [],
+    cwd: layout.repo,
+  };
+  return withArgv(plan);
+}
+
+/** Builds the act command. Remote actions are keyed by sha once known, else by the written ref. */
+function withArgv(plan: JobPlan): JobPlan {
+  const argv = [
+    plan.layout.act,
+    plan.event,
+    "-W",
+    plan.workflowPath,
+    "-j",
+    plan.jobId,
+    ...plan.labels.filter((l) => l !== "self-hosted").flatMap((l) => ["-P", `${l}=-self-hosted`]),
     "-P",
     "self-hosted=-self-hosted",
     "--json",
@@ -182,21 +254,46 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     "--container-daemon-socket",
     "-",
     // Every action is served from a local dir: the checkout stub, or the sha-delivered copy.
-    ...[...new Map(actions.map((a) => [`${a.repo}@${a.ref}`, a.dir])).entries()].flatMap(
-      ([key, dir]) => ["--local-repository", `${key}=${dir}`],
-    ),
+    ...[
+      ...new Map(plan.actions.map((a) => [`${a.repo}@${a.sha ?? a.ref}`, a.dir])).entries(),
+    ].flatMap(([key, dir]) => ["--local-repository", `${key}=${dir}`]),
   ];
-  return {
-    jobId,
-    workflowPath: opts.workflowPath,
-    layout,
-    checkoutRefs,
-    stubDirs,
-    actions,
-    warnings,
-    argv,
-    cwd: layout.repo,
-  };
+  assertNoDockerAccess(argv);
+  return { ...plan, argv };
+}
+
+/** Asserts nothing in a command exposes the container runtime to a job. */
+export function assertNoDockerAccess(argv: readonly string[]): void {
+  for (const [i, a] of argv.entries()) {
+    if (a.includes("docker.sock") || a === "--privileged" || a.startsWith("--privileged=")) {
+      throw new PlanError("container runtime access", `refusing to pass ${a} to a job`);
+    }
+    if (a === "--container-daemon-socket" && argv[i + 1] !== "-") {
+      throw new PlanError("container runtime access", "container-daemon-socket must be -");
+    }
+    if (a === "-b" || a === "--bind") {
+      throw new PlanError("container runtime access", "bind mounts are not allowed");
+    }
+  }
+}
+
+const esc = (s: string): string => s.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Rewrites `uses: owner/repo@tag` to `@sha` for every resolved action. Comments survive. */
+export function rewriteUses(text: string, actions: readonly PlannedAction[]): string {
+  let out = text;
+  for (const a of actions) {
+    if (!a.sha || a.sha === a.ref) continue;
+    const re = new RegExp(
+      `^(\\s*(?:-\\s*)?uses:\\s*["']?)${esc(a.uses)}(["']?[ \\t]*(?:#.*)?)$`,
+      "gm",
+    );
+    out = out.replace(re, (_m, pre: string, post: string) => {
+      const pinned = `${a.repo}${a.subpath ? `/${a.subpath}` : ""}@${a.sha}`;
+      return `${pre}${pinned}${post.includes("#") ? post : `${post} # ${a.ref}`}`;
+    });
+  }
+  return out;
 }
 
 /**
@@ -209,7 +306,7 @@ const UNTRUSTED: RegExp[] = [
   /github\.event\.pull_request\.head\.(ref|label)\b/,
   /github\.event\.pull_request\.head\.repo\.(default_branch|description|homepage)\b/,
   /github\.event\.pages\.[^.}\s]+\.page_name\b/,
-  /github\.event\.commits\.[^.}\s]+\.(message|author\.(email|name))\b/,
+  /github\.event\.commits(\[[^\]]*\]|\.[^.}\s]+)\.(message|author\.(email|name))\b/,
   /github\.event\.head_commit\.(message|author\.(email|name))\b/,
   /github\.event\.workflow_run\.(head_branch|display_title|head_commit\.(message|author\.(email|name)))\b/,
   /github\.head_ref\b/,
@@ -231,14 +328,14 @@ export function untrustedIn(step: string, script: string): PlanWarning[] {
   return out;
 }
 
-/** Resolves a tag or branch to a commit sha. */
-export type RefResolver = (repo: string, ref: string) => Promise<string>;
+/** Resolves a tag or branch to a commit sha. Core implements it later with the forge API. */
+export type ActionRefResolver = (owner: string, repo: string, ref: string) => Promise<string>;
 
 /** Default resolver: the GitHub API, which also dereferences annotated tags. */
-export function githubResolver(token?: string): RefResolver {
-  return async (repo, ref) => {
+export function githubResolver(token?: string): ActionRefResolver {
+  return async (owner, repo, ref) => {
     const res = await fetch(
-      `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(ref)}`,
+      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
       {
         headers: {
           Accept: "application/vnd.github.sha",
@@ -248,22 +345,43 @@ export function githubResolver(token?: string): RefResolver {
       },
     );
     if (!res.ok) {
-      throw new PlanError("action ref", `cannot resolve ${repo}@${ref}: HTTP ${res.status}`);
+      throw new PlanError(
+        "action ref",
+        `cannot resolve ${owner}/${repo}@${ref}: HTTP ${res.status}`,
+      );
     }
     const sha = (await res.text()).trim();
-    if (!/^[0-9a-f]{40}$/.test(sha))
-      throw new PlanError("action ref", `bad sha for ${repo}@${ref}`);
+    if (!/^[0-9a-f]{40}$/.test(sha)) {
+      throw new PlanError("action ref", `bad sha for ${owner}/${repo}@${ref}`);
+    }
     return sha;
   };
 }
 
-/** Fills in the sha of every action whose ref is not already a full sha. Returns a new plan. */
+/** Test stub: a fixed map of `owner/repo@ref` to sha. Unknown refs throw. */
+export function staticResolver(map: Readonly<Record<string, string>>): ActionRefResolver {
+  return async (owner, repo, ref) => {
+    const sha = map[`${owner}/${repo}@${ref}`];
+    if (!sha) throw new PlanError("action ref", `no stub sha for ${owner}/${repo}@${ref}`);
+    return sha;
+  };
+}
+
+/**
+ * Fills in the sha of every action whose ref is not already a full sha, rewrites each plan file
+ * so `uses:` is pinned, and re-keys the act command by sha. Returns a new plan.
+ */
 export async function resolveActions(
   plan: JobPlan,
-  resolve: RefResolver = githubResolver(),
+  resolve: ActionRefResolver = githubResolver(),
 ): Promise<JobPlan> {
   const actions = await Promise.all(
-    plan.actions.map(async (a) => (a.sha ? a : { ...a, sha: await resolve(a.repo, a.ref) })),
+    plan.actions.map(async (a) => {
+      if (a.sha) return a;
+      const [owner = "", repo = ""] = a.repo.split("/");
+      return { ...a, sha: await resolve(owner, repo, a.ref) };
+    }),
   );
-  return { ...plan, actions };
+  const files = plan.files.map((f) => ({ ...f, text: rewriteUses(f.source, actions) }));
+  return withArgv({ ...plan, actions, files });
 }

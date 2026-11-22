@@ -70,6 +70,23 @@ describe("hardening and egress", () => {
   });
 });
 
+describe("no container runtime access", () => {
+  test("run args never mount a socket or volume, or run privileged", () => {
+    const a = buildRunArgs(spec, 0).join(" ");
+    for (const bad of [
+      "docker.sock",
+      "--privileged",
+      "--volume",
+      " -v ",
+      "--mount",
+      "--pid ",
+      "--ipc ",
+    ]) {
+      expect(a).not.toContain(bad);
+    }
+  });
+});
+
 describe("argument injection", () => {
   test("image that looks like a flag is rejected", () => {
     for (const image of ["--privileged", "-v", "a b", "alpine;rm", ""]) {

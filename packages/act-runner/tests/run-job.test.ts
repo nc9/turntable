@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { InfraError, type Provider } from "@turntable/provider-sdk";
-import { drain, planJob, runJob, sha256Hex, tarDirectory, type RunEvent } from "../src/index";
+import {
+  drain,
+  planJob,
+  resolveActions,
+  runJob,
+  sha256Hex,
+  staticResolver,
+  tarDirectory,
+  type RunEvent,
+} from "../src/index";
 
 const world = new FakeWorld({ exec: { tickSeconds: 1 } });
 const tmp = mkdtempSync(join(tmpdir(), "tt-act-test-"));
@@ -144,10 +153,7 @@ describe("runJob against the fake provider", () => {
 
     const { p, id, plan, repoTarball } = await setup(wf);
     const sha = "c".repeat(40);
-    const resolved = {
-      ...plan,
-      actions: plan.actions.map((a) => ({ ...a, sha })),
-    };
+    const resolved = await resolveActions(plan, staticResolver({ "acme/tool@v1": sha }));
     const asked: string[] = [];
     const d = mkdtempSync(join(tmp, "a-"));
     mkdirSync(join(d, "tool-abc"));
@@ -173,5 +179,8 @@ describe("runJob against the fake provider", () => {
     expect(asked).toEqual([`acme/tool@${sha}`]);
     const dir = resolved.actions[0]?.dir ?? "";
     expect(await Bun.file(`${dir}/action.yml`).text()).toBe("name: tool\n");
+    // The workflow copy act reads is pinned to the sha.
+    const wfText = await Bun.file(`${plan.layout.repo}/.github/workflows/ci.yml`).text();
+    expect(wfText).toContain(`uses: acme/tool@${sha} # v1`);
   });
 });
