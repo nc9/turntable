@@ -137,4 +137,24 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(log).toContain("lc-all=C.UTF-8");
     expect(log).toContain("pager=cat");
   }, 600_000);
+
+  // act kills a timed-out step by SIGKILL of the direct child, which is the step shim. The shim's
+  // watcher must then take the interpreter and its children down (README P1).
+  test("a step past timeout-minutes ends on time, the job fails, and nothing is left running", async () => {
+    const started = Date.now();
+    const { result, log, act } = await runExample("timeout.yml", "timeout");
+    const took = Date.now() - started;
+    expect(result.state).toBe("failure");
+    // act's own reason for the failed step (v0.2.97): the shim was killed by the step timeout.
+    expect(log).toContain("this step has been cancelled: signal: killed");
+    expect(log).toContain("hang-started");
+    expect(log).not.toContain("hang-not-reached");
+    // One minute of timeout plus setup and the cleanup step, nowhere near the 600 s sleep.
+    expect(took).toBeLessThan(200_000);
+    const ends = act.flatMap((e) => (e.type === "step-end" ? [`${e.name}:${e.result}`] : []));
+    expect(ends).toContain("Hang past the step timeout:failure");
+    // The `if: always()` step ran and found no `sleep 600` left in the sandbox.
+    expect(log).toContain("left=0");
+    expect(ends).toContain("Nothing is left running:success");
+  }, 400_000);
 });
