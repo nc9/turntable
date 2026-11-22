@@ -616,8 +616,8 @@ describe("transient toolbox failures do not end a running job", () => {
     expect(f.seen.calls - before).toBeGreaterThanOrEqual(4);
     // Each retry was logged with the call and attempt, and nothing secret.
     expect(logs.length).toBeGreaterThanOrEqual(3);
-    expect(logs[0]).toContain("exec status");
-    expect(logs[0]).toContain("attempt 1");
+    const retry = logs.find((l) => l.includes("exec status"));
+    expect(retry).toContain("attempt 1");
     expect(logs.join("\n")).not.toContain(MOCK_KEY);
     await p.destroy(h.id);
   });
@@ -797,5 +797,143 @@ describe("transient toolbox failures do not end a running job", () => {
     expect(execId).toMatch(/^tt1-/);
     await Bun.$`rm -f ${marker}`;
     await p.destroy(h.id);
+  });
+});
+
+describe("the org-wide CPU check before a create", () => {
+  const row = (cpu: number, over: Record<string, unknown> = {}) => ({
+    regionId: "us",
+    sandboxClass: "container",
+    currentCpuUsage: cpu,
+    ...over,
+  });
+  /** An account with one sandbox in it, so the org id can be learned. */
+  const primed = () => mock.addForeign("someone-elses", { project: "other" }, "stopped");
+  const usageReads = (): number =>
+    mock.requests.filter((r) => r.path.endsWith("/usage") && r.method === "GET").length;
+
+  test("creates when there is room, after reading the org's usage once", async () => {
+    primed();
+    mock.usage.rows = [row(150)];
+    const p = make();
+    const h = await p.create(spec());
+    expect(usageReads()).toBe(1);
+    await p.destroy(h.id);
+  });
+
+  test("waits while current usage plus this sandbox would pass the limit, then goes ahead", async () => {
+    primed();
+    mock.usage.rows = [row(200)]; // 200 + 1 > 200
+    const p = make({ capacityWaitMs: 30_000 });
+    const creating = p.create(spec());
+    await Bun.sleep(150);
+    // Still waiting: nothing was created.
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(0);
+    expect(usageReads()).toBeGreaterThan(1);
+    mock.usage.rows = [row(199)];
+    const h = await creating;
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(1);
+    await p.destroy(h.id);
+  });
+
+  test("the sandbox's own vCPU counts, and gives up with a message that says why", async () => {
+    primed();
+    mock.usage.rows = [row(198)];
+    const p = make({ capacityWaitMs: 80 });
+    const err = (await p
+      .create(spec({ resources: { cpus: 4 } }))
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(InfraError);
+    expect(err.message).toContain("198 vCPU in use");
+    expect(err.message).toContain("needs 4");
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(0);
+  });
+
+  test("the limit, the region and the class are configurable; other regions and classes do not count", async () => {
+    primed();
+    mock.usage.rows = [
+      row(240, { regionId: "eu" }),
+      row(240, { sandboxClass: "linux-vm" }),
+      row(10),
+    ];
+    const ok = make();
+    await ok.destroy((await ok.create(spec())).id);
+    mock.usage.rows = [row(50)];
+    const tight = make({ ownerCiPreflight: { cpuLimit: 50 }, capacityWaitMs: 50 });
+    await expect(tight.create(spec())).rejects.toBeInstanceOf(InfraError);
+    mock.usage.rows = [row(5, { regionId: "eu" }), row(90, { regionId: "us" })];
+    const eu = make({ ownerCiPreflight: { region: "eu" } });
+    await eu.destroy((await eu.create(spec())).id);
+  });
+
+  test("no row for the region means nothing is running there; a row with no number is an error, not room", async () => {
+    primed();
+    mock.usage.rows = [];
+    const p = make();
+    await p.destroy((await p.create(spec())).id);
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container" }];
+    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+  });
+
+  test("an unreadable usage is never taken for room: an error fails the create", async () => {
+    primed();
+    mock.usage.status = 500;
+    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(0);
+  });
+
+  test("an endpoint that does not exist (404) fails the create: a check that cannot be made is not a pass", async () => {
+    primed();
+    mock.usage.status = 404;
+    const err = (await make()
+      .create(spec())
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(InfraError);
+    expect(err.message).toContain("ownerCiPreflight: false");
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(0);
+    // The operator opts out explicitly.
+    const off = make({ ownerCiPreflight: false });
+    await off.destroy((await off.create(spec())).id);
+  });
+
+  test("an empty account skips the check, says so, and learns the org id from the sandbox it creates", async () => {
+    mock.usage.rows = [row(999)];
+    const logs: string[] = [];
+    const p = make({ log: (m) => logs.push(m), capacityWaitMs: 80 });
+    // Nothing in the account: nobody else is running, so the create goes ahead, with a log line.
+    const first = await p.create(spec());
+    expect(usageReads()).toBe(0);
+    expect(logs.join("\n")).toContain("no sandbox in the account to learn the org id from");
+    // The next create has the org id from the first sandbox, and now the check applies.
+    await expect(p.create(spec({ name: "job-2" })).then((h) => h.id)).rejects.toBeInstanceOf(
+      InfraError,
+    );
+    expect(usageReads()).toBeGreaterThan(0);
+    await p.destroy(first.id);
+  });
+
+  test("it can be turned off, and then no usage is read", async () => {
+    primed();
+    mock.usage.rows = [row(999)];
+    const p = make({ ownerCiPreflight: false });
+    await p.destroy((await p.create(spec())).id);
+    expect(usageReads()).toBe(0);
+  });
+
+  test("it is in addition to the label count: both must have room", async () => {
+    primed();
+    mock.usage.rows = [row(0)];
+    for (let i = 0; i < 8; i++) mock.addForeign(`ci-${i}`, { project: "squirrel-ci" });
+    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
   });
 });

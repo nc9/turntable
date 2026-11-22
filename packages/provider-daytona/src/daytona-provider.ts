@@ -19,7 +19,13 @@ import {
 import { type DaytonaSandbox, DaytonaApi, DEFAULT_BASE_URL, readJson } from "./api";
 import type { ApiKeySource } from "./key";
 import {
+  DEFAULT_ORG_CLASS,
+  DEFAULT_ORG_CPU_LIMIT,
+  DEFAULT_ORG_REGION,
   FOREIGN_WAIT_AT,
+  cpuInUse,
+  type OwnerCiPreflight,
+  type RegionUsageRow,
   LIVE_STATES,
   MAX_TTL_SECONDS,
   OWN_LABEL,
@@ -78,6 +84,12 @@ export interface DaytonaProviderOptions {
   exec?: WrappedExecOptions;
   /** How long to wait for capacity (our own cap or the owner's CI) before giving up. Default 20 min. */
   capacityWaitMs?: number;
+  /**
+   * The org-wide CPU check before each create (see OwnerCiPreflight). On by default with the
+   * defaults; `false` turns it off. If the account has no sandbox to learn the org id from, or the
+   * usage endpoint does not exist (404), the check is skipped and the label count still applies.
+   */
+  ownerCiPreflight?: OwnerCiPreflight | false;
   /** Poll interval while waiting for capacity or for a sandbox to start. Default 5 s. */
   pollMs?: number;
   /** How long a sandbox may take to reach `started`. Default 3 min. */
@@ -335,13 +347,78 @@ export class DaytonaProvider implements Provider {
     return live.filter((s) => !isOwn(s) && isForeignCi(s)).length;
   }
 
+  private orgId: string | undefined;
+  private warnedNoOrg = false;
+
+  /**
+   * The org's CPU in use against the limit: `{ ok: true }` when there is room for `vcpu` more (or
+   * the check does not apply), else the reading. Reading errors are thrown: an unreadable usage is
+   * never taken for room.
+   */
+  private async orgRoom(
+    vcpu: number,
+  ): Promise<{ ok: true } | { ok: false; cpu: number; limit: number }> {
+    const o = this.opts.ownerCiPreflight;
+    if (o === false) return { ok: true };
+    const limit = o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT;
+    if (this.orgId === undefined) {
+      const first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
+        query: { limit: 1 },
+        timeoutMs: 20_000,
+      });
+      this.orgId = first.items?.find((s) => s.organizationId)?.organizationId;
+    }
+    // Nothing to learn the org from: an empty account has nobody else in it. The first sandbox we
+    // create tells us the org id for the next create.
+    if (this.orgId === undefined) {
+      if (!this.warnedNoOrg) {
+        this.warnedNoOrg = true;
+        this.opts.log?.(
+          "daytona: no sandbox in the account to learn the org id from, so the org usage check is skipped for this create",
+        );
+      }
+      return { ok: true };
+    }
+    let usage: { regionUsage?: RegionUsageRow[] };
+    try {
+      usage = await this.api.json("GET", `/organizations/${encodeURIComponent(this.orgId)}/usage`, {
+        timeoutMs: 20_000,
+      });
+    } catch (e) {
+      // Fail closed: a check that cannot be made is not a check that passed. An operator whose
+      // deployment has no usage endpoint opts out with `ownerCiPreflight: false`.
+      if (e instanceof SandboxNotFoundError) {
+        throw new InfraError(
+          "Daytona's org usage endpoint answered 404, so the org's CPU cannot be checked; not creating a sandbox (set ownerCiPreflight: false to run without the check)",
+        );
+      }
+      throw e;
+    }
+    const cpu = cpuInUse(
+      usage.regionUsage,
+      o?.region ?? DEFAULT_ORG_REGION,
+      o?.sandboxClass ?? DEFAULT_ORG_CLASS,
+    );
+    if (cpu === undefined) throw new InfraError("Daytona usage reply has no CPU reading");
+    return cpu + vcpu <= limit ? { ok: true } : { ok: false, cpu, limit };
+  }
+
   /** Waits until we are under our own cap and the owner's CI is not busy, or gives up. */
-  private async waitForCapacity(): Promise<void> {
+  private async waitForCapacity(vcpu = 1): Promise<void> {
     const deadline = this.now() + this.capacityWaitMs;
     for (;;) {
-      const [own, foreign] = await Promise.all([this.ownLive(), this.foreignLive()]);
-      if (own < this.maxLive && foreign < FOREIGN_WAIT_AT) return;
+      const [own, foreign, room] = await Promise.all([
+        this.ownLive(),
+        this.foreignLive(),
+        this.orgRoom(vcpu),
+      ]);
+      if (own < this.maxLive && foreign < FOREIGN_WAIT_AT && room.ok) return;
       if (this.now() >= deadline) {
+        if (!room.ok && own < this.maxLive && foreign < FOREIGN_WAIT_AT) {
+          throw new InfraError(
+            `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.cpu} vCPU in use (waiting above ${room.limit}, this sandbox needs ${vcpu})`,
+          );
+        }
         throw new InfraError(
           own >= this.maxLive
             ? `waited ${Math.round(this.capacityWaitMs / 1000)}s: already ${own} live sandboxes of ours (max ${this.maxLive})`
@@ -419,7 +496,7 @@ export class DaytonaProvider implements Provider {
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const body = this.buildCreateBody(spec); // refuse a bad spec before queueing anything
     const run = async (): Promise<SandboxHandle> => {
-      await this.waitForCapacity();
+      await this.waitForCapacity(spec.resources?.cpus ?? 1);
       const startedAt = this.now();
       const sb = await this.api.json<DaytonaSandbox>("POST", "/sandbox", {
         json: body,
@@ -428,6 +505,8 @@ export class DaytonaProvider implements Provider {
       try {
         if (!isOwn(sb))
           throw new InfraError("Daytona created a sandbox without our label; refusing to continue");
+        // The org id for the next create's usage check, when the account had no sandbox to ask.
+        this.orgId ??= sb.organizationId;
         await this.waitStarted(sb.id);
         const base = await this.verify(sb.id, true);
         await this.waitToolbox(sb.id, base);

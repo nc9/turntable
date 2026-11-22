@@ -27,6 +27,7 @@ export type DaytonaSandbox = {
   labels?: Record<string, string>;
   createdAt?: string;
   toolboxProxyUrl?: string;
+  organizationId?: string;
   errorReason?: string;
   sandboxClass?: string;
   networkBlockAll?: boolean;
