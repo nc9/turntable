@@ -41,6 +41,19 @@ describe("declared capabilities are checked at registration", () => {
     refuse(base({ isolation: "bogus" as never }));
     // Daytona's ceiling is container: gvisor is above it.
     refuse(base({ name: "daytona", isolation: "gvisor" }), BUILTIN_CEILINGS.daytona, "daytona");
+    // The proxy-confined policies are within daytona's ceiling; `allowlist` is not.
+    checkProviderInfo(
+      "daytona",
+      base({
+        name: "daytona",
+        isolation: "container",
+        network: {
+          ...base().network,
+          egressPolicy: ["none", "open", "deny-all-except-proxy", "proxy-domain-filtered"],
+        },
+      }),
+      BUILTIN_CEILINGS.daytona,
+    );
     // Egress beyond the ceiling, or no way to enforce `none`.
     refuse(
       base({

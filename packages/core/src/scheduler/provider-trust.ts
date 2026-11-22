@@ -22,8 +22,13 @@ export type BuiltinCeiling = {
 export const BUILTIN_CEILINGS: Readonly<Record<string, BuiltinCeiling>> = {
   // Containers; runsc (gVisor) is the strongest a Docker host can be.
   docker: { isolation: "gvisor", egress: ["none", "open", "deny-all-except-proxy"] },
-  // Containers on a shared host, over an API: no allowlist or proxy reachability verified.
-  daytona: { isolation: "container", egress: ["none", "open"] },
+  // Containers on a shared host, over an API. `allowlist` is not verified; the proxy-confined
+  // policies are (the strict one needs the endpoint's addresses, the domain-filtered one is an
+  // operator opt-in).
+  daytona: {
+    isolation: "container",
+    egress: ["none", "open", "deny-all-except-proxy", "proxy-domain-filtered"],
+  },
 };
 
 export class ProviderTrustError extends Error {}
