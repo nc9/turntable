@@ -1,11 +1,27 @@
 // Running as root, and getting out of it. Some platforms (Railway) mount volumes owned by root,
 // which a non-root image cannot write. The image therefore starts as root, and with
-// LONGSHORE_DROP_PRIVILEGES=<uid>:<gid> the server takes ownership of its data directory and
-// drops to that user BEFORE it opens anything else: no database, no key file, no socket is ever
-// touched as root. A server that is still root after startup is refused unless the operator
-// said LONGSHORE_ALLOW_ROOT=1.
-import { lchownSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+// LONGSHORE_DROP_PRIVILEGES=<uid>:<gid> the server takes ownership of the files it expects in its
+// data directory and drops to that user BEFORE it opens anything else: no database, no key file,
+// no socket is ever touched as root. A server that is still root after startup is refused unless
+// the operator said LONGSHORE_ALLOW_ROOT=1.
+//
+// Two things here are deliberately strict, because root is doing the work:
+//  - the chown never walks an arbitrary tree. Something the old non-root process could create
+//    (a symlink, or a hardlink to /etc/shadow, which IS that file) must never be handed to the
+//    service user, so only the names Longshore itself writes are touched, each through an open
+//    file descriptor opened without following links, and anything unexpected stops the start;
+//  - every step of the drop is checked, and a platform that cannot do one refuses to run.
+import { basename, dirname, join, resolve } from "node:path";
+import {
+  closeSync,
+  constants,
+  fchownSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  type Stats,
+} from "node:fs";
 
 export class RootRefused extends Error {}
 
@@ -13,11 +29,14 @@ export class RootRefused extends Error {}
 export interface PrivilegeOps {
   uid(): number;
   gid(): number;
-  chownTree(dir: string, uid: number, gid: number): void;
+  groups(): number[];
+  chownData(dataDir: string, uid: number, gid: number, env: Env): void;
   setgroups(groups: number[]): void;
   setgid(gid: number): void;
   setuid(uid: number): void;
 }
+
+type Env = Record<string, string | undefined>;
 
 /** `uid:gid`, both whole numbers, neither root. */
 export function parseDropSpec(spec: string): { uid: number; gid: number } {
@@ -30,68 +49,196 @@ export function parseDropSpec(spec: string): { uid: number; gid: number } {
   return { uid, gid };
 }
 
-/**
- * Gives `dir` and everything under it to uid:gid. Uses lchown and never follows a symlink, so a
- * link planted in the volume cannot make root hand a file elsewhere to the service user.
- */
-export function chownTree(
-  dir: string,
-  uid: number,
-  gid: number,
-  chown: (path: string, uid: number, gid: number) => void = lchownSync,
-): void {
-  mkdirSync(dir, { recursive: true });
-  const walk = (p: string): void => {
-    chown(p, uid, gid);
-    if (!lstatSync(p).isDirectory()) return;
-    for (const name of readdirSync(p)) walk(join(p, name));
-  };
-  walk(dir);
+/** The files Longshore writes in its data directory: the database, as the current or old name. */
+const DB_FILE = /^(longshore|turntable)\.db(-wal|-shm|-journal)?$/;
+/** What a volume brings itself; left alone, never chowned. */
+const SKIP = new Set(["lost+found"]);
+
+/** The names a data directory may hold, given where the master key file lives. */
+export interface Expected {
+  /** Regular files, by name. */
+  files: Set<string>;
+  /** Directories whose own contents are `*.state` files (the audit anchor state), by name. */
+  stateDirs: Set<string>;
 }
 
-export const realOps: PrivilegeOps = {
-  uid: () => process.getuid?.() ?? -1,
-  gid: () => process.getgid?.() ?? -1,
-  chownTree: (d, u, g) => chownTree(d, u, g),
-  setgroups: (g) => process.setgroups?.(g),
-  setgid: (g) => process.setgid?.(g),
-  setuid: (u) => process.setuid?.(u),
-};
+export function expectedFor(dataDir: string, env: Env): Expected {
+  const files = new Set<string>();
+  const stateDirs = new Set<string>();
+  const keyFile = env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  if (keyFile && dirname(resolve(keyFile)) === resolve(dataDir)) {
+    files.add(basename(keyFile));
+    stateDirs.add(`${basename(keyFile)}.audit-state`);
+  }
+  return { files, stateDirs };
+}
+
+export type FchownFn = (fd: number, uid: number, gid: number) => void;
+
+/**
+ * Opens `path` without following a final symlink, checks what it is through the descriptor (so
+ * nothing can change between the check and the chown), and chowns it. Refuses a symlink, a
+ * regular file with more than one link, anything that is not a file or directory, and anything
+ * on another device than the data directory.
+ */
+function chownChecked(
+  path: string,
+  want: "file" | "dir",
+  uid: number,
+  gid: number,
+  dev: number | undefined,
+  fchown: FchownFn,
+): Stats {
+  let fd: number;
+  try {
+    fd = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | (want === "dir" ? constants.O_DIRECTORY : 0),
+    );
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ELOOP" || code === "EMLINK") {
+      throw new RootRefused(`${path} is a symbolic link; refusing to start`);
+    }
+    throw new RootRefused(
+      `cannot open ${path} without following links (${code ?? "error"}); refusing to start`,
+    );
+  }
+  try {
+    const st = fstatSync(fd);
+    if (want === "file" && !st.isFile())
+      throw new RootRefused(`${path} is not a regular file; refusing to start`);
+    if (want === "dir" && !st.isDirectory())
+      throw new RootRefused(`${path} is not a directory; refusing to start`);
+    if (want === "file" && st.nlink > 1) {
+      throw new RootRefused(`${path} has ${st.nlink} hard links; refusing to start`);
+    }
+    if (dev !== undefined && st.dev !== dev) {
+      throw new RootRefused(
+        `${path} is on another device than the data directory; refusing to start`,
+      );
+    }
+    fchown(fd, uid, gid);
+    return st;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Gives the data directory and the files Longshore expects in it to uid:gid. Not recursive in
+ * general: the top level only, plus the contents of the audit state directory. An entry that is
+ * not on the list stops the start, named, so nothing a past process planted is touched.
+ */
+export function chownData(
+  dataDir: string,
+  uid: number,
+  gid: number,
+  env: Env = {},
+  fchown: FchownFn = fchownSync,
+): void {
+  mkdirSync(dataDir, { recursive: true });
+  const top = chownChecked(dataDir, "dir", uid, gid, undefined, fchown);
+  const expected = expectedFor(dataDir, env);
+  for (const name of readdirSync(dataDir)) {
+    if (SKIP.has(name)) continue;
+    const path = join(dataDir, name);
+    if (DB_FILE.test(name) || expected.files.has(name)) {
+      chownChecked(path, "file", uid, gid, top.dev, fchown);
+    } else if (expected.stateDirs.has(name)) {
+      chownChecked(path, "dir", uid, gid, top.dev, fchown);
+      for (const inner of readdirSync(path)) {
+        if (!/^[0-9A-Za-z]+\.state(\.tmp)?$/.test(inner)) {
+          throw new RootRefused(
+            `unexpected entry ${join(path, inner)} in the audit state directory; refusing to start`,
+          );
+        }
+        chownChecked(join(path, inner), "file", uid, gid, top.dev, fchown);
+      }
+    } else {
+      throw new RootRefused(
+        `unexpected entry ${path} in the data directory; refusing to start as root with it there ` +
+          "(remove it, or start without root)",
+      );
+    }
+  }
+}
+
+/** The real process. A platform that cannot do any step makes the drop impossible, so it throws. */
+export function realOpsFor(p: NodeJS.Process = process): PrivilegeOps {
+  const need = <T>(fn: T | undefined, name: string): T => {
+    if (typeof fn !== "function") {
+      throw new RootRefused(
+        `process.${name} is not available here, so privileges cannot be dropped; refusing to run as root`,
+      );
+    }
+    return fn;
+  };
+  return {
+    uid: () => need(p.getuid, "getuid").call(p),
+    gid: () => need(p.getgid, "getgid").call(p),
+    groups: () => need(p.getgroups, "getgroups").call(p),
+    chownData: (d, u, g, env) => chownData(d, u, g, env),
+    setgroups: (g) => need(p.setgroups, "setgroups").call(p, g),
+    setgid: (g) => need(p.setgid, "setgid").call(p, g),
+    setuid: (u) => need(p.setuid, "setuid").call(p, u),
+  };
+}
 
 export type PrivilegeOutcome = "not_root" | "dropped" | "root_allowed";
 
+const throws = (f: () => void): boolean => {
+  try {
+    f();
+    return false;
+  } catch {
+    return true;
+  }
+};
+
 /**
  * Call first in `serve`. Not root: nothing to do (a drop request is ignored). Root with a drop
- * spec: own the data dir, then groups, gid, uid, in that order, and prove root cannot be
- * regained. Root with neither a drop spec nor LONGSHORE_ALLOW_ROOT=1: refuse.
+ * spec: own the expected files, then groups, gid, uid, in that order; then check that the process
+ * really is that user with exactly that one group, and that root cannot be regained by uid, gid
+ * or group. Any failure refuses to run. Root with neither a spec nor LONGSHORE_ALLOW_ROOT=1:
+ * refuse.
  */
 export function enforceRootPolicy(
   dataDir: string,
-  env: Record<string, string | undefined> = process.env,
-  ops: PrivilegeOps = realOps,
+  env: Env = process.env,
+  ops: PrivilegeOps = realOpsFor(),
 ): PrivilegeOutcome {
   if (ops.uid() !== 0) return "not_root";
   const spec = env.LONGSHORE_DROP_PRIVILEGES?.trim();
   if (spec) {
     const { uid, gid } = parseDropSpec(spec);
-    ops.chownTree(dataDir, uid, gid);
+    ops.chownData(dataDir, uid, gid, env);
     // Supplementary groups first (root's own would survive setgid), then gid, then uid last:
     // after setuid there is no privilege left to change the others.
     ops.setgroups([gid]);
     ops.setgid(gid);
     ops.setuid(uid);
+    const groups = ops.groups();
     if (ops.uid() !== uid || ops.gid() !== gid) {
-      throw new RootRefused(`dropping privileges did not take effect (still uid ${ops.uid()})`);
+      throw new RootRefused(
+        `dropping privileges did not take effect (now uid ${ops.uid()}, gid ${ops.gid()})`,
+      );
     }
-    let regained = false;
-    try {
-      ops.setuid(0);
-      regained = true;
-    } catch {
-      // expected: root cannot be regained
+    if (groups.length !== 1 || groups[0] !== gid) {
+      throw new RootRefused(
+        `supplementary groups were not cleared (now ${groups.join(",") || "none"})`,
+      );
     }
-    if (regained)
+    if (
+      !throws(() => ops.setuid(0)) ||
+      !throws(() => ops.setgid(0)) ||
+      !throws(() => ops.setgroups([0]))
+    ) {
       throw new RootRefused("root could be regained after dropping privileges; refusing to run");
+    }
+    if (ops.uid() !== uid || ops.gid() !== gid) {
+      throw new RootRefused("the identity changed while checking that root cannot be regained");
+    }
     return "dropped";
   }
   if (env.LONGSHORE_ALLOW_ROOT === "1") return "root_allowed";

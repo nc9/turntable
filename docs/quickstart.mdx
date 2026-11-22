@@ -88,8 +88,10 @@ On boot, if the org has no tokens yet, the server creates one `operator` token w
 
 ### Root-owned volumes
 
-Railway and some other platforms mount a volume owned by root, which a non-root process cannot write. The image handles this itself: it starts as root with `LONGSHORE_DROP_PRIVILEGES=65532:65532` (set in the image), chowns the data directory to that user, then drops group, supplementary groups and user, and proves root cannot be regained, all before the database or any key file is opened. **Do not set `RAILWAY_RUN_UID=0`** (or any run-as-root override): the image no longer needs it.
+Railway and some other platforms mount a volume owned by root, which a non-root process cannot write. The image handles this itself: it starts as root with `LONGSHORE_DROP_PRIVILEGES=65532:65532` (set in the image), chowns the data directory and the files it expects in it (the database and its `-wal` and `-shm` files, and a master key file and its `.audit-state` directory if they live there) to that user, then drops group, supplementary groups and user, and proves root cannot be regained, all before the database or any key file is opened. **Do not set `RAILWAY_RUN_UID=0`** (or any run-as-root override): the image no longer needs it.
 
+- The chown does not walk the volume. It uses open file descriptors that never follow a symlink, and it refuses a symlink, a file with more than one hard link, anything on another device, and any entry it does not recognise (apart from `lost+found`): the server does not start, and names the entry. Remove it, or start without root.
+- Every step of the drop is checked: if setuid, setgid or setgroups is unavailable, the user, group or supplementary groups are not what was asked, or root can be regained, the server refuses to run.
 - The server refuses to keep running as root. To run as root on purpose, set `LONGSHORE_ALLOW_ROOT=1`.
 - Started as a non-root user (`docker run --user 65532:65532`), nothing is dropped and nothing is chowned.
 - Everything is opened after the drop, so a master key file (`LONGSHORE_MASTER_KEY_FILE`) must be readable by `65532`: keep it on the data volume, where it is chowned too, or make it readable.
