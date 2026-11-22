@@ -17,6 +17,12 @@ export interface RepoSnapshot {
   tarball: Uint8Array;
   ref: string;
   sha: string;
+  /** Short branch name, undefined on a detached HEAD. */
+  headBranch?: string;
+  /** Subject line of HEAD. */
+  commitMessage: string;
+  /** `git config user.name`, else the author of HEAD. */
+  actor?: string;
   /** True when the working tree has changes that are NOT in the delivered tree. */
   dirty: boolean;
 }
@@ -35,6 +41,15 @@ export async function snapshotRepo(repoDir: string): Promise<RepoSnapshot> {
   } catch {
     ref = sha; // detached HEAD
   }
+  const headBranch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined;
+  const commitMessage = (await sh(repoDir, ["git", "log", "-1", "--format=%s"])).trim();
+  let actor = "";
+  try {
+    actor = (await sh(repoDir, ["git", "config", "user.name"])).trim();
+  } catch {
+    // unset
+  }
+  if (!actor) actor = (await sh(repoDir, ["git", "log", "-1", "--format=%an"])).trim();
   const dirty =
     (await sh(repoDir, ["git", "status", "--porcelain", "--untracked-files=no"])).trim() !== "";
   const tmp = mkdtempSync(join(tmpdir(), "tt-snap-"));
@@ -43,7 +58,15 @@ export async function snapshotRepo(repoDir: string): Promise<RepoSnapshot> {
     await sh(repoDir, ["git", "archive", "--format=tar", "--output", tar, "HEAD"]);
     await sh(repoDir, ["tar", "rf", tar, ".git"]);
     const gz = Bun.gzipSync(new Uint8Array(await Bun.file(tar).arrayBuffer()));
-    return { tarball: gz, ref, sha, dirty };
+    return {
+      tarball: gz,
+      ref,
+      sha,
+      commitMessage,
+      ...(actor ? { actor } : {}),
+      ...(headBranch ? { headBranch } : {}),
+      dirty,
+    };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

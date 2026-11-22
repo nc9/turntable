@@ -70,6 +70,9 @@ async function go(
     event: "push",
     ref: "refs/heads/main",
     sha: "a".repeat(40),
+    commitMessage: "fix: the thing",
+    actor: "Dev",
+    headBranch: "main",
     repoTarball,
     image: "unused",
     out: (t) => out.push(t),
@@ -99,7 +102,14 @@ describe("runLocal", () => {
     const { db, scope, result, out, logText, provider } = await go(act);
     expect(result).toMatchObject({ state: "success", exitCode: 0 });
     const [run] = await listRuns(db, scope);
-    expect(run).toMatchObject({ status: "success", workflowPath: ".github/workflows/ci.yml" });
+    expect(run).toMatchObject({
+      status: "success",
+      workflowPath: ".github/workflows/ci.yml",
+      workflowName: "t",
+      commitMessage: "fix: the thing",
+      actor: "Dev",
+      headBranch: "main",
+    });
     const [job] = await listJobs(db, scope, result.runId);
     expect(job).toMatchObject({ state: "success", exitCode: 0, jobKey: "hello" });
     const [attempt] = await listAttempts(db, scope, result.jobId);

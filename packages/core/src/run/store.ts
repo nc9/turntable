@@ -37,6 +37,10 @@ export interface RunStore {
     event: string;
     ref: string;
     sha?: string;
+    workflowName?: string;
+    commitMessage?: string;
+    actor?: string;
+    headBranch?: string;
     jobKey: string;
     jobName: string;
     provider: string;
@@ -61,6 +65,10 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
         event: i.event,
         ref: i.ref,
         ...(i.sha ? { sha: i.sha } : {}),
+        workflowName: i.workflowName,
+        commitMessage: i.commitMessage,
+        actor: i.actor,
+        headBranch: i.headBranch,
       });
       const job = await createJob(db, scope, { runId: run.id, jobKey: i.jobKey, name: i.jobName });
       if (!job) throw new Error("job creation failed");

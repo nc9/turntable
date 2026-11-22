@@ -51,6 +51,9 @@ describe("snapshotRepo", () => {
     expect(snap.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(snap.ref).toBe("refs/heads/main");
     expect(snap.dirty).toBe(false);
+    expect(snap.headBranch).toBe("main");
+    expect(snap.commitMessage).toBe("c1");
+    expect(snap.actor).toBeTruthy();
     const files = await listing(snap.tarball);
     expect(files.some((f) => f.endsWith("tracked.txt"))).toBe(true);
     expect(files.some((f) => f.includes(".git/HEAD"))).toBe(true);

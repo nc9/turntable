@@ -8,6 +8,7 @@ import {
   type ActEvent,
 } from "@turntable/act-runner";
 import type { Provider } from "@turntable/provider-sdk";
+import { parse } from "yaml";
 import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { RunStore, StepRecord } from "./store";
@@ -27,6 +28,9 @@ export interface RunLocalOptions {
   event: string;
   ref: string;
   sha?: string;
+  commitMessage?: string;
+  actor?: string;
+  headBranch?: string;
   repoTarball: Uint8Array;
   image: string;
   /** Sink for the (redacted) log text, for example the terminal. */
@@ -85,11 +89,16 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
   for (const w of planned.warnings) o.out(`warning: ${w.message}\n`);
   const plan = await resolveActions(planned, o.resolver);
 
+  const workflowName = workflowNameOf(o.workflowYaml);
   const ids = await o.store.begin({
     workflowPath: o.workflowPath,
     event: o.event,
     ref: o.ref,
     ...(o.sha ? { sha: o.sha } : {}),
+    ...(workflowName ? { workflowName } : {}),
+    ...(o.commitMessage ? { commitMessage: o.commitMessage } : {}),
+    ...(o.actor ? { actor: o.actor } : {}),
+    ...(o.headBranch ? { headBranch: o.headBranch } : {}),
     jobKey: o.job,
     jobName: o.job,
     provider: o.providerName,
@@ -264,5 +273,17 @@ class LogPipe {
     const at = this.stored;
     this.stored += bytes.length;
     this.chain(() => this.#o.store.appendLog(this.#attemptId, at, bytes));
+  }
+}
+
+/** The workflow's top-level `name:`, if it has a plain string one. */
+function workflowNameOf(yaml: string): string | undefined {
+  try {
+    const doc: unknown = parse(yaml);
+    const name =
+      typeof doc === "object" && doc !== null ? (doc as { name?: unknown }).name : undefined;
+    return typeof name === "string" && name !== "" ? name : undefined;
+  } catch {
+    return undefined;
   }
 }

@@ -31,6 +31,7 @@
         "@turntable/provider-sdk": "workspace:*",
         "@turntable/redact": "workspace:*",
         "drizzle-orm": "0.45.4",
+        "yaml": "2.9.1",
         "zod": "4.6.7",
       },
       "devDependencies": {
