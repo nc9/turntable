@@ -229,7 +229,7 @@ function scripted(
   steps: (() => { events: FeedEvent[]; next_after: number } | Error)[],
   runs: Record<string, RunInfo> = {},
 ) {
-  const calls: { after: number; types?: string[] | undefined; waitMs: number }[] = [];
+  const calls: { after: number | "now"; types?: string[] | undefined; waitMs: number }[] = [];
   const ac = new AbortController();
   let i = 0;
   const api: ChannelApi = {
@@ -238,7 +238,7 @@ function scripted(
       const step = steps[i++];
       if (!step) {
         ac.abort();
-        return { events: [], next_after: after };
+        return { events: [], next_after: after === "now" ? 0 : after };
       }
       const r = step();
       if (r instanceof Error) throw r;
@@ -314,7 +314,7 @@ describe("feed", () => {
 
   test("first start skips history and only reports what comes after", async () => {
     const s = scripted([
-      () => ({ events: [ev(1), ev(2)], next_after: 2 }), // history page
+      () => ({ events: [], next_after: 2 }), // the tip, from after: "now"
       () => ({ events: [ev(3)], next_after: 3 }),
     ]);
     const sent: Notification[] = [];
@@ -329,7 +329,7 @@ describe("feed", () => {
       signal: s.ac.signal,
       sleep: async () => {},
     });
-    expect(s.calls[0]).toMatchObject({ after: 0, waitMs: 0 });
+    expect(s.calls[0]).toMatchObject({ after: "now", waitMs: 0 });
     expect(s.calls[1]).toMatchObject({ after: 2 });
     expect(sent.map((n) => n.meta.run_id)).toEqual(["run3"]);
   });
