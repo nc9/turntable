@@ -4,6 +4,7 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  PolicyStatement,
   EnrolStatement,
   EnvironmentApprovalResult,
   WebAuthnSignature,
@@ -97,7 +98,23 @@ export interface LongshoreApi {
     statement: ApprovalStatement;
     signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
   }): Promise<EnvironmentApprovalResult>;
-  registerChallenge(): Promise<{ challenge: string; rpId: string; expiresAt: number }>;
+  registerChallenge(): Promise<{
+    challenge: string;
+    rpId: string;
+    expiresAt: number;
+    attestation: "none" | "direct";
+  }>;
+  /** The statement an approver signs to change the key policy (a quorum applies it). */
+  keyPolicyChallenge(args: {
+    mode: "any" | "hardware";
+    presets: string[];
+    aaguids: string[];
+    approver: string;
+  }): Promise<ApprovalChallenge<PolicyStatement>>;
+  approveKeyPolicy(args: {
+    statement: PolicyStatement;
+    signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
+  }): Promise<{ approvals: number; required: number; applied: boolean }>;
   requestEnrolment(args: {
     person: string;
     forgeLogin: string;

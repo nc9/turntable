@@ -17,9 +17,11 @@ import {
   PlanError,
   type PlannedJob,
   planJob,
+  rebuildArgv,
   splitJob,
   workflowHeadCheckouts,
 } from "@longshore/act-runner";
+import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
 import { listJobs, listRepos, type Run } from "../db/repos";
@@ -175,6 +177,8 @@ export type ActRunnerOptions = {
   now?: () => number;
   /** Test seam: the HTTP client for action resolution and reachability (default: safeFetch). */
   fetch?: SafeFetch;
+  /** Gives a job its control-plane cache (see cache/job.ts). Absent: jobs keep act's local cache. */
+  cache?: JobCacheProvider;
   /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
   planRoot?: string;
   /** Live terminal output of a job, line by line (`longshore run` prints it with a key prefix). */
@@ -258,12 +262,15 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     plan: JobPlan,
     repoTarball: Uint8Array | undefined,
     githubToken?: string,
+    secrets: readonly string[] = [],
   ): Promise<AttemptOutcome> => {
     const registry = ctx.redact ?? new SecretRegistry();
     // A real token in the environment is something the log must never show.
     if (githubToken !== undefined && githubToken !== PROXIED_TOKEN_PLACEHOLDER) {
       registry.register(githubToken);
     }
+    // Values that must never reach the job log: act echoes env and URLs when it is verbose.
+    for (const v of secrets) registry.register(v);
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
       : undefined;
@@ -557,9 +564,29 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       };
       const revoke = (): void => void issued?.revoke();
       ctx.signal.addEventListener("abort", revoke, { once: true });
+      // The job's control-plane cache, if configured and reachable. The URL carries a credential
+      // that lasts as long as this attempt, so it is added now (after the plan was stored) and
+      // revoked when the run ends, however it ends.
+      const jobCache =
+        o.cache && jobKlass
+          ? await o.cache({
+              run: dbRun,
+              attemptId: ctx.attempt.id,
+              scope: ctx.scope,
+              klass: jobKlass,
+              egress: egressForRun(ctx.run.plan, o.egress) === "open" ? "open" : "none",
+            })
+          : undefined;
       try {
-        return await run(jobCtx, plan, checkout.tarball, githubToken);
+        return await run(
+          jobCtx,
+          jobCache ? rebuildArgv({ ...plan, cacheUrl: jobCache.url }) : plan,
+          checkout.tarball,
+          githubToken,
+          jobCache ? [jobCache.secret] : [],
+        );
       } finally {
+        jobCache?.release();
         ctx.signal.removeEventListener("abort", revoke);
         await issued?.revoke();
       }

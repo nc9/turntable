@@ -1,0 +1,77 @@
+---
+title: Job cache
+description: The control-plane cache for jobs, how it keeps trust classes apart, and how a provider exposes it.
+---
+
+A job that uses `actions/cache` normally gets act's own cache server inside its sandbox, so nothing carries over between jobs. Longshore can serve the cache from the control plane instead, so a job restores what an earlier job saved. A cache is also the classic route from an untrusted pull request to a privileged job, so the service is built around trust classes. Issue [#38](https://github.com/nc9/turntable/issues/38).
+
+## Turning it on
+
+Set `LONGSHORE_CACHE_URL` on the server to the base URL a sandbox uses to reach it. Without it nothing changes and jobs keep act's local cache.
+
+| Variable | Meaning |
+| --- | --- |
+| `LONGSHORE_CACHE_URL` | Base URL the sandbox reaches the server at, no trailing slash. Enables the cache. |
+| `LONGSHORE_CACHE_QUOTA_GIB` | Bytes an org may hold in total (default 10). Split between trust classes, see below. |
+| `LONGSHORE_CACHE_MAX_ENTRY_GIB` | Largest single entry (default 2). |
+
+Blobs are stored in `<data-dir>/cache`. A job gets a cache only if its sandbox has a network path to the server: `egress: open` jobs, never `none`. A run started with `longshore run` is the developer's own and keeps act's local cache.
+
+### With the docker provider
+
+The docker provider adds `--add-host host.docker.internal:host-gateway` to every sandbox that has a network, so a container reaches the host by that name. Start the server on an address the container can reach, and set the URL to match:
+
+```sh
+LONGSHORE_CACHE_URL=http://host.docker.internal:8080 longshore serve --worker --host 0.0.0.0 --port 8080
+```
+
+Binding `0.0.0.0` exposes the whole API on the host's network: put it behind a firewall or bind the docker bridge address instead.
+
+### How another provider exposes it
+
+A provider only has to make `LONGSHORE_CACHE_URL` reachable from the sandbox: a host name the sandbox resolves, a route to the control plane, or a proxy. The service needs nothing else from the provider. A provider that cannot give a sandbox a network path to the control plane (or that runs with `egress: none`) simply gets no cache. Daytona sandboxes cannot reach a control plane on a developer's loopback, so the cache is not wired for Daytona yet: it needs a public URL for the server.
+
+## The protocol
+
+The service speaks the actions/cache v1 REST protocol (`/_apis/artifactcache`: find, reserve, upload by `Content-Range`, commit, download, with ranged reads). That is the protocol act's own cache server speaks, and the one act v0.2.97 supports. The newer twirp cache service (v2) is not implemented.
+
+Which `actions/cache` versions work: the action's client picks v1 unless the environment sets `ACTIONS_CACHE_SERVICE_V2` (GitHub-hosted runners set it; act does not) or the server URL is a GitHub Enterprise Server, which also forces v1. I read `getCacheServiceVersion` in the built `dist` of v3.4.3, v4.0.2, v4.1.2, v4.2.0, v4.2.4 and v4.3.0: every one of them uses v1 here. The CI end-to-end test pins v4.2.4 by commit (`0400d5f644dc74513175e3cd8d07132dd4860809`) and runs the real action under real act. A later version that makes v2 the default would need the twirp service, which is not built.
+
+act is told the URL as the job's `ACTIONS_CACHE_URL`, which makes it skip its own cache server.
+
+## Who can read and write what
+
+The server assigns the namespace from the job: org, project, trust class and ref scope. A client names only a key and a version inside it, and cannot see or choose the namespace. A job writes only to its own namespace.
+
+| Job class | Restores from |
+| --- | --- |
+| `protected` | its own |
+| `trusted_pr` | its own pull request's, then the `protected` cache (read up) |
+| `untrusted_pr` | its own pull request's only |
+| `release` | nothing by default; with the project opt-in, only release-written caches |
+
+A job never reads a cache written by a lower class, so a privileged job consumes nothing a less trusted job could have written. Ref scope is one per pull request for the pull request classes (one pull request cannot poison another's cache), and one per class for `protected` and `release`. `longshore policy set --cache-release-restore on --org acme --project api` lets release jobs restore release-written caches. Untrusted pull requests currently run with `egress: none` (or an allowlist the providers do not enforce yet), so they get no service cache.
+
+## Credentials
+
+Each attempt gets a random credential when it starts. It fixes the job's namespace and stops working when the attempt ends (and after a few hours at most, and on any restart). It lives in memory only and is never stored with the plan. It travels in the cache URL path, not a header, because the job's `Authorization` header belongs to act's own artifact token. The credential is only ever held by the job it was minted for, and it is useless after that job ends. It is registered with the job's log redactor, so act echoing its environment or URLs (it does when verbose) shows it redacted, and the plan stored for re-attach never contains it (the URL is added after the plan is stored). Access logs should not record request paths for `/_cache/`.
+
+A bad token and an ended job get the same `401`.
+
+## Quota and eviction
+
+An org's quota is split into class shares: `protected` 40%, `trusted_pr` 30%, `untrusted_pr` 20%, `release` 10%. A class that goes over its share evicts its own least recently used entries; it never evicts another class's, so a flood from an untrusted pull request cannot push a protected cache out. If an entry cannot fit in its class's share, the reservation is refused with `413` and nothing is evicted. A reservation must name a positive `cacheSize`; it is charged to the class at once (a pending reservation counts, and is never evicted), and an upload that would write past that size is refused. A job can hold at most 16 uncommitted reservations, and one project at most 64 and half of a class share in uncommitted bytes per class, across all its jobs. A reservation that is not committed within 10 minutes is abandoned: it stops counting and is reclaimed (and evicted first) when space is needed. Reclaiming bumps a generation number that every chunk of an upload is checked against, so an upload still running cannot write to it or recreate its file, and the sweep removes any file that has no row.
+
+## Archive validation
+
+When an upload commits, the server reads the archive's tar headers (tar, gzip or zstd; never the file data) and refuses it unless every entry is safe. Only validated archives can be restored. Refused: paths that climb out of their root (`..`), absolute paths outside `/home/`, `/root/`, `/github/home/`, `/workspace/` and `/tmp/` (actions/cache stores `~/.npm` and similar as absolute paths), any path with a `.git`, `.github`, `.ssh`, `.gnupg` or `.longshore` component, shell and tool startup or credential files (`.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zshenv`, `.zprofile`, `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`, `.gitconfig`, `.netrc`, `.pypirc`, `.docker/config.json`, `.config/fish`, `.config/git`, `.config/gh`), links that leave their tree, point at those paths, or pass through another link at any step, devices and fifos, and archives with too many entries or too large when unpacked. The walk is fail-closed, because a validator that reads the archive differently from tar is a bypass. A PAX `size` is the data length, as in tar; only the PAX keys `path`, `linkpath`, `size`, `mtime`, `atime`, `ctime`, `uid`, `gid`, `uname` and `gname` are accepted (so no `GNU.sparse.*`), and sparse files, PAX global headers and every entry type other than files, directories, symlinks and hardlinks are refused. The ustar prefix field is read only for exact POSIX ustar headers. Hardlink targets resolve from the archive root, and no entry may sit at or below a link the archive created earlier. Links and directories carrying data are refused, as is a `.git` that is not a directory; link targets may not name `.git`, `.github`, `.ssh`, `.gnupg` or `.longshore`, bare or not.
+
+The client never gets its own bytes back. On commit the staged archive is parsed under every rule above, and the entries that pass are re-emitted by Longshore's own writer as plain POSIX ustar (a PAX record only for a path or link target that does not fit, over a placeholder name such as `pax-long-name-0`: never a prefix or a truncated path, so a reader that ignores PAX sees nothing real), with setuid, setgid and sticky bits dropped and no owner names, then recompressed in the same format (gzip, zstd or none). That new archive is what is stored and served, so a header quirk in the original cannot reach the job. Unknown header formats (anything but POSIX ustar, GNU and V7) are refused, and an entry named `./` or `/` is dropped (a directory) or refused (anything else). The output is counted as it is written and stopped with `413` past the entry limit, and the unpacked contents may be at most 8 times the reserved size, so a compression bomb is stopped early.
+
+Uploads land in a staging file. Commit is refused while an upload is writing, uploads are refused once a commit starts, and the staging file is validated and then renamed atomically into place: only renamed blobs are served, and nothing can be written after commit. This is defence in depth: the class rules already keep a privileged job from restoring what a lower class wrote.
+
+## Limits and what is not done
+
+- Verified against real act and `actions/cache` only by the CI end-to-end test (`bun run test:cache-e2e`, Linux with Docker): save in one sandbox and restore in another, a trusted pull request that cannot restore another pull request's key, and an untrusted one that cannot read protected caches. The unit tests cover the protocol with a client that follows the actions/cache v1 flow.
+- The v2 twirp protocol, S3 storage (the store is an interface), and Daytona reachability are not built.
+- Cache keys are namespaced per org and per class; there is no encryption of blobs at rest.

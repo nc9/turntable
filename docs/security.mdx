@@ -111,6 +111,10 @@ A moved tag, a refused owner, an unpinned or unreachable action and the other de
 
 Two optional project policies tighten this further. `require_sha_pins` refuses any `uses:` that is not already a full commit sha. The org's action owner allowlist refuses actions from any owner not on it (`longshore policy set --allow-owners actions,oven-sh`). Both are off by default and apply to nested actions inside local composite actions too.
 
+## Job cache
+
+Implemented. The control-plane cache assigns each job a namespace from its org, project, trust class and ref scope. A job writes only to its own namespace and never reads one written by a lower trust class, release jobs restore nothing unless a project opts in, each trust class has its own share of the org quota and evicts only within it, archives are validated before they can be restored, and the per-job credential dies with the job. See [Job cache](/cache). Issue [#38](https://github.com/nc9/turntable/issues/38).
+
 ## Outbound requests from the control plane
 
 Everything the control plane fetches (the GitHub API and codeload, the Daytona API, release downloads, outbound webhooks later) goes through one client, `@longshore/net`. A source-guard test fails if any other code calls `fetch` or opens a connection itself.
@@ -211,6 +215,23 @@ Each environment needs a number of distinct people. The default is 2 for `produc
 **The two-person rule is only as strong as enrolment.** The enrolment quorum is the production policy's count, capped by how many other people could sign. With one person enrolled the cap is one, so a lone approver can enrol a second identity alone, and "two people" can then be one person holding two keys. Until at least as many people are enrolled as an environment requires, the rule is not a guarantee. Longshore says so: `approvers_overview` returns a warning, the Approvers page shows it, and `longshore approvals bootstrap` and `list` print it. Enrol the second real person promptly, and treat the first bootstrap as a setup step, not a steady state.
 
 The first approver of an org comes from the server's CLI, the local trust root: `longshore approvals bootstrap --org acme --person alice --forge-login alice-gh --public-key alice.pub`. After that the CLI refuses, and the API refuses to enrol the first one. Every further key needs a quorum of existing approvers: someone requests an enrolment (`request_enrolment`, with a passkey registration or an ed25519 public key), and existing approvers sign it with `approve_enrolment` (the UI's Approvers page does this). The quorum is the production policy's count, capped by how many other people could sign, and a person cannot approve their own new key. Every enrolment names the person's forge login, and the signed enrolment statement carries it, so approvers sign off on the identity being granted (the Approvers page and `longshore approvals sign` show it). The enrolment quorum is counted over distinct logins, excluding only the enrolee's own login. Open challenges are capped per caller (not per org) and expired ones are purged. Revoke a key with `longshore approvals revoke`.
+
+### Key policy: any or hardware
+
+Each org sets which keys its approvers may use, the same way it sets the approval count.
+
+- **`any`** (the default): any WebAuthn passkey with user verification, or an offline ed25519 key.
+- **`hardware`**: only passkeys whose attestation chained to a vendor root pinned in the binary (Yubico today) when they were enrolled, and whose AAGUID is on the org's allowlist. The preset `yubikey` covers the YubiKey 5 and Bio series; add other devices by AAGUID. Registration then asks the authenticator for direct attestation and accepts the `packed` format with a certificate chain. Nothing is fetched at runtime. Offline ed25519 keys cannot satisfy `hardware`.
+
+**Changing the policy is a trust-root change, so it takes the same quorum as enrolling a key.** There is no token operation that sets it. An operator asks for the statement (`key_policy_challenge`: the policy being replaced, the new one, a hash of the AAGUID allowlist it expands to, an expiry and a nonce), and a quorum of the currently counted approvers signs it (`approve_key_policy`, from the Approvers page or the API; not MCP). The quorum is the production policy's count, capped by how many counted people there are, computed before the change, and signers must count under the policy being replaced. A statement is bound to the policy it was issued against: once the policy moves on, it is refused. A change that would leave fewer counted people than that quorum is refused, so a change cannot quietly lower the quorum or lock the org out. The one exception is the server's CLI, the local trust root, and only while the org has no approver at all: `longshore approvals key-policy --org acme --policy hardware --preset yubikey`. Read the policy from `approvers_overview` or `longshore approvals list`.
+
+Tightening it never deletes a key. A key that does not satisfy the policy stops counting at once, in approvals, in the enrolment quorum and in `ApprovalVerifier`, and the Approvers page and `approvals list` say why. Enrol hardware-attested keys first, while the policy is `any`, and enrol at least as many people as the quorum before tightening.
+
+Attestation is only trusted when the device certificate carries the FIDO AAGUID extension and it matches the credential: a certificate without it proves no model, so it is never verified and never matches the allowlist.
+
+**Touch ID and Face ID passkeys cannot satisfy `hardware`.** They are synced through iCloud Keychain and give the browser no attestation, so in practice `hardware` means security keys such as a YubiKey. If your team uses platform passkeys, leave the policy at `any`.
+
+**Solo orgs.** One person can run the org: enrol your key with `bootstrap`, set the production and release policies to one approver with `longshore approvals policy --required 1 --allow-author-approval`, and accept that the single key is the whole guarantee. That is the case to use `hardware` for: enrol a security key as a second key (the bootstrap key signs for it while the policy is `any`), then sign the switch to `hardware` with the counted approvers (with one counted person the quorum is one) so a stolen laptop or a copied offline key cannot approve. An offline-key path for hardware keys (FIDO `sk` keys with attestation captured at enrolment) is a follow-up.
 
 ### For the signing service
 

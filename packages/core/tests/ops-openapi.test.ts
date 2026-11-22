@@ -99,6 +99,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
   expect(hiddenFromMcp.map((o) => o.name).toSorted()).toEqual([
     "approval_challenge",
     "enrolment_challenge",
+    "key_policy_challenge",
     "register_challenge",
     "request_enrolment",
     "request_release",

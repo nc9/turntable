@@ -68,7 +68,7 @@ export async function signWithPasskey(
 
 /** Creates a new passkey for enrolment: attestation "none", user verification required. */
 export async function createPasskey(
-  o: { challenge: string; rpId: string; person: string },
+  o: { challenge: string; rpId: string; person: string; attestation?: "none" | "direct" },
   credentials: CredentialsLike = navigator.credentials,
 ): Promise<{ clientDataJson: string; attestationObject: string }> {
   let cred: Credential | null;
@@ -88,7 +88,8 @@ export async function createPasskey(
           { type: "public-key", alg: -8 },
         ],
         authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
-        attestation: "none",
+        // "direct" under the hardware key policy: the server checks the vendor attestation.
+        attestation: o.attestation ?? "none",
         timeout: TIMEOUT_MS,
       },
     });

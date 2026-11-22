@@ -96,6 +96,7 @@ function ociRules(key: string, t: OciTarget, r: CompatRelease): Rule[] {
     type: "oci-bearer",
     username: t.username,
     scope: `repository:${t.repository}:push,pull`,
+    ...(t.realmHost ? { realmHost: t.realmHost } : {}),
   } as const;
   const common = { host: t.registry, inject, secret: t.secret };
   return [

@@ -30,6 +30,31 @@ export function onEventsAppended(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
+/** Called after a log chunk is committed; live log tails wake on it instead of polling. */
+type LogListener = (orgId: string, attemptId: string) => void;
+const logListeners = new Set<LogListener>();
+
+/**
+ * Subscribes to "a log chunk was appended to this attempt". Fired after the appending transaction
+ * commits, never inside it, so a woken reader sees the bytes. In-process only: another process
+ * appending to the same database is not seen, which is why readers keep a slow safety poll.
+ */
+export function onLogAppended(listener: LogListener): () => void {
+  logListeners.add(listener);
+  return () => logListeners.delete(listener);
+}
+
+/** For the log writer: schedules the wake-up for after the surrounding transaction commits. */
+export function notifyLogAppended(
+  h: { afterCommit(fn: () => void): void },
+  orgId: string,
+  attemptId: string,
+): void {
+  h.afterCommit(() => {
+    for (const l of logListeners) l(orgId, attemptId);
+  });
+}
+
 /**
  * Appends an event and returns its cursor. Call it with the transaction handle of the change it
  * describes, so a rolled-back change leaves no event. Tenant columns come from `scope`.

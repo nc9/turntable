@@ -7,6 +7,7 @@ import {
   localActionDir,
   planJob,
   resolveActions,
+  rebuildArgv,
   rewriteUses,
   staticResolver,
   untrustedIn,
@@ -320,5 +321,25 @@ describe("local actions: runs.using is normalised and fails closed", () => {
     }
     files["n8/action.yml"] = using("node20", "  main: i.js\n");
     expect(() => plan2(files)).toThrow(/deeper than 5/);
+  });
+});
+
+describe("the control-plane cache", () => {
+  const base = plan("    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n");
+  test("without a cache URL act keeps its own cache server and no cache env is passed", () => {
+    expect(base.argv.some((a) => a.startsWith("ACTIONS_CACHE_URL"))).toBe(false);
+  });
+  test("with one, act is told the URL as the job's ACTIONS_CACHE_URL and the plan never stores it", () => {
+    const withCache = rebuildArgv({
+      ...base,
+      cacheUrl: "http://host.docker.internal:8080/_cache/tok/",
+    });
+    const i = withCache.argv.indexOf("--env");
+    expect(withCache.argv[i + 1]).toBe(
+      "ACTIONS_CACHE_URL=http://host.docker.internal:8080/_cache/tok/",
+    );
+    // The original plan (the one stored) carries no URL and so no credential.
+    expect(JSON.stringify(base)).not.toContain("_cache/");
+    expect(() => rebuildArgv(withCache)).not.toThrow();
   });
 });

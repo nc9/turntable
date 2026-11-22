@@ -393,6 +393,7 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
     approvers,
     keysOf<WireApprovers>({
       approvers: true,
+      key_policy: true,
       pending_enrolments: true,
       policies: true,
       warnings: true,
@@ -406,10 +407,13 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
     "passkey_id",
     "created_at",
     "not_counting",
+    "attested",
+    "aaguid",
   ]);
   expectKeys(approvers.properties!.pending_enrolments!.items!, [
     "id",
     "person",
+    "forge_login",
     "kind",
     "key_fingerprint",
     "approvals",
@@ -438,7 +442,12 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
   ).toEqual(expect.arrayContaining(["run_id", "environment", "approver", "project", "org"]));
   expectKeys(
     ok(op("/approvers/register-challenge", "post")),
-    keysOf<WireRegisterChallenge>({ challenge: true, rp_id: true, expires_at: true }),
+    keysOf<WireRegisterChallenge>({
+      challenge: true,
+      rp_id: true,
+      expires_at: true,
+      attestation: true,
+    }),
   );
   expectKeys(
     ok(op("/approvers/enrolments", "post")),

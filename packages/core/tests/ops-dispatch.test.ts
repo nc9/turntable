@@ -291,7 +291,7 @@ test("signature ops are refused for every principal and token, and absent from t
       .filter((o) => o.auth.type === "signature")
       .map((o) => o.name)
       .toSorted(),
-  ).toEqual(["approve_enrolment", "approve_environment", "sign_release"]);
+  ).toEqual(["approve_enrolment", "approve_environment", "approve_key_policy", "sign_release"]);
 });
 
 test("input is strict and validated; output is validated and stripped", async () => {

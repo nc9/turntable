@@ -51,9 +51,12 @@ describe("buildRunArgs", () => {
 });
 
 describe("hardening and egress", () => {
-  test("open egress keeps the default network", () => {
+  test("open egress keeps the default network and names the host, so a job can reach the control plane", () => {
     const a = buildRunArgs({ ...spec, network: { egress: "open" } }, 0);
     expect(a).not.toContain("--network");
+    expect(a[a.indexOf("--add-host") + 1]).toBe("host.docker.internal:host-gateway");
+    // A sandbox with no network gets no host mapping either.
+    expect(buildRunArgs({ ...spec, network: { egress: "none" } }, 0)).not.toContain("--add-host");
   });
   test("overrides", () => {
     const a = buildRunArgs(spec, 0, {

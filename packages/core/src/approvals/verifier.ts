@@ -4,8 +4,15 @@
 // must bind exactly this subject, be unexpired, and its signature must verify against the
 // approver key (the org's enrolled keys, or the caller's own key store).
 import { approverIdentity } from "./identity";
+import { keyPolicyViolation } from "./key-policy";
 import type { Db } from "../db";
-import { getEnvPolicy, getRun, listEnvironmentRecords, parseTrust } from "../db/repos";
+import {
+  getEnvPolicy,
+  getKeyPolicy,
+  getRun,
+  listEnvironmentRecords,
+  parseTrust,
+} from "../db/repos";
 import { authorBlocked, liveEnvironmentRecords } from "./apply";
 import { dbKeyStore } from "./store";
 import { statementHash, envStatementSchema } from "./statement";
@@ -66,6 +73,7 @@ export function createApprovalVerifier(
       const rp = o.rp ?? defaults.rp;
       const scope = { orgId: subject.orgId, projectId: subject.projectId };
       const policy = await getEnvPolicy(db, subject.orgId, environment);
+      const keyPolicy = await getKeyPolicy(db, subject.orgId);
       const denied = (
         reason: Extract<ApprovalVerdict, { approved: false }>["reason"],
         have = 0,
@@ -109,6 +117,8 @@ export function createApprovalVerifier(
         }
         const key = await keys.lookup(r.approverId);
         if (!key) continue;
+        // A key that no longer satisfies the org's key policy stops counting, however it signed.
+        if (keyPolicyViolation(keyPolicy, key) !== null) continue;
         try {
           const v = verifySignature(parsed, sig, key, { rp, counter: "ignore" });
           if (v.hash !== statementHash(parsed) || v.hash !== r.statementHash) continue;
