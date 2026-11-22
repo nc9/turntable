@@ -34,6 +34,7 @@ import {
   withIsolationPolicy,
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
+import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
@@ -543,6 +544,8 @@ async function token(args: string[]): Promise<void> {
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
+  // Before any subcommand opens the data directory: as root, drop (or refuse) like `serve` does.
+  dropForCommand(command, rest);
   switch (command) {
     case "serve":
       return await serve(rest);
