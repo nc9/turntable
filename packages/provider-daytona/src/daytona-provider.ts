@@ -19,7 +19,7 @@ import { type DaytonaSandbox, DaytonaApi, DEFAULT_BASE_URL, readJson } from "./a
 import type { ApiKeySource } from "./key";
 import {
   FOREIGN_WAIT_AT,
-  RUNNING_STATES,
+  LIVE_STATES,
   MAX_TTL_SECONDS,
   OWN_LABEL,
   OWN_LABEL_VALUE,
@@ -283,17 +283,17 @@ export class DaytonaProvider implements Provider {
 
   private async ownLive(): Promise<number> {
     const all = await this.listAll({ labels: JSON.stringify({ [OWN_LABEL]: OWN_LABEL_VALUE }) });
-    return all.filter((s) => isOwn(s) && isLive(s.state) && s.desiredState !== "destroyed").length;
+    return all.filter((s) => isOwn(s) && isLive(s.state)).length;
   }
 
   /**
-   * Counts the owner's own CI sandboxes that are running. Read only: they are never touched.
-   * Only running states are fetched, because an account can hold thousands of stopped or
-   * archived sandboxes that use no capacity.
+   * Counts the owner's own CI sandboxes that hold quota. Read only: they are never touched.
+   * Only the states that hold quota are fetched, because an account can hold thousands of
+   * stopped or archived sandboxes that use none.
    */
   private async foreignLive(): Promise<number> {
-    const running = await this.listAll({ states: RUNNING_STATES });
-    return running.filter((s) => !isOwn(s) && isForeignCi(s)).length;
+    const live = await this.listAll({ states: LIVE_STATES });
+    return live.filter((s) => !isOwn(s) && isForeignCi(s)).length;
   }
 
   /** Waits until we are under our own cap and the owner's CI is not busy, or gives up. */
@@ -481,9 +481,7 @@ export class DaytonaProvider implements Provider {
     const deadline = this.now() + 90_000;
     for (;;) {
       const all = await this.listAll({ labels: JSON.stringify({ [OWN_LABEL]: OWN_LABEL_VALUE }) });
-      const here = all.some(
-        (s) => s.id === id && isOwn(s) && isLive(s.state) && s.desiredState !== "destroyed",
-      );
+      const here = all.some((s) => s.id === id && isOwn(s) && isLive(s.state));
       if (here === present) return;
       if (this.now() >= deadline) {
         throw new InfraError(
@@ -528,7 +526,6 @@ export class DaytonaProvider implements Provider {
         (s) =>
           isOwn(s) &&
           isLive(s.state) &&
-          s.desiredState !== "destroyed" &&
           Object.entries(want).every(([k, v]) => s.labels?.[k] === v),
       )
       .map((s) => ({

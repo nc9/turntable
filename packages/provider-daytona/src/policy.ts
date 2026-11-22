@@ -29,34 +29,61 @@ export const FOREIGN_CI_LABELS: readonly string[] = [
 ];
 export const FOREIGN_WAIT_AT = 8;
 
-/** States in which a sandbox is running or about to run, i.e. using capacity right now. */
-export const RUNNING_STATES: readonly string[] = [
-  "creating",
-  "restoring",
-  "started",
-  "starting",
-  "pending_build",
-  "building_snapshot",
-  "pulling_snapshot",
-  "resizing",
-  "resuming",
-];
+/** The label key the account owner's CI uses, with one of FOREIGN_CI_LABELS as its value. */
+export const FOREIGN_CI_LABEL_KEY = "project";
 
-/** True for one of the account owner's CI sandboxes, by label key, label value or snapshot. */
+/**
+ * True for one of the account owner's CI sandboxes: the label `project` set to exactly one of
+ * the CI names, or a sandbox that started from a snapshot with one of those names.
+ */
 export function isForeignCi(s: {
   labels?: Record<string, string> | undefined;
   snapshot?: string | undefined;
 }): boolean {
   if (s.snapshot !== undefined && FOREIGN_CI_LABELS.includes(s.snapshot)) return true;
-  return Object.entries(s.labels ?? {}).some(
-    ([k, v]) => FOREIGN_CI_LABELS.includes(k) || FOREIGN_CI_LABELS.includes(v),
-  );
+  const v = s.labels?.[FOREIGN_CI_LABEL_KEY];
+  return v !== undefined && FOREIGN_CI_LABELS.includes(v);
 }
 
-/** Daytona sandbox states that occupy capacity (everything not on its way out). */
-const GONE = new Set(["destroyed", "destroying", "archived", "archiving", "build_failed"]);
+/**
+ * Every Daytona sandbox state. A sandbox holds quota in all of them except the four in
+ * `FREE_STATES`: stopped, archived, destroyed and error. Everything else, including the
+ * transitional states (creating, restoring, stopping, destroying, ...), counts as live.
+ */
+export const ALL_STATES: readonly string[] = [
+  "creating",
+  "restoring",
+  "destroyed",
+  "destroying",
+  "started",
+  "stopped",
+  "starting",
+  "stopping",
+  "error",
+  "build_failed",
+  "pending_build",
+  "building_snapshot",
+  "unknown",
+  "pulling_snapshot",
+  "archived",
+  "archiving",
+  "resizing",
+  "snapshotting",
+  "forking",
+  "pausing",
+  "paused",
+  "resuming",
+];
+
+/** States that hold no quota. */
+export const FREE_STATES: readonly string[] = ["stopped", "archived", "destroyed", "error"];
+
+/** The states asked for when counting live sandboxes (everything that holds quota). */
+export const LIVE_STATES: readonly string[] = ALL_STATES.filter((s) => !FREE_STATES.includes(s));
+
+/** A state we do not recognise is counted as live: when unsure, assume it holds quota. */
 export const isLive = (state: string | undefined): boolean =>
-  state !== undefined && !GONE.has(state);
+  state !== undefined && !FREE_STATES.includes(state);
 
 /** A DNS-label-safe sandbox name that always starts with the required prefix. */
 export function ownName(requested: string): string {

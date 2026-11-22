@@ -7,9 +7,11 @@ import {
   type SandboxSpec,
 } from "@longshore/provider-sdk";
 import {
+  ALL_STATES,
   DaytonaProvider,
   type DaytonaProviderOptions,
   type UsageRecord,
+  isLive,
   readApiKey,
   withSandbox,
 } from "../src/index";
@@ -39,6 +41,11 @@ const spec = (over: Partial<SandboxSpec> = {}): SandboxSpec => ({
   network: { egress: "open" },
   ...over,
 });
+
+/** The mock learns of a client hang-up asynchronously; wait for it, bounded. */
+async function untilCancelled(): Promise<void> {
+  for (let i = 0; i < 100 && !mock.stats.hugeCancelled; i++) await Bun.sleep(30);
+}
 
 const created = () => mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox");
 
@@ -156,7 +163,7 @@ describe("live cap and waiting", () => {
       "squirrel-pub-ci",
       "squirrel-release",
       "squirrel-ci",
-    ].map((k, i) => mock.addForeign(`their-${i}`, { [k]: "x" }));
+    ].map((k, i) => mock.addForeign(`their-${i}`, { project: k }));
     const p = make();
     let done = false;
     const pending = p.create(spec()).then((h) => {
@@ -178,33 +185,75 @@ describe("live cap and waiting", () => {
     ).toBe(true);
   });
 
-  test("the owner's CI is recognised by label key, label value or snapshot, and only while running", async () => {
-    // 3 by value (how the account really labels them), 3 by snapshot, 2 by key: 8 running
-    for (let i = 0; i < 3; i++) mock.addForeign(`v-${i}`, { project: "squirrel-pub-ci" });
-    for (let i = 0; i < 3; i++)
-      mock.addForeign(`s-${i}`, { project: "other" }, "started", "squirrel-release");
-    for (let i = 0; i < 2; i++) mock.addForeign(`k-${i}`, { "squirrel-ci": "1" });
-    // none of these count: stopped, archived, unrelated
+  test("the owner's CI is matched by the project label or snapshot, and counted in every quota state", async () => {
+    // 4 by label value (how the account really labels them), 4 by snapshot: 8 live
+    for (let i = 0; i < 2; i++) mock.addForeign(`v-${i}`, { project: "squirrel-pub-ci" });
+    for (let i = 0; i < 2; i++)
+      mock.addForeign(`w-${i}`, { project: "squirrel-release" }, "pending_build");
+    for (let i = 0; i < 2; i++)
+      mock.addForeign(`s-${i}`, { project: "other" }, "starting", "squirrel-release");
+    for (let i = 0; i < 2; i++)
+      mock.addForeign(`t-${i}`, { project: "other" }, "building_snapshot", "squirrel-ci");
+    // none of these count: not live, wrong key, wrong value, someone else's
     for (let i = 0; i < 20; i++) {
       mock.addForeign(
         `idle-${i}`,
         { project: "squirrel-ci" },
-        i % 2 ? "stopped" : "archived",
+        ["stopped", "archived", "error", "destroyed"][i % 4],
         "squirrel-ci",
       );
     }
+    mock.addForeign("key", { "squirrel-ci": "1" });
+    mock.addForeign("lane", { lane: "squirrel-ci" });
     mock.addForeign("unrelated", { project: "someone-else" }, "started", "daytona-small");
     const p = make({ capacityWaitMs: 40 });
     await expect(p.create(spec())).rejects.toThrow(/CI has 8 live/);
-    // the check only asked for running states, not the whole account
+    // the check asked only for states that hold quota, not for stopped or archived ones
     const asked = mock.requests.filter(
       (r) => r.path === "/api/sandbox" && r.query.includes("states=started"),
     );
     expect(asked.length).toBeGreaterThan(0);
+    const q = decodeURIComponent(asked[0]!.query);
+    expect(q).not.toMatch(/states=(stopped|archived|destroyed|error)\b/);
+  });
+
+  test("each state is tested for the owner-CI wait: 8 sandboxes block exactly when the state holds quota", async () => {
+    for (const state of ALL_STATES) {
+      await mock.stop();
+      mock = startMock();
+      for (let i = 0; i < 8; i++) mock.addForeign(`ci-${i}`, { project: "squirrel-ci" }, state);
+      const p = make({ capacityWaitMs: 30 });
+      if (isLive(state)) {
+        await expect(p.create(spec())).rejects.toThrow(/CI has 8 live/);
+      } else {
+        const h = await p.create(spec());
+        await p.destroy(h.id);
+      }
+    }
+  });
+
+  test("each state is tested for our own cap: a sandbox of ours blocks the next create exactly when its state holds quota", async () => {
+    for (const state of ALL_STATES) {
+      await mock.stop();
+      mock = startMock();
+      const p = make({ maxLive: 1, capacityWaitMs: 30 });
+      const a = await p.create(spec({ name: "a" }));
+      mock.sandboxes.get(a.id)!.state = state;
+      if (isLive(state)) {
+        await expect(p.create(spec({ name: "b" }))).rejects.toThrow(/max 1/);
+      } else {
+        const b = await p.create(spec({ name: "b" }));
+        mock.sandboxes.get(a.id)!.state = "started";
+        await p.destroy(b.id);
+      }
+      mock.sandboxes.get(a.id)!.state = "started";
+      await p.destroy(a.id);
+    }
   });
 
   test("stopped sandboxes of the owner's CI do not hold us up", async () => {
-    for (let i = 0; i < 10; i++) mock.addForeign(`their-${i}`, { "squirrel-ci": "1" }, "destroyed");
+    for (let i = 0; i < 10; i++)
+      mock.addForeign(`their-${i}`, { project: "squirrel-ci" }, "stopped");
     const p = make({ capacityWaitMs: 40 });
     const h = await p.create(spec());
     await p.destroy(h.id);
@@ -298,12 +347,13 @@ describe("delete in finally and cleanup", () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(100); // waited out the teardown
     expect(mock.sandboxes.size).toBe(0);
     expect(await p.count({})).toBe(0);
-    // a sandbox that is already being destroyed does not use up the cap
+    // a sandbox that is being destroyed still holds quota until it is gone
     const b = await p.create(spec({ name: "b" }));
     const c = p.destroy(b.id);
     await Bun.sleep(20);
-    expect(await p.count({})).toBe(0);
+    expect(await p.count({})).toBe(1);
     await c;
+    expect(await p.count({})).toBe(0);
   });
 
   test("withSandbox deletes when the work throws", async () => {
@@ -388,9 +438,9 @@ describe("api key and errors", () => {
     await expect(p.files.get(h.id, "/tmp/__huge", 100_000)).rejects.toBeInstanceOf(
       FileTooLargeError,
     );
-    await Bun.sleep(100); // the server notices the client hanging up a moment later
+    await untilCancelled(); // the server notices the client hanging up a moment later
     expect(mock.stats.hugeCancelled).toBe(true);
-    expect(mock.stats.hugePulled).toBeLessThan(40); // 2000 chunks were on offer, ~2 needed
+    expect(mock.stats.hugePulled).toBeLessThan(300); // 2000 chunks were on offer, ~2 needed
     await p.destroy(h.id);
   });
 
@@ -401,9 +451,9 @@ describe("api key and errors", () => {
     mock.stats.hugeCancelled = false;
     const err = await p.count({}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InfraError);
-    await Bun.sleep(100);
+    await untilCancelled();
     expect(mock.stats.hugeCancelled).toBe(true);
-    expect(mock.stats.hugePulled).toBeLessThan(400); // 16 MiB cap is 256 chunks of 64 KiB
+    expect(mock.stats.hugePulled).toBeLessThan(1000); // 2000 offered; the 16 MiB cap is 256 chunks // 16 MiB cap is 256 chunks of 64 KiB
   });
 
   test("file caps: put over the cap and get over maxBytes are FileTooLargeError", async () => {

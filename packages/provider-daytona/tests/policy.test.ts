@@ -7,6 +7,9 @@ import {
   MAX_TTL_SECONDS,
   NAME_PREFIX,
   clampMaxLive,
+  ALL_STATES,
+  LIVE_STATES,
+  isForeignCi,
   isLive,
   isOwn,
   ownName,
@@ -57,11 +60,42 @@ describe("customer-account rules", () => {
     expect(isOwn({ name: "longshore-dev-x" })).toBe(false);
   });
 
-  test("states that are leaving do not occupy capacity", () => {
-    expect(["creating", "started", "stopped", "starting", "pending_build"].every(isLive)).toBe(
-      true,
-    );
-    expect(["destroyed", "destroying", "archived", "build_failed"].some(isLive)).toBe(false);
+  test("every Daytona state holds quota except stopped, archived, destroyed and error", () => {
+    const free = new Set(["stopped", "archived", "destroyed", "error"]);
+    for (const state of ALL_STATES) expect(isLive(state)).toBe(!free.has(state));
+    // transitional and odd states count too: when unsure, assume quota is held
+    for (const state of [
+      "started",
+      "starting",
+      "creating",
+      "pending_build",
+      "building_snapshot",
+      "restoring",
+      "stopping",
+      "destroying",
+      "build_failed",
+      "unknown",
+      "some-new-state",
+    ]) {
+      expect(isLive(state)).toBe(true);
+    }
     expect(isLive(undefined)).toBe(false);
+    expect(LIVE_STATES.toSorted()).toEqual(ALL_STATES.filter((s) => !free.has(s)).toSorted());
+    expect(LIVE_STATES.some((s) => free.has(s))).toBe(false);
+  });
+
+  test("owner CI is the label project with an exact CI name, or a snapshot with one", () => {
+    for (const name of FOREIGN_CI_LABELS) {
+      expect(isForeignCi({ labels: { project: name } })).toBe(true);
+      expect(isForeignCi({ snapshot: name })).toBe(true);
+    }
+    expect(isForeignCi({ labels: { project: "squirrel-pub-ci-2" } })).toBe(false);
+    expect(isForeignCi({ labels: { project: "SQUIRREL-CI" } })).toBe(false);
+    expect(isForeignCi({ labels: { lane: "squirrel-ci" } })).toBe(false); // right value, wrong key
+    expect(isForeignCi({ labels: { "squirrel-ci": "1" } })).toBe(false); // right name as a key
+    expect(
+      isForeignCi({ labels: { project: "squirrel-dev" }, snapshot: "squirrel-dev-warm" }),
+    ).toBe(false);
+    expect(isForeignCi({})).toBe(false);
   });
 });
