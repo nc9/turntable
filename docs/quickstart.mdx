@@ -66,6 +66,25 @@ curl http://127.0.0.1:8080/healthz
 
 The response is JSON with `ok` and the running `version`.
 
+## Deploy
+
+On a host where you cannot run commands in the container (Railway, Fly, a distroless image), bootstrap access with a token hash instead of `token create`:
+
+```sh
+# On your own machine: prints the token (stdout) and its sha256 (stderr).
+./dist/longshore-darwin-arm64 token generate
+```
+
+Keep the token. Set only the hash on the server:
+
+| Variable | Value |
+| --- | --- |
+| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | the `sha256:` value printed above |
+| `LONGSHORE_BOOTSTRAP_ORG` | optional, default `local` |
+| `PORT` | set by the host; `serve` uses it as the default port |
+
+On boot, if the org has no tokens yet, the server creates one `operator` token with that hash (valid 365 days). It does nothing when the org already has tokens, so the variable is safe to leave set. The token is never stored on the server or in its environment or logs; only its hash is. Use it as `Authorization: Bearer <token>`.
+
 ## Network binding
 
 `--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `LONGSHORE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.

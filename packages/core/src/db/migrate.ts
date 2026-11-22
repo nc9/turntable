@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { migrateLegacyMigrationsTable } from "./legacy-names";
 
 export type Migration = {
   tag: string;
@@ -13,6 +14,7 @@ export type Migration = {
  * runner.
  */
 export function applyMigrations(sqlite: Database, migrations: Migration[]): string[] {
+  migrateLegacyMigrationsTable(sqlite);
   sqlite.run(
     "CREATE TABLE IF NOT EXISTS __longshore_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
   );

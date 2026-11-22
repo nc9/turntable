@@ -2,6 +2,8 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, openDatabase } from "./db";
+import { bootstrapToken } from "./ops/bootstrap";
+import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
 import {
   createActRunner,
@@ -24,12 +26,17 @@ Usage:
                   [--poll <config.json>]
   longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
+  longshore token generate
   longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
   longshore token revoke <id> [--data-dir ./data]
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
   longshore version
 
 Environment:
+  PORT  default for --port (Railway and similar hosts set it)
+  LONGSHORE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "longshore token generate"; on boot, an
+                    org with no tokens gets one operator token with this hash
+  LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
   LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
@@ -57,6 +64,7 @@ async function startBackground(
   if (v.worker) {
     const providerName = v.provider ?? "docker";
     const provider = createProvider(providerName, loadProviderConfig(v["provider-config"]));
+    workerProvider = provider;
     // One provider per server for now; the name stored on an attempt is the provider it was made for.
     const providers = () => provider;
     const leaseMs = Number(v["lease-seconds"]) * 1000;
@@ -65,11 +73,6 @@ async function startBackground(
       if (!Number.isInteger(n) || n < 1) throw new Error(`invalid --${name}: ${value}`);
       return n;
     };
-    // Boot reconcile first: anything a dead worker left running is resolved before new claims.
-    const report = await reconcileExpired(db, providers, { log });
-    if (report.resolved.length > 0)
-      log(`reconciled ${report.resolved.length} abandoned attempt(s)`);
-    workerProvider = provider;
     scheduler = new Scheduler({
       db,
       providers,
@@ -83,12 +86,26 @@ async function startBackground(
       perOrgCap: num("org-cap", v["org-cap"]),
       log,
     });
+    const sched = scheduler;
+    const reconcile = () =>
+      reconcileExpired(db, providers, {
+        log,
+        owner: sched.owner,
+        leaseMs,
+        // Re-attach to execs a dead worker left behind: the real result is recovered by replay.
+        adopt: (claim, resume) => sched.adopt(claim, resume),
+      });
+    // Boot reconcile before claiming: abandoned attempts are re-attached or resolved first.
+    const report = await reconcile();
+    if (report.resolved.length + report.adopted.length > 0) {
+      log(
+        `reconciled: ${report.adopted.length} re-attached, ${report.resolved.length} marked infra_error`,
+      );
+    }
     scheduler.start();
     reconcileTimer = setInterval(
       () => {
-        void reconcileExpired(db, providers, { log }).catch((e) =>
-          log(`reconcile failed: ${String(e)}`),
-        );
+        void reconcile().catch((e) => log(`reconcile failed: ${String(e)}`));
       },
       Math.max(leaseMs, 10_000),
     );
@@ -108,7 +125,7 @@ async function startBackground(
       log,
       onQueued: () => scheduler?.nudge(),
       // A newer cancel-in-progress run took over running attempts: stop their workers now and
-      // destroy their sandboxes (the worker's own cleanup is the same, this is the backstop).
+      // destroy their sandboxes (the worker's own cleanup is the same; this is the backstop).
       onSuperseded: (running) => {
         scheduler?.abort(running.map((r) => r.attemptId));
         for (const r of running) {
@@ -130,7 +147,7 @@ async function startBackground(
       if (reconcileTimer) clearInterval(reconcileTimer);
       if (scheduler) {
         // Stop claiming, give running attempts a moment, then leave the rest: their leases
-        // expire and the next boot's reconcile resolves them as infra_error. Never abort them
+        // expire and the next boot's reconcile re-attaches to them. Never abort them
         // here, which would record a user cancel that never happened.
         await Promise.race([scheduler.stop(), Bun.sleep(10_000)]);
       }
@@ -142,7 +159,7 @@ async function serve(args: string[]): Promise<void> {
   const { values } = parseArgs({
     args,
     options: {
-      port: { type: "string", default: "8080" },
+      port: { type: "string", default: process.env.PORT?.trim() || "8080" },
       host: { type: "string", default: process.env.LONGSHORE_HOST ?? "127.0.0.1" },
       "data-dir": { type: "string", default: "./data" },
       "allowed-origin": { type: "string", multiple: true },
@@ -164,6 +181,20 @@ async function serve(args: string[]): Promise<void> {
   const dataDir = resolve(values["data-dir"]);
   const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
+
+  // First-boot access without a shell: see ops/bootstrap.ts.
+  const bootstrapHash = process.env.LONGSHORE_BOOTSTRAP_TOKEN_SHA256?.trim();
+  if (bootstrapHash) {
+    const r = await bootstrapToken(db, {
+      sha256: bootstrapHash,
+      org: process.env.LONGSHORE_BOOTSTRAP_ORG,
+    });
+    console.log(
+      r.status === "created"
+        ? `bootstrap: created an operator token for org ${r.org} (expires ${iso(r.expiresAt)})`
+        : `bootstrap: org ${r.org} already has tokens, nothing created`,
+    );
+  }
 
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
@@ -208,6 +239,16 @@ async function token(args: string[]): Promise<void> {
     strict: true,
   });
   const open = () => openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  if (sub === "generate") {
+    // No database: the token goes to stdout, its hash to stderr. Keep the token; set only the
+    // hash (LONGSHORE_BOOTSTRAP_TOKEN_SHA256) on the server.
+    const secret = generateToken();
+    console.error(
+      `sha256: ${hashToken(secret)}\nSet LONGSHORE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
+    );
+    console.log(secret);
+    return;
+  }
   if (sub === "create") {
     if (!values.org || !values.role || !values.name) {
       throw new Error("--org, --role and --name are required");
@@ -263,7 +304,7 @@ async function token(args: string[]): Promise<void> {
       db.close();
     }
   } else {
-    throw new Error("usage: longshore token <create|list|revoke> ...");
+    throw new Error("usage: longshore token <generate|create|list|revoke> ...");
   }
 }
 

@@ -110,7 +110,7 @@ test("the CLI binary prints only the secret on stdout", async () => {
       proc.exited,
     ]);
     expect(code).toBe(0);
-    expect(out.trim()).toMatch(/^tt_[A-Za-z0-9_-]{43}$/);
+    expect(out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
     expect(err).toContain("shown once");
     expect(err).not.toContain(out.trim());
     const bad = Bun.spawn(
