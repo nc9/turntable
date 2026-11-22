@@ -23,6 +23,14 @@ const MCP_OFF: Record<string, string> = {
   request_enrolment: "approver enrolment is a human act",
   request_release: "releasing is a human decision; the release lane re-checks everything anyway",
   start_installation_claim: "binding a GitHub installation to an org is a human act in a browser",
+  set_proxy_rule: "decides where a secret may be sent: a limit-raising setter",
+  add_proxy_passthrough_host: "widens the egress of secret-bearing jobs: a limit-raising setter",
+  accept_action_move: "a trust decision: it blesses a moved action tag for protected runs",
+  incident_unfreeze: "reversing the safety stop is human-only (freezing stays on MCP)",
+  create_api_token: "token minting: never into an agent's context, and no agent role can call it",
+  sign_release: "signature op: a human-signed assertion, never a token",
+  approve_environment: "signature op: a human-signed statement, never a token",
+  approve_enrolment: "signature op: a human-signed statement, never a token",
 };
 
 describe("the operations table", () => {
@@ -71,7 +79,7 @@ describe("what an agent is shown", () => {
   });
 
   test("every MCP-off operation has a recorded reason, and every reason is still true", () => {
-    const off = registry.documentedOps().filter((o) => !o.mcp && o.secretInputFields.length === 0);
+    const off = registry.ops.filter((o) => !o.mcp && o.secretInputFields.length === 0);
     expect(off.map((o) => o.name).toSorted()).toEqual(
       Object.keys(MCP_OFF)
         .filter((n) => registry.get(n)!.secretInputFields.length === 0)

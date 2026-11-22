@@ -83,14 +83,14 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_whoami` | none | no |  | read | admin | instance | Who the instance administrator token is. |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
-| `accept_action_move` | `POST /api/v1/action-pins/accept-move` | yes |  | write | operator | token | Accept a moved action tag: re-pin it to the commit it now points at. |
+| `accept_action_move` | `POST /api/v1/action-pins/accept-move` | no |  | write | operator | token | Accept a moved action tag: re-pin it to the commit it now points at. |
 | `set_secret` | `POST /api/v1/secrets` | no | `longshore secret set` | write | release_operator | token | Store a scoped secret value (new, or a new version of an existing scope). |
 | `rotate_secret` | `POST /api/v1/secrets/rotate` | no | `longshore secret rotate` | write | release_operator | token | Give an existing secret a new value; keep the old one usable for an overlap window. |
 | `delete_secret` | `DELETE /api/v1/secrets` | yes | `longshore secret delete` | destructive | release_operator | token | Delete a secret and every version of it. |
-| `set_proxy_rule` | `POST /api/v1/proxy-rules` | yes |  | write | release_operator | token | Allow the secrets proxy to inject a secret into requests to one host (create or replace). |
+| `set_proxy_rule` | `POST /api/v1/proxy-rules` | no |  | write | release_operator | token | Allow the secrets proxy to inject a secret into requests to one host (create or replace). |
 | `list_proxy_rules` | `GET /api/v1/proxy-rules` | yes |  | read | release_operator | token | List a project's secrets-proxy rules. |
 | `delete_proxy_rule` | `DELETE /api/v1/proxy-rules` | yes |  | destructive | release_operator | token | Delete a secrets-proxy rule. |
-| `add_proxy_passthrough_host` | `POST /api/v1/proxy-passthrough-hosts` | yes |  | write | release_operator | token | Allow a project's secret-bearing jobs a plain tunnel to one host (no injection). |
+| `add_proxy_passthrough_host` | `POST /api/v1/proxy-passthrough-hosts` | no |  | write | release_operator | token | Allow a project's secret-bearing jobs a plain tunnel to one host (no injection). |
 | `list_proxy_passthrough_hosts` | `GET /api/v1/proxy-passthrough-hosts` | yes |  | read | release_operator | token | List the hosts a project's secret-bearing jobs may tunnel to without injection. |
 | `delete_proxy_passthrough_host` | `DELETE /api/v1/proxy-passthrough-hosts` | yes |  | destructive | release_operator | token | Remove a host from a project's passthrough list. |
 | `list_secrets` | `GET /api/v1/secrets` | yes | `longshore secret list` | read | release_operator | token | List secrets: names, scopes, policy, versions and last use. Never values. |
@@ -106,7 +106,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `approve_environment` | `POST /api/v1/approvals` | no |  | write | viewer | signature | Approve a run for an environment with a signed statement. Human only. |
 | `approve_enrolment` | `POST /api/v1/approvers/approve` | no |  | write | viewer | signature | Approve enrolling a new approver key with a signed statement. Human only. |
 | `incident_freeze` | `POST /api/v1/incident/freeze` | yes | `longshore incident freeze` | destructive | release_operator | token | Incident response: stop scheduling, kill running jobs, drop minted tokens, flag secrets. |
-| `incident_unfreeze` | `POST /api/v1/incident/unfreeze` | yes | `longshore incident unfreeze` | write | release_operator | token | Resume scheduling after an incident freeze. Rotation flags stay. |
+| `incident_unfreeze` | `POST /api/v1/incident/unfreeze` | no | `longshore incident unfreeze` | write | release_operator | token | Resume scheduling after an incident freeze. Rotation flags stay. |
 | `incident_status` | `GET /api/v1/incident` | yes | `longshore incident status` | read | reader | token | Whether the scope is frozen, why, and which secrets still need rotation. |
 | `secret_usage` | `GET /api/v1/secrets/usage` | yes |  | read | release_operator | token | Where a secret was used in a time range: runs, jobs, attempts and destinations. |
 | `sandbox_usage` | `GET /api/v1/usage/sandbox` | yes |  | read | reader | token | Exact sandbox time per UTC day: from the provider's create to its confirmed destroy. |
