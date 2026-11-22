@@ -6,20 +6,36 @@ import { join } from "node:path";
 import { canonicalJson, entryHash, GENESIS_HASH } from "../src/audit/chain";
 import {
   AUDIT_KEY_SECRET,
+  AuditKeyMissing,
   checkpointDue,
   createCheckpoint,
   ensureAuditKey,
+  keyFromPrivatePem,
+  parsePublicKeyFile,
+  publicKeyFile,
+  signCheckpoint,
 } from "../src/audit/checkpoint";
 import { exportOrg, jsonlSink, webhookSink, type AuditSink } from "../src/audit/export";
 import {
   auditFailure,
-  FAILURE_LIMIT,
+  FAILURE_CHAIN_LIMIT,
+  FAILURE_PER_SOURCE_LIMIT,
   FAILURE_WINDOW_MS,
+  auditAggregate,
+  flushAggregates,
   resetFailureThrottle,
 } from "../src/audit/failures";
 import { verifyAudit } from "../src/audit/verify";
-import { type Db, appendAudit, chainedAudit, listCheckpoints, getOrgBySlug } from "../src/db";
+import {
+  type Db,
+  appendAudit,
+  chainedAudit,
+  getOrgBySlug,
+  listCheckpoints,
+  putCheckpoint,
+} from "../src/db";
 import * as s from "../src/db/schema";
+import { generateKeyPairSync } from "node:crypto";
 import { SecretStore } from "../src/secrets/store";
 import { seedWorld, type Tenant } from "./ops-helpers";
 import { and, eq, gte } from "drizzle-orm";
@@ -40,7 +56,7 @@ const add = (t: Tenant, op = "test_op", outcome = "ok") =>
   });
 
 const keysOf = async (t: Tenant) => {
-  const k = await ensureAuditKey(store, t.orgId);
+  const k = await ensureAuditKey(db, store, t.orgId);
   return new Map([[k.keyId, k.publicKeyPem]]);
 };
 
@@ -156,9 +172,9 @@ describe("verify", () => {
 
 describe("checkpoints", () => {
   test("the key lives in the secret store, per org", async () => {
-    const k1 = await ensureAuditKey(store, a.orgId);
-    expect((await ensureAuditKey(store, a.orgId)).keyId).toBe(k1.keyId);
-    expect((await ensureAuditKey(store, b.orgId)).keyId).not.toBe(k1.keyId);
+    const k1 = await ensureAuditKey(db, store, a.orgId);
+    expect((await ensureAuditKey(db, store, a.orgId)).keyId).toBe(k1.keyId);
+    expect((await ensureAuditKey(db, store, b.orgId)).keyId).not.toBe(k1.keyId);
     expect(await store.get(a.orgId, AUDIT_KEY_SECRET)).toContain("PRIVATE KEY");
   });
 
@@ -259,32 +275,183 @@ describe("export", () => {
 });
 
 describe("failure auditing", () => {
-  const fail = (orgId: string | undefined, now: () => number) =>
+  const fail = (orgId: string | undefined, source: string, now: () => number, trackFirst = false) =>
     auditFailure(
       db,
       {
         orgId,
         principalKind: "token",
-        principalId: "x",
+        principalId: source,
+        source,
+        trackFirst,
         op: "o",
         outcome: "error:unauthenticated",
       },
       now,
     );
+  const count = async (orgId: string) => (await chainedAudit(db, orgId, 0, 1000)).length;
 
   test("unattributable failures land in the _system org", async () => {
-    await fail(undefined, () => 1);
+    await fail(undefined, "x", () => 1);
     const sys = await getOrgBySlug(db, "_system");
     expect(sys).toBeDefined();
-    expect((await chainedAudit(db, sys!.id, 0, 10)).length).toBe(1);
+    expect(await count(sys!.id)).toBe(1);
   });
 
-  test("throttled per chain per window, then resumes", async () => {
-    for (let i = 0; i < FAILURE_LIMIT + 20; i++) await fail(a.orgId, () => 1000);
-    expect((await chainedAudit(db, a.orgId, 0, 500)).length).toBe(FAILURE_LIMIT);
-    await fail(a.orgId, () => 1000 + FAILURE_WINDOW_MS + 1);
-    expect((await chainedAudit(db, a.orgId, 0, 500)).length).toBe(FAILURE_LIMIT + 1);
-    await fail(b.orgId, () => 1000);
-    expect((await chainedAudit(db, b.orgId, 0, 500)).length).toBe(1);
+  test("one noisy source cannot suppress another source's failures", async () => {
+    for (let i = 0; i < 100; i++) await fail(a.orgId, "noisy", () => 1000);
+    expect(await count(a.orgId)).toBe(FAILURE_PER_SOURCE_LIMIT);
+    await fail(a.orgId, "victim", () => 1000);
+    expect(await count(a.orgId)).toBe(FAILURE_PER_SOURCE_LIMIT + 1);
+    // the window rolls over, the noisy source is recorded again and says what it dropped
+    await fail(a.orgId, "noisy", () => 1000 + FAILURE_WINDOW_MS + 1);
+    const last = (await chainedAudit(db, a.orgId, 0, 1000)).at(-1);
+    expect(JSON.parse(last!.input).dropped_since_last).toBe(100 - FAILURE_PER_SOURCE_LIMIT);
+  });
+
+  test("the first failure of each distinct token id is always recorded", async () => {
+    // exhaust the chain ceiling with many untracked sources
+    for (let i = 0; i < FAILURE_CHAIN_LIMIT + 50; i++) await fail(a.orgId, `s${i}`, () => 1000);
+    expect(await count(a.orgId)).toBe(FAILURE_CHAIN_LIMIT);
+    await fail(a.orgId, "token-1", () => 1000, true);
+    await fail(a.orgId, "token-2", () => 1000, true);
+    expect(await count(a.orgId)).toBe(FAILURE_CHAIN_LIMIT + 2);
+    // only the first: a repeat is throttled like any other once the ceiling is hit
+    await fail(a.orgId, "token-1", () => 1000, true);
+    expect(await count(a.orgId)).toBe(FAILURE_CHAIN_LIMIT + 2);
+    // other orgs are untouched
+    await fail(b.orgId, "s0", () => 1000);
+    expect(await count(b.orgId)).toBe(1);
+  });
+
+  test("limiter-throttled requests are recorded as one aggregate per window", async () => {
+    for (let i = 0; i < 50; i++)
+      await auditAggregate(db, a.orgId, "github_webhook_throttled", () => 1000 + i);
+    expect(await count(a.orgId)).toBe(0);
+    await flushAggregates(db, () => 1000 + FAILURE_WINDOW_MS + 1);
+    const rows = await chainedAudit(db, a.orgId, 0, 10);
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ op: "github_webhook_throttled", outcome: "error:throttled" });
+    expect(JSON.parse(rows[0]!.input).count).toBe(50);
+  });
+});
+
+describe("key custody", () => {
+  test("a missing key is never regenerated once checkpoints exist; it is an error and an alert", async () => {
+    await add(a);
+    const k = await ensureAuditKey(db, store, a.orgId);
+    await createCheckpoint(db, store, a.orgId);
+    await store.delete(a.orgId, AUDIT_KEY_SECRET);
+    await add(a);
+    await expect(createCheckpoint(db, store, a.orgId)).rejects.toBeInstanceOf(AuditKeyMissing);
+    await expect(ensureAuditKey(db, store, a.orgId)).rejects.toBeInstanceOf(AuditKeyMissing);
+    expect(await store.get(a.orgId, AUDIT_KEY_SECRET)).toBeUndefined();
+    const alert = (await chainedAudit(db, a.orgId, 0, 100)).find(
+      (r) => r.op === "audit_signing_key",
+    );
+    expect(alert?.outcome).toBe("error:key_missing");
+    expect(k.keyId).toHaveLength(16);
+  });
+
+  test("key file round trip, and a tampered key id is refused", async () => {
+    const k = await ensureAuditKey(db, store, a.orgId);
+    const text = JSON.stringify(publicKeyFile(a.orgId, a.slug, k));
+    expect(parsePublicKeyFile(text).keyId).toBe(k.keyId);
+    expect(() => parsePublicKeyFile(text.replace(k.keyId, "0".repeat(16)))).toThrow();
+  });
+
+  test("a chain rewritten and re-signed with a regenerated key passes unpinned, fails pinned", async () => {
+    for (let i = 0; i < 3; i++) await add(a);
+    const original = await ensureAuditKey(db, store, a.orgId);
+    await createCheckpoint(db, store, a.orgId);
+    const pinned = new Map([[original.keyId, original.publicKeyPem]]);
+    // attacker: rewrite the last entry, recompute its hash, drop checkpoints, sign with a new key
+    const [row] = await chainedAudit(db, a.orgId, 3, 1);
+    const { hash: _h, prevHash: _p, ...rest } = row!;
+    const forged = { ...rest, outcome: "forged" };
+    const hash = entryHash(row!.prevHash as string, forged as never);
+    await db.orm
+      .update(s.auditLog)
+      .set({ outcome: "forged", hash })
+      .where(eq(s.auditLog.id, row!.id));
+    await db.orm.delete(s.auditCheckpoints).where(eq(s.auditCheckpoints.orgId, a.orgId));
+    const evil = keyFromPrivatePem(
+      generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    );
+    const head = (await chainedAudit(db, a.orgId, 0, 100)).at(-1)!;
+    await putCheckpoint(
+      db,
+      signCheckpoint(evil, {
+        orgId: a.orgId,
+        seq: head.seq as number,
+        hash: head.hash as string,
+        signedAt: Date.now(),
+      }),
+    );
+    const loose = await verifyAudit(db, a.orgId, new Map([[evil.keyId, evil.publicKeyPem]]));
+    expect(loose.ok).toBe(true);
+    expect(loose.keyPinned).toBe(false);
+    const strict = await verifyAudit(db, a.orgId, pinned, { keyPinned: true });
+    expect(strict.ok).toBe(false);
+    expect(strict.problems.join("\n")).toMatch(/unknown key/);
+  });
+});
+
+describe("anchors", () => {
+  const anchorOf = async (t: Tenant) => (await listCheckpoints(db, t.orgId)).map((c) => ({ ...c }));
+
+  test("a checkpoint list deleted from the database is caught by the anchor", async () => {
+    for (let i = 0; i < 3; i++) await add(a);
+    await createCheckpoint(db, store, a.orgId);
+    const anchors = await anchorOf(a);
+    const keys = await keysOf(a);
+    await db.orm.delete(s.auditCheckpoints).where(eq(s.auditCheckpoints.orgId, a.orgId));
+    expect((await verifyAudit(db, a.orgId, keys)).ok).toBe(true); // alone, it cannot tell
+    const r = await verifyAudit(db, a.orgId, keys, { anchors });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join("\n")).toMatch(/missing from the database/);
+  });
+
+  test("truncation behind an anchored checkpoint is caught even with its row deleted", async () => {
+    for (let i = 0; i < 5; i++) await add(a);
+    await createCheckpoint(db, store, a.orgId);
+    const anchors = await anchorOf(a);
+    const keys = await keysOf(a);
+    await db.orm.delete(s.auditCheckpoints).where(eq(s.auditCheckpoints.orgId, a.orgId));
+    await db.orm
+      .delete(s.auditLog)
+      .where(and(eq(s.auditLog.orgId, a.orgId), gte(s.auditLog.seq, 4)));
+    const r = await verifyAudit(db, a.orgId, keys, { anchors });
+    expect(r.ok).toBe(false);
+    expect(r.anchored).toBe(true);
+  });
+
+  test("a matching anchor passes and marks the report anchored", async () => {
+    for (let i = 0; i < 3; i++) await add(a);
+    await createCheckpoint(db, store, a.orgId);
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), { anchors: await anchorOf(a) });
+    expect(r).toMatchObject({ ok: true, anchored: true, keyPinned: false });
+  });
+
+  test("a forged anchor signature is refused", async () => {
+    for (let i = 0; i < 2; i++) await add(a);
+    await createCheckpoint(db, store, a.orgId);
+    const [cp] = await anchorOf(a);
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), {
+      anchors: [{ ...cp!, signature: Buffer.alloc(64).toString("base64url") }],
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test("old entries with no checkpoint after them fail", async () => {
+    for (let i = 0; i < 2; i++) await add(a);
+    const keys = await keysOf(a);
+    const later = Date.now() + 60 * 60_000;
+    const none = await verifyAudit(db, a.orgId, keys, { now: later });
+    expect(none.ok).toBe(false);
+    expect(none.problems.join("\n")).toMatch(/no checkpoint/);
+    expect((await verifyAudit(db, a.orgId, keys)).ok).toBe(true); // recent: not yet due
+    await createCheckpoint(db, store, a.orgId);
+    expect((await verifyAudit(db, a.orgId, keys, { now: later })).ok).toBe(true);
   });
 });

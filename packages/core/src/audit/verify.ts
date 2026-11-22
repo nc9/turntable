@@ -1,7 +1,7 @@
 import type { Db } from "../db";
-import { chainedAudit, listCheckpoints, type AuditRow } from "../db/repos";
+import { chainedAudit, listCheckpoints, type AuditCheckpoint, type AuditRow } from "../db/repos";
 import { entryHash, GENESIS_HASH, type ChainFields } from "./chain";
-import { checkpointSignatureValid } from "./checkpoint";
+import { CHECKPOINT_EVERY_MS, checkpointSignatureValid } from "./checkpoint";
 
 export interface VerifyReport {
   orgId: string;
@@ -12,7 +12,30 @@ export interface VerifyReport {
   lastCheckpointSeq: number;
   /** Entries after the last checkpoint: intact, but not yet pinned by a signature. */
   unsignedTail: number;
+  /** Checkpoints were checked against a public key the operator pinned outside the database. */
+  keyPinned: boolean;
+  /** Checkpoints were compared with an external copy (the export sink). */
+  anchored: boolean;
   problems: string[];
+}
+
+export interface VerifyOptions {
+  /** The keys came from the operator's own file, not from the store the server writes. */
+  keyPinned?: boolean;
+  /** Checkpoints taken from the export sink or a saved file: the source of truth. */
+  anchors?: readonly AnchorCheckpoint[];
+  now?: number;
+  /** Entries this old with no checkpoint after them are a failure. Default: twice the interval. */
+  maxUnsignedAgeMs?: number;
+}
+
+export interface AnchorCheckpoint {
+  orgId: string;
+  seq: number;
+  hash: string;
+  signedAt: number;
+  keyId: string;
+  signature: string;
 }
 
 const PAGE = 500;
@@ -43,6 +66,7 @@ export async function verifyAudit(
   db: Db,
   orgId: string,
   publicKeys: ReadonlyMap<string, string>,
+  opts: VerifyOptions = {},
 ): Promise<VerifyReport> {
   const problems: string[] = [];
   const hashes = new Map<number, string>();
@@ -95,6 +119,43 @@ export async function verifyAudit(
       problems.push(`checkpoint ${cp.seq} has an invalid signature`);
   }
   const lastCheckpointSeq = cps.at(-1)?.seq ?? 0;
+  const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
+  for (const an of anchors) {
+    const key = publicKeys.get(an.keyId);
+    const sigOk =
+      key !== undefined &&
+      checkpointSignatureValid(key, { ...an, signature: an.signature } as AuditCheckpoint);
+    if (!sigOk)
+      problems.push(`anchor checkpoint ${an.seq} has no valid signature under a trusted key`);
+    const at = hashes.get(an.seq);
+    if (at === undefined) {
+      problems.push(`anchor checkpoint ${an.seq} covers an entry the chain no longer has`);
+    } else if (at !== an.hash) {
+      problems.push(`anchor checkpoint ${an.seq} does not match the entry at that position`);
+    }
+    if (!cps.some((c) => c.seq === an.seq && c.hash === an.hash)) {
+      problems.push(`checkpoint ${an.seq} from the anchor is missing from the database`);
+    }
+  }
+  const anchorSeqs = new Set(anchors.map((a) => a.seq));
+  if (anchorSeqs.size > cps.length) {
+    problems.push(
+      `the database has ${cps.length} checkpoints but the anchor shows ${anchorSeqs.size}`,
+    );
+  }
+  // Checkpoints are due every few minutes. Old entries with nothing signed after them mean the
+  // checkpoints were deleted or signing stopped.
+  const maxAge = opts.maxUnsignedAgeMs ?? 2 * CHECKPOINT_EVERY_MS;
+  if (headSeq > lastCheckpointSeq) {
+    const [oldest] = await chainedAudit(db, orgId, lastCheckpointSeq, 1);
+    const age = (opts.now ?? Date.now()) - (oldest?.createdAt ?? Number.POSITIVE_INFINITY);
+    if (oldest && age > maxAge) {
+      problems.push(
+        `entry ${oldest.seq} is ${Math.round(age / 60_000)} minutes old and no checkpoint covers it` +
+          (lastCheckpointSeq === 0 ? " (the org has no checkpoints)" : ""),
+      );
+    }
+  }
   if (lastCheckpointSeq > headSeq) {
     problems.push(`the chain ends at ${headSeq} but a checkpoint covers ${lastCheckpointSeq}`);
   }
@@ -106,6 +167,8 @@ export async function verifyAudit(
     headSeq,
     lastCheckpointSeq,
     unsignedTail: Math.max(0, headSeq - lastCheckpointSeq),
+    keyPinned: opts.keyPinned === true,
+    anchored: anchors.length > 0,
     problems,
   };
 }

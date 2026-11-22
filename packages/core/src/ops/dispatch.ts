@@ -47,6 +47,10 @@ export class AuthFailure extends OpError {
   }
 }
 
+/** A short stable digest of an unrecognised token, so repeats of it share a throttle bucket. */
+const unknownTokenSource = (c: Credential): string =>
+  c.kind === "bearer" ? hashToken(c.token).slice(0, 12) : "none";
+
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(env: DispatchEnv, credential: Credential): Promise<Principal> {
   if (credential.kind === "principal") return credential.principal;
@@ -183,6 +187,8 @@ export async function dispatch(
           orgId: err.orgId,
           principalKind: "token",
           principalId: err.tokenId ?? "unknown",
+          source: err.tokenId ?? `unknown:${unknownTokenSource(credential)}`,
+          trackFirst: err.tokenId !== undefined,
           op: name,
           outcome: "error:unauthenticated",
           detail: { reason: err.orgId ? "revoked_or_expired" : "unknown_or_malformed" },

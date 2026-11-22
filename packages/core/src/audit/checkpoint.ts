@@ -20,6 +20,7 @@ import {
 } from "../db/repos";
 import type { SecretStore } from "../secrets/store";
 import { canonicalJson } from "./chain";
+import { auditFailure, flushAggregates } from "./failures";
 
 export const AUDIT_KEY_SECRET = "audit/signing-key";
 
@@ -46,14 +47,75 @@ export function keyFromPrivatePem(privateKeyPem: string): AuditKey {
   return { privateKeyPem, publicKeyPem, keyId: keyIdOf(publicKeyPem) };
 }
 
-/** The org's signing key from the secret store, generated on first use. */
-export async function ensureAuditKey(store: SecretStore, orgId: string): Promise<AuditKey> {
-  const existing = await store.get(orgId, AUDIT_KEY_SECRET);
-  if (existing) return keyFromPrivatePem(existing);
+/** The signing key is gone from the store although the org has signed checkpoints. */
+export class AuditKeyMissing extends Error {
+  constructor(orgId: string) {
+    super(
+      `audit signing key for org ${orgId} is missing from the secret store but checkpoints exist; ` +
+        "refusing to generate a new one (it could re-sign a rewritten chain). Restore the key, or " +
+        "verify against a pinned public key and decide whether the chain can still be trusted.",
+    );
+  }
+}
+
+/** The org's signing key from the secret store, or undefined when there is none. */
+export async function loadAuditKey(
+  store: SecretStore,
+  orgId: string,
+): Promise<AuditKey | undefined> {
+  const pem = await store.get(orgId, AUDIT_KEY_SECRET);
+  return pem ? keyFromPrivatePem(pem) : undefined;
+}
+
+/**
+ * The org's signing key. Generated only while the org has never signed a checkpoint. Once one
+ * exists, a missing key is an error and an audit alert, never a reason to make a new one: a new
+ * key would let someone who deleted the old one re-sign a rewritten chain.
+ */
+export async function ensureAuditKey(db: Db, store: SecretStore, orgId: string): Promise<AuditKey> {
+  const existing = await loadAuditKey(store, orgId);
+  if (existing) return existing;
+  if (await latestCheckpoint(db, orgId)) {
+    await auditFailure(db, {
+      orgId,
+      principalKind: "system",
+      principalId: "audit",
+      source: orgId,
+      kind: "key_missing",
+      op: "audit_signing_key",
+      outcome: "error:key_missing",
+    });
+    throw new AuditKeyMissing(orgId);
+  }
   const { privateKey } = generateKeyPairSync("ed25519");
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   await store.set(orgId, AUDIT_KEY_SECRET, pem);
   return keyFromPrivatePem(pem);
+}
+
+/** What an operator keeps outside the server to anchor verification. */
+export interface PublicKeyFile {
+  v: 1;
+  orgId: string;
+  org: string;
+  keyId: string;
+  publicKey: string;
+}
+
+export const publicKeyFile = (orgId: string, org: string, key: AuditKey): PublicKeyFile => ({
+  v: 1,
+  orgId,
+  org,
+  keyId: key.keyId,
+  publicKey: key.publicKeyPem,
+});
+
+/** Parses and checks a key file: the key id must really be the id of the key it carries. */
+export function parsePublicKeyFile(text: string): PublicKeyFile {
+  const f = JSON.parse(text) as Partial<PublicKeyFile>;
+  if (f.v !== 1 || !f.orgId || !f.keyId || !f.publicKey) throw new Error("not an audit key file");
+  if (keyIdOf(f.publicKey) !== f.keyId) throw new Error("key file: key id does not match the key");
+  return f as PublicKeyFile;
 }
 
 /** The bytes that are signed. */
@@ -95,7 +157,7 @@ export async function createCheckpoint(
 ): Promise<AuditCheckpoint | undefined> {
   // First use writes the key, which is itself audited; do that before reading the head so the
   // checkpoint covers it.
-  const key = await ensureAuditKey(store, orgId);
+  const key = await ensureAuditKey(db, store, orgId);
   const head = await auditHead(db, orgId);
   if (!head || head.seq === null || head.hash === null) return undefined;
   const last = await latestCheckpoint(db, orgId);
@@ -142,6 +204,7 @@ export function startCheckpointer(
 ): () => void {
   const log = opts.log ?? ((m: string) => console.warn(m));
   const timer = setInterval(() => {
+    void flushAggregates(db).catch(() => {});
     checkpointDue(db, store, opts).catch((e: unknown) =>
       log(`audit checkpoint failed: ${String(e)}`),
     );

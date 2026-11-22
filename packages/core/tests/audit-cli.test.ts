@@ -64,11 +64,30 @@ test("longshore audit: checkpoint, verify, export, and tamper exit codes", async
   expect(await quiet(() => auditCommand(["export", ...base, "--dir", out]))).toBe(0);
   expect(readdirSync(out).length).toBe(1);
 
+  // anchors kept off the server: the pinned key and the exported checkpoints
+  const pub = join(tmp, "acme.pub.json");
+  expect(await quiet(() => auditCommand(["export-key", ...base, "--out", pub]))).toBe(0);
+  const exported = join(out, readdirSync(out)[0]!);
+  const anchored = ["--pubkey", pub, "--anchor", exported];
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (m: string) => lines.push(String(m));
+  const okCode = await auditCommand(["verify", ...base, ...anchored]);
+  const looseCode = await auditCommand(["verify", ...base]);
+  console.log = log;
+  expect(okCode).toBe(0);
+  expect(lines[0]).toContain("key pinned, checkpoints anchored");
+  expect(looseCode).toBe(0);
+  expect(lines[1]).toContain("unanchored: integrity only");
+  // the key file is never overwritten
+  await expect(auditCommand(["export-key", ...base, "--out", pub])).rejects.toThrow();
+
   await db.orm
     .update(s.auditLog)
     .set({ outcome: "tampered" })
     .where(and(eq(s.auditLog.orgId, org.id), eq(s.auditLog.seq, 2)));
   expect(await quiet(() => auditCommand(["verify", ...base]))).toBe(1);
+  expect(await quiet(() => auditCommand(["verify", ...base, ...anchored]))).toBe(1);
   expect(await quiet(() => auditCommand(["bogus"]))).toBe(2);
   db.close();
 });
