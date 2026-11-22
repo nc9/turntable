@@ -276,3 +276,50 @@ export function touchVaultSecret(
       .where(and(eq(s.vaultSecrets.orgId, orgId), eq(s.vaultSecrets.id, secretId)));
   });
 }
+
+/** Every sealed version of an org with its secret's name, for re-sealing. Vault service only. */
+export function listVaultCiphertexts(
+  db: Db,
+  orgId: string,
+): Promise<{ secretId: string; version: number; name: string; ciphertext: string }[]> {
+  return db.run((h) =>
+    h.orm
+      .select({
+        secretId: s.vaultSecretVersions.secretId,
+        version: s.vaultSecretVersions.version,
+        name: s.vaultSecrets.name,
+        ciphertext: s.vaultSecretVersions.ciphertext,
+      })
+      .from(s.vaultSecretVersions)
+      .innerJoin(
+        s.vaultSecrets,
+        and(
+          eq(s.vaultSecrets.id, s.vaultSecretVersions.secretId),
+          eq(s.vaultSecrets.orgId, s.vaultSecretVersions.orgId),
+        ),
+      )
+      .where(eq(s.vaultSecretVersions.orgId, orgId)),
+  );
+}
+
+/** Replaces one version's sealed record with the same value sealed another way. */
+export function setVaultCiphertext(
+  db: Db,
+  orgId: string,
+  secretId: string,
+  version: number,
+  ciphertext: string,
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .update(s.vaultSecretVersions)
+      .set({ ciphertext })
+      .where(
+        and(
+          eq(s.vaultSecretVersions.orgId, orgId),
+          eq(s.vaultSecretVersions.secretId, secretId),
+          eq(s.vaultSecretVersions.version, version),
+        ),
+      );
+  });
+}

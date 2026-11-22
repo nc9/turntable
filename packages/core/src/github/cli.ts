@@ -7,9 +7,11 @@ import {
   listInstallations,
   openDatabase,
 } from "../db";
+import { AuditAnchor } from "../audit/anchor";
 import { getGithubApp } from "../db/repos";
 import { initMasterKey, loadMasterKey } from "../secrets/crypto";
 import { SecretStore } from "../secrets/store";
+import { SecretVault } from "../secrets/vault";
 import { AppAuth } from "./app-auth";
 import { startManifestFlow } from "./manifest";
 import { rotateWebhookSecret } from "./rotation";
@@ -28,18 +30,54 @@ function keyFile(explicit: string | undefined, dataDir?: string): string {
 /** `longshore keys init [--file <path>] [--data-dir ./data]` */
 export async function keysCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
-  if (sub !== "init")
-    throw new Error("usage: longshore keys init [--file <path>] [--data-dir ./data]");
+  if (sub !== "init" && sub !== "reseal") {
+    throw new Error(
+      "usage: longshore keys init [--file <path>] [--data-dir ./data]\n       longshore keys reseal --org <slug> [--file <path>] [--data-dir ./data]",
+    );
+  }
   const { values } = parseArgs({
     args: rest,
-    options: { file: { type: "string" }, "data-dir": { type: "string", default: "./data" } },
+    options: {
+      file: { type: "string" },
+      org: { type: "string" },
+      "data-dir": { type: "string", default: "./data" },
+    },
     strict: true,
   });
+  if (sub === "reseal")
+    return resealOrg(values.org, keyFile(values.file, values["data-dir"]), values["data-dir"]);
   const path = resolve(keyFile(values.file, values["data-dir"]));
   initMasterKey(path);
   console.error(
     `created master key file ${path} (mode 0600). Point LONGSHORE_MASTER_KEY_FILE at it. Back it up: without it stored secrets cannot be decrypted. It is never printed.`,
   );
+}
+
+/**
+ * `longshore keys reseal --org <slug>`: re-seals everything an org has sealed (secret store,
+ * OIDC keys, vault secrets, the audit anchor state) under the org's own key-encryption key. The
+ * values do not change. Run it once per org after upgrading, then set LONGSHORE_REQUIRE_ORG_KEYS=1.
+ */
+async function resealOrg(
+  slug: string | undefined,
+  keyPath: string,
+  dataDir: string,
+): Promise<void> {
+  if (!slug) throw new Error("--org <slug> is required");
+  const master = loadMasterKey(resolve(keyPath));
+  const db = openDatabase(dbPath(dataDir));
+  try {
+    const org = await getOrgBySlug(db, slug);
+    if (!org) throw new Error(`no org with slug ${slug}`);
+    const store = await new SecretStore(db, master).reseal(org.id);
+    const vault = await new SecretVault({ db, masterKey: master }).reseal(org.id);
+    const anchor = new AuditAnchor(AuditAnchor.dirFor(resolve(keyPath)), master).reseal(org.id);
+    console.error(
+      `resealed org ${slug}: ${store} store records, ${vault} vault versions, anchor state ${anchor ? "yes" : "no change"}`,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 /** `longshore github-app <create|rotate-webhook-secret|status> ...` */
