@@ -1,0 +1,41 @@
+---
+title: Compatibility
+description: Which GitHub Actions features Turntable supports, and how it reports the rest.
+---
+
+Turntable promises that unsupported features fail loudly at parse or plan time. It never silently ignores them. Every feature is in one of three states.
+
+| State | Meaning |
+| --- | --- |
+| Supported | Behaves as on GitHub. |
+| Supported with differences | Works, with documented differences. |
+| Unsupported | Rejected with an error that names the feature. |
+
+<Note>
+  Nothing is implemented yet. The classification below is the plan for v1, and every row is planned.
+</Note>
+
+## Planned support
+
+| Feature | Status |
+| --- | --- |
+| Triggers: `push`, `pull_request`, `schedule`, `workflow_dispatch` | Planned |
+| `needs`, job outputs, `matrix` | Planned |
+| `concurrency` | Planned |
+| Reusable workflows | Planned |
+| Composite and JavaScript actions | Planned |
+| `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STEP_SUMMARY` | Planned |
+| Services and job containers | Planned, run by the core |
+
+## Unsupported in v1
+
+| Feature | Notes |
+| --- | --- |
+| Windows runners | Not in v1. |
+| macOS runners | Not in v1. A future provider plugin could offer them. |
+| GitHub artifact attestations | Turntable signed provenance is the planned substitute. |
+| GitHub OIDC claims | Turntable's own OIDC issuer replaces them. |
+
+<Info>
+  npm trusted publishing does not accept self-hosted OIDC issuers. Publishing to npm uses tokens injected by the secrets proxy until that changes.
+</Info>
