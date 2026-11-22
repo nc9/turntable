@@ -15,6 +15,8 @@ import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/e
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
 import { SecretStore } from "./secrets/store";
+import { createOidcHandler, type OidcHandler } from "./oidc/http";
+import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
@@ -41,6 +43,7 @@ Usage:
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
                    [--isolation-override <reason>]]
                   [--poll <config.json>]
+  longshore oidc status|rotate|export --org <slug> (see longshore oidc)
   longshore secret set|rotate|delete|list --org <slug> --name <NAME> (--value-file <path> | --value-stdin)
   longshore audit init-key|adopt|verify|checkpoint|export-key|export (see longshore audit)
   longshore policy show | set [--org local] [--project local] [--require-sha-pins true|false]
@@ -73,6 +76,10 @@ Environment:
                     required for the GitHub App and its webhook endpoint
   LONGSHORE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
   LONGSHORE_AUDIT_WEBHOOK_URL  POST audit batches here (HMAC with LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE)
+  LONGSHORE_OIDC_BASE_URL  base of the per-org OIDC issuers (default <public url>/oidc); an org's issuer
+                    is <base>/<org slug>. Needs LONGSHORE_MASTER_KEY_FILE
+  LONGSHORE_OIDC_ALLOW_CLASSES  trust classes that may get an OIDC token (default protected,release;
+                    untrusted_pr is refused unless you list it, which you should not)
   LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control, so secret values
                     sent through it over x-forwarded-proto: https are accepted
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
@@ -295,11 +302,33 @@ async function serve(args: string[]): Promise<void> {
   const auditStops: (() => void)[] = [];
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
+  let oidc: OidcHandler | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const masterKey = loadMasterKey(keyFile);
     const store = new SecretStore(db, masterKey);
     vault = new SecretVault({ db, masterKey });
+    // Per-org OIDC issuer: needs a public https base, which is what an issuer URL is.
+    const publicUrl = (values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL)?.trim();
+    const oidcBase =
+      process.env.LONGSHORE_OIDC_BASE_URL?.trim() ||
+      (publicUrl ? `${publicUrl.replace(/\/+$/, "")}/oidc` : undefined);
+    if (oidcBase) {
+      const u = new URL(oidcBase);
+      const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+      if (u.protocol !== "https:" && !local) {
+        throw new Error(
+          "the OIDC issuer base URL must be https (LONGSHORE_PUBLIC_URL or LONGSHORE_OIDC_BASE_URL)",
+        );
+      }
+      const issuer = new OidcIssuer({
+        db,
+        masterKey,
+        baseUrl: oidcBase,
+        allowClasses: parseAllowClasses(process.env.LONGSHORE_OIDC_ALLOW_CLASSES),
+      });
+      oidc = createOidcHandler({ db, issuer, masterKey });
+    }
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
     // that has not turned it on.
@@ -346,6 +375,7 @@ async function serve(args: string[]): Promise<void> {
     allowedOrigins,
     ...(webhooks ? { webhooks } : {}),
     ...(vault ? { vault } : {}),
+    ...(oidc ? { oidc } : {}),
     trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
@@ -472,6 +502,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "oidc": {
+      const { oidcCommand } = await import("./oidc/cli");
+      process.exit(await oidcCommand(rest));
     }
     case "secret": {
       const { secretCommand } = await import("./secrets/cli");

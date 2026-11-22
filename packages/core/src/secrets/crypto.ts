@@ -12,7 +12,7 @@ const VERSION = "v1";
 const VERSION_DOMAIN = "v2";
 
 /** Key domains: a record sealed for one domain cannot be opened as another. */
-export type KeyDomain = "system" | "job";
+export type KeyDomain = "system" | "job" | "oidc" | "attempt";
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
