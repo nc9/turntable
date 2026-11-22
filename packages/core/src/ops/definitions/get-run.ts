@@ -15,6 +15,20 @@ const attemptSchema = z.object({
   started_at: z.string().nullable(),
   finished_at: z.string().nullable(),
   duration_ms: z.int().nullable(),
+  sandbox_created_at: z
+    .string()
+    .nullable()
+    .describe("When the provider's create returned: the sandbox is billed from here."),
+  sandbox_destroyed_at: z
+    .string()
+    .nullable()
+    .describe("When the provider confirmed the destroy; null if never confirmed."),
+  sandbox_seconds: z
+    .number()
+    .nullable()
+    .describe(
+      "Exact sandbox time (create to confirmed destroy); null until both are known. Unlike duration_ms it excludes time waiting for provider capacity.",
+    ),
 });
 
 const jobSchema = z.object({
@@ -140,6 +154,12 @@ export const getRun = defineOp({
             started_at: iso(a.startedAt),
             finished_at: iso(a.finishedAt),
             duration_ms: durationMs(a.startedAt, a.finishedAt),
+            sandbox_created_at: iso(a.sandboxCreatedAt),
+            sandbox_destroyed_at: iso(a.sandboxDestroyedAt),
+            sandbox_seconds:
+              a.sandboxCreatedAt !== null && a.sandboxDestroyedAt !== null
+                ? Math.round(Math.max(0, a.sandboxDestroyedAt - a.sandboxCreatedAt)) / 1000
+                : null,
           })),
           log_path: latest ? `/api/v1/jobs/${job.id}/log` : null,
         };

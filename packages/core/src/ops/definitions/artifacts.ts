@@ -59,13 +59,22 @@ export const checkArtifactConsumption = defineOp({
   name: "check_artifact_consumption",
   summary: "Whether a run may consume artifacts of other runs, and as what.",
   description:
-    "For a consumer run and a list of artifacts of this project, says per artifact whether it is " +
+    "For a consumer (a run, or a trust class by name) and a list of artifacts of this project, says per artifact whether it is " +
     "`allow` (same trust class or higher), `quarantine` (a lower class that the request named in " +
     "`quarantine`: delivered non-executable, never an input to a build) or `deny`. A release-class " +
     "consumer is denied anything below the release class, whatever it asks. Read-only: it " +
     "decides, it does not move bytes.",
   input: z.object({
-    consumer_run_id: z.string().min(1).max(64),
+    consumer_run_id: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe("The run that would consume them; its class comes from its stored decision."),
+    consumer_class: z
+      .enum(["untrusted_pr", "trusted_pr", "protected", "release"])
+      .optional()
+      .describe("Instead of a run: ask whether a build of this class may take them."),
     sources: z.array(source).min(1).max(100),
     quarantine: z
       .array(source)
@@ -92,10 +101,12 @@ export const checkArtifactConsumption = defineOp({
   http: { method: "POST", path: "/artifacts/check-consumption" },
   async handler(ctx, input) {
     if (input.sources.length === 0) throw new OpError("invalid_input", "no sources");
+    if ((input.consumer_run_id === undefined) === (input.consumer_class === undefined))
+      throw new OpError("invalid_input", "give exactly one of consumer_run_id or consumer_class");
     const res = await resolveArtifactConsumption(
       ctx.db,
       ctx.scope,
-      input.consumer_run_id,
+      input.consumer_run_id ?? { klass: input.consumer_class! },
       input.sources.map((s) => ({ runId: s.run_id, name: s.name })),
       (input.quarantine ?? []).map((s) => ({ runId: s.run_id, name: s.name })),
     );

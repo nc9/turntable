@@ -297,3 +297,27 @@ export type WireIncident = {
   rotation_required_count: number;
   rotation_required: { name: string; reason: string; flagged_by: string; flagged_at: number }[];
 };
+
+export type WireArtifacts = {
+  artifacts: {
+    name: string;
+    size: number;
+    sha256: string;
+    digest_source: "reported" | "computed";
+    trust_class: string;
+    run_sha: string | null;
+    attempt_id: string;
+    created_at: string;
+  }[];
+};
+
+export type WireConsumption = {
+  results: {
+    run_id: string;
+    name: string;
+    decision: "allow" | "quarantine" | "deny";
+    reason: string | null;
+    trust_class: string | null;
+    sha256: string | null;
+  }[];
+};

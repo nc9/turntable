@@ -64,7 +64,10 @@ export interface RunStore {
   ): Promise<{ jobId: string }>;
   /** Creates an attempt and marks job, attempt and run running. */
   startAttempt(runId: string, jobId: string, provider: string): Promise<JobIds>;
-  setSandbox(attemptId: string, sandboxId: string): Promise<void>;
+  /** `createdAt`: epoch ms the provider's create returned (the sandbox is billed from here). */
+  setSandbox(attemptId: string, sandboxId: string, createdAt?: number): Promise<void>;
+  /** The provider confirmed the sandbox is destroyed, at `at` (epoch ms). */
+  setSandboxDestroyed?(attemptId: string, at: number): Promise<void>;
   /** Records act's exec id as soon as it starts, so a controller restarted mid-run can re-attach. */
   setExec?(attemptId: string, execId: string): Promise<void>;
   /** Clears stored log, steps and cuts before a re-attached run replays the whole exec log. */
@@ -122,8 +125,14 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
       await setRunStatus(db, scope, runId, "running");
       return ids;
     },
-    async setSandbox(attemptId, sandboxId) {
-      await updateAttempt(db, scope, attemptId, { sandboxId });
+    async setSandbox(attemptId, sandboxId, createdAt) {
+      await updateAttempt(db, scope, attemptId, {
+        sandboxId,
+        ...(createdAt === undefined ? {} : { sandboxCreatedAt: createdAt }),
+      });
+    },
+    async setSandboxDestroyed(attemptId, at) {
+      await updateAttempt(db, scope, attemptId, { sandboxDestroyedAt: at });
     },
     async setExec(attemptId, execId) {
       await updateAttempt(db, scope, attemptId, { execId });

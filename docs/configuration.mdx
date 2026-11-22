@@ -110,11 +110,14 @@ With `--worker` and with `longshore run`:
 | Path | Description |
 | --- | --- |
 | `GET /healthz` | JSON `{ "ok": true, "version": "..." }`. |
-| `GET /` | Placeholder page. The web UI is planned. |
+| `GET /openapi.json` | The OpenAPI 3.1 document for the REST API. |
+| `/api/v1/...` | The REST API, one route per [operation](/agent-interface). Webhooks arrive at `/api/v1/webhooks/github`. |
+| `/mcp` | MCP over HTTP. |
+| `/api/v1/realtime` | The WebSocket feed of events, log bytes and steps. |
+| `/oidc/<org>/...` | Each org's OIDC issuer, see [OIDC](/oidc). |
+| `GET /` | The web UI. |
 
-Only `GET` and `HEAD` are accepted today. Responses carry a strict content security policy.
-
-More settings arrive with each feature, and this page ships with them.
+Responses carry a strict content security policy. Every API call needs a bearer token, except the signature operations and webhooks, which carry their own proof.
 
 ## Per-org quotas
 

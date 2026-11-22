@@ -44,6 +44,34 @@ const TRUST: Record<
   },
 };
 
+/** A trust class by name (an artifact's), with its hint. An unknown name is shown as given. */
+export function TrustChip({ klass }: { klass: string }) {
+  const t = (TRUST as Record<string, (typeof TRUST)[TrustClass] | undefined>)[klass];
+  if (!t)
+    return (
+      <span className="inline-flex rounded-md border border-line px-1.5 py-0.5 text-xs text-dim">
+        {klass}
+      </span>
+    );
+  const Icon = t.icon;
+  return (
+    <Tooltip label={t.hint}>
+      <span
+        tabIndex={0}
+        className={cn(
+          "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs",
+          t.tone === "warn"
+            ? "border-st-approval/40 bg-st-approval-bg text-st-approval"
+            : "border-line text-dim",
+        )}
+      >
+        <Icon className="size-3.5" aria-hidden="true" />
+        {t.label}
+      </span>
+    </Tooltip>
+  );
+}
+
 /** The run's trust class. Renders nothing when the API does not report one. */
 export function TrustBadge({
   run,
