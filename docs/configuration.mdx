@@ -126,4 +126,6 @@ An org can live under limits. Quotas limit tenants, so the **instance operator**
 - `max_log_bytes`: stored job log bytes.
 - `max_stored_bytes`: recorded artifact bytes plus control-plane cache bytes. (The cache also keeps its own per-class shares inside the org's cache quota; this is the org-wide total.)
 
+`longshore quotas get --url <https://host> --org <slug> --token-file <file>` reads them remotely over the API (an org-level reader token), and the Quotas page of the UI shows each limit, its usage and percent, and why new work is held, refreshing as runs change. Both are read-only.
+
 A reached limit holds new claims only: running attempts finish, queued ones wait until the window moves or the limit is raised. Null means no limit. Each metric emits an event when it first crosses 80% and when it is reached, once per window: an `infra.error` event whose `error_class` is `quota_warning` or `quota_reached`, with the metric, used and limit. (The event type list is a database constraint, so a dedicated type needs a table rebuild migration; this reuses the existing type.)

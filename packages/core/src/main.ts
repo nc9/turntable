@@ -89,6 +89,7 @@ Usage:
   longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
   longshore quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
   longshore artifacts list|check --url <https://host> --org <slug> --project <slug> [--run <id>] [--token-file <path>]
+  longshore quotas get --url <https://host> --org <slug> [--token-file <path>]  (remote read)
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
