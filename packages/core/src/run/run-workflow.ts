@@ -46,6 +46,8 @@ export interface RunWorkflowOptions {
   readFile: (path: string) => string | undefined;
   resolver?: ActionRefResolver;
   egress?: "none" | "open";
+  /** Probe each `none` sandbox for a real network path before its job runs. */
+  canary?: boolean;
   /** Aborting cancels the run: running jobs stop and their sandboxes are destroyed. */
   signal?: AbortSignal;
   /** Jobs running at once, one sandbox each. Default 2. */
@@ -207,6 +209,7 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
     image: o.image,
     resolver,
     ...(o.egress ? { egress: o.egress } : {}),
+    ...(o.canary ? { canary: true } : {}),
     ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
     ...(o.act ? { act: o.act } : {}),
     ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),

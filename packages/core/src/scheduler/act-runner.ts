@@ -125,6 +125,8 @@ export type ActRunnerOptions = {
   image?: string;
   resolver?: ActionRefResolver;
   egress?: "none" | "open";
+  /** Probe each `none` sandbox for a real network path before the job runs (see egress-canary). */
+  canary?: boolean;
   timeoutSeconds?: number;
   // Test seams.
   act?: ActTarball;
@@ -217,7 +219,9 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         ...(ctx.notices ? { notices: ctx.notices } : {}),
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
         // `none` unless this run's plan (from the project's config) or the runner says `open`.
-        egress: egressForRun(ctx.run.plan, o.egress),
+        // `allowlist` has no provider support yet and is refused by withEgressPolicy first.
+        egress: egressForRun(ctx.run.plan, o.egress) === "open" ? "open" : "none",
+        ...(o.canary ? { canary: true } : {}),
         ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
         ...(o.act ? { act: o.act } : {}),
         ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),

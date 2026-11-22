@@ -17,6 +17,7 @@ import {
   loadProviderConfig,
   reconcileExpired,
   Scheduler,
+  withEgressPolicy,
   withIsolationPolicy,
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
@@ -111,11 +112,16 @@ async function startBackground(
       providers,
       // Jobs never start on a provider weaker than their trust class allows (see isolation.ts).
       runner: withIsolationPolicy(
-        createActRunner({
-          db,
-          source: gitRepoSource(),
-          ...(v.image ? { image: v.image } : {}),
-        }),
+        // Egress is none by default and refused where it cannot be enforced; each `none`
+        // sandbox is probed for a real way out before the job starts.
+        withEgressPolicy(
+          createActRunner({
+            db,
+            source: gitRepoSource(),
+            canary: true,
+            ...(v.image ? { image: v.image } : {}),
+          }),
+        ),
         {
           db,
           hosted: v.hosted === true || process.env.LONGSHORE_HOSTED === "1",

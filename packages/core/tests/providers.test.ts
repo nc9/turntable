@@ -99,7 +99,7 @@ test("egress is none unless the run's plan, or an explicit runner option, says o
   for (const odd of [
     '{"egress":"OPEN"}',
     '{"egress":true}',
-    '{"egress":"allowlist"}',
+    '{"egress":"deny-all-except-proxy"}',
     "not json",
     "null",
     "[]",
