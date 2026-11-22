@@ -104,6 +104,63 @@ workflow file alone and fail when act runs them.
 - The checkout stub copies the delivered repo. `ref`, `path` (beyond a subdirectory) and
   `fetch-depth` inputs are accepted and ignored.
 
+## Whole workflows
+
+`planWorkflow(yaml, event, { readFile })` plans every job: the trigger match (`matchTrigger`:
+branches, tags, paths, activity types), the graph with matrices expanded (include, exclude,
+fail-fast, max-parallel), static `if:` results, and jobs that cannot run here marked
+`unsupported` with the reason. `if:` that reads `needs` is evaluated at schedule time with
+`evaluateCondition` (the expression subset: contexts, operators, success/failure/always/cancelled,
+contains, startsWith, endsWith, fromJSON, toJSON, join, format; anything else throws `ExprError`
+naming the feature). A matrix built from an expression (`fromJSON(needs...)`) is marked unsupported.
+
+`splitJob` generates a single-job workflow for one job (one matrix leg) whose needed jobs are
+stubs carrying the real result and outputs as literals, so `needs.x.outputs.y` and
+`needs.x.result` resolve in act. A final `if: always()` step writes the job's declared outputs to
+files that `runJob` reads back, because act's JSON stream has none. A job with
+`continue-on-error` that fails counts as `success` for its dependents.
+
+## Parity assumptions
+
+Places where the engine had to pick a behaviour that GitHub documents loosely or not at all.
+Each one is checked against the GitHub checks API on the same sha; tick them off here.
+
+1. **continue-on-error.** A job that fails with `continue-on-error: true` reports
+   `needs.<job>.result == 'success'` to its dependents, and the run does not fail. The job
+   itself is stored as `failure`.
+2. **Implicit success().** A job with no `if:` (or `success()`) runs only when every need
+   succeeded. A skipped need skips the dependent, as does a failed or cancelled one. Only
+   `always()`, `!cancelled()` or an explicit `needs.x.result` test lets it run.
+3. **Unsupported jobs are skipped.** A job that needs docker, runs on a non-Linux runner or calls
+   a reusable workflow is recorded as `skipped` with the reason, and dependents see `skipped`.
+   GitHub would run it; this is an engine limit, not parity.
+4. **infra_error needs.** A needed job that ended in `infra_error` counts as `failure` for its
+   dependents.
+5. **Matrix needs.** `needs.<id>.result` for a matrix job is `failure` if any leg failed, else
+   `cancelled` if any was cancelled, else `skipped` if all were skipped, else `success`.
+6. **Matrix outputs.** Outputs of the legs merge in leg order; a later non-empty value wins.
+7. **Fail-fast.** On a failed leg (without continue-on-error) queued sibling legs are cancelled.
+   Legs already running finish.
+8. **Plan-time `if:`.** An `if:` that reads only github, vars, inputs, env or matrix is decided
+   at plan time and the job is skipped with no sandbox. The `github.event` payload holds only
+   `action` and, for pull requests, `pull_request.base.ref`, `head.ref`, `head.sha` and `draft`;
+   any other field is null.
+9. **Path filters without a change list.** When changed files are not supplied the filter is not
+   applied and the run proceeds, with a note.
+10. **Filter globs.** `?` and `+` apply to the preceding character, `**/` matches zero or more
+    directories, and the last matching pattern wins with `!` negation.
+11. **Workflow concurrency** is evaluated and recorded but not enforced: a local run never
+    cancels another.
+12. **Stub need results.** A needed job's result reaches act as a stub: success runs `true`, skipped
+    is `if: false`, failure and cancelled run `exit 1` (so `needs.x.result` reads `failure` for
+    cancelled).
+13. **Job outputs.** Read from files written by a generated final step, as UTF-8 text. An output
+    over 1 MiB, or one whose step never ran, is unset. Output names must be identifiers.
+14. **Expression semantics.** String comparison is case-insensitive, mixed types compare as
+    numbers, `&&` and `||` return operands, and property names are case-insensitive, as GitHub
+    documents. `hashFiles` and `.*` filters are not evaluated by the planner (act evaluates
+    step-level `hashFiles` itself).
+
 ## Tests
 
 - `tests/plan.test.ts`, `tests/events.test.ts` (recorded-style fixtures in `tests/fixtures`) and

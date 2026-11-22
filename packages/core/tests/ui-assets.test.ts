@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleRequest } from "../src/server";
-import { registerUiAssets, UI_CSP } from "../src/ui-assets";
+import { registerUiAssets, uiCsp } from "../src/ui-assets";
 
 afterEach(() => registerUiAssets(null));
 
@@ -26,12 +26,16 @@ test("serves the app shell at / and for client-side routes, with a strict CSP", 
     const res = await get(path);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(res.headers.get("content-security-policy")).toBe(UI_CSP);
+    expect(res.headers.get("content-security-policy")).toBe(uiCsp("localhost"));
     expect(res.headers.get("cache-control")).toBe("no-cache");
     expect(await res.text()).toContain("<title>UI</title>");
   }
-  expect(UI_CSP).toContain("script-src 'self';");
-  expect(UI_CSP).toContain("frame-ancestors 'none'");
+  const csp = uiCsp("localhost");
+  expect(csp).toContain("script-src 'self';");
+  expect(csp).toContain("frame-ancestors 'none'");
+  // WebSocket is allowed for the page's own host only, and a bad Host header adds nothing.
+  expect(csp).toContain("connect-src 'self' ws://localhost wss://localhost;");
+  expect(uiCsp("evil.example:8080/x y")).toContain("connect-src 'self';");
 });
 
 test("assets are typed and immutable; unknown files and API paths stay 404", async () => {

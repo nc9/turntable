@@ -6,14 +6,12 @@ import {
   type ActionRefResolver,
 } from "@turntable/act-runner";
 import type { Provider } from "@turntable/provider-sdk";
-import { parse } from "yaml";
 import { SecretRegistry } from "@turntable/redact";
-import { executeJob } from "./execute";
+import { parse } from "yaml";
+import { DEFAULT_IMAGE, EXIT, executeJob, type ExitCode, type Verdict } from "./job-exec";
 import type { RunStore } from "./store";
 
-/** Node 22 with bash, git and tar, which act host mode needs. Multi-arch index digest. */
-export const DEFAULT_IMAGE =
-  "node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb";
+export { DEFAULT_IMAGE };
 
 export interface RunLocalOptions {
   provider: Provider;
@@ -53,27 +51,19 @@ export interface RunLocalOptions {
 }
 
 export interface RunLocalResult {
-  state: "success" | "failure" | "skipped" | "infra_error" | "cancelled";
+  state: Verdict;
   /** Process exit code: 0 success or skipped, 1 failure, 2 infra_error, 130 cancelled. */
-  exitCode: 0 | 1 | 2 | 130;
+  exitCode: ExitCode;
   reason: string;
   runId: string;
   jobId: string;
   attemptId: string;
 }
 
-const EXIT: Record<RunLocalResult["state"], RunLocalResult["exitCode"]> = {
-  success: 0,
-  skipped: 0,
-  failure: 1,
-  infra_error: 2,
-  cancelled: 130,
-};
-
 /**
- * Plans, creates DB rows, runs one job in a fresh sandbox and records the result. Plan errors
- * (unsupported workflow features, unresolvable action refs) throw before any row exists.
- * The sandbox is always destroyed.
+ * Plans one job (a workflow that uses needs or a matrix is refused here: run it whole with
+ * runWorkflowLocal), creates DB rows, runs it in a fresh sandbox and records the result. Plan
+ * errors throw before any row exists. The sandbox is always destroyed.
  */
 export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
   const planned = planJob(o.workflowYaml, o.job, {
@@ -86,7 +76,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
   const plan = await resolveActions(planned, o.resolver);
 
   const workflowName = workflowNameOf(o.workflowYaml);
-  const ids = await o.store.begin({
+  const { runId } = await o.store.beginRun({
     workflowPath: o.workflowPath,
     event: o.event,
     ref: o.ref,
@@ -95,55 +85,47 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
     ...(o.commitMessage ? { commitMessage: o.commitMessage } : {}),
     ...(o.actor ? { actor: o.actor } : {}),
     ...(o.headBranch ? { headBranch: o.headBranch } : {}),
+  });
+  await o.store.recordLaunch({
+    runId,
+    workflow: o.workflowPath,
+    job: o.job,
+    provider: o.providerName,
+    image: o.image,
+    egress: o.egress ?? "none",
+  });
+  const { jobId } = await o.store.createJob(runId, {
     jobKey: o.job,
     jobName: o.job,
-    provider: o.providerName,
+    needs: [],
   });
-  await o.store.markRunning(ids);
+  const ids = await o.store.startAttempt(runId, jobId, o.providerName);
 
-  // One registry for everything act-derived that we show or store.
-  const registry = o.registry ?? new SecretRegistry();
-
-  const result = await executeJob({
-    provider: o.provider,
-    plan,
-    ids,
-    io: {
-      setSandbox: (sandboxId) => o.store.setSandbox(ids.attemptId, sandboxId),
-      setExec: (execId) => o.store.setExec?.(ids.attemptId, execId) ?? Promise.resolve(),
-      appendLog: (offset, bytes) => o.store.appendLog(ids.attemptId, offset, bytes),
-      recordStep: (step) => o.store.recordStep(ids.attemptId, step),
+  const outcome = await executeJob(
+    {
+      provider: o.provider,
+      store: o.store,
+      image: o.image,
+      repoTarball: o.repoTarball,
+      out: o.out,
+      ...(o.egress ? { egress: o.egress } : {}),
+      registry: o.registry ?? new SecretRegistry(),
+      signal: o.signal,
+      ...(o.idleFlushMs !== undefined ? { idleFlushMs: o.idleFlushMs } : {}),
+      ...(o.act ? { act: o.act } : {}),
+      ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
+      ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
+      ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
     },
-    repoTarball: o.repoTarball,
-    image: o.image,
-    out: o.out,
-    ...(o.egress ? { egress: o.egress } : {}),
-    registry,
-    ...(o.signal ? { signal: o.signal } : {}),
-    ...(o.idleFlushMs !== undefined ? { idleFlushMs: o.idleFlushMs } : {}),
-    ...(o.act ? { act: o.act } : {}),
-    ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
-    ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
-    ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
-  });
-
-  const exitCode =
-    result.state === "success"
-      ? 0
-      : result.state === "failure"
-        ? result.code && result.code !== 0
-          ? result.code
-          : 1
-        : undefined;
-  await o.store.finish(ids, result.state, {
-    ...(exitCode === undefined ? {} : { exitCode }),
-    ...(result.state === "infra_error" ? { errorClass: result.reason.slice(0, 200) } : {}),
-  });
-  return { state: result.state, exitCode: EXIT[result.state], reason: result.reason, ...ids };
+    ids,
+    plan,
+  );
+  await o.store.finishRun(runId, [outcome.state]);
+  return { state: outcome.state, exitCode: EXIT[outcome.state], reason: outcome.reason, ...ids };
 }
 
 /** The workflow's top-level `name:`, if it has a plain string one. */
-function workflowNameOf(yaml: string): string | undefined {
+export function workflowNameOf(yaml: string): string | undefined {
   try {
     const doc: unknown = parse(yaml);
     const name =

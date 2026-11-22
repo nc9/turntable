@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./realtime-protocol": "./src/realtime/protocol.ts"
+  },
   "scripts": {
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "db:generate": "drizzle-kit generate && bun run scripts/gen-migrations.ts",

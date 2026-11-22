@@ -1,0 +1,37 @@
+# Vendored from https://github.com/squirrelscan/squirrelscan/blob/c13e78246917a948eee8031648300853fde6a939/.github/actions/setup-bun/action.yml
+# (MIT license, public repository). Pinned at c13e78246917a948eee8031648300853fde6a939. Used only as a planning fixture.
+name: Setup Bun
+description: Install Bun, cache dependencies, and install packages
+
+inputs:
+  bun-version:
+    description: Bun version to install
+    # exact pin: "latest" makes setup-bun resolve the version via api.github.com,
+    # which takes all CI down whenever GitHub's API degrades (2026-07-16 outage)
+    default: 1.4.4
+
+runs:
+  using: composite
+  steps:
+    # wrangler ≥4.99 requires Node 22+; runners default to Node 20.
+    - name: Setup Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "22.x"
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - name: Cache dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.bun/install/cache
+        key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+        restore-keys: |
+          bun-${{ runner.os }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile

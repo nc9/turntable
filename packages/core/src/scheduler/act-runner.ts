@@ -15,11 +15,11 @@ import {
 } from "@turntable/act-runner";
 import type { Db } from "../db";
 import { listRepos, type Run } from "../db/repos";
-import { executeJob } from "../run/execute";
-import { DEFAULT_IMAGE } from "../run/run-local";
+import { SecretRegistry } from "@turntable/redact";
+import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { snapshotRepo } from "../run/repo-archive";
-import { stepInputOf } from "../run/store";
-import type { AttemptRunner } from "./types";
+import { type RunStore, stepInputOf } from "../run/store";
+import type { AttemptContext, AttemptRunner } from "./types";
 
 /** The source of a run: a tarball to deliver and the files the planner reads. */
 export interface Checkout {
@@ -99,35 +99,39 @@ export type ActRunnerOptions = {
   pollMs?: number;
 };
 
+/**
+ * The persistence executeJob writes to while a worker runs an attempt. Every write goes through
+ * the lease-fenced attempt store. The final state is NOT written here: the scheduler records the
+ * outcome (fenced) once the runner returns, so `finishJob` and the run-level calls do nothing.
+ */
+function workerStore(ctx: AttemptContext): RunStore {
+  const unused = (name: string) => async (): Promise<never> => {
+    throw new Error(`${name} is not used by the worker`);
+  };
+  return {
+    beginRun: unused("beginRun"),
+    createJob: unused("createJob"),
+    startAttempt: unused("startAttempt"),
+    skipJob: unused("skipJob"),
+    cancelQueuedJob: unused("cancelQueuedJob"),
+    recordLaunch: async () => {},
+    finishRun: async () => {},
+    finishJob: async () => {},
+    setSandbox: (_id, sandboxId) => ctx.store.setExec({ sandboxId }),
+    setExec: (_id, execId) => ctx.store.setExec({ execId }),
+    resetOutput: () => ctx.store.reset(),
+    appendLog: (_id, offset, bytes) => ctx.store.appendLog(offset, bytes),
+    recordStep: (_id, step) => {
+      const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);
+      return ctx.store.recordStep(rest);
+    },
+  };
+}
+
 /** Builds the runner for the scheduler. Deterministic plan problems are infra_error with a reason. */
 export function createActRunner(o: ActRunnerOptions): AttemptRunner {
   return async (ctx) => {
     const { run, job } = ctx;
-    // Re-attach to an exec a dead worker started: no checkout, no planning, just replay it.
-    if (ctx.resume) {
-      const res = await executeJob({
-        provider: ctx.provider,
-        ids: { runId: run.id, jobId: job.id, attemptId: ctx.attempt.id },
-        io: {
-          setSandbox: (sandboxId) => ctx.store.setExec({ sandboxId }),
-          setExec: (execId) => ctx.store.setExec({ execId }),
-          reset: () => ctx.store.reset(),
-          appendLog: (offset, bytes) => ctx.store.appendLog(offset, bytes),
-          recordStep: (step) => {
-            const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);
-            return ctx.store.recordStep(rest);
-          },
-        },
-        resume: ctx.resume,
-        signal: ctx.signal,
-        ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
-      });
-      return {
-        state: res.state,
-        ...(res.code === undefined ? {} : { exitCode: res.code }),
-        reason: res.reason,
-      };
-    }
     const repo = (await listRepos(o.db, ctx.scope))[0];
     if (!repo) return { state: "infra_error", reason: "project has no bound repo to fetch from" };
     if (run.sha === null) return { state: "infra_error", reason: "run has no sha" };
@@ -155,31 +159,30 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         }
         throw err;
       }
-      const res = await executeJob({
-        provider: ctx.provider,
-        plan,
-        ids: { runId: run.id, jobId: job.id, attemptId: ctx.attempt.id },
-        io: {
-          setSandbox: (sandboxId) => ctx.store.setExec({ sandboxId }),
-          setExec: (execId) => ctx.store.setExec({ execId }),
-          appendLog: (offset, bytes) => ctx.store.appendLog(offset, bytes),
-          recordStep: (step) => {
-            const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);
-            return ctx.store.recordStep(rest);
-          },
+      const ids = { runId: run.id, jobId: job.id, attemptId: ctx.attempt.id };
+      const res = await executeJob(
+        {
+          provider: ctx.provider,
+          store: workerStore(ctx),
+          out: () => {},
+          registry: new SecretRegistry(),
+          signal: ctx.signal,
+          ...(ctx.resume ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball: checkout.tarball }),
+          ...(o.egress ? { egress: o.egress } : {}),
+          ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
+          ...(o.act ? { act: o.act } : {}),
+          ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
+          ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
         },
-        repoTarball: checkout.tarball,
-        image: o.image ?? DEFAULT_IMAGE,
-        signal: ctx.signal,
-        ...(o.egress ? { egress: o.egress } : {}),
-        ...(o.timeoutSeconds !== undefined ? { timeoutSeconds: o.timeoutSeconds } : {}),
-        ...(o.act ? { act: o.act } : {}),
-        ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
-        ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
-      });
+        ids,
+        plan,
+        // A dead worker's exec: replay it for the real result instead of starting over. The plan
+        // (re-derived above) says which events are this job's and which outputs to read.
+        ctx.resume,
+      );
       return {
         state: res.state,
-        ...(res.code === undefined ? {} : { exitCode: res.code }),
+        ...(res.actExitCode === undefined ? {} : { exitCode: res.actExitCode }),
         reason: res.reason,
       };
     } finally {

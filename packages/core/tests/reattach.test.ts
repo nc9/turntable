@@ -6,6 +6,7 @@ import { FakeWorld } from "@turntable/provider-sdk/testing";
 import type { Provider } from "@turntable/provider-sdk";
 import {
   appendLogFenced,
+  bindRepo,
   createAttempt,
   createJob,
   createOrg,
@@ -22,11 +23,24 @@ import {
   type Scope,
 } from "../src/db";
 import { claimNextAttempt } from "../src/db";
-import { executeJob } from "../src/run/execute";
+import { executeJob } from "../src/run/job-exec";
+import type { RunStore } from "../src/run/store";
+import { SecretRegistry } from "@turntable/redact";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
 
 const FIXTURE = join(import.meta.dir, "../../act-runner/tests/fixtures");
 const T0 = 1_800_000_000_000;
+
+const WORKFLOW =
+  "name: t\non: push\njobs:\n  hello:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n";
+
+/** A repo source whose only job is to supply the workflow: a re-attach replays the exec, it does not rerun it. */
+const source = {
+  checkout: async () => ({
+    tarball: new Uint8Array(),
+    readFile: (p: string) => (p === "w.yml" ? WORKFLOW : undefined),
+  }),
+};
 
 let world: FakeWorld;
 let provider: Provider;
@@ -40,6 +54,7 @@ beforeEach(async () => {
   const org = await createOrg(db, { slug: "a", name: "a" });
   const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
   scope = { orgId: org.id, projectId: project.id };
+  await bindRepo(db, scope, { forge: "github", owner: "acme", repo: "web" });
 });
 afterEach(() => world.dispose());
 
@@ -87,20 +102,23 @@ test("executeJob can resume an exec that finished while nobody watched", async (
   let text = "";
   const steps: string[] = [];
   let resets = 0;
-  const res = await executeJob({
-    provider,
-    ids: { runId: "r", jobId: "j", attemptId: "a" },
-    io: {
-      setSandbox: async () => {},
-      setExec: async () => {},
-      reset: async () => void resets++,
-      appendLog: async (_o, bytes) => void (text += new TextDecoder().decode(bytes)),
-      recordStep: async (s) => void steps.push(`${s.stepKey}:${s.result ?? "running"}`),
-    },
-    resume: { sandboxId, execId },
-    pollMs: 25,
-  });
-  expect(res).toMatchObject({ state: "success", code: 0 });
+  const store = {
+    setSandbox: async () => {},
+    setExec: async () => {},
+    resetOutput: async () => void resets++,
+    appendLog: async (_id: string, _o: number, bytes: Uint8Array) =>
+      void (text += new TextDecoder().decode(bytes)),
+    recordStep: async (_id: string, s: { stepKey: string; result?: string }) =>
+      void steps.push(`${s.stepKey}:${s.result ?? "running"}`),
+    finishJob: async () => {},
+  } as unknown as RunStore;
+  const res = await executeJob(
+    { provider, store, out: () => {}, registry: new SecretRegistry(), pollMs: 25 },
+    { runId: "r", jobId: "j", attemptId: "a" },
+    undefined,
+    { sandboxId, execId },
+  );
+  expect(res).toMatchObject({ state: "success", exitCode: 0 });
   expect(resets).toBe(1); // the stored output is cleared once, then rewritten from the replay
   expect(text).toContain("✓ Set up job");
   expect(text).toContain("job success");
@@ -136,11 +154,7 @@ test("reconcile hands a still-running exec to a worker, which re-attaches and re
     providers: () => provider,
     runner: createActRunner({
       db,
-      source: {
-        checkout: async () => {
-          throw new Error("a re-attach must not check out the repo");
-        },
-      },
+      source,
       pollMs: 25,
     }),
     leaseMs: 60_000,
@@ -189,11 +203,7 @@ test("an exec that exited or failed meanwhile keeps its real verdict", async () 
       providers: () => provider,
       runner: createActRunner({
         db,
-        source: {
-          checkout: async () => {
-            throw new Error("no");
-          },
-        },
+        source,
         pollMs: 25,
       }),
       leaseMs: 60_000,
@@ -277,6 +287,7 @@ test("kill -9 the worker while the job runs, let the job finish, reboot: success
     const org = await createOrg(db, { slug: "k", name: "k" });
     const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
     scope = { orgId: org.id, projectId: project.id };
+    await bindRepo(db, scope, { forge: "github", owner: "acme", repo: "web" });
     const q = await queued();
 
     // the job runs in a sandbox that outlives the worker (a separate process tree)
@@ -322,11 +333,7 @@ test("kill -9 the worker while the job runs, let the job finish, reboot: success
       providers: () => provider,
       runner: createActRunner({
         db,
-        source: {
-          checkout: async () => {
-            throw new Error("no checkout on re-attach");
-          },
-        },
+        source,
         pollMs: 25,
       }),
       leaseMs: 60_000,

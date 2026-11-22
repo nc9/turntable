@@ -2,6 +2,7 @@ import type { TurntableApi } from "./client";
 import { createFixture, type Fixture } from "./fixture/adapter";
 import { createHttpApi } from "./http-adapter";
 import { createPollingRealtime } from "./polling-realtime";
+import { createWsRealtime } from "./ws-adapter";
 import type { Realtime } from "./realtime";
 import { disconnect, getOrg, getToken } from "@/lib/auth";
 
@@ -54,8 +55,18 @@ export function getBackend(): Backend {
         token: getToken,
         onUnauthenticated: () => disconnect("The server did not accept your token. Connect again."),
       });
-      // TODO(#30): swap in the WebSocket adapter; polling stays as the fallback transport.
-      backend = { kind: "http", api, realtime: createPollingRealtime(api), fixture: null };
+      const onUnauthenticated = () =>
+        disconnect("The server did not accept your token. Connect again.");
+      // Push over the WebSocket; polling carries each subscription whenever a socket is unavailable.
+      const wsUrl = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v1/realtime`;
+      const realtime = createWsRealtime({
+        url: wsUrl,
+        token: getToken,
+        api,
+        fallback: createPollingRealtime(api),
+        onUnauthenticated,
+      });
+      backend = { kind: "http", api, realtime, fixture: null };
     }
   }
   return backend;

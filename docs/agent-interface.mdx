@@ -129,6 +129,28 @@ Event payloads carry forge text (refs, workflow paths, step names). Treat them a
 
 Planned: delivery by SSE, and signed outbound webhooks that push events to a URL you choose, with a signature receivers verify. Issue [#25](https://github.com/nc9/turntable/issues/25).
 
+## Realtime WebSocket
+
+`/api/v1/realtime` pushes the same events the feed carries, and live log bytes, over one WebSocket. The message types are in `packages/core/src/realtime/protocol.ts`, which the web UI imports too.
+
+**Connect.** Open the socket with the subprotocols `turntable.v1` and `bearer.<token>`. The server echoes only `turntable.v1`. A token in the query string is refused, and a browser `Origin` must be the page's own or listed with `--allowed-origin`.
+
+**Subscribe.** Send `{"op":"subscribe","id":"s1","topic":"org","after":123}`. Topics:
+
+| Topic | Streams |
+| --- | --- |
+| `org` | Every event in the token's grant. |
+| `project:<slug>` | Events of one project. |
+| `run:<id>` | Events of one run, job and attempt changes included. |
+| `attempt:<id>:log` | Redacted log text from `from_offset`, plus the attempt's cuts. |
+| `attempt:<id>:steps` | The attempt's steps and cuts, re-sent in full when they change. |
+
+Omit `after` to start from now. With a cursor the server replays from the feed, then goes live, with no gap and no duplicate. Each subscribe is authorized by running the matching read operation (`events`, `get_run`, `job_log`, `job_steps`, `job_cuts`) as the token, so a socket can never read what REST would refuse.
+
+**Server messages.** `subscribed`, `event`, `log` (with `offset` and `bytes`, and `eof` on the last chunk of a finished attempt), `steps`, `cuts` and `error`. Steps and cuts are metadata delivered apart from the log text.
+
+**Limits and drops.** A client whose unsent data passes the buffer limit is closed with code 4408 and should resume from its last cursor and offset. Other close codes: 4401 token no longer valid, 4429 too many connections or subscriptions, 4400 protocol error, 4000 idle. Messages are text frames of at most 4 KiB. The web UI reconnects with backoff, resumes each topic, and falls back to polling when no socket can be opened.
+
 ## Claude Code channel
 
 A Claude Code channel pushes events, such as a failed run, into a running Claude Code session, so an agent can react without polling. Issue [#26](https://github.com/nc9/turntable/issues/26).

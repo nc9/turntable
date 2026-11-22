@@ -225,7 +225,9 @@ function LiveIndicator() {
             ? "Updates arrive every few seconds"
             : status === "offline"
               ? "Offline: showing the last known state"
-              : "Reconnecting"
+              : status === "connecting"
+                ? "Connecting"
+                : "Reconnecting"
       }
     >
       <span

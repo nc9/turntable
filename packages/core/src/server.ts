@@ -2,6 +2,7 @@ import type { Db } from "./db";
 import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
 import { createRestApi } from "./ops/rest";
+import { createRealtime, type WsData } from "./realtime/server";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 
@@ -56,13 +57,36 @@ export async function handleRequest(req: Request, api?: ApiHandler): Promise<Res
   return new Response("not found", { status: 404, headers: SECURITY_HEADERS });
 }
 
-export type ServeOptions = { port: number; host: string; db: Db };
+export type ServeOptions = {
+  port: number;
+  host: string;
+  db: Db;
+  /** Origins besides the page's own that may open a realtime socket. */
+  allowedOrigins?: readonly string[];
+};
 
 export function startServer(options: ServeOptions) {
-  const api = createRestApi({ registry, db: options.db });
-  return Bun.serve({
+  const env = { registry, db: options.db };
+  const api = createRestApi(env);
+  const realtime = createRealtime({
+    env,
+    ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
+  });
+  const server = Bun.serve<WsData>({
     port: options.port,
     hostname: options.host,
-    fetch: (req) => handleRequest(req, api),
+    async fetch(req, srv) {
+      const upgraded = await realtime.handle(req, srv);
+      if (upgraded === "upgraded") return undefined;
+      if (upgraded) return upgraded;
+      return handleRequest(req, api);
+    },
+    websocket: realtime.websocket,
   });
+  const stop = server.stop.bind(server);
+  server.stop = (force?: boolean) => {
+    realtime.stop();
+    return stop(force);
+  };
+  return server;
 }

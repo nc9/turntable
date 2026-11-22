@@ -20,6 +20,43 @@ export type PollingOptions = {
  * into the change events and log chunks the realtime interface promises, so the collections and
  * the log viewer behave the same either way. Polling pauses while the tab is hidden.
  */
+/**
+ * Turns "fetch the current state" into change events: it remembers what it last emitted per
+ * entity and emits only what changed. Shared by polling (refresh on a timer) and the WebSocket
+ * adapter (refresh when the server says something happened, and after a reconnect).
+ */
+export function createSnapshotSource(
+  api: TurntableApi,
+  topic: Topic,
+  emit: (m: RealtimeMessage) => void,
+  nextCursor: () => string,
+): { refresh: () => Promise<void> } {
+  const seen = new Map<string, string>();
+  const push = (entity: ChangeEvent["entity"], value: { id: string }) => {
+    const key = `${entity}:${value.id}`;
+    const sig = JSON.stringify(value);
+    if (seen.get(key) === sig) return;
+    seen.set(key, sig);
+    emit({ type: "change", cursor: nextCursor(), entity, op: "upsert", value } as ChangeEvent);
+  };
+  return {
+    async refresh() {
+      if (topic.kind === "run") {
+        const d = await api.getRun(topic.runId);
+        push("run", d.run);
+        for (const j of d.jobs) push("job", j);
+        for (const a of d.attempts) push("attempt", a);
+      } else if (topic.kind === "project" || topic.kind === "org") {
+        const { runs } = await api.listRuns({
+          projectId: topic.kind === "project" ? topic.projectId : "",
+          limit: topic.kind === "project" ? 50 : 30,
+        });
+        for (const r of runs) push("run", r);
+      }
+    },
+  };
+}
+
 export function createPollingRealtime(api: TurntableApi, options: PollingOptions = {}): Realtime {
   const interval = options.intervalMs ?? 3000;
   const logInterval = options.logIntervalMs ?? 1000;
@@ -34,28 +71,8 @@ export function createPollingRealtime(api: TurntableApi, options: PollingOptions
   const nextCursor = () => String(++counter).padStart(10, "0");
 
   function pollEntities(topic: Topic, emit: (m: RealtimeMessage) => void): () => void {
-    const seen = new Map<string, string>();
-    const push = (entity: ChangeEvent["entity"], value: { id: string }) => {
-      const key = `${entity}:${value.id}`;
-      const sig = JSON.stringify(value);
-      if (seen.get(key) === sig) return;
-      seen.set(key, sig);
-      emit({ type: "change", cursor: nextCursor(), entity, op: "upsert", value } as ChangeEvent);
-    };
-    return every(interval, async () => {
-      if (topic.kind === "run") {
-        const d = await api.getRun(topic.runId);
-        push("run", d.run);
-        for (const j of d.jobs) push("job", j);
-        for (const a of d.attempts) push("attempt", a);
-      } else if (topic.kind === "project" || topic.kind === "org") {
-        const { runs } = await api.listRuns({
-          projectId: topic.kind === "project" ? topic.projectId : "",
-          limit: topic.kind === "project" ? 50 : 30,
-        });
-        for (const r of runs) push("run", r);
-      }
-    });
+    const source = createSnapshotSource(api, topic, emit, nextCursor);
+    return every(interval, source.refresh);
   }
 
   function pollLog(

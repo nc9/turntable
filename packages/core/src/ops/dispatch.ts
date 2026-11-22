@@ -99,6 +99,21 @@ async function resolveScope(
   return { orgId: org.id, ...(projectId ? { projectId } : {}) };
 }
 
+/**
+ * For trusted in-process readers (the realtime server): authenticates a credential and resolves
+ * the Scope of its grant with exactly the checks an operation gets. The data itself must still
+ * be read by dispatching an operation, so roles, caps and redaction are never duplicated.
+ */
+export async function resolveCallerScope(
+  env: DispatchEnv,
+  credential: Credential,
+  raw: Record<string, unknown> = {},
+): Promise<{ principal: Principal; scope: Scope }> {
+  const principal = await authenticate(env, credential);
+  const scope = await resolveScope(env.db, principal, { scope: "org" } as Op, raw);
+  return { principal, scope };
+}
+
 function validateInput(op: Op, raw: Record<string, unknown>): Record<string, unknown> {
   const parsed = op.input.safeParse(raw);
   if (!parsed.success) {

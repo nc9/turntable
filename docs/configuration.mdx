@@ -18,12 +18,14 @@ description: Flags and environment variables supported today.
 | `--port` | `8080` | TCP port, 0 to 65535. |
 | `--host` | `127.0.0.1` | Interface to bind. Defaults to `TURNTABLE_HOST` when set. |
 | `--data-dir` | `./data` | Directory that holds `turntable.db`. |
+| `--allowed-origin` | none | An extra origin allowed to open the realtime WebSocket. Repeatable. The page's own origin is always allowed. |
 
 ## Environment variables
 
 | Variable | Description |
 | --- | --- |
 | `TURNTABLE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
+| `TURNTABLE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
 
 ## Endpoints
 
