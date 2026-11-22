@@ -104,6 +104,22 @@ workflow file alone and fail when act runs them.
 - The checkout stub copies the delivered repo. `ref`, `path` (beyond a subdirectory) and
   `fetch-depth` inputs are accepted and ignored.
 
+## Whole workflows
+
+`planWorkflow(yaml, event, { readFile })` plans every job: the trigger match (`matchTrigger`:
+branches, tags, paths, activity types), the graph with matrices expanded (include, exclude,
+fail-fast, max-parallel), static `if:` results, and jobs that cannot run here marked
+`unsupported` with the reason. `if:` that reads `needs` is evaluated at schedule time with
+`evaluateCondition` (the expression subset: contexts, operators, success/failure/always/cancelled,
+contains, startsWith, endsWith, fromJSON, toJSON, join, format; anything else throws `ExprError`
+naming the feature). A matrix built from an expression (`fromJSON(needs...)`) is marked unsupported.
+
+`splitJob` generates a single-job workflow for one job (one matrix leg) whose needed jobs are
+stubs carrying the real result and outputs as literals, so `needs.x.outputs.y` and
+`needs.x.result` resolve in act. A final `if: always()` step writes the job's declared outputs to
+files that `runJob` reads back, because act's JSON stream has none. A job with
+`continue-on-error` that fails counts as `success` for its dependents.
+
 ## Tests
 
 - `tests/plan.test.ts`, `tests/events.test.ts` (recorded-style fixtures in `tests/fixtures`) and
