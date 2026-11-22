@@ -1039,3 +1039,46 @@ export const artifacts = sqliteTable(
     index("artifacts_sha256_idx").on(t.orgId, t.sha256),
   ],
 );
+
+// ---- release lane (#45) ----
+
+export const RELEASE_STATUSES = ["pending", "claimed", "signed", "refused", "error"] as const;
+export type ReleaseStatus = (typeof RELEASE_STATUSES)[number];
+
+/**
+ * Requests for the release lane. The main process writes `pending` rows; only the release lane
+ * claims them and writes the outcome. A row is a REQUEST, never evidence: the lane re-fetches the
+ * tag and sha from the forge and re-reads the artifact bytes before it acts, and trusts nothing
+ * here for what to sign (not the sha, not the ref, not a digest).
+ */
+export const releaseRequests = sqliteTable(
+  "release_requests",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    runId: text("run_id").notNull(),
+    /** The tag being released, for example `v1.2.3`. */
+    tag: text("tag").notNull(),
+    /** JSON array of artifact names. */
+    artifacts: text("artifacts").notNull(),
+    status: text("status").notNull().default("pending"),
+    /** Why it was refused or errored: a short code. */
+    reason: text("reason"),
+    detail: text("detail"),
+    requestedBy: text("requested_by").notNull(),
+    claimedBy: text("claimed_by"),
+    claimedAt: integer("claimed_at", { mode: "number" }),
+    finishedAt: integer("finished_at", { mode: "number" }),
+    /** JSON the lane wrote: the key id and the signed envelope, on success. */
+    result: text("result"),
+    /** JSON of what the lane saw at the forge and in the artifact bytes, for audit. */
+    facts: text("facts"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    check("release_requests_status_check", inList("status", RELEASE_STATUSES)),
+    index("release_requests_status_idx").on(t.status, t.createdAt),
+  ],
+);

@@ -47,6 +47,7 @@
     "test:trust": "bun test packages/core/tests/trust.test.ts packages/core/tests/workflow-taint.test.ts",
     "test:oidc": "bun test packages/core/tests/oidc.test.ts",
     "test:parity": "bun test packages/core/tests/pr-event-parity.test.ts",
+    "test:release": "bun test packages/core/tests/release-lane.test.ts",
     "test:vault": "bun test packages/core/tests/vault.test.ts packages/core/tests/vault-ops.test.ts packages/core/tests/vault-cli.test.ts packages/core/tests/env-scrub.test.ts",
     "test:audit": "bun test packages/core/tests/audit-chain.test.ts packages/core/tests/audit-coverage.test.ts packages/core/tests/audit-cli.test.ts packages/core/tests/audit-hardening.test.ts",
     "test:transport": "bun test packages/core/tests/transport.test.ts packages/core/tests/server.test.ts",
