@@ -1,4 +1,4 @@
-import { SandboxNotFoundError, InfraError, SpecError } from "./errors";
+import { SandboxNotFoundError, InfraError, SpecError, TransientInfraError } from "./errors";
 import { OUTPUT_HEAD_BYTES, OUTPUT_SLACK_BYTES, OUTPUT_TAIL_BYTES, cutMarker } from "./cap-output";
 import type {
   ExecLogs,
@@ -25,7 +25,26 @@ export interface ShellRunner {
   ): Promise<{ exitCode: number; stdout: Uint8Array; stderr: Uint8Array }>;
 }
 
+export interface RetryOptions {
+  /** How long a call may keep retrying transient failures. Default 3 minutes. */
+  budgetMs?: number;
+  /** First backoff, doubled each time up to `maxDelayMs`, with jitter. Defaults 500 ms and 10 s. */
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  /** Test seams. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  /** 0 to 1, for jitter. Default Math.random. */
+  random?: () => number;
+  /** Told of each retry: what was being done, the attempt that just failed, and the error. */
+  onRetry?: (what: string, attempt: number, error: Error) => void;
+}
+
+export const DEFAULT_RETRY_BUDGET_MS = 180_000;
+
 export interface WrappedExecOptions {
+  /** Retry of transient transport failures on idempotent calls. See RetryOptions. */
+  retry?: RetryOptions;
   /** Where exec dirs live inside the sandbox. */
   baseDir?: string;
   /** Kill the command once its output file exceeds this many bytes. Default 1 GiB. */
@@ -98,13 +117,51 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
   ): ReturnType<ShellRunner["run"]> =>
     runner.run(id, ["sh", "-c", script, "tt", ...args], { timeoutMs });
 
-  return {
+  const retry = o.retry ?? {};
+  const budgetMs = retry.budgetMs ?? DEFAULT_RETRY_BUDGET_MS;
+  const sleep = retry.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const now = retry.now ?? Date.now;
+  const random = retry.random ?? Math.random;
+  /**
+   * Runs an idempotent call, retrying only TransientInfraError with jittered exponential backoff
+   * until the budget is spent. Then it is an InfraError that says how many attempts were made and
+   * what the last one said. Anything else (not found, a spec error, a plain InfraError) is not
+   * retried.
+   */
+  const withRetry = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
+    const started = now();
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        return await fn();
+      } catch (e) {
+        if (!(e instanceof TransientInfraError)) throw e;
+        const elapsed = now() - started;
+        const delay = Math.min(
+          retry.maxDelayMs ?? 10_000,
+          (retry.baseDelayMs ?? 500) * 2 ** (attempt - 1),
+        );
+        const wait = Math.round(delay * (0.5 + random() / 2));
+        if (elapsed + wait > budgetMs) {
+          throw new InfraError(
+            `${what} failed after ${attempt} attempts over ${Math.round(elapsed / 1000)}s: ${e.message}`,
+            e,
+          );
+        }
+        retry.onRetry?.(what, attempt, e);
+        await sleep(wait);
+      }
+    }
+  };
+
+  const self: ProviderExec = {
     async start(id, opts) {
       if (!Number.isInteger(opts.timeoutSeconds) || opts.timeoutSeconds <= 0) {
         throw new SpecError("timeoutSeconds must be a positive integer");
       }
       const execId = newExecId();
-      const res = await sh(id, LAUNCH_SH, [
+      const launchArgs = [
         dirOf(execId),
         buildCmdScript(opts),
         WRAPPER_SH,
@@ -115,17 +172,45 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
         String(slack),
         String(o.tickSeconds ?? 5),
         String(o.heartbeatEveryTicks ?? 6),
-      ]);
-      if (res.exitCode !== 0) {
-        throw new InfraError(`exec launch failed (${res.exitCode}): ${dec.decode(res.stderr)}`);
+      ];
+      // Not blindly repeated: a launch whose reply was lost may have run. After a transient
+      // failure, the exec id says what happened (status reads the sandbox's own state), and a
+      // launch that did not happen is repeated under the SAME id, which the launcher makes a
+      // no-op if the first one had in fact landed (atomic mkdir of the exec dir).
+      const started = now();
+      let attempt = 0;
+      for (;;) {
+        attempt += 1;
+        try {
+          const res = await sh(id, LAUNCH_SH, launchArgs);
+          if (res.exitCode !== 0) {
+            throw new InfraError(`exec launch failed (${res.exitCode}): ${dec.decode(res.stderr)}`);
+          }
+          return { execId };
+        } catch (e) {
+          if (!(e instanceof TransientInfraError)) throw e;
+          const seen = await withRetry("exec launch check", () => self.status(id, execId));
+          if (seen.state !== "lost") return { execId };
+          const wait = Math.round(
+            Math.min(retry.maxDelayMs ?? 10_000, (retry.baseDelayMs ?? 500) * 2 ** (attempt - 1)) *
+              (0.5 + random() / 2),
+          );
+          if (now() - started + wait > budgetMs) {
+            throw new InfraError(
+              `exec launch failed after ${attempt} attempts over ${Math.round((now() - started) / 1000)}s: ${e.message}`,
+              e,
+            );
+          }
+          retry.onRetry?.("exec launch", attempt, e);
+          await sleep(wait);
+        }
       }
-      return { execId };
     },
 
     async status(id, execId): Promise<ExecStatus> {
       let res;
       try {
-        res = await sh(id, STATUS_SH, [dirOf(execId)]);
+        res = await withRetry("exec status", () => sh(id, STATUS_SH, [dirOf(execId)]));
       } catch (e) {
         if (e instanceof SandboxNotFoundError) return { state: "lost" };
         throw e;
@@ -149,13 +234,15 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
       if (!Number.isInteger(opts.maxBytes) || opts.maxBytes <= 0) {
         throw new SpecError("maxBytes must be a positive integer");
       }
-      const res = await sh(id, LOGS_SH, [
-        dirOf(execId),
-        String(opts.fromOffset),
-        String(opts.maxBytes),
-        String(head),
-        String(tail),
-      ]);
+      const res = await withRetry("exec logs", () =>
+        sh(id, LOGS_SH, [
+          dirOf(execId),
+          String(opts.fromOffset),
+          String(opts.maxBytes),
+          String(head),
+          String(tail),
+        ]),
+      );
       if (res.exitCode !== 0) throw new InfraError(`logs failed (${res.exitCode})`);
       const { header, body } = splitHeader(res.stdout);
       const f = header.split(" ");
@@ -176,7 +263,7 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
     async kill(id, execId, signal) {
       if (!SIGNALS.includes(signal)) throw new SpecError(`unsupported signal ${signal}`);
       try {
-        const res = await sh(id, KILL_SH, [dirOf(execId), signal]);
+        const res = await withRetry("exec kill", () => sh(id, KILL_SH, [dirOf(execId), signal]));
         if (res.exitCode !== 0) throw new InfraError(`kill failed (${res.exitCode})`);
       } catch (e) {
         if (e instanceof SandboxNotFoundError) return;
@@ -184,4 +271,5 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
       }
     },
   };
+  return self;
 }

@@ -15,6 +15,7 @@ import {
   readApiKey,
   withSandbox,
 } from "../src/index";
+import { safeFetch } from "@longshore/net";
 import { MOCK_KEY, startMock } from "../src/testing/mock-daytona";
 
 let mock: ReturnType<typeof startMock>;
@@ -555,6 +556,208 @@ describe("api key and errors", () => {
     await expect(p.files.get(h.id, "/tmp/tt-daytona-test/missing", 10)).rejects.toBeInstanceOf(
       SpecError,
     );
+    await p.destroy(h.id);
+  });
+});
+
+describe("transient toolbox failures do not end a running job", () => {
+  const FAST = { budgetMs: 3000, baseDelayMs: 1, maxDelayMs: 2 };
+  const timeout = (): never => {
+    throw new DOMException("The operation timed out.", "TimeoutError");
+  };
+
+  /** A fetch that fails chosen toolbox execute calls and counts them. */
+  function flaky(
+    plan: (n: number, body: string) => "ok" | "fail-before" | "fail-after" | Response,
+  ) {
+    const seen = { calls: 0, failed: 0 };
+    const fn = (async (input: Parameters<typeof safeFetch>[0], init?: RequestInit) => {
+      if (!String(input).endsWith("/process/execute")) return safeFetch(input, init);
+      seen.calls += 1;
+      const verdict = plan(seen.calls, String(init?.body ?? ""));
+      if (verdict instanceof Response) return verdict;
+      if (verdict === "fail-before") {
+        seen.failed += 1;
+        return timeout();
+      }
+      const res = await safeFetch(input, init);
+      if (verdict === "fail-after") {
+        seen.failed += 1;
+        return timeout();
+      }
+      return res;
+    }) as typeof safeFetch;
+    return { fn, seen };
+  }
+
+  const isLaunch = (body: string): boolean => body.includes("setsid");
+
+  test("a status read that times out a few times, then answers, returns the real state", async () => {
+    let failing = false;
+    const f = flaky(() => (failing ? "fail-before" : "ok"));
+    const logs: string[] = [];
+    const p = make({ fetch: f.fn, exec: { retry: FAST }, log: (m) => logs.push(m) });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, {
+      argv: ["sh", "-c", "echo hi"],
+      timeoutSeconds: 30,
+    });
+    await Bun.sleep(300);
+    const before = f.seen.calls;
+    failing = true;
+    const pending = p.exec.status(h.id, execId);
+    // Three failures, then it recovers.
+    const stop = setInterval(() => {
+      if (f.seen.failed >= 3) failing = false;
+    }, 1);
+    const st = await pending;
+    clearInterval(stop);
+    expect(st.state).toBe("exited");
+    expect(f.seen.calls - before).toBeGreaterThanOrEqual(4);
+    // Each retry was logged with the call and attempt, and nothing secret.
+    expect(logs.length).toBeGreaterThanOrEqual(3);
+    expect(logs[0]).toContain("exec status");
+    expect(logs[0]).toContain("attempt 1");
+    expect(logs.join("\n")).not.toContain(MOCK_KEY);
+    await p.destroy(h.id);
+  });
+
+  test("a log read is retried the same way", async () => {
+    let failing = false;
+    const f = flaky(() => (failing ? "fail-before" : "ok"));
+    const p = make({ fetch: f.fn, exec: { retry: FAST } });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, {
+      argv: ["sh", "-c", "echo hello-log"],
+      timeoutSeconds: 30,
+    });
+    await Bun.sleep(300);
+    failing = true;
+    const pending = p.exec.logs(h.id, execId, { fromOffset: 0, maxBytes: 1000 });
+    const stop = setInterval(() => {
+      if (f.seen.failed >= 2) failing = false;
+    }, 1);
+    const out = await pending;
+    clearInterval(stop);
+    expect(new TextDecoder().decode(out.bytes)).toContain("hello-log");
+    await p.destroy(h.id);
+  });
+
+  test("a toolbox that always times out ends as InfraError after the budget, saying how many attempts", async () => {
+    const f = flaky(() => "ok");
+    const p = make({
+      fetch: f.fn,
+      exec: { retry: { budgetMs: 150, baseDelayMs: 5, maxDelayMs: 10 } },
+    });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, {
+      argv: ["sh", "-c", "sleep 1"],
+      timeoutSeconds: 30,
+    });
+    const dead = flaky(() => "fail-before");
+    const q = make({
+      fetch: dead.fn,
+      exec: { retry: { budgetMs: 150, baseDelayMs: 5, maxDelayMs: 10 } },
+    });
+    const t0 = Date.now();
+    const err = (await q.exec.status(h.id, execId).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(InfraError);
+    expect(err.message).toMatch(/exec status failed after \d+ attempts/);
+    expect(err.message).toContain("TimeoutError");
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(dead.seen.calls).toBeGreaterThan(2);
+    await p.destroy(h.id);
+  });
+
+  test("errors that are not transient are not retried: a 500 and a bad request", async () => {
+    for (const status of [500, 400]) {
+      let armed = false;
+      const f = flaky(() => {
+        if (!armed) return "ok";
+        armed = false;
+        return new Response(JSON.stringify({ message: "nope" }), { status });
+      });
+      const p = make({ fetch: f.fn, exec: { retry: FAST } });
+      const h = await p.create(spec());
+      const calls = f.seen.calls;
+      armed = true;
+      await expect(p.exec.status(h.id, "tt1-" + "a".repeat(24))).rejects.toBeInstanceOf(
+        status === 500 ? InfraError : SpecError,
+      );
+      expect(f.seen.calls - calls).toBe(1);
+      await p.destroy(h.id);
+    }
+  });
+
+  test("503 and 429 are transient", async () => {
+    for (const status of [503, 429, 502, 504]) {
+      let armed = false;
+      const f = flaky(() => {
+        if (!armed) return "ok";
+        armed = false;
+        return new Response("{}", { status });
+      });
+      const p = make({ fetch: f.fn, exec: { retry: FAST } });
+      const h = await p.create(spec());
+      const calls = f.seen.calls;
+      armed = true;
+      const st = await p.exec.status(h.id, "tt1-" + "b".repeat(24));
+      expect(st.state).toBe("lost");
+      expect(f.seen.calls - calls).toBeGreaterThanOrEqual(2);
+      await p.destroy(h.id);
+    }
+  });
+
+  test("a start whose reply was lost but which ran does not run twice", async () => {
+    const marker = `/tmp/tt-once-${Date.now()}-a`;
+    let done = false;
+    const f = flaky((_n, body) => (isLaunch(body) && !done ? ((done = true), "fail-after") : "ok"));
+    const p = make({ fetch: f.fn, exec: { retry: FAST } });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, {
+      argv: ["sh", "-c", `echo x >> ${marker}; sleep 2`],
+      timeoutSeconds: 30,
+    });
+    expect(execId).toMatch(/^tt1-/);
+    await Bun.sleep(2500);
+    const lines = (await Bun.file(marker).text()).trim().split("\n");
+    expect(lines).toHaveLength(1);
+    await Bun.$`rm -f ${marker}`;
+    await p.destroy(h.id);
+  });
+
+  test("a start whose request never arrived is launched once, under the same id", async () => {
+    const marker = `/tmp/tt-once-${Date.now()}-b`;
+    let done = false;
+    const f = flaky((_n, body) =>
+      isLaunch(body) && !done ? ((done = true), "fail-before") : "ok",
+    );
+    const p = make({ fetch: f.fn, exec: { retry: FAST } });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, {
+      argv: ["sh", "-c", `echo x >> ${marker}; sleep 1`],
+      timeoutSeconds: 30,
+    });
+    await Bun.sleep(2000);
+    expect((await Bun.file(marker).text()).trim().split("\n")).toHaveLength(1);
+    expect((await p.exec.status(h.id, execId)).state).toBe("exited");
+    await Bun.$`rm -f ${marker}`;
+    await p.destroy(h.id);
+  });
+
+  test("an ordinary start runs the command once", async () => {
+    const marker = `/tmp/tt-once-${Date.now()}-c`;
+    const f = flaky(() => "ok");
+    const p = make({ fetch: f.fn });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, {
+      argv: ["sh", "-c", `echo x >> ${marker}`],
+      timeoutSeconds: 30,
+    });
+    await Bun.sleep(500);
+    expect((await Bun.file(marker).text()).trim().split("\n")).toHaveLength(1);
+    expect(execId).toMatch(/^tt1-/);
+    await Bun.$`rm -f ${marker}`;
     await p.destroy(h.id);
   });
 });

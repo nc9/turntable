@@ -84,6 +84,8 @@ export interface DaytonaProviderOptions {
   startTimeoutMs?: number;
   /** Called after a sandbox is deleted, so callers can account for minutes used. */
   onUsage?: (r: UsageRecord) => void;
+  /** Debug log (retries, with the call and attempt; never a URL with a token). Default silent. */
+  log?: (message: string) => void;
   fetch?: SafeFetch;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -197,7 +199,20 @@ export class DaytonaProvider implements Provider {
         return unframe(body.result);
       },
     };
-    this.exec = createWrappedExec(runner, opts.exec);
+    // The toolbox is slow to answer while a heavy job runs, so a status or log read gets longer than
+    // the generic default before it counts as a timeout, and a transient failure of one is retried
+    // for a few minutes (never the launch itself without checking: see wrapped-exec).
+    this.exec = createWrappedExec(runner, {
+      commandTimeoutMs: 120_000,
+      ...opts.exec,
+      retry: {
+        sleep: this.sleep,
+        now: this.now,
+        onRetry: (what, attempt, error) =>
+          opts.log?.(`daytona ${what}: attempt ${attempt} failed, retrying: ${error.message}`),
+        ...opts.exec?.retry,
+      },
+    });
 
     this.files = {
       put: async (id, path, bytes) => {
