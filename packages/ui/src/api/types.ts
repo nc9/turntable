@@ -102,6 +102,29 @@ export type JobAttempt = {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  /** When the provider's create returned (billing starts). Null if no sandbox was made. */
+  sandboxCreatedAt: number | null;
+  /** When the provider confirmed the destroy. Null if never confirmed: the time is an estimate. */
+  sandboxDestroyedAt: number | null;
+  /** Exact sandbox time, create to confirmed destroy. Null until both are known. */
+  sandboxSeconds: number | null;
+};
+
+/** Sandbox time for one UTC day, from the `sandbox_usage` op. */
+export type SandboxUsageDay = {
+  day: string;
+  seconds: number;
+  minutes: number;
+  attempts: number;
+  /** Attempts of the day with no confirmed destroy, whose time is an estimate. */
+  estimatedAttempts: number;
+};
+
+export type SandboxUsage = {
+  days: SandboxUsageDay[];
+  totalMinutes: number;
+  /** The org's sandbox-minutes-per-day quota, or null when none is set (or unreadable). */
+  limitMinutesPerDay: number | null;
 };
 
 /**

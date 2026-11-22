@@ -10,6 +10,7 @@ import {
   Settings,
   Gauge,
   ShieldCheck,
+  ChartColumn,
 } from "lucide-react";
 import { useState } from "react";
 import { StateIcon } from "@/components/state-badge";
@@ -136,6 +137,15 @@ export function CommandPalette({
                 >
                   <Gauge />
                   Quotas
+                </CommandItem>
+                <CommandItem
+                  value="usage sandbox minutes"
+                  onSelect={go(
+                    () => void navigate({ to: "/$org/-/usage", params: { org: orgSlug } }),
+                  )}
+                >
+                  <ChartColumn />
+                  Usage
                 </CommandItem>
                 {projectSlug ? (
                   <CommandItem
