@@ -17,7 +17,13 @@ import type {
  * operations `list_runs`, `get_run`, `job_log`, `checks_for_sha`, `rerun`, `cancel` and `events`.
  * `listOrgs` and `listProjects` are navigation helpers the registry will need to expose.
  */
+export type ApiCapabilities = {
+  /** The API has an operation to rerun a run or a job. */
+  rerun: boolean;
+};
+
 export interface TurntableApi {
+  readonly capabilities: ApiCapabilities;
   listOrgs(): Promise<Org[]>;
   listProjects(orgId: string): Promise<Project[]>;
   listRuns(filter: RunFilter): Promise<{ runs: Run[]; nextCursor: string | null }>;

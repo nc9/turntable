@@ -34,7 +34,10 @@ export async function buildUi(): Promise<string[]> {
       chunk: "assets/[name]-[hash].[ext]",
       asset: "assets/[name]-[hash].[ext]",
     },
-    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    define: {
+      "process.env.NODE_ENV": JSON.stringify("production"),
+      "process.env.TURNTABLE_UI_BACKEND": JSON.stringify(process.env.TURNTABLE_UI_BACKEND ?? ""),
+    },
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);

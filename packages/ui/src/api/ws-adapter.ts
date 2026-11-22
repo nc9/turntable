@@ -1,4 +1,3 @@
-import type { TurntableApi } from "./client";
 import type {
   ConnectionStatus,
   Realtime,
@@ -31,9 +30,4 @@ export function createWsRealtime(_url: string): Realtime {
       return () => listeners.delete(listener);
     },
   };
-}
-
-// TODO(#22/#24): HTTP client over the REST API generated from the operations registry.
-export function createHttpApi(_baseUrl: string): TurntableApi {
-  throw new Error("HTTP API client is not implemented yet (#24)");
 }
