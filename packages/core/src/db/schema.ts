@@ -1199,7 +1199,7 @@ export const cacheEntries = sqliteTable(
 
 /**
  * Limits one org lives under. Null in a column means no limit of that kind. `max_concurrent`,
- * when set, replaces the instance's per-org cap for this org.
+ * when set, lowers the instance's per-org cap for this org (never raises it).
  */
 export const orgQuotas = sqliteTable("org_quotas", {
   orgId: text("org_id")

@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   appendLog,
   claimNextAttempt,
   createAttempt,
   createJob,
+  createOrg,
   createRun,
+  getOrgBySlug,
+  openDatabase,
   type Db,
   getOrgQuotas,
   listEvents,
@@ -16,6 +22,7 @@ import {
 } from "../src/db";
 import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
+import { parseLimit, quotasCommand } from "../src/quotas/cli";
 import { mcpTools } from "../src/ops/mcp";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
@@ -68,7 +75,7 @@ const statuses = async (t: Tenant) =>
   quotaStatuses(await getOrgQuotas(db, t.orgId), await quotaUsage(db, t.orgId, NOW));
 
 describe("quota enforcement at claim", () => {
-  test("a stored concurrency limit replaces the instance cap for that org only", async () => {
+  test("a stored concurrency limit lowers the instance cap for that org only, and never raises it", async () => {
     await set(a, { maxConcurrent: 1 });
     await queued(a, "a1");
     await queued(a, "a2");
@@ -82,6 +89,17 @@ describe("quota enforcement at claim", () => {
     // a is held to 1 running, b to the instance cap of 3 (it has only 2 queued).
     expect(got.filter((o) => o === a.orgId)).toHaveLength(1);
     expect(got.filter((o) => o === b.orgId)).toHaveLength(2);
+  });
+
+  test("a row that says more than the instance cap is clamped to the cap", async () => {
+    await set(a, { maxConcurrent: 50 });
+    for (let i = 0; i < 4; i++) await queued(a, `c${i}`);
+    const got: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const c = await claim(2);
+      if (c) got.push(c.scope.orgId);
+    }
+    expect(got).toHaveLength(2);
   });
 
   test("sandbox minutes: past the daily limit new claims are held with a clear reason, and others are not", async () => {
@@ -216,41 +234,97 @@ describe("notices", () => {
   });
 });
 
-describe("ops", () => {
-  test("an operator sets quotas, a reader reads them and the usage; MCP cannot set them", async () => {
-    const op = (await mintToken(db, { orgId: a.orgId }, "operator")).secret;
+describe("who can read and set quotas", () => {
+  test("an org-level reader reads them; a project-scoped token or a named project is refused; the other org sees none of it", async () => {
+    await set(a, { maxConcurrent: 3 });
     const reader = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const projectTok = (await mintToken(db, a.scope, "reader")).secret;
     const env = { registry, db, now: () => NOW };
     const call = (tok: string, name: string, input: unknown) =>
       dispatch(env, { kind: "bearer", token: tok }, name, input);
-    const denied = await call(reader, "set_quotas", { max_concurrent: 3 });
-    expect(!denied.ok && denied.error.code).toBe("forbidden");
-    const set1 = await call(op, "set_quotas", { max_concurrent: 3, max_log_bytes: 1000 });
-    expect(set1.ok && (set1.output as any).limits).toMatchObject({
-      max_concurrent: 3,
-      max_log_bytes: 1000,
-      max_runs_per_hour: null,
-    });
-    // A second call changes only what it names, and null clears.
-    const set2 = await call(op, "set_quotas", { max_log_bytes: null, max_runs_per_hour: 5 });
-    expect(set2.ok && (set2.output as any).limits).toMatchObject({
-      max_concurrent: 3,
-      max_log_bytes: null,
-      max_runs_per_hour: 5,
-    });
     const got = await call(reader, "get_quotas", {});
+    expect(got.ok && (got.output as any).limits.max_concurrent).toBe(3);
     expect(
       got.ok && (got.output as any).usage.find((u: any) => u.metric === "concurrent"),
     ).toMatchObject({
       limit: 3,
     });
-    // The other org sees none of it.
+    const scoped = await call(projectTok, "get_quotas", {});
+    expect(!scoped.ok && scoped.error.code).toBe("forbidden");
+    expect(!scoped.ok && scoped.error.message).toContain("org-level token");
+    const named = await call(reader, "get_quotas", { project: a.projectSlug });
+    expect(!named.ok && named.error.code).toBe("forbidden");
     const other = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
     const theirs = await call(other, "get_quotas", {});
     expect(theirs.ok && (theirs.output as any).limits.max_concurrent).toBeNull();
-    // Not an MCP tool; reading is.
+  });
+
+  test("there is no operation that sets quotas: not for an operator token, not over MCP, not over REST", async () => {
+    expect(registry.ops.map((o) => o.name)).not.toContain("set_quotas");
+    const op = (await mintToken(db, { orgId: a.orgId }, "operator")).secret;
+    const env = { registry, db, now: () => NOW };
+    const r = await dispatch(env, { kind: "bearer", token: op }, "set_quotas", {
+      max_concurrent: 99,
+    });
+    expect(r.ok).toBe(false);
+    expect(await getOrgQuotas(db, a.orgId)).toMatchObject({ maxConcurrent: null });
     const names = mcpTools(registry).map((t) => t.name);
     expect(names).toContain("get_quotas");
     expect(names).not.toContain("set_quotas");
+  });
+});
+
+describe("the host command sets them", () => {
+  test("longshore quotas set changes only the named limits, none removes one, and show prints usage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ls-quotas-host-"));
+    try {
+      const file = openDatabase(join(dir, "longshore.db"));
+      await createOrg(file, { slug: "acme", name: "Acme" });
+      file.close();
+      const logs: string[] = [];
+      const log = console.log;
+      const err = console.error;
+      console.log = (m: string) => void logs.push(String(m));
+      console.error = (m: string) => void logs.push(String(m));
+      try {
+        const base = ["--org", "acme", "--data-dir", dir];
+        expect(
+          await quotasCommand(["set", ...base, "--max-concurrent", "3", "--max-log-bytes", "100"]),
+        ).toBe(0);
+        expect(logs.join("\n")).toContain("of 3");
+        logs.length = 0;
+        expect(await quotasCommand(["set", ...base, "--max-log-bytes", "none"])).toBe(0);
+        expect(await quotasCommand(["show", ...base])).toBe(0);
+        const text = logs.join("\n");
+        expect(text).toContain("concurrent");
+        expect(text).toContain("of 3");
+        expect(text).toContain("log_bytes");
+        expect(await quotasCommand(["set", ...base])).toBe(1); // names nothing
+        expect(await quotasCommand(["set", ...base, "--max-concurrent=-1"])).toBe(1);
+        expect(
+          await quotasCommand(["set", "--org", "nope", "--data-dir", dir, "--max-concurrent", "1"]),
+        ).toBe(1);
+        expect(await quotasCommand(["frob"])).toBe(2);
+      } finally {
+        console.log = log;
+        console.error = err;
+      }
+      const check = openDatabase(join(dir, "longshore.db"));
+      const org = (await getOrgBySlug(check, "acme"))!;
+      expect(await getOrgQuotas(check, org.id)).toMatchObject({
+        maxConcurrent: 3,
+        maxLogBytes: null,
+      });
+      check.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("limits are whole numbers or none", () => {
+    expect(parseLimit("x", "5")).toBe(5);
+    expect(parseLimit("x", "none")).toBeNull();
+    for (const bad of ["-1", "1.5", "abc", "", "1e3"])
+      expect(() => parseLimit("x", bad), bad).toThrow();
   });
 });

@@ -171,10 +171,13 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       )
       .groupBy(s.jobAttempts.orgId);
     // Per-org quotas (#52). Only orgs with a limit set are looked at. A stored concurrency limit
-    // replaces the instance's per-org cap; the other limits hold new work when reached, and say
+    // lowers the instance's per-org cap for the org; the other limits hold new work when reached, and say
     // why in `get_quotas` and in an event at 80% and 100%.
     const quotas = await orgsWithQuotas(tx);
-    const capOf = (orgId: string) => quotas.get(orgId)?.maxConcurrent ?? o.perOrgCap;
+    // Quotas limit tenants: a stored limit can lower an org's cap, never lift it above the
+    // instance's per-org cap (whatever a row says).
+    const capOf = (orgId: string) =>
+      Math.min(quotas.get(orgId)?.maxConcurrent ?? Infinity, o.perOrgCap);
     const heldOrgs = new Set<string>();
     const runsFull = new Map<string, Set<string>>();
     for (const w of waiting) {

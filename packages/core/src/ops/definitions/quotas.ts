@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { getOrgQuotas, quotaStatuses, quotaUsage, setOrgQuotas } from "../../db/repos";
+import { getOrgQuotas, quotaStatuses, quotaUsage } from "../../db/repos";
 import { defineOp } from "../define";
-import { principalLabel } from "../principal";
+import { OpError } from "../errors";
 
 const limit = z.int().min(0).max(Number.MAX_SAFE_INTEGER);
 
@@ -59,7 +59,9 @@ export const getQuotas = defineOp({
     "log bytes, stored artifact and cache bytes), the percent used, and for a limit that is reached the " +
     "reason new work is held. A held limit stops new claims; running attempts finish. Events " +
     "(`infra.error` with `error_class` `quota_warning` at 80% and `quota_reached` at 100%) fire " +
-    "once per window. Read-only.",
+    "once per window. Read-only. Needs an org-level token (a project-scoped one is refused). " +
+    "Limits are set by the instance operator on the host (`longshore quotas set`), never over " +
+    "the API: a tenant must not be able to raise its own.",
   input: z.object({}),
   output: view,
   effect: "read",
@@ -68,38 +70,10 @@ export const getQuotas = defineOp({
   scope: "org",
   http: { method: "GET", path: "/quotas" },
   async handler(ctx) {
-    return build(ctx, ctx.scope.orgId);
-  },
-});
-
-export const setQuotas = defineOp({
-  name: "set_quotas",
-  summary: "Set the org's quotas. Operator only; not available over MCP.",
-  description:
-    "Sets the limits you give (a number sets one, null removes it) and leaves the others as they " +
-    "are. `max_concurrent` replaces the instance's per-org concurrency cap for this org. The " +
-    "other limits hold new work when reached: running attempts finish, queued ones wait until " +
-    "the window moves or the limit is raised. Audited. Not exposed as an MCP tool: an agent must " +
-    "not raise its own limits.",
-  input: quotasShape.partial(),
-  output: view,
-  effect: "write",
-  auth: { type: "token", minRole: "operator" },
-  untrustedOutput: false,
-  scope: "org",
-  http: { method: "POST", path: "/quotas" },
-  mcp: false,
-  async handler(ctx, input) {
-    const patch = {
-      ...(input.max_concurrent !== undefined ? { maxConcurrent: input.max_concurrent } : {}),
-      ...(input.max_runs_per_hour !== undefined ? { maxRunsPerHour: input.max_runs_per_hour } : {}),
-      ...(input.max_sandbox_minutes_per_day !== undefined
-        ? { maxSandboxMinutesPerDay: input.max_sandbox_minutes_per_day }
-        : {}),
-      ...(input.max_log_bytes !== undefined ? { maxLogBytes: input.max_log_bytes } : {}),
-      ...(input.max_stored_bytes !== undefined ? { maxStoredBytes: input.max_stored_bytes } : {}),
-    };
-    await setOrgQuotas(ctx.db, ctx.scope.orgId, patch, principalLabel(ctx.principal), ctx.now());
+    // Quotas belong to the org as a whole: a project-scoped token (or a project named in the
+    // request) is refused rather than answered with an org-wide figure.
+    if (ctx.scope.projectId || (ctx.principal.kind === "token" && ctx.principal.projectId))
+      throw new OpError("forbidden", "an org-level token is required to read quotas");
     return build(ctx, ctx.scope.orgId);
   },
 });

@@ -118,9 +118,9 @@ More settings arrive with each feature, and this page ships with them.
 
 ## Per-org quotas
 
-An org can live under limits, set by an operator with `set_quotas` (REST; not an MCP tool, so an agent cannot raise its own) and read with `get_quotas`, which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
+An org can live under limits. Quotas limit tenants, so the **instance operator** sets them, on the host: `longshore quotas set --org <slug> --max-concurrent 3 ... [--data-dir ./data]` (`none` removes a limit; `longshore quotas show --org <slug>` prints them with usage). There is no API operation that sets them, so an org's own tokens, operators and agents cannot raise their limits. They are read with `get_quotas` (REST and MCP, an org-level token; a project-scoped token is refused), which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
 
-- `max_concurrent`: attempts running at once. When set, it replaces the instance's per-org cap (`--org-cap`) for this org; the instance-wide cap still applies.
+- `max_concurrent`: attempts running at once. It can only lower this org's cap: the effective cap is the smaller of it and the instance's per-org cap (`--org-cap`), whatever a stored row says. Raise `--org-cap` to raise everyone's.
 - `max_runs_per_hour`: runs that start in a rolling hour. A run that has already started finishes its jobs; new runs wait.
 - `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, from attempt start and finish times (a running attempt counts up to now).
 - `max_log_bytes`: stored job log bytes.
