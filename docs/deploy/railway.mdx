@@ -1,0 +1,78 @@
+---
+title: Deploy on Railway
+description: A main service and a release lane service, their volumes and variables, the drop-privileges behaviour and the trusted-proxies setting.
+---
+
+This page describes a layout for Railway (or any platform that gives you environment variables, a volume per service and no shell). Names such as `longshore.example.com` are placeholders. It was written from the code and the image, not from a deployed project: check the volume limit below before you plan around two services.
+
+## Layout
+
+| | Main service | Release service |
+| --- | --- | --- |
+| Image | `ghcr.io/nc9/longshore` | the same image |
+| Start command | `serve` (the image default), with `LONGSHORE_WORKER=1` to run jobs in it | `serve --roles release` |
+| Public networking | Yes: one domain | **No.** It listens on nothing and needs no domain |
+| Volume | Mounted at `/data` | Its own volume, for its keys and attestations |
+| Role | web, and worker and poller if you set them | the release lane, **alone** |
+
+Run the release lane only when you sign or publish releases. Without it, leave the second service out.
+
+<Warning>
+  **A Railway volume attaches to one service.** The release lane reads release requests from the main database, and today that database is a SQLite file in the main service's volume, so a second Railway service cannot open it. Until the Postgres backend lands, run the release lane where it can mount the main data directory (the same machine or pod), or do not run it on Railway. Do not work around this by giving the release service the main service's key or putting `LONGSHORE_RELEASE_*` in the main service: those separations are the point (see [Release lane](/release-lane)).
+</Warning>
+
+## Volumes
+
+- **Main:** mount a volume at `/data` and set `LONGSHORE_DATA_DIR=/data`. It holds `longshore.db` (and its `-wal` and `-shm` files) and, if you keep it there, the master key and its `.audit-state` directory (`LONGSHORE_MASTER_KEY_FILE=/data/master.key`, created with `longshore keys init`, which you can run once from a one-off deploy or generate elsewhere and upload).
+- **Release:** a separate volume, for example at `/release`, with `LONGSHORE_RELEASE_DATA_DIR=/release/state` and the lane's key at `LONGSHORE_RELEASE_MASTER_KEY_FILE=/release/master.key`. The main service must not be able to read it.
+
+## Variables
+
+Everything is configured from the environment (the full list is in [Configuration](/configuration#environment-reference)).
+
+**Main service**
+
+| Variable | Why |
+| --- | --- |
+| `LONGSHORE_DATA_DIR=/data` | Where the volume is mounted. |
+| `LONGSHORE_PUBLIC_URL=https://longshore.example.com` | The public base URL: check run links, WebAuthn and OIDC defaults. |
+| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | Hash of a token from `longshore token generate`, so you can sign in with no shell. Remove it once real tokens exist. |
+| `LONGSHORE_MASTER_KEY_FILE=/data/master.key` | Needed for the vault, the GitHub App and OIDC. |
+| `LONGSHORE_TRUST_FORWARDED_PROTO=1` | Railway terminates TLS in front of the service: plain-http requests it forwards get a 301 to https, and secret values over `x-forwarded-proto: https` are accepted. |
+| `LONGSHORE_TRUSTED_PROXIES` | See below. |
+| `LONGSHORE_WORKER=1`, `LONGSHORE_PROVIDER`, `LONGSHORE_PROVIDER_CONFIG_JSON`, `LONGSHORE_POLL_JSON`, `LONGSHORE_HOSTED=1` | Only to run jobs in this service. Railway has no Docker socket, so use a remote provider such as `daytona`; its API key goes in a variable the provider config names (`apiKeyEnv`), never in the JSON. |
+
+`PORT` is set by Railway and the server follows it. Point the health check at `/healthz`.
+
+**Release service** (only when you run the lane; none of these go on the main service)
+
+| Variable | Why |
+| --- | --- |
+| `LONGSHORE_RELEASE_MASTER_KEY_FILE`, `LONGSHORE_RELEASE_DATA_DIR` | Its own key and state, on its own volume. |
+| `LONGSHORE_RELEASE_GITHUB_TOKEN` | Read-only token to re-check tags. |
+| `LONGSHORE_RELEASE_GITHUB_PUBLISH_TOKEN` | Optional, to publish. |
+| `LONGSHORE_RELEASE_ARTIFACT_DIR`, `LONGSHORE_RELEASE_BUILDER_ID`, `LONGSHORE_RELEASE_POLL_MS` | Artifact bytes, the builder id in provenance, polling interval. |
+| Signing backend and KMS credentials | Here only. |
+
+## Running as root, and dropping it
+
+Railway mounts volumes owned by root, which a non-root process cannot write. The image therefore starts as root with `LONGSHORE_DROP_PRIVILEGES=65532:65532` already set: before it opens the database or any key file, it takes ownership of the files it expects in the data directory (only those names, each through an open descriptor, never following a link), then drops group, supplementary groups and user, and checks that root cannot be regained. A platform that cannot do a step refuses to start.
+
+**Do not set `RAILWAY_RUN_UID=0`** or any other run-as-root override, and do not set `LONGSHORE_ALLOW_ROOT=1`: the image does not need them, and a server still running as root after startup is refused unless you say so. If a volume was written by an older, root-run deployment, the first start with the drop takes it over; unexpected files in the data directory stop the start with a message naming them.
+
+## Trusted proxies
+
+Behind Railway's edge, the client address on a connection is the proxy's. `LONGSHORE_TRUSTED_PROXIES` is a comma-separated list of the addresses and CIDR ranges of the proxies in front of the service. Only a request that arrives from one of them has its `x-forwarded-for` chain believed, and the webhook failure limiter then keys on the client the chain reports, instead of lumping every caller behind one address.
+
+- **Unset:** forwarded headers are ignored entirely. That is safe, and it means the limiter sees the proxy's address for everyone. A burst of bad webhook calls from one source can then throttle legitimate ones.
+- **Do not guess.** Use the ranges your platform documents for its edge, and leave it unset if you cannot find them. An entry that is too wide lets a caller spoof its address.
+- `LONGSHORE_TRUST_FORWARDED_FOR` is no longer read (a warning is printed).
+
+## Checklist
+
+1. Volume at `/data`, `LONGSHORE_DATA_DIR=/data`, public domain, `LONGSHORE_PUBLIC_URL`, `LONGSHORE_TRUST_FORWARDED_PROTO=1`.
+2. A bootstrap token hash, then `curl` the API with the token to confirm access; remove the variable after creating real tokens.
+3. The master key at `/data/master.key` before you enable the vault, GitHub App or OIDC.
+4. No `RAILWAY_RUN_UID`, no `LONGSHORE_ALLOW_ROOT`.
+5. Health check `/healthz`.
+6. Release lane only if you can give it what it needs without weakening the split (see the warning above).
