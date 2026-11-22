@@ -1,0 +1,19 @@
+{
+  "name": "@longshore/provider-daytona",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@longshore/provider-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@longshore/provider-conformance": "workspace:*",
+    "@types/bun": "1.4.4"
+  }
+}

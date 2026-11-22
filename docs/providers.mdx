@@ -37,3 +37,50 @@ The sandbox spec has no environment variable field. Providers never receive secr
 ## Conformance suite
 
 A provider conformance suite will exercise the contract: detached exec, offset logs, exit code recovery and cleanup. First-party and third-party providers must pass it.
+
+## Daytona
+
+The Daytona provider (`packages/provider-daytona`) runs jobs in Daytona sandboxes through its REST API with plain `fetch`. It supports detached exec through the shared wrapper, file upload and download, listing by label, and TTL backstops.
+
+### Configuration
+
+The API key is read when it is first needed, from a file path, an environment variable name, or a function, and is never stored in config, logged or included in an error:
+
+```ts
+new DaytonaProvider({ apiKey: { file: "/run/secrets/daytona" } });
+new DaytonaProvider({ apiKey: { env: "DAYTONA_API_KEY" } });
+```
+
+Other options: `baseUrl`, `runId`, `maxLive`, `target`, `snapshot` (the name of an existing snapshot), `maxFileBytes` and `capacityWaitMs`.
+
+### Account rules, enforced in code
+
+The provider is built for a shared account where it must not disturb other work. Each rule is checked in the provider, with tests, and cannot be switched off by configuration:
+
+- Every sandbox is named `longshore-dev-*` and labelled `longshore-dev=1` plus `longshore-run=<run id>`.
+- At most 2 sandboxes of ours are live. `maxLive` can lower this and cannot raise it past 3.
+- The hard TTL, auto-stop and auto-delete are at most 30 minutes. A spec asking for more is refused. Auto-delete is 0, so a stopped sandbox is deleted at once.
+- Before creating a sandbox, the provider waits while 8 or more of the account owner's CI sandboxes are running (matched by label key, label value or snapshot name). They are only counted.
+- Listing, counting and deleting only ever touch sandboxes carrying our label and name prefix. `destroy`, `exec` and `files` first check that the target is ours and refuse anything else.
+- No snapshots are created. A spec that names an `image` is refused, because building one makes a snapshot in the account; `allowImageBuild` opts in explicitly. A named existing snapshot or the account default is used instead.
+- `withSandbox` creates, runs and always deletes in a `finally`. `destroy` returns only once the sandbox is gone from the API and from listings, so counts and the cap are true.
+- Every response body the provider reads is capped and streamed: file downloads stop at the caller's `maxBytes` however large or mislabelled the response, and API replies are capped at 16 MiB.
+
+### Verified against the real service
+
+These were checked by running the conformance suite and a short capability test on a real account (`packages/provider-daytona/scripts/live-check.ts`):
+
+- Egress `none` blocks outbound connections (`networkBlockAll`), and egress `open` allows them. These are the two policies the provider declares.
+- Sandboxes are Linux x86_64 containers (`sandboxClass: container`) running as user `daytona`, with 1 vCPU, 1 GB memory and 3 GB disk by default.
+- Exit codes, signal deaths, offset logs across silent gaps, output caps, binary file round trips and the absence of controller environment variables all pass the shared conformance suite.
+
+### Not declared, and why
+
+- `allowlist` egress: the API has `domainAllowList` and `networkAllowList`, but they have not been exercised, so the provider does not claim them.
+- Proxy reachability and ingress: a sandbox has no route to a controller on a private machine without a tunnel.
+- Isolation: the sandboxes observed are containers sharing a host kernel, which is weaker than a VM. Daytona has a `linux-vm` class that has not been tested. The provider interface has no isolation field yet, so nothing is claimed.
+
+### Known limits
+
+- `nproc` and `/proc/meminfo` show the host, not the sandbox. Read limits from the sandbox's cgroup instead.
+- Listings are eventually consistent and deletion is asynchronous. The provider waits for both, which adds a few seconds to create and destroy.

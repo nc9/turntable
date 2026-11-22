@@ -49,6 +49,17 @@
         "@types/bun": "1.4.4",
       },
     },
+    "packages/provider-daytona": {
+      "name": "@longshore/provider-daytona",
+      "version": "0.0.0",
+      "dependencies": {
+        "@longshore/provider-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@longshore/provider-conformance": "workspace:*",
+        "@types/bun": "1.4.4",
+      },
+    },
     "packages/provider-docker": {
       "name": "@longshore/provider-docker",
       "version": "0.0.0",
@@ -93,9 +104,9 @@
         "tailwind-merge": "3.7.0",
       },
       "devDependencies": {
-        "@tailwindcss/postcss": "4.3.5",
         "@longshore/core": "workspace:*",
         "@longshore/provider-sdk": "workspace:*",
+        "@tailwindcss/postcss": "4.3.5",
         "@types/bun": "1.4.4",
         "@types/react": "19.3.0",
         "@types/react-dom": "19.3.0",
@@ -238,6 +249,22 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.6.0", "", {}, "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@longshore/act-runner": ["@longshore/act-runner@workspace:packages/act-runner"],
+
+    "@longshore/core": ["@longshore/core@workspace:packages/core"],
+
+    "@longshore/provider-conformance": ["@longshore/provider-conformance@workspace:packages/provider-conformance"],
+
+    "@longshore/provider-daytona": ["@longshore/provider-daytona@workspace:packages/provider-daytona"],
+
+    "@longshore/provider-docker": ["@longshore/provider-docker@workspace:packages/provider-docker"],
+
+    "@longshore/provider-sdk": ["@longshore/provider-sdk@workspace:packages/provider-sdk"],
+
+    "@longshore/redact": ["@longshore/redact@workspace:packages/redact"],
+
+    "@longshore/ui": ["@longshore/ui@workspace:packages/ui"],
 
     "@next/env": ["@next/env@16.4.6", "", {}, "sha512-SunBjJ6t+oBtecS3dTjdVuMhUogP5wD/vrGL5EVuQYM1iS4O5ilL51HkiJ3sPjMzRHiCChvr4dbaSJbR7F3lxA=="],
 
@@ -508,20 +535,6 @@
     "@tanstack/store": ["@tanstack/store@0.11.2", "", {}, "sha512-sJ4mjol8uQsHV0gOJzzjwXfh2Fwm+Sz0+8deqiTm4jGbMdjzNSW+xZCFm0kUa870uhd8yi+DpKnZb5Kc4apa0Q=="],
 
     "@tanstack/virtual-core": ["@tanstack/virtual-core@3.19.11", "", {}, "sha512-/5iHb0RHBvj8Di59FDs4ESNm45jls33aZAi4zccVXZjc/6ZvwQP6nzEYeT6weXjTf9E6/vrp2JhYWRyO+ZP13A=="],
-
-    "@longshore/act-runner": ["@longshore/act-runner@workspace:packages/act-runner"],
-
-    "@longshore/core": ["@longshore/core@workspace:packages/core"],
-
-    "@longshore/provider-conformance": ["@longshore/provider-conformance@workspace:packages/provider-conformance"],
-
-    "@longshore/provider-docker": ["@longshore/provider-docker@workspace:packages/provider-docker"],
-
-    "@longshore/provider-sdk": ["@longshore/provider-sdk@workspace:packages/provider-sdk"],
-
-    "@longshore/redact": ["@longshore/redact@workspace:packages/redact"],
-
-    "@longshore/ui": ["@longshore/ui@workspace:packages/ui"],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
