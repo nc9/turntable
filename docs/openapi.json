@@ -1581,7 +1581,7 @@
       "post": {
         "operationId": "cancel",
         "summary": "Cancel a run: queued, running and waiting jobs become cancelled.",
-        "description": "Cancels a run by moving every queued, running or awaiting-approval job to cancelled. Jobs that already finished are left as they are. Idempotent: cancelling a finished or already cancelled run changes nothing. Destructive and audited; it needs the operator role. Today this updates state only; a running sandbox is stopped by the controller in a later change.\n\nRequired role: operator. Side effects: destructive; audited.",
+        "description": "Cancels a run by moving every queued, running or awaiting-approval job to cancelled. Jobs that already finished are left as they are. Idempotent: cancelling a finished or already cancelled run changes nothing. Destructive and audited; it needs the operator role. A running job is stopped at once: its worker is told to abort and its sandbox is destroyed (a worker in another process stops at its next heartbeat).\n\nRequired role: operator. Side effects: destructive; audited.",
         "parameters": [
           {
             "name": "run_id",

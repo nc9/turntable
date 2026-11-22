@@ -168,4 +168,5 @@ export function ensureInstance(db: Db): Promise<string> {
 }
 
 export { schema };
+export * from "./abort-bus";
 export * from "./repos";

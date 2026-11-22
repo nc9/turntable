@@ -176,6 +176,11 @@ export const runs = sqliteTable(
     plan: text("plan"),
     /** The workflow's concurrency group (project-wide), for cancel-in-progress. */
     concurrencyGroup: text("concurrency_group"),
+    /**
+     * Started by `longshore run`: only the process that started it runs its attempts. A server's
+     * worker never claims them, so a shared data directory is safe.
+     */
+    local: integer("local", { mode: "boolean" }).notNull().default(false),
     /** Aggregate of its jobs; same vocabulary as job state. */
     status: text("status").notNull().default("queued"),
     createdAt: createdAt(),

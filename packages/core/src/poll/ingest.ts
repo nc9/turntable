@@ -1,4 +1,10 @@
-import { githubContext, planWorkflow, type Value, type WorkflowEvent } from "@longshore/act-runner";
+import {
+  githubContext,
+  localActionDir,
+  planWorkflow,
+  type Value,
+  type WorkflowEvent,
+} from "@longshore/act-runner";
 import { parse } from "yaml";
 import type { Db } from "../db";
 import {
@@ -17,6 +23,7 @@ import {
   type Scope,
   validateJobGraph,
 } from "../db/repos";
+import { assertRepoRelative, MAX_REPO_FILE_BYTES } from "../run/safe-read";
 import type { PollConfig, PollRepoConfig } from "./config";
 import type { GithubClient } from "./github";
 
@@ -165,6 +172,72 @@ function eventPayload(c: Candidate): Value {
   return {};
 }
 
+/** Most local action directories read while planning one workflow. */
+const MAX_LOCAL_ACTIONS = 20;
+const MAX_LOCAL_ACTION_DEPTH = 5;
+
+/** `uses: ./dir` references in a workflow or composite action document. */
+function localUses(text: string): string[] {
+  let doc: unknown;
+  try {
+    doc = parse(text, { merge: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (node !== null && typeof node === "object") {
+      for (const [k, v] of Object.entries(node)) {
+        if (k === "uses" && typeof v === "string" && (v.startsWith("./") || v.startsWith("../"))) {
+          out.push(v.trim());
+        } else walk(v);
+      }
+    }
+  };
+  walk(doc);
+  return out;
+}
+
+/**
+ * Fetches the local composite actions a workflow uses (`uses: ./dir`, and the ones those use,
+ * to a bounded depth and count) through the read-only GitHub client, so the planner can see
+ * a docker step hidden inside one. Paths go through the same repo-relative check as host
+ * reads: anything absolute or climbing out is never requested (the planner marks that job
+ * unsupported). Files over the safe reader's size cap are ignored.
+ */
+async function fetchLocalActions(
+  github: GithubClient,
+  repo: string,
+  sha: string,
+  workflowYaml: string,
+): Promise<Map<string, string>> {
+  const files = new Map<string, string>();
+  const seen = new Set<string>();
+  let level = localUses(workflowYaml);
+  for (let depth = 0; depth < MAX_LOCAL_ACTION_DEPTH && level.length > 0; depth++) {
+    const next: string[] = [];
+    for (const uses of level) {
+      const dir = localActionDir(uses);
+      if (dir === undefined || seen.has(dir) || seen.size >= MAX_LOCAL_ACTIONS) continue;
+      seen.add(dir);
+      for (const name of ["action.yml", "action.yaml"]) {
+        const path = dir === "" ? name : `${dir}/${name}`;
+        assertRepoRelative(path);
+        const text = await github.fileAt(repo, path, sha);
+        if (text === undefined) continue;
+        if (text.length <= MAX_REPO_FILE_BYTES) {
+          files.set(path, text);
+          next.push(...localUses(text));
+        }
+        break;
+      }
+    }
+    level = next;
+  }
+  return files;
+}
+
 /** True when the workflow has a path filter, so changed files are worth an API call. */
 const hasPathFilter = (yaml: string): boolean => /^\s*paths(-ignore)?\s*:/m.test(yaml);
 
@@ -291,7 +364,18 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
 
     let wp;
     try {
-      wp = planWorkflow(yaml, event, { readFile: () => undefined, github: githubExtra });
+      // Local composite actions are fetched first (read-only, bounded), so a docker step inside
+      // one marks its job unsupported at plan time.
+      const localFiles = /uses:\s*['"]?\.\.?\//.test(yaml)
+        ? await fetchLocalActions(deps.github, repo, c.sha, yaml)
+        : new Map<string, string>();
+      wp = planWorkflow(yaml, event, {
+        readFile: (p) => {
+          assertRepoRelative(p);
+          return localFiles.get(p);
+        },
+        github: githubExtra,
+      });
     } catch (err) {
       const reason = `plan rejected: ${err instanceof Error ? err.message : String(err)}`;
       await markPollSkipped(deps.db, scope, { ...key, now });

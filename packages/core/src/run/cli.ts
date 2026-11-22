@@ -112,7 +112,8 @@ export async function runCommand(args: string[]): Promise<number> {
       const wr = await runWorkflowLocal({
         provider: new DockerProvider(),
         providerName: "docker",
-        store: dbRunStore(db, scope),
+        db,
+        scope,
         workflowPath,
         workflowYaml: workflowText,
         event: {

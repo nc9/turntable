@@ -133,5 +133,12 @@ export const migrations: Migration[] = [
       "CREATE TABLE `webhook_deliveries` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text,\n\t`forge` text DEFAULT 'github' NOT NULL,\n\t`event` text NOT NULL,\n\t`action` text,\n\t`installation_id` text,\n\t`status` text DEFAULT 'received' NOT NULL,\n\t`error` text,\n\t`payload` text,\n\t`received_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`processed_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"webhook_deliveries_status_check\" CHECK(status IN ('received', 'processed', 'ignored', 'failed'))\n);",
       "CREATE INDEX `webhook_deliveries_received_idx` ON `webhook_deliveries` (`received_at`);"
     ]
+  },
+  {
+    "tag": "0008_chief_ink",
+    "when": 1795351514724,
+    "statements": [
+      "ALTER TABLE `runs` ADD `local` integer DEFAULT false NOT NULL;"
+    ]
   }
 ];

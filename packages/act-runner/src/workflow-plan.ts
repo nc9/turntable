@@ -129,6 +129,51 @@ export function expandMatrix(matrix: unknown): Combo[] {
 const DOCKER_CMD = /(^|[\s;&|(`])docker(\s|$)/m;
 const DOCKER_OWNERS = /^docker\//i;
 
+/**
+ * Why a local composite action (a directory of the repo) needs docker, looking through the local
+ * actions it uses in turn, to a bounded depth. Undefined when it does not, or cannot be read.
+ */
+function localActionDockerReason(
+  uses: string,
+  readFile: (p: string) => string | undefined,
+  depth: number,
+  seen: Set<string>,
+): string | undefined {
+  const dir = localActionDir(uses);
+  if (dir === undefined) return `step uses ${uses}, a path outside the repository`;
+  if (depth > 5 || seen.has(dir)) return undefined;
+  seen.add(dir);
+  for (const f of ["action.yml", "action.yaml"]) {
+    const text = readFile(dir === "" ? f : `${dir}/${f}`);
+    if (text === undefined) continue;
+    try {
+      const doc: unknown = parse(text);
+      const runs = isObj(doc) ? doc.runs : undefined;
+      if (isObj(runs) && runs.using === "docker") return `local action ${uses} is a docker action`;
+      if (isObj(runs) && Array.isArray(runs.steps)) {
+        for (const cs of runs.steps) {
+          if (!isObj(cs)) continue;
+          if (typeof cs.run === "string" && DOCKER_CMD.test(cs.run)) {
+            return `local action ${uses} runs docker`;
+          }
+          if (typeof cs.uses === "string") {
+            const u = cs.uses.trim();
+            if (u.startsWith("docker://")) return `local action ${uses} uses ${u}`;
+            if (u.startsWith("./") || u.startsWith("../")) {
+              const inner = localActionDockerReason(u, readFile, depth + 1, seen);
+              if (inner) return `local action ${uses} uses ${inner.replace(/^step uses /, "")}`;
+            }
+          }
+        }
+      }
+    } catch {
+      // an unparsable action fails loudly at run time
+    }
+    break;
+  }
+  return undefined;
+}
+
 /** Why a job needs a container runtime, or undefined. */
 function dockerReason(job: Obj, readFile: (p: string) => string | undefined): string | undefined {
   if (job.container !== undefined) return "uses container:";
@@ -141,28 +186,8 @@ function dockerReason(job: Obj, readFile: (p: string) => string | undefined): st
       if (u.startsWith("docker://")) return `step uses ${u}`;
       if (DOCKER_OWNERS.test(u)) return `step uses ${u}, which needs a docker daemon`;
       if (u.startsWith("./") || u.startsWith("../")) {
-        const dir = localActionDir(u);
-        if (dir === undefined) return `step uses ${u}, a path outside the repository`;
-        for (const f of ["action.yml", "action.yaml"]) {
-          const text = readFile(dir === "" ? f : `${dir}/${f}`);
-          if (text === undefined) continue;
-          try {
-            const doc: unknown = parse(text);
-            const runs = isObj(doc) ? doc.runs : undefined;
-            if (isObj(runs) && runs.using === "docker")
-              return `local action ${u} is a docker action`;
-            if (isObj(runs) && Array.isArray(runs.steps)) {
-              for (const cs of runs.steps) {
-                if (isObj(cs) && typeof cs.run === "string" && DOCKER_CMD.test(cs.run)) {
-                  return `local action ${u} runs docker`;
-                }
-              }
-            }
-          } catch {
-            // an unparsable action fails loudly at run time
-          }
-          break;
-        }
+        const why = localActionDockerReason(u, readFile, 0, new Set());
+        if (why) return why;
       }
     }
     if (typeof s.run === "string" && DOCKER_CMD.test(s.run))

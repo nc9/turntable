@@ -10,6 +10,7 @@ export type {
 export {
   createActRunner,
   gitRepoSource,
+  localRepoSource,
   type ActRunnerOptions,
   type Checkout,
   type RepoSource,

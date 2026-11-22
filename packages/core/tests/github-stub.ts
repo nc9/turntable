@@ -17,6 +17,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     files: new Map<string, string>(),
     /** Changed files by `base...head`. A missing entry answers 404. */
     compare: new Map<string, string[]>(),
+    /** Other repo files by path (local composite actions), served for any sha. */
+    extra: new Map<string, string>(),
     calls: [] as { path: string; method: string | undefined }[],
   };
   const fetchStub = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -58,6 +60,11 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       return files === undefined
         ? new Response("not found", { status: 404 })
         : json({ files: files.map((filename) => ({ filename })) });
+    }
+    const content = new RegExp(`^/repos/${repo}/contents/(.+)$`).exec(path);
+    if (content && content[1] !== workflowPath) {
+      const text = state.extra.get(content[1] as string);
+      return text === undefined ? new Response("not found", { status: 404 }) : new Response(text);
     }
     if (path === `/repos/${repo}/contents/${workflowPath}`) {
       const sha = u.searchParams.get("ref") ?? "";

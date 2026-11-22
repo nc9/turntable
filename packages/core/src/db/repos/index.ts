@@ -16,6 +16,7 @@ import { requireProject, type Scope, scoped } from "./scope";
 export type { Scope } from "./scope";
 export * from "./api";
 export * from "./github";
+export * from "./cancel";
 export * from "./events";
 export * from "./lease";
 export * from "./poll";
@@ -44,6 +45,8 @@ export type RunInput = {
   /** Run-level planning facts (JSON text); see `runs.plan`. */
   plan?: string | undefined;
   concurrencyGroup?: string | undefined;
+  /** Started by `longshore run`; see `runs.local`. */
+  local?: boolean | undefined;
 };
 
 const cap = (value: string | undefined, max: number): string | null =>
@@ -303,6 +306,7 @@ export function createRun(db: Db, scope: Scope, input: RunInput): Promise<Run> {
       prNumber: input.prNumber ?? null,
       plan: input.plan ?? null,
       concurrencyGroup: input.concurrencyGroup ?? null,
+      local: input.local ?? false,
     });
     await appendEvent(h, scope, {
       type: "run.queued",
