@@ -53,6 +53,13 @@ export type GateVerdict = { ok: true } | { ok: false; reason: string };
 
 const lower = (s: string | null | undefined): string => (s ?? "").toLowerCase();
 
+/** Narrows open pull requests to `prNumbers` when the config lists them. */
+const onlyListed = <T extends { number: number }>(
+  cfg: Pick<PollRepoConfig, "prNumbers">,
+  prs: T[],
+): T[] =>
+  cfg.prNumbers === undefined ? prs : prs.filter((p) => cfg.prNumbers!.includes(p.number));
+
 const allowed = (cfg: Pick<PollRepoConfig, "authors">, login: string | null): boolean =>
   login !== null && cfg.authors.some((a) => lower(a) === lower(login));
 
@@ -304,7 +311,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
     let budget = cfg.maxNewPrsPerPoll;
     let taken = 0;
-    for (const pr of await deps.github.openPulls(repo)) {
+    for (const pr of onlyListed(cfg, await deps.github.openPulls(repo))) {
       if (
         await pollSeen(deps.db, scope, {
           repo,
@@ -370,7 +377,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   }
 
   if (cfg.prMode === "allowlist") {
-    for (const pr of await deps.github.openPulls(repo)) {
+    for (const pr of onlyListed(cfg, await deps.github.openPulls(repo))) {
       // Already handled: no API call at all.
       if (
         await pollSeen(deps.db, scope, {

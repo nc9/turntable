@@ -40,6 +40,11 @@ export const pollConfigSchema = z
              * maintainer approves that sha. Listed `authors` count as trusted in both modes.
              */
             prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
+            /**
+             * Only these pull request numbers are considered (both PR modes). Unset: every open
+             * pull request. For targeted parity runs without picking up every open PR.
+             */
+            prNumbers: z.array(z.int().positive()).max(100).optional(),
             /** GitHub logins trusted without asking the forge. Compared case-insensitively. */
             authors: z.array(z.string().min(1)).default([]),
             /** Extra protected ref patterns (refs/heads/release/**). The default branch always is. */
