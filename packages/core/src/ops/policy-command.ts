@@ -5,7 +5,9 @@ import { policyCommand as actionPolicyCommand } from "../pins/cli";
 import {
   POLICY_USAGE,
   setChecksModePolicy,
+  setSigningPolicy,
   showChecksMode,
+  showSigning,
   setEgressPolicy,
   setPolicy,
   showEgress,
@@ -20,6 +22,8 @@ async function ownPolicy(args: string[]): Promise<void> {
       project: { type: "string" },
       egress: { type: "string" },
       "checks-mode": { type: "string" },
+      "release-refs": { type: "string" },
+      "signing-key": { type: "string" },
       "data-dir": { type: "string", default: "./data" },
     },
     allowPositionals: true,
@@ -37,8 +41,29 @@ async function ownPolicy(args: string[]): Promise<void> {
       console.log(`approve-run-min-role: ${p.approveRunMinRole}`);
       for (const e of await showEgress(db, values.org))
         console.log(`egress ${e.project}: ${e.egress}`);
+      for (const x of await showSigning(db, values.org)) {
+        console.log(
+          `signing ${x.project}: release refs ${x.releaseRefs.join(", ")}; key ${x.signingKey ?? "(none)"}`,
+        );
+      }
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
+    } else if (values["release-refs"] !== undefined || values["signing-key"] !== undefined) {
+      const refs = values["release-refs"];
+      for (const r of await setSigningPolicy(db, values.org, values.project, {
+        releaseRefs:
+          refs === undefined
+            ? undefined
+            : refs
+                .split(",")
+                .map((x) => x.trim())
+                .filter(Boolean),
+        signingKey: values["signing-key"],
+      })) {
+        console.error(
+          `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}`,
+        );
+      }
     } else if (values["checks-mode"] !== undefined) {
       for (const r of await setChecksModePolicy(
         db,
@@ -71,7 +96,7 @@ export async function policyCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const ours =
     rest.includes("approve-run-min-role") ||
-    rest.some((a) => /^--(egress|checks-mode)(=|$)/.test(a));
+    rest.some((a) => /^--(egress|checks-mode|release-refs|signing-key)(=|$)/.test(a));
   if (sub === "set" && ours) return ownPolicy(args);
   if (sub === "show") {
     await actionPolicyCommand(args);

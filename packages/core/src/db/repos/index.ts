@@ -16,6 +16,7 @@ import { requireProject, type Scope, scoped } from "./scope";
 export type { Scope } from "./scope";
 export * from "./api";
 export * from "./approve";
+export * from "./artifacts";
 export * from "./github";
 export * from "./incident";
 export * from "./audit";

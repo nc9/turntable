@@ -1,0 +1,139 @@
+// Recorded artifacts and the project's signing settings. Part of the only code allowed to name
+// tenant tables.
+import { and, asc, eq, inArray } from "drizzle-orm";
+import type { Db } from "..";
+import * as s from "../schema";
+import { ulid } from "../ulid";
+import { requireProject, type Scope, scoped } from "./scope";
+
+export type ArtifactRow = typeof s.artifacts.$inferSelect;
+
+const COLS = { orgId: s.artifacts.orgId, projectId: s.artifacts.projectId };
+
+export class ArtifactConflict extends Error {}
+
+/**
+ * Records an artifact of a run. Idempotent for the same name and digest; a different digest under
+ * a name already recorded is refused, never overwritten.
+ */
+export function recordArtifact(
+  db: Db,
+  scope: Scope,
+  input: { runId: string; attemptId: string; name: string; sha256: string; size: number },
+): Promise<ArtifactRow> {
+  if (!/^[0-9a-f]{64}$/.test(input.sha256))
+    return Promise.reject(new Error("sha256 must be 64 lower-case hex"));
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/.test(input.name)) {
+    return Promise.reject(new Error("artifact name must be 1 to 200 plain characters"));
+  }
+  return db.transaction(async (tx) => {
+    const { projectId } = requireProject(scope);
+    const [existing] = await tx.orm
+      .select()
+      .from(s.artifacts)
+      .where(
+        scoped(scope, COLS, eq(s.artifacts.runId, input.runId), eq(s.artifacts.name, input.name)),
+      )
+      .limit(1);
+    if (existing) {
+      if (existing.sha256 === input.sha256) return existing;
+      throw new ArtifactConflict(`artifact ${input.name} is already recorded with another digest`);
+    }
+    const row = {
+      id: ulid(),
+      orgId: scope.orgId,
+      projectId,
+      runId: input.runId,
+      attemptId: input.attemptId,
+      name: input.name,
+      sha256: input.sha256,
+      size: input.size,
+    };
+    await tx.orm.insert(s.artifacts).values(row);
+    const [out] = await tx.orm
+      .select()
+      .from(s.artifacts)
+      .where(eq(s.artifacts.id, row.id))
+      .limit(1);
+    return out!;
+  });
+}
+
+export function listRunArtifacts(db: Db, scope: Scope, runId: string): Promise<ArtifactRow[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.artifacts)
+      .where(scoped(scope, COLS, eq(s.artifacts.runId, runId)))
+      .orderBy(asc(s.artifacts.name)),
+  );
+}
+
+export function getRunArtifactsByName(
+  db: Db,
+  scope: Scope,
+  runId: string,
+  names: readonly string[],
+): Promise<ArtifactRow[]> {
+  if (names.length === 0) return Promise.resolve([]);
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.artifacts)
+      .where(
+        and(
+          scoped(scope, COLS, eq(s.artifacts.runId, runId)),
+          inArray(s.artifacts.name, [...names]),
+        ),
+      ),
+  );
+}
+
+export interface ProjectSigning {
+  /** Release ref patterns; the default when the project sets none. */
+  releaseRefs: string[];
+  /** The key reference, or null when the project cannot sign. */
+  signingKey: string | null;
+}
+
+export const DEFAULT_RELEASE_REF_PATTERNS: readonly string[] = ["refs/tags/v*"];
+
+export function getProjectSigning(db: Db, scope: Scope): Promise<ProjectSigning> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ refs: s.projects.releaseRefs, key: s.projects.signingKey })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    let refs: string[] = [...DEFAULT_RELEASE_REF_PATTERNS];
+    if (row?.refs) {
+      try {
+        const parsed: unknown = JSON.parse(row.refs);
+        if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) refs = parsed;
+      } catch {
+        // an unreadable setting falls back to the default, which is the stricter reading
+      }
+    }
+    return { releaseRefs: refs, signingKey: row?.key ?? null };
+  });
+}
+
+export function setProjectSigning(
+  db: Db,
+  scope: Scope,
+  patch: { releaseRefs?: readonly string[] | null; signingKey?: string | null },
+): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .update(s.projects)
+      .set({
+        ...(patch.releaseRefs === undefined
+          ? {}
+          : { releaseRefs: patch.releaseRefs === null ? null : JSON.stringify(patch.releaseRefs) }),
+        ...(patch.signingKey === undefined ? {} : { signingKey: patch.signingKey }),
+      })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+  });
+}
