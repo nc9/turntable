@@ -27,6 +27,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@longshore/act-runner": "workspace:*",
+        "@longshore/provider-daytona": "workspace:*",
         "@longshore/provider-docker": "workspace:*",
         "@longshore/provider-sdk": "workspace:*",
         "@longshore/redact": "workspace:*",

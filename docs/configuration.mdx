@@ -24,6 +24,49 @@ description: Flags and environment variables supported today.
 | `--data-dir` | `./data` | Directory that holds `longshore.db`. |
 | `--allowed-origin` | none | An extra origin allowed to open the realtime WebSocket. Repeatable. The page's own origin is always allowed. |
 
+## Worker and provider flags
+
+With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from a provider.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--worker` | off | Run the scheduler and worker in this process. |
+| `--provider` | `docker` | `docker` or `daytona`. The server checks the provider at startup and exits with its name and the reason if it is unusable. |
+| `--provider-config` | none | A JSON file of provider options. Secrets never go in it. |
+| `--global-cap`, `--org-cap` | `4`, `2` | Most jobs at once, in total and per org. |
+| `--image` | built in | The image jobs run in (Docker). |
+
+### Daytona options
+
+```json
+{
+  "apiKeyFile": "/run/secrets/daytona-key",
+  "baseUrl": "https://app.daytona.io/api",
+  "snapshot": "my-runner-snapshot",
+  "maxLive": 2,
+  "ttlSeconds": 1800,
+  "capacityWaitSeconds": 1200
+}
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `apiKeyFile` | none | Path of a file holding the API key. The key is read when first needed and never logged. |
+| `apiKeyEnv` | `DAYTONA_API_KEY` | An environment variable holding the key, used when `apiKeyFile` is not set. Set only one of the two. |
+| `baseUrl` | Daytona cloud | The API URL. |
+| `snapshot` | account default | An existing snapshot to start sandboxes from. Used even when the job names an image. Longshore never creates snapshots. |
+| `target` | account default | The Daytona region. |
+| `maxLive` | `2` | Live sandboxes of ours at once. At most `3`. |
+| `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
+| `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
+| `ownerCiPreflight` | `true` | Waiting while the account owner's own CI is busy cannot be turned off; `false` is refused. |
+
+The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
+
+### Egress
+
+A job's sandbox has no network unless its run says otherwise: egress is `none` by default, and `open` only when the run's plan records `"egress": "open"` from the project's configuration. Anything else is treated as `none`.
+
 ## Environment variables
 
 | Variable | Description |

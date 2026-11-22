@@ -50,7 +50,11 @@ export interface DaytonaProviderOptions {
   maxLive?: number;
   /** Daytona target (region). Omit for the account default. */
   target?: string;
-  /** Name of an EXISTING snapshot to start from. This provider never creates snapshots. */
+  /**
+   * Name of an EXISTING snapshot to start from. This provider never creates snapshots. When a
+   * spec also names an `image` (the scheduler always does), the snapshot is used and the image
+   * name is ignored: the operator chose what runs, and an image build would create a snapshot.
+   */
   snapshot?: string;
   /**
    * Allow `spec.image` by asking Daytona to build it. A build creates a snapshot in the account,
@@ -58,6 +62,14 @@ export interface DaytonaProviderOptions {
    * deliberately.
    */
   allowImageBuild?: boolean;
+  /** Longest TTL a sandbox may have, in seconds. Default and ceiling: 1800 (30 minutes). */
+  maxTtlSeconds?: number;
+  /**
+   * What to do with a spec asking for more than `maxTtlSeconds`: refuse it (default, the safe
+   * choice for library use) or clamp it, so a scheduler that asks for job timeout plus slack
+   * still runs, with the sandbox reaped at the cap.
+   */
+  clampTtl?: boolean;
   /** Per-file byte cap. Default 64 MiB. */
   maxFileBytes?: number;
   exec?: WrappedExecOptions;
@@ -113,6 +125,7 @@ export class DaytonaProvider implements Provider {
   private readonly runId: string;
   private readonly maxLive: number;
   private readonly maxFileBytes: number;
+  private readonly maxTtl: number;
   private readonly capacityWaitMs: number;
   private readonly pollMs: number;
   private readonly startTimeoutMs: number;
@@ -132,6 +145,11 @@ export class DaytonaProvider implements Provider {
     });
     this.runId = opts.runId ?? crypto.randomUUID().replaceAll("-", "").slice(0, 16);
     this.maxLive = clampMaxLive(opts.maxLive);
+    const ttl = opts.maxTtlSeconds ?? MAX_TTL_SECONDS;
+    if (!Number.isInteger(ttl) || ttl < 60 || ttl > MAX_TTL_SECONDS) {
+      throw new RangeError(`maxTtlSeconds must be 60 to ${MAX_TTL_SECONDS}`);
+    }
+    this.maxTtl = ttl;
     this.maxFileBytes = opts.maxFileBytes ?? 64 * 1024 * 1024;
     this.capacityWaitMs = opts.capacityWaitMs ?? 20 * 60_000;
     this.pollMs = opts.pollMs ?? 5000;
@@ -324,11 +342,12 @@ export class DaytonaProvider implements Provider {
     if (!Number.isInteger(spec.ttlSeconds) || spec.ttlSeconds <= 0) {
       throw new SpecError("ttlSeconds must be a positive integer");
     }
-    if (spec.ttlSeconds > MAX_TTL_SECONDS) {
+    if (spec.ttlSeconds > this.maxTtl && !this.opts.clampTtl) {
       throw new SpecError(
-        `ttlSeconds ${spec.ttlSeconds} exceeds the ${MAX_TTL_SECONDS}s limit for this account`,
+        `ttlSeconds ${spec.ttlSeconds} exceeds the ${this.maxTtl}s limit for this account`,
       );
     }
+    const ttlSeconds = Math.min(spec.ttlSeconds, this.maxTtl);
     if (spec.network.egress !== "none" && spec.network.egress !== "open") {
       throw new SpecError(
         `egress policy ${spec.network.egress} is not supported by this provider (none, open)`,
@@ -343,7 +362,7 @@ export class DaytonaProvider implements Provider {
     labels[OWN_LABEL] = OWN_LABEL_VALUE;
     labels[RUN_LABEL] = labels[RUN_LABEL] || this.runId;
 
-    const minutes = Math.ceil(spec.ttlSeconds / 60);
+    const minutes = Math.ceil(ttlSeconds / 60);
     const body: Record<string, unknown> = {
       name: ownName(spec.name),
       labels,
@@ -362,10 +381,16 @@ export class DaytonaProvider implements Provider {
     if (r?.diskGb !== undefined) body.disk = r.diskGb;
 
     const snapshot = spec.snapshot ?? this.opts.snapshot;
-    if (spec.image !== undefined) {
+    if (
+      spec.image !== undefined &&
+      this.opts.snapshot !== undefined &&
+      spec.snapshot === undefined
+    ) {
+      body.snapshot = this.opts.snapshot; // the configured snapshot wins; the image name is not used
+    } else if (spec.image !== undefined) {
       if (!this.opts.allowImageBuild) {
         throw new SpecError(
-          "this provider starts from existing snapshots only: an image build would create a snapshot in the account",
+          "this provider starts from existing snapshots only: set a snapshot (an image build would create one in the account)",
         );
       }
       if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/.test(spec.image))
