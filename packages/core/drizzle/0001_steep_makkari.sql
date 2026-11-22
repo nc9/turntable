@@ -1,6 +1,7 @@
 CREATE TABLE `job_attempts` (
 	`id` text PRIMARY KEY NOT NULL,
 	`org_id` text NOT NULL,
+	`project_id` text NOT NULL,
 	`job_id` text NOT NULL,
 	`attempt` integer NOT NULL,
 	`state` text DEFAULT 'queued' NOT NULL,
@@ -11,11 +12,11 @@ CREATE TABLE `job_attempts` (
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	`started_at` integer,
 	`finished_at` integer,
-	FOREIGN KEY (`job_id`,`org_id`) REFERENCES `jobs`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`job_id`,`org_id`,`project_id`) REFERENCES `jobs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "job_attempts_state_check" CHECK(state IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled'))
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `job_attempts_id_org_unique` ON `job_attempts` (`id`,`org_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `job_attempts_id_org_project_unique` ON `job_attempts` (`id`,`org_id`,`project_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `job_attempts_job_attempt_unique` ON `job_attempts` (`job_id`,`attempt`);--> statement-breakpoint
 CREATE TABLE `jobs` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -30,20 +31,21 @@ CREATE TABLE `jobs` (
 	`started_at` integer,
 	`finished_at` integer,
 	FOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`run_id`,`org_id`) REFERENCES `runs`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`run_id`,`org_id`,`project_id`) REFERENCES `runs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "jobs_state_check" CHECK(state IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled'))
 );
 --> statement-breakpoint
 CREATE INDEX `jobs_run_idx` ON `jobs` (`org_id`,`run_id`);--> statement-breakpoint
-CREATE UNIQUE INDEX `jobs_id_org_unique` ON `jobs` (`id`,`org_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `jobs_id_org_project_unique` ON `jobs` (`id`,`org_id`,`project_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `jobs_run_key_unique` ON `jobs` (`run_id`,`job_key`);--> statement-breakpoint
 CREATE TABLE `log_chunks` (
 	`org_id` text NOT NULL,
+	`project_id` text NOT NULL,
 	`attempt_id` text NOT NULL,
 	`offset` integer NOT NULL,
 	`bytes` blob NOT NULL,
 	PRIMARY KEY(`attempt_id`, `offset`),
-	FOREIGN KEY (`attempt_id`,`org_id`) REFERENCES `job_attempts`(`id`,`org_id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`attempt_id`,`org_id`,`project_id`) REFERENCES `job_attempts`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
 CREATE TABLE `org_members` (
@@ -71,6 +73,7 @@ CREATE TABLE `project_repos` (
 	`project_id` text NOT NULL,
 	`forge` text NOT NULL,
 	`installation_id` text,
+	`forge_repo_id` text,
 	`owner` text NOT NULL,
 	`repo` text NOT NULL,
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
@@ -79,6 +82,7 @@ CREATE TABLE `project_repos` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `project_repos_forge_owner_repo_unique` ON `project_repos` (`forge`,`owner`,`repo`);--> statement-breakpoint
+CREATE UNIQUE INDEX `project_repos_forge_repo_id_unique` ON `project_repos` (`forge`,`forge_repo_id`);--> statement-breakpoint
 CREATE TABLE `projects` (
 	`id` text PRIMARY KEY NOT NULL,
 	`org_id` text NOT NULL,
@@ -107,7 +111,7 @@ CREATE TABLE `runs` (
 );
 --> statement-breakpoint
 CREATE INDEX `runs_project_created_idx` ON `runs` (`org_id`,`project_id`,`created_at`);--> statement-breakpoint
-CREATE UNIQUE INDEX `runs_id_org_unique` ON `runs` (`id`,`org_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `runs_id_org_project_unique` ON `runs` (`id`,`org_id`,`project_id`);--> statement-breakpoint
 CREATE TABLE `users` (
 	`id` text PRIMARY KEY NOT NULL,
 	`email` text,

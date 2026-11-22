@@ -6,7 +6,7 @@ One Turntable instance serves many orgs. An org is the tenant. Isolation is enfo
 
 - **Org**: the tenant boundary. Has a unique slug.
 - **Project**: belongs to one org, slug unique per org. Runs, jobs and logs hang off a project.
-- **Project repo**: binds a project to a forge repo (today: GitHub, optionally with an installation id). A `(forge, owner, repo)` triple belongs to exactly one project instance-wide, so webhook routing is unambiguous.
+- **Project repo**: binds a project to a forge repo (today: GitHub, optionally with an installation id). A `(forge, owner, repo)` triple belongs to exactly one project instance-wide, so webhook routing is unambiguous. Owner and repo are stored lowercase (forges treat them case-insensitively). `forge_repo_id` holds the forge's stable numeric id, unique per forge when set; webhook routing should prefer it when present, because names change on rename and transfer.
 - **User**: global identity. A person can belong to several orgs.
 - **Org member**: links a user to an org with a role: `owner`, `admin`, `member` or `viewer`.
 - **Local tenant**: `turntable run` uses a built-in org `local` with project `local`, created idempotently by `ensureLocalTenant`.
@@ -24,7 +24,7 @@ One Turntable instance serves many orgs. An org is the tenant. Isolation is enfo
 1. Every tenant-owned table has an `org_id` column. A test fails if a new table lacks one and is not on the explicit allowlist (`instance`, `orgs`, `users`).
 2. All access goes through `packages/core/src/db/repos`. Each function takes a `Scope` (`{ orgId, projectId? }`) and always filters by it. A lookup by id in another org returns nothing; writes affect nothing.
 3. A source-guard test fails if code outside the repos module references a tenant table.
-4. Composite foreign keys such as `(project_id, org_id)` make the database reject a child row whose org differs from its parent's, even if application code is wrong.
+4. Composite foreign keys such as `(run_id, org_id, project_id)` make the database reject a child row whose org or project differs from its parent's, even if application code is wrong. Jobs, attempts and log chunks all carry `project_id`, so a project-narrowed scope cannot reach a sibling project's data in the same org.
 5. Portable column types (ULID text ids, epoch-ms integers, text plus CHECK for enums, no arrays) keep a Postgres port mechanical.
 
 ## Scope of the guarantee

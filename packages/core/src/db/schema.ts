@@ -79,6 +79,9 @@ export const projectRepos = sqliteTable(
     projectId: text("project_id").notNull(),
     forge: text("forge").notNull(),
     installationId: text("installation_id"),
+    /** Forge's stable numeric repo id (survives renames); prefer it for webhook routing. */
+    forgeRepoId: text("forge_repo_id"),
+    /** Stored lowercase: forge owner and repo names are case-insensitive. */
     owner: text("owner").notNull(),
     repo: text("repo").notNull(),
     createdAt: createdAt(),
@@ -86,6 +89,8 @@ export const projectRepos = sqliteTable(
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
     unique("project_repos_forge_owner_repo_unique").on(t.forge, t.owner, t.repo),
+    // NULLs are distinct in SQLite unique indexes, so repos without an id do not collide.
+    unique("project_repos_forge_repo_id_unique").on(t.forge, t.forgeRepoId),
     check("project_repos_forge_check", inList("forge", FORGES)),
   ],
 );
@@ -136,7 +141,7 @@ export const runs = sqliteTable(
   },
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
-    unique("runs_id_org_unique").on(t.id, t.orgId),
+    unique("runs_id_org_project_unique").on(t.id, t.orgId, t.projectId),
     check("runs_status_check", inList("status", JOB_STATES)),
     index("runs_project_created_idx").on(t.orgId, t.projectId, t.createdAt),
   ],
@@ -160,8 +165,11 @@ export const jobs = sqliteTable(
   },
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
-    foreignKey({ columns: [t.runId, t.orgId], foreignColumns: [runs.id, runs.orgId] }),
-    unique("jobs_id_org_unique").on(t.id, t.orgId),
+    foreignKey({
+      columns: [t.runId, t.orgId, t.projectId],
+      foreignColumns: [runs.id, runs.orgId, runs.projectId],
+    }),
+    unique("jobs_id_org_project_unique").on(t.id, t.orgId, t.projectId),
     unique("jobs_run_key_unique").on(t.runId, t.jobKey),
     check("jobs_state_check", inList("state", JOB_STATES)),
     index("jobs_run_idx").on(t.orgId, t.runId),
@@ -173,6 +181,7 @@ export const jobAttempts = sqliteTable(
   {
     id: text("id").primaryKey(),
     orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
     jobId: text("job_id").notNull(),
     attempt: integer("attempt").notNull(),
     state: text("state").notNull().default("queued"),
@@ -185,8 +194,11 @@ export const jobAttempts = sqliteTable(
     finishedAt: integer("finished_at", { mode: "number" }),
   },
   (t) => [
-    foreignKey({ columns: [t.jobId, t.orgId], foreignColumns: [jobs.id, jobs.orgId] }),
-    unique("job_attempts_id_org_unique").on(t.id, t.orgId),
+    foreignKey({
+      columns: [t.jobId, t.orgId, t.projectId],
+      foreignColumns: [jobs.id, jobs.orgId, jobs.projectId],
+    }),
+    unique("job_attempts_id_org_project_unique").on(t.id, t.orgId, t.projectId),
     unique("job_attempts_job_attempt_unique").on(t.jobId, t.attempt),
     check("job_attempts_state_check", inList("state", JOB_STATES)),
   ],
@@ -197,6 +209,7 @@ export const logChunks = sqliteTable(
   "log_chunks",
   {
     orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
     attemptId: text("attempt_id").notNull(),
     offset: integer("offset").notNull(),
     bytes: blob("bytes", { mode: "buffer" }).notNull(),
@@ -204,8 +217,8 @@ export const logChunks = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.attemptId, t.offset] }),
     foreignKey({
-      columns: [t.attemptId, t.orgId],
-      foreignColumns: [jobAttempts.id, jobAttempts.orgId],
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
     }),
   ],
 );

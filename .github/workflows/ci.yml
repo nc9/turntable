@@ -28,6 +28,7 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - name: Migrations match schema and embedded module is current
+        timeout-minutes: 5
         run: |
           bun run --cwd packages/core db:generate
           if [ -n "$(git status --porcelain packages/core/drizzle packages/core/src/db/migrations.generated.ts)" ]; then

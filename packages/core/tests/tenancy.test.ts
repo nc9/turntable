@@ -171,3 +171,52 @@ test("ensureLocalTenant is idempotent and returns a usable scope", () => {
       .filter((o) => o.slug === "local"),
   ).toHaveLength(1);
 });
+
+test("project A cannot read, update or append to project B's attempts and logs (same org)", () => {
+  const pb = createProject(db, { orgId: a.orgId }, { slug: "b", name: "B" });
+  const sb = { orgId: a.orgId, projectId: pb.id };
+  const run = createRun(db, a, { workflowPath: "w", event: "push", ref: "main" });
+  const job = createJob(db, a, { runId: run.id, jobKey: "k", name: "k" })!;
+  const attempt = createAttempt(db, a, { jobId: job.id, provider: "p" })!;
+  appendLog(db, a, attempt.id, 0, new Uint8Array([1, 2]));
+
+  expect(getAttempt(db, sb, attempt.id)).toBeUndefined();
+  expect(listAttempts(db, sb, job.id)).toEqual([]);
+  expect(readLog(db, sb, attempt.id)).toEqual([]);
+  expect(updateAttempt(db, sb, attempt.id, { state: "running" })).toBeUndefined();
+  expect(appendLog(db, sb, attempt.id, 2, new Uint8Array([3]))).toBe(false);
+  expect(createAttempt(db, sb, { jobId: job.id, provider: "p" })).toBeUndefined();
+  expect(getAttempt(db, a, attempt.id)!.state).toBe("queued");
+  expect(readLog(db, a, attempt.id)).toHaveLength(1);
+});
+
+test("db rejects a job pointing at a run in another project of the same org", () => {
+  const pb = createProject(db, { orgId: a.orgId }, { slug: "b", name: "B" });
+  const run = createRun(db, a, { workflowPath: "w", event: "push", ref: "main" });
+  const raw = { orgId: a.orgId, projectId: pb.id };
+  expect(() => createJob(db, raw, { runId: run.id, jobKey: "k", name: "k" })).not.toThrow();
+  // createJob returns undefined (parent not in scope); force the insert to hit the FK.
+  expect(() =>
+    db.orm
+      .insert(schema.jobs)
+      .values({ id: "J1", orgId: a.orgId, projectId: pb.id, runId: run.id, jobKey: "k", name: "k" })
+      .run(),
+  ).toThrow();
+});
+
+test("repo owner and name are case-insensitive; forge repo id survives renames", () => {
+  bindRepo(db, a, { forge: "github", owner: "Acme", repo: "Web", forgeRepoId: "999" });
+  expect(resolveRepoScope(db, { forge: "github", owner: "ACME", repo: "WEB" })).toEqual(a);
+  expect(listRepos(db, a)[0]).toMatchObject({ owner: "acme", repo: "web" });
+  // renamed upstream: the id still routes
+  expect(
+    resolveRepoScope(db, { forge: "github", owner: "acme", repo: "renamed", forgeRepoId: "999" }),
+  ).toEqual(a);
+  expect(() =>
+    bindRepo(db, b, { forge: "github", owner: "other", repo: "x", forgeRepoId: "999" }),
+  ).toThrow();
+  expect(() => bindRepo(db, b, { forge: "github", owner: "ACME", repo: "web" })).toThrow();
+  // two repos without an id do not collide on the id index
+  bindRepo(db, b, { forge: "github", owner: "o1", repo: "r1" });
+  bindRepo(db, b, { forge: "github", owner: "o2", repo: "r2" });
+});

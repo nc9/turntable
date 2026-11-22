@@ -81,7 +81,13 @@ export function renameProject(db: Db, scope: Scope, id: string, name: string): P
 export function bindRepo(
   db: Db,
   scope: Scope,
-  input: { forge: s.Forge; owner: string; repo: string; installationId?: string },
+  input: {
+    forge: s.Forge;
+    owner: string;
+    repo: string;
+    installationId?: string;
+    forgeRepoId?: string;
+  },
 ): ProjectRepo {
   const { projectId } = requireProject(scope);
   const id = ulid();
@@ -92,9 +98,10 @@ export function bindRepo(
       orgId: scope.orgId,
       projectId,
       forge: input.forge,
-      owner: input.owner,
-      repo: input.repo,
+      owner: input.owner.toLowerCase(),
+      repo: input.repo.toLowerCase(),
       installationId: input.installationId ?? null,
+      forgeRepoId: input.forgeRepoId ?? null,
     })
     .run();
   return db.orm.select().from(s.projectRepos).where(eq(s.projectRepos.id, id)).get()!;
@@ -114,19 +121,34 @@ export function listRepos(db: Db, scope: Scope): ProjectRepo[] {
  */
 export function resolveRepoScope(
   db: Db,
-  input: { forge: s.Forge; owner: string; repo: string },
+  input: { forge: s.Forge; owner: string; repo: string; forgeRepoId?: string },
 ): Required<Scope> | undefined {
-  const row = db.orm
-    .select()
-    .from(s.projectRepos)
-    .where(
-      and(
-        eq(s.projectRepos.forge, input.forge),
-        eq(s.projectRepos.owner, input.owner),
-        eq(s.projectRepos.repo, input.repo),
-      ),
-    )
-    .get();
+  // Prefer the stable forge id (survives renames); fall back to case-insensitive owner/repo.
+  const byId = input.forgeRepoId
+    ? db.orm
+        .select()
+        .from(s.projectRepos)
+        .where(
+          and(
+            eq(s.projectRepos.forge, input.forge),
+            eq(s.projectRepos.forgeRepoId, input.forgeRepoId),
+          ),
+        )
+        .get()
+    : undefined;
+  const row =
+    byId ??
+    db.orm
+      .select()
+      .from(s.projectRepos)
+      .where(
+        and(
+          eq(s.projectRepos.forge, input.forge),
+          eq(s.projectRepos.owner, input.owner.toLowerCase()),
+          eq(s.projectRepos.repo, input.repo.toLowerCase()),
+        ),
+      )
+      .get();
   return row ? { orgId: row.orgId, projectId: row.projectId } : undefined;
 }
 
@@ -156,6 +178,15 @@ export function createUser(db: Db, input: { email?: string; displayName: string 
 
 /** Idempotently creates the built-in `local` org and project used by local runs. */
 export function ensureLocalTenant(db: Db): Required<Scope> {
+  try {
+    return ensureLocalTenantOnce(db);
+  } catch {
+    // A concurrent boot created the rows between our read and insert: reread.
+    return ensureLocalTenantOnce(db);
+  }
+}
+
+function ensureLocalTenantOnce(db: Db): Required<Scope> {
   return db.orm.transaction((tx) => {
     const inner = { orm: tx, close: () => {} } as unknown as Db;
     let org = getOrgBySlug(inner, "local");
@@ -317,16 +348,20 @@ export function transitionJob(
 
 // ---- attempts ----
 
+const ATTEMPT_COLS = { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId };
+const LOG_COLS = { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId };
+
 export function createAttempt(
   db: Db,
   scope: Scope,
   input: { jobId: string; provider: string },
 ): JobAttempt | undefined {
+  const { projectId } = requireProject(scope);
   if (!getJob(db, scope, input.jobId)) return undefined;
   const last = db.orm
     .select({ attempt: s.jobAttempts.attempt })
     .from(s.jobAttempts)
-    .where(scoped(scope, { orgId: s.jobAttempts.orgId }, eq(s.jobAttempts.jobId, input.jobId)))
+    .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, input.jobId)))
     .orderBy(desc(s.jobAttempts.attempt))
     .limit(1)
     .get();
@@ -336,6 +371,7 @@ export function createAttempt(
     .values({
       id,
       orgId: scope.orgId,
+      projectId,
       jobId: input.jobId,
       attempt: (last?.attempt ?? 0) + 1,
       provider: input.provider,
@@ -348,7 +384,7 @@ export function getAttempt(db: Db, scope: Scope, id: string): JobAttempt | undef
   return db.orm
     .select()
     .from(s.jobAttempts)
-    .where(scoped(scope, { orgId: s.jobAttempts.orgId }, eq(s.jobAttempts.id, id)))
+    .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.id, id)))
     .get();
 }
 
@@ -356,7 +392,7 @@ export function listAttempts(db: Db, scope: Scope, jobId: string): JobAttempt[] 
   return db.orm
     .select()
     .from(s.jobAttempts)
-    .where(scoped(scope, { orgId: s.jobAttempts.orgId }, eq(s.jobAttempts.jobId, jobId)))
+    .where(scoped(scope, ATTEMPT_COLS, eq(s.jobAttempts.jobId, jobId)))
     .orderBy(asc(s.jobAttempts.attempt))
     .all();
 }
@@ -382,7 +418,8 @@ export function updateAttempt(
     }
   }
   const t = now();
-  db.orm
+  const from = cur.state as JobState;
+  const rows = db.orm
     .update(s.jobAttempts)
     .set({
       ...patch,
@@ -392,8 +429,20 @@ export function updateAttempt(
           ? t
           : undefined,
     })
-    .where(scoped(scope, { orgId: s.jobAttempts.orgId }, eq(s.jobAttempts.id, id)))
-    .run();
+    .where(
+      scoped(
+        scope,
+        ATTEMPT_COLS,
+        eq(s.jobAttempts.id, id),
+        // Compare-and-set on state so heartbeat and reconcile cannot overwrite each other.
+        patch.state ? eq(s.jobAttempts.state, from) : undefined,
+      ),
+    )
+    .returning({ id: s.jobAttempts.id })
+    .all();
+  if (!rows.length) {
+    throw new InvalidTransitionError(from, patch.state ?? from, "state changed concurrently");
+  }
   return getAttempt(db, scope, id);
 }
 
@@ -410,7 +459,13 @@ export function appendLog(
   if (!getAttempt(db, scope, attemptId)) return false;
   db.orm
     .insert(s.logChunks)
-    .values({ orgId: scope.orgId, attemptId, offset, bytes: Buffer.from(bytes) })
+    .values({
+      orgId: scope.orgId,
+      projectId: requireProject(scope).projectId,
+      attemptId,
+      offset,
+      bytes: Buffer.from(bytes),
+    })
     .onConflictDoNothing()
     .run();
   return true;
@@ -429,7 +484,7 @@ export function readLog(
     .where(
       scoped(
         scope,
-        { orgId: s.logChunks.orgId },
+        LOG_COLS,
         eq(s.logChunks.attemptId, attemptId),
         gte(s.logChunks.offset, fromOffset),
       ),
