@@ -26,6 +26,8 @@ export interface ProvenanceInput {
   /** `owner/repo`, for the source URI. */
   repo: string;
   workflowPath: string;
+  /** The approval environment the project requires; recorded as an internal parameter. */
+  environment?: string | undefined;
   ref: string;
   sha: string;
   event: string;
@@ -47,6 +49,7 @@ export interface Statement {
     buildDefinition: {
       buildType: string;
       externalParameters: Record<string, unknown>;
+      internalParameters?: { environment: string };
       resolvedDependencies: {
         uri: string;
         name: string;
@@ -87,6 +90,9 @@ export function buildStatement(i: ProvenanceInput): Statement {
           event: i.event,
           inputs: { ...i.inputs },
         },
+        ...(i.environment === undefined
+          ? {}
+          : { internalParameters: { environment: i.environment } }),
         resolvedDependencies: [
           {
             uri: `git+https://github.com/${i.repo}@${i.ref}`,

@@ -123,7 +123,11 @@ export interface ProjectSigning {
   releaseRefs: string[];
   /** The key reference, or null when the project cannot sign. */
   signingKey: string | null;
+  /** The environment whose approval signing needs: the project's setting, `release` by default. */
+  environment: string;
 }
+
+export const DEFAULT_SIGNING_ENVIRONMENT = "release";
 
 export const DEFAULT_RELEASE_REF_PATTERNS: readonly string[] = ["refs/tags/v*"];
 
@@ -131,7 +135,11 @@ export function getProjectSigning(db: Db, scope: Scope): Promise<ProjectSigning>
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
     const [row] = await h.orm
-      .select({ refs: s.projects.releaseRefs, key: s.projects.signingKey })
+      .select({
+        refs: s.projects.releaseRefs,
+        key: s.projects.signingKey,
+        env: s.projects.signingEnvironment,
+      })
       .from(s.projects)
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
       .limit(1);
@@ -144,14 +152,22 @@ export function getProjectSigning(db: Db, scope: Scope): Promise<ProjectSigning>
         // an unreadable setting falls back to the default, which is the stricter reading
       }
     }
-    return { releaseRefs: refs, signingKey: row?.key ?? null };
+    return {
+      releaseRefs: refs,
+      signingKey: row?.key ?? null,
+      environment: row?.env ?? DEFAULT_SIGNING_ENVIRONMENT,
+    };
   });
 }
 
 export function setProjectSigning(
   db: Db,
   scope: Scope,
-  patch: { releaseRefs?: readonly string[] | null; signingKey?: string | null },
+  patch: {
+    releaseRefs?: readonly string[] | null;
+    signingKey?: string | null;
+    environment?: string | null;
+  },
 ): Promise<void> {
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
@@ -162,6 +178,7 @@ export function setProjectSigning(
           ? {}
           : { releaseRefs: patch.releaseRefs === null ? null : JSON.stringify(patch.releaseRefs) }),
         ...(patch.signingKey === undefined ? {} : { signingKey: patch.signingKey }),
+        ...(patch.environment === undefined ? {} : { signingEnvironment: patch.environment }),
       })
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
   });

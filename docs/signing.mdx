@@ -55,6 +55,8 @@ longshore policy set --release-refs 'refs/tags/v*,refs/heads/release/*' --org <s
 longshore policy show --org <slug>
 ```
 
+The approval environment defaults to `release` and is set with `--signing-environment <name>`. It is the project's own setting: `sign_release` takes no environment from the caller, refuses a request that names a different one, asks for approval in the project's environment, and records it in the provenance (`internalParameters.environment`) and the audit row.
+
 Release refs default to `refs/tags/v*`. An empty `--signing-key ''` unsets the key, and a project with no key cannot sign. Both are changed from the CLI only.
 
 ## Verifying

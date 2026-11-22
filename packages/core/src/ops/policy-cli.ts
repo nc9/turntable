@@ -206,11 +206,22 @@ export async function setSigningPolicy(
   db: Db,
   orgSlug: string,
   projectSlug: string | undefined,
-  patch: { releaseRefs?: string[] | undefined; signingKey?: string | undefined },
-): Promise<{ project: string; releaseRefs: string[]; signingKey: string | null }[]> {
+  patch: {
+    releaseRefs?: string[] | undefined;
+    signingKey?: string | undefined;
+    environment?: string | undefined;
+  },
+): Promise<
+  { project: string; releaseRefs: string[]; signingKey: string | null; environment: string }[]
+> {
   const { parseKeyRef } = await import("../signing");
   if (patch.signingKey !== undefined && patch.signingKey !== "" && !parseKeyRef(patch.signingKey)) {
     throw new Error("--signing-key must be builtin:<name>, aws-kms:<key> or gcp-kms:<key version>");
+  }
+  if (patch.environment !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(patch.environment)) {
+    throw new Error(
+      "--signing-environment must be 1 to 64 letters, digits, dots, dashes or underscores",
+    );
   }
   for (const r of patch.releaseRefs ?? []) {
     if (!/^refs\/(heads|tags)\/[A-Za-z0-9._/*-]{1,200}$/.test(r)) {
@@ -226,7 +237,12 @@ export async function setSigningPolicy(
       projectSlug ? `no project ${projectSlug} in org ${orgSlug}` : "org has no projects",
     );
   }
-  const out: { project: string; releaseRefs: string[]; signingKey: string | null }[] = [];
+  const out: {
+    project: string;
+    releaseRefs: string[];
+    signingKey: string | null;
+    environment: string;
+  }[] = [];
   for (const p of projects) {
     const scope = { orgId: org.id, projectId: p!.id };
     await db.transaction(async (tx) => {
@@ -235,6 +251,7 @@ export async function setSigningPolicy(
         ...(patch.signingKey === undefined
           ? {}
           : { signingKey: patch.signingKey === "" ? null : patch.signingKey }),
+        ...(patch.environment === undefined ? {} : { environment: patch.environment }),
       });
       await appendAudit(tx, scope, {
         principalKind: "cli",
@@ -247,6 +264,7 @@ export async function setSigningPolicy(
           project: p!.slug,
           release_refs: patch.releaseRefs ?? null,
           signing_key: patch.signingKey ?? null,
+          signing_environment: patch.environment ?? null,
         },
       });
     });
@@ -258,9 +276,16 @@ export async function setSigningPolicy(
 export async function showSigning(
   db: Db,
   orgSlug: string,
-): Promise<{ project: string; releaseRefs: string[]; signingKey: string | null }[]> {
+): Promise<
+  { project: string; releaseRefs: string[]; signingKey: string | null; environment: string }[]
+> {
   const org = await orgOf(db, orgSlug);
-  const out: { project: string; releaseRefs: string[]; signingKey: string | null }[] = [];
+  const out: {
+    project: string;
+    releaseRefs: string[];
+    signingKey: string | null;
+    environment: string;
+  }[] = [];
   for (const p of await listProjects(db, { orgId: org.id })) {
     out.push({
       project: p.slug,
