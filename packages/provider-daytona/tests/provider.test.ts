@@ -42,6 +42,35 @@ const spec = (over: Partial<SandboxSpec> = {}): SandboxSpec => ({
   ...over,
 });
 
+/**
+ * A fetch that counts the body bytes the CLIENT actually pulls from each response, so a test can
+ * assert how much was read before the cap cut it off, independent of how fast the server pushes.
+ */
+function countingFetch(): { fetch: typeof fetch; read: { bytes: number; last: number } } {
+  const read = { bytes: 0, last: 0 };
+  const counted = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const res = await fetch(input, init);
+    if (!res.body) return res;
+    const reader = res.body.getReader();
+    // highWaterMark 0: pull only when the consumer asks, so the count is what it really read.
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          const { done, value } = await reader.read();
+          if (done) return controller.close();
+          read.bytes += value.length;
+          read.last = value.length;
+          controller.enqueue(value);
+        },
+        cancel: (reason) => reader.cancel(reason),
+      },
+      { highWaterMark: 0 },
+    );
+    return new Response(body, { status: res.status, headers: res.headers });
+  }) as typeof fetch;
+  return { fetch: counted, read };
+}
+
 /** The mock learns of a client hang-up asynchronously; wait for it, bounded. */
 async function untilCancelled(): Promise<void> {
   for (let i = 0; i < 100 && !mock.stats.hugeCancelled; i++) await Bun.sleep(30);
@@ -432,28 +461,37 @@ describe("api key and errors", () => {
   });
 
   test("files.get streams with a running byte count: a huge body with no content-length is cut off", async () => {
-    const p = make();
+    const counter = countingFetch();
+    const p = make({ fetch: counter.fetch });
     const h = await p.create(spec());
-    mock.stats.hugePulled = 0;
-    await expect(p.files.get(h.id, "/tmp/__huge", 100_000)).rejects.toBeInstanceOf(
-      FileTooLargeError,
-    );
-    await untilCancelled(); // the server notices the client hanging up a moment later
+    const cap = 100_000;
+    const before = counter.read.bytes;
+    await expect(p.files.get(h.id, "/tmp/__huge", cap)).rejects.toBeInstanceOf(FileTooLargeError);
+    // It stopped at the first chunk that crossed the cap: everything before that chunk was within
+    // the cap, and with it the total passed it. (Chunk sizes depend on the network, so this does
+    // not assume one.)
+    const got = counter.read.bytes - before;
+    expect(got).toBeGreaterThan(cap);
+    expect(got - counter.read.last).toBeLessThanOrEqual(cap);
+    await untilCancelled(); // the server notices the hang-up asynchronously
     expect(mock.stats.hugeCancelled).toBe(true);
-    expect(mock.stats.hugePulled).toBeLessThan(300); // 2000 chunks were on offer, ~2 needed
     await p.destroy(h.id);
   });
 
   test("an oversized API reply is refused as an infrastructure fault, not buffered", async () => {
-    const p = make();
+    const counter = countingFetch();
+    const p = make({ fetch: counter.fetch });
     mock.setHugeList(true);
-    mock.stats.hugePulled = 0;
-    mock.stats.hugeCancelled = false;
+    const before = counter.read.bytes;
     const err = await p.count({}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InfraError);
+    // stopped at the first chunk that crossed the 16 MiB cap
+    const got = counter.read.bytes - before;
+    const cap = 16 * 1024 * 1024;
+    expect(got).toBeGreaterThan(cap);
+    expect(got - counter.read.last).toBeLessThanOrEqual(cap);
     await untilCancelled();
     expect(mock.stats.hugeCancelled).toBe(true);
-    expect(mock.stats.hugePulled).toBeLessThan(1000); // 2000 offered; the 16 MiB cap is 256 chunks // 16 MiB cap is 256 chunks of 64 KiB
   });
 
   test("file caps: put over the cap and get over maxBytes are FileTooLargeError", async () => {
