@@ -233,6 +233,16 @@ export const jobAttempts = sqliteTable(
     errorClass: text("error_class"),
     /** Set when a person or agent asked for this attempt (a rerun); the reason they gave. */
     rerunReason: text("rerun_reason"),
+    /** The provider exec running the attempt, so a restarted controller can probe it. */
+    execId: text("exec_id"),
+    /**
+     * Scheduler lease. A worker that claims a queued attempt owns it until `lease_expires_at`
+     * and extends it by heartbeat. An expired lease on a running attempt means its worker is
+     * gone: the reconciler resolves it.
+     */
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: integer("lease_expires_at", { mode: "number" }),
+    heartbeatAt: integer("heartbeat_at", { mode: "number" }),
     createdAt: createdAt(),
     startedAt: integer("started_at", { mode: "number" }),
     finishedAt: integer("finished_at", { mode: "number" }),
@@ -245,6 +255,7 @@ export const jobAttempts = sqliteTable(
     unique("job_attempts_id_org_project_unique").on(t.id, t.orgId, t.projectId),
     unique("job_attempts_job_attempt_unique").on(t.jobId, t.attempt),
     check("job_attempts_state_check", inList("state", JOB_STATES)),
+    index("job_attempts_state_idx").on(t.state, t.id),
   ],
 );
 
@@ -404,5 +415,31 @@ export const logCuts = sqliteTable(
       columns: [t.attemptId, t.orgId, t.projectId],
       foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
     }),
+  ],
+);
+
+// ---- poll ingest ----
+
+/**
+ * One row per (repo, workflow, event, sha) the poller turned into a run. The unique key is what
+ * makes ingest idempotent, and its `created_at` is what the per-hour run cap counts.
+ */
+export const pollSeen = sqliteTable(
+  "poll_seen",
+  {
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    /** `owner/name`, lowercase. */
+    repo: text("repo").notNull(),
+    workflowPath: text("workflow_path").notNull(),
+    event: text("event").notNull(),
+    sha: text("sha").notNull(),
+    runId: text("run_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.projectId, t.repo, t.workflowPath, t.event, t.sha] }),
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    index("poll_seen_repo_created_idx").on(t.projectId, t.repo, t.createdAt),
   ],
 );

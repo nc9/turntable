@@ -16,6 +16,8 @@ import { requireProject, type Scope, scoped } from "./scope";
 export type { Scope } from "./scope";
 export * from "./api";
 export * from "./events";
+export * from "./lease";
+export * from "./poll";
 export * from "./rerun";
 
 export type Project = typeof s.projects.$inferSelect;
