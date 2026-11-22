@@ -149,5 +149,16 @@ export const migrations: Migration[] = [
       "ALTER TABLE `orgs` ADD `action_owner_allowlist` text;",
       "ALTER TABLE `projects` ADD `require_sha_pins` integer DEFAULT 0 NOT NULL;"
     ]
+  },
+  {
+    "tag": "0010_loose_smasher",
+    "when": 1795365759673,
+    "statements": [
+      "ALTER TABLE `orgs` ADD `approve_run_min_role` text DEFAULT 'release_operator' NOT NULL;",
+      "ALTER TABLE `projects` ADD `egress` text DEFAULT 'none' NOT NULL;",
+      "ALTER TABLE `runs` ADD `repo` text;",
+      "ALTER TABLE `runs` ADD `trust` text;",
+      "ALTER TABLE `runs` ADD `approval` text;"
+    ]
   }
 ];

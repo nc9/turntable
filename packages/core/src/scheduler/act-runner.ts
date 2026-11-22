@@ -30,7 +30,9 @@ import { makeSafeReader } from "../run/safe-read";
 import { resolvePlanActions } from "../pins";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
-import { assessJob, lintFailsFor } from "../trust";
+import { createHash } from "node:crypto";
+import { parseTrust } from "../db/repos";
+import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
 /** The source of a run: a tarball to deliver and the files the planner reads. */
@@ -270,6 +272,27 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           reason: `workflow ${dbRun.workflowPath} not found at ${dbRun.sha}`,
         };
       }
+      // An untrusted run starts only with an approval bound to this exact sha and workflow. The
+      // approval op checks the same thing; this is the backstop for a run that got here some
+      // other way (a bug, a hand-edited database), and for a workflow that is not the one read.
+      const stored = parseTrust(dbRun);
+      if (stored?.class === "untrusted_pr") {
+        const approval = dbRun.approval
+          ? (JSON.parse(dbRun.approval) as { head_sha?: string; workflow_hash?: string })
+          : undefined;
+        const hash = createHash("sha256").update(workflowYaml).digest("hex");
+        if (!approval) return { state: "infra_error", reason: "untrusted run has no approval" };
+        if (
+          approval.head_sha !== dbRun.sha?.toLowerCase() ||
+          approval.workflow_hash !== hash ||
+          stored.workflowHash !== hash
+        ) {
+          return {
+            state: "infra_error",
+            reason: "approval does not match this run's sha and workflow",
+          };
+        }
+      }
       let plan: JobPlan;
       try {
         const root = o.planRoot ? { root: o.planRoot } : {};
@@ -277,8 +300,17 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         // The class this job runs as: the demotion rule applies before anything starts, and
         // protected and release runs fail lint instead of warning.
         const headCheckouts = workflowHeadCheckouts(workflowYaml)[planned?.id ?? job.jobKey] ?? [];
-        const trust = assessJob({ event: dbRun.event, ref: dbRun.ref }, headCheckouts.length > 0);
-        const failOnLint = lintFailsFor(trust.klass);
+        const assessed = assessJob(
+          { event: dbRun.event, ref: dbRun.ref },
+          headCheckouts.length > 0,
+        );
+        // The class decided at ingest from forge facts is a ceiling: the demotion rule may lower
+        // it, nothing recomputed here may raise it. A run with no decision (local, older) is
+        // assessed from its event and ref alone, as before.
+        const klass: TrustClass = assessed.demotedFrom
+          ? assessed.klass
+          : ((stored?.class as TrustClass | undefined) ?? assessed.klass);
+        const failOnLint = lintFailsFor(klass);
         const jobPlan = planned
           ? // A whole-workflow job: a generated single-job workflow whose stub need jobs carry the
             // real results and outputs of its dependencies.
@@ -307,7 +339,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         plan = await resolvePlanActions(jobPlan, {
           db: o.db,
           scope: ctx.scope,
-          klass: trust.klass,
+          klass,
           base: o.resolver ?? githubResolver(),
           readFile: checkout.readFile,
           ...(o.reachable ? { reachable: o.reachable } : {}),

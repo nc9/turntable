@@ -2,14 +2,18 @@ import {
   githubContext,
   localActionDir,
   planWorkflow,
+  workflowHeadCheckouts,
   type Value,
   type WorkflowEvent,
 } from "@longshore/act-runner";
+import { createHash } from "node:crypto";
 import { parse } from "yaml";
 import type { Db } from "../db";
 import {
   bindRepo,
   countPolledSince,
+  countWaitingRuns,
+  getProjectEgress,
   createPolledRun,
   lastPolledSha,
   markPollSkipped,
@@ -25,6 +29,7 @@ import {
 } from "../db/repos";
 import { assertRepoRelative, MAX_REPO_FILE_BYTES } from "../run/safe-read";
 import type { PollConfig, PollRepoConfig } from "./config";
+import { decideRun, type ForgePermission, needsApproval } from "../trust";
 import type { GithubClient } from "./github";
 
 export type Candidate = {
@@ -37,6 +42,11 @@ export type Candidate = {
   message: string;
   headBranch: string;
   prNumber?: number;
+  /** Forge facts for the trust decision, re-fetched at ingest. */
+  sameRepo?: boolean;
+  permission?: ForgePermission | "unknown";
+  allowlisted?: boolean;
+  forgeProtected?: boolean;
 };
 
 export type GateVerdict = { ok: true } | { ok: false; reason: string };
@@ -139,6 +149,11 @@ export type IngestDeps = {
   provider: string;
   now?: () => number;
   log?: (message: string) => void;
+  /**
+   * Head shas skipped because the repo's waiting cap was full, kept by the long-lived poller so a
+   * full queue is not re-examined (and re-reported) every poll. Cleared once room opens up.
+   */
+  overCap?: Set<string>;
 };
 
 async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
@@ -267,6 +282,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
 
   const candidates: Candidate[] = [];
   const head = await deps.github.branchHead(repo, cfg.defaultBranch);
+  const forgeProtected = await deps.github.branchProtected(repo, cfg.defaultBranch);
   candidates.push({
     event: "push",
     ref: `refs/heads/${cfg.defaultBranch}`,
@@ -274,7 +290,84 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     actor: head.author,
     message: head.message,
     headBranch: cfg.defaultBranch,
+    sameRepo: true,
+    ...(forgeProtected === undefined ? {} : { forgeProtected }),
   });
+
+  if (cfg.prMode === "approval") {
+    // Stranger-controlled work is bounded before any forge call is spent on it: a waiting cap
+    // checked first (counting what this poll already took), and a budget of new candidates.
+    const memo = deps.overCap;
+    let waiting = await countWaitingRuns(deps.db, scope, repo);
+    if (waiting < cfg.maxWaitingRuns) {
+      for (const k of memo ?? []) if (k.startsWith(`${repo}#`)) memo?.delete(k);
+    }
+    let budget = cfg.maxNewPrsPerPoll;
+    let taken = 0;
+    for (const pr of await deps.github.openPulls(repo)) {
+      if (
+        await pollSeen(deps.db, scope, {
+          repo,
+          workflowPath: cfg.workflow,
+          event: "pull_request",
+          sha: pr.headSha,
+        })
+      ) {
+        continue;
+      }
+      if (lower(pr.baseRepo) !== lower(repo)) {
+        result.refused.push({
+          what: `pr #${pr.number}`,
+          reason: "base repo is not the configured repo",
+        });
+        continue;
+      }
+      const sameRepo = pr.headRepo !== null && lower(pr.headRepo) === lower(repo);
+      const allowlisted = pr.author !== null && allowed(cfg, pr.author);
+      if (!allowlisted) {
+        const memoKey = `${repo}#${pr.headSha}`;
+        if (memo?.has(memoKey)) continue;
+        // A new push to a waiting PR replaces its run, so its own waiting run does not count.
+        const full =
+          waiting + taken >= cfg.maxWaitingRuns &&
+          (await countWaitingRuns(deps.db, scope, repo, pr.number)) + taken >= cfg.maxWaitingRuns;
+        if (full) {
+          memo?.add(memoKey);
+          result.refused.push({
+            what: `pr #${pr.number}`,
+            reason: "too many runs are waiting for approval",
+          });
+          continue;
+        }
+        if (budget <= 0) continue; // the next poll
+        budget--;
+        taken++;
+      }
+      // A fork is untrusted whoever opened it, so the forge is not asked about its author. For a
+      // same-repo PR the opener's permission is re-fetched now (never taken from PR text); if the
+      // token cannot ask, the author is not trusted.
+      let permission: ForgePermission | "unknown" | undefined;
+      if (sameRepo && !allowlisted && pr.author !== null) {
+        permission = await deps.github.collaboratorPermission(repo, pr.author);
+        if (permission === "unknown") {
+          log(`poll ${repo}: cannot read ${pr.author}'s permission; pr #${pr.number} is untrusted`);
+        }
+      }
+      candidates.push({
+        event: "pull_request",
+        ref: `refs/pull/${pr.number}/head`,
+        sha: pr.headSha,
+        actor: pr.author,
+        message: pr.title,
+        headBranch: pr.headRef,
+        prNumber: pr.number,
+        baseRef: pr.baseRef,
+        sameRepo,
+        allowlisted,
+        ...(permission === undefined ? {} : { permission }),
+      });
+    }
+  }
 
   if (cfg.prMode === "allowlist") {
     for (const pr of await deps.github.openPulls(repo)) {
@@ -311,6 +404,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         headBranch: pr.headRef,
         prNumber: pr.number,
         baseRef: pr.baseRef,
+        sameRepo: true,
+        allowlisted: true,
       });
     }
   }
@@ -320,7 +415,12 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     const key = { repo, workflowPath: cfg.workflow, event: c.event, sha: c.sha };
     if (await pollSeen(deps.db, scope, key)) continue;
     const used = await countPolledSince(deps.db, scope, repo, now - 3_600_000);
-    if (used + result.created.length >= cfg.maxRunsPerHour) {
+    // `used` already includes what this poll created (the marker commits with the run).
+    // A pull request that may be held for approval is judged after its class is known: held
+    // runs have their own cap and must not eat this one.
+    const mayBeHeld = c.event === "pull_request" && c.allowlisted !== true;
+    const capReached = (): boolean => used >= cfg.maxRunsPerHour;
+    if (capReached() && !mayBeHeld) {
       result.refused.push({ what, reason: "hourly run cap reached" });
       log(`poll ${repo}: hourly cap of ${cfg.maxRunsPerHour} reached`);
       continue;
@@ -406,11 +506,50 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       result.refused.push({ what, reason: invalid });
       continue;
     }
+    // The class is decided here, once, from the facts above; the worker never raises it.
+    const decision = decideRun({
+      event: c.event,
+      ref: c.ref,
+      baseRef: c.baseRef,
+      sameRepo: c.sameRepo,
+      actor: c.actor,
+      permission: c.permission,
+      allowlisted: c.allowlisted,
+      protectedRefs: [`refs/heads/${cfg.defaultBranch}`, ...cfg.protectedRefs],
+      forgeProtected: c.forgeProtected,
+      workflowHash: createHash("sha256").update(yaml).digest("hex"),
+      now,
+    });
+    const hold = needsApproval(decision.class);
+    if (!hold && capReached()) {
+      result.refused.push({ what, reason: "hourly run cap reached" });
+      log(`poll ${repo}: hourly cap of ${cfg.maxRunsPerHour} reached`);
+      continue;
+    }
+    if (hold && (await countWaitingRuns(deps.db, scope, repo, c.prNumber)) >= cfg.maxWaitingRuns) {
+      result.refused.push({ what, reason: "too many runs are waiting for approval" });
+      continue;
+    }
+    // An untrusted workflow file picks its own concurrency group: never let it name one that
+    // another run uses (it could cancel or block the default branch). Its group is its PR's.
+    const group = wp.concurrency
+      ? hold
+        ? `untrusted:pr-${c.prNumber ?? "x"}:${wp.concurrency.group}`
+        : wp.concurrency.group
+      : undefined;
+    // Untrusted code never gets open egress, whatever the repo or project allows.
+    const egress = hold
+      ? cfg.untrustedEgress
+      : (cfg.egress ?? (await getProjectEgress(deps.db, scope)));
+    const headCheckoutJobs = Object.entries(workflowHeadCheckouts(yaml))
+      .filter(([, v]) => v.length > 0)
+      .map(([k]) => k);
     const created = await createPolledRun(deps.db, scope, {
       repo,
       provider: deps.provider,
       now,
       jobs,
+      hold,
       cancelInProgress: wp.concurrency?.cancelInProgress ?? false,
       run: {
         workflowPath: cfg.workflow,
@@ -426,16 +565,22 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           env: wp.env,
           github: githubContext(event, githubExtra),
           vars: {},
+          // What isolation and egress policy read: the decided class, and the sandbox egress.
+          trust: decision.class,
+          egress,
+          // Jobs whose own steps check out the PR head: the demotion rule makes them untrusted.
+          ...(headCheckoutJobs.length > 0 ? { headCheckouts: headCheckoutJobs } : {}),
           ...(wp.concurrency ? { concurrency: wp.concurrency } : {}),
         }),
-        ...(wp.concurrency ? { concurrencyGroup: wp.concurrency.group } : {}),
+        ...(group ? { concurrencyGroup: group } : {}),
+        trust: JSON.stringify(decision),
       },
     });
     if (created) {
       result.created.push(created.run.id);
       result.superseded.push(...created.superseded.running);
       log(
-        `poll ${repo}: queued ${what}, ${jobs.length} job(s)${
+        `poll ${repo}: ${hold ? "holding for approval" : "queued"} ${what} (${decision.class}), ${jobs.length} job(s)${
           created.superseded.runIds.length > 0
             ? `, superseded ${created.superseded.runIds.length} older run(s)`
             : ""

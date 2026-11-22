@@ -1,5 +1,5 @@
 // Poll ingest persistence. Part of the only code that names tenant tables.
-import { and, count, desc, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import {
@@ -9,6 +9,9 @@ import {
   createRun,
   type Run,
   type RunInput,
+  setRunStatus,
+  transitionJob,
+  updateAttempt,
 } from "./index";
 import { requireProject, type Scope, scoped } from "./scope";
 
@@ -82,7 +85,12 @@ export type Superseded = {
 async function insertPlannedRun(
   tx: Db,
   scope: Scope,
-  input: { run: RunInput; jobs: readonly PolledJob[]; provider: string },
+  input: {
+    run: RunInput;
+    jobs: readonly PolledJob[];
+    provider: string;
+    hold?: boolean | undefined;
+  },
 ): Promise<Run> {
   const run = await createRun(tx, scope, input.run);
   for (const job of input.jobs) {
@@ -93,9 +101,18 @@ async function insertPlannedRun(
       needs: job.needs,
       ...(job.matrix ? { matrix: job.matrix } : {}),
       ...(job.planned === undefined ? {} : { planned: job.planned }),
+      // A held run's jobs wait for a human, from the moment they exist: in this same transaction,
+      // so no scheduler tick can claim one in between.
+      ...(input.hold ? { approvalKind: "untrusted_author" as const } : {}),
     });
-    if (created) await createAttempt(tx, scope, { jobId: created.id, provider: input.provider });
+    if (!created) continue;
+    const attempt = await createAttempt(tx, scope, { jobId: created.id, provider: input.provider });
+    if (input.hold && attempt) {
+      await transitionJob(tx, scope, created.id, "awaiting_approval");
+      await updateAttempt(tx, scope, attempt.id, { state: "awaiting_approval" });
+    }
   }
+  if (input.hold) return (await setRunStatus(tx, scope, run.id, "awaiting_approval")) ?? run;
   return run;
 }
 
@@ -137,6 +154,8 @@ export function createPolledRun(
     now?: number | undefined;
     /** Cancel older runs of the same concurrency group (cancel-in-progress). */
     cancelInProgress?: boolean | undefined;
+    /** Hold every job for approval (an untrusted class): nothing can start until approved. */
+    hold?: boolean | undefined;
   },
 ): Promise<{ run: Run; superseded: Superseded } | undefined> {
   const invalid = validateJobGraph(input.jobs);
@@ -163,7 +182,10 @@ export function createPolledRun(
         ),
       );
     if (Number(seen?.n ?? 0) > 0) return undefined;
-    const run = await insertPlannedRun(tx, scope, input);
+    const run = await insertPlannedRun(tx, scope, {
+      ...input,
+      run: { ...input.run, repo: input.repo },
+    });
     await tx.orm.insert(s.pollSeen).values({
       orgId: scope.orgId,
       ...key,
@@ -175,6 +197,16 @@ export function createPolledRun(
     const superseded = run.concurrencyGroup
       ? await supersedeOlderRuns(tx, scope, run, input.cancelInProgress ? "all" : "pending")
       : { runIds: [], running: [] };
+    // A new head sha of a pull request makes older runs of it that still wait for approval
+    // stale: an approval is for one sha, so they could never be used.
+    if (run.prNumber !== null) {
+      for (const stale of await olderWaitingForPr(tx, run)) {
+        const res = await cancelRunJobs(tx, scope, stale.id, {
+          errorClass: "replaced by a newer push to the pull request",
+        });
+        if (res) superseded.runIds.push(stale.id);
+      }
+    }
     return { run, superseded };
   });
 }
@@ -187,20 +219,32 @@ export function countPolledSince(
   since: number,
 ): Promise<number> {
   return db.run(async (h) => {
+    // Runs held for approval are not counted: strangers' pull requests must not use up the cap
+    // that the default branch's own runs depend on (they have their own cap, see countWaitingRuns).
     const [row] = await h.orm
       .select({ n: count() })
       .from(s.pollSeen)
+      .leftJoin(s.runs, eq(s.runs.id, s.pollSeen.runId))
       .where(
-        scoped(
-          scope,
-          SEEN_COLS,
-          eq(s.pollSeen.repo, repo.toLowerCase()),
-          gte(s.pollSeen.createdAt, since),
+        and(
+          scoped(
+            scope,
+            SEEN_COLS,
+            eq(s.pollSeen.repo, repo.toLowerCase()),
+            gte(s.pollSeen.createdAt, since),
+          ),
+          // Pushes always count. A pull request counts only when its run is classified and not
+          // untrusted: an untrusted or not-yet-classified marker must never use the trusted budget.
+          sql`(${s.pollSeen.event} = 'push' OR (${s.runs.id} IS NOT NULL AND (${s.runs.trust} IS NULL OR ${s.runs.trust} NOT LIKE '{"class":"untrusted_pr"%')))`,
         ),
       );
     return Number(row?.n ?? 0);
   });
 }
+
+/** Matches runs of the same repo as `run` (a run with no repo matches only runs with none). */
+const sameRepoAs = (run: Run) =>
+  run.repo === null ? isNull(s.runs.repo) : eq(s.runs.repo, run.repo);
 
 /** Unfinished runs of a run's concurrency group that are older than it. */
 async function olderUnfinished(db: Db, run: Run): Promise<Run[]> {
@@ -213,10 +257,84 @@ async function olderUnfinished(db: Db, run: Run): Promise<Run[]> {
         eq(s.runs.orgId, run.orgId),
         eq(s.runs.projectId, run.projectId),
         eq(s.runs.concurrencyGroup, run.concurrencyGroup),
+        // A group is per repo: a project can bind several, and one must not touch another's.
+        sameRepoAs(run),
         lt(s.runs.id, run.id),
         inArray(s.runs.status, ["queued", "running", "awaiting_approval"]),
       ),
     );
+}
+
+/** Older runs of the same pull request and workflow that wait for approval. */
+async function olderWaitingForPr(db: Db, run: Run): Promise<Run[]> {
+  return db.orm
+    .select()
+    .from(s.runs)
+    .where(
+      and(
+        eq(s.runs.orgId, run.orgId),
+        eq(s.runs.projectId, run.projectId),
+        eq(s.runs.workflowPath, run.workflowPath),
+        sameRepoAs(run),
+        run.prNumber === null ? sql`0` : eq(s.runs.prNumber, run.prNumber),
+        lt(s.runs.id, run.id),
+        eq(s.runs.status, "awaiting_approval"),
+      ),
+    );
+}
+
+/** Runs of one repo waiting for approval. A cap on this keeps strangers from filling the queue. */
+export function countWaitingRuns(
+  db: Db,
+  scope: Scope,
+  repo: string,
+  /** A pull request whose waiting runs a new push is about to replace: not counted. */
+  exceptPr?: number,
+): Promise<number> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ n: count() })
+      .from(s.runs)
+      .where(
+        and(
+          eq(s.runs.orgId, scope.orgId),
+          eq(s.runs.projectId, projectId),
+          eq(s.runs.repo, repo.toLowerCase()),
+          eq(s.runs.status, "awaiting_approval"),
+          ...(exceptPr === undefined
+            ? []
+            : [sql`(${s.runs.prNumber} IS NULL OR ${s.runs.prNumber} != ${exceptPr})`]),
+        ),
+      );
+    return Number(row?.n ?? 0);
+  });
+}
+
+export type EgressMode = "none" | "open" | "allowlist";
+
+/** The project's default sandbox egress (`projects.egress`); `none` when the project is unknown. */
+export function getProjectEgress(db: Db, scope: Scope): Promise<EgressMode> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ egress: s.projects.egress })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    const v = row?.egress;
+    return v === "open" || v === "allowlist" ? v : "none";
+  });
+}
+
+export function setProjectEgress(db: Db, scope: Scope, egress: EgressMode): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .update(s.projects)
+      .set({ egress })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+  });
 }
 
 /**

@@ -1,3 +1,4 @@
+import { approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
@@ -36,6 +37,7 @@ export const registry = createRegistry([
   checksForSha,
   cancel,
   rerun,
+  approveRunOp,
   whoami,
   listOrgs,
   listProjects,

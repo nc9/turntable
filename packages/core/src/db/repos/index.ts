@@ -15,6 +15,7 @@ import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
 export * from "./api";
+export * from "./approve";
 export * from "./github";
 export * from "./cancel";
 export * from "./pins";
@@ -48,12 +49,37 @@ export type RunInput = {
   concurrencyGroup?: string | undefined;
   /** Started by `longshore run`; see `runs.local`. */
   local?: boolean | undefined;
+  /** `owner/name`, lower case, for runs the poller creates; see `runs.repo`. */
+  repo?: string | undefined;
+  /** The trust decision (JSON text); see `runs.trust`. */
+  trust?: string | undefined;
 };
 
 const cap = (value: string | undefined, max: number): string | null =>
   value === undefined ? null : value.slice(0, max);
 
 // ---- tenancy ----
+
+export type ApproveRunRole = "operator" | "release_operator";
+export const APPROVE_RUN_ROLES: readonly ApproveRunRole[] = ["operator", "release_operator"];
+
+/** The org's `approve_run` minimum role; the strict default when unset or unknown. */
+export function getApproveRunMinRole(db: Db, orgId: string): Promise<ApproveRunRole> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ role: s.orgs.approveRunMinRole })
+      .from(s.orgs)
+      .where(eq(s.orgs.id, orgId))
+      .limit(1);
+    return row?.role === "operator" ? "operator" : "release_operator";
+  });
+}
+
+export function setApproveRunMinRole(db: Db, orgId: string, role: ApproveRunRole): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm.update(s.orgs).set({ approveRunMinRole: role }).where(eq(s.orgs.id, orgId));
+  });
+}
 
 export function createOrg(db: Db, input: { slug: string; name: string }) {
   return db.run(async (h) => {
@@ -308,6 +334,8 @@ export function createRun(db: Db, scope: Scope, input: RunInput): Promise<Run> {
       plan: input.plan ?? null,
       concurrencyGroup: input.concurrencyGroup ?? null,
       local: input.local ?? false,
+      repo: input.repo?.toLowerCase() ?? null,
+      trust: input.trust ?? null,
     });
     await appendEvent(h, scope, {
       type: "run.queued",

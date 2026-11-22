@@ -95,6 +95,7 @@ function makeGithub(repo = "acme/web") {
         "application/json",
       );
     }
+    if (u.pathname === `/repos/${repo}/branches/main`) return Response.json({ protected: true });
     const commit = new RegExp(`^/repos/${repo}/commits/([0-9a-f]{40})$`).exec(u.pathname);
     if (commit) {
       const pull = state.pulls.find((p) => p.headSha === commit[1]);
@@ -596,6 +597,8 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   await client.commitInfo("acme/web", SHA("1"));
   await client.fileAt("acme/web", ".github/workflows/ci.yml", SHA("a"));
   await client.branchHead("acme/web", "main"); // a conditional repeat
+  await client.collaboratorPermission("acme/web", "octocat").catch(() => {});
+  await client.branchProtected("acme/web", "main").catch(() => {});
   expect(seen.length).toBeGreaterThanOrEqual(5);
   for (const s of seen) {
     expect(s.method).toBe("GET");
@@ -609,7 +612,9 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   );
   expect(methods.toSorted()).toEqual([
     "branchHead",
+    "branchProtected",
     "changedFiles",
+    "collaboratorPermission",
     "commitInfo",
     "fileAt",
     "openPulls",
@@ -911,4 +916,49 @@ test("ingest_status narrows to the project for a project-scoped token", async ()
   expect(none.repos).toEqual([]);
   expect(none.rate_limit).toBeNull();
   void second;
+});
+
+test("collaboratorPermission: role_name wins, a custom role gets at most the legacy verdict, errors are classified", async () => {
+  const reply =
+    (status: number, body: unknown = {}) =>
+    async () =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+  const ask = (fetch: (u: string) => Promise<Response>, token: string | null = "stub-token-xyz") =>
+    new GithubClient({
+      fetch,
+      baseUrl: "https://api.github.com",
+      token: token ?? undefined,
+    }).collaboratorPermission("acme/web", "dev");
+  // maintain and triage are folded into write and read by the legacy field; role_name keeps them.
+  expect(await ask(reply(200, { permission: "write", role_name: "maintain" }))).toBe("maintain");
+  expect(await ask(reply(200, { permission: "read", role_name: "triage" }))).toBe("triage");
+  // A custom role is read from the legacy field only, and never above write.
+  expect(await ask(reply(200, { permission: "admin", role_name: "deployers" }))).toBe("write");
+  expect(await ask(reply(200, { permission: "read", role_name: "auditors" }))).toBe("read");
+  expect(await ask(reply(200, { role_name: "???" }))).toBe("unknown");
+  // Not a collaborator or no such user: none. The token cannot ask, or there is none: unknown.
+  expect(await ask(reply(404))).toBe("none");
+  expect(await ask(reply(403))).toBe("unknown");
+  expect(await ask(reply(401))).toBe("unknown");
+  expect(await ask(reply(200, { role_name: "admin" }), null)).toBe("unknown");
+  // A server error and a rate limit are not an answer: they propagate so the poll retries.
+  await expect(ask(reply(500))).rejects.toThrow();
+  await expect(
+    ask(async () => new Response("slow down", { status: 429, headers: { "retry-after": "5" } })),
+  ).rejects.toBeInstanceOf(RateLimited);
+  // A login that is not a plain login never reaches the URL.
+  const seen: string[] = [];
+  const odd = new GithubClient({
+    fetch: async (u) => {
+      seen.push(u);
+      return new Response("{}");
+    },
+    baseUrl: "https://api.github.com",
+    token: "stub-token-xyz",
+  });
+  expect(await odd.collaboratorPermission("acme/web", "../../x")).toBe("none");
+  expect(seen).toEqual([]);
 });

@@ -57,6 +57,8 @@ export function createMcpHttp(env: DispatchEnv): (req: Request) => Promise<Respo
       if (err instanceof OpError) return failure(err);
       return failure(new OpError("invalid_input", "request body is not valid JSON"));
     }
+    // No DNS-rebinding host allowlist: access needs the bearer token in this header, which a
+    // browser never attaches on its own (there are no cookies or ambient credentials to ride).
     const server = createMcpServer(env, token);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,

@@ -32,10 +32,35 @@ export const pollConfigSchema = z
             defaultBranch: z.string().min(1),
             /** Seconds between polls of this repo. 60 to 120 is the intended range. */
             intervalSeconds: z.int().min(30).max(3600).default(60),
-            /** `off`: pull requests are never run. `allowlist`: same-repo PRs by listed authors. */
-            prMode: z.enum(["off", "allowlist"]).default("off"),
-            /** GitHub logins allowed to have PRs run. Compared case-insensitively. */
+            /**
+             * `off`: pull requests are never run. `allowlist`: only same-repo PRs by listed authors
+             * run, and nothing else is looked at. `approval`: every open PR is ingested and its
+             * trust class decided from re-fetched facts (same repo, and the author's collaborator
+             * permission); an untrusted class is created but waits in awaiting_approval until a
+             * maintainer approves that sha. Listed `authors` count as trusted in both modes.
+             */
+            prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
+            /** GitHub logins trusted without asking the forge. Compared case-insensitively. */
             authors: z.array(z.string().min(1)).default([]),
+            /** Extra protected ref patterns (refs/heads/release/**). The default branch always is. */
+            protectedRefs: z.array(z.string().min(1)).default([]),
+            /**
+             * Sandbox egress for this repo's runs: `none`, `open` or `allowlist`. Unset: the
+             * project's setting (`projects.egress`), which defaults to `none`.
+             */
+            egress: z.enum(["none", "open", "allowlist"]).optional(),
+            /**
+             * Egress for runs classified untrusted_pr, whatever `egress` says: never `open`
+             * (untrusted code with network is a mining and exfiltration vector). Default `none`.
+             */
+            untrustedEgress: z.enum(["none", "allowlist"]).default("none"),
+            /**
+             * Most pull requests from authors who are not on `authors` that one poll will look at
+             * (each costs forge API calls). The rest wait for the next poll.
+             */
+            maxNewPrsPerPoll: z.int().min(1).max(100).default(5),
+            /** Most runs of this repo that may wait for approval at once. */
+            maxWaitingRuns: z.int().min(1).max(500).default(20),
             maxRunsPerHour: z.int().min(1).max(1000).default(30),
           })
           .strict(),

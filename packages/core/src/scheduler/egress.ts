@@ -17,8 +17,12 @@ export function egressForRun(
   if (explicit === "open") return "open";
   if (!runPlan) return "none";
   try {
-    const plan = JSON.parse(runPlan) as { egress?: unknown } | null;
+    const plan = JSON.parse(runPlan) as { egress?: unknown; trust?: unknown } | null;
     if (plan === null || typeof plan !== "object") return "none";
+    // Untrusted code never gets open egress, whatever a config said (mining, exfiltration).
+    if (plan.trust === "untrusted_pr" || plan.trust === "untrusted") {
+      return plan.egress === "allowlist" ? "allowlist" : "none";
+    }
     return plan.egress === "open" || plan.egress === "allowlist" ? plan.egress : "none";
   } catch {
     return "none";

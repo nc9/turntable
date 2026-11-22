@@ -44,6 +44,8 @@ Usage:
   longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
   longshore token revoke <id> [--data-dir ./data]
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
+  longshore policy set approve-run-min-role <operator|release_operator> [--org local]
+  longshore policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
   longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
@@ -388,10 +390,6 @@ async function main(argv: string[]): Promise<void> {
       return await serve(rest);
     case "token":
       return await token(rest);
-    case "policy": {
-      const { policyCommand } = await import("./pins/cli");
-      return await policyCommand(rest);
-    }
     case "keys": {
       const { keysCommand } = await import("./github/cli");
       return await keysCommand(rest);
@@ -403,6 +401,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "policy": {
+      const { policyCommand } = await import("./ops/policy-command");
+      return await policyCommand(rest);
     }
     case "mcp": {
       const { mcpCommand } = await import("./mcp/cli");

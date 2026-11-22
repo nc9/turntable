@@ -68,6 +68,7 @@ No token role reaches `admin`, so a token can never create tokens.
 | `list_orgs` | read | reader | The orgs the credential belongs to: just its own. |
 | `list_projects` | read | reader | Projects in scope with their bound repos. Cursor paging. |
 | `rerun` | write | operator | Queue a new attempt for failed jobs (or named jobs) of a run, with a required reason. At most 2 reruns per job per commit; audited. |
+| `approve_run` | write | release_operator (operator if the org lowered it) | Release a run held for an untrusted author. Bound to the run's head sha and workflow hash; never raises the trust class. Audited. |
 | `cancel` | destructive | operator | Cancel the queued, running and waiting jobs of a run. Audited. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 

@@ -36,6 +36,7 @@ export class Poller {
   readonly #github: GithubClient;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #failures = new Map<string, number>();
+  readonly #overCap = new Set<string>();
   #running = false;
 
   constructor(o: PollerOptions) {
@@ -128,6 +129,7 @@ export class Poller {
           db: this.#o.db,
           github: this.#github,
           provider: this.#o.config.provider,
+          overCap: this.#overCap,
           ...(this.#o.now ? { now: this.#o.now } : {}),
           log,
         },

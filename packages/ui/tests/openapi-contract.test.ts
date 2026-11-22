@@ -302,20 +302,14 @@ test("ingest_status", () => {
     expect(Object.keys(rateProps)).toContain(k);
 });
 
-// Trust and approvals land with #98. The UI reads them optionally, so it works against a server
-// without them; once the spec has them they join the required lists above and these entries go.
-const PENDING_98 = {
-  runFields: ["trust_class", "trust"],
-  operations: ["approve_run"],
-};
-
-test("fields and operations pending #98 are either in the spec or still listed as pending", () => {
+// Trust and approvals landed with #98: the run carries its class and decision, and approve_run
+// exists. The UI still reads them optionally, so it works against an older server.
+test("the run schema carries trust_class and trust, and approve_run is in the spec", () => {
   const run = ok(op("/runs/{run_id}", "get")).properties!;
-  const present = PENDING_98.runFields.filter((f) => f in run);
-  // When this fails, #98 has merged: move the fields into the key lists above, assert approve_run's
-  // schema in a real test, and delete PENDING_98.
-  expect(present).toEqual([]);
-  expect(ids.includes("approve_run")).toBe(false);
+  expect(run).toHaveProperty("trust_class");
+  expect(run).toHaveProperty("trust");
+  expect(run).toHaveProperty("approval");
+  expect(ids.includes("approve_run")).toBe(true);
 });
 
 test("when the spec carries trust, it matches the wire types the adapter reads", () => {
