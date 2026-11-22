@@ -116,7 +116,6 @@ describe("planning the real ci.yml", () => {
   });
 });
 
-const ok = (outputs: Record<string, string> = {}): NeedStatus => ({ state: "success", outputs });
 const CODE = { code: "true", engine: "true", installer: "true", release: "true", build: "true" };
 
 /** Walks the graph with jobReadiness, giving every job the verdict `results[id]` (default success). */
