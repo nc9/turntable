@@ -1,7 +1,7 @@
 // Secrets, the GitHub App record, installations and webhook deliveries. Like index.ts, part of
 // the only code allowed to name tenant tables. Secret values are stored only as sealed records
 // and are never returned by any query written for an API response.
-import { and, asc, eq, lt } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lt } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
@@ -366,5 +366,71 @@ export function purgeDeliveries(db: Db, before: number): Promise<number> {
       .where(lt(s.webhookDeliveries.receivedAt, before))
       .returning({ id: s.webhookDeliveries.id });
     return rows.length;
+  });
+}
+
+// ---- installation claims (hosted multi-tenant installs) ----
+
+export type InstallationClaim = typeof s.installationClaims.$inferSelect;
+
+export function createInstallationClaim(
+  db: Db,
+  scope: Scope,
+  input: { nonce: string; startedBy: string; expiresAt: number; expectedLogin?: string },
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm.insert(s.installationClaims).values({
+      nonce: input.nonce,
+      orgId: scope.orgId,
+      startedBy: input.startedBy,
+      expiresAt: input.expiresAt,
+      expectedLogin: input.expectedLogin ?? null,
+    });
+  });
+}
+
+/** A claim by nonce, used or not (the callback checks the rest). */
+export function getInstallationClaim(
+  db: Db,
+  nonce: string,
+): Promise<InstallationClaim | undefined> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select()
+      .from(s.installationClaims)
+      .where(eq(s.installationClaims.nonce, nonce));
+    return rows[0];
+  });
+}
+
+/**
+ * Consumes a claim: atomic, so a state is accepted once. Returns the claim, or undefined when the
+ * nonce is unknown, expired or already used.
+ */
+export function consumeInstallationClaim(
+  db: Db,
+  nonce: string,
+  installationId: string,
+  now: number,
+  github: { userId: string; login: string },
+): Promise<InstallationClaim | undefined> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.installationClaims)
+      .set({
+        usedAt: now,
+        installationId,
+        githubUserId: github.userId,
+        githubLogin: github.login,
+      })
+      .where(
+        and(
+          eq(s.installationClaims.nonce, nonce),
+          isNull(s.installationClaims.usedAt),
+          gt(s.installationClaims.expiresAt, now),
+        ),
+      )
+      .returning();
+    return rows[0];
   });
 }

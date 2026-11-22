@@ -6042,6 +6042,89 @@
         "x-longshore-untrusted-output": false
       }
     },
+    "/github/installation-claims": {
+      "post": {
+        "operationId": "start_installation_claim",
+        "summary": "Get the link that connects a GitHub installation to this org.",
+        "description": "Starts a claim for this org and returns a link carrying a signed, single-use state that binds the installation to the org of the caller. The link opens a confirmation page on this Longshore instance that names the org; confirming sets a cookie that binds the flow to that browser and sends it to GitHub. The person must install (or configure) the App and be signed in to GitHub; Longshore then checks that they OWN the installation (an admin of the organization, or the user the personal account belongs to) before it binds it, and audits who claimed it. The link expires in 15 minutes. Needs an org-level token with release_operator or admin (a project-scoped token is refused with forbidden). Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "github_login": {
+                    "description": "If known, only this GitHub user can complete the claim.",
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]{1,39}$"
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "Open this in a browser to install and connect."
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["url", "expires_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
+    },
     "/approvals": {
       "post": {
         "operationId": "approve_environment",

@@ -276,5 +276,13 @@ export const migrations: Migration[] = [
       "CREATE TABLE `release_requests` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`tag` text NOT NULL,\n\t`artifacts` text NOT NULL,\n\t`status` text DEFAULT 'pending' NOT NULL,\n\t`reason` text,\n\t`detail` text,\n\t`requested_by` text NOT NULL,\n\t`claimed_by` text,\n\t`claimed_at` integer,\n\t`finished_at` integer,\n\t`result` text,\n\t`facts` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"release_requests_status_check\" CHECK(status IN ('pending', 'claimed', 'signed', 'refused', 'error'))\n);",
       "CREATE INDEX `release_requests_status_idx` ON `release_requests` (`status`,`created_at`);"
     ]
+  },
+  {
+    "tag": "0022_complete_thor_girl",
+    "when": 1795378684717,
+    "statements": [
+      "CREATE TABLE `installation_claims` (\n\t`nonce` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`started_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer,\n\t`installation_id` text,\n\t`expected_login` text,\n\t`github_user_id` text,\n\t`github_login` text,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `installation_claims_org_idx` ON `installation_claims` (`org_id`,`created_at`);"
+    ]
   }
 ];

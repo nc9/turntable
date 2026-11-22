@@ -12,6 +12,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
+import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { serveUi } from "./ui-assets";
@@ -81,11 +82,13 @@ export type ServeOptions = {
   /** Origins besides the page's own that may open a realtime socket. */
   allowedOrigins?: readonly string[];
   /** GitHub webhook endpoint, when a master key is configured. */
-  webhooks?: { handle(req: Request): Promise<Response | undefined> };
+  webhooks?: { handle(req: Request, peer?: string): Promise<Response | undefined> };
   /** Per-org OIDC issuer endpoints, when a master key and a public URL are configured. */
   oidc?: { handle(req: Request): Promise<Response | undefined> };
   /** The secrets vault, when a master key is configured. */
   vault?: SecretVault;
+  /** Installation claims (hosted): the start op and the setup callback. */
+  claims?: { starter: InstallationClaims; handler: ClaimHandler };
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
@@ -93,7 +96,13 @@ export type ServeOptions = {
 };
 
 export function startServer(options: ServeOptions) {
-  const env = { registry, db: options.db, vault: options.vault, webauthn: options.webauthn };
+  const env = {
+    registry,
+    db: options.db,
+    vault: options.vault,
+    claims: options.claims?.starter,
+    webauthn: options.webauthn,
+  };
   const api = createRestApi(env, {
     trustForwardedProto:
       options.trustForwardedProto ?? options.transport?.trustForwardedProto === true,
@@ -117,8 +126,10 @@ export function startServer(options: ServeOptions) {
     websocket: realtime.websocket,
   });
   async function route(req: Request, srv: Bun.Server<WsData>): Promise<Response | undefined> {
-    const hook = await options.webhooks?.handle(req);
+    const hook = await options.webhooks?.handle(req, srv.requestIP(req)?.address);
     if (hook) return hook;
+    const claimed = await options.claims?.handler.handle(req);
+    if (claimed) return claimed;
     const idp = await options.oidc?.handle(req);
     if (idp) return idp;
     const upgraded = await realtime.handle(req, srv);

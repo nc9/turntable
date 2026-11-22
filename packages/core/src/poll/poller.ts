@@ -1,6 +1,6 @@
 import type { Db } from "../db";
 import { backoffMs } from "./backoff";
-import { type PollConfig, readToken } from "./config";
+import { type PollConfig, readPollToken } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
 import { pollRepo } from "./ingest";
 import { ingestStatus, type RepoStatus } from "./status";
@@ -24,6 +24,8 @@ export type PollerOptions = {
 
 /** Below this many requests left in the window the poller stops asking until it resets. */
 const RESERVE = 5;
+/** The fewest ms between two polls of one repo that webhooks asked for. */
+export const MIN_NUDGE_GAP_MS = 5000;
 
 /**
  * Polls every configured repo on its own interval. The token (read once from its file) is handed
@@ -37,11 +39,14 @@ export class Poller {
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #failures = new Map<string, number>();
   readonly #overCap = new Set<string>();
+  readonly #busy = new Set<string>();
+  readonly #again = new Set<string>();
+  readonly #lastStart = new Map<string, number>();
   #running = false;
 
   constructor(o: PollerOptions) {
     this.#o = o;
-    const token = o.config.tokenFile ? readToken(o.config.tokenFile) : undefined;
+    const token = readPollToken(o.config);
     this.#github = new GithubClient({
       ...(o.fetch ? { fetch: o.fetch } : {}),
       baseUrl: o.config.apiBaseUrl,
@@ -161,10 +166,45 @@ export class Poller {
     }
   }
 
+  /**
+   * A webhook said something happened in `repo`: poll it now instead of at the next interval.
+   * Only a repo this poller is configured for is acted on (the name from a payload selects, it
+   * never adds), polls of one repo never overlap (an event during a poll asks for one more), and
+   * events cannot poll a repo more than once per MIN_NUDGE_GAP_MS, so a flood costs one poll.
+   */
+  nudge(repo: string): boolean {
+    if (!this.#running) return false;
+    const cfg = this.#o.config.repos.find((r) => r.repo.toLowerCase() === repo.toLowerCase());
+    if (!cfg) return false;
+    // A repo that is backing off after errors or a rate limit stays backed off.
+    if ((this.#failures.get(cfg.repo) ?? 0) > 0) return false;
+    if (this.#busy.has(cfg.repo)) {
+      this.#again.add(cfg.repo);
+      return true;
+    }
+    const wait = Math.max(0, (this.#lastStart.get(cfg.repo) ?? 0) + MIN_NUDGE_GAP_MS - this.#now());
+    const t = this.#timers.get(cfg.repo);
+    if (t) clearTimeout(t);
+    this.#timers.set(
+      cfg.repo,
+      setTimeout(() => void this.#loop(cfg.repo), wait),
+    );
+    return true;
+  }
+
   async #loop(repo: string): Promise<void> {
     if (!this.#running) return;
-    const next = await this.#pollOne(repo);
+    this.#busy.add(repo);
+    this.#lastStart.set(repo, this.#now());
+    let next: number;
+    try {
+      next = await this.#pollOne(repo);
+    } finally {
+      this.#busy.delete(repo);
+    }
     if (!this.#running) return;
+    // An event arrived while polling: poll once more, soon, not at the full interval.
+    if (this.#again.delete(repo)) next = Math.min(next, MIN_NUDGE_GAP_MS);
     this.#timers.set(
       repo,
       setTimeout(() => void this.#loop(repo), next),

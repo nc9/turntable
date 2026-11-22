@@ -8,7 +8,7 @@
 import type { Run } from "../db/repos";
 import { getOrgById, listProjects, listRepos, type Scope } from "../db/repos";
 import type { Db } from "../db";
-import { readToken } from "../poll/config";
+import { readPollToken } from "../poll/config";
 
 export interface TokenMinter {
   mint(
@@ -26,6 +26,7 @@ export interface ForgeTokenOptions {
   poll?:
     | {
         tokenFile?: string | undefined;
+        tokenEnv?: string | undefined;
         /** Each entry lands runs in `org`/`project` (default `local`); the token serves only those. */
         repos: readonly { repo: string; org?: string | undefined; project?: string | undefined }[];
       }
@@ -60,7 +61,10 @@ export function createForgeToken(o: ForgeTokenOptions): ForgeToken {
       // The poll token serves a run only when the poll entry for that repo lands runs in this
       // very org and project: the same repo bound in another tenant must not borrow it.
       let watched = false;
-      if (o.poll?.tokenFile && o.poll.repos.some((r) => r.repo.toLowerCase() === repo)) {
+      if (
+        (o.poll?.tokenFile || o.poll?.tokenEnv) &&
+        o.poll.repos.some((r) => r.repo.toLowerCase() === repo)
+      ) {
         const org = await getOrgById(o.db, scope.orgId);
         const project = (await listProjects(o.db, scope)).find((p) => p.id === scope.projectId);
         watched = o.poll.repos.some(
@@ -70,11 +74,11 @@ export function createForgeToken(o: ForgeTokenOptions): ForgeToken {
             (r.project ?? "local") === project?.slug,
         );
       }
-      if (watched && o.poll?.tokenFile) {
+      if (watched && o.poll) {
         try {
-          return readToken(o.poll.tokenFile);
+          return readPollToken(o.poll);
         } catch (err) {
-          log(`poll token file unreadable: ${err instanceof Error ? err.message : String(err)}`);
+          log(`poll token unreadable: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       if (o.auth) {
