@@ -13,6 +13,8 @@ export type MockSandbox = {
   createdAt: string;
   toolboxProxyUrl: string;
   networkBlockAll: boolean;
+  networkAllowList?: string | undefined;
+  domainAllowList?: string | undefined;
   dir: string;
   readyAt: number;
   snapshot?: string | undefined;
@@ -30,6 +32,8 @@ export function startMock(
     deleteDelayMs?: number;
     /** New sandboxes appear in listings, and deleted ones disappear, only after this long. */
     listLagMs?: number;
+    /** Behave like an account that accepts an allow list but does not apply it. */
+    ignoreNetworkLists?: boolean;
   } = {},
 ) {
   // The mock listens on loopback, which the outbound client refuses unless it is allowlisted.
@@ -134,6 +138,8 @@ export function startMock(
             name: string;
             labels: Record<string, string>;
             networkBlockAll?: boolean;
+            networkAllowList?: string;
+            domainAllowList?: string;
           };
           const sid = `sbx-${(seq += 1)}-${crypto.randomUUID().slice(0, 8)}`;
           bornAt.set(sid, Date.now());
@@ -145,6 +151,9 @@ export function startMock(
             createdAt: new Date().toISOString(),
             toolboxProxyUrl: `${origin}/toolbox`,
             networkBlockAll: Boolean(b.networkBlockAll),
+            // An account that does not apply a list (a lower tier) leaves these out of the reply.
+            networkAllowList: opts.ignoreNetworkLists ? undefined : b.networkAllowList,
+            domainAllowList: opts.ignoreNetworkLists ? undefined : b.domainAllowList,
             dir: mkdtempSync(join(tmpdir(), "tt-mock-sbx-")),
             readyAt: Date.now() + (opts.startDelayMs ?? 0),
           };
@@ -239,6 +248,8 @@ export function startMock(
     toolboxProxyUrl: `${origin}/toolbox`,
     networkBlockAll: s.networkBlockAll,
     organizationId: "org-mock",
+    ...(s.networkAllowList ? { networkAllowList: s.networkAllowList } : {}),
+    ...(s.domainAllowList ? { domainAllowList: s.domainAllowList } : {}),
   });
 
   return {

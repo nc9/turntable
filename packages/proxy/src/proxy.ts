@@ -35,6 +35,12 @@ export interface ProxyOptions {
   tunnel?: (host: string, port: number) => Promise<net.Socket>;
   host?: string;
   port?: number;
+  /**
+   * Serve the proxy over TLS (an HTTPS proxy), for a listener that sandboxes reach across the
+   * public internet. `CONNECT` and the per-attempt `Proxy-Authorization` then travel inside TLS.
+   * The certificate is for the listener's public name. Absent: plain TCP, for a local listener.
+   */
+  tls?: { key: string; cert: string };
   now?: () => number;
   limits?: Partial<Limits> & {
     /** Response cap in bytes. Default 64 MiB. */
@@ -43,13 +49,63 @@ export interface ProxyOptions {
     /** Idle time before a tunnel is closed. Default 60 s. */
     idleMs?: number;
     upstreamTimeoutMs?: number;
+    /** Connections open at once, authenticated or not. Default 4096. */
+    maxConnections?: number;
+    /**
+     * Connections that have not authenticated yet (handshaking, or reading the CONNECT head, or
+     * being tarpitted), over all sources. Authenticated tunnels do not count here, and these do
+     * not count against `maxConnections`'s share for them. Default 512.
+     */
+    maxUnauthenticated?: number;
+    /** The same, from one source (an IPv6 address counts as its /64). Default 128. */
+    maxUnauthenticatedPerSource?: number;
+    /**
+     * Total time to send the CONNECT head, from the first byte of the connection: not an idle
+     * timer, so a client that drips one byte at a time still runs out. Default 10 s.
+     */
+    headDeadlineMs?: number;
+    /**
+     * A failed authentication is answered after a delay that doubles with each recent failure of
+     * the same source and username (this base, up to `authFailureMaxDelayMs`). A valid credential
+     * is never delayed or refused because of failures: shared egress addresses are common.
+     */
+    authFailureBaseDelayMs?: number;
+    authFailureMaxDelayMs?: number;
+    /** How long a failure counts. Default 60 s. */
+    authFailureWindowMs?: number;
+    /** How often the per-source books are pruned. Default 30 s. */
+    pruneMs?: number;
+    /** Time allowed for a TLS handshake. Default 10 s. */
+    handshakeMs?: number;
   };
 }
 
 export interface RunningProxy {
   host: string;
   port: number;
+  /** What the listener is tracking now (for tests and status). */
+  stats(): { unauthenticated: number; authenticated: number; tracked: number };
   close(): Promise<void>;
+}
+
+/**
+ * The key a source address is limited under: an IPv4 address as is, an IPv4-mapped IPv6 address as
+ * its IPv4, any other IPv6 address as its /64 (one customer holds a whole /64, so counting single
+ * addresses would let it dodge every limit).
+ */
+export function sourceKey(address: string | undefined): string {
+  if (!address) return "unknown";
+  const a = address.toLowerCase();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a);
+  if (mapped) return mapped[1]!;
+  if (!a.includes(":")) return a;
+  // Expand `::` and keep the first four groups.
+  const [head = "", tail = ""] = a.split("::");
+  const h = head === "" ? [] : head.split(":");
+  const t = tail === "" ? [] : tail.split(":");
+  const fill = a.includes("::") ? Array(Math.max(0, 8 - h.length - t.length)).fill("0") : [];
+  const groups = [...h, ...fill, ...t].slice(0, 4).map((g) => g.replace(/^0+(?=.)/, ""));
+  return `${groups.join(":")}::/64`;
 }
 
 const HOP = new Set([
@@ -162,16 +218,115 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
   };
 
   const open = new Set<net.Socket>();
-  const server = net.createServer((raw) => {
+  // Admission. A connection is "unauthenticated" until it presents a valid credential, then
+  // "authenticated"; the two are counted and capped separately, so a flood of one never starves
+  // the other. State is found by the connection's address tuple, because over TLS the socket that
+  // authenticates is not the one that was accepted.
+  const states = new Map<string, { src: string; authed: boolean }>();
+  let unauthTotal = 0;
+  let authTotal = 0;
+  const unauthBySource = new Map<string, number>();
+  const maxConn = lim.maxConnections ?? 4096;
+  const maxUnauth = lim.maxUnauthenticated ?? 512;
+  const maxUnauthPerSource = lim.maxUnauthenticatedPerSource ?? 128;
+  const headDeadline = lim.headDeadlineMs ?? 10_000;
+  const failBase = lim.authFailureBaseDelayMs ?? 250;
+  const failMax = lim.authFailureMaxDelayMs ?? 5_000;
+  const failWindow = lim.authFailureWindowMs ?? 60_000;
+  const tupleOf = (s: net.Socket): string => `${s.remoteAddress}:${s.remotePort}`;
+  const release = (t: string): void => {
+    const st = states.get(t);
+    if (!st) return;
+    states.delete(t);
+    if (st.authed) authTotal -= 1;
+    else {
+      unauthTotal -= 1;
+      const n = (unauthBySource.get(st.src) ?? 1) - 1;
+      if (n <= 0) unauthBySource.delete(st.src);
+      else unauthBySource.set(st.src, n);
+    }
+  };
+  /** Counts the connection as unauthenticated; false when a cap says no. */
+  const admit = (s: net.Socket): boolean => {
+    const src = sourceKey(s.remoteAddress);
+    if (
+      unauthTotal >= maxUnauth ||
+      authTotal + unauthTotal >= maxConn ||
+      (unauthBySource.get(src) ?? 0) >= maxUnauthPerSource
+    ) {
+      return false;
+    }
+    const t = tupleOf(s);
+    states.set(t, { src, authed: false });
+    unauthTotal += 1;
+    unauthBySource.set(src, (unauthBySource.get(src) ?? 0) + 1);
+    s.once("close", () => release(t));
+    return true;
+  };
+  /** A valid credential: the connection stops counting against the unauthenticated caps. */
+  const promote = (s: net.Socket): void => {
+    const st = states.get(tupleOf(s));
+    if (!st || st.authed) return;
+    st.authed = true;
+    unauthTotal -= 1;
+    authTotal += 1;
+    const n = (unauthBySource.get(st.src) ?? 1) - 1;
+    if (n <= 0) unauthBySource.delete(st.src);
+    else unauthBySource.set(st.src, n);
+  };
+  // Failed authentications, by source and attempted username: escalating delay, no block.
+  const failures = new Map<string, number[]>();
+  const failureDelay = (s: net.Socket, header: string | undefined): number => {
+    let user = "";
+    const m = /^Basic +([A-Za-z0-9+/=]+)$/i.exec(header ?? "");
+    if (m) user = Buffer.from(m[1]!, "base64").toString("utf8").split(":", 1)[0]!.slice(0, 64);
+    const key = `${sourceKey(s.remoteAddress)}|${user}`;
+    const cutoff = now() - failWindow;
+    const times = (failures.get(key) ?? []).filter((t) => t > cutoff);
+    times.push(now());
+    failures.set(key, times);
+    return Math.min(failMax, failBase * 2 ** Math.min(times.length - 1, 20));
+  };
+  const prune = setInterval(() => {
+    const cutoff = now() - failWindow;
+    for (const [k, times] of failures) {
+      const recent = times.filter((t) => t > cutoff);
+      if (recent.length === 0) failures.delete(k);
+      else failures.set(k, recent);
+    }
+  }, lim.pruneMs ?? 30_000);
+  prune.unref();
+  const accept = (raw: net.Socket): void => {
     open.add(raw);
     raw.once("close", () => open.delete(raw));
     void handle(raw).catch(() => raw.destroy());
-  });
+  };
+  // Over TLS the limits apply to the TCP connection, before the handshake is paid for.
+  const server: net.Server = o.tls
+    ? tls
+        .createServer({
+          key: o.tls.key,
+          cert: o.tls.cert,
+          minVersion: "TLSv1.2",
+          ALPNProtocols: ["http/1.1"],
+          handshakeTimeout: lim.handshakeMs ?? 10_000,
+        })
+        .on("connection", (c: net.Socket) => {
+          if (!admit(c)) c.destroy();
+        })
+        .on("tlsClientError", () => {})
+        .on("secureConnection", (s: tls.TLSSocket) => accept(s))
+    : net.createServer().on("connection", (raw) => {
+        if (!admit(raw)) return void raw.destroy();
+        accept(raw);
+      });
 
   async function handle(raw: net.Socket): Promise<void> {
     raw.setTimeout(10_000, () => raw.destroy());
     raw.on("error", () => raw.destroy());
-    const head = await readConnectHead(raw);
+    // An absolute deadline for the head, so a client that sends a byte at a time cannot hold it.
+    const deadline = setTimeout(() => raw.destroy(), headDeadline);
+    const head = await readConnectHead(raw).finally(() => clearTimeout(deadline));
     if (head === undefined) return void raw.destroy();
     const auth = o.registry.authenticate(head.headers.get("proxy-authorization"));
     if (!auth.ok) {
@@ -180,9 +335,15 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       } catch {
         // refused either way
       }
+      // Answered late, later the more this source has failed as this user. The connection stays
+      // counted as unauthenticated meanwhile, which is what keeps a guesser's cost bounded.
+      await new Promise((r) =>
+        setTimeout(r, failureDelay(raw, head.headers.get("proxy-authorization"))),
+      );
       raw.end(AUTH_REQUIRED);
       return;
     }
+    promote(raw);
     const attempt = auth.attempt;
     const id = attempt.spec.attemptId;
     const m = /^CONNECT ([^\s]+) HTTP\/1\.1$/.exec(head.line);
@@ -542,8 +703,14 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
   return {
     host: addr.address,
     port: addr.port,
+    stats: () => ({
+      unauthenticated: unauthTotal,
+      authenticated: authTotal,
+      tracked: states.size + failures.size,
+    }),
     close: () =>
       new Promise<void>((resolve) => {
+        clearInterval(prune);
         server.close(() => resolve());
         for (const s of open) s.destroy();
       }),

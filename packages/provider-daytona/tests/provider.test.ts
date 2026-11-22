@@ -745,43 +745,47 @@ describe("transient toolbox failures do not end a running job", () => {
     await p.destroy(h.id);
   });
 
-  test("the original request landing AFTER its repeat still gives exactly one process", async () => {
-    const marker = `/tmp/tt-once-${Date.now()}-late`;
-    let deferred = false;
-    const late: Promise<unknown>[] = [];
-    const seen = { launches: 0 };
-    const base = flaky(() => "ok");
-    // The first launch times out at the client at once, but its request reaches the sandbox only
-    // after the repeat has already run.
-    const fn = (async (input: Parameters<typeof safeFetch>[0], init?: RequestInit) => {
-      const body = String(init?.body ?? "");
-      if (String(input).endsWith("/process/execute") && isLaunch(body)) {
-        seen.launches += 1;
-        if (!deferred) {
-          deferred = true;
-          late.push(Bun.sleep(800).then(() => safeFetch(input, init)));
-          return timeout();
+  test(
+    "the original request landing AFTER its repeat still gives exactly one process",
+    { timeout: 20_000 },
+    async () => {
+      const marker = `/tmp/tt-once-${Date.now()}-late`;
+      let deferred = false;
+      const late: Promise<unknown>[] = [];
+      const seen = { launches: 0 };
+      const base = flaky(() => "ok");
+      // The first launch times out at the client at once, but its request reaches the sandbox only
+      // after the repeat has already run.
+      const fn = (async (input: Parameters<typeof safeFetch>[0], init?: RequestInit) => {
+        const body = String(init?.body ?? "");
+        if (String(input).endsWith("/process/execute") && isLaunch(body)) {
+          seen.launches += 1;
+          if (!deferred) {
+            deferred = true;
+            late.push(Bun.sleep(800).then(() => safeFetch(input, init)));
+            return timeout();
+          }
         }
-      }
-      return base.fn(input, init);
-    }) as typeof safeFetch;
-    const p = make({ fetch: fn, exec: { retry: FAST } });
-    const h = await p.create(spec());
-    const { execId } = await p.exec.start(h.id, {
-      argv: ["sh", "-c", `echo x >> ${marker}; sleep 3`],
-      timeoutSeconds: 30,
-    });
-    // The repeat has run; now the original lands.
-    await Promise.all(late);
-    await Bun.sleep(300);
-    expect(seen.launches).toBe(2);
-    expect((await Bun.file(marker).text()).trim().split("\n")).toHaveLength(1);
-    expect((await p.exec.status(h.id, execId)).state).toBe("running");
-    await Bun.sleep(3000);
-    expect((await p.exec.status(h.id, execId)).state).toBe("exited");
-    await Bun.$`rm -f ${marker}`;
-    await p.destroy(h.id);
-  });
+        return base.fn(input, init);
+      }) as typeof safeFetch;
+      const p = make({ fetch: fn, exec: { retry: FAST } });
+      const h = await p.create(spec());
+      const { execId } = await p.exec.start(h.id, {
+        argv: ["sh", "-c", `echo x >> ${marker}; sleep 3`],
+        timeoutSeconds: 30,
+      });
+      // The repeat has run; now the original lands.
+      await Promise.all(late);
+      await Bun.sleep(300);
+      expect(seen.launches).toBe(2);
+      expect((await Bun.file(marker).text()).trim().split("\n")).toHaveLength(1);
+      expect((await p.exec.status(h.id, execId)).state).toBe("running");
+      await Bun.sleep(3000);
+      expect((await p.exec.status(h.id, execId)).state).toBe("exited");
+      await Bun.$`rm -f ${marker}`;
+      await p.destroy(h.id);
+    },
+  );
 
   test("an ordinary start runs the command once", async () => {
     const marker = `/tmp/tt-once-${Date.now()}-c`;
