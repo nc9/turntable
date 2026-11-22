@@ -31,6 +31,9 @@ ends as `infra_error`.
 - Tokenless checkout: the controller delivers the repo (with `.git`) as a tarball. Each pinned
   `actions/checkout@<ref>` is replaced by a composite stub that copies it into the workspace
   (`--no-skip-checkout --local-repository <ref>=<stub dir>`).
+- act runs under `env GIT_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0` (constants, set inside the
+  sandbox; no controller env). act gives run steps a pty, so without these `git log` blocks in a
+  pager until the timeout.
 - Sandbox image needs `bash`, `git`, `tar`, `sha256sum` (or `shasum`) and, for JavaScript actions,
   `node`.
 

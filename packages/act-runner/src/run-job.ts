@@ -42,6 +42,16 @@ export interface RunOptions {
   maxProviderErrors?: number;
 }
 
+/**
+ * Environment set INSIDE the sandbox for act itself (constants, never controller env). act gives
+ * run steps a pty, so without these a `git log` would block in a pager until the timeout.
+ */
+export const SANDBOX_ENV: readonly string[] = [
+  "GIT_PAGER=cat",
+  "PAGER=cat",
+  "GIT_TERMINAL_PROMPT=0",
+];
+
 const dec = new TextDecoder();
 const enc = new TextEncoder();
 
@@ -151,7 +161,7 @@ export async function* runJob(
     const { execId } = await withRetry(
       () =>
         provider.exec.start(sandboxId, {
-          argv: plan.argv,
+          argv: ["env", ...SANDBOX_ENV, ...plan.argv],
           cwd: plan.cwd,
           timeoutSeconds: opts.timeoutSeconds ?? 3600,
         }),
