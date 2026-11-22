@@ -93,16 +93,29 @@ const good = tar(
 let dir: string;
 beforeEach(() => void (dir = mkdtempSync(join(tmpdir(), "ls-cache-"))));
 
+/**
+ * Whether an archive is refused. An archive is also reported as "not allowed" here when entries at
+ * denied paths were dropped from it: those tests ask "does the dangerous entry get through as is?",
+ * and it does not. `walked` below tests the dropping itself.
+ */
 async function check(bytes: Buffer, name = "a.tar"): Promise<ArchiveError | null> {
   const f = join(dir, name);
   writeFileSync(f, bytes);
   try {
-    await validateArchive(f, DEFAULT_RULES);
+    const r = await validateArchive(f, DEFAULT_RULES);
+    if (r.skipped > 0)
+      return new ArchiveError(`path is not allowed in a cache: dropped ${r.skipped}`);
     return null;
   } catch (e) {
     if (e instanceof ArchiveError) return e;
     throw e;
   }
+}
+
+async function walked(bytes: Buffer, name = "w.tar") {
+  const f = join(dir, name);
+  writeFileSync(f, bytes);
+  return validateArchive(f, DEFAULT_RULES);
 }
 
 describe("path-validated archives", () => {
@@ -419,6 +432,7 @@ async function world(
     maxEntry?: number;
     isActive?: (a: string) => boolean;
     now?: () => number;
+    onNotice?: (message: string) => void;
   } = {},
 ): Promise<World> {
   const db = openDatabase(":memory:");
@@ -434,6 +448,7 @@ async function world(
     maxEntryBytes: o.maxEntry ?? 4 * 1024 ** 2,
     baseUrl: "http://127.0.0.1:0",
     ...(o.now ? { now: o.now } : {}),
+    ...(o.onNotice ? { onNotice: (_g: unknown, m: string) => o.onNotice!(m) } : {}),
     ...(o.isActive ? { isActive: async (g) => o.isActive!(g.attemptId) } : {}),
   });
   const server = startServer({ port: 0, host: "127.0.0.1", db, cache: service });
@@ -1332,5 +1347,86 @@ describe("the denylist, symlink chains, empty names, long names and caps", () =>
     } finally {
       await w.server.stop(true);
     }
+  });
+});
+
+describe("entries at denied paths are dropped, not the whole archive", () => {
+  test("denied entries are counted and left out; the rest is accepted", async () => {
+    const r = await walked(
+      tar(
+        tarEntry("node_modules/pkg/", { type: "5", mode: "0000755" }),
+        tarEntry("node_modules/pkg/index.js", { data: "ok" }),
+        // An npm package that ships its own CI config and git metadata.
+        tarEntry("node_modules/pkg/.github/", { type: "5", mode: "0000755" }),
+        tarEntry("node_modules/pkg/.github/workflows/ci.yml", { data: "on: push" }),
+        tarEntry("node_modules/pkg/.git/config", { data: "[core]" }),
+        tarEntry("home/runner/.npmrc", { data: "//registry:_authToken=x" }),
+      ),
+    );
+    expect(r).toMatchObject({ entries: 2, skipped: 4 });
+  });
+
+  test("what is stored lacks them, their bytes are discarded, and a notice with the count is raised", async () => {
+    const notices: string[] = [];
+    const w = await world({ onNotice: (m) => notices.push(m) });
+    try {
+      const c = client(w, grant(w, "a1", "protected"));
+      const original = tar(
+        tarEntry("pkg/index.js", { data: "console.log(1)" }),
+        tarEntry("pkg/.github/workflows/ci.yml", { data: "SECRET-WORKFLOW-BODY" }),
+        tarEntry("pkg/.ssh/id_rsa", { data: "SECRET-KEY-BODY" }),
+        tarEntry("pkg/lib.js", { data: "x" }),
+      );
+      expect((await c.save("k", "v", original)).status).toBe(200);
+      const got = (await c.restore(["k"], "v"))!.bytes;
+      expect(got.toString("latin1")).not.toContain("SECRET-");
+      const f = join(dir, "kept.tar");
+      writeFileSync(f, got);
+      const names: string[] = [];
+      await walkArchive(f, DEFAULT_RULES, {
+        entry: (e) => void names.push(e.name),
+        data: () => {},
+      });
+      expect(names).toEqual(["pkg/index.js", "pkg/lib.js"]);
+      expect(notices).toEqual([expect.stringContaining("dropped 2 entries")]);
+      expect(notices.join(" ")).not.toContain("ssh");
+    } finally {
+      await w.server.stop(true);
+    }
+  });
+
+  test("a link that points at a denied path is still refused, symlink or hardlink, and a hardlink to a dropped file is too", async () => {
+    expect(
+      (await check(tar(tarEntry("a/l", { type: "2", link: "../.github/workflows/ci.yml" }))))
+        ?.message,
+    ).toMatch(/not allowed/);
+    expect(
+      (
+        await check(
+          tar(
+            tarEntry(".github/x", { data: "x" }),
+            tarEntry("a/h", { type: "1", link: ".github/x" }),
+          ),
+        )
+      )?.message,
+    ).toMatch(/not allowed/);
+    // A dropped link entry creates nothing, so what follows it is plain.
+    const r = await walked(
+      tar(tarEntry(".github/l", { type: "2", link: "real" }), tarEntry("a/b.txt", { data: "ok" })),
+    );
+    expect(r).toMatchObject({ entries: 1, skipped: 1 });
+  });
+
+  test("an archive with nothing left after dropping is refused", async () => {
+    await expect(
+      walked(tar(tarEntry(".git/config", { data: "x" }), tarEntry(".github/a", { data: "y" }))),
+    ).rejects.toThrow(/no entries left after dropping 2 at paths not allowed/);
+  });
+
+  test("the parser-differential archives still show the hidden entry to the walk (it is dropped, not unseen)", async () => {
+    const hidden = tarEntry(".git/hooks/pre-commit", { data: "#!/bin/sh\nevil" });
+    const innocent = tarEntry("a.txt", { size: hidden.length, data: "" });
+    const r = await walked(tar(pax(["size", "0"]), innocent, hidden));
+    expect(r).toMatchObject({ entries: 1, skipped: 1 });
   });
 });
