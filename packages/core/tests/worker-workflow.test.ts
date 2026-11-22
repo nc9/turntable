@@ -40,7 +40,7 @@ afterAll(() => {
 
 /** A stand-in for act, as in run-workflow.test.ts: events for the job, outputs, exit per job id. */
 const FAKE_ACT = String.raw`#!/bin/sh
-J=""; W=""
+J=""; W=""; ARGS="$*"
 while [ $# -gt 0 ]; do
   case "$1" in -j) J=$2; shift;; -W) W=$2; shift;; esac
   shift
@@ -51,6 +51,9 @@ cp "$W" "$R/seen/$J.yml"
 ev() { printf '{"jobID":"%s","level":"info","msg":"%s","step":"%s","stepid":["--setup-job"],"time":"t"%s}\n' "$1" "$2" "$3" "$4"; }
 ev stubjob "stub" "Set up job" ',"stepResult":"success"'
 ev "$J" "Run" "Set up job" ""
+case "$ARGS" in *ACTIONS_CACHE_URL*)
+  printf '{"jobID":"%s","raw_output":true,"msg":"ARGV %s\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' "$J" "$ARGS" ;;
+esac
 ev "$J" "ok" "Set up job" ',"stepResult":"success"'
 case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
@@ -127,6 +130,7 @@ function sourceFor(gh: ReturnType<typeof makeGithub>, tarball: Uint8Array) {
 async function makeScheduler(
   gh: ReturnType<typeof makeGithub>,
   provider: Provider = world.provider(),
+  runnerOpts: Partial<Parameters<typeof createActRunner>[0]> = {},
 ) {
   const act = await actTarball();
   const tarball = await repoTarball();
@@ -140,6 +144,7 @@ async function makeScheduler(
       act,
       planRoot: root,
       pollMs: 30,
+      ...runnerOpts,
     }),
     // One at a time: the fake provider shares one host directory between sandboxes (planRoot).
     globalCap: 1,
@@ -1495,5 +1500,56 @@ jobs:
     );
     await ingestAs(gh);
     expect(JSON.parse((await listRuns(db, scope))[0]!.plan!).headCheckouts).toEqual(["risky"]);
+  });
+});
+
+describe("the job cache credential", () => {
+  test("it is never in the log act writes (act echoes its arguments), never stored with the plan, and ends with the attempt", async () => {
+    const { CacheGrants } = await import("../src/cache/grants");
+    const { jobCacheProvider } = await import("../src/cache/job");
+    const { createCacheService } = await import("../src/cache/service");
+    const { FsCacheStore } = await import("../src/cache/store");
+    const service = createCacheService({
+      db,
+      store: new FsCacheStore(join(tmp, "cache-blobs")),
+      grants: new CacheGrants(),
+      orgQuotaBytes: 1024 * 1024,
+      maxEntryBytes: 1024 * 1024,
+      baseUrl: "http://host.docker.internal:8080",
+    });
+    const real = jobCacheProvider(db, service);
+    const issued: { url: string; secret: string }[] = [];
+    const cache: typeof real = async (req) => {
+      const g = await real(req);
+      if (g) issued.push({ url: g.url, secret: g.secret });
+      return g;
+    };
+    const gh = makeGithub();
+    gh.state.files.set("*", PIPELINE);
+    await ingest(gh);
+    const sched = await makeScheduler(gh, world.provider(), { cache, egress: "open" });
+    await drain(sched);
+    // Every job got a grant, and the argv really carried the URL (the fake act echoed it).
+    expect(issued.length).toBeGreaterThanOrEqual(3);
+    const [run] = await listRuns(db, scope);
+    let echoed = 0;
+    for (const j of await listJobs(db, scope, run!.id)) {
+      for (const a of await listAttempts(db, scope, j.id)) {
+        const log = Buffer.concat((await readLog(db, scope, a.id)).map((c) => c.bytes)).toString();
+        for (const g of issued) {
+          expect(log).not.toContain(g.secret);
+          // Nor the plan stored for re-attach.
+          expect(a.plan ?? "").not.toContain(g.secret);
+          expect(a.plan ?? "").not.toContain("_cache/");
+        }
+        if (log.includes("ARGV")) {
+          echoed++;
+          expect(log).toContain("ACTIONS_CACHE_URL=http://host.docker.internal:8080/_cache/");
+        }
+      }
+    }
+    expect(echoed).toBeGreaterThanOrEqual(1);
+    // The credentials died with their attempts.
+    for (const g of issued) expect(service.grants.verify(g.secret)).toBeUndefined();
   });
 });

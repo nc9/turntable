@@ -1,3 +1,4 @@
+import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
 import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
@@ -91,6 +92,8 @@ export type ServeOptions = {
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
+  /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
+  cache?: CacheService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
   trustForwardedProto?: boolean;
 };
@@ -132,6 +135,8 @@ export function startServer(options: ServeOptions) {
     if (claimed) return claimed;
     const idp = await options.oidc?.handle(req);
     if (idp) return idp;
+    const cached = await options.cache?.handle(req);
+    if (cached) return cached;
     const upgraded = await realtime.handle(req, srv);
     if (upgraded === "upgraded") return undefined;
     if (upgraded) return upgraded;

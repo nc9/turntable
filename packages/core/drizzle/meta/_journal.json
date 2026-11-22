@@ -183,6 +183,13 @@
       "when": 1795382724371,
       "tag": "0025_magenta_magdalene",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1795384046708,
+      "tag": "0026_strong_famine",
+      "breakpoints": true
     }
   ]
 }

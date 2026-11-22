@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
-import { type Db, ensureInstance, openDatabase } from "./db";
+import { type Db, ensureInstance, getAttempt, openDatabase } from "./db";
 import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
@@ -28,6 +28,10 @@ import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
+import { CacheGrants } from "./cache/grants";
+import { jobCacheProvider } from "./cache/job";
+import { createCacheService, type CacheService } from "./cache/service";
+import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
@@ -113,6 +117,8 @@ Environment:
                     token, artifact dir): the release lane runs as its own process and no other role reads them
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
+  LONGSHORE_CACHE_URL  base URL jobs reach the control-plane cache at (enables it; see docs/cache.mdx)
+  LONGSHORE_CACHE_QUOTA_GIB, LONGSHORE_CACHE_MAX_ENTRY_GIB  per-org cache quota (default 10) and largest entry (default 2)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
                     the webhook failure limiter keys on the client the forwarded chain reports through them
@@ -142,7 +148,7 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
-  extras: { auth?: AppAuth; vault?: SecretVault } = {},
+  extras: { auth?: AppAuth; vault?: SecretVault; cache?: CacheService } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -278,6 +284,7 @@ async function startBackground(
                 }),
                 canary: true,
                 ...(jobTokens ? { jobTokens } : {}),
+                ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
                 ...(v.image ? { image: v.image } : {}),
               }),
               // A job behind the proxy holds secrets: it never runs with open egress.
@@ -472,6 +479,32 @@ async function serve(args: string[]): Promise<void> {
     );
   }
 
+  // The control-plane cache for jobs (#38). Off unless a URL the sandboxes can reach is given.
+  let cache: CacheService | undefined;
+  const cacheUrl = process.env.LONGSHORE_CACHE_URL?.trim();
+  if (cacheUrl) {
+    const gib = (name: string, dflt: number): number => {
+      const n = Number(process.env[name] ?? dflt);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid ${name}`);
+      return Math.floor(n * 1024 ** 3);
+    };
+    cache = createCacheService({
+      db,
+      store: new FsCacheStore(join(dataDir, "cache")),
+      grants: new CacheGrants(),
+      orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
+      maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
+      baseUrl: cacheUrl,
+      // A grant works only while its attempt is running, whatever else the token says.
+      isActive: async (g) =>
+        (await getAttempt(db, { orgId: g.own.orgId, projectId: g.own.projectId }, g.attemptId))
+          ?.state === "running",
+    });
+    const sweep = setInterval(() => void cache?.sweep().catch(() => {}), 5 * 60_000);
+    sweep.unref();
+    console.log(`[longshore] job cache on, sandboxes reach it at ${cacheUrl}`);
+  }
+
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
     ...(process.env.LONGSHORE_ALLOWED_ORIGINS?.split(",") ?? []),
@@ -593,6 +626,7 @@ async function serve(args: string[]): Promise<void> {
         ...(webauthn ? { webauthn } : {}),
         ...(oidc ? { oidc } : {}),
         ...(claims ? { claims } : {}),
+        ...(cache ? { cache } : {}),
         trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
       })
@@ -611,6 +645,7 @@ async function serve(args: string[]): Promise<void> {
     {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
+      ...(cache ? { cache } : {}),
     },
   );
 

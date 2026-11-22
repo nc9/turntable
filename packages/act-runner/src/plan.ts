@@ -131,6 +131,11 @@ export interface JobPlan {
   actions: PlannedAction[];
   /** Runner labels the job asks for. */
   labels: string[];
+  /**
+   * The control-plane cache URL for this attempt (set at execution, never stored with the plan).
+   * When present act does not start its own cache server and jobs read this as ACTIONS_CACHE_URL.
+   */
+  cacheUrl?: string;
   /** act event name. */
   event: string;
   /** Files to overwrite in the delivered repo so every `uses:` is pinned to its sha. */
@@ -344,6 +349,8 @@ function withArgv(plan: JobPlan): JobPlan {
     "127.0.0.1",
     "--cache-server-addr",
     "127.0.0.1",
+    // The control-plane cache, when the job has one: act then starts no cache server of its own.
+    ...(plan.cacheUrl ? ["--env", `ACTIONS_CACHE_URL=${plan.cacheUrl}`] : []),
     // Never hand the job a container socket.
     "--container-daemon-socket",
     "-",

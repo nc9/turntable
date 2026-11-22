@@ -24,6 +24,7 @@ export * from "./incident";
 export * from "./audit";
 export * from "./vault";
 export * from "./release";
+export * from "./cache";
 export * from "./cancel";
 export * from "./pins";
 export * from "./verdicts";
