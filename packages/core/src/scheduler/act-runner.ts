@@ -42,6 +42,7 @@ import { createBackoff, type SafeFetch } from "@longshore/net";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
+import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import { getActionPolicy, parseTrust } from "../db/repos";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
@@ -178,7 +179,16 @@ export type ActRunnerOptions = {
   planRoot?: string;
   /** Live terminal output of a job, line by line (`longshore run` prints it with a key prefix). */
   out?: (jobKey: string, text: string) => void;
+  /**
+   * Gives each job its own GitHub token as GITHUB_TOKEN (see github/job-token): minted at job
+   * start for the run's repository with the workflow's declared permissions, capped by the trust
+   * class and the App's grant, revoked when the job ends. Absent: jobs get no GITHUB_TOKEN.
+   */
+  jobTokens?: JobTokens;
 };
+
+/** What GITHUB_TOKEN holds inside a job that is behind the secrets proxy. The proxy attaches the real one. */
+export const PROXIED_TOKEN_PLACEHOLDER = "longshore-token-is-added-by-the-proxy";
 
 /**
  * The persistence executeJob writes to while a worker runs an attempt. Every write goes through
@@ -247,7 +257,13 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     ctx: AttemptContext,
     plan: JobPlan,
     repoTarball: Uint8Array | undefined,
+    githubToken?: string,
   ): Promise<AttemptOutcome> => {
+    const registry = ctx.redact ?? new SecretRegistry();
+    // A real token in the environment is something the log must never show.
+    if (githubToken !== undefined && githubToken !== PROXIED_TOKEN_PLACEHOLDER) {
+      registry.register(githubToken);
+    }
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
       : undefined;
@@ -256,8 +272,12 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         provider: ctx.provider,
         store: workerStore(ctx),
         out: sink ? sink.out : () => {},
-        registry: ctx.redact ?? new SecretRegistry(),
+        registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),
+        ...(githubToken !== undefined ? { githubToken } : {}),
+        // A job holding a minted token, in its environment or behind the proxy, is secret-bearing:
+        // an egress canary that cannot verify isolation refuses it instead of letting it run.
+        ...(githubToken !== undefined ? { secretBearing: true } : {}),
         signal: ctx.signal,
         ...(ctx.notices ? { notices: ctx.notices } : {}),
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
@@ -332,6 +352,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         }
       }
       let plan: JobPlan;
+      let jobKlass: TrustClass | undefined;
       try {
         const root = o.planRoot ? { root: o.planRoot } : {};
         const planned = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
@@ -349,6 +370,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           ? assessed.klass
           : ((stored?.class as TrustClass | undefined) ?? assessed.klass);
         // Recorded before anything starts: the secrets vault decides from this and nothing else.
+        jobKlass = klass;
         await ctx.store.setTrustClass(klass);
         const failOnLint = lintFailsFor(klass);
         const jobPlan = planned
@@ -458,7 +480,89 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         // A legacy attempt with no stored plan: it was just re-planned; replay its exec.
         return run(ctx, plan, undefined);
       }
-      return run(ctx, plan, checkout.tarball);
+      // The job's own GitHub token, minted now that the job is known and revoked however it ends.
+      // Only when the capped permissions need one (a write scope, or a private repository): a
+      // public repo's job that needs nothing beyond contents read gets none, and stays as it was.
+      let issued: IssuedJobToken | undefined;
+      let githubToken: string | undefined;
+      const notices: string[] = [...(ctx.notices ?? [])];
+      // The proxy is used for the project's vault rules, or because a token needs holding.
+      let useProxy = ctx.proxy?.vaultRules === true;
+      if (o.jobTokens && repo?.installationId && jobKlass) {
+        const plannedJob = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+        // Behind the proxy the job holds a placeholder. Without it the real token goes in the
+        // environment, and only for a class that may hold credentials.
+        const envOk = jobKlass === "protected" || jobKlass === "release";
+        if (ctx.proxy || envOk) {
+          try {
+            const r = await o.jobTokens.issue({
+              installationId: repo.installationId,
+              owner: repo.owner,
+              repo: repo.repo,
+              klass: jobKlass,
+              workflowYaml,
+              jobId: plannedJob?.id ?? job.jobKey,
+            });
+            if ("none" in r) {
+              notices.push(`[longshore] GITHUB_TOKEN is not set (${r.none})`);
+            } else if (egressForRun(ctx.run.plan, o.egress) === "open") {
+              // A job holding a token never runs with open egress.
+              await r.revoke();
+              return {
+                state: "infra_error",
+                reason:
+                  "this job needs a GitHub token (a write permission, or a private repository), and a job with a token cannot run with open egress",
+              };
+            } else {
+              issued = r;
+              if (ctx.proxy) {
+                ctx.proxy.setGithubToken(r.token);
+                githubToken = PROXIED_TOKEN_PLACEHOLDER;
+                useProxy = true;
+              } else {
+                githubToken = r.token;
+              }
+              const perms = Object.entries(r.permissions)
+                .map(([k, v]) => `${k}:${v}`)
+                .join(", ");
+              notices.push(
+                `[longshore] GITHUB_TOKEN for ${repo.owner}/${repo.repo}: ${perms} (${ctx.proxy ? "added by the proxy" : "in the environment"}), revoked when the job ends`,
+                ...r.notes.map((n) => `[longshore] GITHUB_TOKEN: ${n}`),
+              );
+            }
+          } catch (err) {
+            // The job runs without a token rather than not at all; its log says so.
+            notices.push(
+              "[longshore] GITHUB_TOKEN is not available: the installation token could not be minted",
+            );
+            console.warn(
+              `job token for ${repo.owner}/${repo.repo}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+      if (o.jobTokens && repo?.installationId && jobKlass && !ctx.proxy && !issued) {
+        if (jobKlass !== "protected" && jobKlass !== "release") {
+          notices.push(
+            "[longshore] GITHUB_TOKEN is not set (this class may not hold a token, and no secrets proxy is running to attach one)",
+          );
+        }
+      }
+      // A job that uses neither vault rules nor a token is not proxied, and its egress is unchanged.
+      const { proxy: access, ...rest } = ctx;
+      const jobCtx: AttemptContext = {
+        ...rest,
+        notices,
+        ...(useProxy && access ? { proxy: access } : {}),
+      };
+      const revoke = (): void => void issued?.revoke();
+      ctx.signal.addEventListener("abort", revoke, { once: true });
+      try {
+        return await run(jobCtx, plan, checkout.tarball, githubToken);
+      } finally {
+        ctx.signal.removeEventListener("abort", revoke);
+        await issued?.revoke();
+      }
     } finally {
       checkout.dispose?.();
     }
