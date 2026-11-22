@@ -4,7 +4,7 @@ description: How agents and scripts drive Longshore through MCP, REST, events an
 ---
 
 <Warning>
-  Partly implemented. The operations registry, agent tokens, the REST API, the OpenAPI document and the MCP server exist. The CLI, the event feed and the Claude Code channel do not yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#24](https://github.com/nc9/turntable/issues/24), [#25](https://github.com/nc9/turntable/issues/25) and [#26](https://github.com/nc9/turntable/issues/26).
+  Partly implemented. The operations registry, agent tokens, the REST API, the OpenAPI document and the MCP server exist. The CLI does not yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#24](https://github.com/nc9/turntable/issues/24) and [#25](https://github.com/nc9/turntable/issues/25).
 </Warning>
 
 Longshore is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
@@ -177,4 +177,70 @@ Omit `after` to start from now. With a cursor the server replays from the feed, 
 
 ## Claude Code channel
 
-A Claude Code channel pushes events, such as a failed run, into a running Claude Code session, so an agent can react without polling. Issue [#26](https://github.com/nc9/turntable/issues/26).
+A Claude Code channel pushes events, such as a failed run, into a running Claude Code session, so an agent can react without polling. `longshore channel` is that channel. It follows the [channels contract](https://code.claude.com/docs/en/channels-reference): Claude Code starts it as an MCP server over stdio, it declares the `claude/channel` capability, and it sends `notifications/claude/channel`. Channels are a research preview in Claude Code, so the flags and protocol may change.
+
+### What it sends
+
+By default: a run finished with `failure` or `infra_error`, and a job that needs approval. Each notification is a few lines of facts: the run id, conclusion, failing jobs with the failing step name, and a link to the run. Example:
+
+```
+Longshore: run finished, conclusion failure.
+project: "api"
+run: 01J...  workflow: "CI"  branch: "main"  event: push
+failed jobs: "lint" (failure, step "Run oxlint")
+link: https://ci.example.com/acme/api/runs/01J...
+Untrusted data: quoted values come from the forge or workflow files. No log content is included.
+```
+
+Log text is never in a notification. The channel reads only the step name from `failure_digest` and drops the excerpt. The agent follows up with the Longshore MCP tools (`failure_digest`, `job_log`) using the run id. Branch, workflow, job and step names come from the forge or workflow files, so they are quoted, cut to 60 characters, stripped of control and direction characters, and escaped so they cannot close the `<channel>` tag. The tag attributes carry ids and enums only. The server's `instructions` tell the model the quoted text is data and not to act on it.
+
+### Set up
+
+1. Create a reader-role token and put it in a file only you can read. The channel refuses a token file that others can read, and never takes a token on the command line.
+
+   ```sh
+   longshore token create --org acme --role reader --name claude-channel
+   umask 077 && printf '%s' "$TOKEN" > ~/.config/longshore/channel-token
+   ```
+
+2. Register the server in your project's `.mcp.json` (or `~/.claude.json` with absolute paths):
+
+   ```json
+   {
+     "mcpServers": {
+       "longshore": {
+         "command": "longshore",
+         "args": ["channel", "--url", "https://ci.example.com", "--org", "acme",
+                  "--token-file", "/home/you/.config/longshore/channel-token",
+                  "--project", "api", "--branch", "main,release/*"]
+       }
+     }
+   }
+   ```
+
+3. Start Claude Code with the channel enabled. A custom channel is not on Anthropic's allowlist, so during the preview use the development flag:
+
+   ```sh
+   claude --dangerously-load-development-channels server:longshore
+   ```
+
+   Team and Enterprise organizations must also have channels enabled (`channelsEnabled`) by an owner. Channels need claude.ai or Console API-key login.
+
+A plugin manifest is in `claude-plugin/` for publishing the channel through a marketplace. It asks for the URL, org and token file path, and starts `longshore channel` with them.
+
+### Options
+
+| Option | Environment | Default |
+| --- | --- | --- |
+| `--url` | `LONGSHORE_URL` | required. `https` only, except loopback (`--allow-insecure` overrides) |
+| `--org` | `LONGSHORE_ORG` | required |
+| `--token-file` | `LONGSHORE_TOKEN_FILE` | required, mode 0600 |
+| `--project a,b` | `LONGSHORE_CHANNEL_PROJECTS` | all projects the token sees |
+| `--branch main,release/*` | `LONGSHORE_CHANNEL_BRANCHES` | all branches. `*` is a glob. A run with no known branch never matches a branch filter. |
+| `--types` | `LONGSHORE_CHANNEL_TYPES` | `run.finished,approval.required` |
+| `--conclusions` | `LONGSHORE_CHANNEL_CONCLUSIONS` | `failure,infra_error` (for `run.finished`) |
+| `--state-file` | `LONGSHORE_CHANNEL_STATE_FILE` | a file under `$XDG_STATE_HOME/longshore` |
+
+### Resume and limits
+
+The channel long-polls the `events` operation and keeps its cursor in the state file, written after each handled event. After a dropped connection it backs off (1 s up to 30 s) and resumes from the cursor; after a restart it resumes from the state file. On the very first start it skips history, so only new events are reported. A burst of more than 10 matching events in one poll sends 10 and one summary line. A 401 or 403 sends one "channel stopped" notice and exits. The feed's `events` operation has no "from now" cursor yet, so the first start pages through existing events to find the end.

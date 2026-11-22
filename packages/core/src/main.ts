@@ -47,6 +47,8 @@ Usage:
   longshore policy set approve-run-min-role <operator|release_operator> [--org local]
   longshore policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
   longshore mcp [--token-file <path>] [--data-dir ./data]
+  longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
+                    [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore version
 
 Environment:
@@ -407,6 +409,10 @@ async function main(argv: string[]): Promise<void> {
     case "mcp": {
       const { mcpCommand } = await import("./mcp/cli");
       return await mcpCommand(rest);
+    }
+    case "channel": {
+      const { channelCommand } = await import("./channel/cli");
+      return await channelCommand(rest);
     }
     case "version":
     case "--version":
