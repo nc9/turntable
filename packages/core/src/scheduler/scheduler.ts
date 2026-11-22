@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Db } from "../db";
+import { type Db, onAttemptsCancelled } from "../db";
 import {
   addCut,
   appendLogFenced,
@@ -39,6 +39,8 @@ export type SchedulerOptions = {
   perOrgCap?: number;
   /** Decides when a queued job may run and what becomes of dependents of a failed one. */
   readiness?: Readiness;
+  /** Run only this run's attempts (see ClaimOptions.onlyRun): `longshore run`'s own scheduler. */
+  onlyRun?: string;
   now?: () => number;
   log?: (message: string) => void;
 };
@@ -53,7 +55,8 @@ const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reaso
  */
 export class Scheduler {
   readonly owner: string;
-  readonly #o: Required<Omit<SchedulerOptions, "owner" | "log" | "readiness">> & {
+  readonly #o: Required<Omit<SchedulerOptions, "owner" | "log" | "readiness" | "onlyRun">> & {
+    onlyRun?: string | undefined;
     log: (message: string) => void;
     readiness: Readiness;
   };
@@ -61,9 +64,14 @@ export class Scheduler {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #running = false;
   #wake: (() => void) | undefined;
+  readonly #unsubscribe: () => void;
 
   constructor(o: SchedulerOptions) {
     this.owner = o.owner ?? `worker-${randomUUID()}`;
+    // A manual cancel (or supersession) of a run with attempts running here stops them at once.
+    this.#unsubscribe = onAttemptsCancelled((attempts) =>
+      this.abort(attempts.map((a) => a.attemptId)),
+    );
     const leaseMs = o.leaseMs ?? 30_000;
     this.#o = {
       db: o.db,
@@ -75,6 +83,7 @@ export class Scheduler {
       globalCap: o.globalCap ?? 4,
       perOrgCap: o.perOrgCap ?? 2,
       readiness: o.readiness ?? workflowReadiness,
+      onlyRun: o.onlyRun,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
     };
@@ -99,6 +108,7 @@ export class Scheduler {
         globalCap: this.#o.globalCap,
         perOrgCap: this.#o.perOrgCap,
         readiness: this.#o.readiness,
+        ...(this.#o.onlyRun ? { onlyRun: this.#o.onlyRun } : {}),
       });
       if (!claim) return started;
       this.#launch(claim);
@@ -138,6 +148,7 @@ export class Scheduler {
    */
   async stop(opts: { abort?: boolean } = {}): Promise<void> {
     this.#running = false;
+    this.#unsubscribe();
     clearTimeout(this.#timer);
     if (opts.abort) for (const a of this.#active.values()) a.controller.abort("scheduler stopping");
     await Promise.all([...this.#active.values()].map((a) => a.done));

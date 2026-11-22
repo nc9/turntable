@@ -76,7 +76,7 @@ No token role reaches `admin`, so a token can never create tokens.
 
 `rerun` only queues work. It puts the jobs back in `queued` with a new attempt that carries the reason, and reopens the run. Starting the queued attempts is the scheduler's job, which comes later, so until then a reran job stays queued. The cap is per job key per commit across all runs of that sha (per run when it has none); past it the call is refused with `409 conflict`, and the right response is to read the failure, not to retry. The call is all or nothing. A rerun never bypasses approval: a job with an `approval_kind` goes back to `awaiting_approval` (and emits `approval.required`) whatever its previous state, and a job that never ran (skipped, or cancelled before it started) and needs approval is refused.
 
-`cancel` updates state only for now. Stopping the running sandbox comes with the controller.
+`cancel` records the cancellation and, for a job running in the same process, stops it at once: the worker is signalled and its sandbox destroyed. A worker in another process stops at its next heartbeat, when it finds its lease gone.
 
 Planned next: `failure_digest`, `rerun`, `cost_summary`, and grep for `job_log`.
 

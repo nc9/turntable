@@ -57,6 +57,13 @@
       "when": 1795351041847,
       "tag": "0007_violet_starbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795351514724,
+      "tag": "0008_chief_ink",
+      "breakpoints": true
     }
   ]
 }
