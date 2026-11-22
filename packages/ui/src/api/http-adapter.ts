@@ -467,6 +467,7 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         reason: w.reason,
         frozenAt: w.frozen_at,
         frozenBy: w.frozen_by,
+        rotationRequiredCount: w.rotation_required_count,
         rotationRequired: w.rotation_required.map((r) => ({
           name: r.name,
           reason: r.reason,

@@ -1,6 +1,7 @@
 import type { Db } from "../db";
 import {
   appendAudit,
+  clearRotationFlag,
   deleteSecretRecord,
   getSecretRecord,
   listSecretNames,
@@ -32,6 +33,9 @@ export class SecretStore {
     );
     // Audited by name only: a value never goes near the log.
     await this.#audit(orgId, "secret_set", name);
+    // A new value in this store closes an incident rotation flag it raised (and only this
+    // store's flags: a vault secret of the same name is rotated through the vault).
+    await clearRotationFlag(this.#db, { orgId }, name, "builtin", Date.now());
   }
 
   /** Throws SecretDecryptError if the record was tampered with or the key is wrong. */

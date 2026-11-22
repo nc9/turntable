@@ -8,6 +8,8 @@ import {
   appendAudit,
   claimNextAttempt,
   clearRotationFlag,
+  clearRotationFlagIfRotated,
+  listOpenRotationFlags,
   createAttempt,
   createJob,
   createOrg,
@@ -23,13 +25,15 @@ import {
 } from "../src/db";
 import { onAttemptsCancelled } from "../src/db/abort-bus";
 import { incidentCommand } from "../src/incident/cli";
-import { registerCredentialRevoker, registerSecretNameSource } from "../src/incident";
+import { registerCredentialRevoker } from "../src/incident";
+import { SecretStore } from "../src/secrets/store";
 import { SecretVault } from "../src/secrets/vault";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { USAGE_SCAN_LIMIT } from "../src/ops/definitions/secret-usage";
 import { createRestApi } from "../src/ops/rest";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let db: Db;
 let a: Tenant;
 let b: Tenant;
@@ -245,39 +249,97 @@ describe("credentials and secrets", () => {
     await putSecretRecord(db, { orgId: a.orgId }, "GITHUB_APP_KEY", "sealed");
     await putSecretRecord(db, { orgId: a.orgId }, "WEBHOOK_SECRET", "sealed");
     await putSecretRecord(db, { orgId: b.orgId }, "OTHER_ORG", "sealed");
-    const off = registerSecretNameSource({
-      name: "test-vault",
-      list: async () => ["DEPLOY_KEY", "WEBHOOK_SECRET"],
+    const out = await run("incident_freeze", { reason: "rotate all" });
+    expect(out.flagged_for_rotation).toBe(2);
+    await run("incident_unfreeze");
+    const status = await run("incident_status", {}, release);
+    expect(status.rotation_required.map((r: { name: string }) => r.name)).toEqual([
+      "GITHUB_APP_KEY",
+      "WEBHOOK_SECRET",
+    ]);
+    expect(status.rotation_required[0]).toMatchObject({ reason: "rotate all" });
+    expect((await run("incident_freeze", { reason: "again" })).flagged_for_rotation).toBe(0);
+    // Updating the built-in store's secret closes its flag.
+    const store = new SecretStore(db, randomBytes(32));
+    await store.set(a.orgId, "GITHUB_APP_KEY", "new value");
+    const after = await run("incident_status", {}, release);
+    expect(after.rotation_required.map((r: { name: string }) => r.name)).toEqual([
+      "WEBHOOK_SECRET",
+    ]);
+    // Never another org's secrets.
+    const bTok = (await mintToken(db, { orgId: b.orgId }, "release_operator")).secret;
+    expect((await run("incident_status", {}, bTok)).rotation_required).toEqual([]);
+  });
+
+  test("a reader sees how many secrets need rotation, never which; release_operator sees names", async () => {
+    await putSecretRecord(db, { orgId: a.orgId }, "GITHUB_APP_KEY", "sealed");
+    await putSecretRecord(db, { orgId: a.orgId }, "WEBHOOK_SECRET", "sealed");
+    await run("incident_freeze", { reason: "leak" });
+    const asReader = await run("incident_status", {}, reader);
+    expect(asReader.rotation_required_count).toBe(2);
+    expect(asReader.rotation_required).toEqual([]);
+    expect(JSON.stringify(asReader)).not.toContain("GITHUB_APP_KEY");
+    const op = (await mintToken(db, { orgId: a.orgId }, "operator")).secret;
+    expect((await run("incident_status", {}, op)).rotation_required).toEqual([]);
+    const asRelease = await run("incident_status", {}, release);
+    expect(asRelease.rotation_required_count).toBe(2);
+    expect(asRelease.rotation_required).toHaveLength(2);
+    // REST is the same.
+    const api = createRestApi(env);
+    const res = await api(
+      new Request("http://x/api/v1/incident", { headers: { authorization: `Bearer ${reader}` } }),
+    );
+    expect(JSON.stringify(await res!.json())).not.toContain("WEBHOOK_SECRET");
+  });
+
+  test("a flag is cleared only by an update in the store that raised it", async () => {
+    // The same name in both stores.
+    await putSecretRecord(db, { orgId: a.orgId }, "SHARED", "sealed");
+    env = { registry, db, vault: new SecretVault({ db, masterKey: randomBytes(32) }) };
+    await run("set_secret", { name: "SHARED", value: "v1" });
+    await sleep(5);
+    await run("incident_freeze", { reason: "leak" });
+    const sources = async () =>
+      (await listOpenRotationFlags(db, { orgId: a.orgId })).map((f) => f.name).toSorted();
+    expect(await sources()).toEqual(["SHARED", "SHARED"]);
+    await sleep(5);
+    // Rotating in the vault closes the vault's flag, not the built-in one.
+    await run("rotate_secret", { name: "SHARED", value: "v2" });
+    expect(await sources()).toEqual(["SHARED"]);
+    expect(await clearRotationFlag(db, { orgId: a.orgId }, "SHARED", "vault", Date.now())).toBe(
+      false,
+    );
+    // The built-in store closes its own.
+    await new SecretStore(db, randomBytes(32)).set(a.orgId, "SHARED", "new");
+    expect(await sources()).toEqual([]);
+  });
+
+  test("a project-scoped caller can close only its own project's flags, never an org-wide one", async () => {
+    env = { registry, db, vault: new SecretVault({ db, masterKey: randomBytes(32) }) };
+    await run("set_secret", { name: "ORG_KEY", value: "v1" });
+    await sleep(5);
+    await run("incident_freeze", { reason: "org wide" }); // the flag has no project
+    // Every vault row of the name was updated after the flag was raised.
+    await db.run(async (h) => {
+      await h.orm.run(sql`update vault_secrets set updated_at = ${Date.now() + 1000}`);
     });
-    try {
-      const out = await run("incident_freeze", { reason: "rotate all" });
-      expect(out.flagged_for_rotation).toBe(3);
-      await run("incident_unfreeze");
-      const status = await run("incident_status", {}, reader);
-      expect(status.rotation_required.map((r: { name: string }) => r.name)).toEqual([
-        "DEPLOY_KEY",
-        "GITHUB_APP_KEY",
-        "WEBHOOK_SECRET",
-      ]);
-      expect(status.rotation_required[0]).toMatchObject({ reason: "rotate all" });
-      expect((await run("incident_freeze", { reason: "again" })).flagged_for_rotation).toBe(0);
-      // Rotation closes a flag.
-      expect(await clearRotationFlag(db, { orgId: a.orgId }, "DEPLOY_KEY", Date.now())).toBe(true);
-      const after = await run("incident_status", {}, reader);
-      expect(after.rotation_required.map((r: { name: string }) => r.name)).not.toContain(
-        "DEPLOY_KEY",
-      );
-      // Never another org's secrets.
-      const bTok = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
-      expect((await run("incident_status", {}, bTok)).rotation_required).toEqual([]);
-    } finally {
-      off();
-    }
+    const project = { orgId: a.orgId, projectId: a.projectId };
+    expect(await clearRotationFlagIfRotated(db, project, "ORG_KEY", Date.now())).toBe(false);
+    expect(await clearRotationFlag(db, project, "ORG_KEY", "vault", Date.now())).toBe(false);
+    expect((await listOpenRotationFlags(db, { orgId: a.orgId })).length).toBe(1);
+    // A project-scoped token rotating through the op cannot close it either.
+    const projTok = (await mintToken(db, project, "release_operator")).secret;
+    await run("set_secret", { name: "PROJ_KEY", value: "p1", project: a.projectSlug }, projTok);
+    await run("rotate_secret", { name: "ORG_KEY", value: "v2" }, projTok).catch(() => {});
+    expect((await listOpenRotationFlags(db, { orgId: a.orgId })).length).toBe(1);
+    // The org-scoped caller can.
+    expect(await clearRotationFlagIfRotated(db, { orgId: a.orgId }, "ORG_KEY", Date.now())).toBe(
+      true,
+    );
   });
 });
 
 describe("vault secrets", () => {
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   beforeEach(() => {
     env = { registry, db, vault: new SecretVault({ db, masterKey: randomBytes(32) }) };
   });
@@ -290,7 +352,7 @@ describe("vault secrets", () => {
     const out = await run("incident_freeze", { reason: "vault leak" });
     expect(out.flagged_for_rotation).toBe(2);
     const names = async () =>
-      (await run("incident_status", {}, reader)).rotation_required.map(
+      (await run("incident_status", {}, release)).rotation_required.map(
         (r: { name: string }) => r.name,
       );
     expect(await names()).toEqual(["DEPLOY_KEY", "NPM_TOKEN"]);
@@ -312,7 +374,7 @@ describe("vault secrets", () => {
     await run("set_secret", { name: "PROJ_ONLY", value: "y", project: a.projectSlug });
     const out = await run("incident_freeze", { reason: "project leak", project: a.projectSlug });
     expect(out.flagged_for_rotation).toBe(1);
-    const status = await run("incident_status", { project: a.projectSlug }, reader);
+    const status = await run("incident_status", { project: a.projectSlug }, release);
     expect(status.rotation_required.map((r: { name: string }) => r.name)).toEqual(["PROJ_ONLY"]);
   });
 });
@@ -375,24 +437,33 @@ describe("secret_usage", () => {
     expect(JSON.stringify(out)).not.toContain(b.runId);
   });
 
-  test("project-scoped tokens only see their project; reader is enough; bad ranges are refused", async () => {
+  test("project-scoped tokens only see their project; reader and operator are refused; bad ranges are refused", async () => {
     const second = await createProject(db, { orgId: a.orgId }, { slug: "web", name: "Web" });
     const other = { ...a, scope: { orgId: a.orgId, projectId: second.id } } as Tenant;
     await use(a, "DEPLOY_KEY", T0);
     await use(other, "DEPLOY_KEY", T0 + 1000);
-    const projTok = (await mintToken(db, { orgId: a.orgId, projectId: a.projectId }, "reader"))
-      .secret;
+    const projTok = (
+      await mintToken(db, { orgId: a.orgId, projectId: a.projectId }, "release_operator")
+    ).secret;
     const range = {
       name: "DEPLOY_KEY",
       since: "2026-11-20T00:00:00Z",
       until: "2026-11-21T00:00:00Z",
     };
+    expect(await fail("secret_usage", range, reader)).toBe("forbidden");
+    expect(
+      await fail(
+        "secret_usage",
+        range,
+        (await mintToken(db, { orgId: a.orgId }, "operator")).secret,
+      ),
+    ).toBe("forbidden");
     expect((await run("secret_usage", range, projTok)).total).toBe(1);
-    expect((await run("secret_usage", range, reader)).total).toBe(2);
-    expect(await fail("secret_usage", { ...range, since: "yesterday-ish" }, reader)).toBe(
+    expect((await run("secret_usage", range, release)).total).toBe(2);
+    expect(await fail("secret_usage", { ...range, since: "yesterday-ish" }, release)).toBe(
       "invalid_input",
     );
-    expect(await fail("secret_usage", { ...range, since: "2026-11-22T00:00:00Z" }, reader)).toBe(
+    expect(await fail("secret_usage", { ...range, since: "2026-11-22T00:00:00Z" }, release)).toBe(
       "invalid_input",
     );
   });

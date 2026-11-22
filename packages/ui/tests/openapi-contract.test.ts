@@ -375,6 +375,7 @@ test("incident_status", () => {
       reason: true,
       frozen_at: true,
       frozen_by: true,
+      rotation_required_count: true,
       rotation_required: true,
     }),
   );

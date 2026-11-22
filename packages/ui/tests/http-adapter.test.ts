@@ -633,6 +633,7 @@ describe("operations added for trust, digests, search and ingest", () => {
         reason: "<script>alert(1)</script> key leaked",
         frozen_at: 1_700_000_000_000,
         frozen_by: "member:maya",
+        rotation_required_count: 3,
         rotation_required: [
           {
             name: "DEPLOY_KEY",
@@ -651,6 +652,7 @@ describe("operations added for trust, digests, search and ingest", () => {
       level: "org",
       reason: "<script>alert(1)</script> key leaked",
       frozenBy: "member:maya",
+      rotationRequiredCount: 3,
       rotationRequired: [{ name: "DEPLOY_KEY", flaggedBy: "member:maya" }],
     });
   });

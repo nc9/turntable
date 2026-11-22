@@ -74,8 +74,8 @@ No token role reaches `admin`, so a token can never create tokens.
 | `delete_secret` | destructive | release_operator | Delete a secret and every version. Audited. |
 | `incident_freeze` | destructive | release_operator | Incident response: stop scheduling for the org or a project, kill running jobs, drop cached tokens, flag secret names for rotation. Audited. See [Incident response](/security#incident-response). |
 | `incident_unfreeze` | write | release_operator | Resume scheduling. Clears the pause only; rotation flags stay. Audited. |
-| `incident_status` | read | reader | Whether the scope is frozen, why, and which secret names still need rotation. |
-| `secret_usage` | read | reader | Where a secret name was used in a time range: runs, jobs, attempts and destinations, from the audit log. |
+| `incident_status` | read | reader | Whether the scope is frozen, why, and how many secrets still need rotation. Their names are listed only for release_operator and above. |
+| `secret_usage` | read | release_operator | Where a secret name was used in a time range: runs, jobs, attempts and destinations, from the audit log. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
 Secret values are set only through the REST API (over https) or `longshore secret set`, never through MCP or the OpenAPI agent description: see [Secrets vault](/secrets-vault).

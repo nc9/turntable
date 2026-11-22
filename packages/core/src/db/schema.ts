@@ -791,6 +791,11 @@ export const incidentRotationFlags = sqliteTable(
     /** The project whose freeze raised it; null for an org-wide freeze. */
     projectId: text("project_id"),
     name: text("name").notNull(),
+    /**
+     * Which store the name came from: `builtin` (the GitHub App's key and webhook secret) or
+     * `vault`. A flag is cleared only by an update in the store that raised it.
+     */
+    source: text("source").notNull().default("builtin"),
     reason: text("reason").notNull(),
     flaggedBy: text("flagged_by").notNull(),
     flaggedAt: integer("flagged_at", { mode: "number" }).notNull(),
