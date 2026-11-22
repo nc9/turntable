@@ -1,5 +1,6 @@
 import {
   EXPORT_STEP_NAME,
+  resumeJob,
   runJob,
   type ActEvent,
   type ActTarball,
@@ -32,8 +33,10 @@ export const EXIT: Record<Verdict, ExitCode> = {
 export interface JobEnv {
   provider: Provider;
   store: RunStore;
-  image: string;
-  repoTarball: Uint8Array;
+  /** Not needed to resume. */
+  image?: string;
+  /** Not needed to resume. */
+  repoTarball?: Uint8Array;
   /** Sink for the (redacted) log text. */
   out: (text: string) => void;
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
@@ -58,11 +61,27 @@ export interface JobOutcome {
 
 const enc = new TextEncoder();
 
+/** Re-attach to an exec a dead controller started, instead of starting one. */
+export interface ResumeFrom {
+  sandboxId: string;
+  execId: string;
+}
+
 /**
  * Runs one planned job in a fresh sandbox: streams redacted log text to `out` and the store
  * (with offsets), records steps, writes the job's final state, and always destroys the sandbox.
+ *
+ * With `resume` it re-attaches to the exec of a dead controller instead (`plan` is then only used
+ * to tell the job's own events from stub-needs events and to read outputs; pass it when the job has
+ * either): the store's output is reset, the whole exec log is replayed by offset, and the real
+ * verdict is derived from it, even for a job that finished while nobody was watching.
  */
-export async function executeJob(env: JobEnv, ids: JobIds, plan: JobPlan): Promise<JobOutcome> {
+export async function executeJob(
+  env: JobEnv,
+  ids: JobIds,
+  plan: JobPlan | undefined,
+  resume?: ResumeFrom,
+): Promise<JobOutcome> {
   const clean = (text: string): string => redactString(text, env.registry);
 
   const finish = async (
@@ -144,29 +163,47 @@ export async function executeJob(env: JobEnv, ids: JobIds, plan: JobPlan): Promi
   });
   try {
     if (cancelled) return await settle("cancelled", "cancelled by user");
-    const sb = await env.provider.create({
-      name: `tt-run-${ids.attemptId.toLowerCase()}`,
-      labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
-      image: env.image,
-      ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
-      network: { egress: env.egress ?? "none" },
-    });
-    sandboxId = sb.id;
-    await env.store.setSandbox(ids.attemptId, sb.id);
-    const run = runJob(
-      env.provider,
-      sb.id,
-      plan,
-      {
-        repoTarball: env.repoTarball,
-        ...(env.act ? { act: env.act } : {}),
-        ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
-      },
-      {
-        pollMs: env.pollMs ?? 500,
-        ...(env.timeoutSeconds ? { timeoutSeconds: env.timeoutSeconds } : {}),
-      },
-    );
+    let run;
+    if (resume) {
+      sandboxId = resume.sandboxId;
+      await env.store.resetOutput?.(ids.attemptId);
+      run = resumeJob(
+        env.provider,
+        resume.sandboxId,
+        resume.execId,
+        { pollMs: env.pollMs ?? 500 },
+        plan,
+      );
+    } else {
+      if (!plan || !env.image || !env.repoTarball) {
+        throw new Error("plan, image and repoTarball are required to start a job");
+      }
+      const sb = await env.provider.create({
+        name: `tt-run-${ids.attemptId.toLowerCase()}`,
+        labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
+        image: env.image,
+        ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
+        network: { egress: env.egress ?? "none" },
+      });
+      sandboxId = sb.id;
+      await env.store.setSandbox(ids.attemptId, sb.id);
+      run = runJob(
+        env.provider,
+        sb.id,
+        plan,
+        {
+          repoTarball: env.repoTarball,
+          ...(env.act ? { act: env.act } : {}),
+          ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
+        },
+        {
+          pollMs: env.pollMs ?? 500,
+          ...(env.timeoutSeconds ? { timeoutSeconds: env.timeoutSeconds } : {}),
+          // As soon as the exec exists, record it: a restarted controller needs it to re-attach.
+          onExec: ({ execId }) => env.store.setExec?.(ids.attemptId, execId) ?? Promise.resolve(),
+        },
+      );
+    }
     for (;;) {
       const next = await Promise.race([run.next(), aborted]);
       if (next === "abort") {

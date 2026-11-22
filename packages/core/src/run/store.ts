@@ -3,6 +3,7 @@ import {
   type Scope,
   appendAudit,
   appendLog,
+  type StepInput,
   createAttempt,
   createJob,
   createRun,
@@ -64,6 +65,10 @@ export interface RunStore {
   /** Creates an attempt and marks job, attempt and run running. */
   startAttempt(runId: string, jobId: string, provider: string): Promise<JobIds>;
   setSandbox(attemptId: string, sandboxId: string): Promise<void>;
+  /** Records act's exec id as soon as it starts, so a controller restarted mid-run can re-attach. */
+  setExec?(attemptId: string, execId: string): Promise<void>;
+  /** Clears stored log, steps and cuts before a re-attached run replays the whole exec log. */
+  resetOutput?(attemptId: string): Promise<void>;
   appendLog(attemptId: string, offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(attemptId: string, step: StepRecord): Promise<void>;
   /** A job that never ran (skipped, unsupported): state skipped, the reason kept as its log. */
@@ -120,21 +125,14 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
     async setSandbox(attemptId, sandboxId) {
       await updateAttempt(db, scope, attemptId, { sandboxId });
     },
+    async setExec(attemptId, execId) {
+      await updateAttempt(db, scope, attemptId, { execId });
+    },
     async appendLog(attemptId, offset, bytes) {
       await appendLog(db, scope, attemptId, offset, bytes);
     },
     async recordStep(attemptId, step) {
-      await upsertStep(db, scope, {
-        attemptId,
-        stepKey: step.stepKey,
-        stage: stageOf(step.stage),
-        index: step.index,
-        name: step.name,
-        result: resultOf(step.result),
-        startedAt: step.startedAt ?? null,
-        finishedAt: step.endedAt ?? null,
-        logOffset: step.logOffset,
-      });
+      await upsertStep(db, scope, stepInputOf(attemptId, step));
     },
     async skipJob(_runId, jobId, provider, reason) {
       const attempt = await createAttempt(db, scope, { jobId, provider });
@@ -169,6 +167,21 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
         input: info,
       });
     },
+  };
+}
+
+/** The persisted shape of a step the runner reported. Shared by the CLI and the worker. */
+export function stepInputOf(attemptId: string, step: StepRecord): StepInput {
+  return {
+    attemptId,
+    stepKey: step.stepKey,
+    stage: stageOf(step.stage),
+    index: step.index,
+    name: step.name,
+    result: resultOf(step.result),
+    startedAt: step.startedAt ?? null,
+    finishedAt: step.endedAt ?? null,
+    logOffset: step.logOffset,
   };
 }
 

@@ -53,6 +53,11 @@ export interface RunOptions {
   logChunkBytes?: number;
   /** Consecutive provider errors tolerated before giving up with infra_error. Default 5. */
   maxProviderErrors?: number;
+  /**
+   * Called as soon as act's exec has started, before anything is watched. Persist it: a
+   * restarted controller needs `{sandboxId, execId}` to re-attach with `resumeJob`.
+   */
+  onExec?: (info: { sandboxId: string; execId: string }) => void | Promise<void>;
 }
 
 /**
@@ -133,7 +138,6 @@ export async function* runJob(
   opts: RunOptions = {},
 ): AsyncGenerator<RunEvent, JobResult> {
   const pollMs = opts.pollMs ?? 500;
-  const chunk = opts.logChunkBytes ?? 256 * 1024;
   const maxErr = opts.maxProviderErrors ?? 5;
   const retry = { max: maxErr, pollMs };
   const L = plan.layout;
@@ -209,10 +213,43 @@ export async function* runJob(
       maxErr,
       pollMs,
     );
+    await opts.onExec?.({ sandboxId, execId });
+    return yield* watchExec(provider, sandboxId, execId, opts, plan);
+  } catch (e) {
+    if (e instanceof PlanError) return fail(`plan rejected: ${e.message}`);
+    if (e instanceof SandboxNotFoundError) return fail("sandbox is gone (cancelled or expired)");
+    if (e instanceof InfraError) return fail(e.message);
+    throw e;
+  }
+}
+
+/**
+ * Watches an already-started act exec to its end: polls status, drains the log by offset from
+ * the beginning, parses the events, and returns the verdict. It yields the same events as
+ * `runJob` (the log from offset 0, every act event). It holds no state outside the sandbox, so a
+ * restarted controller can call it for an exec a dead one started and get the real result: the
+ * exec outlives the controller, and its log is read by offset.
+ */
+export async function* watchExec(
+  provider: Provider,
+  sandboxId: string,
+  execId: string,
+  opts: RunOptions = {},
+  /**
+   * The job's plan, when known. It tells which events belong to the job (a split job's stub
+   * `needs` jobs emit their own) and which outputs to read. Without it every event counts and no
+   * outputs are read, which is only right for a job with no stub needs and no outputs.
+   */
+  plan?: JobPlan,
+): AsyncGenerator<RunEvent, JobResult> {
+  const pollMs = opts.pollMs ?? 500;
+  const chunk = opts.logChunkBytes ?? 256 * 1024;
+  const maxErr = opts.maxProviderErrors ?? 5;
+  try {
     yield { kind: "phase", phase: "running" };
 
     // Events of stub need jobs (split workflows) are not part of this job.
-    const mine = (ev: ActEvent): boolean => !("jobId" in ev && plan.stubIds.includes(ev.jobId));
+    const mine = (ev: ActEvent): boolean => !("jobId" in ev && plan?.stubIds.includes(ev.jobId));
     const parser = createActParser();
     const events: ActEvent[] = [];
     let offset = 0;
@@ -258,15 +295,29 @@ export async function* runJob(
     }
 
     const verdict = decide(status, summarize(events));
-    if (plan.outputNames.length === 0 || status.state === "lost") return verdict;
+    if (!plan || plan.outputNames.length === 0 || status.state === "lost") return verdict;
     const outputs = await readOutputs(provider, sandboxId, plan, maxErr, pollMs);
     return Object.keys(outputs).length > 0 ? { ...verdict, outputs } : verdict;
   } catch (e) {
-    if (e instanceof PlanError) return fail(`plan rejected: ${e.message}`);
     if (e instanceof SandboxNotFoundError) return fail("sandbox is gone (cancelled or expired)");
     if (e instanceof InfraError) return fail(e.message);
     throw e;
   }
+}
+
+/**
+ * Re-attaches to an exec a previous controller started (`{sandboxId, execId}` from `onExec`).
+ * Same events and verdict as `runJob` would have produced. An exec that is lost, or a sandbox
+ * that is gone, is infra_error: there is no result to recover.
+ */
+export function resumeJob(
+  provider: Provider,
+  sandboxId: string,
+  execId: string,
+  opts: RunOptions = {},
+  plan?: JobPlan,
+): AsyncGenerator<RunEvent, JobResult> {
+  return watchExec(provider, sandboxId, execId, opts, plan);
 }
 
 /** Turns the authoritative exec status plus parsed events into a verdict. */

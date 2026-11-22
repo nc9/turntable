@@ -16,6 +16,9 @@ import { requireProject, type Scope, scoped } from "./scope";
 export type { Scope } from "./scope";
 export * from "./api";
 export * from "./events";
+export * from "./lease";
+export * from "./poll";
+export * from "./readiness";
 export * from "./rerun";
 
 export type Project = typeof s.projects.$inferSelect;
@@ -561,6 +564,7 @@ export function updateAttempt(
   patch: {
     state?: JobState;
     sandboxId?: string | null;
+    execId?: string | null;
     exitCode?: number | null;
     errorClass?: string | null;
   },

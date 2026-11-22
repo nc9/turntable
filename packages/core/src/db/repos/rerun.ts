@@ -7,6 +7,8 @@ import { aggregateRunStatus, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { appendEvent } from "./events";
+import { DEPENDENCY_SKIP_PREFIX } from "./readiness";
+import { listRunAttempts } from "./api";
 import { createAttempt, getRun, type Job, listAttempts, listJobs, type Run } from "./index";
 import { type Scope, scoped } from "./scope";
 
@@ -99,7 +101,28 @@ export function rerunJobs(
         throw new RerunError("not_finished", `job ${job.jobKey} is ${job.state}, not finished`);
       }
     }
+    // Jobs skipped only because a dependency failed come back with it (transitively), so a rerun
+    // of the failed job can finish the run. A job a filter skipped (`if:`) stays skipped.
+    const auto = new Set<string>();
+    const attempts = await listRunAttempts(h, scope, run.id);
+    const latestClass = (jobId: string): string | null =>
+      attempts.filter((a) => a.jobId === jobId).at(-1)?.errorClass ?? null;
+    for (let grew = true; grew;) {
+      grew = false;
+      const keys = new Set(selected.map((j) => j.jobKey));
+      for (const job of all) {
+        if (keys.has(job.jobKey) || (job.state !== "skipped" && job.state !== "cancelled"))
+          continue;
+        if (!latestClass(job.id)?.startsWith(DEPENDENCY_SKIP_PREFIX)) continue;
+        if ((JSON.parse(job.needs) as string[]).some((k) => keys.has(k))) {
+          selected.push(job);
+          auto.add(job.id);
+          grew = true;
+        }
+      }
+    }
     for (const job of selected) {
+      if (auto.has(job.id)) continue; // dependents of a rerun job: gated ones wait for approval
       const neverRan =
         (job.state === "skipped" || job.state === "cancelled") && job.startedAt === null;
       if (neverRan && job.approvalKind !== null) {

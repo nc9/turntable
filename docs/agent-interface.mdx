@@ -62,6 +62,7 @@ No token role reaches `admin`, so a token can never create tokens.
 | `job_steps` | read | reader | The steps of a job attempt with results, timing and the log offset where each starts. |
 | `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap. |
 | `events` | read | reader | The event feed from a cursor, with optional long-poll (`wait_ms`, up to 30 s). |
+| `ingest_status` | read | reader | What the GitHub poller is doing: per repo last poll, outcome, next poll, failures and runs created, plus the API rate-limit budget. |
 | `whoami` | read | reader | Who the credential is: kind, token name, role, org and project slugs, expiry. Call it first. |
 | `list_orgs` | read | reader | The orgs the credential belongs to: just its own. |
 | `list_projects` | read | reader | Projects in scope with their bound repos. Cursor paging. |

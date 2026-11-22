@@ -8,6 +8,7 @@ import {
   drain,
   planJob,
   resolveActions,
+  resumeJob,
   runJob,
   sha256Hex,
   staticResolver,
@@ -183,5 +184,88 @@ describe("runJob against the fake provider", () => {
     // The workflow copy act reads is pinned to the sha.
     const wfText = await Bun.file(`${plan.layout.repo}/.github/workflows/ci.yml`).text();
     expect(wfText).toContain(`uses: acme/tool@${sha} # v1`);
+  });
+});
+
+describe("onExec and resumeJob: a controller that restarts gets the real result", () => {
+  /** Runs a real job, then replays its exec from scratch the way a restarted controller would. */
+  async function runThenResume(out: string, code: number) {
+    const { p, id, plan, repoTarball } = await setup();
+    const act = await fakeAct(out, code);
+    const seen: { sandboxId: string; execId: string }[] = [];
+    const first: RunEvent[] = [];
+    const result = await drain(
+      runJob(p, id, plan, { repoTarball, act }, { pollMs: 50, onExec: (i) => void seen.push(i) }),
+      (e) => first.push(e),
+    );
+    // a brand-new provider instance and no state from the first run: only the ids survive
+    const fresh = world.provider();
+    const again: RunEvent[] = [];
+    const resumed = await drain(
+      resumeJob(fresh, seen[0]!.sandboxId, seen[0]!.execId, { pollMs: 50 }),
+      (e) => again.push(e),
+    );
+    return { result, first, resumed, again, seen, id, p: fresh };
+  }
+
+  test("onExec reports the sandbox and exec once, as soon as the exec starts", async () => {
+    const { seen, id, first } = await runThenResume(await fixture("success.jsonl"), 0);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.sandboxId).toBe(id);
+    expect(seen[0]!.execId).toBeString();
+    // it fired before the job was watched: nothing but setup phases came before it could have
+    expect(first.some((e) => e.kind === "phase" && e.phase === "running")).toBe(true);
+  });
+
+  test("a success that finished while nobody watched still resumes as success, with the same log", async () => {
+    const { result, resumed, first, again } = await runThenResume(
+      await fixture("success.jsonl"),
+      0,
+    );
+    expect(result).toMatchObject({ state: "success" });
+    expect(resumed).toMatchObject({ state: "success", exitCode: 0 });
+    const logText = (events: RunEvent[]) =>
+      events
+        .filter((e) => e.kind === "log")
+        .map((e) => Buffer.from(e.bytes).toString())
+        .join("");
+    expect(logText(again)).toBe(logText(first)); // the full log, from offset 0
+    expect(again.filter((e) => e.kind === "act").length).toBe(
+      first.filter((e) => e.kind === "act").length,
+    );
+  });
+
+  test("a failure resumes as the same failure", async () => {
+    const { result, resumed } = await runThenResume(await fixture("failure.jsonl"), 1);
+    expect(result.state).toBe("failure");
+    expect(resumed).toMatchObject({ state: "failure", exitCode: 1 });
+  });
+
+  test("a lost exec and a vanished sandbox are infra_error, never a guess", async () => {
+    const { p, id, plan, repoTarball } = await setup();
+    const act = await fakeAct(await fixture("success.jsonl"), 0, "sleep 30");
+    let ids: { sandboxId: string; execId: string } | undefined;
+    const run = runJob(
+      p,
+      id,
+      plan,
+      { repoTarball, act },
+      { pollMs: 50, onExec: (i) => void (ids = i) },
+    );
+    for (;;) {
+      const n = await run.next();
+      if (n.done || ids) break;
+    }
+    void run.return({ state: "infra_error", reason: "stop" });
+    world.loseExec(ids!.sandboxId, ids!.execId);
+    const lost = await drain(
+      resumeJob(world.provider(), ids!.sandboxId, ids!.execId, { pollMs: 50 }),
+    );
+    expect(lost.state).toBe("infra_error");
+    await world.provider().destroy(ids!.sandboxId);
+    const gone = await drain(
+      resumeJob(world.provider(), ids!.sandboxId, ids!.execId, { pollMs: 50 }),
+    );
+    expect(gone).toMatchObject({ state: "infra_error" });
   });
 });

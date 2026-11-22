@@ -95,3 +95,55 @@ List and revoke tokens the same way:
 ```
 
 A revoked or expired token stops working at once. The OpenAPI document is at `/openapi.json`.
+
+## Run queued jobs on the server
+
+`serve` can also run jobs. Start it with `--worker` and it claims queued attempts, runs each one with act in a sandbox, and records the logs, steps and result. Reruns queued with the `rerun` operation are picked up the same way.
+
+```sh
+./dist/turntable-darwin-arm64 serve --worker --data-dir ./data
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--worker` | off | Run queued attempts in this process. |
+| `--global-cap` | 4 | Most attempts running at once. |
+| `--org-cap` | 2 | Most attempts running at once for one org, so one tenant cannot take every slot. |
+| `--lease-seconds` | 30 | How long a claim lasts without a heartbeat. |
+| `--image` | node 22 | Sandbox image. |
+
+Each claim is a lease that the worker extends with heartbeats, and everything a worker writes is fenced by it. If a worker dies (a crash, `kill -9`, a lost host), its lease expires. On boot, and periodically after, the server resolves every attempt with an expired lease by probing its sandbox with `exec.status`:
+
+- **The exec still exists** (running, or finished while nobody watched): the server takes the lease over and re-attaches. The job runs in a detached exec that outlives the server, so a job that finished meanwhile keeps its real result. The worker replays the exec's whole log by offset, rewrites the stored log and steps, and records the real verdict (success, failure, or infra_error if act itself failed).
+- **The exec is lost, the sandbox is gone, or the provider cannot be reached**: whatever still runs is killed, the sandbox is destroyed, and the attempt is marked `infra_error` with the probe result. It never guesses a verdict.
+
+Attempts started by `turntable run` have no lease and are never touched. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
+
+## Poll a GitHub repo
+
+`serve --poll <config.json>` watches a public repo and queues a run for each new commit on its default branch, and for new head commits of open pull requests that pass the gate.
+
+```json
+{
+  "tokenFile": "/etc/turntable/github-token",
+  "repos": [
+    {
+      "repo": "acme/web",
+      "workflow": ".github/workflows/ci.yml",
+      "defaultBranch": "main",
+      "intervalSeconds": 60,
+      "prMode": "allowlist",
+      "authors": ["octocat"],
+      "maxRunsPerHour": 30
+    }
+  ]
+}
+```
+
+- `tokenFile` is required: polling is authenticated, so its rate limit is not shared with every other unauthenticated client. Put a token in a file outside the repo with mode 0600 (for example from `gh auth token`). The token is read once, sent only in the `Authorization` header and never put in a URL or a log. The config refuses an inline token. `allowUnauthenticated: true` opts out explicitly.
+- The GitHub client is read-only: every request is a GET, enforced in the client and covered by a test.
+- Polling is cheap. Requests are conditional (`If-None-Match`), and a 304 does not count against the rate limit. `intervalSeconds` is 30 to 3600 (default 60; 60 to 120 is the intended range). A failing poll backs off exponentially, never shorter than `Retry-After` or the rate-limit reset GitHub reports, and a success resets it. When the remaining budget is nearly gone the poller waits for the reset instead of spending it. The `ingest_status` operation shows the budget and each repo's last poll over MCP or REST.
+- `prMode` is `off` by default. With `allowlist`, a pull request runs only if its head repo is the configured repo (a fork never runs, whatever else is true), whoever opened it is in `authors`, and the author of its head commit is in `authors` too. A head commit with no linked GitHub account is refused. A bot runs only if its exact login (`dependabot[bot]`) is listed. All of this comes from the API response.
+- Each (repo, workflow, event, sha) becomes a run once. `maxRunsPerHour` caps how many a repo can queue.
+- Runs land in the `org` and `project` you name (default: the built-in `local` ones), with the sha, ref, actor, commit message and PR number filled in. The project is bound to the repo so the worker knows what to fetch.
+- Workflows with unknown `needs`, a dependency cycle or more than 256 jobs are refused. Jobs with `needs` wait for their dependencies, and a job whose dependency failed, was cancelled or hit an infrastructure error is skipped at once (along with its own dependents) rather than left in the queue; a rerun of the failed job brings them back. Matrix jobs, reusable workflows and other unsupported features are rejected when the worker plans them, with the reason on the attempt.

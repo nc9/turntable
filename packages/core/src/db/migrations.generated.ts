@@ -97,5 +97,18 @@ export const migrations: Migration[] = [
       "ALTER TABLE `runs` ADD `head_branch` text;",
       "ALTER TABLE `runs` ADD `pr_number` integer;"
     ]
+  },
+  {
+    "tag": "0005_pink_maximus",
+    "when": 1795347979398,
+    "statements": [
+      "CREATE TABLE `poll_seen` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`repo` text NOT NULL,\n\t`workflow_path` text NOT NULL,\n\t`event` text NOT NULL,\n\t`sha` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`project_id`, `repo`, `workflow_path`, `event`, `sha`),\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `poll_seen_repo_created_idx` ON `poll_seen` (`project_id`,`repo`,`created_at`);",
+      "ALTER TABLE `job_attempts` ADD `exec_id` text;",
+      "ALTER TABLE `job_attempts` ADD `lease_owner` text;",
+      "ALTER TABLE `job_attempts` ADD `lease_expires_at` integer;",
+      "ALTER TABLE `job_attempts` ADD `heartbeat_at` integer;",
+      "CREATE INDEX `job_attempts_state_idx` ON `job_attempts` (`state`,`id`);"
+    ]
   }
 ];
