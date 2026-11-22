@@ -15,6 +15,7 @@
           "compatibility",
           "providers",
           "security",
+          "secrets-vault",
           "github-app"
         ]
       },

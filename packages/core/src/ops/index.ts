@@ -9,6 +9,7 @@ import { listOrgs } from "./definitions/list-orgs";
 import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
 import { whoami } from "./definitions/whoami";
+import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
@@ -45,4 +46,8 @@ export const registry = createRegistry([
   createApiToken,
   listActionPinsOp,
   acceptActionMoveOp,
+  setSecretOp,
+  rotateSecretOp,
+  deleteSecretOp,
+  listSecretsOp,
 ]);

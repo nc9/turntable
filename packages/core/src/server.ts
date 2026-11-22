@@ -3,6 +3,7 @@ import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
 import { createRestApi } from "./ops/rest";
+import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
@@ -29,12 +30,16 @@ const SECURITY_HEADERS = {
 } as const;
 
 /** Handler for `/api/v1/*`; resolves to undefined for any other path. */
-export type ApiHandler = (req: Request) => Promise<Response | undefined>;
+export type ApiHandler = (req: Request, peer?: string) => Promise<Response | undefined>;
 
 const OPENAPI = JSON.stringify(buildOpenApi(registry, VERSION));
 
-export async function handleRequest(req: Request, api?: ApiHandler): Promise<Response> {
-  const apiResponse = await api?.(req);
+export async function handleRequest(
+  req: Request,
+  api?: ApiHandler,
+  peer?: string,
+): Promise<Response> {
+  const apiResponse = await api?.(req, peer);
   if (apiResponse) return apiResponse;
   const url = new URL(req.url);
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -66,11 +71,15 @@ export type ServeOptions = {
   allowedOrigins?: readonly string[];
   /** GitHub webhook endpoint, when a master key is configured. */
   webhooks?: { handle(req: Request): Promise<Response | undefined> };
+  /** The secrets vault, when a master key is configured. */
+  vault?: SecretVault;
+  /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
+  trustForwardedProto?: boolean;
 };
 
 export function startServer(options: ServeOptions) {
-  const env = { registry, db: options.db };
-  const api = createRestApi(env);
+  const env = { registry, db: options.db, vault: options.vault };
+  const api = createRestApi(env, { trustForwardedProto: options.trustForwardedProto === true });
   const mcp = createMcpHttp(env);
   const realtime = createRealtime({
     env,
@@ -87,7 +96,7 @@ export function startServer(options: ServeOptions) {
       if (upgraded) return upgraded;
       const mcpResponse = await mcp(req);
       if (mcpResponse) return mcpResponse;
-      return handleRequest(req, api);
+      return handleRequest(req, api, srv.requestIP(req)?.address);
     },
     websocket: realtime.websocket,
   });

@@ -11,6 +11,7 @@ import {
   type Readiness,
   recordExec,
   recordPlan,
+  recordTrustClass,
   resetAttemptOutput,
   upsertStep,
 } from "../db/repos";
@@ -214,6 +215,9 @@ export class Scheduler {
       },
       setPlan: async (planJson) => {
         await recordPlan(db, scope, attempt.id, owner, planJson);
+      },
+      setTrustClass: async (klass) => {
+        await recordTrustClass(db, scope, attempt.id, owner, klass);
       },
       reset: async () => {
         await resetAttemptOutput(db, scope, attempt.id, owner);

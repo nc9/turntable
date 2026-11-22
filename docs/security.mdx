@@ -124,6 +124,10 @@ Everything the control plane fetches (the GitHub API and codeload, the Daytona A
 
 An address the guard refuses ends the job as a `policy:` failure, not an infrastructure error.
 
+## Secrets vault
+
+Scoped, versioned secrets with policy evaluated by the core: bound to an org (and optionally a project, environment and ref pattern), usable only by the trust classes named (never `untrusted_pr`) and only toward named destination hosts. Values are sealed under a per-domain key derived from the master key, are never returned by any operation, and every use and denial is audited with the run, job, attempt and destination. Child processes the server starts get an allowlisted environment only. Delivery to jobs comes with the secrets proxy (#15). Design and threat model: [Secrets vault](/secrets-vault).
+
 ## Audit log integrity and export
 
 Every write, denied write, authentication failure, policy change, token create and revoke, approval, secret change and GitHub App change is recorded. A test walks the op registry and fails if any write op does not audit.

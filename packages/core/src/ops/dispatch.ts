@@ -12,6 +12,7 @@ import {
   touchApiToken,
 } from "../db/repos";
 import type { Op, OpContext } from "./define";
+import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
 import type { Credential, Principal } from "./principal";
 import type { OpRegistry } from "./registry";
@@ -22,6 +23,8 @@ export type DispatchEnv = {
   registry: OpRegistry;
   db: Db;
   now?: () => number;
+  /** Set when the server has a master key; the vault ops need it. */
+  vault?: SecretVault | undefined;
 };
 
 export type DispatchResult =
@@ -45,6 +48,16 @@ export class AuthFailure extends OpError {
     this.orgId = orgId;
     this.tokenId = tokenId;
   }
+}
+
+/** The input as audited: fields that carry a secret value never go into the log. */
+export function redactInput(op: Op, input: unknown): unknown {
+  if (op.secretInputFields.length === 0 || input === null || typeof input !== "object") {
+    return input;
+  }
+  const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  for (const f of op.secretInputFields) if (f in out) out[f] = "[redacted]";
+  return out;
 }
 
 /** A short stable digest of an unrecognised token, so repeats of it share a throttle bucket. */
@@ -216,7 +229,7 @@ export async function dispatch(
         op: op!.name,
         effect: op!.effect,
         outcome,
-        input,
+        input: redactInput(op!, input),
       }).catch(() => {});
 
     if (!roleSatisfies(principal.role, op.auth.minRole)) {
@@ -235,6 +248,7 @@ export async function dispatch(
       scope,
       principal,
       now: env.now ?? Date.now,
+      vault: env.vault,
     });
     const target = op;
     if (!audited) {
@@ -250,7 +264,7 @@ export async function dispatch(
           op: target.name,
           effect: target.effect,
           outcome: "ok",
-          input,
+          input: redactInput(target, input),
         });
         return out;
       });

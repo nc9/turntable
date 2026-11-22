@@ -1,6 +1,7 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
 // it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
 // the same from the CLI and from the worker.
+import { scrubbedEnv } from "@longshore/provider-sdk";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,12 +86,7 @@ async function git(cwd: string, argv: string[]): Promise<void> {
     stdout: "pipe",
     stderr: "pipe",
     // No prompts, no credentials, no system config: this only ever reads public repos.
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: cwd,
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_CONFIG_NOSYSTEM: "1",
-    },
+    env: scrubbedEnv({ HOME: cwd, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" }),
   });
   const [err, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
   if (code !== 0) throw new Error(`git ${argv[0]} failed: ${err.trim().split("\n")[0]}`);
@@ -331,6 +327,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         const klass: TrustClass = assessed.demotedFrom
           ? assessed.klass
           : ((stored?.class as TrustClass | undefined) ?? assessed.klass);
+        // Recorded before anything starts: the secrets vault decides from this and nothing else.
+        await ctx.store.setTrustClass(klass);
         const failOnLint = lintFailsFor(klass);
         const jobPlan = planned
           ? // A whole-workflow job: a generated single-job workflow whose stub need jobs carry the

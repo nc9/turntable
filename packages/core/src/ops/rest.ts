@@ -94,9 +94,32 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
  * Builds the handler for `/api/v1/*`. Returns undefined for paths outside the API so the caller
  * can fall through. Only `auth.type === "token"` ops get routes.
  */
-export function createRestApi(env: DispatchEnv): (req: Request) => Promise<Response | undefined> {
+export type RestOptions = {
+  /** Trust `x-forwarded-proto` from a proxy you control (LONGSHORE_TRUST_FORWARDED_PROTO=1). */
+  trustForwardedProto?: boolean;
+};
+
+/**
+ * True when a value-bearing request is safe to accept: https, a proxy that says it terminated
+ * TLS (explicit opt-in), or a loopback peer with no proxy headers. The peer is the socket's
+ * address, never the Host header, which a client controls.
+ */
+export function secureTransport(req: Request, opts: RestOptions = {}, peer?: string): boolean {
+  if (new URL(req.url).protocol === "https:") return true;
+  if (opts.trustForwardedProto) {
+    const proto = req.headers.get("x-forwarded-proto")?.split(",").at(-1)?.trim().toLowerCase();
+    if (proto === "https") return true;
+  }
+  const proxied = req.headers.has("x-forwarded-for") || req.headers.has("x-forwarded-proto");
+  return !proxied && (peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1");
+}
+
+export function createRestApi(
+  env: DispatchEnv,
+  opts: RestOptions = {},
+): (req: Request, peer?: string) => Promise<Response | undefined> {
   const routes = env.registry.tokenOps().map(compile);
-  return async (req) => {
+  return async (req, peer) => {
     const url = new URL(req.url);
     if (url.pathname !== API_PREFIX && !url.pathname.startsWith(`${API_PREFIX}/`)) return undefined;
     const path = url.pathname.slice(API_PREFIX.length) || "/";
@@ -124,6 +147,12 @@ export function createRestApi(env: DispatchEnv): (req: Request) => Promise<Respo
       const input: Record<string, unknown> = {};
       for (const [key, value] of url.searchParams) {
         if (key in input) throw new OpError("invalid_input", `repeated query parameter: ${key}`);
+        if (route.op.secretInputFields.includes(key)) {
+          throw new OpError(
+            "invalid_input",
+            `${key} must be sent in the request body, not the URL`,
+          );
+        }
         input[key] = coerce(value, route.types[key]);
       }
       if (req.method !== "GET") Object.assign(input, await readBody(req));
@@ -135,6 +164,12 @@ export function createRestApi(env: DispatchEnv): (req: Request) => Promise<Respo
         return failure(new OpError("unauthenticated", "missing bearer token"), {
           "www-authenticate": 'Bearer realm="longshore"',
         });
+      }
+      if (route.op.secretInputFields.length > 0 && !secureTransport(req, opts, peer)) {
+        throw new OpError(
+          "invalid_input",
+          "this operation carries a secret value and is accepted only over https (or loopback)",
+        );
       }
       const result = await dispatch(
         env,
