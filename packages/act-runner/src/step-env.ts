@@ -27,6 +27,8 @@ export const STEP_ENV: readonly string[] = [
   // GitHub's hosted runners and act's own container mode use this locale. The sandbox image may
   // have none (POSIX), which changes sorting, case folding and character handling.
   "LANG=C.UTF-8",
+  // LC_ALL overrides every LC_* and LANG a tool or image sets, so the locale is the same everywhere.
+  "LC_ALL=C.UTF-8",
 ];
 
 /**

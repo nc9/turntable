@@ -70,7 +70,8 @@ issues cite them.
    reported `tput`/`clear` "TERM environment variable not set" errors on hosted runners.
    Verify with a probe workflow on GitHub if it ever matters; the tests accept unset or `dumb`
    and refuse anything else.
-4. **P4: `LANG=C.UTF-8`.** act's own container mode sets it with the comment "Use same locale as
+4. **P4: `LANG=C.UTF-8` and `LC_ALL=C.UTF-8`.** (The customer's own controller runs each part as
+   `part.sh > file 2>&1` with the same locale, TERM unset or dumb, and stdin not a terminal.) act's own container mode sets it with the comment "Use same locale as
    GitHub Actions" (`run_context.go`), and actions/runner-images sets no `LANG` or `LC_ALL` in
    `/etc/environment`, so the Ubuntu image default applies. The sandbox image may have no locale
    (POSIX), which changes sorting, case folding and character handling.

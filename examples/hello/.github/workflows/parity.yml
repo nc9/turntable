@@ -14,6 +14,7 @@ jobs:
           echo "github-actions=$GITHUB_ACTIONS"
           echo "term=${TERM-unset}"
           echo "lang=$LANG"
+          echo "lc-all=$LC_ALL"
           echo "pager=$GIT_PAGER"
       - name: A program the step starts sees no terminal either
         run: |

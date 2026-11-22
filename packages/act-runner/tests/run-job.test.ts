@@ -76,7 +76,7 @@ describe("the step environment", () => {
     const act = await fakeAct(
       "",
       0,
-      'echo "term=${TERM-unset}"; echo "lang=$LANG"; echo "pager=$GIT_PAGER"; echo "prompt=$GIT_TERMINAL_PROMPT"; echo "first=${PATH%%:*}"; ls "${PATH%%:*}"',
+      'echo "term=${TERM-unset}"; echo "lang=$LANG"; echo "lcall=$LC_ALL"; echo "pager=$GIT_PAGER"; echo "prompt=$GIT_TERMINAL_PROMPT"; echo "first=${PATH%%:*}"; ls "${PATH%%:*}"',
     );
     const saved = process.env.TERM;
     process.env.TERM = "xterm-256color"; // the controller's own terminal must not leak through
@@ -89,6 +89,7 @@ describe("the step environment", () => {
       expect(log).toMatch(/term=(unset|dumb)/);
       expect(log).not.toContain("xterm");
       expect(log).toContain("lang=C.UTF-8");
+      expect(log).toContain("lcall=C.UTF-8");
       expect(log).toContain("pager=cat");
       expect(log).toContain("prompt=0");
       expect(log).toMatch(/first=.*\/shims/);

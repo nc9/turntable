@@ -136,6 +136,7 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(log).toMatch(/term=(unset|dumb)/);
     expect(log).not.toMatch(/term=xterm/);
     expect(log).toContain("lang=C.UTF-8");
+    expect(log).toContain("lc-all=C.UTF-8");
     expect(log).toContain("pager=cat");
   }, 600_000);
 });

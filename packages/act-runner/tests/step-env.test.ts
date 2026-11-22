@@ -163,6 +163,7 @@ describe("the step environment", () => {
         "PAGER=cat",
         "GIT_TERMINAL_PROMPT=0",
         "LANG=C.UTF-8",
+        "LC_ALL=C.UTF-8",
       ]),
     );
     // TERM is unset, never set, and no controller environment is forwarded.
@@ -180,7 +181,7 @@ describe("the step environment", () => {
       launcherArgv(shims, [
         "sh",
         "-c",
-        'echo "path=$PATH"; echo "term=${TERM-unset}"; echo "lang=$LANG"; echo "pager=$GIT_PAGER"',
+        'echo "path=$PATH"; echo "term=${TERM-unset}"; echo "lang=$LANG"; echo "lcall=$LC_ALL"; echo "pager=$GIT_PAGER"',
       ]),
       {
         env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color", LANG: "en_US.UTF-8" },
@@ -195,6 +196,7 @@ describe("the step environment", () => {
     expect(out).toMatch(/term=(unset|dumb)/);
     expect(out).not.toContain("xterm");
     expect(out).toContain("lang=C.UTF-8");
+    expect(out).toContain("lcall=C.UTF-8");
     expect(out).toContain("pager=cat");
   });
 });
