@@ -319,6 +319,9 @@ export type WireConsumption = {
     reason: string | null;
     trust_class: string | null;
     sha256: string | null;
+  }[];
+};
+
 export type WireQuotas = {
   limits: {
     max_concurrent: number | null;

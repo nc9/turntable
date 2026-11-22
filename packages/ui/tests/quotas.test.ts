@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { createFixture } from "../src/api/fixture/adapter";
 import { createHttpApi } from "../src/api/http-adapter";
 import type { WireQuotas } from "../src/api/wire";
-import { formatBytes, formatQuotaValue, QUOTA_ROWS, quotaLevel } from "../src/lib/quota";
+import { formatQuotaValue, QUOTA_ROWS, quotaLevel } from "../src/lib/quota";
+import { formatSize } from "../src/lib/format";
 
 const wire = (over: Partial<WireQuotas["limits"]> = {}): WireQuotas => ({
   limits: {
@@ -39,11 +40,11 @@ describe("presentation", () => {
   });
 
   test("values are formatted per unit", () => {
-    expect(formatBytes(0)).toBe("0 B");
-    expect(formatBytes(999)).toBe("999 B");
-    expect(formatBytes(1500)).toBe("1.5 KB");
-    expect(formatBytes(48_000_000)).toBe("48 MB");
-    expect(formatBytes(1_200_000_000)).toBe("1.2 GB");
+    expect(formatSize(0)).toBe("0 B");
+    expect(formatSize(999)).toBe("999 B");
+    expect(formatSize(1500)).toBe("1.5 KB");
+    expect(formatSize(48_000_000)).toBe("48 MB");
+    expect(formatSize(1_200_000_000)).toBe("1.2 GB");
     expect(formatQuotaValue(1234, "count")).toBe("1,234");
     expect(formatQuotaValue(90, "minutes")).toBe("90 min");
   });

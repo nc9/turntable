@@ -402,6 +402,8 @@ test("artifacts: provenance and consumption shapes the adapter reads", () => {
     "trust_class",
     "sha256",
   ]);
+});
+
 test("quotas: get and set return the shape the adapter reads", () => {
   // Read only: there is no API operation that sets quotas.
   expect(Object.keys(spec.paths["/quotas"] ?? {})).toEqual(["get"]);

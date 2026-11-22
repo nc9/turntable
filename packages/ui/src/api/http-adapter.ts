@@ -598,6 +598,8 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         trustClass: r.trust_class,
         sha256: r.sha256,
       }));
+    },
+
     async getQuotas(): Promise<OrgQuotas> {
       return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
     },

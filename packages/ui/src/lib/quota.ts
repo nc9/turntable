@@ -1,5 +1,6 @@
 // Presentation helpers for per-org quotas: names, units and how full a limit is.
 import type { QuotaLimits, QuotaMetric, QuotaUsage } from "@/api/types";
+import { formatSize } from "@/lib/format";
 
 export const QUOTA_ROWS: {
   metric: QuotaMetric;
@@ -46,21 +47,8 @@ export const QUOTA_ROWS: {
   },
 ];
 
-const UNITS = ["B", "KB", "MB", "GB", "TB"];
-
-/** `1.5 GB`; decimal units, as storage is usually sold. */
-export function formatBytes(n: number): string {
-  let v = n;
-  let i = 0;
-  while (v >= 1000 && i < UNITS.length - 1) {
-    v /= 1000;
-    i++;
-  }
-  return `${i === 0 || v >= 100 ? Math.round(v) : Math.round(v * 10) / 10} ${UNITS[i]}`;
-}
-
 export function formatQuotaValue(n: number, unit: "count" | "minutes" | "bytes"): string {
-  if (unit === "bytes") return formatBytes(n);
+  if (unit === "bytes") return formatSize(n);
   if (unit === "minutes") return `${n.toLocaleString("en-US")} min`;
   return n.toLocaleString("en-US");
 }

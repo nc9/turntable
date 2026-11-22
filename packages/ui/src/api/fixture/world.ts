@@ -970,6 +970,8 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       });
       return { runId: s.runId, name: s.name, ...d, trustClass: art.trustClass, sha256: art.sha256 };
     });
+  }
+
   // Quotas: a few limits and usage that moves with the fixture's running attempts.
   const quotaLimits: QuotaLimits = {
     maxConcurrent: 4,
