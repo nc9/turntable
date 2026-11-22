@@ -109,6 +109,8 @@ const DAYTONA_KEYS = new Set([
   "ttlSeconds",
   "capacityWaitSeconds",
   "ownerCiPreflight",
+  "ownerCiLabels",
+  "ownerCiLabelWaitAt",
   "allowDomainListConfinement",
 ]);
 
@@ -137,7 +139,8 @@ function int(
 /**
  * `ownerCiPreflight` in the config: `true` (or absent) is the defaults; an object sets the org CPU
  * check's `cpuLimit`, `region` and `sandboxClass`; `false` turns that org check off. The label
- * count of the account owner's CI sandboxes is part of the provider and is never configurable.
+ * count of the account owner's CI sandboxes is separate and off unless `ownerCiLabels` and
+ * `ownerCiLabelWaitAt` are both given.
  */
 function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
   if (v === undefined || v === true) return undefined;
@@ -175,11 +178,28 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
   return out;
 }
 
+/** `ownerCiLabels`: `{ key, values[] }`, the label that marks the account owner's CI sandboxes. */
+function ownerCiLabelsOf(v: unknown): { key: string; values: string[] } | undefined {
+  if (v === undefined) return undefined;
+  const bad = (): never => {
+    throw new Error(
+      "daytona provider option ownerCiLabels must be { key, values }, for example { key: 'project', values: ['acme-ci'] }",
+    );
+  };
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return bad();
+  const o = v as Record<string, unknown>;
+  if (Object.keys(o).some((k) => k !== "key" && k !== "values")) return bad();
+  if (typeof o.key !== "string" || !Array.isArray(o.values)) return bad();
+  if (!o.values.every((x) => typeof x === "string")) return bad();
+  return { key: o.key, values: o.values as string[] };
+}
+
 /**
  * Daytona, for a shared account. The key is never in the config: `apiKeyFile` names a file that
  * holds it (or `apiKeyEnv` an environment variable; default `DAYTONA_API_KEY`). The label and name
- * prefix `longshore-dev`, the 30 minute backstops, the owner-CI preflight and the cap of 3 live
- * sandboxes are fixed in the provider and cannot be configured away.
+ * prefix `longshore-dev`, the 30 minute backstops and the cap of 3 live sandboxes are fixed in the
+ * provider and cannot be configured away. Counting the account owner's CI sandboxes by label is
+ * the operator's to configure (`ownerCiLabels`, `ownerCiLabelWaitAt`) and is off by default.
  */
 function createDaytona(config: Record<string, unknown>): Provider {
   const unknown = Object.keys(config).filter((k) => !DAYTONA_KEYS.has(k));
@@ -189,6 +209,13 @@ function createDaytona(config: Record<string, unknown>): Provider {
     );
   }
   const preflight = ownerCiPreflightOf(config.ownerCiPreflight);
+  const ownerLabels = ownerCiLabelsOf(config.ownerCiLabels);
+  const labelWaitAt = int(config, "ownerCiLabelWaitAt", 1, 10_000);
+  if ((ownerLabels === undefined) !== (labelWaitAt === undefined)) {
+    throw new Error(
+      "daytona provider options ownerCiLabels and ownerCiLabelWaitAt go together: the labels say what to count, the number says when to wait",
+    );
+  }
   const domainOk = config.allowDomainListConfinement;
   if (domainOk !== undefined && typeof domainOk !== "boolean") {
     throw new Error("daytona provider option allowDomainListConfinement must be true or false");
@@ -217,6 +244,9 @@ function createDaytona(config: Record<string, unknown>): Provider {
     // server name, which the strict address allow list does not.
     ...(domainOk === true ? { allowDomainListConfinement: true } : {}),
     ...(preflight !== undefined ? { ownerCiPreflight: preflight } : {}),
+    ...(ownerLabels !== undefined && labelWaitAt !== undefined
+      ? { ownerCiLabels: ownerLabels, ownerCiLabelWaitAt: labelWaitAt }
+      : {}),
     clampTtl: true,
     ...(ttl !== undefined ? { maxTtlSeconds: ttl } : {}),
   });

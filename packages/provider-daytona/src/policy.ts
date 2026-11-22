@@ -17,32 +17,42 @@ export const HARD_MAX_LIVE = 3;
 export const MAX_TTL_SECONDS = 30 * 60;
 
 /**
- * Names that mark the account owner's own CI sandboxes. They appear as a label value (for
- * example `project=squirrel-pub-ci`), as a label key, or as the snapshot a sandbox started from.
- * Before creating one of ours, if this many or more of them are running, we wait: our runs must
- * not crowd out their CI. They are only ever counted, never listed back, changed or deleted.
+ * How to recognise the account owner's own CI sandboxes, when the operator wants the provider to
+ * count them: one label key and the values it takes on those sandboxes (for example
+ * `project=acme-ci`), or a snapshot of one of those names. Nothing is assumed: with no
+ * `ownerCiLabels` configured there is no label check at all. They are only ever counted, never
+ * listed back, changed or deleted.
  */
-export const FOREIGN_CI_LABELS: readonly string[] = [
-  "squirrel-pub-ci",
-  "squirrel-ci",
-  "squirrel-release",
-];
-export const FOREIGN_WAIT_AT = 8;
+export interface OwnerCiLabels {
+  /** The label key their CI sandboxes carry, for example `project`. */
+  key: string;
+  /** The values of that key (and snapshot names) that mark a sandbox as theirs. */
+  values: readonly string[];
+}
 
-/** The label key the account owner's CI uses, with one of FOREIGN_CI_LABELS as its value. */
-export const FOREIGN_CI_LABEL_KEY = "project";
+const LABEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+
+/** Validates an `OwnerCiLabels`; throws a RangeError naming what is wrong. */
+export function checkOwnerCiLabels(l: OwnerCiLabels): OwnerCiLabels {
+  if (!LABEL_NAME.test(l.key)) throw new RangeError("ownerCiLabels.key must be a plain label name");
+  if (l.values.length < 1 || l.values.length > 20)
+    throw new RangeError("ownerCiLabels.values must list 1 to 20 values");
+  for (const v of l.values)
+    if (!LABEL_NAME.test(v)) throw new RangeError(`ownerCiLabels.values entry ${v} is not plain`);
+  return { key: l.key, values: [...new Set(l.values)] };
+}
 
 /**
- * True for one of the account owner's CI sandboxes: the label `project` set to exactly one of
- * the CI names, or a sandbox that started from a snapshot with one of those names.
+ * True for one of the account owner's CI sandboxes: the configured label key set to exactly one of
+ * the configured values, or a sandbox that started from a snapshot with one of those names.
  */
-export function isForeignCi(s: {
-  labels?: Record<string, string> | undefined;
-  snapshot?: string | undefined;
-}): boolean {
-  if (s.snapshot !== undefined && FOREIGN_CI_LABELS.includes(s.snapshot)) return true;
-  const v = s.labels?.[FOREIGN_CI_LABEL_KEY];
-  return v !== undefined && FOREIGN_CI_LABELS.includes(v);
+export function isOwnerCi(
+  s: { labels?: Record<string, string> | undefined; snapshot?: string | undefined },
+  l: OwnerCiLabels,
+): boolean {
+  if (s.snapshot !== undefined && l.values.includes(s.snapshot)) return true;
+  const v = s.labels?.[l.key];
+  return v !== undefined && l.values.includes(v);
 }
 
 /**

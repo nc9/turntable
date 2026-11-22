@@ -57,6 +57,33 @@ test("daytona is selectable and its options are validated strictly", () => {
     /unknown daytona provider option/,
   );
   expect(() => createProvider("daytona", { ownerCiPreflight: true, maxLive: 3 })).not.toThrow();
+  // The owner-CI label count is the operator's, and off unless both halves are given.
+  const labels = { key: "project", values: ["acme-ci", "acme-release"] };
+  expect(() =>
+    createProvider("daytona", { ownerCiLabels: labels, ownerCiLabelWaitAt: 8 }),
+  ).not.toThrow();
+  expect(() => createProvider("daytona", { ownerCiLabels: labels })).toThrow(/go together/);
+  expect(() => createProvider("daytona", { ownerCiLabelWaitAt: 8 })).toThrow(/go together/);
+  for (const bad of [
+    "acme-ci",
+    [],
+    { key: "project" },
+    { values: ["x"] },
+    { key: "project", values: "x" },
+    { key: "project", values: [1] },
+    { key: "project", values: ["x"], extra: true },
+    { key: "bad key", values: ["x"] },
+    { key: "project", values: [] },
+  ]) {
+    expect(() =>
+      createProvider("daytona", { ownerCiLabels: bad, ownerCiLabelWaitAt: 8 }),
+    ).toThrow();
+  }
+  for (const badAt of [0, -1, 1.5, "8", 10_001]) {
+    expect(() =>
+      createProvider("daytona", { ownerCiLabels: labels, ownerCiLabelWaitAt: badAt }),
+    ).toThrow();
+  }
 });
 
 test("a daytona provider built from config talks to the API with the key from a file, and applies the account rules", async () => {

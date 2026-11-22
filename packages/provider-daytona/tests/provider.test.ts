@@ -35,6 +35,14 @@ const make = (o: Partial<DaytonaProviderOptions> = {}) =>
     ...o,
   });
 
+/** The label-count gate, configured the way an operator would: a key, its values, a threshold. */
+const makeGated = (o: Partial<DaytonaProviderOptions> = {}) =>
+  make({
+    ownerCiLabels: { key: "project", values: ["acme-pub-ci", "acme-ci", "acme-release"] },
+    ownerCiLabelWaitAt: 8,
+    ...o,
+  });
+
 const spec = (over: Partial<SandboxSpec> = {}): SandboxSpec => ({
   name: "job-1",
   labels: { "longshore-run": "run-42" },
@@ -233,16 +241,16 @@ describe("live cap and waiting", () => {
 
   test("it waits while the owner's CI has 8 or more live sandboxes, and goes ahead once under", async () => {
     const ids = [
-      "squirrel-ci",
-      "squirrel-pub-ci",
-      "squirrel-release",
-      "squirrel-ci",
-      "squirrel-ci",
-      "squirrel-pub-ci",
-      "squirrel-release",
-      "squirrel-ci",
+      "acme-ci",
+      "acme-pub-ci",
+      "acme-release",
+      "acme-ci",
+      "acme-ci",
+      "acme-pub-ci",
+      "acme-release",
+      "acme-ci",
     ].map((k, i) => mock.addForeign(`their-${i}`, { project: k }));
-    const p = make();
+    const p = makeGated();
     let done = false;
     const pending = p.create(spec()).then((h) => {
       done = true;
@@ -265,26 +273,26 @@ describe("live cap and waiting", () => {
 
   test("the owner's CI is matched by the project label or snapshot, and counted in every quota state", async () => {
     // 4 by label value (how the account really labels them), 4 by snapshot: 8 live
-    for (let i = 0; i < 2; i++) mock.addForeign(`v-${i}`, { project: "squirrel-pub-ci" });
+    for (let i = 0; i < 2; i++) mock.addForeign(`v-${i}`, { project: "acme-pub-ci" });
     for (let i = 0; i < 2; i++)
-      mock.addForeign(`w-${i}`, { project: "squirrel-release" }, "pending_build");
+      mock.addForeign(`w-${i}`, { project: "acme-release" }, "pending_build");
     for (let i = 0; i < 2; i++)
-      mock.addForeign(`s-${i}`, { project: "other" }, "starting", "squirrel-release");
+      mock.addForeign(`s-${i}`, { project: "other" }, "starting", "acme-release");
     for (let i = 0; i < 2; i++)
-      mock.addForeign(`t-${i}`, { project: "other" }, "building_snapshot", "squirrel-ci");
+      mock.addForeign(`t-${i}`, { project: "other" }, "building_snapshot", "acme-ci");
     // none of these count: not live, wrong key, wrong value, someone else's
     for (let i = 0; i < 20; i++) {
       mock.addForeign(
         `idle-${i}`,
-        { project: "squirrel-ci" },
+        { project: "acme-ci" },
         ["stopped", "archived", "error", "destroyed"][i % 4],
-        "squirrel-ci",
+        "acme-ci",
       );
     }
-    mock.addForeign("key", { "squirrel-ci": "1" });
-    mock.addForeign("lane", { lane: "squirrel-ci" });
+    mock.addForeign("key", { "acme-ci": "1" });
+    mock.addForeign("lane", { lane: "acme-ci" });
     mock.addForeign("unrelated", { project: "someone-else" }, "started", "daytona-small");
-    const p = make({ capacityWaitMs: 40 });
+    const p = makeGated({ capacityWaitMs: 40 });
     await expect(p.create(spec())).rejects.toThrow(/CI has 8 live/);
     // the check asked only for states that hold quota, not for stopped or archived ones
     const asked = mock.requests.filter(
@@ -299,8 +307,8 @@ describe("live cap and waiting", () => {
     for (const state of ALL_STATES) {
       await mock.stop();
       mock = startMock();
-      for (let i = 0; i < 8; i++) mock.addForeign(`ci-${i}`, { project: "squirrel-ci" }, state);
-      const p = make({ capacityWaitMs: 30 });
+      for (let i = 0; i < 8; i++) mock.addForeign(`ci-${i}`, { project: "acme-ci" }, state);
+      const p = makeGated({ capacityWaitMs: 30 });
       if (isLive(state)) {
         await expect(p.create(spec())).rejects.toThrow(/CI has 8 live/);
       } else {
@@ -330,11 +338,41 @@ describe("live cap and waiting", () => {
   });
 
   test("stopped sandboxes of the owner's CI do not hold us up", async () => {
-    for (let i = 0; i < 10; i++)
-      mock.addForeign(`their-${i}`, { project: "squirrel-ci" }, "stopped");
+    for (let i = 0; i < 10; i++) mock.addForeign(`their-${i}`, { project: "acme-ci" }, "stopped");
+    const p = makeGated({ capacityWaitMs: 40 });
+    const h = await p.create(spec());
+    await p.destroy(h.id);
+  });
+
+  test("with no owner-CI labels configured nothing is counted, and nothing is listed for it", async () => {
+    // plenty of someone else's live sandboxes, labelled however they like
+    for (let i = 0; i < 20; i++) mock.addForeign(`ci-${i}`, { project: "acme-ci" });
     const p = make({ capacityWaitMs: 40 });
     const h = await p.create(spec());
     await p.destroy(h.id);
+    // the all-states listing the label count needs was never asked for
+    expect(
+      mock.requests.some((r) => r.path === "/api/sandbox" && r.query.includes("states=")),
+    ).toBe(false);
+  });
+
+  test("the label gate needs both halves, a valid key and values, and a positive threshold", () => {
+    const labels = { key: "project", values: ["acme-ci"] };
+    expect(() => make({ ownerCiLabels: labels })).toThrow(RangeError);
+    expect(() => make({ ownerCiLabelWaitAt: 8 })).toThrow(RangeError);
+    expect(() => make({ ownerCiLabels: labels, ownerCiLabelWaitAt: 0 })).toThrow(RangeError);
+    expect(() =>
+      make({ ownerCiLabels: { key: "bad key", values: ["x"] }, ownerCiLabelWaitAt: 8 }),
+    ).toThrow(RangeError);
+    expect(() => make({ ownerCiLabels: labels, ownerCiLabelWaitAt: 3 })).not.toThrow();
+  });
+
+  test("the threshold is the configured one", async () => {
+    for (let i = 0; i < 3; i++) mock.addForeign(`ci-${i}`, { project: "acme-ci" });
+    const blocked = makeGated({ ownerCiLabelWaitAt: 3, capacityWaitMs: 40 });
+    await expect(blocked.create(spec())).rejects.toThrow(/CI has 3 live.*waiting at 3/);
+    const roomy = makeGated({ ownerCiLabelWaitAt: 4, capacityWaitMs: 40 });
+    await roomy.destroy((await roomy.create(spec())).id);
   });
 
   test("gives up with a retryable error when capacity never frees", async () => {
@@ -349,7 +387,7 @@ describe("live cap and waiting", () => {
 
 describe("only ever our own sandboxes", () => {
   test("list, count and destroyByLabels never see or delete a foreign sandbox", async () => {
-    const theirs = mock.addForeign("squirrel-ci-1", { "squirrel-ci": "1", grp: "g" });
+    const theirs = mock.addForeign("acme-ci-1", { "acme-ci": "1", grp: "g" });
     const lookalike = mock.addForeign("longshore-dev-fake", { grp: "g" }); // name prefix but no label
     const p = make();
     const mine = await p.create(spec({ labels: { grp: "g" } }));
@@ -366,7 +404,7 @@ describe("only ever our own sandboxes", () => {
   });
 
   test("destroy, exec and files refuse a sandbox that is not ours", async () => {
-    const theirs = mock.addForeign("squirrel-ci-1", { "squirrel-ci": "1" });
+    const theirs = mock.addForeign("acme-ci-1", { "acme-ci": "1" });
     const p = make();
     await expect(p.destroy(theirs)).rejects.toBeInstanceOf(SpecError);
     await expect(
@@ -882,13 +920,17 @@ describe("the org-wide CPU check before a create", () => {
     const p = make();
     await p.destroy((await p.create(spec())).id);
     mock.usage.rows = [{ regionId: "us", sandboxClass: "container" }];
-    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    await expect(makeGated({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(
+      InfraError,
+    );
   });
 
   test("an unreadable usage is never taken for room: an error fails the create", async () => {
     primed();
     mock.usage.status = 500;
-    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    await expect(makeGated({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(
+      InfraError,
+    );
     expect(
       mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
     ).toHaveLength(0);
@@ -934,10 +976,12 @@ describe("the org-wide CPU check before a create", () => {
     expect(usageReads()).toBe(0);
   });
 
-  test("it is in addition to the label count: both must have room", async () => {
+  test("it is in addition to the label count, when one is configured: both must have room", async () => {
     primed();
     mock.usage.rows = [row(0)];
-    for (let i = 0; i < 8; i++) mock.addForeign(`ci-${i}`, { project: "squirrel-ci" });
-    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    for (let i = 0; i < 8; i++) mock.addForeign(`ci-${i}`, { project: "acme-ci" });
+    await expect(makeGated({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(
+      InfraError,
+    );
   });
 });
