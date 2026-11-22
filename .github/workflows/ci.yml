@@ -1,4 +1,4 @@
-# Bootstrap CI on GitHub Actions. Turntable will run its own CI later.
+# Bootstrap CI on GitHub Actions. Longshore will run its own CI later.
 name: ci
 
 on:
@@ -40,7 +40,7 @@ jobs:
       - run: bun run test
       - run: bun run build
       - name: Smoke the linux-x64 binary
-        run: scripts/smoke.sh dist/turntable-linux-x64
+        run: scripts/smoke.sh dist/longshore-linux-x64
 
   provider-docker:
     runs-on: ubuntu-24.04
@@ -78,9 +78,9 @@ jobs:
         run: bun run test:act-e2e
       - name: Build the linux-x64 binary
         run: bun run scripts/build.ts bun-linux-x64
-      - name: turntable run end to end (compiled binary, docker provider)
+      - name: longshore run end to end (compiled binary, docker provider)
         env:
-          TT_BINARY: dist/turntable-linux-x64
+          TT_BINARY: dist/longshore-linux-x64
         run: bun run test:run-e2e
 
   docker:

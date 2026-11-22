@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type { Provider } from "@turntable/provider-sdk";
+import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, openDatabase } from "./db";
 import { loadPollConfig, Poller } from "./poll";
 import {
@@ -15,23 +15,23 @@ import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops
 import { startServer } from "./server";
 import { VERSION } from "./version";
 
-const USAGE = `turntable ${VERSION}
+const USAGE = `longshore ${VERSION}
 
 Usage:
-  turntable serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
+  longshore serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>]]
                   [--poll <config.json>]
-  turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
+  longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
-  turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
-  turntable token revoke <id> [--data-dir ./data]
-  turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
-  turntable version
+  longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
+  longshore token revoke <id> [--data-dir ./data]
+  longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
+  longshore version
 
 Environment:
-  TURNTABLE_HOST  default for --host (the container image sets 0.0.0.0)
-  TURNTABLE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
+  LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
+  LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
 
 /** Starts the worker and the poller when asked for. Returns a stop function. */
@@ -48,7 +48,7 @@ async function startBackground(
     "provider-config"?: string | undefined;
   },
 ): Promise<{ stop(): Promise<void> }> {
-  const log = (m: string) => console.log(`[turntable] ${m}`);
+  const log = (m: string) => console.log(`[longshore] ${m}`);
   let scheduler: Scheduler | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   let poller: Poller | undefined;
@@ -143,7 +143,7 @@ async function serve(args: string[]): Promise<void> {
     args,
     options: {
       port: { type: "string", default: "8080" },
-      host: { type: "string", default: process.env.TURNTABLE_HOST ?? "127.0.0.1" },
+      host: { type: "string", default: process.env.LONGSHORE_HOST ?? "127.0.0.1" },
       "data-dir": { type: "string", default: "./data" },
       "allowed-origin": { type: "string", multiple: true },
       worker: { type: "boolean", default: false },
@@ -162,17 +162,17 @@ async function serve(args: string[]): Promise<void> {
     throw new Error(`invalid --port: ${values.port}`);
   }
   const dataDir = resolve(values["data-dir"]);
-  const db = openDatabase(join(dataDir, "turntable.db"));
+  const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
 
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
-    ...(process.env.TURNTABLE_ALLOWED_ORIGINS?.split(",") ?? []),
+    ...(process.env.LONGSHORE_ALLOWED_ORIGINS?.split(",") ?? []),
   ]
     .map((o) => o.trim())
     .filter((o) => o !== "");
   const server = startServer({ port, host: values.host, db, allowedOrigins });
-  console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
   const background = await startBackground(db, values);
 
@@ -207,7 +207,7 @@ async function token(args: string[]): Promise<void> {
     allowPositionals: sub === "revoke",
     strict: true,
   });
-  const open = () => openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
+  const open = () => openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
   if (sub === "create") {
     if (!values.org || !values.role || !values.name) {
       throw new Error("--org, --role and --name are required");
@@ -222,7 +222,7 @@ async function token(args: string[]): Promise<void> {
         expiresInDays:
           values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
       });
-      // Details to stderr, the secret alone to stdout, so `TOKEN=$(turntable token create ...)` works.
+      // Details to stderr, the secret alone to stdout, so `TOKEN=$(longshore token create ...)` works.
       console.error(
         `created ${created.role} token ${created.id} for ${created.org}${created.project ? `/${created.project}` : ""}, expires ${iso(created.expiresAt)}. It is shown once.`,
       );
@@ -254,7 +254,7 @@ async function token(args: string[]): Promise<void> {
     }
   } else if (sub === "revoke") {
     const [id] = positionals;
-    if (!id) throw new Error("usage: turntable token revoke <id> [--data-dir ./data]");
+    if (!id) throw new Error("usage: longshore token revoke <id> [--data-dir ./data]");
     const db = open();
     try {
       const done = await revokeTokenFromCli(db, id);
@@ -263,7 +263,7 @@ async function token(args: string[]): Promise<void> {
       db.close();
     }
   } else {
-    throw new Error("usage: turntable token <create|list|revoke> ...");
+    throw new Error("usage: longshore token <create|list|revoke> ...");
   }
 }
 

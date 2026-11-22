@@ -1,4 +1,4 @@
-import type { Provider } from "@turntable/provider-sdk";
+import type { Provider } from "@longshore/provider-sdk";
 import type { Job, JobAttempt, Run, Scope } from "../db/repos";
 import type { StepInput } from "../db/repos";
 

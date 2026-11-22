@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { githubResolver } from "@turntable/act-runner";
-import { DockerProvider } from "@turntable/provider-docker";
+import { githubResolver } from "@longshore/act-runner";
+import { DockerProvider } from "@longshore/provider-docker";
 import { ensureInstance, ensureLocalTenant, openDatabase } from "../db";
 import { changedFiles, snapshotRepo } from "./repo-archive";
 import { makeSafeReader } from "./safe-read";
@@ -11,7 +11,7 @@ import { runWorkflowLocal } from "./run-workflow";
 import { dbRunStore } from "./store";
 
 export const RUN_USAGE = `Usage:
-  turntable run <workflow-path> [-j <job>] [--repo <dir>] [--provider docker] [--image <ref>]
+  longshore run <workflow-path> [-j <job>] [--repo <dir>] [--provider docker] [--image <ref>]
                 [--data-dir ./data] [--event push] [--egress none|open]
                 [--base-ref <branch>] [--action opened] [--changed-from <rev>] [--max-parallel 2]
 
@@ -89,7 +89,7 @@ export async function runCommand(args: string[]): Promise<number> {
     console.error("warning: uncommitted changes are not delivered; only HEAD is run");
   }
 
-  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
   const ac = new AbortController();
   let interrupts = 0;
   const onSigint = (): void => {

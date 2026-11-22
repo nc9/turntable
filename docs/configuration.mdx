@@ -7,25 +7,25 @@ description: Flags and environment variables supported today.
 
 | Command | Description |
 | --- | --- |
-| `turntable serve` | Start the server. |
-| `turntable version` | Print the version. `--version` also works. |
-| `turntable help` | Print usage. |
+| `longshore serve` | Start the server. |
+| `longshore version` | Print the version. `--version` also works. |
+| `longshore help` | Print usage. |
 
 ## `serve` flags
 
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--port` | `8080` | TCP port, 0 to 65535. |
-| `--host` | `127.0.0.1` | Interface to bind. Defaults to `TURNTABLE_HOST` when set. |
-| `--data-dir` | `./data` | Directory that holds `turntable.db`. |
+| `--host` | `127.0.0.1` | Interface to bind. Defaults to `LONGSHORE_HOST` when set. |
+| `--data-dir` | `./data` | Directory that holds `longshore.db`. |
 | `--allowed-origin` | none | An extra origin allowed to open the realtime WebSocket. Repeatable. The page's own origin is always allowed. |
 
 ## Environment variables
 
 | Variable | Description |
 | --- | --- |
-| `TURNTABLE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
-| `TURNTABLE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
+| `LONGSHORE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
+| `LONGSHORE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
 
 ## Endpoints
 

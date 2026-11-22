@@ -132,7 +132,7 @@ export function openDatabase(path: string): Db {
             try {
               hook();
             } catch (err) {
-              console.error("turntable: afterCommit hook failed", err);
+              console.error("longshore: afterCommit hook failed", err);
             }
           }
           return out;

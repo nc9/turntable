@@ -107,7 +107,7 @@ function originAllowed(req: Request, allow: readonly string[]): boolean {
   }
 }
 
-/** Reads the offered subprotocols: returns the bearer token if `turntable.v1` is offered too. */
+/** Reads the offered subprotocols: returns the bearer token if `longshore.v1` is offered too. */
 function tokenFromProtocols(header: string | null): string | null {
   if (!header) return null;
   const offered = header.split(",").map((p) => p.trim());
@@ -179,7 +179,7 @@ export function createRealtime(options: RealtimeOptions) {
       send(ws, { type: "error", ...(id ? { id } : {}), code: err.code, message: err.message });
       return;
     }
-    console.error("turntable: realtime error", err);
+    console.error("longshore: realtime error", err);
     send(ws, { type: "error", ...(id ? { id } : {}), code: "internal", message: "internal error" });
   }
 
@@ -531,8 +531,8 @@ export function createRealtime(options: RealtimeOptions) {
     if (!originAllowed(req, allowed)) return refuse(403, "origin not allowed");
     const token = tokenFromProtocols(req.headers.get("sec-websocket-protocol"));
     if (token === null) {
-      return refuse(401, "offer subprotocols turntable.v1 and bearer.<token>", {
-        "www-authenticate": 'Bearer realm="turntable"',
+      return refuse(401, "offer subprotocols longshore.v1 and bearer.<token>", {
+        "www-authenticate": 'Bearer realm="longshore"',
       });
     }
     let orgId: string;
@@ -541,7 +541,7 @@ export function createRealtime(options: RealtimeOptions) {
       orgId = principal.orgId;
     } catch {
       return refuse(401, "invalid, expired or revoked token", {
-        "www-authenticate": 'Bearer realm="turntable"',
+        "www-authenticate": 'Bearer realm="longshore"',
       });
     }
     // Check and reserve with no await in between, so concurrent upgrades cannot all pass.

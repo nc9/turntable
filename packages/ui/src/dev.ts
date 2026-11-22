@@ -6,4 +6,4 @@ const server = Bun.serve({
   routes: { "/*": index },
   development: { hmr: false, console: true },
 });
-console.log(`turntable ui dev server on ${server.url}`);
+console.log(`longshore ui dev server on ${server.url}`);

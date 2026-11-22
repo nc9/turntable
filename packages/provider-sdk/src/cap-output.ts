@@ -10,7 +10,7 @@ export interface CapOptions {
 }
 
 export function cutMarker(omittedBytes: number): Uint8Array {
-  return new TextEncoder().encode(`\n[turntable: ${omittedBytes} bytes of output omitted]\n`);
+  return new TextEncoder().encode(`\n[longshore: ${omittedBytes} bytes of output omitted]\n`);
 }
 
 /**

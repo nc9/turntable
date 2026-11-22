@@ -11,10 +11,10 @@ const PLACEHOLDER_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Turntable</title>
+    <title>Longshore</title>
   </head>
   <body>
-    <h1>Turntable</h1>
+    <h1>Longshore</h1>
     <p>Pre-alpha. The web UI is not built yet.</p>
   </body>
 </html>

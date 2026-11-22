@@ -1,4 +1,4 @@
-import type { TurntableApi } from "./client";
+import type { LongshoreApi } from "./client";
 import { createFixture, type Fixture } from "./fixture/adapter";
 import { createHttpApi } from "./http-adapter";
 import { createPollingRealtime } from "./polling-realtime";
@@ -9,7 +9,7 @@ import { disconnect, getOrg, getToken } from "@/lib/auth";
 export type BackendKind = "http" | "fixture";
 export type Backend = {
   kind: BackendKind;
-  api: TurntableApi;
+  api: LongshoreApi;
   realtime: Realtime;
   fixture: Fixture | null;
 };
@@ -18,12 +18,12 @@ let backend: Backend | null = null;
 
 /**
  * Which backend to use: `?backend=fixture|http` (remembered for the tab), else the build default
- * (`TURNTABLE_UI_BACKEND`, set by `bun run dev` to fixture), else the real API on the same origin.
+ * (`LONGSHORE_UI_BACKEND`, set by `bun run dev` to fixture), else the real API on the same origin.
  */
 /** Inlined at build time (bunfig for the dev server, `define` for the bundle); absent otherwise. */
 function buildDefault(): string {
   try {
-    return process.env.TURNTABLE_UI_BACKEND ?? "";
+    return process.env.LONGSHORE_UI_BACKEND ?? "";
   } catch {
     return "";
   }

@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeWorld } from "@turntable/provider-sdk/testing";
+import { FakeWorld } from "@longshore/provider-sdk/testing";
 import {
   addCut,
   claimNextAttempt,
@@ -564,7 +564,7 @@ test("local runs (running, no lease) are never reconciled", async () => {
 
 test("kill -9 mid-run: the next boot resolves the abandoned attempt as infra_error", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tt-kill9-"));
-  const path = join(dir, "turntable.db");
+  const path = join(dir, "longshore.db");
   try {
     db = openDatabase(path);
     const s = await seedOrg("a");

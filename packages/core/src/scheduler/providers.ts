@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { DockerProvider } from "@turntable/provider-docker";
-import type { Provider } from "@turntable/provider-sdk";
+import { DockerProvider } from "@longshore/provider-docker";
+import type { Provider } from "@longshore/provider-sdk";
 
 /** Providers `serve --provider` knows. Daytona is wired in when its package lands. */
 export const PROVIDER_NAMES = ["docker", "daytona"] as const;

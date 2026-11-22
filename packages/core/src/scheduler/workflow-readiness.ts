@@ -1,4 +1,4 @@
-import { jobReadiness, type PlannedJob } from "@turntable/act-runner";
+import { jobReadiness, type PlannedJob } from "@longshore/act-runner";
 import { defaultReadiness, type Readiness } from "../db/repos";
 
 /**

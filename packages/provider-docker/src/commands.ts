@@ -1,8 +1,8 @@
-import { SpecError, type Labels, type SandboxSpec } from "@turntable/provider-sdk";
+import { SpecError, type Labels, type SandboxSpec } from "@longshore/provider-sdk";
 
 /** Label on every container this provider creates. Listing and destroying only touch these. */
-export const MANAGED_LABEL = "turntable.managed";
-export const EXPIRES_LABEL = "turntable.expires-at";
+export const MANAGED_LABEL = "longshore.managed";
+export const EXPIRES_LABEL = "longshore.expires-at";
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 

@@ -1,4 +1,4 @@
-import { githubContext, planWorkflow, type Value, type WorkflowEvent } from "@turntable/act-runner";
+import { githubContext, planWorkflow, type Value, type WorkflowEvent } from "@longshore/act-runner";
 import { parse } from "yaml";
 import type { Db } from "../db";
 import {

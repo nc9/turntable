@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 
-/** Prefix of every Turntable API token, so scanners and humans can recognise one. */
+/** Prefix of every Longshore API token, so scanners and humans can recognise one. */
 export const TOKEN_PREFIX = "tt_";
 
-/** A new random token: `tt_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
+/** A new random token: `ls_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
 export function generateToken(): string {
   return `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 }

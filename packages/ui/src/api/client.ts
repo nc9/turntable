@@ -22,7 +22,7 @@ export type ApiCapabilities = {
   rerun: boolean;
 };
 
-export interface TurntableApi {
+export interface LongshoreApi {
   readonly capabilities: ApiCapabilities;
   listOrgs(): Promise<Org[]>;
   listProjects(orgId: string): Promise<Project[]>;

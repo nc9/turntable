@@ -1,6 +1,6 @@
 # hello
 
-A self-contained workflow for trying Turntable: run steps, `$GITHUB_OUTPUT`, `$GITHUB_ENV`,
+A self-contained workflow for trying Longshore: run steps, `$GITHUB_OUTPUT`, `$GITHUB_ENV`,
 `$GITHUB_STEP_SUMMARY`, a local composite action and `actions/checkout`.
 
 - `.github/workflows/ci.yml`, job `hello`, succeeds.

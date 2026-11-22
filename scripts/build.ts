@@ -1,7 +1,7 @@
 // Cross-compiles the single-file binary for each supported target.
 //   bun run scripts/build.ts                 all targets
 //   bun run scripts/build.ts bun-darwin-arm64  one or more named targets
-// Version comes from TURNTABLE_VERSION (a leading "v" is stripped) or root package.json.
+// Version comes from LONGSHORE_VERSION (a leading "v" is stripped) or root package.json.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ const root = join(import.meta.dir, "..");
 const dist = join(root, "dist");
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
-const version = (process.env.TURNTABLE_VERSION ?? pkg.version).replace(/^v/, "");
+const version = (process.env.LONGSHORE_VERSION ?? pkg.version).replace(/^v/, "");
 
 const requested = process.argv.slice(2);
 const targets = requested.length > 0 ? requested : [...TARGETS];
@@ -31,13 +31,13 @@ const entry = await prepareCompileEntry();
 
 const sums: string[] = [];
 for (const target of targets) {
-  const name = `turntable-${target.replace(/^bun-/, "")}`;
+  const name = `longshore-${target.replace(/^bun-/, "")}`;
   const outfile = join(dist, name);
   const result = await Bun.build({
     entrypoints: [entry],
     compile: { target: target as (typeof TARGETS)[number], outfile },
     minify: true,
-    define: { TURNTABLE_BUILD_VERSION: JSON.stringify(version) },
+    define: { LONGSHORE_BUILD_VERSION: JSON.stringify(version) },
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);

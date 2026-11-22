@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "turntable-docs",
+      "name": "longshore-docs",
       "devDependencies": {
         "tangly": "0.6.0",
       },

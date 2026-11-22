@@ -3,7 +3,7 @@ import {
   SandboxNotFoundError,
   type ExecStatus,
   type Provider,
-} from "@turntable/provider-sdk";
+} from "@longshore/provider-sdk";
 import {
   ACT_RELEASES,
   EXTRACT_ACTION_SH,

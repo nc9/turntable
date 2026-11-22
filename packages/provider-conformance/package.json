@@ -1,5 +1,5 @@
 {
-  "name": "@turntable/provider-conformance",
+  "name": "@longshore/provider-conformance",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@turntable/provider-sdk": "workspace:*"
+    "@longshore/provider-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "1.4.4"
