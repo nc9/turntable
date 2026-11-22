@@ -59,6 +59,9 @@ No token role reaches `admin`, so a token can never create tokens.
 | `get_run` | read | reader | One run with jobs, attempts, durations and the infra_error reason. |
 | `job_log` | read | reader | A job log: tail, head or byte-range paging. Byte-capped, cut on character boundaries, redacted again. |
 | `checks_for_sha` | read | reader | `GREEN`, `PENDING`, `RED` or `NONE` for a commit. A queued run is `PENDING`, never `NONE`. |
+| `job_steps` | read | reader | The steps of a job attempt with results, timing and the log offset where each starts. |
+| `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap. |
+| `events` | read | reader | The event feed from a cursor, with optional long-poll (`wait_ms`, up to 30 s). |
 | `cancel` | destructive | operator | Cancel the queued, running and waiting jobs of a run. Audited. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
@@ -66,7 +69,7 @@ No token role reaches `admin`, so a token can never create tokens.
 
 `cancel` updates state only for now. Stopping the running sandbox comes with the controller.
 
-Planned next: `failure_digest`, `rerun`, `events`, `cost_summary`, and grep for `job_log`.
+Planned next: `failure_digest`, `rerun`, `cost_summary`, and grep for `job_log`.
 
 ## Human-only actions
 
@@ -105,13 +108,17 @@ Local access to the data directory is the trust root. The command writes through
 
 ## Event feed and webhooks
 
-Agents learn what happened through an event feed:
+Agents learn what happened through an event feed, the `events` operation (`GET /api/v1/events`):
 
-- **Cursor.** Every event has a monotonic cursor, so a client resumes exactly where it stopped.
-- **Delivery.** Read by polling, long-poll or SSE over HTTP, and through MCP.
-- **Webhooks.** Signed outbound webhooks push events to a URL you choose. Receivers verify the signature.
+- **Cursor.** Every event has a monotonic `cursor`. Pass the last one back as `after` (the response's `next_after`) and you resume exactly where you stopped. Start from `after=0` for everything.
+- **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required` and `infra.error`. Filter with `types` (a comma-separated list in a query string).
+- **Long-poll.** With `wait_ms` (up to 30000) and nothing new, the call waits for an event instead of returning empty. Waiters are capped across the instance; beyond the cap a call returns at once, so fall back to polling.
+- **Transactional.** An event is written in the same transaction as the change it describes, and waiters are woken only after commit. A rolled-back change leaves no event.
+- **Scope.** A token sees events for its org, or only its project when it is project-scoped.
 
-Issue [#25](https://github.com/nc9/turntable/issues/25).
+Event payloads carry forge text (refs, workflow paths, step names). Treat them as untrusted data.
+
+Planned: delivery by SSE, and signed outbound webhooks that push events to a URL you choose, with a signature receivers verify. Issue [#25](https://github.com/nc9/turntable/issues/25).
 
 ## Claude Code channel
 

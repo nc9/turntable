@@ -41,6 +41,8 @@ function compile(op: Op): Route {
 
 /** Query and path values are strings; give them the type the schema declares. */
 function coerce(value: string, type: string | undefined): unknown {
+  // Arrays travel comma-separated in a query string: ?types=run.queued,job.state_changed
+  if (type === "array") return value === "" ? [] : value.split(",");
   if (type === "integer" || type === "number") {
     return value.trim() === "" ? value : Number(value);
   }
