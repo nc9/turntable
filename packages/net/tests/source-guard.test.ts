@@ -20,6 +20,7 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/provider-daytona/tests/proxy-path.test.ts", // a local TLS endpoint and relay, on 127.0.0.1
   "packages/core/tests/proxy-wiring.test.ts", // the same proxy, dialled on 127.0.0.1
   "packages/core/tests/job-token-proxy.test.ts", // the same proxy, dialled on 127.0.0.1
+  "packages/core/tests/release-compat.test.ts", // the release proxy, dialled on 127.0.0.1
   "packages/core/tests/proxy-e2e.test.ts", // the same proxy, dialled on 127.0.0.1 (CI only)
 ]);
 
