@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Db } from "../db";
 import type { Scope } from "../db/repos";
+import type { SecretVault } from "../secrets/vault";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
 
@@ -26,6 +27,8 @@ export type OpContext = {
   scope: Scope;
   principal: Principal;
   now: () => number;
+  /** The secrets vault; absent when the server has no master key. Vault ops refuse without it. */
+  vault?: SecretVault | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
@@ -57,6 +60,13 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
    * output lint rejects any other secret-looking field name.
    */
   oneTimeSecretFields?: readonly string[];
+  /**
+   * Input fields that carry a secret value. They are redacted from every audit entry and refused
+   * in a query string (URLs get logged), and the call is refused over plain http.
+   */
+  secretInputFields?: readonly string[];
+  /** False keeps the op out of MCP tools: a value in tool input sits in an agent's context. */
+  mcp?: boolean;
   handler(ctx: OpContext, input: z.infer<I>): Promise<z.infer<O>>;
 };
 
@@ -75,6 +85,8 @@ export type Op = {
   scope: "org" | "project";
   http: HttpBinding;
   oneTimeSecretFields: readonly string[];
+  secretInputFields: readonly string[];
+  mcp: boolean;
   handler(ctx: OpContext, input: unknown): Promise<unknown>;
 };
 
@@ -99,6 +111,12 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     if (field in spec.input.shape) {
       throw new Error(`${spec.name}: "${field}" is added by defineOp; do not declare it`);
     }
+  }
+  for (const f of spec.secretInputFields ?? []) {
+    if (!(f in spec.input.shape))
+      throw new Error(`${spec.name}: secretInputFields names "${f}", not an input field`);
+    if (spec.http.method === "GET")
+      throw new Error(`${spec.name}: a value-bearing op cannot be a GET`);
   }
   for (const param of pathParams(spec.http.path)) {
     if (!(param in spec.input.shape)) {
@@ -138,6 +156,8 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     scope: spec.scope,
     http: spec.http,
     oneTimeSecretFields: spec.oneTimeSecretFields ?? [],
+    secretInputFields: spec.secretInputFields ?? [],
+    mcp: spec.mcp ?? true,
     handler: (ctx, raw) => spec.handler(ctx, raw as z.infer<I>),
   };
 }

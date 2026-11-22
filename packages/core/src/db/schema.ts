@@ -295,6 +295,12 @@ export const jobAttempts = sqliteTable(
      * when the attempt starts, so a restarted controller can re-attach with no repo fetch.
      */
     plan: text("plan"),
+    /**
+     * The trust class this attempt runs as, after the demotion rule, written once by the
+     * scheduler before the sandbox starts. The secrets vault trusts only this: a null means
+     * "not decided", and the vault refuses.
+     */
+    trustClass: text("trust_class"),
     /** The provider exec running the attempt, so a restarted controller can probe it. */
     execId: text("exec_id"),
     /**
@@ -687,5 +693,66 @@ export const actionVerdicts = sqliteTable(
     primaryKey({ columns: [t.projectId, t.kind, t.repo, t.ref, t.sha] }),
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
     index("action_verdicts_checked_idx").on(t.checkedAt),
+  ],
+);
+
+// ---- secrets vault (#14) ----
+
+/**
+ * A scoped secret. The row holds policy (where, for whom, to which hosts) and never a value;
+ * values live sealed in `vault_secret_versions`. `scope_key` is the normalised tuple
+ * (project, environment, ref pattern) with `*` for unset, so uniqueness is enforced even though
+ * the columns are nullable. System secrets (the audit key, the GitHub App) are in `secrets`,
+ * a different table and key domain, and are unreachable from here.
+ */
+export const vaultSecrets = sqliteTable(
+  "vault_secrets",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id"),
+    name: text("name").notNull(),
+    environment: text("environment"),
+    refPattern: text("ref_pattern"),
+    scopeKey: text("scope_key").notNull(),
+    /** JSON array of trust classes allowed to use it. Never contains untrusted_pr. */
+    trustClasses: text("trust_classes").notNull(),
+    /** JSON array of host patterns a delivery may go to. Empty: deliverable nowhere. */
+    destinations: text("destinations").notNull(),
+    currentVersion: integer("current_version", { mode: "number" }).notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+    lastUsedAt: integer("last_used_at", { mode: "number" }),
+  },
+  (t) => [
+    unique("vault_secrets_scope_unique").on(t.orgId, t.name, t.scopeKey),
+    unique("vault_secrets_id_org_unique").on(t.id, t.orgId),
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    index("vault_secrets_org_name_idx").on(t.orgId, t.name),
+  ],
+);
+
+/** One sealed value. The previous version stays usable until `valid_until` (rotation overlap). */
+export const vaultSecretVersions = sqliteTable(
+  "vault_secret_versions",
+  {
+    secretId: text("secret_id").notNull(),
+    orgId: text("org_id").notNull(),
+    version: integer("version", { mode: "number" }).notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    /** Null for the current version; for an older one, the end of its overlap window. */
+    validUntil: integer("valid_until", { mode: "number" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.secretId, t.version] }),
+    foreignKey({
+      columns: [t.secretId, t.orgId],
+      foreignColumns: [vaultSecrets.id, vaultSecrets.orgId],
+    }),
   ],
 );

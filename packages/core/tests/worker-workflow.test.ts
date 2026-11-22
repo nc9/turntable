@@ -231,6 +231,8 @@ describe("the server path: poll, plan, schedule, run", () => {
       expect(att?.plan).toBeString();
       expect(JSON.parse(att!.plan!)).toHaveProperty("layout");
       expect(att).toMatchObject({ state: "success", leaseOwner: null });
+      // the class the job ran as is recorded for the secrets vault: a push to main is protected
+      expect(att?.trustClass).toBe("protected");
     }
   });
 
@@ -1051,6 +1053,9 @@ jobs:
     expect(after.trust).toBe(before);
     expect(trustOf(after).class).toBe("untrusted_pr");
     expect(credentialsFor(trustOf(after).class)).toEqual({ secrets: false, writeToken: false });
+    // and what the job ran as is on its attempt, where the vault looks
+    const [jobRow] = await listJobs(db, scope, held!.id);
+    expect((await listAttempts(db, scope, jobRow!.id))[0]?.trustClass).toBe("untrusted_pr");
     expect(JSON.parse(after.approval!)).toMatchObject({
       head_sha: SHA("d"),
       workflow_hash: trustOf(after).workflowHash,

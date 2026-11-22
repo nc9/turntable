@@ -18,6 +18,8 @@ export interface AttemptStore {
   setExec(where: { sandboxId?: string; execId?: string }): Promise<void>;
   /** Stores the resolved job plan (JSON), so a restarted controller can re-attach without the repo. */
   setPlan(planJson: string): Promise<void>;
+  /** Records the class the attempt runs as, once, before the sandbox starts (the vault reads it). */
+  setTrustClass(klass: string): Promise<void>;
   /** Clears stored log, steps and cuts, before a re-attached run replays the whole exec log. */
   reset(): Promise<void>;
   appendLog(offset: number, bytes: Uint8Array): Promise<void>;

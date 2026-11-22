@@ -63,6 +63,29 @@ async function stored(data: string) {
   return { run, job, attempt, log, steps };
 }
 
+/** For a failed run: every attempt's state, reason and stored log, so CI shows why. */
+async function failedAttempts(data: string): Promise<string> {
+  const db = openDatabase(join(data, "longshore.db"));
+  try {
+    const scope = await ensureLocalTenant(db);
+    const lines: string[] = [];
+    for (const run of await listRuns(db, scope)) {
+      for (const job of await listJobs(db, scope, run.id)) {
+        for (const a of await listAttempts(db, scope, job.id)) {
+          if (a.state === "success") continue;
+          const log = (await readLog(db, scope, a.id))
+            .map((c) => c.bytes.toString("utf8"))
+            .join("");
+          lines.push(`--- ${job.jobKey} ${a.state} ${a.errorClass ?? ""}\n${log.slice(-4000)}`);
+        }
+      }
+    }
+    return lines.join("\n");
+  } finally {
+    db.close();
+  }
+}
+
 describe.skipIf(!enabled)("longshore run (compiled binary, docker)", () => {
   test("hello job: exit 0 and the run is stored with its log", async () => {
     const { repo, data } = await exampleRepo("ok");
@@ -135,7 +158,10 @@ describe.skipIf(!enabled)("longshore run (compiled binary, docker)", () => {
     );
     const out = await new Response(p.stdout).text();
     const code = await p.exited;
-    if (code !== 0) console.log(out);
+    if (code !== 0) {
+      console.log(out);
+      console.log(await failedAttempts(data));
+    }
     expect(code).toBe(0);
     expect(out).toContain("got-version=1.2.3");
     expect(out).toContain("got-result=success");

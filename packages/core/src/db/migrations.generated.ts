@@ -188,5 +188,17 @@ export const migrations: Migration[] = [
       "CREATE TABLE `action_verdicts` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`kind` text NOT NULL,\n\t`repo` text NOT NULL,\n\t`ref` text DEFAULT '' NOT NULL,\n\t`sha` text NOT NULL,\n\t`verdict` integer NOT NULL,\n\t`checked_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`project_id`, `kind`, `repo`, `ref`, `sha`),\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `action_verdicts_checked_idx` ON `action_verdicts` (`checked_at`);"
     ]
+  },
+  {
+    "tag": "0014_unique_living_mummy",
+    "when": 1795368466391,
+    "statements": [
+      "CREATE TABLE `vault_secret_versions` (\n\t`secret_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`version` integer NOT NULL,\n\t`ciphertext` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`valid_until` integer,\n\tPRIMARY KEY(`secret_id`, `version`),\n\tFOREIGN KEY (`secret_id`,`org_id`) REFERENCES `vault_secrets`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `vault_secrets` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`name` text NOT NULL,\n\t`environment` text,\n\t`ref_pattern` text,\n\t`scope_key` text NOT NULL,\n\t`trust_classes` text NOT NULL,\n\t`destinations` text NOT NULL,\n\t`current_version` integer NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `vault_secrets_org_name_idx` ON `vault_secrets` (`org_id`,`name`);",
+      "CREATE UNIQUE INDEX `vault_secrets_scope_unique` ON `vault_secrets` (`org_id`,`name`,`scope_key`);",
+      "CREATE UNIQUE INDEX `vault_secrets_id_org_unique` ON `vault_secrets` (`id`,`org_id`);",
+      "ALTER TABLE `job_attempts` ADD `trust_class` text;"
+    ]
   }
 ];

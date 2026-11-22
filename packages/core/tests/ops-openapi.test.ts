@@ -62,7 +62,7 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
   }
   expect([...ids].toSorted()).toEqual(
     registry
-      .documentedOps()
+      .mcpOps()
       .map((o) => o.name)
       .toSorted(),
   );
@@ -83,12 +83,14 @@ test("MCP tool list equals the registry minus signature ops", () => {
     handler: async () => ({}),
   });
   const withSig = createRegistry([...registry.ops, sig]);
-  expect(mcpTools(withSig).map((t) => t.name)).toEqual(withSig.documentedOps().map((o) => o.name));
+  expect(mcpTools(withSig).map((t) => t.name)).toEqual(withSig.mcpOps().map((o) => o.name));
   expect(withSig.documentedOps().map((o) => o.name)).not.toContain("approve_release");
   // Ops no token role can call (create_api_token needs admin) are not listed.
-  expect(mcpTools(registry).map((t) => t.name)).toEqual(
-    registry.documentedOps().map((o) => o.name),
-  );
+  expect(mcpTools(registry).map((t) => t.name)).toEqual(registry.mcpOps().map((o) => o.name));
+  // Ops that carry a secret value are REST and CLI only: never in an agent's tool list.
+  const hiddenFromMcp = registry.documentedOps().filter((o) => !o.mcp);
+  expect(hiddenFromMcp.map((o) => o.name).toSorted()).toEqual(["rotate_secret", "set_secret"]);
+  expect(hiddenFromMcp.every((o) => o.secretInputFields.length > 0)).toBe(true);
 
   for (const tool of mcpTools(registry)) {
     expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
@@ -174,7 +176,7 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
     ),
   );
   for (const op of registry.ops.filter((o) => o.auth.type !== "signature")) {
-    const documented = registry.documentedOps().includes(op);
+    const documented = registry.mcpOps().includes(op);
     expect(tools.has(op.name)).toBe(documented);
     expect(operationIds.has(op.name)).toBe(documented);
     if (documented) {
@@ -188,13 +190,13 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   // and nothing extra: no adapter lists an op the registry does not have
   expect([...tools].toSorted()).toEqual(
     registry
-      .documentedOps()
+      .mcpOps()
       .map((o) => o.name)
       .toSorted(),
   );
   expect([...operationIds].toSorted()).toEqual(
     registry
-      .documentedOps()
+      .mcpOps()
       .map((o) => o.name)
       .toSorted(),
   );

@@ -3,6 +3,7 @@
 // action is read at its sha: a composite's nested actions are resolved, checked and delivered
 // locally the same way (recursively, depth-capped), a docker action is refused, and anything
 // that cannot be resolved refuses the plan.
+import { scrubbedEnv } from "@longshore/provider-sdk";
 import { parse } from "yaml";
 import type { ActionFetcher } from "./act-install";
 import { fetchActionTarball } from "./act-install";
@@ -27,6 +28,7 @@ async function tar(args: string[], stdin: Uint8Array): Promise<{ code: number; o
     stdin: new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
+    env: scrubbedEnv(),
   });
   const [out, code] = await Promise.all([new Response(p.stdout).bytes(), p.exited]);
   return { code, out };

@@ -273,6 +273,36 @@ export function recordExec(
 }
 
 /**
+ * Records the class the attempt runs as (after the demotion rule). Write-once and fenced by the
+ * lease owner: the class can be recorded, never changed or raised afterwards.
+ */
+export function recordTrustClass(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+  klass: string,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({ trustClass: klass })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+          eq(s.jobAttempts.state, "running"),
+          eq(s.jobAttempts.leaseOwner, owner),
+          isNull(s.jobAttempts.trustClass),
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    return rows.length > 0;
+  });
+}
+
+/**
  * Stores the attempt's resolved job plan (JSON) when it starts, so a restarted controller can
  * re-attach without fetching the repo. Fenced by the lease owner.
  */

@@ -1,8 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
+import type { SafeFetch } from "@longshore/net";
+import { InfraError } from "@longshore/provider-sdk";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import {
   claimNextAttempt,
@@ -115,12 +117,14 @@ async function go(
   yaml: string,
   extra: Partial<Parameters<typeof runWorkflowLocal>[0]> = {},
   event: Parameters<typeof runWorkflowLocal>[0]["event"] = { name: "push", ref: "refs/heads/main" },
+  /** Leave the resolver unset: the runner then resolves with the operator's token, like the CLI. */
+  defaultResolver = false,
 ) {
   const db = openDatabase(":memory:");
   const scope = await ensureLocalTenant(db);
   const root = join(mkdtempSync(join(tmp, "root-")), "tt");
   const out: string[] = [];
-  const result = await runWorkflowLocal({
+  const opts: Parameters<typeof runWorkflowLocal>[0] = {
     provider: world.provider(),
     providerName: "fake",
     db,
@@ -139,7 +143,9 @@ async function go(
     pollMs: 30,
     maxParallel: 1,
     ...extra,
-  });
+  };
+  if (defaultResolver) delete opts.resolver;
+  const result = await runWorkflowLocal(opts);
   const seen = (id: string): string => readFileSync(join(root, "seen", `${id}.yml`), "utf8");
   return { db, scope, root, result, out: out.join(""), seen };
 }
@@ -291,5 +297,132 @@ jobs:
     expect(out).toContain("[bad] skipped:");
     const [run] = await listRuns(db, scope);
     expect(run?.status).toBe("skipped");
+  });
+
+  test("an infrastructure error that is thrown keeps its reason: printed, returned and stored", async () => {
+    const yaml = `on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: acme/tool@${"b".repeat(40)}
+`;
+    const reason = "verifying an action commit: rate limited (HTTP 403)";
+    const { db, scope, result, out } = await go(yaml, {
+      reachable: async () => {
+        throw new InfraError(reason);
+      },
+    });
+    expect(result.jobs[0]).toMatchObject({ state: "infra_error" });
+    expect(result.jobs[0]!.reason).toContain("rate limited");
+    expect(out).toContain("[build] ");
+    expect(out).toContain("rate limited");
+    const jobs = await listJobs(db, scope, result.runId as string);
+    const [att] = await listAttempts(db, scope, jobs[0]!.id);
+    expect(att!.errorClass).toContain("rate limited");
+  });
+
+  describe("actions of a local run use the operator's token", () => {
+    const TOKEN = "operator-token-value";
+    const wf = (uses: string) => `on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${uses}
+`;
+    /** A GitHub that hides private repos from anonymous calls and 404s the unknown. */
+    function github(priv: string[]) {
+      const calls: { path: string; auth: string | null }[] = [];
+      const impl: SafeFetch = async (input, init) => {
+        const url = new URL(String(input));
+        calls.push({ path: url.pathname, auth: new Headers(init?.headers).get("authorization") });
+        const name = /^\/repos\/([^/]+\/[^/]+)/.exec(url.pathname)?.[1]?.toLowerCase();
+        const authed = new Headers(init?.headers).get("authorization") !== null;
+        const known = name === "stranger/tool" || (name !== undefined && priv.includes(name));
+        if (!known || (priv.includes(name!) && !authed)) return new Response("no", { status: 404 });
+        if (url.pathname.endsWith("/commits/v1")) return new Response("c".repeat(40));
+        if (/\/compare\//.test(url.pathname)) return Response.json({ status: "identical" });
+        return Response.json({ default_branch: "main", private: priv.includes(name!) });
+      };
+      return { impl, calls };
+    }
+    const tarball = async (): Promise<Uint8Array> => {
+      const d = mkdtempSync(join(tmp, "act-"));
+      const top = "x-y-abc123";
+      mkdirSync(join(d, top), { recursive: true });
+      writeFileSync(
+        join(d, top, "action.yml"),
+        "name: n\nruns:\n  using: node20\n  main: index.js\n",
+      );
+      return tarDirectory(d, [top]);
+    };
+
+    test("any public action is resolved and verified with the token, not the shared anonymous limit", async () => {
+      const gh = github([]);
+      const { result } = await go(
+        wf("stranger/tool@v1"),
+        { githubToken: TOKEN, fetch: gh.impl, fetchAction: tarball },
+        { name: "push", ref: "refs/heads/main" },
+        true,
+      );
+      expect(result.jobs[0]?.state).toBe("success");
+      expect(gh.calls.length).toBeGreaterThanOrEqual(3);
+      for (const c of gh.calls) expect(c.auth).toBe(`Bearer ${TOKEN}`);
+    });
+
+    test("a local run that simulates a pull request is still the operator's own", async () => {
+      const gh = github([]);
+      const { result } = await go(
+        wf("stranger/tool@v1"),
+        { githubToken: TOKEN, fetch: gh.impl, fetchAction: tarball },
+        { name: "pull_request", ref: "refs/pull/1/head" },
+        true,
+      );
+      expect(result.jobs[0]?.state).toBe("success");
+      for (const c of gh.calls) expect(c.auth).toBe(`Bearer ${TOKEN}`);
+    });
+
+    test("a private repo and one that does not exist are refused with the same words", async () => {
+      const gh = github(["secret-org/private-thing"]);
+      const run = (uses: string) =>
+        go(
+          wf(uses),
+          { githubToken: TOKEN, fetch: gh.impl, fetchAction: tarball },
+          { name: "push", ref: "refs/heads/main" },
+          true,
+        );
+      const priv = (await run("secret-org/private-thing@v1")).result.jobs[0]!;
+      const ghost = (await run("ghost-org/none@v1")).result.jobs[0]!;
+      expect(priv.state).toBe("failure");
+      expect(ghost.state).toBe("failure");
+      const norm = (r: string, name: string) => r.replaceAll(name, "<repo>");
+      expect(priv.reason).toContain("action not available: secret-org/private-thing");
+      expect(norm(priv.reason, "secret-org/private-thing")).toBe(
+        norm(ghost.reason, "ghost-org/none"),
+      );
+      // Nothing of the private repo leaked: no sha, no mention that it is private.
+      expect(priv.reason.replace("secret-org/private-thing", "")).not.toMatch(
+        /private|[0-9a-f]{40}/,
+      );
+    });
+
+    test("without a token nothing is authenticated, and the run still works for public actions", async () => {
+      const gh = github([]);
+      const saved = process.env.LONGSHORE_GITHUB_TOKEN;
+      delete process.env.LONGSHORE_GITHUB_TOKEN;
+      try {
+        const { result } = await go(
+          wf("stranger/tool@v1"),
+          { fetch: gh.impl, fetchAction: tarball },
+          { name: "push", ref: "refs/heads/main" },
+          true,
+        );
+        expect(result.jobs[0]?.state).toBe("success");
+        for (const c of gh.calls) expect(c.auth).toBeNull();
+      } finally {
+        if (saved !== undefined) process.env.LONGSHORE_GITHUB_TOKEN = saved;
+      }
+    });
   });
 });

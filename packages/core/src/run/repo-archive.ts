@@ -1,9 +1,10 @@
+import { scrubbedEnv } from "@longshore/provider-sdk";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 async function sh(cwd: string, argv: string[]): Promise<string> {
-  const p = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env: scrubbedEnv() });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(),
     new Response(p.stderr).text(),

@@ -39,7 +39,7 @@ describe("envelope encryption", () => {
       bad[i] = buf.toString("base64url");
       expect(() => open(key, bad.join("."), aad)).toThrow(SecretDecryptError);
     }
-    expect(() => open(key, `v2.${parts.slice(1).join(".")}`, aad)).toThrow(SecretDecryptError);
+    expect(() => open(key, `v9.${parts.slice(1).join(".")}`, aad)).toThrow(SecretDecryptError);
     expect(() => open(key, "garbage", aad)).toThrow(SecretDecryptError);
   });
 
