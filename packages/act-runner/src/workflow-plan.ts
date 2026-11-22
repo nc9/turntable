@@ -152,7 +152,8 @@ function localActionDockerReason(
     try {
       const doc: unknown = parse(text);
       const runs = isObj(doc) ? doc.runs : undefined;
-      if (isObj(runs) && runs.using === "docker") return `local action ${uses} is a docker action`;
+      if (isObj(runs) && String(runs.using).trim().toLowerCase() === "docker")
+        return `local action ${uses} is a docker action`;
       if (isObj(runs) && Array.isArray(runs.steps)) {
         for (const cs of runs.steps) {
           if (!isObj(cs)) continue;

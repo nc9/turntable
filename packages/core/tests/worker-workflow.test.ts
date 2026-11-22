@@ -868,7 +868,7 @@ jobs:
     const [att] = await listAttempts(db, scope, job!.id);
     expect(att).toMatchObject({ state: "failure", errorClass: null });
     const text = Buffer.concat((await readLog(db, scope, att!.id)).map((c) => c.bytes)).toString();
-    expect(text).toContain("policy: workflow lint failed");
+    expect(text).toContain("lint: workflow lint failed");
     expect(text).toContain("github.event.pull_request.title");
   });
 

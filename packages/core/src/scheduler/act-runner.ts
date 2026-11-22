@@ -309,6 +309,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           scope: ctx.scope,
           klass: trust.klass,
           base: o.resolver ?? githubResolver(),
+          readFile: checkout.readFile,
           ...(o.reachable ? { reachable: o.reachable } : {}),
           ...(o.fetchAction ? { fetchTarball: o.fetchAction } : {}),
           warn: (m) => console.warn(`action pins: ${m}`),
@@ -318,7 +319,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           // A plan rejection (policy, moved tag, unpinned or unreachable action, unsupported
           // feature) is deterministic and the user can act on it: a failure, never retried.
           // infra_error stays for transient causes (a resolver network error, a provider down).
-          const msg = `policy: ${err.message}`;
+          const msg = `${err.feature === "lint" ? "lint" : "policy"}: ${err.message}`;
           // Shown where the job's log would be, not only as the attempt's reason.
           await ctx.store.appendLog(0, new TextEncoder().encode(`${msg}\n`));
           o.out?.(job.jobKey, `[${job.jobKey}] ${msg}\n`);

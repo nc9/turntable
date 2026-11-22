@@ -106,6 +106,8 @@ export interface ResolvePlanOptions {
   warn?: (message: string) => void;
   /** Verifies a sha belongs to the named repo (default: the GitHub compare and tags APIs). */
   reachable?: ReachabilityChecker;
+  /** Reads a workspace file (the safe reader), for `./` actions inside remote composites. */
+  readFile?: (path: string) => string | undefined;
   /** Fetches action tarballs by sha, to read nested actions (default: codeload). */
   fetchTarball?: ActionFetcher;
 }
@@ -145,6 +147,7 @@ export async function resolvePlanActions(plan: JobPlan, o: ResolvePlanOptions): 
   for (const a of resolved.actions) await verify(a);
   return expandNestedActions(resolved, {
     resolve,
+    readFile: o.readFile ?? (() => undefined),
     ...(o.fetchTarball ? { fetchTarball: o.fetchTarball } : {}),
     check: async (a) => {
       checkActionOwner(a, policy);

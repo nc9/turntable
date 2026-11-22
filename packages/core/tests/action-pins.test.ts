@@ -680,4 +680,154 @@ describe("nested actions in remote composites", () => {
     expect(err).toBeInstanceOf(MovedTagError);
     expect(err.message).toContain("other/dep@v2");
   });
+
+  // ---- runs.using is normalised and fails closed ----
+
+  const withUsing = (using: string | undefined, extra = ""): string =>
+    `name: x\nruns:\n${using === undefined ? "" : `  using: ${using}\n`}${extra}`;
+  const compositeYml = (using: string): string =>
+    withUsing(using, "  steps:\n    - uses: other/dep@v2\n");
+
+  const planWith = async (yml: string, readFile?: (p: string) => string | undefined) => {
+    const w = world({
+      [`acme/tool@${SHA("1")}`]: await actionTgz("acme-tool", yml),
+      [`other/dep@${SHA("2")}`]: await actionTgz("other-dep", nodeAction),
+    });
+    return resolvePlanActions(planOf(["acme/tool@v1"]), {
+      db,
+      scope: a.scope,
+      klass: "protected",
+      base: base(),
+      reachable: allReachable,
+      fetchTarball: w.fetchTarball,
+      ...(readFile ? { readFile } : {}),
+    });
+  };
+
+  test.each(["composite", " composite", "COMPOSITE", "Composite\t", '"  Composite  "'])(
+    "composite spelled %j is still expanded (its nested action is policed)",
+    async (using) => {
+      const plan = await planWith(compositeYml(using));
+      expect(plan.actions.map((x) => x.repo)).toEqual(["acme/tool", "other/dep"]);
+    },
+  );
+
+  test.each(["docker", "Docker", " DOCKER ", '"docker "'])(
+    "%j is refused as a docker action",
+    async (using) => {
+      const err = await planWith(withUsing(using, "  image: Dockerfile\n")).catch((e) => e);
+      expect(err).toBeInstanceOf(PlanError);
+      expect(err.message).toContain("docker action");
+    },
+  );
+
+  test.each(["node12", "node16", "node20", "node24", " Node20 "])(
+    "%j is allowed and has no nested actions",
+    async (using) => {
+      const plan = await planWith(withUsing(using, "  main: index.js\n"));
+      expect(plan.actions.map((x) => x.repo)).toEqual(["acme/tool"]);
+    },
+  );
+
+  test.each([
+    ["an unknown runtime", withUsing("bash")],
+    ["an unknown version", withUsing("node99", "  main: i.js\n")],
+    ["no using at all", withUsing(undefined, "  main: i.js\n")],
+    ["a non-string using", withUsing("[composite]")],
+    ["an empty using", withUsing('""')],
+    ["a composite without steps", withUsing("composite")],
+    ["a composite whose steps is not a list", withUsing("composite", "  steps: nope\n")],
+  ])("%s is refused", async (_name, yml) => {
+    const err = await planWith(yml).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanError);
+    expect(err.feature).toBe("nested-action");
+  });
+
+  // ---- ./x inside a REMOTE composite is the caller's workspace ----
+
+  const workspace =
+    (files: Record<string, string>) =>
+    (p: string): string | undefined =>
+      files[p];
+
+  test("a ./ action inside a remote composite is read from the workspace and walked like any other", async () => {
+    const files = {
+      "tools/local/action.yml": compositeYml("composite"),
+    };
+    const plan = await planWith(
+      `name: x\nruns:\n  using: composite\n  steps:\n    - uses: ./tools/local\n`,
+      workspace(files),
+    );
+    // its nested remote action is resolved, pinned and delivered locally
+    expect(plan.actions.map((x) => x.repo)).toEqual(["acme/tool", "other/dep"]);
+    expect(plan.actions[1]?.nestedIn).toBe("./tools/local");
+    expect(plan.argv).toContain(`other/dep@v2=${plan.actions[1]?.dir}`);
+    // and the workspace file is part of the plan, so it is verified like the others
+    expect(plan.files.map((f) => f.path)).toContain("tools/local/action.yml");
+  });
+
+  test("the allowlist and reachability apply to what a workspace action pulls in", async () => {
+    const files = { "l/action.yml": compositeYml("composite") };
+    const yml = `name: x\nruns:\n  using: composite\n  steps:\n    - uses: ./l\n`;
+    const w = world({
+      [`acme/tool@${SHA("1")}`]: await actionTgz("acme-tool", yml),
+      [`other/dep@${SHA("2")}`]: await actionTgz("other-dep", nodeAction),
+    });
+    await setActionPolicy(db, a.scope, { allowedOwners: ["acme"] });
+    const blocked = await resolvePlanActions(planOf(["acme/tool@v1"]), {
+      db,
+      scope: a.scope,
+      klass: "protected",
+      base: base(),
+      reachable: allReachable,
+      fetchTarball: w.fetchTarball,
+      readFile: workspace(files),
+    }).catch((e) => e);
+    expect(blocked.feature).toBe("action-owner");
+  });
+
+  test("paths leaving the workspace, missing actions and docker or unknown local actions are refused", async () => {
+    const using = (u: string) => `name: l\nruns:\n  using: ${u}\n`;
+    const cases: [string, string, Record<string, string>, string][] = [
+      ["a path above the root", "../secrets", {}, "outside the workspace"],
+      ["an absolute path", "./../../etc", {}, "outside the workspace"],
+      ["a missing action", "./nope", {}, "no action.yml"],
+      ["a docker local action", "./d", { "d/action.yml": using("Docker") }, "docker action"],
+      [
+        "an unknown local runtime",
+        "./u",
+        { "u/action.yml": using("bash") },
+        "unsupported runs.using",
+      ],
+    ];
+    for (const [, uses, files, message] of cases) {
+      const err = await planWith(
+        `name: x\nruns:\n  using: composite\n  steps:\n    - uses: ${uses}\n`,
+        workspace(files),
+      ).catch((e) => e);
+      expect(err).toBeInstanceOf(PlanError);
+      expect(err.message).toContain(message);
+    }
+  });
+
+  test("a workspace action that refers back to itself does not loop, and an unresolvable nested remote refuses", async () => {
+    const loop = {
+      "a/action.yml": "name: a\nruns:\n  using: composite\n  steps:\n    - uses: ./a\n",
+    };
+    const ok = await planWith(
+      `name: x\nruns:\n  using: composite\n  steps:\n    - uses: ./a\n`,
+      workspace(loop),
+    );
+    expect(ok.actions).toHaveLength(1);
+    const ghost = {
+      "g/action.yml":
+        "name: g\nruns:\n  using: composite\n  steps:\n    - uses: ghost/missing@v1\n",
+    };
+    const err = await planWith(
+      `name: x\nruns:\n  using: composite\n  steps:\n    - uses: ./g\n`,
+      workspace(ghost),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanError);
+    expect(err.message).toContain("ghost/missing@v1");
+  });
 });

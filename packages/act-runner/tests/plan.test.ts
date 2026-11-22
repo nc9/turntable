@@ -283,3 +283,39 @@ describe("local action paths cannot leave the repository", () => {
     expect(root).toEqual(["action.yml", "action.yaml"]); // never an absolute "/action.yml"
   });
 });
+
+describe("local actions: runs.using is normalised and fails closed", () => {
+  const using = (u: string, steps = ""): string => `name: l\nruns:\n  using: ${u}\n${steps}`;
+  const plan2 = (files: Record<string, string>) =>
+    planJob(wf("    runs-on: ubuntu-latest\n    steps:\n      - uses: ./l\n"), "j", {
+      workflowPath: ".github/workflows/ci.yml",
+      readFile: (f) => files[f],
+    });
+
+  test.each(["composite", "Composite", " COMPOSITE "])(
+    "a %j local composite is still scanned",
+    (u) => {
+      const p = plan2({ "l/action.yml": using(u, "  steps:\n    - uses: acme/tool@v1\n") });
+      expect(p.actions.map((a) => a.uses)).toEqual(["acme/tool@v1"]);
+    },
+  );
+
+  test("docker, unknown runtimes and a composite without steps are refused", () => {
+    expect(() => plan2({ "l/action.yml": using("Docker") })).toThrow(/docker action/);
+    expect(() => plan2({ "l/action.yml": using("bash") })).toThrow(/unsupported runs.using/);
+    expect(() => plan2({ "l/action.yml": using("composite") })).toThrow(/without a steps list/);
+    expect(() => plan2({ "l/action.yml": using("node20", "  main: i.js\n") })).not.toThrow();
+  });
+
+  test("local actions nested deeper than the cap are refused, not ignored", () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 8; i += 1) {
+      files[`${i === 0 ? "l" : `n${i}`}/action.yml`] = using(
+        "composite",
+        `  steps:\n    - uses: ./n${i + 1}\n`,
+      );
+    }
+    files["n8/action.yml"] = using("node20", "  main: i.js\n");
+    expect(() => plan2(files)).toThrow(/deeper than 5/);
+  });
+});

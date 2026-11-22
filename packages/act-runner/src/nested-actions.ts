@@ -6,11 +6,14 @@
 import { parse } from "yaml";
 import type { ActionFetcher } from "./act-install";
 import { fetchActionTarball } from "./act-install";
+import { classifyActionRuntime } from "./action-runtime";
 import {
   PlanError,
+  localActionDir,
   rebuildArgv,
   type ActionRefResolver,
   type JobPlan,
+  type PlanFile,
   type PlannedAction,
 } from "./plan";
 
@@ -55,6 +58,11 @@ export interface NestedHooks {
   /** Fetches a source tarball by sha. Defaults to codeload. */
   fetchTarball?: ActionFetcher;
   /**
+   * Reads a file of the workspace (the caller's repo, path relative to its root), through the
+   * safe reader. A `./` action inside a remote composite resolves against the workspace.
+   */
+  readFile: (path: string) => string | undefined;
+  /**
    * Called once for each nested action, with its sha known, before it is accepted. Throw to
    * refuse (allowlist, impostor check ...).
    */
@@ -66,18 +74,105 @@ const USES = /^([^/@\s]+\/[^/@\s]+)((?:\/[^@\s]+)?)@(\S+)$/;
 
 /**
  * Walks every remote action of a pinned plan and adds the actions its composites use, to any
- * depth up to the cap. Returns a new plan whose command maps every one of them to a local,
- * sha-delivered directory.
+ * depth up to the cap. A `./x` inside a remote composite is a real action of the caller's
+ * workspace (act and GitHub resolve it there), so it is read through the safe reader and walked
+ * the same way. Returns a new plan whose command maps every remote one to a local, sha-delivered
+ * directory, and whose files include the workspace actions reached this way.
  */
 export async function expandNestedActions(plan: JobPlan, h: NestedHooks): Promise<JobPlan> {
   const fetchTarball = h.fetchTarball ?? fetchActionTarball;
   const maxDepth = h.maxDepth ?? MAX_NESTED_DEPTH;
   const actions: PlannedAction[] = [...plan.actions];
+  const files: PlanFile[] = [...plan.files];
   const tarballs = new Map<string, Uint8Array>();
   const checkoutRefs = [...plan.checkoutRefs];
   const stubDirs = [...plan.stubDirs];
+  const seenLocal = new Set<string>();
+  for (const f of plan.files) seenLocal.add(f.path);
 
-  const visit = async (a: PlannedAction, depth: number): Promise<void> => {
+  const parseYaml = (text: string, label: string): unknown => {
+    try {
+      return parse(text, { merge: true });
+    } catch (e) {
+      throw new PlanError(
+        "nested-action",
+        `${label}: action.yml is not valid YAML: ${(e as Error).message}`,
+      );
+    }
+  };
+
+  /** Handles the `uses:` of every step of a composite found in `from`. */
+  const walkSteps = async (from: string, steps: unknown[], depth: number): Promise<void> => {
+    if (depth > maxDepth) {
+      throw new PlanError("nested-depth", `${from} nests actions deeper than ${maxDepth} levels`);
+    }
+    for (const step of steps) {
+      if (!isObj(step) || typeof step.uses !== "string") continue;
+      const uses = step.uses.trim();
+      if (uses.startsWith("docker://")) {
+        throw new PlanError("docker:// action", `${from} uses ${uses}, which is unsupported`);
+      }
+      if (uses.startsWith("./") || uses.startsWith("../")) {
+        await walkLocal(from, uses, depth);
+        continue;
+      }
+      const m = USES.exec(uses);
+      if (!m)
+        throw new PlanError("nested-action", `${from} has an unparsable nested action "${uses}"`);
+      const [, repo = "", sub = "", ref = ""] = m;
+      const subpath = sub.replace(/^\//, "");
+      if (actions.some((x) => x.repo === repo && x.ref === ref && x.subpath === subpath)) continue;
+      const kind = uses.startsWith("actions/checkout@") ? "checkout" : "remote";
+      const dir = `${plan.layout.stubs}/${kind === "checkout" ? "checkout" : "action"}-${actions.length}`;
+      const [owner = "", name = ""] = repo.split("/");
+      const nested: PlannedAction = {
+        uses,
+        repo,
+        subpath,
+        ref,
+        sha: /^[0-9a-f]{40}$/.test(ref) ? ref : await h.resolve(owner, name, ref),
+        kind,
+        dir,
+        nestedIn: from,
+      };
+      await h.check?.(nested);
+      actions.push(nested);
+      if (kind === "checkout") {
+        checkoutRefs.push(uses);
+        stubDirs.push(dir);
+      } else {
+        await walkRemote(nested, depth + 1);
+      }
+    }
+  };
+
+  /** A `./x` inside a remote composite: an action of the caller's workspace. */
+  const walkLocal = async (from: string, uses: string, depth: number): Promise<void> => {
+    const dir = localActionDir(uses);
+    if (dir === undefined) {
+      throw new PlanError("local action", `${from} uses "${uses}", a path outside the workspace`);
+    }
+    if (seenLocal.has(dir)) return;
+    seenLocal.add(dir);
+    for (const name of ["action.yml", "action.yaml"]) {
+      const path = dir === "" ? name : `${dir}/${name}`;
+      const text = h.readFile(path);
+      if (text === undefined) continue;
+      files.push({ path, source: text, text });
+      const rt = classifyActionRuntime(
+        (parseYaml(text, `local action ${path}`) as Obj | undefined)?.runs,
+        `local action ${path}`,
+      );
+      if (rt.kind === "composite") await walkSteps(`./${dir}`, rt.steps, depth + 1);
+      return;
+    }
+    throw new PlanError(
+      "local action",
+      `${from} uses "${uses}", which has no action.yml in the workspace`,
+    );
+  };
+
+  const walkRemote = async (a: PlannedAction, depth: number): Promise<void> => {
     if (a.kind !== "remote") return;
     if (!a.sha) throw new PlanError("nested-action", `${a.uses} is not resolved to a sha`);
     const key = `${a.repo}@${a.sha}`;
@@ -90,67 +185,10 @@ export async function expandNestedActions(plan: JobPlan, h: NestedHooks): Promis
     if (yml === undefined) {
       throw new PlanError("nested-action", `${a.uses} has no action.yml at ${a.sha}`);
     }
-    let doc: unknown;
-    try {
-      doc = parse(yml, { merge: true });
-    } catch (e) {
-      throw new PlanError(
-        "nested-action",
-        `${a.uses}: action.yml is not valid YAML: ${(e as Error).message}`,
-      );
-    }
-    const runs = isObj(doc) ? doc.runs : undefined;
-    if (!isObj(runs))
-      throw new PlanError("nested-action", `${a.uses}: action.yml has no runs section`);
-    if (runs.using === "docker") {
-      throw new PlanError("docker:// action", `${a.uses} is a docker action, which is unsupported`);
-    }
-    if (runs.using !== "composite" || !Array.isArray(runs.steps)) return;
-    if (depth >= maxDepth) {
-      throw new PlanError("nested-depth", `${a.uses} nests actions deeper than ${maxDepth} levels`);
-    }
-    for (const step of runs.steps) {
-      if (!isObj(step) || typeof step.uses !== "string") continue;
-      const uses = step.uses.trim();
-      if (uses.startsWith("./") || uses.startsWith("../")) continue;
-      if (uses.startsWith("docker://")) {
-        throw new PlanError("docker:// action", `${a.uses} uses ${uses}, which is unsupported`);
-      }
-      const m = USES.exec(uses);
-      if (!m)
-        throw new PlanError("nested-action", `${a.uses} has an unparsable nested action "${uses}"`);
-      const [, repo = "", sub = "", ref = ""] = m;
-      if (
-        actions.some(
-          (x) => x.repo === repo && x.ref === ref && x.subpath === sub.replace(/^\//, ""),
-        )
-      ) {
-        continue;
-      }
-      const kind = uses.startsWith("actions/checkout@") ? "checkout" : "remote";
-      const dir = `${plan.layout.stubs}/${kind === "checkout" ? "checkout" : "action"}-${actions.length}`;
-      const [owner = "", name = ""] = repo.split("/");
-      const nested: PlannedAction = {
-        uses,
-        repo,
-        subpath: sub.replace(/^\//, ""),
-        ref,
-        sha: /^[0-9a-f]{40}$/.test(ref) ? ref : await h.resolve(owner, name, ref),
-        kind,
-        dir,
-        nestedIn: a.uses,
-      };
-      await h.check?.(nested);
-      actions.push(nested);
-      if (kind === "checkout") {
-        checkoutRefs.push(uses);
-        stubDirs.push(dir);
-      } else {
-        await visit(nested, depth + 1);
-      }
-    }
+    const rt = classifyActionRuntime((parseYaml(yml, a.uses) as Obj | undefined)?.runs, a.uses);
+    if (rt.kind === "composite") await walkSteps(a.uses, rt.steps, depth);
   };
 
-  for (const a of plan.actions) await visit(a, 1);
-  return rebuildArgv({ ...plan, actions, checkoutRefs, stubDirs });
+  for (const a of plan.actions) await walkRemote(a, 1);
+  return rebuildArgv({ ...plan, actions, files, checkoutRefs, stubDirs });
 }

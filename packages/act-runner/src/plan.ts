@@ -1,6 +1,7 @@
 import { parse } from "yaml";
 import { InfraError } from "@longshore/provider-sdk";
 import { layoutFor, type Layout } from "./layout";
+import { classifyActionRuntime } from "./action-runtime";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 
 /** A workflow feature that M0 refuses, named so the user can see why. */
@@ -243,7 +244,10 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   };
 
   const scanLocal = (dir: string, depth: number): void => {
-    if (depth > 5 || seenLocal.has(dir)) return;
+    if (depth > 5) {
+      throw new PlanError("nested-depth", `local actions nest deeper than 5 levels at ${dir}`);
+    }
+    if (seenLocal.has(dir)) return;
     seenLocal.add(dir);
     for (const name of ["action.yml", "action.yaml"]) {
       const path = dir === "" ? name : `${dir}/${name}`;
@@ -256,10 +260,8 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
       } catch (e) {
         throw new PlanError("yaml", `${path} is not valid YAML: ${(e as Error).message}`);
       }
-      const runs = isObj(doc2) ? doc2.runs : undefined;
-      if (isObj(runs) && runs.using === "composite" && Array.isArray(runs.steps)) {
-        scan(path, runs.steps, depth);
-      }
+      const rt = classifyActionRuntime(isObj(doc2) ? doc2.runs : undefined, `local action ${path}`);
+      if (rt.kind === "composite") scan(path, rt.steps, depth);
       return;
     }
   };
