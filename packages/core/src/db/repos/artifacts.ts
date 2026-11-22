@@ -20,6 +20,14 @@ export class ArtifactScopeError extends Error {}
 /**
  * Records an artifact of a run. Idempotent for the same name and digest; a different digest under
  * a name already recorded is refused, never overwritten.
+ *
+ * The size is charged to the org's stored-bytes quota, so where it comes from matters. The
+ * contract for every caller, and for the job-side upload path when it exists: pass `bytes` (the
+ * control plane holds them, and the size must be their length), or a size the control plane read
+ * from the blob in its own storage (a stat or a length), never a size the job reports. The check
+ * below only rejects what is impossible (negative, fractional, not the bytes' length); it cannot
+ * tell an under-reported size from a true one when there are no bytes. The release lane
+ * re-checks the stored file's length against this row (`size_mismatch`).
  */
 export function recordArtifact(
   db: Db,
