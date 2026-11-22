@@ -62,6 +62,7 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `maxLive` | `2` | Live sandboxes of ours at once. At most `3`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
+| `retryBudgetSeconds` | `180` | How long one control-plane call keeps being retried when it fails for a moment (a timeout, a connection reset, 429, 502, 503, 504). Applies to exec status and log reads, kills and file transfers; a job is never ended by one failed call. `0` turns retries off. |
 | `ownerCiPreflight` | `true` | Waiting while the account owner's own CI is busy cannot be turned off; `false` is refused. |
 
 The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).

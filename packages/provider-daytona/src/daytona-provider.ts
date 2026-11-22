@@ -6,10 +6,12 @@ import {
   SpecError,
   createWrappedExec,
   readCapped,
+  retryTransient,
   shellQuote,
   type Labels,
   type Provider,
   type ProviderInfo,
+  type RetryOptions,
   type SandboxHandle,
   type SandboxInfo,
   type SandboxSpec,
@@ -76,6 +78,12 @@ export interface DaytonaProviderOptions {
   /** Per-file byte cap. Default 64 MiB. */
   maxFileBytes?: number;
   exec?: WrappedExecOptions;
+  /**
+   * Retries of transient control-plane failures (timeouts, resets, 429, 502, 503, 504) on calls
+   * that are safe to repeat: exec status and log reads, kills, file reads and writes. A launch is
+   * never repeated blindly. Default budget 3 minutes per call.
+   */
+  retry?: RetryOptions;
   /** How long to wait for capacity (our own cap or the owner's CI) before giving up. Default 20 min. */
   capacityWaitMs?: number;
   /** Poll interval while waiting for capacity or for a sandbox to start. Default 5 s. */
@@ -197,7 +205,10 @@ export class DaytonaProvider implements Provider {
         return unframe(body.result);
       },
     };
-    this.exec = createWrappedExec(runner, opts.exec);
+    this.exec = createWrappedExec(runner, {
+      ...opts.exec,
+      ...(opts.retry ? { retry: opts.retry } : {}),
+    });
 
     this.files = {
       put: async (id, path, bytes) => {
@@ -205,26 +216,41 @@ export class DaytonaProvider implements Provider {
           throw new FileTooLargeError(`${bytes.length} bytes exceeds ${this.maxFileBytes}`);
         }
         const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) || "/" : ".";
-        const mk = await runner.run(id, ["mkdir", "-p", dir], { timeoutMs: 30_000 });
+        const mk = await retryTransient(
+          "file upload",
+          () => runner.run(id, ["mkdir", "-p", dir], { timeoutMs: 30_000 }),
+          opts.retry,
+        );
         if (mk.exitCode !== 0)
           throw new SpecError(`put: cannot create ${dir}: ${dec.decode(mk.stderr).trim()}`);
         const base = await this.toolbox(id);
         const form = new FormData();
         form.set("file", new Blob([bytes as unknown as ArrayBuffer]), "upload");
-        await this.toolboxCall(id, base, "POST", "/files/upload-v2", {
-          query: { path },
-          form,
-          timeoutMs: 120_000,
-        });
+        // Writing the same bytes to the same path again is harmless, so a transient failure retries.
+        await retryTransient(
+          "file upload",
+          () =>
+            this.toolboxCall(id, base, "POST", "/files/upload-v2", {
+              query: { path },
+              form,
+              timeoutMs: 120_000,
+            }),
+          opts.retry,
+        );
       },
       get: async (id, path, maxBytes) => {
         const base = await this.toolbox(id);
         let res: Response;
         try {
-          res = await this.toolboxCall(id, base, "GET", "/files/download", {
-            query: { path },
-            timeoutMs: 120_000,
-          });
+          res = await retryTransient(
+            "file download",
+            () =>
+              this.toolboxCall(id, base, "GET", "/files/download", {
+                query: { path },
+                timeoutMs: 120_000,
+              }),
+            opts.retry,
+          );
         } catch (e) {
           // A 404 here can mean the file, not the sandbox: tell them apart.
           if (e instanceof SandboxNotFoundError) {

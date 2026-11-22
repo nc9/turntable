@@ -14,6 +14,12 @@ export class InfraError extends ProviderError {
   readonly retryable = true;
 }
 
+/**
+ * Infrastructure trouble that usually clears on its own: a timeout, a dropped connection, a 429,
+ * a 502, 503 or 504. Safe to retry for a call that is idempotent; see retryTransient.
+ */
+export class TransientError extends InfraError {}
+
 /** The request is invalid or can never succeed as stated. Do not retry. */
 export class SpecError extends ProviderError {
   readonly retryable = false;

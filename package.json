@@ -18,7 +18,7 @@
     "typecheck:provider-sdk": "bun run --cwd packages/provider-sdk typecheck",
     "typecheck:provider-conformance": "bun run --cwd packages/provider-conformance typecheck",
     "test:core": "bun test packages/core/tests/db.test.ts packages/core/tests/server.test.ts packages/core/tests/job-state.test.ts",
-    "test:provider": "bun test packages/provider-sdk/tests/sdk.test.ts packages/provider-sdk/tests/read-capped.test.ts packages/provider-conformance/tests/fake.test.ts packages/provider-conformance/tests/fake-faults.test.ts packages/provider-docker/tests/commands.test.ts",
+    "test:provider": "bun test packages/provider-sdk/tests/sdk.test.ts packages/provider-sdk/tests/read-capped.test.ts packages/provider-sdk/tests/retry.test.ts packages/provider-conformance/tests/fake.test.ts packages/provider-conformance/tests/fake-faults.test.ts packages/provider-docker/tests/commands.test.ts",
     "typecheck:provider-docker": "bun run --cwd packages/provider-docker typecheck",
     "typecheck:redact": "bun run --cwd packages/redact typecheck",
     "typecheck:ui": "bun run --cwd packages/ui typecheck",

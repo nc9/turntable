@@ -106,3 +106,10 @@ These were checked by running the conformance suite and a short capability test 
 
 - `nproc` and `/proc/meminfo` show the host, not the sandbox. Read limits from the sandbox's cgroup instead.
 - Listings are eventually consistent and deletion is asynchronous. The provider waits for both, which adds a few seconds to create and destroy.
+
+## Transient failures
+
+A control plane that is slow for a moment must not end a long job. Providers classify their failures: a timeout, a dropped connection, a 429 and a 502, 503 or 504 are **transient**; a missing sandbox, a bad request, a rejected key and any other error are not.
+
+- Calls that are safe to repeat (exec status reads, log reads by offset, kills, file reads and writes) retry transient failures with jittered exponential backoff inside a budget (Daytona: `retryBudgetSeconds`, default 180). Only when the budget is spent does the call become an infrastructure error, and the reason says how many attempts were made and what the last error was. Each retry is logged at debug level with the call and the attempt, never a URL or a key.
+- **Starting a detached exec is never repeated on a guess.** If the launch fails transiently, the provider waits for any in-flight request to finish and asks the sandbox about that exec id. If the exec exists, it started, and nothing is launched again. Only if it does not exist is a new exec launched (under a new id), and only inside the budget.

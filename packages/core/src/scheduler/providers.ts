@@ -70,6 +70,7 @@ const DAYTONA_KEYS = new Set([
   "target",
   "ttlSeconds",
   "capacityWaitSeconds",
+  "retryBudgetSeconds",
   "ownerCiPreflight",
 ]);
 
@@ -122,6 +123,7 @@ function createDaytona(config: Record<string, unknown>): Provider {
   const maxLive = int(config, "maxLive", 1, HARD_MAX_LIVE);
   const ttl = int(config, "ttlSeconds", 60, 1800);
   const wait = int(config, "capacityWaitSeconds", 1, 3600);
+  const retryBudget = int(config, "retryBudgetSeconds", 0, 3600);
   return new DaytonaProvider({
     apiKey: keyFile !== undefined ? { file: keyFile } : { env: keyEnv },
     ...(baseUrl ? { baseUrl } : {}),
@@ -129,6 +131,10 @@ function createDaytona(config: Record<string, unknown>): Provider {
     ...(target ? { target } : {}),
     ...(maxLive !== undefined ? { maxLive } : {}),
     ...(wait !== undefined ? { capacityWaitMs: wait * 1000 } : {}),
+    retry: {
+      ...(retryBudget !== undefined ? { budgetMs: retryBudget * 1000 } : {}),
+      log: (m: string) => console.debug(`[longshore] daytona: ${m}`),
+    },
     // The scheduler asks for job timeout plus slack, usually past 30 minutes: clamp instead of
     // refusing so jobs still run; the sandbox is reaped at the cap either way.
     clampTtl: true,

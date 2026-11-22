@@ -4,6 +4,7 @@ import {
   InfraError,
   SandboxNotFoundError,
   SpecError,
+  TransientError,
   type SandboxSpec,
 } from "@longshore/provider-sdk";
 import {
@@ -16,6 +17,7 @@ import {
   withSandbox,
 } from "../src/index";
 import { MOCK_KEY, startMock } from "../src/testing/mock-daytona";
+import { DaytonaApi } from "../src/api";
 
 let mock: ReturnType<typeof startMock>;
 beforeEach(() => {
@@ -556,5 +558,118 @@ describe("api key and errors", () => {
       SpecError,
     );
     await p.destroy(h.id);
+  });
+});
+
+describe("transient control-plane failures", () => {
+  /** A fetch that fails the first `n` calls to the exec endpoint, the way a slow toolbox does. */
+  const flaky = (n: number, how: "timeout" | "502" = "timeout") => {
+    let left = n;
+    let seen = 0;
+    const f = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (String(input).includes("/process/execute")) {
+        seen += 1;
+        if (left-- > 0) {
+          if (how === "502") return new Response("bad gateway", { status: 502 });
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        }
+      }
+      return fetch(input, init);
+    }) as typeof fetch;
+    return { fetch: f, seen: () => seen };
+  };
+
+  const retry = { sleep: async () => {}, budgetMs: 60_000, baseMs: 1 };
+
+  test("a status read that times out a few times still completes the job", async () => {
+    const fl = flaky(0);
+    const p = make({ fetch: fl.fetch as never, retry });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, { argv: ["true"], timeoutSeconds: 30 });
+    const bad = flaky(4);
+    const p2 = make({ fetch: bad.fetch as never, retry });
+    // same sandbox, same mock: only the client's calls are flaky
+    const st = await p2.exec.status(h.id, execId);
+    expect(["running", "exited"]).toContain(st.state);
+    expect(bad.seen()).toBeGreaterThanOrEqual(5);
+  });
+
+  test("a 502 from the toolbox is retried too", async () => {
+    const p = make({ retry });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, { argv: ["true"], timeoutSeconds: 30 });
+    const bad = flaky(2, "502");
+    const p2 = make({ fetch: bad.fetch as never, retry });
+    expect((await p2.exec.status(h.id, execId)).state).toBeString();
+  });
+
+  test("a toolbox that always times out ends as InfraError after the budget, with the attempts", async () => {
+    const p = make({ retry });
+    const h = await p.create(spec());
+    const { execId } = await p.exec.start(h.id, { argv: ["true"], timeoutSeconds: 30 });
+    let t = 0;
+    const bad = flaky(1_000_000);
+    const p2 = make({
+      fetch: bad.fetch as never,
+      retry: { sleep: async (ms) => void (t += ms), now: () => t, budgetMs: 20_000, baseMs: 500 },
+    });
+    const err = await p2.exec.status(h.id, execId).catch((e) => e);
+    expect(err).toBeInstanceOf(InfraError);
+    expect(err.message).toMatch(/exec status: still failing after \d+ attempts.*TimeoutError/);
+  });
+
+  test("a start whose reply was lost but which did start is not started twice", async () => {
+    const p = make({ retry });
+    const h = await p.create(spec());
+    // the launch reaches the sandbox, then the reply is lost
+    let dropped = false;
+    const lossy = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const res = await fetch(input, init);
+      if (
+        !dropped &&
+        String(input).includes("/process/execute") &&
+        String(init?.body).includes("sleep")
+      ) {
+        dropped = true;
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }
+      return res;
+    }) as typeof fetch;
+    const before = mock.requests.filter((r) => r.path.endsWith("/process/execute")).length;
+    const p2 = make({ fetch: lossy as never, retry });
+    const { execId } = await p2.exec.start(h.id, { argv: ["sleep", "5"], timeoutSeconds: 30 });
+    expect(dropped).toBe(true);
+    expect(execId).toMatch(/^tt1-/);
+    const launches = mock.requests
+      .filter((r) => r.path.endsWith("/process/execute"))
+      .slice(before)
+      .filter((r) => JSON.stringify(r).includes("sleep"));
+    expect(launches.length).toBeLessThanOrEqual(1);
+  });
+
+  test("errors are classified: timeouts, resets, 408, 429, 502, 503, 504 are transient; 404, 400, 401, 500 are not", async () => {
+    const answer = (status: number) =>
+      new DaytonaApi({
+        apiKey: () => MOCK_KEY,
+        fetch: (async () => new Response("x", { status })) as never,
+      }).request("GET", "https://toolbox.example/x");
+    for (const s of [408, 429, 502, 503, 504]) {
+      await expect(answer(s)).rejects.toBeInstanceOf(TransientError);
+    }
+    for (const s of [400, 401, 403, 500]) {
+      const e = await answer(s).catch((x) => x);
+      expect(e).not.toBeInstanceOf(TransientError);
+      expect(e).toBeInstanceOf(Error);
+    }
+    await expect(answer(404)).rejects.toBeInstanceOf(SandboxNotFoundError);
+    const down = new DaytonaApi({
+      apiKey: () => MOCK_KEY,
+      fetch: (async () => {
+        throw new TypeError("connection reset");
+      }) as never,
+    });
+    await expect(down.request("GET", "https://toolbox.example/x")).rejects.toBeInstanceOf(
+      TransientError,
+    );
   });
 });

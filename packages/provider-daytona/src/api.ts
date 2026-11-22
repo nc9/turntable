@@ -4,6 +4,7 @@ import {
   InfraError,
   SandboxNotFoundError,
   SpecError,
+  TransientError,
   readCappedJson,
   readCappedText,
 } from "@longshore/provider-sdk";
@@ -95,7 +96,8 @@ export class DaytonaApi {
         redirect: "error",
       });
     } catch (e) {
-      throw new InfraError(
+      // A timeout, a reset or a refused connection: usually gone a moment later.
+      throw new TransientError(
         `Daytona request failed: ${method} ${new URL(full).pathname} (${(e as Error).name})`,
       );
     }
@@ -108,9 +110,12 @@ export class DaytonaApi {
         `Daytona rejected the API key (${res.status}); check the configured key`,
       );
     }
-    if (res.status === 429) throw new InfraError(`Daytona rate limit (${where}); retry later`);
-    if (res.status === 408 || res.status >= 500)
-      throw new InfraError(`Daytona ${res.status} (${where}): ${detail}`);
+    if (res.status === 429) throw new TransientError(`Daytona rate limit (${where}); retry later`);
+    // Transient: request timeout and a gateway that could not reach the toolbox for the moment.
+    if (res.status === 408 || res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new TransientError(`Daytona ${res.status} (${where}): ${detail}`);
+    }
+    if (res.status >= 500) throw new InfraError(`Daytona ${res.status} (${where}): ${detail}`);
     throw new SpecError(`Daytona ${res.status} (${where}): ${detail}`);
   }
 

@@ -1,4 +1,5 @@
-import { SandboxNotFoundError, InfraError, SpecError } from "./errors";
+import { SandboxNotFoundError, InfraError, SpecError, TransientError } from "./errors";
+import { retryTransient, type RetryOptions } from "./retry";
 import { OUTPUT_HEAD_BYTES, OUTPUT_SLACK_BYTES, OUTPUT_TAIL_BYTES, cutMarker } from "./cap-output";
 import type {
   ExecLogs,
@@ -39,6 +40,14 @@ export interface WrappedExecOptions {
   heartbeatEveryTicks?: number;
   /** Client-side timeout for each helper command. Default 60 s. */
   commandTimeoutMs?: number;
+  /**
+   * How transient failures are retried. Status, log and kill calls (idempotent) retry within the
+   * budget. A launch is never blindly repeated: after a transient failure the exec id is checked
+   * first (see `start`).
+   */
+  retry?: RetryOptions;
+  /** How long to wait before checking whether a launch that failed transiently actually started. Default 5 s. */
+  launchSettleMs?: number;
 }
 
 export const DEFAULT_EXEC_BASE_DIR = "/tmp/.longshore";
@@ -97,35 +106,78 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
     args: readonly string[],
   ): ReturnType<ShellRunner["run"]> =>
     runner.run(id, ["sh", "-c", script, "tt", ...args], { timeoutMs });
+  const retry = o.retry ?? {};
+  const sleep = retry.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const settleMs = o.launchSettleMs ?? 5000;
+  /** An idempotent helper call: transient failures are retried inside the budget. */
+  const shRetry = (
+    label: string,
+    id: string,
+    script: string,
+    args: readonly string[],
+  ): ReturnType<ShellRunner["run"]> => retryTransient(label, () => sh(id, script, args), retry);
 
   return {
     async start(id, opts) {
       if (!Number.isInteger(opts.timeoutSeconds) || opts.timeoutSeconds <= 0) {
         throw new SpecError("timeoutSeconds must be a positive integer");
       }
-      const execId = newExecId();
-      const res = await sh(id, LAUNCH_SH, [
-        dirOf(execId),
-        buildCmdScript(opts),
-        WRAPPER_SH,
-        String(opts.timeoutSeconds),
-        String(o.maxOutputBytes ?? 1024 ** 3),
-        String(head),
-        String(tail),
-        String(slack),
-        String(o.tickSeconds ?? 5),
-        String(o.heartbeatEveryTicks ?? 6),
-      ]);
-      if (res.exitCode !== 0) {
-        throw new InfraError(`exec launch failed (${res.exitCode}): ${dec.decode(res.stderr)}`);
+      const now = retry.now ?? Date.now;
+      const started = now();
+      const budget = retry.budgetMs ?? 180_000;
+      for (;;) {
+        const execId = newExecId();
+        let res;
+        try {
+          res = await sh(id, LAUNCH_SH, [
+            dirOf(execId),
+            buildCmdScript(opts),
+            WRAPPER_SH,
+            String(opts.timeoutSeconds),
+            String(o.maxOutputBytes ?? 1024 ** 3),
+            String(head),
+            String(tail),
+            String(slack),
+            String(o.tickSeconds ?? 5),
+            String(o.heartbeatEveryTicks ?? 6),
+          ]);
+        } catch (e) {
+          if (!(e instanceof TransientError)) throw e;
+          // The launch may have reached the sandbox even though the reply did not come back.
+          // Never start a second process on a guess: wait for any in-flight request to finish,
+          // then ask the sandbox about THIS exec id. If it exists, the exec started. Only if it
+          // does not is a fresh exec (a new id) launched, and only inside the budget.
+          await sleep(settleMs);
+          const st = await retryTransient(
+            "exec launch check",
+            async () => {
+              const r = await sh(id, STATUS_SH, [dirOf(execId)]);
+              if (r.exitCode !== 0) throw new InfraError(`status failed (${r.exitCode})`);
+              return dec.decode(r.stdout).trim().split(" ")[0];
+            },
+            retry,
+          );
+          if (st !== "lost") return { execId };
+          if (now() - started > budget) {
+            throw new InfraError(
+              `exec launch: no reply and nothing started after ${Math.round((now() - started) / 1000)}s; last error: ${e.message}`,
+              e,
+            );
+          }
+          retry.log?.(`exec launch: ${execId} did not start (${e.message}); launching again`);
+          continue;
+        }
+        if (res.exitCode !== 0) {
+          throw new InfraError(`exec launch failed (${res.exitCode}): ${dec.decode(res.stderr)}`);
+        }
+        return { execId };
       }
-      return { execId };
     },
 
     async status(id, execId): Promise<ExecStatus> {
       let res;
       try {
-        res = await sh(id, STATUS_SH, [dirOf(execId)]);
+        res = await shRetry("exec status", id, STATUS_SH, [dirOf(execId)]);
       } catch (e) {
         if (e instanceof SandboxNotFoundError) return { state: "lost" };
         throw e;
@@ -149,7 +201,7 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
       if (!Number.isInteger(opts.maxBytes) || opts.maxBytes <= 0) {
         throw new SpecError("maxBytes must be a positive integer");
       }
-      const res = await sh(id, LOGS_SH, [
+      const res = await shRetry("exec logs", id, LOGS_SH, [
         dirOf(execId),
         String(opts.fromOffset),
         String(opts.maxBytes),
@@ -176,7 +228,7 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
     async kill(id, execId, signal) {
       if (!SIGNALS.includes(signal)) throw new SpecError(`unsupported signal ${signal}`);
       try {
-        const res = await sh(id, KILL_SH, [dirOf(execId), signal]);
+        const res = await shRetry("exec kill", id, KILL_SH, [dirOf(execId), signal]);
         if (res.exitCode !== 0) throw new InfraError(`kill failed (${res.exitCode})`);
       } catch (e) {
         if (e instanceof SandboxNotFoundError) return;
