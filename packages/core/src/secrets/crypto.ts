@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 
 const VERSION = "v1";
 const VERSION_DOMAIN = "v2";
+const VERSION_ORG = "v3";
 
 /** Key domains: a record sealed for one domain cannot be opened as another. */
 export type KeyDomain = "system" | "job" | "oidc" | "attempt";
@@ -53,29 +54,59 @@ function gcmOpen(key: Buffer, iv: Buffer, ct: Buffer, tag: Buffer, aad: Buffer):
 const b64 = (b: Buffer): string => b.toString("base64url");
 const unb64 = (s: string): Buffer => Buffer.from(s, "base64url");
 
-/** The wrapping key for a domain: HKDF-SHA256 over the master key, domain in the info string. */
-export function domainKey(masterKey: Buffer, domain: KeyDomain): Buffer {
+/**
+ * The wrapping key for a domain: HKDF-SHA256 over the master key, domain in the info string. With
+ * an org, the org id is in the info string too, so each org has its own key-encryption key: a
+ * value sealed for org A is opened with A's key only, whatever AAD is presented, and the keys
+ * for two orgs differ without any further secret.
+ */
+export function domainKey(masterKey: Buffer, domain: KeyDomain, orgId?: string): Buffer {
   assertKey(masterKey);
-  return Buffer.from(
-    hkdfSync("sha256", masterKey, Buffer.alloc(0), `longshore:domain:${domain}`, KEY_BYTES),
-  );
+  const info =
+    orgId === undefined
+      ? `longshore:domain:${domain}`
+      : `longshore:domain:${domain}:org:${orgId.length}:${orgId}`;
+  return Buffer.from(hkdfSync("sha256", masterKey, Buffer.alloc(0), info, KEY_BYTES));
 }
 
-const withDomain = (aad: Buffer, domain: KeyDomain): Buffer =>
-  Buffer.concat([aad, Buffer.from(`|domain:${domain}`, "utf8")]);
+/** The record format: `v1` (master key wraps directly), `v2` (per domain), `v3` (per domain and org). */
+export function recordVersion(record: string): "v1" | "v2" | "v3" | undefined {
+  const v = record.slice(0, record.indexOf("."));
+  return v === VERSION || v === VERSION_DOMAIN || v === VERSION_ORG ? v : undefined;
+}
+
+/**
+ * When `LONGSHORE_REQUIRE_ORG_KEYS=1`, a record that is not per-org (v1, v2) is refused wherever
+ * an org is known. Set it once `keys reseal` has run for every org: it stops a stale copy of an
+ * old record from being accepted.
+ */
+const requireOrgKeys = (): boolean => process.env.LONGSHORE_REQUIRE_ORG_KEYS === "1";
+
+const withDomain = (aad: Buffer, domain: KeyDomain, orgId?: string): Buffer =>
+  Buffer.concat([
+    aad,
+    Buffer.from(`|domain:${domain}${orgId === undefined ? "" : `|org:${orgId}`}`, "utf8"),
+  ]);
 
 /**
  * Seals `plaintext` for a key domain. The wrapping key is derived for that domain and the domain
- * is bound into the AAD, so the record opens only as that domain. The result is one string:
- * `v2.<wrap iv>.<wrapped dek>.<wrap tag>.<iv>.<ct>.<tag>`.
+ * is bound into the AAD, so the record opens only as that domain. With `orgId` the wrapping key
+ * is the org's own (format v3). The result is one string:
+ * `v2.<wrap iv>.<wrapped dek>.<wrap tag>.<iv>.<ct>.<tag>` (or `v3.` with an org).
  */
 export function seal(
   masterKey: Buffer,
   plaintext: string,
   aad: Buffer,
   domain: KeyDomain = "system",
+  orgId?: string,
 ): string {
-  return sealWith(domainKey(masterKey, domain), VERSION_DOMAIN, plaintext, withDomain(aad, domain));
+  return sealWith(
+    domainKey(masterKey, domain, orgId),
+    orgId === undefined ? VERSION_DOMAIN : VERSION_ORG,
+    plaintext,
+    withDomain(aad, domain, orgId),
+  );
 }
 
 function sealWith(wrapKey: Buffer, version: string, plaintext: string, aad: Buffer): string {
@@ -117,6 +148,7 @@ export function open(
   record: string,
   aad: Buffer,
   domain: KeyDomain = "system",
+  orgId?: string,
 ): string {
   assertKey(masterKey);
   const parts = record.split(".");
@@ -124,10 +156,19 @@ export function open(
   const version = parts[0];
   let wrapKey: Buffer;
   let fullAad: Buffer;
-  if (version === VERSION_DOMAIN) {
+  if (version === VERSION_ORG) {
+    // A per-org record opens only for the org it names: asked with no org, or another, it fails.
+    if (orgId === undefined) throw new SecretDecryptError();
+    wrapKey = domainKey(masterKey, domain, orgId);
+    fullAad = withDomain(aad, domain, orgId);
+  } else if (version === VERSION_DOMAIN && !(orgId !== undefined && requireOrgKeys())) {
     wrapKey = domainKey(masterKey, domain);
     fullAad = withDomain(aad, domain);
-  } else if (version === VERSION && domain === "system") {
+  } else if (
+    version === VERSION &&
+    domain === "system" &&
+    !(orgId !== undefined && requireOrgKeys())
+  ) {
     wrapKey = Buffer.from(masterKey);
     fullAad = aad;
   } else {

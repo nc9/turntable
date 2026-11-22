@@ -12,6 +12,8 @@
 import { matchesPatterns } from "@longshore/act-runner";
 import type { Db } from "../db";
 import {
+  listVaultCiphertexts,
+  setVaultCiphertext,
   addVaultVersion,
   deleteVaultSecret,
   findVaultSecret,
@@ -32,7 +34,7 @@ import {
 } from "../db/repos";
 import { credentialsFor, normalizeRef, type TrustClass } from "../trust";
 import { auditFailure } from "../audit/failures";
-import { open, seal, vaultAad } from "./crypto";
+import { open, recordVersion, seal, vaultAad } from "./crypto";
 
 /** Classes a secret may name. `untrusted_pr` is deliberately absent and can never be added. */
 export const ALLOWED_SECRET_CLASSES = ["protected", "release", "trusted_pr"] as const;
@@ -246,7 +248,8 @@ export class SecretVault {
         this.#db,
         orgId,
         { ...sc, ...pol, createdBy: actor },
-        (id, version) => seal(this.#key, value, vaultAad(orgId, id, version, sc.name), "job"),
+        (id, version) =>
+          seal(this.#key, value, vaultAad(orgId, id, version, sc.name), "job", orgId),
       );
       return { secret: view(row, await listVaultVersions(this.#db, orgId, row.id)), created: true };
     }
@@ -255,7 +258,8 @@ export class SecretVault {
       orgId,
       existing.id,
       { createdBy: actor, previousValidUntil: this.#now(), policy: pol },
-      (version) => seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job"),
+      (version) =>
+        seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job", orgId),
     );
     return { secret: (await this.#viewById(orgId, existing.id))!, created: false };
   }
@@ -285,9 +289,32 @@ export class SecretVault {
       orgId,
       existing.id,
       { createdBy: actor, previousValidUntil: this.#now() + overlapMs },
-      (version) => seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job"),
+      (version) =>
+        seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job", orgId),
     );
     return this.#viewById(orgId, existing.id);
+  }
+
+  /**
+   * Re-seals every version of an org under the org's own key (format v3), in place; the values
+   * and versions are unchanged. Versions already v3 are skipped. Returns how many changed.
+   */
+  async reseal(orgId: string): Promise<number> {
+    let n = 0;
+    for (const v of await listVaultCiphertexts(this.#db, orgId)) {
+      if (recordVersion(v.ciphertext) === "v3") continue;
+      const aad = vaultAad(orgId, v.secretId, v.version, v.name);
+      const value = open(this.#key, v.ciphertext, aad, "job");
+      await setVaultCiphertext(
+        this.#db,
+        orgId,
+        v.secretId,
+        v.version,
+        seal(this.#key, value, aad, "job", orgId),
+      );
+      n++;
+    }
+    return n;
   }
 
   async delete(orgId: string, scope: SecretScopeInput): Promise<SecretView | undefined> {
@@ -427,6 +454,7 @@ export class SecretVault {
         rec.ciphertext,
         vaultAad(req.orgId, secret.id, version, secret.name),
         "job",
+        req.orgId,
       );
     } catch {
       return deny("decrypt_failed", secret.id);

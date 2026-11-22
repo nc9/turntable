@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { open, seal, SecretDecryptError } from "../secrets/crypto";
+import { open, recordVersion, seal, SecretDecryptError } from "../secrets/crypto";
 
 export interface AnchorState {
   v: 1;
@@ -60,7 +60,9 @@ export class AuditAnchor {
     const f = this.#file(orgId);
     if (!existsSync(f)) return undefined;
     try {
-      const s = JSON.parse(open(this.#key, readFileSync(f, "utf8"), aad(orgId))) as AnchorState;
+      const s = JSON.parse(
+        open(this.#key, readFileSync(f, "utf8"), aad(orgId), "system", orgId),
+      ) as AnchorState;
       if (s.v !== 1 || typeof s.keyId !== "string" || typeof s.lastSeq !== "number") {
         throw new SecretDecryptError();
       }
@@ -68,6 +70,20 @@ export class AuditAnchor {
     } catch {
       throw new AnchorCorrupt(orgId);
     }
+  }
+
+  /** Re-seals an org's state file under the org's own key. False when there is none or it is already. */
+  reseal(orgId: string): boolean {
+    const f = this.#file(orgId);
+    if (!existsSync(f) || recordVersion(readFileSync(f, "utf8")) === "v3") return false;
+    const st = this.read(orgId);
+    if (!st) return false;
+    this.write(
+      orgId,
+      { keyId: st.keyId, lastSeq: st.lastSeq, lastHash: st.lastHash },
+      st.updatedAt,
+    );
+    return true;
   }
 
   /** Org ids that have a state file here. Used so an org whose database rows are gone is still checked. */
@@ -81,7 +97,13 @@ export class AuditAnchor {
   /** Atomic: written to a temp file and renamed over the old one. Mode 0600. */
   write(orgId: string, state: Omit<AnchorState, "v" | "updatedAt">, now = Date.now()): void {
     mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-    const body = seal(this.#key, JSON.stringify({ v: 1, ...state, updatedAt: now }), aad(orgId));
+    const body = seal(
+      this.#key,
+      JSON.stringify({ v: 1, ...state, updatedAt: now }),
+      aad(orgId),
+      "system",
+      orgId,
+    );
     const f = this.#file(orgId);
     const tmp = `${f}.tmp`;
     writeFileSync(tmp, body, { mode: 0o600 });
