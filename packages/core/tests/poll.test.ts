@@ -57,6 +57,8 @@ type PullStub = {
   baseRepo?: string;
   /** Login of the head commit's author; defaults to the opener. null: no linked account. */
   headAuthor?: string | null;
+  /** The head commit's message; defaults to a fixed text naming the PR. */
+  commitMessage?: string;
 };
 
 /** A GitHub API stand-in served through fetch. */
@@ -98,7 +100,11 @@ function makeGithub(repo = "acme/web") {
       const pull = state.pulls.find((p) => p.headSha === commit[1]);
       const author = pull ? (pull.headAuthor === undefined ? pull.user : pull.headAuthor) : null;
       return etagged(
-        JSON.stringify({ sha: commit[1], author: author === null ? null : { login: author } }),
+        JSON.stringify({
+          sha: commit[1],
+          commit: { message: pull?.commitMessage ?? `head commit of #${pull?.number}` },
+          author: author === null ? null : { login: author },
+        }),
         `"c-${commit[1]}"`,
         "application/json",
       );
@@ -234,6 +240,7 @@ test("a same-repo PR by an allowlisted author runs, with its PR metadata", async
       headSha: SHA("d"),
       headRef: "feature/x",
       headRepo: "acme/web",
+      commitMessage: "feat: add the feature\n\nlonger body",
     },
   ];
   const res = await poll(gh);
@@ -245,7 +252,7 @@ test("a same-repo PR by an allowlisted author runs, with its PR metadata", async
     actor: "HubOT",
     prNumber: 17,
     headBranch: "feature/x",
-    commitMessage: "Add feature",
+    commitMessage: "feat: add the feature\n\nlonger body",
   });
 });
 
@@ -586,7 +593,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   });
   await client.branchHead("acme/web", "main");
   await client.openPulls("acme/web");
-  await client.commitAuthor("acme/web", SHA("1"));
+  await client.commitInfo("acme/web", SHA("1"));
   await client.fileAt("acme/web", ".github/workflows/ci.yml", SHA("a"));
   await client.branchHead("acme/web", "main"); // a conditional repeat
   expect(seen.length).toBeGreaterThanOrEqual(5);
@@ -602,7 +609,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   );
   expect(methods.toSorted()).toEqual([
     "branchHead",
-    "commitAuthor",
+    "commitInfo",
     "fileAt",
     "openPulls",
     "rateLimit",
@@ -610,7 +617,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   for (const m of methods)
     expect(m).not.toMatch(/post|put|patch|delete|create|update|merge|comment|dispatch/i);
   // a sha that is not hex cannot be smuggled into a path
-  await expect(client.commitAuthor("acme/web", "../../user")).rejects.toThrow();
+  await expect(client.commitInfo("acme/web", "../../user")).rejects.toThrow();
   expect(seen.every((s) => !s.url.includes(".."))).toBe(true);
   // the whole poll path obeys the same rule
   const all: string[] = [];

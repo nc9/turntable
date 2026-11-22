@@ -110,6 +110,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
     ids,
     io: {
       setSandbox: (sandboxId) => o.store.setSandbox(ids.attemptId, sandboxId),
+      setExec: (execId) => o.store.setExec?.(ids.attemptId, execId) ?? Promise.resolve(),
       appendLog: (offset, bytes) => o.store.appendLog(ids.attemptId, offset, bytes),
       recordStep: (step) => o.store.recordStep(ids.attemptId, step),
     },

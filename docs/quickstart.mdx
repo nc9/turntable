@@ -112,7 +112,12 @@ A revoked or expired token stops working at once. The OpenAPI document is at `/o
 | `--lease-seconds` | 30 | How long a claim lasts without a heartbeat. |
 | `--image` | node 22 | Sandbox image. |
 
-Each claim is a lease that the worker extends with heartbeats. If a worker dies (a crash, `kill -9`, a lost host), its lease expires. On boot, and periodically after, the server resolves every attempt with an expired lease: it probes the sandbox, destroys it, and marks the attempt `infra_error` with the probe result. It never guesses a verdict for work nobody watched, so rerun it if you want an answer. Attempts started by `turntable run` have no lease and are never touched.
+Each claim is a lease that the worker extends with heartbeats, and everything a worker writes is fenced by it. If a worker dies (a crash, `kill -9`, a lost host), its lease expires. On boot, and periodically after, the server resolves every attempt with an expired lease by probing its sandbox with `exec.status`:
+
+- **The exec still exists** (running, or finished while nobody watched): the server takes the lease over and re-attaches. The job runs in a detached exec that outlives the server, so a job that finished meanwhile keeps its real result. The worker replays the exec's whole log by offset, rewrites the stored log and steps, and records the real verdict (success, failure, or infra_error if act itself failed).
+- **The exec is lost, the sandbox is gone, or the provider cannot be reached**: whatever still runs is killed, the sandbox is destroyed, and the attempt is marked `infra_error` with the probe result. It never guesses a verdict.
+
+Attempts started by `turntable run` have no lease and are never touched. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
 
 ## Poll a GitHub repo
 

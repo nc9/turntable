@@ -2,13 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "../db";
 import {
   addCut,
-  appendLog,
+  appendLogFenced,
   type Claim,
   claimNextAttempt,
   finishAttempt,
   heartbeatAttempt,
+  ifLeaseHeld,
   type Readiness,
   recordExec,
+  resetAttemptOutput,
   upsertStep,
 } from "../db/repos";
 import type {
@@ -144,7 +146,16 @@ export class Scheduler {
     while (this.#active.size > 0) await Promise.all([...this.#active.values()].map((a) => a.done));
   }
 
-  #launch(claim: Claim): void {
+  /**
+   * Takes over an attempt a dead worker left running (see reconcileExpired) and re-attaches to its
+   * exec: the runner is called with `resume`, so it replays the exec and records the real result.
+   * The claim comes from `takeExpiredLease`, so this worker already holds the lease.
+   */
+  adopt(claim: Claim, resume: { sandboxId: string; execId: string }): void {
+    this.#launch(claim, resume);
+  }
+
+  #launch(claim: Claim, resume?: { sandboxId: string; execId: string }): void {
     const { attempt, scope } = claim;
     const controller = new AbortController();
     const db = this.#o.db;
@@ -154,14 +165,23 @@ export class Scheduler {
       setExec: async (where) => {
         await recordExec(db, scope, attempt.id, owner, where);
       },
+      reset: async () => {
+        await resetAttemptOutput(db, scope, attempt.id, owner);
+      },
+      // Everything a worker writes is fenced by its lease: after it loses the lease (reconciled,
+      // cancelled) its writes are dropped instead of landing in a log someone else now owns.
       appendLog: async (offset, bytes) => {
-        await appendLog(db, scope, attempt.id, offset, bytes);
+        await appendLogFenced(db, scope, attempt.id, owner, offset, bytes);
       },
       recordStep: async (step) => {
-        await upsertStep(db, scope, { ...step, attemptId: attempt.id });
+        await ifLeaseHeld(db, scope, attempt.id, owner, () =>
+          upsertStep(db, scope, { ...step, attemptId: attempt.id }),
+        );
       },
       addCut: async (cut) => {
-        await addCut(db, scope, { ...cut, attemptId: attempt.id });
+        await ifLeaseHeld(db, scope, attempt.id, owner, () =>
+          addCut(db, scope, { ...cut, attemptId: attempt.id }),
+        );
       },
     };
 
@@ -192,6 +212,7 @@ export class Scheduler {
             provider,
             signal: controller.signal,
             store,
+            ...(resume ? { resume } : {}),
           };
           outcome = await this.#o.runner(ctx);
         }

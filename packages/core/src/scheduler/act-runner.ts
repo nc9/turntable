@@ -103,6 +103,31 @@ export type ActRunnerOptions = {
 export function createActRunner(o: ActRunnerOptions): AttemptRunner {
   return async (ctx) => {
     const { run, job } = ctx;
+    // Re-attach to an exec a dead worker started: no checkout, no planning, just replay it.
+    if (ctx.resume) {
+      const res = await executeJob({
+        provider: ctx.provider,
+        ids: { runId: run.id, jobId: job.id, attemptId: ctx.attempt.id },
+        io: {
+          setSandbox: (sandboxId) => ctx.store.setExec({ sandboxId }),
+          setExec: (execId) => ctx.store.setExec({ execId }),
+          reset: () => ctx.store.reset(),
+          appendLog: (offset, bytes) => ctx.store.appendLog(offset, bytes),
+          recordStep: (step) => {
+            const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);
+            return ctx.store.recordStep(rest);
+          },
+        },
+        resume: ctx.resume,
+        signal: ctx.signal,
+        ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
+      });
+      return {
+        state: res.state,
+        ...(res.code === undefined ? {} : { exitCode: res.code }),
+        reason: res.reason,
+      };
+    }
     const repo = (await listRepos(o.db, ctx.scope))[0];
     if (!repo) return { state: "infra_error", reason: "project has no bound repo to fetch from" };
     if (run.sha === null) return { state: "infra_error", reason: "run has no sha" };
@@ -136,6 +161,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         ids: { runId: run.id, jobId: job.id, attemptId: ctx.attempt.id },
         io: {
           setSandbox: (sandboxId) => ctx.store.setExec({ sandboxId }),
+          setExec: (execId) => ctx.store.setExec({ execId }),
           appendLog: (offset, bytes) => ctx.store.appendLog(offset, bytes),
           recordStep: (step) => {
             const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);

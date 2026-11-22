@@ -14,6 +14,8 @@ export type AttemptOutcome = {
 export interface AttemptStore {
   /** Records the sandbox (and exec) so a restarted controller can find and probe them. */
   setExec(where: { sandboxId?: string; execId?: string }): Promise<void>;
+  /** Clears stored log, steps and cuts, before a re-attached run replays the whole exec log. */
+  reset(): Promise<void>;
   appendLog(offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(step: Omit<StepInput, "attemptId">): Promise<void>;
   addCut(cut: { atOffset: number; omittedBytes: number; reason: string }): Promise<void>;
@@ -25,6 +27,12 @@ export interface AttemptContext {
   run: Run;
   scope: Required<Scope>;
   provider: Provider;
+  /**
+   * Set when this attempt was started by a worker that died and is being re-attached to: the
+   * sandbox and exec it left. A runner that can re-attach replays the exec and returns the real
+   * outcome; one that cannot should end the attempt as infra_error.
+   */
+  resume?: { sandboxId: string; execId: string };
   /** Aborted when the lease is lost (cancelled, reconciled) or the scheduler stops hard. */
   signal: AbortSignal;
   store: AttemptStore;

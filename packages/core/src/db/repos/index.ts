@@ -564,6 +564,7 @@ export function updateAttempt(
   patch: {
     state?: JobState;
     sandboxId?: string | null;
+    execId?: string | null;
     exitCode?: number | null;
     errorClass?: string | null;
   },

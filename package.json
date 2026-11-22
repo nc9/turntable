@@ -35,7 +35,7 @@
     "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts",
     "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts",
     "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts",
-    "test:sched": "bun test packages/core/tests/scheduler.test.ts packages/core/tests/poll.test.ts"
+    "test:sched": "bun test packages/core/tests/scheduler.test.ts packages/core/tests/poll.test.ts packages/core/tests/reattach.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",

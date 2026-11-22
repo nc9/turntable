@@ -163,9 +163,13 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   if (cfg.prMode === "allowlist") {
     for (const pr of await deps.github.openPulls(repo)) {
       let verdict = gatePullRequestOpener(cfg, pr);
+      let message = pr.title;
       if (verdict.ok) {
-        // Only now spend an API call (ETag-cached, immutable) on who wrote the head commit.
-        verdict = gateHeadCommit(cfg, await deps.github.commitAuthor(repo, pr.headSha));
+        // Only now spend an API call (ETag-cached, immutable) on the head commit: who wrote it
+        // for the gate, and its real message for the run.
+        const head = await deps.github.commitInfo(repo, pr.headSha);
+        verdict = gateHeadCommit(cfg, head.author);
+        if (head.message !== "") message = head.message;
       }
       if (!verdict.ok) {
         result.refused.push({ what: `pr #${pr.number}`, reason: verdict.reason });
@@ -176,7 +180,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         ref: `refs/pull/${pr.number}/head`,
         sha: pr.headSha,
         actor: pr.author,
-        message: pr.title,
+        message,
         headBranch: pr.headRef,
         prNumber: pr.number,
       });

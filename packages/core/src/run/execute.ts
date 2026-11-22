@@ -1,4 +1,5 @@
 import {
+  resumeJob,
   runJob,
   type ActTarball,
   type ActionFetcher,
@@ -14,18 +15,30 @@ import type { StepRecord } from "./store";
 export interface ExecIo {
   /** Records the sandbox as soon as it exists, so a restarted controller can find it. */
   setSandbox(sandboxId: string): Promise<void>;
+  /** Records act's exec as soon as it starts: with the sandbox, what `resume` needs. */
+  setExec(execId: string): Promise<void>;
+  /**
+   * Called once before a resumed execution replays the whole exec log, so stored log, steps and
+   * cuts from the dead run are cleared and rewritten (chunk boundaries differ between runs).
+   */
+  reset?(): Promise<void>;
   appendLog(offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(step: StepRecord): Promise<void>;
 }
 
 export interface ExecuteOptions {
   provider: Provider;
-  /** A planned job with its actions resolved (see planJob and resolveActions). */
-  plan: JobPlan;
+  /** A planned job with its actions resolved (see planJob and resolveActions). Not needed to resume. */
+  plan?: JobPlan;
+  /**
+   * Re-attach to an exec a dead controller started instead of starting one: replays its whole
+   * log, derives the real verdict, destroys the sandbox. `repoTarball` and `plan` are unused.
+   */
+  resume?: { sandboxId: string; execId: string };
   ids: { runId: string; jobId: string; attemptId: string };
   io: ExecIo;
-  repoTarball: Uint8Array;
-  image: string;
+  repoTarball?: Uint8Array;
+  image?: string;
   /** Sink for the (redacted) log text, for example the terminal. Default: discard. */
   out?: (text: string) => void;
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
@@ -54,13 +67,14 @@ export interface ExecuteResult {
 const enc = new TextEncoder();
 
 /**
- * Runs one planned job in a fresh sandbox and returns how it ended. It creates no run, job or
+ * Runs one planned job in a fresh sandbox (or, with `resume`, re-attaches to the exec of a dead
+ * controller) and returns how it ended. It creates no run, job or
  * attempt rows and records no outcome: the caller does, so the CLI and the scheduler's worker
  * share this one code path. Log text is redacted before it is shown or stored. The sandbox is
  * always destroyed.
  */
 export async function executeJob(o: ExecuteOptions): Promise<ExecuteResult> {
-  const { ids, plan } = o;
+  const { ids } = o;
   const out = o.out ?? (() => {});
   // One registry for everything act-derived that we show or store.
   const registry = o.registry ?? new SecretRegistry();
@@ -115,31 +129,43 @@ export async function executeJob(o: ExecuteOptions): Promise<ExecuteResult> {
   });
   try {
     if (cancelled) return await settle("cancelled", "cancelled by user");
-    const sb = await o.provider.create({
-      name: `tt-run-${ids.attemptId.toLowerCase()}`,
-      labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
-      image: o.image,
-      ttlSeconds: (o.timeoutSeconds ?? 3600) + 900,
-      // TODO(#16): egress none works for host-mode jobs with sha-delivered actions (proved in
-      // the act-runner e2e), so local runs get no network.
-      network: { egress: o.egress ?? "none" },
-    });
-    sandboxId = sb.id;
-    await o.io.setSandbox(sb.id);
-    const run = runJob(
-      o.provider,
-      sb.id,
-      plan,
-      {
-        repoTarball: o.repoTarball,
-        ...(o.act ? { act: o.act } : {}),
-        ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
-      },
-      {
+    let run;
+    if (o.resume) {
+      sandboxId = o.resume.sandboxId;
+      await o.io.reset?.();
+      run = resumeJob(o.provider, o.resume.sandboxId, o.resume.execId, {
         pollMs: o.pollMs ?? 500,
-        ...(o.timeoutSeconds ? { timeoutSeconds: o.timeoutSeconds } : {}),
-      },
-    );
+      });
+    } else {
+      if (!o.plan || !o.repoTarball || !o.image)
+        throw new Error("plan, repoTarball and image are required");
+      const sb = await o.provider.create({
+        name: `tt-run-${ids.attemptId.toLowerCase()}`,
+        labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
+        image: o.image,
+        ttlSeconds: (o.timeoutSeconds ?? 3600) + 900,
+        // TODO(#16): egress none works for host-mode jobs with sha-delivered actions (proved in
+        // the act-runner e2e), so local runs get no network.
+        network: { egress: o.egress ?? "none" },
+      });
+      sandboxId = sb.id;
+      await o.io.setSandbox(sb.id);
+      run = runJob(
+        o.provider,
+        sb.id,
+        o.plan,
+        {
+          repoTarball: o.repoTarball,
+          ...(o.act ? { act: o.act } : {}),
+          ...(o.fetchAction ? { fetchAction: o.fetchAction } : {}),
+        },
+        {
+          pollMs: o.pollMs ?? 500,
+          ...(o.timeoutSeconds ? { timeoutSeconds: o.timeoutSeconds } : {}),
+          onExec: ({ execId }) => o.io.setExec(execId),
+        },
+      );
+    }
     for (;;) {
       const next = await Promise.race([run.next(), aborted]);
       if (next === "abort") {

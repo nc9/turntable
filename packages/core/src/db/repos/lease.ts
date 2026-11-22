@@ -8,6 +8,7 @@ import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import {
+  appendLog,
   getRun,
   type Job,
   type JobAttempt,
@@ -318,5 +319,138 @@ export function countRunning(db: Db, orgId?: string): Promise<number> {
         ),
       );
     return Number(row?.n ?? 0);
+  });
+}
+
+/** True when `owner` holds the live lease on a running attempt. */
+async function holdsLease(h: Db, scope: Scope, attemptId: string, owner: string): Promise<boolean> {
+  const [row] = await h.orm
+    .select({ id: s.jobAttempts.id })
+    .from(s.jobAttempts)
+    .where(
+      scoped(
+        scope,
+        { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+        eq(s.jobAttempts.id, attemptId),
+        eq(s.jobAttempts.state, "running"),
+        eq(s.jobAttempts.leaseOwner, owner),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * Appends a log chunk only while `owner` still holds the lease, so a worker that lost its lease
+ * (reconciled, cancelled) cannot write into a log someone else now owns. False means dropped.
+ */
+export function appendLogFenced(
+  db: Db,
+  scope: Required<Scope>,
+  attemptId: string,
+  owner: string,
+  offset: number,
+  bytes: Uint8Array,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    if (!(await holdsLease(tx, scope, attemptId, owner))) return false;
+    return appendLog(tx, scope, attemptId, offset, bytes);
+  });
+}
+
+/** Runs `fn` only while `owner` holds the lease (steps and cuts of a worker that lost it are dropped). */
+export function ifLeaseHeld<T>(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+  fn: () => Promise<T>,
+): Promise<T | undefined> {
+  return db.transaction(async (tx) =>
+    (await holdsLease(tx, scope, attemptId, owner)) ? fn() : undefined,
+  );
+}
+
+/**
+ * Wipes an attempt's stored log, steps and cuts so a re-attached worker can replay the whole exec
+ * log and write it afresh (chunk boundaries differ between runs, so appending would garble it).
+ * Fenced by the lease. Returns false when `owner` does not hold it.
+ */
+export function resetAttemptOutput(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    if (!(await holdsLease(tx, scope, attemptId, owner))) return false;
+    await tx.orm
+      .delete(s.logChunks)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.logChunks.orgId, projectId: s.logChunks.projectId },
+          eq(s.logChunks.attemptId, attemptId),
+        ),
+      );
+    await tx.orm
+      .delete(s.attemptSteps)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+          eq(s.attemptSteps.attemptId, attemptId),
+        ),
+      );
+    await tx.orm
+      .delete(s.logCuts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.logCuts.orgId, projectId: s.logCuts.projectId },
+          eq(s.logCuts.attemptId, attemptId),
+        ),
+      );
+    return true;
+  });
+}
+
+/**
+ * Takes over a running attempt whose lease has expired: the new owner gets a fresh lease and the
+ * old owner is fenced out from then on (its heartbeat and finish no longer match). Returns the
+ * claim, or undefined when the lease is not expired or the attempt is no longer running.
+ */
+export function takeExpiredLease(
+  db: Db,
+  attemptId: string,
+  o: { owner: string; leaseMs: number; now: number },
+): Promise<Claim | undefined> {
+  return db.transaction(async (tx) => {
+    const rows = await tx.orm
+      .update(s.jobAttempts)
+      .set({ leaseOwner: o.owner, leaseExpiresAt: o.now + o.leaseMs, heartbeatAt: o.now })
+      .where(
+        and(
+          eq(s.jobAttempts.id, attemptId),
+          eq(s.jobAttempts.state, "running"),
+          lt(s.jobAttempts.leaseExpiresAt, o.now),
+        ),
+      )
+      .returning({
+        orgId: s.jobAttempts.orgId,
+        projectId: s.jobAttempts.projectId,
+        jobId: s.jobAttempts.jobId,
+      });
+    const row = rows[0];
+    if (!row) return undefined;
+    const scope = { orgId: row.orgId, projectId: row.projectId };
+    const [attempt] = await tx.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(eq(s.jobAttempts.id, attemptId))
+      .limit(1);
+    const [job] = await tx.orm.select().from(s.jobs).where(eq(s.jobs.id, row.jobId)).limit(1);
+    const run = await getRun(tx, scope, job!.runId);
+    return { attempt: attempt!, job: job!, run: run!, scope };
   });
 }

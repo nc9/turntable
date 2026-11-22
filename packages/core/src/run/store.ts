@@ -48,6 +48,8 @@ export interface RunStore {
   }): Promise<{ runId: string; jobId: string; attemptId: string }>;
   markRunning(ids: { runId: string; jobId: string; attemptId: string }): Promise<void>;
   setSandbox(attemptId: string, sandboxId: string): Promise<void>;
+  /** Records act's exec id, so a controller restarted mid-run can re-attach. */
+  setExec?(attemptId: string, execId: string): Promise<void>;
   appendLog(attemptId: string, offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(attemptId: string, step: StepRecord): Promise<void>;
   /** `exitCode`: required non-zero for failure, 0 for success, absent otherwise. */
@@ -84,6 +86,9 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
     },
     async setSandbox(attemptId, sandboxId) {
       await updateAttempt(db, scope, attemptId, { sandboxId });
+    },
+    async setExec(attemptId, execId) {
+      await updateAttempt(db, scope, attemptId, { execId });
     },
     async appendLog(attemptId, offset, bytes) {
       await appendLog(db, scope, attemptId, offset, bytes);

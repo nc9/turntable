@@ -154,15 +154,17 @@ export class GithubClient {
   }
 
   /**
-   * Login of the account GitHub links to a commit's author, or null when it has none (an email
-   * that matches no account). Commits are immutable, so the ETag cache makes repeats free.
+   * Who wrote a commit and what they said. `author` is the login of the account GitHub links to
+   * the commit's author, or null when it links none (an email that matches no account). Commits
+   * are immutable, so the ETag cache makes repeats free.
    */
-  async commitAuthor(repo: string, sha: string): Promise<string | null> {
+  async commitInfo(repo: string, sha: string): Promise<{ author: string | null; message: string }> {
     if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new GithubError(400, "/commits/<invalid sha>");
     const body = (await this.#get(`/repos/${repo}/commits/${sha.toLowerCase()}`)) as {
+      commit?: { message?: string };
       author?: { login?: string } | null;
     };
-    return body.author?.login ?? null;
+    return { author: body.author?.login ?? null, message: body.commit?.message ?? "" };
   }
 
   async openPulls(repo: string): Promise<PullRequest[]> {
