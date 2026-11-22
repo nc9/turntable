@@ -127,7 +127,11 @@ describe("what is sent on create", () => {
 
   test("images need an explicit opt-in because a build creates a snapshot", async () => {
     const p = make();
-    expect(() => p.buildCreateBody(spec({ image: "alpine:3.22" }))).toThrow(/snapshot/);
+    // Without the opt-in the image name is ignored: no build, and no snapshot named either.
+    const off = p.buildCreateBody(spec({ image: "alpine:3.22" }));
+    expect(off).not.toHaveProperty("buildInfo");
+    expect(off).not.toHaveProperty("snapshot");
+    expect(off).not.toHaveProperty("image");
     const on = make({ allowImageBuild: true });
     expect(on.buildCreateBody(spec({ image: "alpine:3.22" })).buildInfo).toEqual({
       dockerfileContent: "FROM alpine:3.22\n",
@@ -142,9 +146,30 @@ describe("what is sent on create", () => {
     const body = p.buildCreateBody(spec({ image: "ghcr.io/example/runner:1" }));
     expect(body.snapshot).toBe("my-base");
     expect(body).not.toHaveProperty("buildInfo");
-    expect(() => make().buildCreateBody(spec({ image: "ghcr.io/example/runner:1" }))).toThrow(
-      /set a snapshot/,
-    );
+  });
+
+  test("with no snapshot configured, a spec that names an image starts from the account default snapshot", async () => {
+    const p = make();
+    const body = p.buildCreateBody(spec({ image: "node:22-bookworm@sha256:" + "a".repeat(64) }));
+    // Daytona picks the account default snapshot when the create call names none.
+    for (const k of ["snapshot", "image", "buildInfo"]) expect(body).not.toHaveProperty(k);
+    // End to end against the mock: the create request carries none of them and succeeds.
+    const h = await p.create(spec({ image: "node:22-bookworm" }));
+    const post = mock.requests
+      .filter((r) => r.method === "POST" && r.path === "/api/sandbox")
+      .at(-1);
+    expect(post).toBeDefined();
+    const sent = post?.body as Record<string, unknown>;
+    for (const k of ["snapshot", "image", "buildInfo"]) expect(sent).not.toHaveProperty(k);
+    await p.destroy(h.id);
+    // The opt-in to build still wins over the default, and a named snapshot over both.
+    const build = make({ allowImageBuild: true }).buildCreateBody(spec({ image: "alpine:3.22" }));
+    expect(build.buildInfo).toBeDefined();
+    expect(
+      make({ allowImageBuild: true, snapshot: "s" }).buildCreateBody(
+        spec({ image: "alpine:3.22" }),
+      ),
+    ).toMatchObject({ snapshot: "s" });
   });
 
   test("clampTtl lowers an over-long TTL to the cap instead of refusing; the cap itself cannot exceed 30 minutes", async () => {
