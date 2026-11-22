@@ -239,6 +239,31 @@ describe("the server path: poll, plan, schedule, run", () => {
       expect(att).toMatchObject({ state: "success", leaseOwner: null });
       // the class the job ran as is recorded for the secrets vault: a push to main is protected
       expect(att?.trustClass).toBe("protected");
+      // the sandbox's own life is recorded: created after the attempt started, destroyed (and
+      // confirmed) before it finished, so sandbox-minutes do not include any waiting
+      expect(att!.sandboxCreatedAt).toBeNumber();
+      expect(att!.sandboxDestroyedAt).toBeNumber();
+      expect(att!.sandboxCreatedAt!).toBeGreaterThanOrEqual(att!.startedAt!);
+      expect(att!.sandboxDestroyedAt!).toBeGreaterThanOrEqual(att!.sandboxCreatedAt!);
+      expect(att!.sandboxDestroyedAt!).toBeLessThanOrEqual(att!.finishedAt!);
+    }
+    // and shown: in get_run and in the attempt's final event
+    const token = (await mintToken(db, scope, "reader")).secret;
+    const got = await dispatch({ registry, db }, { kind: "bearer", token }, "get_run", {
+      run_id: run!.id,
+    });
+    const att0 = (got.ok ? (got.output as any) : undefined).jobs[0].attempts[0];
+    expect(att0.sandbox_created_at).toBeString();
+    expect(att0.sandbox_destroyed_at).toBeString();
+    expect(att0.sandbox_seconds).toBeNumber();
+    const finalEvents = (await listEvents(db, scope, { after: 0, limit: 500 })).filter(
+      (e) => e.type === "job.state_changed" && JSON.parse(e.payload).level === "attempt",
+    );
+    const done = finalEvents.map((e) => JSON.parse(e.payload)).filter((p) => p.to === "success");
+    expect(done.length).toBeGreaterThan(0);
+    for (const p of done) {
+      expect(p.sandbox_created_at).toBeString();
+      expect(p.sandbox_destroyed_at).toBeString();
     }
   });
 
