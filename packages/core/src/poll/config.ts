@@ -1,6 +1,29 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 
+/**
+ * Tags the poller turns into runs: patterns over full tag refs, for example `refs/tags/v*`. Empty
+ * (the default) means tags are never ingested. A tag is a name anyone with write access can
+ * create or move, so a run is made only when its commit is on the default branch and the class
+ * is decided by the same trust decision as any run (a tag matching these patterns is a release).
+ * A pattern is an exact tag ref, or `refs/tags/<literal prefix>*` with at least one literal
+ * character: nothing broader, so one setting cannot make every tag a release.
+ */
+export const tagRefsSchema = z
+  .array(
+    z
+      .string()
+      .regex(
+        /^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\-/]{0,99}\*?$/,
+        "an exact tag ref or refs/tags/<literal prefix>*, with a prefix of at least one letter or digit: refs/tags/* alone would make every tag a release",
+      ),
+  )
+  .refine((all) => all.every((p) => !p.split("/").some((s) => s === ".." || s === ".")), {
+    message: "a tag ref pattern has no . or .. segment",
+  })
+  .max(10)
+  .default([]);
+
 const repoName = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "owner/name");
 
 /**
@@ -63,6 +86,8 @@ export const pollConfigSchema = z
             authors: z.array(z.string().min(1)).default([]),
             /** Extra protected ref patterns (refs/heads/release/**). The default branch always is. */
             protectedRefs: z.array(z.string().min(1)).default([]),
+            /** Tag ref patterns to ingest as release runs (refs/tags/v*). Default none: tags are not ingested. */
+            tagRefs: tagRefsSchema,
             /**
              * Sandbox egress for this repo's runs: `none`, `open` or `allowlist`. Unset: the
              * project's setting (`projects.egress`), which defaults to `none`.
@@ -111,6 +136,8 @@ export const ingestSettingsSchema = z
     prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
     authors: z.array(z.string().min(1)).default([]),
     protectedRefs: z.array(z.string().min(1)).default([]),
+    /** Tag ref patterns to ingest as release runs (refs/tags/v*). Default none. */
+    tagRefs: tagRefsSchema,
     mergeQueue: z.boolean().default(false),
     intervalSeconds: z.int().min(30).max(3600).default(60),
     egress: z.enum(["none", "open", "allowlist"]).optional(),
