@@ -13,6 +13,7 @@ import { ulid } from "../ulid";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
+export * from "./api";
 
 export type Project = typeof s.projects.$inferSelect;
 export type ProjectRepo = typeof s.projectRepos.$inferSelect;

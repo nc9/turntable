@@ -36,5 +36,17 @@ export const migrations: Migration[] = [
       "CREATE TABLE `users` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`email` text,\n\t`display_name` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL\n);",
       "CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);"
     ]
+  },
+  {
+    "tag": "0002_adorable_bulldozer",
+    "when": 1795345698616,
+    "statements": [
+      "CREATE TABLE `api_tokens` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`name` text NOT NULL,\n\t`role` text NOT NULL,\n\t`token_hash` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\t`expires_at` integer,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"api_tokens_role_check\" CHECK(role IN ('reader', 'operator', 'release_operator'))\n);",
+      "CREATE INDEX `api_tokens_org_idx` ON `api_tokens` (`org_id`);",
+      "CREATE UNIQUE INDEX `api_tokens_hash_unique` ON `api_tokens` (`token_hash`);",
+      "CREATE TABLE `audit_log` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`principal_kind` text NOT NULL,\n\t`principal_id` text NOT NULL,\n\t`op` text NOT NULL,\n\t`effect` text NOT NULL,\n\t`outcome` text NOT NULL,\n\t`input` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `audit_log_org_created_idx` ON `audit_log` (`org_id`,`created_at`);",
+      "CREATE INDEX `runs_sha_idx` ON `runs` (`org_id`,`sha`);"
+    ]
   }
 ];

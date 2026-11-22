@@ -6,10 +6,13 @@
   "scripts": {
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "db:generate": "drizzle-kit generate && bun run scripts/gen-migrations.ts",
-    "db:embed": "bun run scripts/gen-migrations.ts"
+    "db:embed": "bun run scripts/gen-migrations.ts",
+    "openapi:gen": "bun run scripts/gen-openapi.ts"
   },
   "dependencies": {
-    "drizzle-orm": "0.45.4"
+    "@turntable/redact": "workspace:*",
+    "drizzle-orm": "0.45.4",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",

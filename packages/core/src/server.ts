@@ -1,4 +1,7 @@
 import type { Db } from "./db";
+import { registry } from "./ops";
+import { buildOpenApi } from "./ops/openapi";
+import { createRestApi } from "./ops/rest";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 
@@ -23,13 +26,25 @@ const SECURITY_HEADERS = {
     "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
 } as const;
 
-export function handleRequest(req: Request): Response {
+/** Handler for `/api/v1/*`; resolves to undefined for any other path. */
+export type ApiHandler = (req: Request) => Promise<Response | undefined>;
+
+const OPENAPI = JSON.stringify(buildOpenApi(registry, VERSION));
+
+export async function handleRequest(req: Request, api?: ApiHandler): Promise<Response> {
+  const apiResponse = await api?.(req);
+  if (apiResponse) return apiResponse;
   const url = new URL(req.url);
   if (req.method !== "GET" && req.method !== "HEAD") {
     return new Response("method not allowed", { status: 405, headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/healthz") {
     return Response.json({ ok: true, version: VERSION }, { headers: SECURITY_HEADERS });
+  }
+  if (url.pathname === "/openapi.json") {
+    return new Response(OPENAPI, {
+      headers: { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8" },
+    });
   }
   const ui = serveUi(url, req.method, SECURITY_HEADERS);
   if (ui) return ui;
@@ -44,9 +59,10 @@ export function handleRequest(req: Request): Response {
 export type ServeOptions = { port: number; host: string; db: Db };
 
 export function startServer(options: ServeOptions) {
+  const api = createRestApi({ registry, db: options.db });
   return Bun.serve({
     port: options.port,
     hostname: options.host,
-    fetch: (req) => handleRequest(req),
+    fetch: (req) => handleRequest(req, api),
   });
 }
