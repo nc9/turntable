@@ -65,6 +65,9 @@ export type RegisterRefusal =
   | "draft_unavailable"
   | "artifact_unverified"
   | "already_registered"
+  | "approval_expired"
+  | "already_finalized"
+  | "superseded"
   | "no_compat_targets";
 
 export type RegisterResult =
@@ -154,6 +157,14 @@ export class ReleaseProxy {
     if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
     const approved = this.#o.attest.approvedRelease({ ...scope, runId: a.runId });
     if (!approved) return refuse("not_approved");
+    // A signed release is not a standing permission: it lasts a while, ends when it is finalized,
+    // and a newer approved release replaces it. Otherwise an old approval could be re-registered
+    // later to publish old bytes under a name that has moved on (rolling `latest` back).
+    const nowMs = (this.#o.now ?? Date.now)();
+    if (approved.finalizedAt !== undefined) return refuse("already_finalized");
+    if (nowMs >= approved.expiresAt) return refuse("approval_expired");
+    const newest = this.#o.attest.isNewestApproved({ ...scope, runId: a.runId });
+    if (!newest) return refuse("superseded");
     if (this.#o.attest.pinnedRepo(a.orgId, a.projectId) !== approved.repo)
       return refuse("repo_mismatch");
     const tag = await this.#o.forge.tagCommit(approved.repo, approved.tag);
@@ -207,6 +218,7 @@ export class ReleaseProxy {
         npmManifests,
         npmReadmes,
         sha: approved.sha,
+        newest,
       }),
     );
     if (rules.length === 0) return refuse("no_compat_targets");

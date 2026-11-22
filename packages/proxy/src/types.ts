@@ -70,6 +70,14 @@ export interface Rule {
   /** The path must be exactly `pathPrefix`, not anything below it. */
   pathExact?: boolean | undefined;
   /**
+   * The path must have exactly this shape, segment by segment: a literal segment matches itself,
+   * `*` matches exactly one non-empty segment, and `{sha256}` matches one `sha256:<64 hex>`
+   * segment. A shape fixes the number of segments, so a prefix cannot match a longer path
+   * (a registry repository named `app/blobs/x` is not the `app` repository's blob path).
+   * `pathPrefix` must be the literal segments before the first wildcard; it orders rules.
+   */
+  pathShape?: string | undefined;
+  /**
    * A scoped npm package, `@scope/name`. `pathPrefix` must then be `/@scope%2Fname`: the one place
    * the proxy accepts an encoded slash, and only for this exact path (which implies `pathExact`).
    */
