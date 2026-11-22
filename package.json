@@ -10,8 +10,8 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
-    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner typecheck:daytona typecheck:net",
-    "test": "bun run --sequential test:core test:core2 test:core3 test:ops test:ops2 test:sched test:provider test:redact test:ui test:act test:act2 test:run test:scripts test:prereqs test:github test:daytona test:trust test:pins test:net test:audit test:vault test:oidc",
+    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner typecheck:daytona typecheck:net typecheck:proxy",
+    "test": "bun run --sequential test:core test:core2 test:core3 test:ops test:ops2 test:sched test:provider test:redact test:ui test:act test:act2 test:run test:scripts test:prereqs test:github test:daytona test:trust test:pins test:net test:audit test:vault test:oidc test:proxy",
     "build": "bun run scripts/build.ts",
     "dev": "bun run packages/core/src/main.ts serve",
     "typecheck:core": "bun run --cwd packages/core typecheck",
@@ -48,6 +48,8 @@
     "test:audit": "bun test packages/core/tests/audit-chain.test.ts packages/core/tests/audit-coverage.test.ts packages/core/tests/audit-cli.test.ts packages/core/tests/audit-hardening.test.ts",
     "test:pins": "bun test packages/core/tests/action-pins.test.ts packages/core/tests/forge-token.test.ts",
     "typecheck:net": "bun run --cwd packages/net typecheck",
+    "typecheck:proxy": "bun run --cwd packages/proxy typecheck",
+    "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/proxy.test.ts",
     "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts"
   },
   "devDependencies": {
