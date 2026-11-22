@@ -17,6 +17,7 @@ import {
   constants,
   fchownSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -75,50 +76,61 @@ export function expectedFor(dataDir: string, env: Env): Expected {
 
 export type FchownFn = (fd: number, uid: number, gid: number) => void;
 
+/** True where a path relative to an open directory descriptor can be written as /proc/self/fd/N. */
+const HAS_PROC_FD = process.platform === "linux";
+
 /**
- * Opens `path` without following a final symlink, checks what it is through the descriptor (so
- * nothing can change between the check and the chown), and chowns it. Refuses a symlink, a
- * regular file with more than one link, anything that is not a file or directory, and anything
- * on another device than the data directory.
+ * Opens `path` without following a final symlink and without blocking (a FIFO planted under an
+ * expected name would otherwise hang the start), checks what it is through the descriptor (so
+ * nothing can change between the check and the chown), chowns it, and runs `inside` while the
+ * descriptor is still open. Refuses a symlink, a regular file with more than one link, anything
+ * that is not a file or directory, and anything on another device than the data directory.
+ * `shown` is the name used in messages (`path` may be a /proc/self/fd route).
  */
 function chownChecked(
   path: string,
+  shown: string,
   want: "file" | "dir",
   uid: number,
   gid: number,
   dev: number | undefined,
   fchown: FchownFn,
+  inside?: (fd: number, st: Stats) => void,
 ): Stats {
   let fd: number;
   try {
     fd = openSync(
       path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | (want === "dir" ? constants.O_DIRECTORY : 0),
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK |
+        (want === "dir" ? constants.O_DIRECTORY : 0),
     );
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ELOOP" || code === "EMLINK") {
-      throw new RootRefused(`${path} is a symbolic link; refusing to start`);
+      throw new RootRefused(`${shown} is a symbolic link; refusing to start`);
     }
     throw new RootRefused(
-      `cannot open ${path} without following links (${code ?? "error"}); refusing to start`,
+      `cannot open ${shown} without following links (${code ?? "error"}); refusing to start`,
     );
   }
   try {
     const st = fstatSync(fd);
     if (want === "file" && !st.isFile())
-      throw new RootRefused(`${path} is not a regular file; refusing to start`);
+      throw new RootRefused(`${shown} is not a regular file; refusing to start`);
     if (want === "dir" && !st.isDirectory())
-      throw new RootRefused(`${path} is not a directory; refusing to start`);
+      throw new RootRefused(`${shown} is not a directory; refusing to start`);
     if (want === "file" && st.nlink > 1) {
-      throw new RootRefused(`${path} has ${st.nlink} hard links; refusing to start`);
+      throw new RootRefused(`${shown} has ${st.nlink} hard links; refusing to start`);
     }
     if (dev !== undefined && st.dev !== dev) {
       throw new RootRefused(
-        `${path} is on another device than the data directory; refusing to start`,
+        `${shown} is on another device than the data directory; refusing to start`,
       );
     }
     fchown(fd, uid, gid);
+    inside?.(fd, st);
     return st;
   } finally {
     closeSync(fd);
@@ -126,9 +138,32 @@ function chownChecked(
 }
 
 /**
+ * A route to an entry of an open directory that cannot be redirected by swapping the directory
+ * for a symlink: through the descriptor on Linux. Elsewhere the path is used, and the caller
+ * proves the directory is still the same one (same device and inode, not a link) before and after.
+ */
+function childRoute(dirFd: number, dirPath: string, name: string): string {
+  return HAS_PROC_FD ? `/proc/self/fd/${dirFd}/${name}` : join(dirPath, name);
+}
+
+function assertSameDir(dirPath: string, st: Stats): void {
+  let now: Stats;
+  try {
+    now = lstatSync(dirPath);
+  } catch {
+    throw new RootRefused(`${dirPath} changed while it was being read; refusing to start`);
+  }
+  if (!now.isDirectory() || now.ino !== st.ino || now.dev !== st.dev) {
+    throw new RootRefused(`${dirPath} changed while it was being read; refusing to start`);
+  }
+}
+
+/**
  * Gives the data directory and the files Longshore expects in it to uid:gid. Not recursive in
  * general: the top level only, plus the contents of the audit state directory. An entry that is
- * not on the list stops the start, named, so nothing a past process planted is touched.
+ * not on the list stops the start, named, so nothing a past process planted is touched. Every
+ * child is reached through the open descriptor of its parent, never by a path that a symlink
+ * swapped in after the check could redirect.
  */
 export function chownData(
   dataDir: string,
@@ -138,30 +173,47 @@ export function chownData(
   fchown: FchownFn = fchownSync,
 ): void {
   mkdirSync(dataDir, { recursive: true });
-  const top = chownChecked(dataDir, "dir", uid, gid, undefined, fchown);
-  const expected = expectedFor(dataDir, env);
-  for (const name of readdirSync(dataDir)) {
-    if (SKIP.has(name)) continue;
-    const path = join(dataDir, name);
-    if (DB_FILE.test(name) || expected.files.has(name)) {
-      chownChecked(path, "file", uid, gid, top.dev, fchown);
-    } else if (expected.stateDirs.has(name)) {
-      chownChecked(path, "dir", uid, gid, top.dev, fchown);
-      for (const inner of readdirSync(path)) {
-        if (!/^[0-9A-Za-z]+\.state(\.tmp)?$/.test(inner)) {
-          throw new RootRefused(
-            `unexpected entry ${join(path, inner)} in the audit state directory; refusing to start`,
-          );
-        }
-        chownChecked(join(path, inner), "file", uid, gid, top.dev, fchown);
+  chownChecked(dataDir, dataDir, "dir", uid, gid, undefined, fchown, (topFd, top) => {
+    const expected = expectedFor(dataDir, env);
+    const topRoute = HAS_PROC_FD ? `/proc/self/fd/${topFd}` : dataDir;
+    for (const name of readdirSync(topRoute)) {
+      if (SKIP.has(name)) continue;
+      const shown = join(dataDir, name);
+      const route = childRoute(topFd, dataDir, name);
+      if (!HAS_PROC_FD) assertSameDir(dataDir, top);
+      if (DB_FILE.test(name) || expected.files.has(name)) {
+        chownChecked(route, shown, "file", uid, gid, top.dev, fchown);
+      } else if (expected.stateDirs.has(name)) {
+        chownChecked(route, shown, "dir", uid, gid, top.dev, fchown, (dirFd, dir) => {
+          const inRoute = HAS_PROC_FD ? `/proc/self/fd/${dirFd}` : shown;
+          for (const inner of readdirSync(inRoute)) {
+            if (!/^[0-9A-Za-z]+\.state(\.tmp)?$/.test(inner)) {
+              throw new RootRefused(
+                `unexpected entry ${join(shown, inner)} in the audit state directory; refusing to start`,
+              );
+            }
+            if (!HAS_PROC_FD) assertSameDir(shown, dir);
+            chownChecked(
+              childRoute(dirFd, shown, inner),
+              join(shown, inner),
+              "file",
+              uid,
+              gid,
+              top.dev,
+              fchown,
+            );
+            if (!HAS_PROC_FD) assertSameDir(shown, dir);
+          }
+        });
+      } else {
+        throw new RootRefused(
+          `unexpected entry ${shown} in the data directory; refusing to start as root with it there ` +
+            "(remove it, or start without root)",
+        );
       }
-    } else {
-      throw new RootRefused(
-        `unexpected entry ${path} in the data directory; refusing to start as root with it there ` +
-          "(remove it, or start without root)",
-      );
+      if (!HAS_PROC_FD) assertSameDir(dataDir, top);
     }
-  }
+  });
 }
 
 /** The real process. A platform that cannot do any step makes the drop impossible, so it throws. */
@@ -207,12 +259,14 @@ export function enforceRootPolicy(
   dataDir: string,
   env: Env = process.env,
   ops: PrivilegeOps = realOpsFor(),
+  opts: { chown?: boolean } = {},
 ): PrivilegeOutcome {
   if (ops.uid() !== 0) return "not_root";
   const spec = env.LONGSHORE_DROP_PRIVILEGES?.trim();
   if (spec) {
     const { uid, gid } = parseDropSpec(spec);
-    ops.chownData(dataDir, uid, gid, env);
+    // Only the server owns the data directory's files; other subcommands (docker exec) just drop.
+    if (opts.chown !== false) ops.chownData(dataDir, uid, gid, env);
     // Supplementary groups first (root's own would survive setgid), then gid, then uid last:
     // after setuid there is no privilege left to change the others.
     ops.setgroups([gid]);

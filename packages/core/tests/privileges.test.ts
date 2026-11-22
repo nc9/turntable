@@ -3,13 +3,15 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { DATA_DIR_COMMANDS, dataDirFromArgs, dropForCommand } from "../src/command-privileges";
 import {
   chownData,
   enforceRootPolicy,
@@ -240,4 +242,93 @@ test("a data dir that does not exist yet is created", () => {
   const fresh = join(tmp, "fresh");
   chownData(fresh, 1, 2, {}, spy);
   expect(statSync(fresh).isDirectory()).toBe(true);
+});
+
+// ---- the review of #129: FIFOs, link swaps, and every subcommand ----
+
+const mkfifo = (path: string): void => {
+  const r = Bun.spawnSync(["mkfifo", path]);
+  if (r.exitCode !== 0) throw new Error("mkfifo failed");
+};
+
+test("a FIFO planted under an expected name does not hang the start: it is refused", () => {
+  mkfifo(join(data, "longshore.db"));
+  // O_NONBLOCK: the open returns at once, the descriptor says it is not a regular file.
+  expect(() => run()).toThrow(/longshore\.db is not a regular file/);
+  expect(chowned.length).toBe(1); // only the data dir itself
+});
+
+test("a FIFO in the audit state directory does not hang the start either", () => {
+  const key = join(data, "master.key");
+  mkdirSync(`${key}.audit-state`);
+  mkfifo(join(`${key}.audit-state`, "ABC.state"));
+  expect(() => run({ LONGSHORE_MASTER_KEY_FILE: key })).toThrow(/not a regular file/);
+});
+
+test("a symlink planted to a file outside the dir is never chowned", () => {
+  symlinkSync(join(outside, "shadow"), join(data, "longshore.db"));
+  const fds: number[] = [];
+  expect(() => chownData(data, 1, 2, {}, (fd) => void fds.push(fd))).toThrow(/symbolic link/);
+  expect(fds.length).toBe(1); // the data dir; the link's target was never opened for chown
+});
+
+test("a state directory swapped for a symlink to elsewhere is not followed", () => {
+  const key = join(data, "master.key");
+  symlinkSync(outside, `${key}.audit-state`);
+  writeFileSync(join(outside, "ABC.state"), "x");
+  expect(() => run({ LONGSHORE_MASTER_KEY_FILE: key })).toThrow(/symbolic link|cannot open/);
+});
+
+test("a drop without chown touches no file: other subcommands only drop", () => {
+  const f = fake();
+  expect(enforceRootPolicy(data, SPEC, f.ops, { chown: false })).toBe("dropped");
+  expect(f.calls).toEqual([
+    "setgroups 65532",
+    "setgid 65532",
+    "setuid 65532",
+    "setuid 0",
+    "setgid 0",
+    "setgroups 0",
+  ]);
+});
+
+test("every subcommand that opens the data dir drops (or refuses) first; the rest do not", () => {
+  for (const c of DATA_DIR_COMMANDS) {
+    const f = fake();
+    expect(dropForCommand(c, [], SPEC, f.ops)).toBe("dropped");
+    expect(f.ids()[0]).toBe(65532);
+    expect(f.calls.some((x) => x.startsWith("chown"))).toBe(false);
+    // as root with nothing set, it refuses instead of running as root
+    expect(() => dropForCommand(c, [], {}, fake().ops)).toThrow(RootRefused);
+  }
+  for (const c of ["serve", "version", "help", "--version", undefined, "bogus"]) {
+    const f = fake();
+    expect(dropForCommand(c, [], {}, f.ops)).toBe("not_needed");
+    expect(f.calls).toEqual([]);
+  }
+});
+
+test("the data dir is read from the arguments as parseArgs reads it", () => {
+  expect(dataDirFromArgs([])).toBe(resolve("./data"));
+  expect(dataDirFromArgs(["create", "--data-dir", "/d"])).toBe("/d");
+  expect(dataDirFromArgs(["--data-dir=/a", "--data-dir", "/b"])).toBe("/b");
+  expect(dataDirFromArgs(["--", "--data-dir", "/x"])).toBe(resolve("./data"));
+});
+
+test("main() calls the drop before any subcommand runs", () => {
+  const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf8");
+  const mainBody = src.slice(src.indexOf("async function main("));
+  expect(mainBody.indexOf("dropForCommand(command, rest)")).toBeGreaterThan(0);
+  expect(mainBody.indexOf("dropForCommand(command, rest)")).toBeLessThan(
+    mainBody.indexOf("switch (command)"),
+  );
+});
+
+test("the release lane branch drops (or refuses) before it opens anything, and does not chown", () => {
+  const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf8");
+  const branch = src.slice(src.indexOf('if (roles.has("release"))'));
+  const drop = branch.indexOf("enforceRootPolicy(");
+  expect(drop).toBeGreaterThan(0);
+  expect(drop).toBeLessThan(branch.indexOf("serveRelease(values)"));
+  expect(branch.slice(drop, drop + 140)).toContain("chown: false");
 });
