@@ -7,7 +7,7 @@ import {
   listSecretNames,
   putSecretRecord,
 } from "../db/repos";
-import { open, recordVersion, seal, secretAad } from "./crypto";
+import { assertResealAllowed, open, recordVersion, seal, secretAad } from "./crypto";
 
 /**
  * The built-in encrypted secret store (minimal, ahead of the full vault). Values go in sealed and
@@ -53,11 +53,14 @@ export class SecretStore {
    * replaced whole).
    */
   async reseal(orgId: string): Promise<number> {
+    assertResealAllowed();
     let n = 0;
     for (const name of await listSecretNames(this.#db, { orgId })) {
       const record = await getSecretRecord(this.#db, { orgId }, name);
       if (record === undefined || recordVersion(record) === "v3") continue;
-      const value = open(this.#key, record, secretAad(orgId, name), "system");
+      const value = open(this.#key, record, secretAad(orgId, name), "system", orgId, {
+        allowLegacy: true,
+      });
       await putSecretRecord(
         this.#db,
         { orgId },
