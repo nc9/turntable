@@ -1,16 +1,18 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AuditAnchor } from "../src/audit/anchor";
 import { canonicalJson, entryHash, GENESIS_HASH } from "../src/audit/chain";
 import {
   AUDIT_KEY_SECRET,
-  AuditKeyMissing,
+  AuditAlreadyInitialised,
   checkpointDue,
   createCheckpoint,
-  ensureAuditKey,
+  initAuditKey,
   keyFromPrivatePem,
+  loadAuditKey,
   parsePublicKeyFile,
   publicKeyFile,
   signCheckpoint,
@@ -40,10 +42,16 @@ import { SecretStore } from "../src/secrets/store";
 import { seedWorld, type Tenant } from "./ops-helpers";
 import { and, eq, gte } from "drizzle-orm";
 
+/** Verification with the key pinned outside the database, as an operator would. */
+const PINNED = { keyPinned: true } as const;
+
 let db: Db;
 let a: Tenant;
 let b: Tenant;
 let store: SecretStore;
+let masterKey: Buffer;
+let stateDir: string;
+let anchor: AuditAnchor;
 
 const add = (t: Tenant, op = "test_op", outcome = "ok") =>
   appendAudit(db, t.scope, {
@@ -55,16 +63,30 @@ const add = (t: Tenant, op = "test_op", outcome = "ok") =>
     input: { n: op },
   });
 
+/** The explicit operator step, idempotent for tests that need "a key exists". */
+const initKey = async (t: Tenant) =>
+  (await loadAuditKey(store, t.orgId)) ?? (await initAuditKey(db, store, anchor, t.orgId));
+
+/** Sets the org up if needed (the operator step), then signs its head. */
+const signHead = async (t: Tenant) => {
+  await initKey(t);
+  return createCheckpoint(db, store, anchor, t.orgId);
+};
+
 const keysOf = async (t: Tenant) => {
-  const k = await ensureAuditKey(db, store, t.orgId);
+  const k = await initKey(t);
   return new Map([[k.keyId, k.publicKeyPem]]);
 };
 
 beforeEach(async () => {
   ({ db, a, b } = await seedWorld());
-  store = new SecretStore(db, randomBytes(32));
+  masterKey = randomBytes(32);
+  store = new SecretStore(db, masterKey);
+  stateDir = mkdtempSync(join(tmpdir(), "ls-anchor-"));
+  anchor = new AuditAnchor(stateDir, masterKey);
   resetFailureThrottle();
 });
+afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 
 describe("chain", () => {
   test("canonical json sorts keys and skips undefined", () => {
@@ -87,23 +109,23 @@ describe("chain", () => {
     await Promise.all(Array.from({ length: 20 }, () => add(a)));
     const rows = await chainedAudit(db, a.orgId, 0, 50);
     expect(rows.map((r) => r.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
-    expect((await verifyAudit(db, a.orgId, await keysOf(a))).ok).toBe(true);
+    expect((await verifyAudit(db, a.orgId, await keysOf(a), PINNED)).ok).toBe(true);
   });
 });
 
 describe("verify", () => {
   test("clean chain with a checkpoint verifies", async () => {
     for (let i = 0; i < 5; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
-    const r = await verifyAudit(db, a.orgId, await keysOf(a));
+    await signHead(a);
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), PINNED);
     expect(r).toMatchObject({ ok: true, entries: 6, checkpoints: 1, headSeq: 6, unsignedTail: 0 });
   });
 
   test("tail after the last checkpoint is reported, not failed", async () => {
     for (let i = 0; i < 3; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     await add(a);
-    const r = await verifyAudit(db, a.orgId, await keysOf(a));
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), PINNED);
     expect(r.ok).toBe(true);
     expect(r.unsignedTail).toBe(1);
   });
@@ -114,7 +136,7 @@ describe("verify", () => {
       .update(s.auditLog)
       .set({ outcome: "error:forbidden" })
       .where(and(eq(s.auditLog.orgId, a.orgId), eq(s.auditLog.seq, 2)));
-    const r = await verifyAudit(db, a.orgId, await keysOf(a));
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), PINNED);
     expect(r.ok).toBe(false);
     expect(r.problems.join("\n")).toMatch(/2/);
   });
@@ -124,21 +146,21 @@ describe("verify", () => {
     await db.orm
       .delete(s.auditLog)
       .where(and(eq(s.auditLog.orgId, a.orgId), eq(s.auditLog.seq, 2)));
-    expect((await verifyAudit(db, a.orgId, await keysOf(a))).ok).toBe(false);
+    expect((await verifyAudit(db, a.orgId, await keysOf(a), PINNED)).ok).toBe(false);
   });
 
   test("truncating entries a checkpoint covers is detected", async () => {
     for (let i = 0; i < 5; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     await db.orm
       .delete(s.auditLog)
       .where(and(eq(s.auditLog.orgId, a.orgId), gte(s.auditLog.seq, 5)));
-    expect((await verifyAudit(db, a.orgId, await keysOf(a))).ok).toBe(false);
+    expect((await verifyAudit(db, a.orgId, await keysOf(a), PINNED)).ok).toBe(false);
   });
 
   test("a rewritten tail with recomputed hashes fails the checkpoint", async () => {
     for (let i = 0; i < 3; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     const [row] = await chainedAudit(db, a.orgId, 2, 1);
     const tampered = { ...row!, outcome: "ok-but-rewritten" };
     const { hash: _h, prevHash: _p, ...rest } = tampered;
@@ -146,49 +168,60 @@ describe("verify", () => {
       .update(s.auditLog)
       .set({ outcome: tampered.outcome, hash: entryHash(row!.prevHash as string, rest as never) })
       .where(eq(s.auditLog.id, row!.id));
-    const r = await verifyAudit(db, a.orgId, await keysOf(a));
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), PINNED);
     expect(r.ok).toBe(false);
   });
 
   test("a forged checkpoint signature and an unknown key both fail", async () => {
     for (let i = 0; i < 2; i++) await add(a);
-    const cp = (await createCheckpoint(db, store, a.orgId))!;
+    const cp = (await signHead(a))!;
     const good = await keysOf(a);
     await db.orm
       .update(s.auditCheckpoints)
       .set({ signature: Buffer.alloc(64).toString("base64") })
       .where(and(eq(s.auditCheckpoints.orgId, a.orgId), eq(s.auditCheckpoints.seq, cp.seq)));
-    expect((await verifyAudit(db, a.orgId, good)).ok).toBe(false);
-    expect((await verifyAudit(db, a.orgId, new Map())).ok).toBe(false);
+    expect((await verifyAudit(db, a.orgId, good, PINNED)).ok).toBe(false);
+    expect((await verifyAudit(db, a.orgId, new Map(), PINNED)).ok).toBe(false);
   });
 
   test("orgs are independent", async () => {
     await add(a);
     await add(b);
     await db.orm.delete(s.auditLog).where(eq(s.auditLog.orgId, a.orgId));
-    expect((await verifyAudit(db, b.orgId, await keysOf(b))).ok).toBe(true);
+    expect((await verifyAudit(db, b.orgId, await keysOf(b), PINNED)).ok).toBe(true);
   });
 });
 
 describe("checkpoints", () => {
   test("the key lives in the secret store, per org", async () => {
-    const k1 = await ensureAuditKey(db, store, a.orgId);
-    expect((await ensureAuditKey(db, store, a.orgId)).keyId).toBe(k1.keyId);
-    expect((await ensureAuditKey(db, store, b.orgId)).keyId).not.toBe(k1.keyId);
+    const k1 = await initKey(a);
+    expect((await initKey(a)).keyId).toBe(k1.keyId);
+    expect((await initKey(b)).keyId).not.toBe(k1.keyId);
     expect(await store.get(a.orgId, AUDIT_KEY_SECRET)).toContain("PRIVATE KEY");
   });
 
   test("due by entry count or by age, never twice for the same head", async () => {
     let now = 1_000_000;
     for (let i = 0; i < 3; i++) await add(a);
-    expect(await checkpointDue(db, store, { everyEntries: 5, everyMs: 60_000 }, () => now)).toBe(1); // no checkpoint yet: age is infinite
-    expect(await checkpointDue(db, store, { everyEntries: 5, everyMs: 60_000 }, () => now)).toBe(0);
+    await initKey(a);
+    expect(
+      await checkpointDue(db, store, anchor, { everyEntries: 5, everyMs: 60_000 }, () => now),
+    ).toBe(1); // no checkpoint yet: age is infinite
+    expect(
+      await checkpointDue(db, store, anchor, { everyEntries: 5, everyMs: 60_000 }, () => now),
+    ).toBe(0);
     await add(a);
-    expect(await checkpointDue(db, store, { everyEntries: 5, everyMs: 60_000 }, () => now)).toBe(0);
+    expect(
+      await checkpointDue(db, store, anchor, { everyEntries: 5, everyMs: 60_000 }, () => now),
+    ).toBe(0);
     now += 61_000;
-    expect(await checkpointDue(db, store, { everyEntries: 5, everyMs: 60_000 }, () => now)).toBe(1);
+    expect(
+      await checkpointDue(db, store, anchor, { everyEntries: 5, everyMs: 60_000 }, () => now),
+    ).toBe(1);
     for (let i = 0; i < 5; i++) await add(a);
-    expect(await checkpointDue(db, store, { everyEntries: 5, everyMs: 60_000 }, () => now)).toBe(1);
+    expect(
+      await checkpointDue(db, store, anchor, { everyEntries: 5, everyMs: 60_000 }, () => now),
+    ).toBe(1);
     expect((await listCheckpoints(db, a.orgId)).map((c) => c.seq)).toEqual([4, 5, 10]);
   });
 });
@@ -226,7 +259,7 @@ describe("export", () => {
     const m = memory();
     const org = { id: a.orgId, slug: a.slug };
     await exportOrg(db, m.sink, org);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     await exportOrg(db, m.sink, org);
     await exportOrg(db, m.sink, org);
     const kinds = m.batches.flat().map((l) => (l as { type: string }).type);
@@ -339,22 +372,27 @@ describe("failure auditing", () => {
 describe("key custody", () => {
   test("a missing key is never regenerated once checkpoints exist; it is an error and an alert", async () => {
     await add(a);
-    const k = await ensureAuditKey(db, store, a.orgId);
-    await createCheckpoint(db, store, a.orgId);
+    const k = await initKey(a);
+    await signHead(a);
     await store.delete(a.orgId, AUDIT_KEY_SECRET);
     await add(a);
-    await expect(createCheckpoint(db, store, a.orgId)).rejects.toBeInstanceOf(AuditKeyMissing);
-    await expect(ensureAuditKey(db, store, a.orgId)).rejects.toBeInstanceOf(AuditKeyMissing);
+    await expect(createCheckpoint(db, store, anchor, a.orgId)).rejects.toMatchObject({
+      reason: "key_missing",
+    });
+    // and the operator step refuses too: the org is already set up, a new key is not the answer
+    await expect(initAuditKey(db, store, anchor, a.orgId)).rejects.toBeInstanceOf(
+      AuditAlreadyInitialised,
+    );
     expect(await store.get(a.orgId, AUDIT_KEY_SECRET)).toBeUndefined();
     const alert = (await chainedAudit(db, a.orgId, 0, 100)).find(
-      (r) => r.op === "audit_signing_key",
+      (r) => r.op === "audit_checkpoint",
     );
     expect(alert?.outcome).toBe("error:key_missing");
     expect(k.keyId).toHaveLength(16);
   });
 
   test("key file round trip, and a tampered key id is refused", async () => {
-    const k = await ensureAuditKey(db, store, a.orgId);
+    const k = await initKey(a);
     const text = JSON.stringify(publicKeyFile(a.orgId, a.slug, k));
     expect(parsePublicKeyFile(text).keyId).toBe(k.keyId);
     expect(() => parsePublicKeyFile(text.replace(k.keyId, "0".repeat(16)))).toThrow();
@@ -362,8 +400,8 @@ describe("key custody", () => {
 
   test("a chain rewritten and re-signed with a regenerated key passes unpinned, fails pinned", async () => {
     for (let i = 0; i < 3; i++) await add(a);
-    const original = await ensureAuditKey(db, store, a.orgId);
-    await createCheckpoint(db, store, a.orgId);
+    const original = await initKey(a);
+    await signHead(a);
     const pinned = new Map([[original.keyId, original.publicKeyPem]]);
     // attacker: rewrite the last entry, recompute its hash, drop checkpoints, sign with a new key
     const [row] = await chainedAudit(db, a.orgId, 3, 1);
@@ -389,8 +427,10 @@ describe("key custody", () => {
       }),
     );
     const loose = await verifyAudit(db, a.orgId, new Map([[evil.keyId, evil.publicKeyPem]]));
-    expect(loose.ok).toBe(true);
+    // the regenerated key postdates the chain, so without a pinned key this fails outright
+    expect(loose.ok).toBe(false);
     expect(loose.keyPinned).toBe(false);
+    expect(loose.problems.join("\n")).toMatch(/--pubkey/);
     const strict = await verifyAudit(db, a.orgId, pinned, { keyPinned: true });
     expect(strict.ok).toBe(false);
     expect(strict.problems.join("\n")).toMatch(/unknown key/);
@@ -402,40 +442,43 @@ describe("anchors", () => {
 
   test("a checkpoint list deleted from the database is caught by the anchor", async () => {
     for (let i = 0; i < 3; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     const anchors = await anchorOf(a);
     const keys = await keysOf(a);
     await db.orm.delete(s.auditCheckpoints).where(eq(s.auditCheckpoints.orgId, a.orgId));
-    expect((await verifyAudit(db, a.orgId, keys)).ok).toBe(true); // alone, it cannot tell
-    const r = await verifyAudit(db, a.orgId, keys, { anchors });
+    expect((await verifyAudit(db, a.orgId, keys, PINNED)).ok).toBe(true); // alone, it cannot tell
+    const r = await verifyAudit(db, a.orgId, keys, { ...PINNED, anchors });
     expect(r.ok).toBe(false);
     expect(r.problems.join("\n")).toMatch(/missing from the database/);
   });
 
   test("truncation behind an anchored checkpoint is caught even with its row deleted", async () => {
     for (let i = 0; i < 5; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     const anchors = await anchorOf(a);
     const keys = await keysOf(a);
     await db.orm.delete(s.auditCheckpoints).where(eq(s.auditCheckpoints.orgId, a.orgId));
     await db.orm
       .delete(s.auditLog)
       .where(and(eq(s.auditLog.orgId, a.orgId), gte(s.auditLog.seq, 4)));
-    const r = await verifyAudit(db, a.orgId, keys, { anchors });
+    const r = await verifyAudit(db, a.orgId, keys, { ...PINNED, anchors });
     expect(r.ok).toBe(false);
     expect(r.anchored).toBe(true);
   });
 
   test("a matching anchor passes and marks the report anchored", async () => {
     for (let i = 0; i < 3; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
-    const r = await verifyAudit(db, a.orgId, await keysOf(a), { anchors: await anchorOf(a) });
-    expect(r).toMatchObject({ ok: true, anchored: true, keyPinned: false });
+    await signHead(a);
+    const r = await verifyAudit(db, a.orgId, await keysOf(a), {
+      ...PINNED,
+      anchors: await anchorOf(a),
+    });
+    expect(r).toMatchObject({ ok: true, anchored: true, keyPinned: true });
   });
 
   test("a forged anchor signature is refused", async () => {
     for (let i = 0; i < 2; i++) await add(a);
-    await createCheckpoint(db, store, a.orgId);
+    await signHead(a);
     const [cp] = await anchorOf(a);
     const r = await verifyAudit(db, a.orgId, await keysOf(a), {
       anchors: [{ ...cp!, signature: Buffer.alloc(64).toString("base64url") }],
@@ -447,11 +490,11 @@ describe("anchors", () => {
     for (let i = 0; i < 2; i++) await add(a);
     const keys = await keysOf(a);
     const later = Date.now() + 60 * 60_000;
-    const none = await verifyAudit(db, a.orgId, keys, { now: later });
+    const none = await verifyAudit(db, a.orgId, keys, { ...PINNED, now: later });
     expect(none.ok).toBe(false);
     expect(none.problems.join("\n")).toMatch(/no checkpoint/);
-    expect((await verifyAudit(db, a.orgId, keys)).ok).toBe(true); // recent: not yet due
-    await createCheckpoint(db, store, a.orgId);
-    expect((await verifyAudit(db, a.orgId, keys, { now: later })).ok).toBe(true);
+    expect((await verifyAudit(db, a.orgId, keys, PINNED)).ok).toBe(true); // recent: not yet due
+    await signHead(a);
+    expect((await verifyAudit(db, a.orgId, keys, { ...PINNED, now: later })).ok).toBe(true);
   });
 });
