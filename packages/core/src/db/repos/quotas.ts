@@ -6,6 +6,7 @@ import type { Db } from "..";
 import * as s from "../schema";
 import { asBigint, greatestOf, leastOf } from "../sql-dialect";
 import { appendEvent } from "./events";
+import { sandboxSeconds } from "./usage";
 
 export type OrgQuotas = {
   maxConcurrent: number | null;
@@ -84,13 +85,15 @@ export type QuotaUsage = {
   concurrent: number;
   /** Distinct runs with an attempt started in the last hour. */
   runsLastHour: number;
-  /** Sandbox time in the last 24 hours, in whole minutes, running attempts counted to now. */
+  /** Sandbox time in the last 24 hours, in whole minutes: create to confirmed destroy, a live or unconfirmed sandbox counted to the attempt's end or now. */
   sandboxMinutesLastDay: number;
   logBytes: number;
   storedBytes: number;
 };
 
 export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
+  // The same exact figure the Usage page shows: provider create to confirmed destroy.
+  const sandbox = await sandboxSeconds(db, { orgId }, { from: now - DAY_MS, to: now, now });
   return db.run(async (h) => {
     const [conc] = await h.orm
       .select({ n: sql<number>`count(*)`.mapWith(Number) })
@@ -105,23 +108,6 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
           eq(s.jobAttempts.orgId, orgId),
           isNotNull(s.jobAttempts.startedAt),
           gte(s.jobAttempts.startedAt, now - HOUR_MS),
-        ),
-      );
-    // Overlap of [started, finished or now] with the last 24 hours.
-    const dayStart = now - DAY_MS;
-    const [ms] = await h.orm
-      .select({
-        n: sql<number>`coalesce(sum(
-          ${leastOf(sql`coalesce(${s.jobAttempts.finishedAt}, ${asBigint(now)})`, asBigint(now))} -
-          ${greatestOf(sql`${s.jobAttempts.startedAt}`, asBigint(dayStart))}
-        ), 0)`.mapWith(Number),
-      })
-      .from(s.jobAttempts)
-      .where(
-        and(
-          eq(s.jobAttempts.orgId, orgId),
-          isNotNull(s.jobAttempts.startedAt),
-          sql`coalesce(${s.jobAttempts.finishedAt}, ${asBigint(now)}) > ${asBigint(dayStart)}`,
         ),
       );
     const [logs] = await h.orm
@@ -150,7 +136,7 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
     return {
       concurrent: Number(conc?.n ?? 0),
       runsLastHour: Number(runs?.n ?? 0),
-      sandboxMinutesLastDay: Math.floor(Number(ms?.n ?? 0) / 60_000),
+      sandboxMinutesLastDay: Math.floor(sandbox.seconds / 60),
       logBytes: Number(logs?.n ?? 0),
       storedBytes: Number(arts?.n ?? 0) + Number(cache?.n ?? 0),
     };

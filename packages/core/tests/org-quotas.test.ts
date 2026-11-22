@@ -64,7 +64,13 @@ async function usedMinutes(t: Tenant, minutes: number, agoMs = 0) {
   await db.run(async (h) => {
     await h.orm
       .update(s.jobAttempts)
-      .set({ state: "success", startedAt: NOW - agoMs - minutes * MIN, finishedAt: NOW - agoMs })
+      .set({
+        state: "success",
+        startedAt: NOW - agoMs - minutes * MIN,
+        finishedAt: NOW - agoMs,
+        sandboxCreatedAt: NOW - agoMs - minutes * MIN,
+        sandboxDestroyedAt: NOW - agoMs,
+      })
       .where(eq(s.jobAttempts.id, x.attempt.id));
     await h.orm.update(s.jobs).set({ state: "success" }).where(eq(s.jobs.id, x.job.id));
   });
@@ -128,10 +134,27 @@ describe("quota enforcement at claim", () => {
     await db.run(async (h) => {
       await h.orm
         .update(s.jobAttempts)
-        .set({ state: "running", startedAt: NOW - 45 * MIN })
+        .set({ state: "running", startedAt: NOW - 45 * MIN, sandboxCreatedAt: NOW - 45 * MIN })
         .where(eq(s.jobAttempts.id, x.attempt.id));
     });
     expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(45);
+  });
+
+  test("sandbox minutes are create to confirmed destroy: waiting for capacity does not count", async () => {
+    const x = await queued(a, "wait");
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.jobAttempts)
+        .set({
+          state: "success",
+          startedAt: NOW - 90 * MIN, // 60 minutes waiting for the provider
+          finishedAt: NOW - 20 * MIN,
+          sandboxCreatedAt: NOW - 30 * MIN,
+          sandboxDestroyedAt: NOW - 20 * MIN,
+        })
+        .where(eq(s.jobAttempts.id, x.attempt.id));
+    });
+    expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(10);
   });
 
   test("runs per hour: new runs wait, a run that already started finishes its jobs", async () => {
