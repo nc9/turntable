@@ -1,0 +1,24 @@
+name: parity
+on: push
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Terminal and environment
+        run: |
+          [ -t 0 ] && echo "stdin-check=tty" || echo "stdin-check=notty"
+          [ -t 1 ] && echo "stdout-check=tty" || echo "stdout-check=notty"
+          [ -t 2 ] && echo "stderr-check=tty" || echo "stderr-check=notty"
+          [ -t 1 ] && echo tty || echo notty
+          echo "ci=$CI"
+          echo "github-actions=$GITHUB_ACTIONS"
+          echo "term=${TERM-unset}"
+          echo "lang=$LANG"
+          echo "pager=$GIT_PAGER"
+      - name: A program the step starts sees no terminal either
+        run: |
+          node -e 'console.log("node-stdout-istty=" + Boolean(process.stdout.isTTY)); console.log("node-stderr-istty=" + Boolean(process.stderr.isTTY))'
+      - name: The sh shell
+        shell: sh
+        run: |
+          [ -t 1 ] && echo "sh-check=tty" || echo "sh-check=notty"

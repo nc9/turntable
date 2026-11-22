@@ -71,6 +71,46 @@ async function go(
   return { result, events, p, id };
 }
 
+describe("the step environment", () => {
+  test("act starts with the shims first on PATH, no inherited TERM, a UTF-8 locale and no pager", async () => {
+    const act = await fakeAct(
+      "",
+      0,
+      'echo "term=${TERM-unset}"; echo "lang=$LANG"; echo "pager=$GIT_PAGER"; echo "prompt=$GIT_TERMINAL_PROMPT"; echo "first=${PATH%%:*}"; ls "${PATH%%:*}"',
+    );
+    const saved = process.env.TERM;
+    process.env.TERM = "xterm-256color"; // the controller's own terminal must not leak through
+    try {
+      const { events } = await go(act);
+      const log = events
+        .filter((e) => e.kind === "log")
+        .map((e) => new TextDecoder().decode(e.bytes))
+        .join("");
+      expect(log).toMatch(/term=(unset|dumb)/);
+      expect(log).not.toContain("xterm");
+      expect(log).toContain("lang=C.UTF-8");
+      expect(log).toContain("pager=cat");
+      expect(log).toContain("prompt=0");
+      expect(log).toMatch(/first=.*\/shims/);
+      for (const name of ["step-shim", "bash", "sh", "node", "python"]) expect(log).toContain(name);
+    } finally {
+      if (saved === undefined) delete process.env.TERM;
+      else process.env.TERM = saved;
+    }
+  });
+
+  test("a sandbox where the shims cannot be installed fails the job as infra_error", async () => {
+    const act = await fakeAct("", 0);
+    const { p, id, plan, repoTarball } = await setup();
+    // A file where the shim directory must go.
+    mkdirSync(plan.layout.root, { recursive: true });
+    writeFileSync(plan.layout.shims, "in the way");
+    const result = await drain(runJob(p, id, plan, { repoTarball, act }, { pollMs: 50 }), () => {});
+    expect(result.state).toBe("infra_error");
+    expect(result.reason).toContain("cannot install step shims");
+  });
+});
+
 describe("runJob against the fake provider", () => {
   test("success: events, contiguous log offsets, success verdict", async () => {
     const out = await fixture("success.jsonl");

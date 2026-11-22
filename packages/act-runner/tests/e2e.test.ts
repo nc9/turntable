@@ -113,4 +113,29 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(result).toMatchObject({ state: "success", exitCode: 0 });
     expect(log).toContain("output-check=hello-output");
   }, 600_000);
+
+  // Parity with a GitHub hosted runner (README, assumptions P1 to P4). act gives every host-mode
+  // command a pty, so without the step shims a program that checks isatty or isTTY (colour,
+  // tables, escape handling) behaves differently here than it does on GitHub.
+  test("steps see no terminal, CI=true, GITHUB_ACTIONS=true, TERM unset and a UTF-8 locale", async () => {
+    const { result, log } = await runExample("parity.yml", "parity");
+    if (result.state !== "success") console.log(JSON.stringify(result), "\n" + log);
+    expect(result).toMatchObject({ state: "success", exitCode: 0 });
+    expect(log).toContain("stdin-check=notty");
+    expect(log).toContain("stdout-check=notty");
+    expect(log).toContain("stderr-check=notty");
+    // `[ -t 1 ] && echo tty || echo notty`, the plain form: a line that is exactly notty.
+    expect(log.split(/\r?\n/).some((l) => l.trim() === "notty" || l.endsWith(" notty"))).toBe(true);
+    expect(log).not.toMatch(/(stdin|stdout|stderr|sh)-check=tty/);
+    expect(log).toContain("node-stdout-istty=false");
+    expect(log).toContain("node-stderr-istty=false");
+    expect(log).toContain("sh-check=notty");
+    expect(log).toContain("ci=true");
+    expect(log).toContain("github-actions=true");
+    // TERM is not set (bash reports `dumb` for an unset TERM, as on a hosted runner): never xterm.
+    expect(log).toMatch(/term=(unset|dumb)/);
+    expect(log).not.toMatch(/term=xterm/);
+    expect(log).toContain("lang=C.UTF-8");
+    expect(log).toContain("pager=cat");
+  }, 600_000);
 });
