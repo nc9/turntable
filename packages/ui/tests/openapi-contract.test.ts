@@ -147,11 +147,20 @@ test("checks_for_sha and cancel", () => {
   );
 });
 
-test("the spec has no operation the UI expects but cannot find (rerun, events, orgs, projects are known gaps)", () => {
+test("the spec has no operation the UI expects but cannot find (rerun, orgs, projects are known gaps)", () => {
   const ids = Object.values(spec.paths).flatMap((p) => Object.values(p).map((o) => o.operationId));
-  for (const known of ["list_runs", "get_run", "job_log", "checks_for_sha", "cancel"])
+  // events, job_steps and job_cuts exist now; the adapter wires them in #30.
+  for (const known of [
+    "list_runs",
+    "get_run",
+    "job_log",
+    "checks_for_sha",
+    "cancel",
+    "events",
+    "job_steps",
+    "job_cuts",
+  ])
     expect(ids).toContain(known);
   // When these appear, wire them into the adapter and flip the matching capability.
-  for (const gap of ["rerun", "events", "list_orgs", "list_projects"])
-    expect(ids).not.toContain(gap);
+  for (const gap of ["rerun", "list_orgs", "list_projects"]) expect(ids).not.toContain(gap);
 });
