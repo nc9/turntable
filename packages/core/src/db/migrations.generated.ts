@@ -48,5 +48,39 @@ export const migrations: Migration[] = [
       "CREATE INDEX `audit_log_org_created_idx` ON `audit_log` (`org_id`,`created_at`);",
       "CREATE INDEX `runs_sha_idx` ON `runs` (`org_id`,`sha`);"
     ]
+  },
+  {
+    "tag": "0003_wide_marrow",
+    "when": 1795346651112,
+    "statements": [
+      "CREATE TABLE `attempt_steps` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`attempt_id` text NOT NULL,\n\t`step_key` text NOT NULL,\n\t`stage` text NOT NULL,\n\t`step_index` integer NOT NULL,\n\t`name` text NOT NULL,\n\t`result` text,\n\t`started_at` integer,\n\t`finished_at` integer,\n\t`log_offset` integer DEFAULT 0 NOT NULL,\n\tPRIMARY KEY(`attempt_id`, `step_key`, `stage`),\n\tFOREIGN KEY (`attempt_id`,`org_id`,`project_id`) REFERENCES `job_attempts`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"attempt_steps_stage_check\" CHECK(stage IN ('pre', 'main', 'post')),\n\tCONSTRAINT \"attempt_steps_result_check\" CHECK(result IS NULL OR result IN ('success', 'failure', 'skipped', 'cancelled'))\n);",
+      "CREATE TABLE `events` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`public_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`type` text NOT NULL,\n\t`run_id` text,\n\t`job_id` text,\n\t`attempt_id` text,\n\t`payload` text DEFAULT '{}' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"events_type_check\" CHECK(type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error'))\n);",
+      "CREATE INDEX `events_org_idx` ON `events` (`org_id`,`id`);",
+      "CREATE INDEX `events_org_project_idx` ON `events` (`org_id`,`project_id`,`id`);",
+      "CREATE UNIQUE INDEX `events_public_id_unique` ON `events` (`public_id`);",
+      "CREATE TABLE `log_cuts` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`attempt_id` text NOT NULL,\n\t`at_offset` integer NOT NULL,\n\t`omitted_bytes` integer NOT NULL,\n\t`reason` text NOT NULL,\n\tPRIMARY KEY(`attempt_id`, `at_offset`),\n\tFOREIGN KEY (`attempt_id`,`org_id`,`project_id`) REFERENCES `job_attempts`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action\n);",
+      "PRAGMA foreign_keys=OFF;",
+      "CREATE TABLE `__new_job_attempts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`job_id` text NOT NULL,\n\t`attempt` integer NOT NULL,\n\t`state` text DEFAULT 'queued' NOT NULL,\n\t`provider` text NOT NULL,\n\t`sandbox_id` text,\n\t`exit_code` integer,\n\t`error_class` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`started_at` integer,\n\t`finished_at` integer,\n\tFOREIGN KEY (`job_id`,`org_id`,`project_id`) REFERENCES `jobs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"job_attempts_state_check\" CHECK(state IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled', 'skipped'))\n);",
+      "INSERT INTO `__new_job_attempts`(\"id\", \"org_id\", \"project_id\", \"job_id\", \"attempt\", \"state\", \"provider\", \"sandbox_id\", \"exit_code\", \"error_class\", \"created_at\", \"started_at\", \"finished_at\") SELECT \"id\", \"org_id\", \"project_id\", \"job_id\", \"attempt\", \"state\", \"provider\", \"sandbox_id\", \"exit_code\", \"error_class\", \"created_at\", \"started_at\", \"finished_at\" FROM `job_attempts`;",
+      "DROP TABLE `job_attempts`;",
+      "ALTER TABLE `__new_job_attempts` RENAME TO `job_attempts`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE UNIQUE INDEX `job_attempts_id_org_project_unique` ON `job_attempts` (`id`,`org_id`,`project_id`);",
+      "CREATE UNIQUE INDEX `job_attempts_job_attempt_unique` ON `job_attempts` (`job_id`,`attempt`);",
+      "CREATE TABLE `__new_jobs` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`job_key` text NOT NULL,\n\t`name` text NOT NULL,\n\t`state` text DEFAULT 'queued' NOT NULL,\n\t`exit_code` integer,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`started_at` integer,\n\t`finished_at` integer,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`run_id`,`org_id`,`project_id`) REFERENCES `runs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"jobs_state_check\" CHECK(state IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled', 'skipped'))\n);",
+      "INSERT INTO `__new_jobs`(\"id\", \"org_id\", \"project_id\", \"run_id\", \"job_key\", \"name\", \"state\", \"exit_code\", \"created_at\", \"started_at\", \"finished_at\") SELECT \"id\", \"org_id\", \"project_id\", \"run_id\", \"job_key\", \"name\", \"state\", \"exit_code\", \"created_at\", \"started_at\", \"finished_at\" FROM `jobs`;",
+      "DROP TABLE `jobs`;",
+      "ALTER TABLE `__new_jobs` RENAME TO `jobs`;",
+      "CREATE INDEX `jobs_run_idx` ON `jobs` (`org_id`,`run_id`);",
+      "CREATE UNIQUE INDEX `jobs_id_org_project_unique` ON `jobs` (`id`,`org_id`,`project_id`);",
+      "CREATE UNIQUE INDEX `jobs_run_key_unique` ON `jobs` (`run_id`,`job_key`);",
+      "CREATE TABLE `__new_runs` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`workflow_path` text NOT NULL,\n\t`event` text NOT NULL,\n\t`ref` text NOT NULL,\n\t`sha` text,\n\t`status` text DEFAULT 'queued' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`started_at` integer,\n\t`finished_at` integer,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"runs_status_check\" CHECK(status IN ('queued', 'running', 'success', 'failure', 'infra_error', 'awaiting_approval', 'cancelled', 'skipped'))\n);",
+      "INSERT INTO `__new_runs`(\"id\", \"org_id\", \"project_id\", \"workflow_path\", \"event\", \"ref\", \"sha\", \"status\", \"created_at\", \"started_at\", \"finished_at\") SELECT \"id\", \"org_id\", \"project_id\", \"workflow_path\", \"event\", \"ref\", \"sha\", \"status\", \"created_at\", \"started_at\", \"finished_at\" FROM `runs`;",
+      "DROP TABLE `runs`;",
+      "ALTER TABLE `__new_runs` RENAME TO `runs`;",
+      "CREATE INDEX `runs_project_created_idx` ON `runs` (`org_id`,`project_id`,`created_at`);",
+      "CREATE INDEX `runs_sha_idx` ON `runs` (`org_id`,`sha`);",
+      "CREATE UNIQUE INDEX `runs_id_org_project_unique` ON `runs` (`id`,`org_id`,`project_id`);"
+    ]
   }
 ];

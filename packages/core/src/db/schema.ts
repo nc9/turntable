@@ -26,8 +26,28 @@ export const JOB_STATES = [
   "infra_error",
   "awaiting_approval",
   "cancelled",
+  "skipped",
 ] as const;
 export type JobState = (typeof JOB_STATES)[number];
+
+/** Event types in the feed. Append-only; new types are additive (the column is text + CHECK). */
+export const EVENT_TYPES = [
+  "run.queued",
+  "run.started",
+  "run.finished",
+  "job.state_changed",
+  "attempt.step",
+  "attempt.cut",
+  "approval.required",
+  "infra.error",
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
+
+export const STEP_STAGES = ["pre", "main", "post"] as const;
+export type StepStage = (typeof STEP_STAGES)[number];
+
+export const STEP_RESULTS = ["success", "failure", "skipped", "cancelled"] as const;
+export type StepResult = (typeof STEP_RESULTS)[number];
 
 export const MEMBER_ROLES = ["owner", "admin", "member", "viewer"] as const;
 export type MemberRole = (typeof MEMBER_ROLES)[number];
@@ -282,4 +302,88 @@ export const auditLog = sqliteTable(
     createdAt: createdAt(),
   },
   (t) => [index("audit_log_org_created_idx").on(t.orgId, t.createdAt)],
+);
+
+// ---- events, steps, cuts ----
+
+/**
+ * Append-only event feed. `id` is the monotonic cursor (integer autoincrement: it is the cursor,
+ * so no ULID here); `public_id` is a ULID for external reference. Rows are written in the same
+ * transaction as the state change they describe.
+ */
+export const events = sqliteTable(
+  "events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    publicId: text("public_id").notNull(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id"),
+    type: text("type").notNull(),
+    /** Subject ids, plain text (no FK): the feed outlives retries and is never rewritten. */
+    runId: text("run_id"),
+    jobId: text("job_id"),
+    attemptId: text("attempt_id"),
+    /** JSON text. */
+    payload: text("payload").notNull().default("{}"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    unique("events_public_id_unique").on(t.publicId),
+    check("events_type_check", inList("type", EVENT_TYPES)),
+    index("events_org_idx").on(t.orgId, t.id),
+    index("events_org_project_idx").on(t.orgId, t.projectId, t.id),
+  ],
+);
+
+/** Steps of an attempt, as the runner reports them. `log_offset` is where the step's log starts. */
+export const attemptSteps = sqliteTable(
+  "attempt_steps",
+  {
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    stepKey: text("step_key").notNull(),
+    stage: text("stage").notNull(),
+    stepIndex: integer("step_index").notNull(),
+    name: text("name").notNull(),
+    result: text("result"),
+    startedAt: integer("started_at", { mode: "number" }),
+    finishedAt: integer("finished_at", { mode: "number" }),
+    logOffset: integer("log_offset").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.attemptId, t.stepKey, t.stage] }),
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+    check("attempt_steps_stage_check", inList("stage", STEP_STAGES)),
+    check(
+      "attempt_steps_result_check",
+      sql.raw(`result IS NULL OR result IN (${STEP_RESULTS.map((v) => `'${v}'`).join(", ")})`),
+    ),
+  ],
+);
+
+/** Out-of-band marks where log bytes were omitted (head and tail caps), so the UI never guesses. */
+export const logCuts = sqliteTable(
+  "log_cuts",
+  {
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    atOffset: integer("at_offset").notNull(),
+    omittedBytes: integer("omitted_bytes").notNull(),
+    reason: text("reason").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.attemptId, t.atOffset] }),
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+  ],
 );

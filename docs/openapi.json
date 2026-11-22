@@ -68,7 +68,8 @@
                 "failure",
                 "infra_error",
                 "awaiting_approval",
-                "cancelled"
+                "cancelled",
+                "skipped"
               ]
             }
           },
@@ -179,7 +180,8 @@
                               "failure",
                               "infra_error",
                               "awaiting_approval",
-                              "cancelled"
+                              "cancelled",
+                              "skipped"
                             ]
                           },
                           "created_at": {
@@ -339,7 +341,8 @@
                         "failure",
                         "infra_error",
                         "awaiting_approval",
-                        "cancelled"
+                        "cancelled",
+                        "skipped"
                       ]
                     },
                     "created_at": {
@@ -386,7 +389,8 @@
                               "failure",
                               "infra_error",
                               "awaiting_approval",
-                              "cancelled"
+                              "cancelled",
+                              "skipped"
                             ]
                           },
                           "exit_code": {
@@ -445,7 +449,8 @@
                                     "failure",
                                     "infra_error",
                                     "awaiting_approval",
-                                    "cancelled"
+                                    "cancelled",
+                                    "skipped"
                                   ]
                                 },
                                 "provider": {
@@ -860,7 +865,8 @@
                           "failure",
                           "infra_error",
                           "awaiting_approval",
-                          "cancelled"
+                          "cancelled",
+                          "skipped"
                         ]
                       },
                       "additionalProperties": {
@@ -875,7 +881,8 @@
                         "failure",
                         "infra_error",
                         "awaiting_approval",
-                        "cancelled"
+                        "cancelled",
+                        "skipped"
                       ],
                       "description": "Runs per state, over the latest run of each workflow."
                     },
@@ -902,7 +909,8 @@
                               "failure",
                               "infra_error",
                               "awaiting_approval",
-                              "cancelled"
+                              "cancelled",
+                              "skipped"
                             ]
                           }
                         },
@@ -1002,7 +1010,8 @@
                         "failure",
                         "infra_error",
                         "awaiting_approval",
-                        "cancelled"
+                        "cancelled",
+                        "skipped"
                       ],
                       "description": "The run's state after cancelling."
                     },

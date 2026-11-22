@@ -16,7 +16,8 @@ export type CheckState = (typeof STATES)[number];
 export function verdict(latest: readonly JobState[]): CheckState {
   if (latest.length === 0) return "NONE";
   if (latest.some((s) => s === "failure" || s === "infra_error" || s === "cancelled")) return "RED";
-  if (latest.some((s) => s !== "success")) return "PENDING";
+  // A skipped run (nothing to run for this commit) does not block: it counts as passed.
+  if (latest.some((s) => s !== "success" && s !== "skipped")) return "PENDING";
   return "GREEN";
 }
 

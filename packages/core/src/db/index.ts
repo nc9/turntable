@@ -38,6 +38,12 @@ export type Db = {
   orm: Orm;
   run<T>(fn: (db: Db) => Promise<T>): Promise<T>;
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
+  /**
+   * Runs `fn` once the outermost transaction commits, and never if it rolls back (a rolled-back
+   * savepoint drops the hooks queued inside it). Outside a transaction it runs at once. Use it
+   * for wake-ups that must not fire before the data is visible.
+   */
+  afterCommit(fn: () => void): void;
   close(): void;
 };
 
@@ -55,7 +61,7 @@ export function openDatabase(path: string): Db {
   /** Handle of the innermost active transaction or repo call in this async context. */
   const active = new AsyncLocalStorage<Db>();
 
-  const txHandle = (depth: number): { tx: Db; end: () => void } => {
+  const txHandle = (depth: number, hooks: (() => void)[]): { tx: Db; end: () => void } => {
     let open = true;
     let savepoints = 0;
     const tx: Db = {
@@ -64,7 +70,8 @@ export function openDatabase(path: string): Db {
       transaction: async (fn) => {
         if (!open) throw ended();
         const name = `tt_sp_${depth}_${++savepoints}`;
-        const inner = txHandle(depth + 1);
+        const inner = txHandle(depth + 1, hooks);
+        const mark = hooks.length;
         sqlite.run(`SAVEPOINT ${name}`);
         try {
           const out = await active.run(inner.tx, () => fn(inner.tx));
@@ -73,10 +80,14 @@ export function openDatabase(path: string): Db {
         } catch (err) {
           sqlite.run(`ROLLBACK TO ${name}`);
           sqlite.run(`RELEASE ${name}`);
+          hooks.length = mark; // hooks queued inside a rolled-back savepoint never fire
           throw err;
         } finally {
           inner.end();
         }
+      },
+      afterCommit: (fn) => {
+        if (open) hooks.push(fn);
       },
       close: () => {},
     };
@@ -90,6 +101,7 @@ export function openDatabase(path: string): Db {
     run: (fn) => active.run(held, () => fn(held)),
     transaction: () =>
       Promise.reject(new Error("cannot start a transaction inside a repo call (shared gate held)")),
+    afterCommit: (fn) => fn(), // statements outside a transaction are already committed
     close: () => {},
   };
 
@@ -109,12 +121,20 @@ export function openDatabase(path: string): Db {
       const ctx = active.getStore();
       if (ctx) return ctx.transaction(fn); // savepoint inside a transaction; throws inside run
       const release = await gate.exclusive();
-      const { tx, end } = txHandle(0);
+      const hooks: (() => void)[] = [];
+      const { tx, end } = txHandle(0, hooks);
       try {
         sqlite.run("BEGIN IMMEDIATE");
         try {
           const out = await active.run(tx, () => fn(tx));
           sqlite.run("COMMIT");
+          for (const hook of hooks.splice(0)) {
+            try {
+              hook();
+            } catch (err) {
+              console.error("turntable: afterCommit hook failed", err);
+            }
+          }
           return out;
         } catch (err) {
           if (sqlite.inTransaction) sqlite.run("ROLLBACK");
@@ -124,6 +144,11 @@ export function openDatabase(path: string): Db {
         end();
         release();
       }
+    },
+    afterCommit: (fn) => {
+      const ctx = active.getStore();
+      if (ctx) ctx.afterCommit(fn);
+      else fn();
     },
     close: () => sqlite.close(),
   };

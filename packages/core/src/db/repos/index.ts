@@ -6,14 +6,16 @@
 // `await orm.select()...` with no `.get()/.all()/.run()` so they run on sync and async drivers.
 import { and, asc, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "..";
-import { canTransition, exitCodeValid } from "../job-state";
+import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { ulid } from "../ulid";
+import { appendEvent } from "./events";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
 export * from "./api";
+export * from "./events";
 
 export type Project = typeof s.projects.$inferSelect;
 export type ProjectRepo = typeof s.projectRepos.$inferSelect;
@@ -263,7 +265,7 @@ export function createRun(
   scope: Scope,
   input: { workflowPath: string; event: string; ref: string; sha?: string },
 ): Promise<Run> {
-  return db.run(async (h) => {
+  return db.transaction(async (h) => {
     const { projectId } = requireProject(scope);
     const id = ulid();
     await h.orm.insert(s.runs).values({
@@ -274,6 +276,16 @@ export function createRun(
       event: input.event,
       ref: input.ref,
       sha: input.sha ?? null,
+    });
+    await appendEvent(h, scope, {
+      type: "run.queued",
+      runId: id,
+      payload: {
+        workflow_path: input.workflowPath,
+        event: input.event,
+        ref: input.ref,
+        sha: input.sha ?? null,
+      },
     });
     return (await getRun(h, scope, id))!;
   });
@@ -307,20 +319,34 @@ export function setRunStatus(
   id: string,
   status: JobState,
 ): Promise<Run | undefined> {
-  return db.run(async (h) => {
+  // One transaction: the status change and its event commit together or not at all.
+  return db.transaction(async (h) => {
+    const prev = await getRun(h, scope, id);
+    if (!prev) return undefined;
     const t = now();
     const rows = await h.orm
       .update(s.runs)
       .set({
         status,
         startedAt: status === "running" ? t : undefined,
-        finishedAt: ["success", "failure", "infra_error", "cancelled"].includes(status)
-          ? t
-          : undefined,
+        finishedAt: FINISHED_STATES.includes(status) ? t : undefined,
       })
       .where(scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, id)))
       .returning({ id: s.runs.id });
-    return rows.length ? getRun(h, scope, id) : undefined;
+    if (!rows.length) return undefined;
+    if (prev.status !== status) {
+      const runScope = { orgId: prev.orgId, projectId: prev.projectId };
+      if (status === "running") {
+        await appendEvent(h, runScope, { type: "run.started", runId: id, payload: { status } });
+      } else if (FINISHED_STATES.includes(status)) {
+        await appendEvent(h, runScope, {
+          type: "run.finished",
+          runId: id,
+          payload: { status, from: prev.status },
+        });
+      }
+    }
+    return getRun(h, scope, id);
   });
 }
 
@@ -390,7 +416,7 @@ export function transitionJob(
   to: JobState,
   opts: { exitCode?: number | null } = {},
 ): Promise<Job | undefined> {
-  return db.run(async (h) => {
+  return db.transaction(async (h) => {
     const job = await getJob(h, scope, id);
     if (!job) return undefined;
     const from = job.state as JobState;
@@ -405,7 +431,7 @@ export function transitionJob(
         state: to,
         exitCode: opts.exitCode ?? null,
         startedAt: to === "running" ? t : undefined,
-        finishedAt: ["success", "failure", "infra_error", "cancelled"].includes(to) ? t : null,
+        finishedAt: FINISHED_STATES.includes(to) ? t : null,
       })
       .where(
         scoped(
@@ -417,6 +443,19 @@ export function transitionJob(
       )
       .returning({ id: s.jobs.id });
     if (!rows.length) throw new InvalidTransitionError(from, to, "state changed concurrently");
+    const evScope = { orgId: job.orgId, projectId: job.projectId };
+    await appendEvent(h, evScope, {
+      type: "job.state_changed",
+      runId: job.runId,
+      jobId: id,
+      payload: { from, to, exit_code: opts.exitCode ?? null },
+    });
+    if (to === "awaiting_approval") {
+      await appendEvent(h, evScope, { type: "approval.required", runId: job.runId, jobId: id });
+    }
+    if (to === "infra_error") {
+      await appendEvent(h, evScope, { type: "infra.error", runId: job.runId, jobId: id });
+    }
     return getJob(h, scope, id);
   });
 }
@@ -485,7 +524,7 @@ export function updateAttempt(
     errorClass?: string | null;
   },
 ): Promise<JobAttempt | undefined> {
-  return db.run(async (h) => {
+  return db.transaction(async (h) => {
     const cur = await getAttempt(h, scope, id);
     if (!cur) return undefined;
     if (patch.state) {
@@ -502,10 +541,7 @@ export function updateAttempt(
       .set({
         ...patch,
         startedAt: patch.state === "running" ? t : undefined,
-        finishedAt:
-          patch.state && ["success", "failure", "infra_error", "cancelled"].includes(patch.state)
-            ? t
-            : undefined,
+        finishedAt: patch.state && FINISHED_STATES.includes(patch.state) ? t : undefined,
       })
       .where(
         scoped(
@@ -519,6 +555,29 @@ export function updateAttempt(
       .returning({ id: s.jobAttempts.id });
     if (!rows.length) {
       throw new InvalidTransitionError(from, patch.state ?? from, "state changed concurrently");
+    }
+    if (patch.state) {
+      const evScope = { orgId: cur.orgId, projectId: cur.projectId };
+      await appendEvent(h, evScope, {
+        type: "job.state_changed",
+        jobId: cur.jobId,
+        attemptId: id,
+        payload: {
+          level: "attempt",
+          from,
+          to: patch.state,
+          exit_code: patch.exitCode ?? null,
+          error_class: patch.errorClass ?? null,
+        },
+      });
+      if (patch.state === "infra_error") {
+        await appendEvent(h, evScope, {
+          type: "infra.error",
+          jobId: cur.jobId,
+          attemptId: id,
+          payload: { error_class: patch.errorClass ?? null },
+        });
+      }
     }
     return getAttempt(h, scope, id);
   });
