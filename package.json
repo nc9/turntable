@@ -26,7 +26,7 @@
     "test:redact": "bun test packages/redact/tests/redact.test.ts",
     "test:docker": "TT_DOCKER_CONFORMANCE=1 bun test packages/provider-docker/tests/conformance.test.ts",
     "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts packages/core/tests/db-transaction.test.ts",
-    "test:ops": "bun test packages/core/tests/ops-dispatch.test.ts packages/core/tests/ops-ops.test.ts packages/core/tests/ops-rest.test.ts packages/core/tests/ops-openapi.test.ts",
+    "test:ops": "bun test packages/core/tests/ops-dispatch.test.ts packages/core/tests/ops-ops.test.ts packages/core/tests/ops-rest.test.ts packages/core/tests/ops-openapi.test.ts packages/core/tests/ops-cli.test.ts",
     "openapi:gen": "bun run --cwd packages/core openapi:gen"
   },
   "devDependencies": {

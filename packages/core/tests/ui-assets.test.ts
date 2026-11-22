@@ -23,7 +23,7 @@ const get = (path: string, method = "GET") =>
 test("serves the app shell at / and for client-side routes, with a strict CSP", async () => {
   fixture();
   for (const path of ["/", "/acme/api/runs/01ABC"]) {
-    const res = get(path);
+    const res = await get(path);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(res.headers.get("content-security-policy")).toBe(UI_CSP);
@@ -36,24 +36,24 @@ test("serves the app shell at / and for client-side routes, with a strict CSP", 
 
 test("assets are typed and immutable; unknown files and API paths stay 404", async () => {
   fixture();
-  const js = get("/assets/app-1.js");
+  const js = await get("/assets/app-1.js");
   expect(js.headers.get("content-type")).toContain("text/javascript");
   expect(js.headers.get("cache-control")).toContain("immutable");
-  expect(get("/assets/missing.js").status).toBe(404);
-  expect(get("/api/runs").status).toBe(404);
-  expect(get("/healthz").status).toBe(200);
+  expect((await get("/assets/missing.js")).status).toBe(404);
+  expect((await get("/api/runs")).status).toBe(404);
+  expect((await get("/healthz")).status).toBe(200);
 });
 
 test("HEAD has no body and other methods are still rejected", async () => {
   fixture();
-  const head = get("/", "HEAD");
+  const head = await get("/", "HEAD");
   expect(head.status).toBe(200);
   expect(await head.text()).toBe("");
-  expect(get("/", "POST").status).toBe(405);
+  expect((await get("/", "POST")).status).toBe(405);
 });
 
 test("without a registered UI the placeholder remains", async () => {
-  const res = get("/");
+  const res = await get("/");
   expect(await res.text()).toContain("web UI is not built yet");
-  expect(get("/some/route").status).toBe(404);
+  expect((await get("/some/route")).status).toBe(404);
 });

@@ -50,7 +50,8 @@ async function serve(args: string[]): Promise<void> {
 
 async function token(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
-  if (sub !== "create") throw new Error(`usage: turntable token create --org <slug> --role <role> --name <name>`);
+  if (sub !== "create")
+    throw new Error(`usage: turntable token create --org <slug> --role <role> --name <name>`);
   const { values } = parseArgs({
     args: rest,
     options: {

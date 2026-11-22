@@ -157,3 +157,40 @@ test("output lint: no secret-looking output field except a declared one-time sec
   expect(lintOutputSchemas(make("token", ["token"]))).toEqual([]);
   expect(lintOutputSchemas(make("name", ["token"]))).toHaveLength(1);
 });
+
+test("every non-signature op is in every adapter that exists: REST, OpenAPI and MCP", async () => {
+  const { createRestApi } = await import("../src/ops/rest");
+  const { handleRequest } = await import("../src/server");
+  const { openDatabase } = await import("../src/db");
+  void handleRequest;
+  const api = createRestApi({ registry, db: openDatabase(":memory:") });
+  const doc = buildOpenApi(registry, "0.0.0-dev") as any;
+  const tools = new Set(mcpTools(registry).map((t) => t.name));
+  const operationIds = new Set(
+    Object.values<any>(doc.paths).flatMap((item) =>
+      Object.values<any>(item).map((o) => o.operationId),
+    ),
+  );
+  for (const op of registry.ops.filter((o) => o.auth.type !== "signature")) {
+    expect(tools.has(op.name)).toBe(true);
+    expect(operationIds.has(op.name)).toBe(true);
+    expect(doc.paths[op.http.path]?.[op.http.method.toLowerCase()]?.operationId).toBe(op.name);
+    // REST: the route exists. Unauthenticated, it answers 401, not 404 (no route) or 405.
+    const path = op.http.path.replaceAll(/\{[^}]+\}/g, "x");
+    const res = await api(new Request(`http://x/api/v1${path}`, { method: op.http.method }));
+    expect(res?.status).toBe(401);
+  }
+  // and nothing extra: no adapter lists an op the registry does not have
+  expect([...tools].toSorted()).toEqual(
+    registry
+      .tokenOps()
+      .map((o) => o.name)
+      .toSorted(),
+  );
+  expect([...operationIds].toSorted()).toEqual(
+    registry
+      .tokenOps()
+      .map((o) => o.name)
+      .toSorted(),
+  );
+});
