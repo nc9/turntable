@@ -54,6 +54,17 @@ export function deleteSecretRecord(db: Db, scope: Scope, name: string): Promise<
   });
 }
 
+/** Orgs that hold a system secret of this name. System-level: the checkpointer finds orgs with a signing key. */
+export function orgsWithSecretName(db: Db, name: string): Promise<string[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ orgId: s.secrets.orgId })
+      .from(s.secrets)
+      .where(eq(s.secrets.name, name));
+    return rows.map((r) => r.orgId);
+  });
+}
+
 /** Names only. */
 export function listSecretNames(db: Db, scope: Scope): Promise<string[]> {
   return db.run(async (h) => {

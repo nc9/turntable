@@ -9,6 +9,7 @@ import { AuditAnchor } from "./anchor";
 import {
   AuditAlreadyInitialised,
   AuditRefusal,
+  auditedOrgIds,
   adoptAuditKey,
   createCheckpoint,
   initAuditKey,
@@ -65,7 +66,7 @@ export async function auditCommand(args: string[]): Promise<number> {
     const store = keyFile && masterKey ? new SecretStore(db, masterKey) : undefined;
     const anchor =
       keyFile && masterKey ? new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey) : undefined;
-    const orgs = await resolveOrgs(db, values.org);
+    const orgs = await resolveOrgs(db, values.org, anchor);
 
     if (sub === "export-key") {
       if (!store) throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
@@ -212,6 +213,7 @@ function readAnchorFile(path: string): AnchorCheckpoint[] {
 async function resolveOrgs(
   db: Db,
   slug: string | undefined,
+  anchor?: AuditAnchor,
 ): Promise<{ id: string; slug: string }[]> {
   if (slug) {
     const o = await getOrgBySlug(db, slug);
@@ -219,7 +221,9 @@ async function resolveOrgs(
     return [{ id: o.id, slug: o.slug }];
   }
   const out: { id: string; slug: string }[] = [];
-  for (const id of await orgsWithAudit(db)) {
+  // With the master key, also the orgs whose rows are all gone but that have a state file or a key.
+  const ids = anchor ? await auditedOrgIds(db, anchor) : await orgsWithAudit(db);
+  for (const id of ids) {
     const o = await getOrgById(db, id);
     if (o) out.push({ id: o.id, slug: o.slug });
   }
