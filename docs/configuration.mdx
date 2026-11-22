@@ -67,7 +67,13 @@ The `longshore-dev` label and name prefix, the auto-stop and auto-delete backsto
 
 ### Egress
 
-A job's sandbox has no network unless its run says otherwise: egress is `none` by default, and `open` only when the run's plan records `"egress": "open"` from the project's configuration. Anything else is treated as `none`.
+Egress is deny by default, for every trust class. A job's sandbox has no network unless its run says otherwise: `none` unless the run's plan records `"egress": "open"` (or `"allowlist"`) from the project's configuration. Anything else is treated as `none`.
+
+With `--worker`:
+
+- A job is refused (as `infra_error`, naming the provider) when its provider cannot enforce the policy it asks for. That includes `none`: a provider that cannot cut the network is not trusted to. Docker and Daytona enforce `none` and `open`; neither enforces `allowlist` yet.
+- A job that holds secrets is never run on `open` egress.
+- Before a `none` job runs, a canary probe inside the sandbox tries a public IP and the cloud metadata IP (`169.254.169.254`). If either answers, the job is not run and ends as `infra_error`. If the image has no tool to probe with (curl, wget, nc or bash), the job runs with a note in its log, unless it holds secrets, in which case it is refused.
 
 ## Environment variables
 

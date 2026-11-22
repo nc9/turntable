@@ -1,3 +1,4 @@
+import { probeEgress } from "./egress-canary";
 import {
   EXPORT_STEP_NAME,
   resumeJob,
@@ -48,6 +49,14 @@ export interface JobEnv {
   fetchAction?: ActionFetcher;
   pollMs?: number;
   timeoutSeconds?: number;
+  /**
+   * Prove the sandbox cannot reach out before the job runs, when egress is `none`: a probe tries a
+   * public IP and the metadata IP. A breach is infra_error. If the probe cannot run (no tool in the
+   * image) the job proceeds with a notice, unless it is `secretBearing`, which is then refused.
+   */
+  canary?: boolean;
+  /** The job holds secrets: it never runs on `open` egress or without a verified `none`. */
+  secretBearing?: boolean;
   /** Lines written to the top of the log before anything else (a fresh run, not a re-attach). */
   notices?: readonly string[];
 }
@@ -190,6 +199,29 @@ export async function executeJob(
       });
       sandboxId = sb.id;
       await env.store.setSandbox(ids.attemptId, sb.id);
+      if (env.canary && (env.egress ?? "none") === "none") {
+        const v = await probeEgress(env.provider, sb.id, {
+          ...(env.pollMs ? { pollMs: env.pollMs } : {}),
+          signal: env.signal,
+        });
+        if (v.kind === "reachable") {
+          return await settle(
+            "infra_error",
+            `egress canary: the sandbox reached ${v.target} although egress is none; the job was not run`,
+          );
+        }
+        if (v.kind === "unknown") {
+          if (env.secretBearing) {
+            return await settle(
+              "infra_error",
+              `egress canary could not verify isolation (${v.why}); a job with secrets was not run`,
+            );
+          }
+          log.push(
+            `[longshore] egress canary could not run (${v.why}); egress none is unverified\n`,
+          );
+        }
+      }
       run = runJob(
         env.provider,
         sb.id,

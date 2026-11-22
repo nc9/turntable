@@ -23,7 +23,14 @@ export {
   PROVIDER_NAMES,
   type ProviderName,
 } from "./providers";
-export { egressForRun, type Egress } from "./egress";
+export {
+  egressDecision,
+  egressForRun,
+  withEgressPolicy,
+  type Egress,
+  type EgressDecision,
+  type EgressPolicyOptions,
+} from "./egress";
 export {
   requiredIsolation,
   trustOf,
