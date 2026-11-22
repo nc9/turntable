@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type {
   WireApprovalStatus,
+  WireArtifacts,
+  WireConsumption,
   WireApprovers,
   WireChallenge,
   WireEnrolmentApproval,
@@ -367,6 +369,31 @@ test("run and job metadata from #66 are in the spec", () => {
   }
   const jobs = (run.jobs as { items: { properties: Record<string, unknown> } }).items.properties;
   for (const key of ["needs", "matrix", "approval_kind"]) expect(jobs).toHaveProperty(key);
+});
+
+test("artifacts: provenance and consumption shapes the adapter reads", () => {
+  const arts = ok(op("/runs/{run_id}/artifacts", "get"));
+  expectKeys(arts, keysOf<WireArtifacts>({ artifacts: true }));
+  expectKeys(arts.properties!.artifacts!.items!, [
+    "name",
+    "size",
+    "sha256",
+    "digest_source",
+    "trust_class",
+    "run_sha",
+    "attempt_id",
+    "created_at",
+  ]);
+  const chk = ok(op("/artifacts/check-consumption", "post"));
+  expectKeys(chk, keysOf<WireConsumption>({ results: true }));
+  expectKeys(chk.properties!.results!.items!, [
+    "run_id",
+    "name",
+    "decision",
+    "reason",
+    "trust_class",
+    "sha256",
+  ]);
 });
 
 test("human approvals: status, approvers, challenges, enrolment and the signature routes", () => {
