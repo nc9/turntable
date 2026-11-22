@@ -1,4 +1,5 @@
 import { parse } from "yaml";
+import { SsrfError, safeFetch } from "@longshore/net";
 import { InfraError } from "@longshore/provider-sdk";
 import { layoutFor, type Layout } from "./layout";
 import { classifyActionRuntime } from "./action-runtime";
@@ -420,18 +421,20 @@ export function githubResolver(token?: string): ActionRefResolver {
   return async (owner, repo, ref) => {
     let res: Response;
     try {
-      res = await fetch(
+      res = await safeFetch(
         `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
         {
           headers: {
             Accept: "application/vnd.github.sha",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          signal: AbortSignal.timeout(30_000),
+          timeoutMs: 30_000,
+          maxBytes: 4096,
         },
       );
     } catch (e) {
-      // The network, not the workflow: retryable.
+      // The network, not the workflow: retryable. A refused address is not.
+      if (e instanceof SsrfError) throw new PlanError("outbound-address", e.message);
       throw new InfraError(`cannot reach GitHub to resolve ${owner}/${repo}@${ref}`, e);
     }
     if (!res.ok) {

@@ -10,8 +10,8 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
-    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner typecheck:daytona",
-    "test": "bun run --sequential test:core test:core2 test:core3 test:ops test:ops2 test:sched test:provider test:redact test:ui test:act test:act2 test:run test:scripts test:prereqs test:github test:daytona test:trust test:pins",
+    "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner typecheck:daytona typecheck:net",
+    "test": "bun run --sequential test:core test:core2 test:core3 test:ops test:ops2 test:sched test:provider test:redact test:ui test:act test:act2 test:run test:scripts test:prereqs test:github test:daytona test:trust test:pins test:net",
     "build": "bun run scripts/build.ts",
     "dev": "bun run packages/core/src/main.ts serve",
     "typecheck:core": "bun run --cwd packages/core typecheck",
@@ -34,7 +34,7 @@
     "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/run-job.test.ts packages/act-runner/tests/expr.test.ts packages/act-runner/tests/triggers.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
     "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts",
-    "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts packages/core/tests/mcp.test.ts packages/core/tests/channel.test.ts",
+    "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts packages/core/tests/mcp.test.ts packages/core/tests/channel.test.ts packages/core/tests/checks.test.ts",
     "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts packages/core/tests/run-workflow.test.ts packages/core/tests/safe-read.test.ts",
     "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts",
     "test:act2": "bun test packages/act-runner/tests/workflow-plan.test.ts packages/act-runner/tests/split.test.ts packages/act-runner/tests/readiness.test.ts packages/act-runner/tests/squirrelscan-plan.test.ts",
@@ -43,7 +43,9 @@
     "test:prereqs": "bun test packages/core/tests/release-prereqs.test.ts packages/core/tests/legacy-names.test.ts",
     "test:github": "bun test packages/core/tests/secrets.test.ts packages/core/tests/github-installations.test.ts packages/core/tests/github-webhook.test.ts packages/core/tests/github-app.test.ts packages/core/tests/github-serve.test.ts",
     "test:trust": "bun test packages/core/tests/trust.test.ts packages/core/tests/workflow-taint.test.ts",
-    "test:pins": "bun test packages/core/tests/action-pins.test.ts"
+    "test:pins": "bun test packages/core/tests/action-pins.test.ts",
+    "typecheck:net": "bun run --cwd packages/net typecheck",
+    "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",

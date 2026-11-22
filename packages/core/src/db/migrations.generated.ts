@@ -160,5 +160,13 @@ export const migrations: Migration[] = [
       "ALTER TABLE `runs` ADD `trust` text;",
       "ALTER TABLE `runs` ADD `approval` text;"
     ]
+  },
+  {
+    "tag": "0011_low_praxagora",
+    "when": 1795366300821,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `check_run_id` text;",
+      "ALTER TABLE `projects` ADD `checks_mode` text DEFAULT 'off' NOT NULL;"
+    ]
   }
 ];

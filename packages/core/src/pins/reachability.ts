@@ -3,13 +3,14 @@
 // fork. An allowlist or a sha pin passes it, and the code is not owner/repo's. So every sha must
 // be reachable from a branch or tag of the named repository itself.
 import { PlanError } from "@longshore/act-runner";
+import { type SafeFetch, safeFetch } from "@longshore/net";
 import { InfraError } from "@longshore/provider-sdk";
 
 /** True when `sha` is reachable from a branch or tag of owner/repo. Throws InfraError if GitHub is unreachable. */
 export type ReachabilityChecker = (owner: string, repo: string, sha: string) => Promise<boolean>;
 
 export interface GithubReachabilityOptions {
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
   /** Raises the unauthenticated rate limit. Read-only access is enough. */
   token?: string;
   apiBase?: string;
@@ -19,7 +20,7 @@ const MAX_TAG_PAGES = 10;
 const MAX_BRANCH_PAGES = 5;
 
 export function githubReachability(o: GithubReachabilityOptions = {}): ReachabilityChecker {
-  const f = o.fetch ?? fetch;
+  const f = o.fetch ?? safeFetch;
   const base = o.apiBase ?? "https://api.github.com";
   const defaultBranch = new Map<string, Promise<string | undefined>>();
   const verdicts = new Map<string, boolean>();

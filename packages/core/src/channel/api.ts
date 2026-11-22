@@ -1,6 +1,7 @@
 // Minimal REST client for the channel: three read operations over `/api/v1` with a reader token.
 // The token goes in a header only, never a URL. Nothing here follows redirects, so a hostile
 // redirect cannot carry the token to another host.
+import { createHttpClient, type SafeFetch } from "@longshore/net";
 
 export class ChannelApiError extends Error {
   readonly status: number;
@@ -85,9 +86,11 @@ export function createChannelApi(o: {
   baseUrl: URL;
   org: string;
   token: string;
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
 }): ChannelApi {
-  const f = o.fetch ?? fetch;
+  // The operator named this server with --url, so exactly that host may be private or plain http
+  // (a local Longshore). Any other address the guard still refuses.
+  const f = o.fetch ?? createHttpClient({ allowHosts: [o.baseUrl.hostname] }).fetch;
   async function call<T>(
     path: string,
     query: Record<string, string | number | undefined>,

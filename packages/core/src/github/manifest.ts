@@ -2,6 +2,7 @@
 // the App manifest to GitHub. GitHub redirects back to a loopback callback with a one-time code,
 // which is exchanged for the App's credentials. Those go straight into the encrypted store and
 // are never printed.
+import { type SafeFetch, safeFetch } from "@longshore/net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db";
 import { setGithubApp } from "../db/repos";
@@ -84,7 +85,7 @@ export interface ManifestConversion {
 /** Exchanges the one-time code. No credentials are involved: the code is the proof. */
 export async function convertManifest(
   code: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: SafeFetch = safeFetch,
   apiBase = "https://api.github.com",
 ): Promise<ManifestConversion> {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(code)) throw new Error("malformed manifest code");
@@ -147,7 +148,7 @@ export interface ManifestFlowOptions {
   ghOrg?: string | undefined;
   /** Loopback port; 0 picks a free one. */
   port?: number;
-  fetch?: typeof fetch;
+  fetch?: SafeFetch;
   apiBase?: string;
 }
 

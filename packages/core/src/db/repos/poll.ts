@@ -327,6 +327,74 @@ export function getProjectEgress(db: Db, scope: Scope): Promise<EgressMode> {
   });
 }
 
+export type ChecksMode = "off" | "shadow" | "live";
+export const CHECKS_MODES: readonly ChecksMode[] = ["off", "shadow", "live"];
+
+/** The project's check-run reporting mode; `off` when unset or unknown. */
+export function getProjectChecksMode(db: Db, scope: Scope): Promise<ChecksMode> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ mode: s.projects.checksMode })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    return row?.mode === "shadow" || row?.mode === "live" ? row.mode : "off";
+  });
+}
+
+export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .update(s.projects)
+      .set({ checksMode: mode })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+  });
+}
+
+/** The forge check run stored on an attempt, if one was created. */
+export function getAttemptCheckRunId(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+): Promise<string | null> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ id: s.jobAttempts.checkRunId })
+      .from(s.jobAttempts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+        ),
+      )
+      .limit(1);
+    return row?.id ?? null;
+  });
+}
+
+export function setAttemptCheckRunId(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  checkRunId: string,
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .update(s.jobAttempts)
+      .set({ checkRunId })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+        ),
+      );
+  });
+}
+
 export function setProjectEgress(db: Db, scope: Scope, egress: EgressMode): Promise<void> {
   return db.run(async (h) => {
     const { projectId } = requireProject(scope);
