@@ -97,6 +97,18 @@ export type StepEvent = {
   logOffset: number;
 };
 
+/**
+ * Where the output cap removed bytes from an attempt's log. Stored as metadata next to the log,
+ * never as text inside it: `atOffset` is the byte offset in the stored log where the omission falls.
+ */
+export type CutRecord = {
+  attemptId: string;
+  kind: "cut";
+  atOffset: number;
+  omittedBytes: number;
+  reason: string;
+};
+
 export type RunDetail = { run: Run; jobs: Job[]; attempts: JobAttempt[] };
 
 export type CheckSummary = {

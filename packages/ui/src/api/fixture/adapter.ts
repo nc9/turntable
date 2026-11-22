@@ -109,6 +109,8 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
       }),
     jobSteps: ({ attemptId }) =>
       delay(() => (world.logOf(attemptId)?.steps ?? []).map((st) => ({ ...st, attemptId }))),
+    jobCuts: ({ attemptId }) =>
+      delay(() => (world.logOf(attemptId)?.cuts ?? []).map((c) => ({ ...c, attemptId }))),
     checksForSha: ({ projectId, sha }) =>
       delay((): CheckSummary => {
         const rows = [...world.runs.values()].filter(
@@ -201,6 +203,7 @@ function subscribeLog(
   const rng = createRng(`chunks:${attemptId}:${fromOffset}`);
   let offset = fromOffset;
   let stepsSent = 0;
+  let cutsSent = 0;
   let stopped = false;
   let handle: ReturnType<typeof setTimeout> | undefined;
   const step = () => {
@@ -224,6 +227,10 @@ function subscribeLog(
       const due = l.steps.filter((st) => st.logOffset >= fromOffset && st.logOffset <= offset);
       for (; stepsSent < due.length; stepsSent++) {
         deliver({ type: "step", attemptId, ...(due[stepsSent] as (typeof due)[number]) });
+      }
+      const dueCuts = l.cuts.filter((c) => c.atOffset >= fromOffset && c.atOffset <= offset);
+      for (; cutsSent < dueCuts.length; cutsSent++) {
+        deliver({ type: "cut", attemptId, ...(dueCuts[cutsSent] as (typeof dueCuts)[number]) });
       }
       if (eof) return;
       handle = setTimeout(step, rng.int(20, 90));

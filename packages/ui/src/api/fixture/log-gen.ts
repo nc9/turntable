@@ -1,4 +1,4 @@
-import type { StepEvent } from "../types";
+import type { CutRecord, StepEvent } from "../types";
 import { createRng, type Rng } from "./prng";
 
 export type LogKind = "setup" | "lint" | "typecheck" | "test" | "build" | "e2e" | "huge" | "deploy";
@@ -19,6 +19,8 @@ export type GeneratedLog = {
   lineCount: number;
   /** Step boundaries, out of band: `logOffset` is where in `bytes` the boundary falls. */
   steps: Omit<StepEvent, "attemptId">[];
+  /** Output-cap cuts, out of band: `atOffset` is where in `bytes` the omission falls. */
+  cuts: Omit<CutRecord, "attemptId">[];
 };
 
 const ESC = "\u001b";
@@ -32,8 +34,6 @@ const cyan = (s: string) => c("36", s);
 type Draft = {
   text: string;
   weight: number;
-  /** Written without a timestamp (cut markers). */
-  raw?: boolean;
 };
 type StepMark = {
   /** Draft index the boundary precedes. */
@@ -47,13 +47,14 @@ type StepMark = {
 class Builder {
   readonly drafts: Draft[] = [];
   readonly marks: StepMark[] = [];
+  readonly cuts: { pos: number; omittedBytes: number; reason: string }[] = [];
   private step = 0;
   readonly rng: Rng;
   constructor(rng: Rng) {
     this.rng = rng;
   }
-  line(text: string, weight = 1, raw = false): void {
-    this.drafts.push({ text, weight, ...(raw ? { raw: true } : {}) });
+  line(text: string, weight = 1): void {
+    this.drafts.push({ text, weight });
   }
   startStep(name: string): number {
     this.step += 1;
@@ -220,9 +221,8 @@ function hugeBody(b: Builder): void {
   const total = 126_000;
   for (let i = 0; i < total; i++) {
     if (i === 62_000) {
-      // Exactly what cutMarker() in @turntable/provider-sdk writes: "\n[turntable: N bytes ...]\n".
-      b.line("", 1, true);
-      b.line(cutMarkerText(3_405_772), 1, true);
+      // The output cap removed bytes here. That is metadata, not text in the log.
+      b.cuts.push({ pos: b.drafts.length, omittedBytes: 3_405_772, reason: "middle" });
       continue;
     }
     if (i % 5000 === 0) b.line(`::group::Shard ${i / 5000 + 1}`);
@@ -236,7 +236,11 @@ function hugeBody(b: Builder): void {
   b.endStep(idx, "success");
 }
 
-function build(plan: LogPlan): { drafts: Draft[]; marks: StepMark[] } {
+function build(plan: LogPlan): {
+  drafts: Draft[];
+  marks: StepMark[];
+  cuts: { pos: number; omittedBytes: number; reason: string }[];
+} {
   const rng = createRng(plan.seed);
   const b = new Builder(rng);
   const failing = plan.outcome === "failure";
@@ -286,12 +290,8 @@ function build(plan: LogPlan): { drafts: Draft[]; marks: StepMark[] } {
     b.marks.length = 0;
     b.marks.push(...kept);
   }
-  return { drafts: b.drafts, marks: b.marks };
+  return { drafts: b.drafts, marks: b.marks, cuts: b.cuts.filter((c) => c.pos <= b.drafts.length) };
 }
-
-/** The text of cutMarker(n) in @turntable/provider-sdk (a test keeps them in step). */
-export const cutMarkerText = (omittedBytes: number): string =>
-  `[turntable: ${omittedBytes} bytes of output omitted]`;
 
 const pad = (n: number, w: number) => String(n).padStart(w, "0");
 function iso(ms: number): string {
@@ -305,7 +305,7 @@ const cache = new Map<string, GeneratedLog>();
 export function generateLog(plan: LogPlan): GeneratedLog {
   const hit = cache.get(plan.seed);
   if (hit) return hit;
-  const { drafts, marks } = build(plan);
+  const { drafts, marks, cuts: cutMarks } = build(plan);
   const enc = new TextEncoder();
   const totalWeight = drafts.reduce((a, d) => a + d.weight, 0);
   const parts: Uint8Array[] = [];
@@ -320,7 +320,7 @@ export function generateLog(plan: LogPlan): GeneratedLog {
     offBefore.push(off);
     tBefore.push(Math.floor(t));
     t += d.weight * msPerWeight;
-    const bytes = enc.encode(d.raw ? `${d.text}\n` : `${iso(Math.floor(t))} ${d.text}\n`);
+    const bytes = enc.encode(`${iso(Math.floor(t))} ${d.text}\n`);
     parts.push(bytes);
     off += bytes.length;
     lineEnds[i] = off;
@@ -341,7 +341,13 @@ export function generateLog(plan: LogPlan): GeneratedLog {
     at: tBefore[m.pos] ?? Math.floor(t),
     logOffset: offBefore[m.pos] ?? off,
   }));
-  const out = { bytes: all, lineEnds, lineCount: drafts.length, steps };
+  const cuts = cutMarks.map((c) => ({
+    kind: "cut" as const,
+    atOffset: offBefore[c.pos] ?? off,
+    omittedBytes: c.omittedBytes,
+    reason: c.reason,
+  }));
+  const out = { bytes: all, lineEnds, lineCount: drafts.length, steps, cuts };
   cache.set(plan.seed, out);
   if (cache.size > 40) cache.delete(cache.keys().next().value as string);
   return out;

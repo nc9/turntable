@@ -1,6 +1,4 @@
 import { expect, test } from "bun:test";
-import { cutMarker } from "@turntable/provider-sdk";
-import { cutMarkerText } from "../src/api/fixture/log-gen";
 import { createFixture } from "../src/api/fixture/adapter";
 import type { ChangeEvent, LogChunkEvent } from "../src/api/realtime";
 import { LogParser } from "../src/log/parser";
@@ -106,8 +104,22 @@ test("rerun of a failed job requeues it; cancel stops unfinished jobs", async ()
   }
 });
 
-test("the fixture cut marker is the provider SDK's cutMarker text", () => {
-  expect(`\n${cutMarkerText(3405772)}\n`).toBe(new TextDecoder().decode(cutMarker(3405772)));
+test("cuts are metadata next to the log: reported by the API, never text in the bytes", async () => {
+  const fx = createFixture({ latency: [0, 0], tickMs: 1000 });
+  try {
+    const huge = [...fx.world.attempts.values()].find((a) => {
+      const l = fx.world.logOf(a.id);
+      return l !== null && l.cuts.length > 0;
+    });
+    expect(huge).toBeDefined();
+    if (!huge) return;
+    const cuts = await fx.api.jobCuts({ attemptId: huge.id });
+    expect(cuts[0]).toMatchObject({ kind: "cut", attemptId: huge.id });
+    const slice = await fx.api.jobLog({ attemptId: huge.id, offset: 0, limit: 1 << 30 });
+    expect(new TextDecoder().decode(slice.bytes)).not.toContain("bytes of output omitted");
+  } finally {
+    fx.stop();
+  }
 });
 
 test("fixture logs carry no inline step markers and no macOS legs", async () => {
@@ -115,7 +127,7 @@ test("fixture logs carry no inline step markers and no macOS legs", async () => 
   try {
     const attempt = [...fx.world.attempts.values()].find((a) => a.finishedAt !== null)!;
     const slice = await fx.api.jobLog({ attemptId: attempt.id, offset: 0, limit: 1 << 30 });
-    expect(new TextDecoder().decode(slice.bytes)).not.toContain("::tt-step::");
+    expect(new TextDecoder().decode(slice.bytes)).not.toContain("::tt-");
     expect([...fx.world.jobs.values()].some((j) => /macos/i.test(j.name))).toBe(false);
   } finally {
     fx.stop();

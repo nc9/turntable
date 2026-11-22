@@ -1,8 +1,7 @@
-import { ChevronDown, ChevronRight, Scissors } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { memo, type ReactNode } from "react";
 import type { LogLine, StepInfo, StyleDef } from "@/log/parser";
 import type { Match } from "@/log/search";
-import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export type RowProps = {
@@ -135,14 +134,6 @@ function RowImpl(p: RowProps) {
         ) : null}
       </button>
     );
-  } else if (line.kind === "cut") {
-    body = (
-      <span className="flex items-center gap-2">
-        <Scissors className="size-3.5" aria-hidden="true" />
-        {line.cutBytes > 0 ? formatBytes(line.cutBytes) : "Some output"} of output omitted to stay
-        within the size cap
-      </span>
-    );
   } else {
     body = (
       <>
@@ -186,7 +177,7 @@ function RowImpl(p: RowProps) {
           </span>
         ) : null}
       </div>
-      <div className={cn("min-w-0 flex-1 pr-4", line.kind === "cut" && "text-center")}>{body}</div>
+      <div className="min-w-0 flex-1 pr-4">{body}</div>
     </div>
   );
 }

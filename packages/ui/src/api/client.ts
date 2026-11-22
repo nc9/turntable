@@ -8,6 +8,7 @@ import type {
   RunDetail,
   RunFilter,
   StepEvent,
+  CutRecord,
 } from "./types";
 
 /**
@@ -25,6 +26,8 @@ export interface TurntableApi {
   jobLog(args: { attemptId: string; offset: number; limit: number }): Promise<LogSlice>;
   /** Step boundaries for an attempt that have occurred so far (out of band from the log bytes). */
   jobSteps(args: { attemptId: string }): Promise<StepEvent[]>;
+  /** Output-cap cuts for an attempt, as metadata (never text in the log). */
+  jobCuts(args: { attemptId: string }): Promise<CutRecord[]>;
   checksForSha(args: { projectId: string; sha: string }): Promise<CheckSummary>;
   rerun(args: { runId: string; jobId?: string }): Promise<{ runId: string }>;
   cancel(args: { runId: string }): Promise<void>;
