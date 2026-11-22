@@ -8,14 +8,16 @@ import { readTokenFile } from "../mcp/stdio";
 
 export const ARTIFACTS_USAGE = `Usage: longshore artifacts list --run <run id> --project <slug> --url <https://host> --org <slug>
                               [--token-file <path>] [--json]
-       longshore artifacts check --consumer <run id> --source <run id>:<name> [--source ...]
+       longshore artifacts check (--consumer <run id> | --consumer-class <class>)
+                              --source <run id>:<name> [--source ...]
                               [--quarantine <run id>:<name> ...] --project <slug> --url <https://host>
                               --org <slug> [--token-file <path>] [--json]
 
 list shows each artifact a run recorded: its trust class, digest (and whether the control plane
 computed it), commit and size. check says, per source artifact, whether the consumer run may take
-it: allow, quarantine (a lower class that you named with --quarantine) or deny. A release run is
-denied anything below the release class. The token is read from --token-file or LONGSHORE_TOKEN_FILE
+it: allow, quarantine (a lower class that you named with --quarantine) or deny. The consumer is a
+run, or a class by name ("may a release build take this?"). A release consumer is denied anything
+below the release class. The token is read from --token-file or LONGSHORE_TOKEN_FILE
 (mode 0600); --url and --org also read LONGSHORE_URL and LONGSHORE_ORG.`;
 
 export type ArtifactRow = {
@@ -117,6 +119,7 @@ export async function artifactsCommand(args: string[], fetchImpl?: SafeFetch): P
         project: { type: "string" },
         run: { type: "string" },
         consumer: { type: "string" },
+        "consumer-class": { type: "string" },
         source: { type: "string", multiple: true },
         quarantine: { type: "string", multiple: true },
         "token-file": { type: "string" },
@@ -151,8 +154,9 @@ export async function artifactsCommand(args: string[], fetchImpl?: SafeFetch): P
       console.log(values.json ? JSON.stringify(r, null, 2) : formatArtifacts(r.artifacts));
       return 0;
     }
-    if (!values.consumer || !values.source?.length)
-      throw new Error("--consumer and at least one --source are required");
+    if (!values.source?.length) throw new Error("at least one --source is required");
+    if ((values.consumer === undefined) === (values["consumer-class"] === undefined))
+      throw new Error("give exactly one of --consumer and --consumer-class");
     const r = await request<{ results: CheckRow[] }>({
       ...common,
       method: "POST",
@@ -160,7 +164,8 @@ export async function artifactsCommand(args: string[], fetchImpl?: SafeFetch): P
       body: {
         org,
         project: values.project,
-        consumer_run_id: values.consumer,
+        ...(values.consumer ? { consumer_run_id: values.consumer } : {}),
+        ...(values["consumer-class"] ? { consumer_class: values["consumer-class"] } : {}),
         sources: values.source.map(parseSource),
         ...(values.quarantine?.length ? { quarantine: values.quarantine.map(parseSource) } : {}),
       },

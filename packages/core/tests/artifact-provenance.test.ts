@@ -186,6 +186,32 @@ describe("consumption by class", () => {
     expect(bareRes.map((x) => x.decision.decision)).toEqual(["allow", "allow", "allow", "allow"]);
   });
 
+  test("a consumer can be a class by name: 'may a release build take this?'", async () => {
+    const low = await runOf(a, "trusted_pr", "aa".repeat(20));
+    const rel = await runOf(a, "release", "bb".repeat(20));
+    await rec(a, low, "pr");
+    await rec(a, rel, "rel");
+    const src = (r: { run: { id: string } }, name: string) => ({ runId: r.run.id, name });
+    const both = [src(low, "pr"), src(rel, "rel")];
+    const asRelease = await resolveArtifactConsumption(
+      db,
+      a.scope,
+      { klass: "release" },
+      both,
+      both,
+    );
+    expect(asRelease.map((x) => x.decision.decision)).toEqual(["deny", "allow"]);
+    const asProtected = await resolveArtifactConsumption(db, a.scope, { klass: "protected" }, both);
+    expect(asProtected.map((x) => x.decision.decision)).toEqual(["deny", "allow"]);
+    const asked = await resolveArtifactConsumption(db, a.scope, { klass: "protected" }, both, [
+      both[0]!,
+    ]);
+    expect(asked.map((x) => x.decision.decision)).toEqual(["quarantine", "allow"]);
+    // An unknown class name is the lowest.
+    const odd = await resolveArtifactConsumption(db, a.scope, { klass: "weird" }, both);
+    expect(odd.map((x) => x.decision.decision)).toEqual(["allow", "allow"]);
+  });
+
   test("tenant scoped: another org's run and artifacts are 'no such' for the caller", async () => {
     const mine = await runOf(a, "protected", "8".repeat(40));
     const theirs = await runOf(b, "release", "9".repeat(40));
@@ -231,5 +257,24 @@ describe("ops", () => {
       decision: "deny",
       trust_class: "untrusted_pr",
     });
+    // By class, and exactly one of run and class.
+    const byClass = await call("check_artifact_consumption", {
+      consumer_class: "release",
+      sources: [{ run_id: prod.run.id, name: "pr-build" }],
+      project: a.projectSlug,
+    });
+    expect(byClass.ok && (byClass.output as any).results[0].decision).toBe("deny");
+    const neither = await call("check_artifact_consumption", {
+      sources: [{ run_id: prod.run.id, name: "pr-build" }],
+      project: a.projectSlug,
+    });
+    expect(!neither.ok && neither.error.code).toBe("invalid_input");
+    const both = await call("check_artifact_consumption", {
+      consumer_class: "release",
+      consumer_run_id: consumer.run.id,
+      sources: [{ run_id: prod.run.id, name: "pr-build" }],
+      project: a.projectSlug,
+    });
+    expect(!both.ok && both.error.code).toBe("invalid_input");
   });
 });

@@ -1,17 +1,21 @@
 import { Package } from "lucide-react";
 import { getBackend } from "@/api";
-import type { Artifact } from "@/api/types";
+import type { Artifact, ConsumeResult } from "@/api/types";
 import { EmptyState, ErrorState } from "@/components/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
-import { belowRun, formatSize, releaseUsable, shortDigest } from "@/lib/artifact";
+import { formatSize, shortDigest } from "@/lib/artifact";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { useAsync } from "@/lib/use-async";
 import { sanitize } from "@/log/parser";
 import { TrustChip } from "./trust";
 
-function Row({ a, runClass }: { a: Artifact; runClass: string | null | undefined }) {
-  const quarantined = belowRun(a.trustClass, runClass);
+type Row = { a: Artifact; asRun: ConsumeResult | undefined; asRelease: ConsumeResult | undefined };
+
+function ArtifactRow({ a, asRun, asRelease }: Row) {
+  // Both answers come from the server. Quarantined: this run may not take it as is, because the
+  // attempt that wrote it was less trusted than the run.
+  const quarantined = asRun !== undefined && asRun.decision !== "allow";
   return (
     <li className="px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -21,8 +25,11 @@ function Row({ a, runClass }: { a: Artifact; runClass: string | null | undefined
         </span>
         <TrustChip klass={a.trustClass} />
         {quarantined ? (
-          <Tooltip label="Written by an attempt less trusted than this run. It is quarantined: never executable, never an input to a build of a higher class.">
-            <span className="rounded-md border border-st-approval/40 bg-st-approval-bg px-1.5 py-0.5 text-xs text-st-approval">
+          <Tooltip label={asRun?.reason ? sanitize(asRun.reason) : "Quarantined"}>
+            <span
+              tabIndex={0}
+              className="rounded-md border border-st-approval/40 bg-st-approval-bg px-1.5 py-0.5 text-xs text-st-approval"
+            >
               Quarantined
             </span>
           </Tooltip>
@@ -46,9 +53,11 @@ function Row({ a, runClass }: { a: Artifact; runClass: string | null | undefined
         <dd title={formatDateTime(a.createdAt)}>{formatRelative(a.createdAt)}</dd>
         <dt>Release builds</dt>
         <dd>
-          {releaseUsable(a.trustClass)
-            ? "may consume it"
-            : "cannot consume it: a release build takes only release-class artifacts"}
+          {asRelease === undefined
+            ? "unknown"
+            : asRelease.decision === "allow"
+              ? "may consume it"
+              : `cannot consume it: ${sanitize(asRelease.reason ?? asRelease.decision)}`}
         </dd>
       </dl>
     </li>
@@ -56,16 +65,23 @@ function Row({ a, runClass }: { a: Artifact; runClass: string | null | undefined
 }
 
 /** What a run recorded, with where each artifact came from and what may consume it. */
-export function ArtifactsPanel({
-  runId,
-  project,
-  runClass,
-}: {
-  runId: string;
-  project: string;
-  runClass: string | null | undefined;
-}) {
-  const q = useAsync(() => getBackend().api.getArtifacts({ runId, project }), [runId, project]);
+export function ArtifactsPanel({ runId, project }: { runId: string; project: string }) {
+  const q = useAsync(async (): Promise<Row[]> => {
+    const { api } = getBackend();
+    const arts = await api.getArtifacts({ runId, project });
+    if (arts.length === 0) return [];
+    // The server decides who may consume what: once as this run, once as a release build.
+    const sources = arts.map((a) => ({ runId, name: a.name }));
+    const [asRun, asRelease] = await Promise.all([
+      api.checkArtifactConsumption({ project, consumer: { runId }, sources }),
+      api.checkArtifactConsumption({ project, consumer: { klass: "release" }, sources }),
+    ]);
+    return arts.map((a) => ({
+      a,
+      asRun: asRun.find((r) => r.name === a.name),
+      asRelease: asRelease.find((r) => r.name === a.name),
+    }));
+  }, [runId, project]);
   if (q.error && !q.data)
     return <ErrorState title="Could not load artifacts" message={q.error} onRetry={q.reload} />;
   if (!q.data) return <Skeleton className="mt-6 h-40 w-full" />;
@@ -77,14 +93,14 @@ export function ArtifactsPanel({
       <p className="mb-3 text-xs text-dim">
         The class and commit are set by the control plane when an artifact is recorded and never
         change. A lower-class artifact can reach a higher-class job only on explicit request, as
-        quarantine.
+        quarantine. What may consume each one is the server's answer.
       </p>
       {q.data.length === 0 ? (
         <EmptyState title="No artifacts">This run recorded none.</EmptyState>
       ) : (
         <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-          {q.data.map((a) => (
-            <Row key={a.name} a={a} runClass={runClass} />
+          {q.data.map((r) => (
+            <ArtifactRow key={r.a.name} {...r} />
           ))}
         </ul>
       )}

@@ -135,7 +135,8 @@ export interface LongshoreApi {
   /** Whether a consumer run may take artifacts of other runs, and as what (`check_artifact_consumption`). */
   checkArtifactConsumption(args: {
     project: string;
-    consumerRunId: string;
+    /** A run (its stored class), or a class by name: "may a build of this class take it?". */
+    consumer: { runId: string } | { klass: string };
     sources: { runId: string; name: string }[];
     quarantine?: { runId: string; name: string }[];
   }): Promise<ConsumeResult[]>;

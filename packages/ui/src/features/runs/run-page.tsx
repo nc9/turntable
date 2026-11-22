@@ -194,7 +194,7 @@ export function RunPage() {
 
       {tab === "artifacts" ? (
         <div role="tabpanel" id="panel-artifacts" aria-labelledby="tab-artifacts">
-          <ArtifactsPanel runId={run.id} project={projectSlug} runClass={run.trustClass} />
+          <ArtifactsPanel runId={run.id} project={projectSlug} />
         </div>
       ) : (
         <div role="tabpanel" id="panel-jobs" aria-labelledby="tab-jobs">

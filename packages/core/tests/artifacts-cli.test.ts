@@ -111,6 +111,10 @@ test("list shows provenance; check denies a lower class for a release consumer, 
   expect(denied.code).toBe(3);
   expect(denied.out).toContain("deny");
   expect(denied.out).toContain("a release build consumes nothing below the release class");
+  // By class: no consumer run needed.
+  const byClass = await run(["check", ...common, "--consumer-class", "release", "--source", src]);
+  expect(byClass.code).toBe(3);
+  expect(byClass.out).toContain("a release build consumes nothing below the release class");
   // A protected consumer gets quarantine when it asks, deny when it does not.
   const prot = await runOf("protected", "3");
   const asked = await run([
@@ -134,7 +138,10 @@ test("arguments are checked first, and plain http to a remote host is refused", 
   const f = await tokenFile();
   const c = ["--org", a.slug, "--project", a.projectSlug, "--token-file", f];
   expect((await run(["list", "--url", base, ...c])).err).toContain("--run is required");
-  expect((await run(["check", "--url", base, ...c])).err).toContain("--consumer");
+  expect((await run(["check", "--url", base, ...c, "--source", "r:x"])).err).toContain(
+    "exactly one",
+  );
+  expect((await run(["check", "--url", base, ...c])).err).toContain("--source");
   expect((await run(["nope"])).code).toBe(2);
   expect((await run(["list", "--url", "http://example.com", ...c, "--run", "x"])).err).toContain(
     "plain http",

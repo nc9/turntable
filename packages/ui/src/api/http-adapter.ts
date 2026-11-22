@@ -556,7 +556,7 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
 
     async checkArtifactConsumption({
       project,
-      consumerRunId,
+      consumer,
       sources,
       quarantine,
     }): Promise<ConsumeResult[]> {
@@ -568,7 +568,9 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         {
           org: org(),
           project,
-          consumer_run_id: consumerRunId,
+          ...("klass" in consumer
+            ? { consumer_class: consumer.klass }
+            : { consumer_run_id: consumer.runId }),
           sources: sources.map(pair),
           ...(quarantine ? { quarantine: quarantine.map(pair) } : {}),
         },

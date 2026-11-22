@@ -386,6 +386,13 @@ test("artifacts: provenance and consumption shapes the adapter reads", () => {
   ]);
   const chk = ok(op("/artifacts/check-consumption", "post"));
   expectKeys(chk, keysOf<WireConsumption>({ results: true }));
+  // The request takes a consumer run or a class: the adapter sends one of the two.
+  expect(
+    Object.keys(
+      op("/artifacts/check-consumption", "post").requestBody!.content["application/json"].schema
+        .properties!,
+    ),
+  ).toEqual(expect.arrayContaining(["consumer_run_id", "consumer_class", "sources", "quarantine"]));
   expectKeys(chk.properties!.results!.items!, [
     "run_id",
     "name",
