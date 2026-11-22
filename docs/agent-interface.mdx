@@ -62,10 +62,18 @@ No token role reaches `admin`, so a token can never create tokens.
 | `job_steps` | read | reader | The steps of a job attempt with results, timing and the log offset where each starts. |
 | `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap. |
 | `events` | read | reader | The event feed from a cursor, with optional long-poll (`wait_ms`, up to 30 s). |
+| `whoami` | read | reader | Who the credential is: kind, token name, role, org and project slugs, expiry. Call it first. |
+| `list_orgs` | read | reader | The orgs the credential belongs to: just its own. |
+| `list_projects` | read | reader | Projects in scope with their bound repos. Cursor paging. |
+| `rerun` | write | operator | Queue a new attempt for failed jobs (or named jobs) of a run, with a required reason. At most 2 reruns per job per commit; audited. |
 | `cancel` | destructive | operator | Cancel the queued, running and waiting jobs of a run. Audited. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
 `checks_for_sha` takes the latest run of each workflow for the full commit sha. Any failure, infrastructure error or cancellation is `RED`. Anything queued, running or waiting for approval is `PENDING`. Every workflow counts as required until required-check configuration exists.
+
+`get_run` and `list_runs` also return run metadata (`workflow_name`, `commit_message`, `actor`, `head_branch`, `pr_number`) and, per job, `needs`, `matrix` and `approval_kind` (`untrusted_author`, `environment` or null). The forge supplies them; `turntable run` fills them for local runs. They are forge text, so untrusted.
+
+`rerun` only queues work. It puts the jobs back in `queued` with a new attempt that carries the reason, and reopens the run. Starting the queued attempts is the scheduler's job, which comes later, so until then a reran job stays queued. The cap is per job key per commit across all runs of that sha (per run when it has none); past it the call is refused with `409 conflict`, and the right response is to read the failure, not to retry. The call is all or nothing.
 
 `cancel` updates state only for now. Stopping the running sandbox comes with the controller.
 
@@ -112,7 +120,7 @@ Agents learn what happened through an event feed, the `events` operation (`GET /
 
 - **Cursor.** Every event has a monotonic `cursor`. Pass the last one back as `after` (the response's `next_after`) and you resume exactly where you stopped. Start from `after=0` for everything.
 - **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required` and `infra.error`. Filter with `types` (a comma-separated list in a query string).
-- **Long-poll.** With `wait_ms` (up to 30000) and nothing new, the call waits for an event instead of returning empty. Waiters are capped across the instance; beyond the cap a call returns at once, so fall back to polling.
+- **Long-poll.** With `wait_ms` (up to 30000) and nothing new, the call waits for an event instead of returning empty. Waiters are capped per org (20) and across the instance (100); beyond either cap a call returns at once, so fall back to polling. The per-org cap keeps one tenant from using every slot.
 - **Transactional.** An event is written in the same transaction as the change it describes, and waiters are woken only after commit. A rolled-back change leaves no event.
 - **Scope.** A token sees events for its org, or only its project when it is project-scoped.
 

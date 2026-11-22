@@ -4,13 +4,17 @@ import { EVENT_TYPES, type EventType } from "../../db/schema";
 import { iso } from "../common";
 import { defineOp } from "../define";
 
-/** Most long-polls waiting at once, instance-wide. Beyond it a call returns without waiting. */
-export const MAX_WAITERS = 100;
+/**
+ * Long-poll limits. A call over either limit returns at once instead of waiting. The per-org cap
+ * is what keeps one tenant from using every slot in a shared instance.
+ */
+export const waiterLimits = { global: 100, perOrg: 20 };
 export const MAX_WAIT_MS = 30_000;
 let waiters = 0;
+const perOrg = new Map<string, number>();
 
-export function waitingCount(): number {
-  return waiters;
+export function waitingCount(orgId?: string): number {
+  return orgId === undefined ? waiters : (perOrg.get(orgId) ?? 0);
 }
 
 export const events = defineOp({
@@ -69,8 +73,15 @@ export const events = defineOp({
       });
 
     let rows = await query();
-    if (rows.length === 0 && input.wait_ms > 0 && waiters < MAX_WAITERS) {
+    const org = ctx.scope.orgId;
+    if (
+      rows.length === 0 &&
+      input.wait_ms > 0 &&
+      waiters < waiterLimits.global &&
+      (perOrg.get(org) ?? 0) < waiterLimits.perOrg
+    ) {
       waiters++;
+      perOrg.set(org, (perOrg.get(org) ?? 0) + 1);
       // Subscribe before the query that decides to wait, so an event appended in between
       // cannot be missed.
       const state = { fired: false };
@@ -101,6 +112,9 @@ export const events = defineOp({
       } finally {
         off();
         waiters--;
+        const left = (perOrg.get(org) ?? 1) - 1;
+        if (left <= 0) perOrg.delete(org);
+        else perOrg.set(org, left);
       }
     }
 
