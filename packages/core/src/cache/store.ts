@@ -4,6 +4,7 @@
 import { constants } from "node:fs";
 import { mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { encryptBlobFile, isEncryptedBlob, openEncryptedBlob } from "./blob-crypto";
 
 export interface CacheBlobStore {
   /** Writes `bytes` at `offset` into the entry's STAGING blob (never the served one). */
@@ -20,19 +21,38 @@ export interface CacheBlobStore {
    * What is served is only ever bytes we wrote, from a file no client can write, and the staging
    * file is gone afterwards, so a write after commit has nothing to land in.
    */
-  promote(id: number): Promise<void>;
-  /** The served blob (or a byte range of it) as a response body; null when not promoted. */
-  read(id: number, range?: { start: number; end: number }): Promise<Response | null>;
+  promote(id: number, orgId: string): Promise<void>;
+  /**
+   * The served blob (or a byte range of it, in plaintext offsets) as a response body; null when
+   * not promoted. `orgId` is the org whose namespace owns the entry: an encrypting store opens
+   * the blob only with that org's key.
+   */
+  read(id: number, orgId: string, range?: { start: number; end: number }): Promise<Response | null>;
   /** Ids that have a file of any kind in the store, for the orphan sweep. */
   listIds(): Promise<number[]>;
   /** Removes both the staging and the served blob. */
   delete(id: number): Promise<void>;
 }
 
+/**
+ * Blobs in a directory. With a master key, a promoted blob is stored encrypted under its org's own
+ * key, in chunks (see blob-crypto.ts), so a copy of the directory holds no cache contents and a
+ * blob read under another org fails. The staging and scratch files (an upload in flight, and the
+ * canonical archive on its way to `promote`) are plaintext, briefly, in a 0700 directory: the
+ * service has to parse them. Both are removed at promote, and by the orphan sweep if a process
+ * died between. Without a key the store is as before; a store with a key serves no unencrypted
+ * blob (a miss, so the entry is rebuilt).
+ */
 export class FsCacheStore implements CacheBlobStore {
   readonly #dir: string;
-  constructor(dir: string) {
+  readonly #key: Buffer | undefined;
+  constructor(dir: string, opts: { masterKey?: Buffer | undefined } = {}) {
     this.#dir = dir;
+    this.#key = opts.masterKey;
+  }
+  /** True when promoted blobs are encrypted. */
+  get encrypting(): boolean {
+    return this.#key !== undefined;
   }
   #id(id: number): void {
     if (!Number.isSafeInteger(id) || id < 0) throw new Error("bad cache id");
@@ -79,13 +99,23 @@ export class FsCacheStore implements CacheBlobStore {
   scratchSize(id: number): Promise<number | null> {
     return this.#size(this.#canon(id));
   }
-  async promote(id: number): Promise<void> {
-    await rename(this.#canon(id), this.#blob(id));
+  async promote(id: number, orgId: string): Promise<void> {
+    if (this.#key) {
+      await encryptBlobFile(this.#key, orgId, id, this.#canon(id), this.#blob(id));
+      await rm(this.#canon(id), { force: true });
+    } else {
+      await rename(this.#canon(id), this.#blob(id));
+    }
     await rm(this.#part(id), { force: true });
   }
-  async read(id: number, range?: { start: number; end: number }): Promise<Response | null> {
+  async read(
+    id: number,
+    orgId: string,
+    range?: { start: number; end: number },
+  ): Promise<Response | null> {
     const size = await this.#size(this.#blob(id));
     if (size === null) return null;
+    if (this.#key) return this.#readEncrypted(this.#key, id, orgId, range);
     const file = Bun.file(this.#blob(id));
     if (!range) return new Response(file, { headers: { "content-length": String(size) } });
     const end = Math.min(range.end, size - 1);
@@ -93,6 +123,41 @@ export class FsCacheStore implements CacheBlobStore {
       status: 206,
       headers: {
         "content-range": `bytes ${range.start}-${end}/${size}`,
+        "content-length": String(end - range.start + 1),
+      },
+    });
+  }
+  async #readEncrypted(
+    key: Buffer,
+    id: number,
+    orgId: string,
+    range: { start: number; end: number } | undefined,
+  ): Promise<Response | null> {
+    // A blob that is not in the encrypted format is not served: it is a miss.
+    if (!(await isEncryptedBlob(this.#blob(id)))) return null;
+    let blob;
+    try {
+      blob = await openEncryptedBlob(key, orgId, id, this.#blob(id));
+    } catch {
+      return new Response("blob unreadable", { status: 500 });
+    }
+    if (!range) {
+      return new Response(blob.stream(0, Math.max(0, blob.size - 1)), {
+        headers: { "content-length": String(blob.size) },
+      });
+    }
+    if (blob.size === 0 || range.start >= blob.size || range.end < range.start) {
+      await blob.close();
+      return new Response(null, {
+        status: 416,
+        headers: { "content-range": `bytes */${blob.size}` },
+      });
+    }
+    const end = Math.min(range.end, blob.size - 1);
+    return new Response(blob.stream(range.start, end), {
+      status: 206,
+      headers: {
+        "content-range": `bytes ${range.start}-${end}/${blob.size}`,
         "content-length": String(end - range.start + 1),
       },
     });

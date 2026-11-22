@@ -157,10 +157,10 @@ export async function serveRelease(
   if (channel) log("release channel listening");
   // A freeze revokes the credentials of running publish jobs, not only the next request.
   const sweep = proxy
-    ? setInterval(
-        () => void proxy.sweepFrozen().catch((e) => log(`sweep failed: ${String(e)}`)),
-        cfg.pollMs,
-      )
+    ? setInterval(() => {
+        void proxy.sweepFrozen().catch((e) => log(`sweep failed: ${String(e)}`));
+        void proxy.sweepApprovals().catch((e) => log(`sweep failed: ${String(e)}`));
+      }, cfg.pollMs)
     : undefined;
   lane.start(cfg.pollMs);
   log("release lane started");

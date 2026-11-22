@@ -88,6 +88,7 @@ Usage:
   longshore approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
   longshore quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
+  longshore artifacts list|check --url <https://host> --org <slug> --project <slug> [--run <id>] [--token-file <path>]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
@@ -491,7 +492,12 @@ async function serve(args: string[]): Promise<void> {
     };
     cache = createCacheService({
       db,
-      store: new FsCacheStore(join(dataDir, "cache")),
+      // With a master key the blobs are encrypted at rest, per org (cache/blob-crypto.ts).
+      store: new FsCacheStore(join(dataDir, "cache"), {
+        masterKey: process.env.LONGSHORE_MASTER_KEY_FILE?.trim()
+          ? loadMasterKey(process.env.LONGSHORE_MASTER_KEY_FILE.trim())
+          : undefined,
+      }),
       grants: new CacheGrants(),
       orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
@@ -811,6 +817,10 @@ async function main(argv: string[]): Promise<void> {
     case "quotas": {
       const { quotasCommand } = await import("./quotas/cli");
       process.exit(await quotasCommand(rest));
+    }
+    case "artifacts": {
+      const { artifactsCommand } = await import("./artifacts/cli");
+      process.exit(await artifactsCommand(rest));
     }
     case "channel": {
       const { channelCommand } = await import("./channel/cli");

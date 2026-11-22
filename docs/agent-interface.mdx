@@ -3,9 +3,9 @@ title: Agent interface (MCP and API)
 description: How agents and scripts drive Longshore through MCP, REST, events and webhooks.
 ---
 
-<Warning>
-  Partly implemented. The operations registry, agent tokens, the REST API, the OpenAPI document and the MCP server exist. The CLI does not yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#24](https://github.com/nc9/turntable/issues/24) and [#25](https://github.com/nc9/turntable/issues/25).
-</Warning>
+<Note>
+  The operations registry, agent tokens, the REST API, the OpenAPI document, the MCP server and the realtime feed are built. Signed outbound webhooks and SSE are not (issue [#25](https://github.com/nc9/turntable/issues/25)). The CLI covers the host and setup commands; most day-to-day operations are reached through REST and MCP.
+</Note>
 
 Longshore is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
 

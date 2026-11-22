@@ -34,6 +34,8 @@
     "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/checkout-stub.test.ts packages/act-runner/tests/missing-tool.test.ts packages/act-runner/tests/permissions.test.ts packages/act-runner/tests/run-job.test.ts packages/act-runner/tests/expr.test.ts packages/act-runner/tests/triggers.test.ts",
     "test:missing-tool-e2e": "TT_ACT_E2E=1 bun test packages/core/tests/missing-tool-e2e.test.ts",
     "test:proxy-e2e": "TT_PROXY_E2E=1 bun test packages/core/tests/proxy-e2e.test.ts",
+    "test:cache-encrypted": "LONGSHORE_TEST_CACHE_ENCRYPT=1 bun test packages/core/tests/cache.test.ts",
+    "test:cache-blobs": "bun test packages/core/tests/cache-blob-encryption.test.ts",
     "test:cache-e2e": "TT_CACHE_E2E=1 bun test packages/core/tests/cache-e2e.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
     "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts",

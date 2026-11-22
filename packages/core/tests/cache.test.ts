@@ -16,6 +16,10 @@ import { jobCacheProvider } from "../src/cache/job";
 import { CLASS_SHARE, readableNamespaces, refScopeFor } from "../src/cache/namespace";
 import { createCacheService, type CacheService } from "../src/cache/service";
 import { FsCacheStore } from "../src/cache/store";
+
+// `LONGSHORE_TEST_CACHE_ENCRYPT=1` runs this whole suite on an encrypting store (test:cache-encrypted).
+const ENCRYPT = process.env.LONGSHORE_TEST_CACHE_ENCRYPT === "1";
+const MASTER = Buffer.alloc(32, 7);
 import {
   ArchiveError,
   DEFAULT_RULES,
@@ -442,7 +446,7 @@ async function world(
   let port = 0;
   const service = createCacheService({
     db,
-    store: new FsCacheStore(join(dir, "blobs")),
+    store: new FsCacheStore(join(dir, "blobs"), ENCRYPT ? { masterKey: MASTER } : {}),
     grants,
     orgQuotaBytes: o.quota ?? 10 * 1024 ** 2,
     maxEntryBytes: o.maxEntry ?? 4 * 1024 ** 2,
