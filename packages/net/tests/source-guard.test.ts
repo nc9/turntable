@@ -15,6 +15,7 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/mcp.test.ts", // the MCP transport, on 127.0.0.1
   "packages/core/tests/realtime.test.ts", // the realtime server, on 127.0.0.1
   "packages/provider-daytona/tests/provider.test.ts", // a mock Daytona, on 127.0.0.1
+  "packages/proxy/tests/proxy.test.ts", // the proxy under test, dialled on 127.0.0.1
 ]);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "data", "drizzle"]);
