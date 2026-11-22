@@ -19,6 +19,7 @@
           "oidc",
           "secrets-proxy",
           "signing",
+          "release-lane",
           "github-app"
         ]
       },

@@ -136,6 +136,10 @@ Each org is its own OpenID Connect issuer (`<public url>/oidc/<org slug>`), so a
 
 Plain http must redirect to https on every site we run. The primary control is the proxy or Cloudflare zone ("Always Use HTTPS", HSTS). The server enforces it too, so a proxy misconfiguration never serves plain http: with `LONGSHORE_TRUST_FORWARDED_PROTO=1`, a forwarded `http` request is redirected (301 for GET and HEAD, 400 for other methods, which a redirect would silently turn into a GET), and https responses carry `Strict-Transport-Security: max-age=31536000; includeSubDomains` (configurable or off with `LONGSHORE_HSTS_MAX_AGE`). The forwarded header is believed only when you set that variable, and only its last hop. Check both layers when you ship or audit a site.
 
+## Release lane
+
+Signing and publishing run in a separate process (`serve --roles release`) that alone holds the signing backend and KMS credentials, the release master key and the publish credentials. It re-checks the tag and sha with the forge and recomputes artifact digests itself, so a fully compromised main process cannot cause a signature or a publish. See [Release lane](/release-lane).
+
 ## Audit log integrity and export
 
 Every write, denied write, authentication failure, policy change, token create and revoke, approval, secret change and GitHub App change is recorded. A test walks the op registry and fails if any write op does not audit.

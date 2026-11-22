@@ -184,6 +184,7 @@ export type UseDenial =
   | "attempt_not_running"
   | "class_unrecorded"
   | "class_not_allowed"
+  | "release_lane_only"
   | "no_match"
   | "ambiguous"
   | "environment_unavailable"
@@ -198,6 +199,11 @@ export type UseResult =
 export interface VaultOptions {
   db: Db;
   masterKey: Buffer;
+  /**
+   * Which process this is. Secrets for `release` class jobs (publish credentials) are used only
+   * by the release lane: any other lane refuses them before it decrypts anything. Default `main`.
+   */
+  lane?: "main" | "release";
   now?: () => number;
 }
 
@@ -205,8 +211,10 @@ export class SecretVault {
   readonly #db: Db;
   readonly #key: Buffer;
   readonly #now: () => number;
+  readonly #lane: "main" | "release";
 
   constructor(o: VaultOptions) {
+    this.#lane = o.lane ?? "main";
     this.#db = o.db;
     this.#key = o.masterKey;
     this.#now = o.now ?? Date.now;
@@ -372,6 +380,8 @@ export class SecretVault {
     if (!klass) return deny("class_unrecorded");
     if (klass === "untrusted_pr" || !credentialsFor(klass).secrets)
       return deny("class_not_allowed");
+    // Publish credentials belong to the release lane alone, whatever the policy says below.
+    if (klass === "release" && this.#lane !== "release") return deny("release_lane_only");
 
     const environment = jobEnvironment(job.planned);
     const ref = normalizeRef(run.ref);

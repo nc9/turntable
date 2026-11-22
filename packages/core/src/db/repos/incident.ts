@@ -1,6 +1,7 @@
 // Incident response: the freeze flags, rotation flags and the per-use audit query. Part of the
 // only code allowed to name tenant tables.
 import { and, asc, eq, gte, isNull, lte, sql } from "drizzle-orm";
+import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import type { Db } from "..";
 import * as s from "../schema";
 import { ulid } from "../ulid";
@@ -28,7 +29,7 @@ const NOT_FROZEN: FreezeState = {
  * SQL for the claim path: true when neither the run's org nor its project is frozen. Both are
  * checked at claim time, in the claim's transaction, so a freeze takes effect on the next claim.
  */
-export function notFrozen(runOrgId: typeof s.runs.orgId, runProjectId: typeof s.runs.projectId) {
+export function notFrozen(runOrgId: SQLiteColumn, runProjectId: SQLiteColumn) {
   return sql`(not exists (select 1 from ${s.orgs} where ${s.orgs.id} = ${runOrgId} and ${s.orgs.frozenAt} is not null)
     and not exists (select 1 from ${s.projects} where ${s.projects.id} = ${runProjectId} and ${s.projects.frozenAt} is not null))`;
 }

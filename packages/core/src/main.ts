@@ -35,6 +35,8 @@ import {
 } from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { enforceRootPolicy } from "./privileges";
+import { mainRuntime, resolveRoles } from "./roles";
+import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
@@ -42,7 +44,8 @@ import { VERSION } from "./version";
 const USAGE = `longshore ${VERSION}
 
 Usage:
-  longshore serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
+  longshore serve [--roles web,worker,poller|all|release] [--port 8080] [--host 127.0.0.1] [--data-dir ./data]
+                  [--allowed-origin <origin>]
                   [--public-url <base url>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
@@ -95,6 +98,8 @@ Environment:
   LONGSHORE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
                     before opening anything (the image sets 65532:65532)
   LONGSHORE_ALLOW_ROOT  set to 1 to keep running as root (otherwise a root server is refused)
+  LONGSHORE_RELEASE_*  belong to "serve --roles release" alone (its own master key file, data dir, forge
+                    token, artifact dir): the release lane runs as its own process and no other role reads them
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
@@ -298,6 +303,7 @@ async function serve(args: string[]): Promise<void> {
       "data-dir": { type: "string", default: "./data" },
       "allowed-origin": { type: "string", multiple: true },
       "public-url": { type: "string" },
+      roles: { type: "string" },
       worker: { type: "boolean", default: false },
       "global-cap": { type: "string", default: "4" },
       "org-cap": { type: "string", default: "2" },
@@ -314,6 +320,25 @@ async function serve(args: string[]): Promise<void> {
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid --port: ${values.port}`);
+  }
+  const roles = resolveRoles(values.roles, { worker: values.worker, poll: values.poll });
+  if (roles.has("release")) {
+    // The release lane is its own process with its own keys: nothing below runs for it.
+    const lane = await serveRelease(values);
+    const stopLane = () => {
+      lane.stop();
+      process.exit(0);
+    };
+    process.on("SIGINT", stopLane);
+    process.on("SIGTERM", stopLane);
+    return;
+  }
+  // A process that is not the release lane holds nothing of it: those variables do nothing here.
+  const runtime = mainRuntime(roles, process.env);
+  if (runtime.ignoredReleaseEnv.length > 0) {
+    console.warn(
+      `warning: ${runtime.ignoredReleaseEnv.join(", ")} belong to the release lane and are ignored here; run it as its own process (serve --roles release)`,
+    );
   }
   const dataDir = resolve(values["data-dir"]);
   // Before anything is opened: as root, own the data dir and drop to an unprivileged user.
@@ -420,30 +445,42 @@ async function serve(args: string[]): Promise<void> {
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
   );
-  const server = startServer({
-    port,
-    host: values.host,
-    db,
-    allowedOrigins,
-    ...(webhooks ? { webhooks } : {}),
-    ...(vault ? { vault } : {}),
-    ...(webauthn ? { webauthn } : {}),
-    ...(oidc ? { oidc } : {}),
-    trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
-    transport: transportOptionsFromEnv(process.env),
-  });
-  console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  const server = roles.has("web")
+    ? startServer({
+        port,
+        host: values.host,
+        db,
+        allowedOrigins,
+        ...(webhooks ? { webhooks } : {}),
+        ...(vault ? { vault } : {}),
+        ...(webauthn ? { webauthn } : {}),
+        ...(oidc ? { oidc } : {}),
+        trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
+        transport: transportOptionsFromEnv(process.env),
+      })
+    : undefined;
+  if (server)
+    console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
-  const background = await startBackground(db, values, checks, {
-    ...(appAuth ? { auth: appAuth } : {}),
-    ...(vault ? { vault } : {}),
-  });
+  const background = await startBackground(
+    db,
+    {
+      ...values,
+      worker: roles.has("worker"),
+      poll: roles.has("poller") ? values.poll : undefined,
+    },
+    checks,
+    {
+      ...(appAuth ? { auth: appAuth } : {}),
+      ...(vault ? { vault } : {}),
+    },
+  );
 
   const stop = () => {
     for (const s of auditStops) s();
     void background
       .stop()
-      .then(() => server.stop())
+      .then(() => server?.stop())
       .finally(() => {
         db.close();
         process.exit(0);
@@ -559,6 +596,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "release": {
+      const { releaseCommand } = await import("./release/cli");
+      process.exit(await releaseCommand(rest));
     }
     case "oidc": {
       const { oidcCommand } = await import("./oidc/cli");
