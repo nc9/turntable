@@ -36,6 +36,7 @@
     "test:proxy-e2e": "TT_PROXY_E2E=1 bun test packages/core/tests/proxy-e2e.test.ts",
     "test:cache-encrypted": "LONGSHORE_TEST_CACHE_ENCRYPT=1 bun test packages/core/tests/cache.test.ts",
     "test:cache-blobs": "bun test packages/core/tests/cache-blob-encryption.test.ts",
+    "test:vault-e2e": "TT_VAULT_E2E=1 bun test packages/core/tests/vault-jwt-e2e.test.ts",
     "test:cache-e2e": "TT_CACHE_E2E=1 bun test packages/core/tests/cache-e2e.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
     "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts",
