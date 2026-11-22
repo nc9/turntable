@@ -29,5 +29,5 @@ export {
   trustOf,
   withIsolationPolicy,
   type IsolationPolicy,
-  type TrustClass,
+  type IsolationTrust,
 } from "./isolation";

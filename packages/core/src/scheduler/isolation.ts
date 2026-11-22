@@ -6,24 +6,29 @@ import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 /**
  * Isolation minimums by trust. A run is `untrusted` when its code comes from someone the project
  * has not vouched for: a job that needed the untrusted-author approval, or a run whose plan says
- * `"trust": "untrusted"`. Everything else is `trusted` (default-branch and local runs).
+ * `"trust": "untrusted"` or the trust module's `"untrusted_pr"` class. Everything else is `trusted` (default-branch and local runs).
  *
  * - untrusted: gVisor or stronger.
  * - hosted instance (many tenants): microVM or VM, for every run.
  * - otherwise: any provider.
  */
-export type TrustClass = "trusted" | "untrusted";
+export type IsolationTrust = "trusted" | "untrusted";
 
 export function trustOf(
   job: { approvalKind?: string | null | undefined },
   runPlan: string | null | undefined,
-): TrustClass {
+): IsolationTrust {
   if (job.approvalKind === "untrusted_author") return "untrusted";
   if (runPlan) {
     try {
       const plan = JSON.parse(runPlan) as { trust?: unknown } | null;
-      if (plan !== null && typeof plan === "object" && plan.trust === "untrusted")
+      if (
+        plan !== null &&
+        typeof plan === "object" &&
+        (plan.trust === "untrusted" || plan.trust === "untrusted_pr")
+      ) {
         return "untrusted";
+      }
     } catch {
       // an unreadable plan adds no claim of its own
     }
@@ -31,7 +36,7 @@ export function trustOf(
   return "trusted";
 }
 
-export function requiredIsolation(trust: TrustClass, hosted: boolean): IsolationClass {
+export function requiredIsolation(trust: IsolationTrust, hosted: boolean): IsolationClass {
   if (hosted) return "microvm";
   return trust === "untrusted" ? "gvisor" : "container";
 }

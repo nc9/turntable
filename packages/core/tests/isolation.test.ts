@@ -51,7 +51,10 @@ test("trust comes from the untrusted-author approval or the run plan, and defaul
   expect(trustOf({ approvalKind: "environment" }, null)).toBe("trusted");
   expect(trustOf({ approvalKind: "untrusted_author" }, null)).toBe("untrusted");
   expect(trustOf({}, '{"trust":"untrusted"}')).toBe("untrusted");
-  expect(trustOf({}, '{"trust":"trusted"}')).toBe("trusted");
+  expect(trustOf({}, '{"trust":"untrusted_pr"}')).toBe("untrusted"); // the trust module's class
+  for (const klass of ["protected", "release", "trusted_pr", "trusted"]) {
+    expect(trustOf({}, JSON.stringify({ trust: klass }))).toBe("trusted");
+  }
   expect(trustOf({}, "not json")).toBe("trusted");
   expect(trustOf({}, '{"trust":"UNTRUSTED"}')).toBe("trusted");
 });
