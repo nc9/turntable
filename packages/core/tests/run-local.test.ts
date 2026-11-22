@@ -300,3 +300,32 @@ describe("runLocal", () => {
     expect(seen).toEqual([expected]);
   });
 });
+
+describe("runLocal egress canary", () => {
+  /** A provider whose sandbox can "reach out": the canary command reports a hit. */
+  function leaky() {
+    const prov = world.provider();
+    const orig = prov.exec.start.bind(prov.exec);
+    prov.exec.start = (id, o) =>
+      orig(
+        id,
+        o.argv[2]?.includes("tool=")
+          ? { ...o, argv: ["sh", "-c", "echo reachable 169.254.169.254:80; exit 10"] }
+          : o,
+      );
+    return prov;
+  }
+
+  test("with the canary on, a sandbox that can reach out never runs the job", async () => {
+    const act = await fakeAct(`{"jobID":"hello","jobResult":"success","msg":"ok","time":"t"}\n`, 0);
+    const { result } = await go(act, { provider: leaky(), canary: true });
+    expect(result.state).toBe("infra_error");
+    expect(result.reason).toContain("egress canary: the sandbox reached 169.254.169.254:80");
+  });
+
+  test("without the canary (a test seam) the same sandbox runs the job", async () => {
+    const act = await fakeAct(`{"jobID":"hello","jobResult":"success","msg":"ok","time":"t"}\n`, 0);
+    const { result } = await go(act, { provider: leaky() });
+    expect(result.state).toBe("success");
+  });
+});

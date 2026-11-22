@@ -69,7 +69,7 @@ The `longshore-dev` label and name prefix, the auto-stop and auto-delete backsto
 
 Egress is deny by default, for every trust class. A job's sandbox has no network unless its run says otherwise: `none` unless the run's plan records `"egress": "open"` (or `"allowlist"`) from the project's configuration. Anything else is treated as `none`.
 
-With `--worker`:
+With `--worker` and with `longshore run`:
 
 - A job is refused (as `infra_error`, naming the provider) when its provider cannot enforce the policy it asks for. That includes `none`: a provider that cannot cut the network is not trusted to. Docker and Daytona enforce `none` and `open`; neither enforces `allowlist` yet.
 - A job that holds secrets is never run on `open` egress.

@@ -36,6 +36,8 @@ export interface RunLocalOptions {
   resolver?: ActionRefResolver;
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
   egress?: "none" | "open";
+  /** Probe a `none` sandbox for a real network path before the job runs (see egress-canary). */
+  canary?: boolean;
   /** Secrets to redact everywhere: log text, step names, stored error text. */
   registry?: SecretRegistry;
   /** Aborting cancels: the sandbox is destroyed and the attempt marked cancelled. */
@@ -109,6 +111,7 @@ export async function runLocal(o: RunLocalOptions): Promise<RunLocalResult> {
       repoTarball: o.repoTarball,
       out: o.out,
       ...(o.egress ? { egress: o.egress } : {}),
+      ...(o.canary ? { canary: true } : {}),
       registry: o.registry ?? new SecretRegistry(),
       signal: o.signal,
       ...(o.idleFlushMs !== undefined ? { idleFlushMs: o.idleFlushMs } : {}),
