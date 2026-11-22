@@ -686,3 +686,77 @@ describe("scanning covers the whole attempt", () => {
     expect(reasons()).toContain("bad_request_bad_trailer");
   });
 });
+
+describe("what the proxy says and forwards", () => {
+  test("the upstream's reason phrase is never passed on: the status line is ours", async () => {
+    handler = () => new Response("ok", { status: 200, statusText: SECRET });
+    const { cred } = newAttempt();
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    const r = await t.request(get("/v1/a"));
+    expect(r.raw.startsWith("HTTP/1.1 200 OK\r\n")).toBe(true);
+    expect(r.raw).not.toContain(SECRET);
+    handler = () => new Response(null, { status: 418, statusText: "I am a teapot" });
+    const odd = await t.request(get("/v1/b"));
+    expect(odd.raw.startsWith("HTTP/1.1 418 Client Error\r\n")).toBe(true);
+    handler = () => new Response(null, { status: 404, statusText: "whatever upstream says" });
+    expect((await t.request(get("/v1/c"))).raw.startsWith("HTTP/1.1 404 Not Found\r\n")).toBe(true);
+  });
+
+  test("a rule that injects forwards an allowlist of headers, so a method override cannot ride along", async () => {
+    const { cred } = newAttempt();
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    await t.request(
+      get(
+        "/v1/a",
+        [
+          "Accept: application/json",
+          "Accept-Language: en",
+          "User-Agent: job/1",
+          "X-HTTP-Method-Override: DELETE",
+          "X-HTTP-Method: DELETE",
+          "X-Method-Override: DELETE",
+          "X-Forwarded-Host: evil.example.test",
+          "X-Original-URL: /admin",
+          "X-Custom: nope",
+          "Cookie: session=abc",
+        ].join("\r\n") + "\r\n",
+      ),
+    );
+    const h = seen[0]!.headers;
+    expect(h.get("accept")).toBe("application/json");
+    expect(h.get("accept-language")).toBe("en");
+    expect(h.get("user-agent")).toBe("job/1");
+    for (const dropped of [
+      "x-http-method-override",
+      "x-http-method",
+      "x-method-override",
+      "x-forwarded-host",
+      "x-original-url",
+      "x-custom",
+      "cookie",
+    ]) {
+      expect(h.get(dropped)).toBeNull();
+    }
+    expect(seen[0]!.method).toBe("GET");
+  });
+
+  test("a rule can name extra headers to forward, but never a method override", async () => {
+    const { cred } = newAttempt(rules({ forwardHeaders: ["X-Request-Id"] }));
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    await t.request(get("/v1/a", "X-Request-Id: abc\r\nX-Other: no\r\n"));
+    expect(seen[0]!.headers.get("x-request-id")).toBe("abc");
+    expect(seen[0]!.headers.get("x-other")).toBeNull();
+    expect(() => newAttempt(rules({ forwardHeaders: ["X-HTTP-Method-Override"] }))).toThrow();
+    expect(() => newAttempt(rules({ forwardHeaders: ["Authorization:x"] }))).toThrow();
+  });
+
+  test("a rule that injects nothing forwards the job's headers, minus the method overrides", async () => {
+    const { cred } = newAttempt(
+      rules({ inject: { type: "none" }, secret: undefined, pathPrefix: "/" }),
+    );
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    await t.request(get("/any", "X-Custom: kept\r\nX-HTTP-Method-Override: DELETE\r\n"));
+    expect(seen[0]!.headers.get("x-custom")).toBe("kept");
+    expect(seen[0]!.headers.get("x-http-method-override")).toBeNull();
+  });
+});

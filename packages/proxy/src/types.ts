@@ -21,6 +21,11 @@ export interface Rule {
   /** Starts with `/`; matched on segment boundaries. */
   pathPrefix: string;
   inject: Inject;
+  /**
+   * Headers (besides the always-forwarded few) the job may send to this host. A rule that injects
+   * forwards ONLY an allowlist: accept, accept-language, content-type and user-agent, plus these.
+   */
+  forwardHeaders?: readonly string[] | undefined;
   /** The name the secret source resolves. Required unless `inject` is `none`. */
   secret?: string | undefined;
 }

@@ -54,3 +54,53 @@ describe("request framing limits", () => {
     if (res.kind === "request") expect(res.request.body.toString()).toBe("abc");
   });
 });
+
+describe("header parsing is linear", () => {
+  const timed = (text: string): { ms: number; res: ReturnType<typeof read> } => {
+    const t0 = performance.now();
+    const res = read(text);
+    return { ms: performance.now() - t0, res };
+  };
+
+  test("a long run of spaces or tabs in a header cannot make parsing slow", () => {
+    // Long enough to be catastrophic for a backtracking pattern, short enough to be a legal line.
+    for (const ws of [" ", "\t", " \t"]) {
+      const value = ws.repeat(3000);
+      const { ms, res } = timed(`${head(`x-a:${value}b${value}\r\n`)}`);
+      expect(res.kind).toBe("request" in res ? "request" : res.kind);
+      expect(ms).toBeLessThan(100);
+    }
+    // And one that does not end in a value at all.
+    const { ms } = timed(head(`x-a:${" ".repeat(8000)}\r\n`));
+    expect(ms).toBeLessThan(100);
+  });
+
+  test("a header line over the cap is refused, quickly, however it is built", () => {
+    for (const line of [
+      `x-a: ${"v".repeat(9000)}`,
+      `x-a:${" ".repeat(200_000)}z`,
+      `${"n".repeat(9000)}: v`,
+    ]) {
+      const { ms, res } = timed(head(`${line}\r\n`));
+      // Over the line cap, or (for the longest) already over the whole header budget.
+      expect(res.kind).toBe("error");
+      expect(["header_line_too_long", "headers_too_large"]).toContain(
+        res.kind === "error" ? res.reason : "",
+      );
+      expect(ms).toBeLessThan(100);
+    }
+  });
+
+  test("values are trimmed of spaces and tabs at both ends only", () => {
+    const res = read(head("x-a: \t one two \t \r\n"));
+    expect(res.kind).toBe("request");
+    if (res.kind === "request") {
+      expect(res.request.headers.find(([k]) => k === "x-a")?.[1]).toBe("one two");
+    }
+  });
+
+  test("a line with no colon, or an empty name, is refused", () => {
+    expect(read(head("nocolon\r\n"))).toEqual({ kind: "error", reason: "bad_header" });
+    expect(read(head(": v\r\n"))).toEqual({ kind: "error", reason: "bad_header" });
+  });
+});

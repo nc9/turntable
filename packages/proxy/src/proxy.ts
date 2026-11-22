@@ -10,6 +10,8 @@ import { DEFAULT_LIMITS, type Limits, RequestReader } from "./http";
 import type { Attempt, AttemptRegistry } from "./registry";
 import {
   DEFAULT_PORT,
+  INJECTING_ALLOWLIST,
+  OVERRIDE_HEADERS,
   checkPath,
   hostAllowed,
   matchRule,
@@ -68,6 +70,51 @@ const PARTIAL_REQUEST = new Set([
 /** A response fragment this long of an injected value is treated as the value leaking. */
 const FRAGMENT = 16;
 const DROP_RESPONSE = new Set([...HOP, "content-length"]);
+
+/** Reason phrases are ours, by status code. The upstream's phrase is never passed on. */
+const REASONS: Record<number, string> = {
+  100: "Continue",
+  200: "OK",
+  201: "Created",
+  202: "Accepted",
+  204: "No Content",
+  206: "Partial Content",
+  301: "Moved Permanently",
+  302: "Found",
+  303: "See Other",
+  304: "Not Modified",
+  307: "Temporary Redirect",
+  308: "Permanent Redirect",
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  409: "Conflict",
+  410: "Gone",
+  412: "Precondition Failed",
+  413: "Payload Too Large",
+  415: "Unsupported Media Type",
+  416: "Range Not Satisfiable",
+  422: "Unprocessable Content",
+  429: "Too Many Requests",
+  500: "Internal Server Error",
+  501: "Not Implemented",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
+const reasonFor = (status: number): string =>
+  REASONS[status] ??
+  (status < 200
+    ? "Informational"
+    : status < 300
+      ? "Success"
+      : status < 400
+        ? "Redirect"
+        : status < 500
+          ? "Client Error"
+          : "Server Error");
 
 const text = (status: number, reason: string, extra: string[] = [], body = ""): string =>
   `HTTP/1.1 ${status} ${reason}\r\n${extra.join("\r\n")}${extra.length ? "\r\n" : ""}content-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n\r\n${body}`;
@@ -285,8 +332,14 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       // representation: a fragment of an echo would slip past a scrubber that looks for whole
       // values. (The request that injects is held to the same rule.)
       const guarded = injected.has(attempt) || rule.inject.type !== "none";
+      // A rule that injects forwards an allowlist of headers, not whatever the job sent: a header
+      // that changes the method or the target must not ride along with a credential. A rule that
+      // injects nothing forwards the job's headers, minus the ones that override the method.
+      const injecting = rule.inject.type !== "none";
       for (const [k, v] of req.headers) {
-        if (DROP_REQUEST.has(k) || (guarded && PARTIAL_REQUEST.has(k))) continue;
+        if (DROP_REQUEST.has(k) || OVERRIDE_HEADERS.has(k)) continue;
+        if (guarded && PARTIAL_REQUEST.has(k)) continue;
+        if (injecting && !INJECTING_ALLOWLIST.has(k) && !rule.forwardHeaders.includes(k)) continue;
         headers.append(k, v);
       }
       headers.set("accept-encoding", "identity");
@@ -405,7 +458,7 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       }
       const noBody =
         res.status === 204 || res.status === 304 || req.method === "HEAD" || res.status < 200;
-      const headText = `HTTP/1.1 ${res.status} ${res.statusText || "OK"}\r\n${lines.join("\r\n")}${lines.length ? "\r\n" : ""}${noBody ? "" : `content-length: ${body.bytes.length}\r\n`}\r\n`;
+      const headText = `HTTP/1.1 ${res.status} ${reasonFor(res.status)}\r\n${lines.join("\r\n")}${lines.length ? "\r\n" : ""}${noBody ? "" : `content-length: ${body.bytes.length}\r\n`}\r\n`;
       return {
         payload: noBody
           ? Buffer.from(headText, "latin1")

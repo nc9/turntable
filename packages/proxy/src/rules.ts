@@ -24,10 +24,33 @@ const FORBIDDEN_HEADERS = new Set([
 
 export const DEFAULT_PORT = 443;
 
+/** Headers that can change the method or the target downstream of the proxy's own checks. */
+export const OVERRIDE_HEADERS: ReadonlySet<string> = new Set([
+  "x-http-method-override",
+  "x-http-method",
+  "x-method-override",
+  "x-original-url",
+  "x-rewrite-url",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-for",
+  "x-forwarded-port",
+  "forwarded",
+]);
+
+/** What a job may send to a host whose rule injects a credential, whatever the rule says. */
+export const INJECTING_ALLOWLIST: ReadonlySet<string> = new Set([
+  "accept",
+  "accept-language",
+  "content-type",
+  "user-agent",
+]);
+
 /** A rule with defaults applied, or a RuleError saying what is wrong. */
 export interface CompiledRule extends Rule {
   port: number;
   methods: readonly string[];
+  forwardHeaders: readonly string[];
 }
 
 export function compileRule(r: Rule): CompiledRule {
@@ -61,8 +84,19 @@ export function compileRule(r: Rule): CompiledRule {
   ) {
     bad("basic username must be printable and contain no colon");
   }
+  for (const h of r.forwardHeaders ?? []) {
+    const n = h.toLowerCase();
+    if (!HEADER.test(h) || FORBIDDEN_HEADERS.has(n) || OVERRIDE_HEADERS.has(n)) {
+      bad(`forwardHeaders entry ${h} is not allowed`);
+    }
+  }
   if (inject.type !== "none" && !r.secret) bad("a rule that injects must name its secret");
-  return { ...r, port, methods: [...new Set(r.methods)] };
+  return {
+    ...r,
+    port,
+    methods: [...new Set(r.methods)],
+    forwardHeaders: [...new Set((r.forwardHeaders ?? []).map((h) => h.toLowerCase()))],
+  };
 }
 
 export function compileRules(rules: readonly Rule[]): CompiledRule[] {

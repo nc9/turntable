@@ -34,6 +34,17 @@ interface Head {
 }
 
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** Longest single header line accepted. */
+export const MAX_HEADER_LINE = 8 * 1024;
+
+/** Trims spaces and tabs from both ends in one linear pass. */
+export function trimOws(s: string): string {
+  let a = 0;
+  let b = s.length;
+  while (a < b && (s.charCodeAt(a) === 32 || s.charCodeAt(a) === 9)) a++;
+  while (b > a && (s.charCodeAt(b - 1) === 32 || s.charCodeAt(b - 1) === 9)) b--;
+  return s.slice(a, b);
+}
 
 /** The head of a request (request line and headers), or the reason it is refused. */
 export function parseHead(text: string): Head | string {
@@ -42,12 +53,18 @@ export function parseHead(text: string): Head | string {
   if (!m) return "bad_request_line";
   const headers: [string, string][] = [];
   for (const line of lines.slice(1)) {
+    if (line.length > MAX_HEADER_LINE) return "header_line_too_long";
     if (line.startsWith(" ") || line.startsWith("\t")) return "obs_fold";
-    const h = /^([^:]+):[ \t]*(.*?)[ \t]*$/.exec(line);
-    if (!h || !TOKEN.test(h[1]!)) return "bad_header";
+    // Split at the first colon and trim by hand: no pattern with a run of optional whitespace
+    // that could backtrack on a hostile line.
+    const colon = line.indexOf(":");
+    if (colon < 1) return "bad_header";
+    const name = line.slice(0, colon);
+    if (!TOKEN.test(name)) return "bad_header";
+    const value = trimOws(line.slice(colon + 1));
     // eslint-disable-next-line no-control-regex
-    if (/[\u0000\r\n]/.test(h[2]!)) return "bad_header_value";
-    headers.push([h[1]!.toLowerCase(), h[2]!]);
+    if (/[\u0000\r\n]/.test(value)) return "bad_header_value";
+    headers.push([name.toLowerCase(), value]);
   }
   const all = (n: string): string[] => headers.filter(([k]) => k === n).map(([, v]) => v);
   if (all("host").length !== 1) return "host_header_count";
