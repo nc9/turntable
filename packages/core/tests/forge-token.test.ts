@@ -328,6 +328,7 @@ jobs:
       store: {
         setExec: noop,
         setPlan: noop,
+        setTrustClass: noop,
         reset: noop,
         appendLog: noop,
         recordStep: noop,
