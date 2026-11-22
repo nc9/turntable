@@ -497,7 +497,7 @@ jobs:
       { workflow: wf("trusted-org/hidden@v1") },
     );
     expect(refused).toMatchObject({ state: "failure" });
-    expect(refused.reason).toContain("private repository");
+    expect(refused.reason).toContain("action not available: trusted-org/hidden");
     expect(tarballs).toHaveLength(0);
     // A repo owned by anyone else is never given the token, allowlist or not.
     const other = github();
@@ -544,7 +544,7 @@ jobs:
       { workflow: wf("trusted-org/tool@v1") },
     );
     expect(second).toMatchObject({ state: "failure" });
-    expect(second.reason).toContain("private repository");
+    expect(second.reason).toContain("action not available: trusted-org/tool");
 
     // An untrusted run takes the anonymous path: it does not see the credentialed verdict, asks
     // GitHub with no token, and gets a plain not-found.
@@ -592,7 +592,10 @@ describe("the privacy check fails closed", () => {
     const notFound = make(() => new Response("no", { status: 404 }));
     const nf = await ask(notFound).catch((e) => e);
     expect(nf).toBeInstanceOf(PlanError);
-    expect(nf.message).toContain("HTTP 404");
+    // Private and missing say the same thing: no oracle for which private repos exist.
+    const pr = await ask(policy).catch((e) => e);
+    expect(nf.message).toBe(pr.message);
+    expect(nf.message).toBe("action not available: trusted-org/tool");
     for (const body of [{}, { private: "false" }, { private: null }, []]) {
       const c = make(() => Response.json(body));
       expect(await ask(c).catch((e) => e)).toBeInstanceOf(InfraError);
