@@ -31,20 +31,29 @@ const TYPES: Record<string, string> = {
 
 const extOf = (p: string): string => p.slice(p.lastIndexOf(".") + 1).toLowerCase();
 
-/** No inline script, no remote origins. Styles: React sets style attributes, so only those are inline. */
-export const UI_CSP = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self'",
-  "style-src-attr 'unsafe-inline'",
-  "font-src 'self' data:",
-  "img-src 'self' data:",
-  "connect-src 'self'",
-  "manifest-src 'self'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join("; ");
+/**
+ * No inline script, no remote origins. Styles: React sets style attributes, so only those are
+ * inline. `connect-src` names the page's own host for WebSocket (`'self'` alone does not cover ws
+ * in every browser); `host` is the request's Host header, validated as host[:port].
+ */
+export function uiCsp(host: string): string {
+  const ws = /^[a-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-f:]+\](:\d{1,5})?$/i.test(host)
+    ? ` ws://${host} wss://${host}`
+    : "";
+  return [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "style-src-attr 'unsafe-inline'",
+    "font-src 'self' data:",
+    "img-src 'self' data:",
+    `connect-src 'self'${ws}`,
+    "manifest-src 'self'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
 
 /**
  * Serve a UI asset, or the app shell for client-side routes. Returns null when no UI is
@@ -75,6 +84,6 @@ export function serveUi(
     "content-type": TYPES[extOf(key)] ?? "application/octet-stream",
     "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
   };
-  if (key === "/index.html" || spa) headers["content-security-policy"] = UI_CSP;
+  if (key === "/index.html" || spa) headers["content-security-policy"] = uiCsp(url.host);
   return new Response(method === "HEAD" ? null : Bun.file(file), { headers });
 }

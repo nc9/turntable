@@ -90,6 +90,7 @@
       },
       "devDependencies": {
         "@tailwindcss/postcss": "4.3.5",
+        "@turntable/core": "workspace:*",
         "@turntable/provider-sdk": "workspace:*",
         "@types/bun": "1.4.4",
         "@types/react": "19.3.0",

@@ -8,7 +8,7 @@ import { VERSION } from "./version";
 const USAGE = `turntable ${VERSION}
 
 Usage:
-  turntable serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data]
+  turntable serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
   turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
   turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
@@ -17,6 +17,7 @@ Usage:
 
 Environment:
   TURNTABLE_HOST  default for --host (the container image sets 0.0.0.0)
+  TURNTABLE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
 
 async function serve(args: string[]): Promise<void> {
@@ -26,6 +27,7 @@ async function serve(args: string[]): Promise<void> {
       port: { type: "string", default: "8080" },
       host: { type: "string", default: process.env.TURNTABLE_HOST ?? "127.0.0.1" },
       "data-dir": { type: "string", default: "./data" },
+      "allowed-origin": { type: "string", multiple: true },
     },
     strict: true,
   });
@@ -37,7 +39,13 @@ async function serve(args: string[]): Promise<void> {
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
 
-  const server = startServer({ port, host: values.host, db });
+  const allowedOrigins = [
+    ...(values["allowed-origin"] ?? []),
+    ...(process.env.TURNTABLE_ALLOWED_ORIGINS?.split(",") ?? []),
+  ]
+    .map((o) => o.trim())
+    .filter((o) => o !== "");
+  const server = startServer({ port, host: values.host, db, allowedOrigins });
   console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
   const stop = () => {

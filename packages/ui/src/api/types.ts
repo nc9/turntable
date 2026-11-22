@@ -95,7 +95,7 @@ export type StepEvent = {
   index: number;
   name: string;
   phase: "start" | "end";
-  result?: "success" | "failure" | "skipped";
+  result?: "success" | "failure" | "skipped" | "cancelled";
   at: number;
   logOffset: number;
 };
