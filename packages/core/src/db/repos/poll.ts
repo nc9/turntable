@@ -546,3 +546,83 @@ export function lastPolledSha(
     return row?.sha;
   });
 }
+
+// ---- ingest from installation bindings ----
+
+/** The project's ingest settings as stored (JSON text), or null when it is not ingested. */
+export function getProjectIngest(db: Db, scope: Scope): Promise<string | null> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ v: s.projects.ingestConfig })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    return row?.v ?? null;
+  });
+}
+
+export function setProjectIngest(db: Db, scope: Scope, json: string | null): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .update(s.projects)
+      .set({ ingestConfig: json })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+  });
+}
+
+/**
+ * Every GitHub repo bound to a project that has ingest settings, with the org and project slugs
+ * the poller targets. Intentionally unscoped (the poller serves every tenant); a project without
+ * settings contributes nothing, so binding a repo never makes it ingested by itself.
+ */
+export function listIngestBindings(db: Db): Promise<
+  {
+    orgId: string;
+    projectId: string;
+    orgSlug: string;
+    projectSlug: string;
+    owner: string;
+    repo: string;
+    config: string;
+  }[]
+> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        orgId: s.orgs.id,
+        projectId: s.projects.id,
+        orgSlug: s.orgs.slug,
+        projectSlug: s.projects.slug,
+        owner: s.projectRepos.owner,
+        repo: s.projectRepos.repo,
+        config: s.projects.ingestConfig,
+        forge: s.projectRepos.forge,
+      })
+      .from(s.projectRepos)
+      .innerJoin(
+        s.projects,
+        and(
+          eq(s.projects.id, s.projectRepos.projectId),
+          eq(s.projects.orgId, s.projectRepos.orgId),
+        ),
+      )
+      .innerJoin(s.orgs, eq(s.orgs.id, s.projects.orgId));
+    return rows.flatMap((r) =>
+      r.forge === "github" && r.config !== null
+        ? [
+            {
+              orgId: r.orgId,
+              projectId: r.projectId,
+              orgSlug: r.orgSlug,
+              projectSlug: r.projectSlug,
+              owner: r.owner,
+              repo: r.repo,
+              config: r.config,
+            },
+          ]
+        : [],
+    );
+  });
+}
