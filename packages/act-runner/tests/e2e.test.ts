@@ -145,7 +145,8 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     const { result, log, act } = await runExample("timeout.yml", "timeout");
     const took = Date.now() - started;
     expect(result.state).toBe("failure");
-    console.log(`TIMEOUT-LOG-BEGIN\n${log}\nTIMEOUT-LOG-END`);
+    // act's own reason for the failed step (v0.2.97): the shim was killed by the step timeout.
+    expect(log).toContain("this step has been cancelled: signal: killed");
     expect(log).toContain("hang-started");
     expect(log).not.toContain("hang-not-reached");
     // One minute of timeout plus setup and the cleanup step, nowhere near the 600 s sleep.
