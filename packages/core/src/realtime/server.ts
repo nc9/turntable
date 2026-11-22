@@ -17,6 +17,7 @@ import {
   type ServerMessage,
   type Topic,
   type WireCut,
+  type WireNotice,
   type WireEvent,
   type WireStep,
   parseClientMessage,
@@ -248,15 +249,29 @@ export function createRealtime(options: RealtimeOptions) {
         if (sub.done || ws.data.closed) return;
         const [steps, cuts] = await Promise.all([
           op<{ steps: WireStep[] }>(ws, "job_steps", { job_id: sub.jobId, attempt: sub.attemptNo }),
-          op<{ cuts: WireCut[] }>(ws, "job_cuts", { job_id: sub.jobId, attempt: sub.attemptNo }),
+          op<{ cuts: WireCut[]; notices: WireNotice[] }>(ws, "job_cuts", {
+            job_id: sub.jobId,
+            attempt: sub.attemptNo,
+          }),
         ]);
-        const sig = JSON.stringify([steps.steps, cuts.cuts]);
+        const sig = JSON.stringify([steps.steps, cuts.cuts, cuts.notices]);
         if (sig !== sub.sig) {
           sub.sig = sig;
           if (sub.topic.kind === "attempt-steps") {
-            if (!send(ws, { type: "steps", id: sub.id, steps: steps.steps, cuts: cuts.cuts }))
+            if (
+              !send(ws, {
+                type: "steps",
+                id: sub.id,
+                steps: steps.steps,
+                cuts: cuts.cuts,
+                notices: cuts.notices,
+              })
+            )
               return;
-          } else if (!send(ws, { type: "cuts", id: sub.id, cuts: cuts.cuts })) return;
+          } else if (
+            !send(ws, { type: "cuts", id: sub.id, cuts: cuts.cuts, notices: cuts.notices })
+          )
+            return;
         }
       } while (sub.stepsDirty);
     } catch (err) {

@@ -353,5 +353,13 @@ export const migrations: Migration[] = [
       "CREATE TABLE `instance_tokens` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`token_hash` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\t`expires_at` integer,\n\t`revoked_at` integer\n);",
       "CREATE UNIQUE INDEX `instance_tokens_hash_unique` ON `instance_tokens` (`token_hash`);"
     ]
+  },
+  {
+    "tag": "0031_job_log_notices",
+    "when": 1795396725281,
+    "statements": [
+      "CREATE TABLE `log_notices` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`attempt_id` text NOT NULL,\n\t`at_offset` integer NOT NULL,\n\t`source` text NOT NULL,\n\t`text` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`attempt_id`,`org_id`,`project_id`) REFERENCES `job_attempts`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `log_notices_attempt_idx` ON `log_notices` (`attempt_id`,`at_offset`);"
+    ]
   }
 ];

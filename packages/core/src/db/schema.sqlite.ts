@@ -591,6 +591,33 @@ export const logCuts = sqliteTable(
   ],
 );
 
+/**
+ * System notices on an attempt's log: lines the control plane wants a reader to see next to the
+ * log (the cache dropped entries, a hold reason), recorded apart from the log text like cuts, so
+ * the job's output can never forge one. `at_offset` is the stored log length when it was added.
+ */
+export const logNotices = sqliteTable(
+  "log_notices",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    atOffset: integer("at_offset").notNull(),
+    /** Short machine-readable source, for example `cache`. */
+    source: text("source").notNull(),
+    text: text("text").notNull(),
+    createdAt: integer("created_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+    index("log_notices_attempt_idx").on(t.attemptId, t.atOffset),
+  ],
+);
+
 // ---- poll ingest ----
 
 /**
