@@ -33,7 +33,10 @@ export type Limits = {
   idleNoSubscriptionMs: number;
   /** How often connections are re-authenticated and idle-checked. */
   sweepMs: number;
-  /** How often a live log is polled for new bytes. */
+  /**
+   * How often a live log is polled for new bytes.
+   * TODO(#77): wake log tails from a log-append notifier and drop this poll to a slow safety net.
+   */
   logPollMs: number;
   /** Events per read while replaying. */
   eventPage: number;
@@ -440,6 +443,7 @@ export function createRealtime(options: RealtimeOptions) {
     // Wake-ups were already routed to this subscription from the moment it was registered
     // above, so an event committed during setup marks it dirty and is read, not missed.
     if (topic.kind === "attempt-log") {
+      // TODO(#77): replace this poll with a log-append notifier (like onEventsAppended).
       sub.timer = setInterval(() => void pumpLog(ws, sub), limits.logPollMs);
     }
     pump(ws, sub);
