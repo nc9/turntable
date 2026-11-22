@@ -9,15 +9,17 @@ import { loadMasterKey } from "../secrets/crypto";
 import { releaseConfigFromEnv } from "../roles";
 import { builtinKeyRef } from "../signing/service";
 import { AttestationStore } from "./attest";
+import { parseTarget, TARGET_KEY } from "./publish/config";
 import { fileKeyVault } from "./key-vault";
 import { keysDir } from "./serve";
 
 export async function releaseCommand(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
   if (sub === "pin-repo") return pinRepo(rest);
+  if (sub === "publish-target") return publishTarget(rest);
   if (sub !== "init-key") {
     console.error(
-      "usage:\n  longshore release init-key --org <slug> --name <key> [--data-dir ./data]\n  longshore release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\nRuns with the release role's environment (LONGSHORE_RELEASE_*).",
+      "usage:\n  longshore release init-key --org <slug> --name <key> [--data-dir ./data]\n  longshore release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\n  longshore release publish-target set|remove|list --org <slug> --project <slug> [--key <name>] [...] (see docs/release-lane)\nRuns with the release role's environment (LONGSHORE_RELEASE_*).",
     );
     return 2;
   }
@@ -84,6 +86,110 @@ async function pinRepo(args: string[]): Promise<number> {
     }
     console.log(`${values.org}/${values.project} releases from ${values.repo.toLowerCase()}`);
     return 0;
+  } finally {
+    db.close();
+  }
+}
+
+const PUBLISH_USAGE = `usage:
+  longshore release publish-target set --org <slug> --project <slug> --key <name> --kind npm \
+      --package <name> --artifact <tarball artifact> --secret <vault secret> [--tag latest] \
+      [--access public|restricted] --accept-long-lived-token
+  longshore release publish-target set --org <slug> --project <slug> --key <name> --kind github-release \
+      --assets <a,b,...> [--provenance-asset <name>|none]
+  longshore release publish-target remove --org <slug> --project <slug> --key <name>
+  longshore release publish-target list --org <slug> --project <slug>
+Targets are stored in the release lane's own file, never in the workflow. An npm target uses a
+long-lived registry token (npm has no tokenless path for a self-hosted issuer), so it needs
+--accept-long-lived-token.`;
+
+/** Sets, removes or lists the project's publish declaration in the lane's own file. */
+async function publishTarget(args: string[]): Promise<number> {
+  const [action, ...rest] = args;
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      org: { type: "string" },
+      project: { type: "string" },
+      key: { type: "string" },
+      kind: { type: "string" },
+      package: { type: "string" },
+      artifact: { type: "string" },
+      secret: { type: "string" },
+      tag: { type: "string" },
+      access: { type: "string" },
+      assets: { type: "string" },
+      "provenance-asset": { type: "string" },
+      "accept-long-lived-token": { type: "boolean" },
+      "data-dir": { type: "string", default: "./data" },
+    },
+    strict: true,
+  });
+  if (!["set", "remove", "list"].includes(action ?? "") || !values.org || !values.project) {
+    console.error(PUBLISH_USAGE);
+    return 2;
+  }
+  const cfg = releaseConfigFromEnv(process.env);
+  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  try {
+    const org = await getOrgBySlug(db, values.org);
+    if (!org) throw new Error(`no org with slug ${values.org}`);
+    const project = await getProjectBySlug(db, { orgId: org.id }, values.project);
+    if (!project) throw new Error(`no project ${values.project} in org ${values.org}`);
+    const attest = new AttestationStore(join(resolve(cfg.dataDir), "attested.db"));
+    try {
+      if (action === "list") {
+        for (const [k, t] of Object.entries(attest.publishTargets(org.id, project.id))) {
+          console.log(`${k}: ${JSON.stringify(t)}`);
+        }
+        return 0;
+      }
+      if (!values.key || !TARGET_KEY.test(values.key)) {
+        throw new Error("--key must be a short lower-case name (letters, digits, dashes)");
+      }
+      if (action === "remove") {
+        const gone = attest.removePublishTarget(org.id, project.id, values.key);
+        console.log(gone ? `removed ${values.key}` : `no target ${values.key}`);
+        return gone ? 0 : 1;
+      }
+      const raw =
+        values.kind === "npm"
+          ? {
+              kind: "npm",
+              package: values.package,
+              artifact: values.artifact,
+              secret: values.secret,
+              ...(values.tag ? { tag: values.tag } : {}),
+              ...(values.access ? { access: values.access } : {}),
+            }
+          : values.kind === "github-release"
+            ? {
+                kind: "github-release",
+                assets: (values.assets ?? "")
+                  .split(",")
+                  .map((x) => x.trim())
+                  .filter(Boolean),
+                ...(values["provenance-asset"] !== undefined
+                  ? {
+                      provenanceAsset:
+                        values["provenance-asset"] === "none" ? null : values["provenance-asset"],
+                    }
+                  : {}),
+              }
+            : undefined;
+      if (!raw) throw new Error("--kind must be npm or github-release");
+      if (raw.kind === "npm" && !values["accept-long-lived-token"]) {
+        throw new Error(
+          "publishing to npm uses a long-lived registry token (a granular, package-scoped, publish-only one); pass --accept-long-lived-token to say you accept that",
+        );
+      }
+      const target = parseTarget(raw);
+      attest.setPublishTarget(org.id, project.id, values.key, target, Date.now());
+      console.log(`${values.org}/${values.project}: ${values.key} = ${JSON.stringify(target)}`);
+      return 0;
+    } finally {
+      attest.close();
+    }
   } finally {
     db.close();
   }

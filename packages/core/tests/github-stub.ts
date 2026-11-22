@@ -28,6 +28,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     /** Answer the permission endpoint with this status instead (403: token cannot ask; 500). */
     permissionStatus: undefined as number | undefined,
     protectedMain: true,
+    /** What GitHub says the default branch is (for ingest drift). */
+    defaultBranch: "main",
     /** Merge queue branches (`gh-readonly-queue/main/...`) and what GitHub says about each commit. */
     queue: [] as {
       ref: string;
@@ -44,6 +46,7 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     state.calls.push({ path: path + u.search, method: init?.method });
     const json = (body: unknown): Response =>
       new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    if (path === `/repos/${repo}`) return json({ default_branch: state.defaultBranch });
     if (path === `/repos/${repo}/commits/main`) {
       return json({
         sha: state.head.sha,

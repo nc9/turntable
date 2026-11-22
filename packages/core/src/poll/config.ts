@@ -97,6 +97,27 @@ export const pollConfigSchema = z
       "required (polling must be authenticated): tokenFile or tokenEnv; set allowUnauthenticated to opt out",
   });
 
+/**
+ * What a project stores to have a repo ingested from its installation binding, with no entry in
+ * the poll config. The same knobs as a poll repo, minus where it lands (the project) and which
+ * repo (the binding). `defaultBranch` is required and fixed when the settings are made: the
+ * poller never asks GitHub which branch is default, because a repo admin changing it would move
+ * the branch that counts as protected.
+ */
+export const ingestSettingsSchema = z
+  .object({
+    workflow: z.string().min(1).default(".github/workflows/ci.yml"),
+    defaultBranch: z.string().min(1),
+    prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
+    authors: z.array(z.string().min(1)).default([]),
+    protectedRefs: z.array(z.string().min(1)).default([]),
+    mergeQueue: z.boolean().default(false),
+    intervalSeconds: z.int().min(30).max(3600).default(60),
+    egress: z.enum(["none", "open", "allowlist"]).optional(),
+  })
+  .strict();
+export type IngestSettings = z.infer<typeof ingestSettingsSchema>;
+
 export type PollConfig = z.infer<typeof pollConfigSchema>;
 export type PollRepoConfig = PollConfig["repos"][number];
 

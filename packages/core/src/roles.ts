@@ -72,6 +72,8 @@ export interface ReleaseConfig {
   /** The instance URL, as the provenance's builder id. */
   builderId: string;
   pollMs: number;
+  /** A GitHub credential that may write releases, for publishing. Only the lane has it. */
+  githubPublishToken?: string | undefined;
 }
 
 /**
@@ -96,6 +98,7 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
     githubToken: need("LONGSHORE_RELEASE_GITHUB_TOKEN"),
     artifactDir: need("LONGSHORE_RELEASE_ARTIFACT_DIR"),
     builderId: need("LONGSHORE_RELEASE_BUILDER_ID"),
+    githubPublishToken: env.LONGSHORE_RELEASE_GITHUB_PUBLISH_TOKEN?.trim() || undefined,
     pollMs,
   };
 }
