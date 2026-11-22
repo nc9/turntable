@@ -4,7 +4,16 @@ import {
   type ExecStatus,
   type Provider,
 } from "@turntable/provider-sdk";
-import { ACT_RELEASES, INSTALL_SH, archFromUname, fetchAct, type ActTarball } from "./act-install";
+import {
+  ACT_RELEASES,
+  EXTRACT_ACTION_SH,
+  INSTALL_SH,
+  archFromUname,
+  fetchAct,
+  fetchActionTarball,
+  type ActTarball,
+  type ActionFetcher,
+} from "./act-install";
 import { checkoutStubAction } from "./checkout-stub";
 import { createActParser, summarize, type ActEvent } from "./events";
 import type { JobPlan } from "./plan";
@@ -29,6 +38,8 @@ export interface RunInput {
   repoTarball: Uint8Array;
   /** Override the pinned act download (tests and offline use). Must carry its sha256. */
   act?: ActTarball;
+  /** Override how remote actions are fetched by sha (tests). */
+  fetchAction?: ActionFetcher;
 }
 
 export interface RunOptions {
@@ -126,6 +137,13 @@ export async function* runJob(
   const L = plan.layout;
 
   try {
+    // Every remote action must be pinned to a commit before anything runs.
+    const unresolved = plan.actions.filter((a) => a.kind === "remote" && !a.sha);
+    if (unresolved.length > 0) {
+      return fail(
+        `actions not resolved to a commit sha: ${unresolved.map((a) => a.uses).join(", ")}`,
+      );
+    }
     yield { kind: "phase", phase: "preparing" };
     let act = input.act;
     const mk = await execShort(provider, sandboxId, 'mkdir -p "$1" && uname -m', [L.root], retry);
@@ -157,6 +175,15 @@ export async function* runJob(
       retry,
     );
     if (inst.exitCode !== 0) return fail(`act install failed: ${inst.output.trim()}`);
+
+    // Deliver remote actions by commit sha. The checkout stub only copies the delivered repo.
+    for (const [i, a] of plan.actions.filter((x) => x.kind === "remote").entries()) {
+      const tgz = await (input.fetchAction ?? fetchActionTarball)(a.repo, a.sha ?? "");
+      const path = `${L.stubs}/action-${i}.tgz`;
+      await withRetry(() => provider.files.put(sandboxId, path, tgz), maxErr, pollMs);
+      const x = await execShort(provider, sandboxId, EXTRACT_ACTION_SH, [path, a.dir], retry);
+      if (x.exitCode !== 0) return fail(`cannot unpack ${a.uses}: ${x.output.trim()}`);
+    }
 
     const { execId } = await withRetry(
       () =>

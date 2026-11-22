@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
@@ -36,10 +36,10 @@ async function fakeAct(stdout: string, code: number, tail = "") {
   return { bytes, sha256: sha256Hex(bytes) };
 }
 
-async function setup() {
+async function setup(wf: string = WF) {
   const p = world.provider();
   const { id } = await p.create(spec);
-  const plan = planJob(WF, "hello", {
+  const plan = planJob(wf, "hello", {
     workflowPath: ".github/workflows/ci.yml",
     root: `${world.sandboxDir(id)}/tt`,
   });
@@ -124,5 +124,54 @@ describe("runJob against the fake provider", () => {
     const act = await fakeAct(await fixture("success.jsonl"), 0);
     const result = await drain(runJob(p, id, plan, { repoTarball, act }, { pollMs: 20 }));
     expect(result.state).toBe("success");
+  });
+
+  test("remote actions are delivered by sha; unresolved ones are refused", async () => {
+    const wf = `${WF}      - uses: acme/tool@v1\n`;
+    const act = await fakeAct(await fixture("success.jsonl"), 0);
+    const first = await setup(wf);
+    const refused = await drain(
+      runJob(
+        first.p,
+        first.id,
+        first.plan,
+        { repoTarball: first.repoTarball, act },
+        { pollMs: 20 },
+      ),
+    );
+    expect(refused.state).toBe("infra_error");
+    expect(refused.reason).toContain("acme/tool@v1");
+
+    const { p, id, plan, repoTarball } = await setup(wf);
+    const sha = "c".repeat(40);
+    const resolved = {
+      ...plan,
+      actions: plan.actions.map((a) => ({ ...a, sha })),
+    };
+    const asked: string[] = [];
+    const d = mkdtempSync(join(tmp, "a-"));
+    mkdirSync(join(d, "tool-abc"));
+    writeFileSync(join(d, "tool-abc", "action.yml"), "name: tool\n");
+    const tgz = await tarDirectory(d, ["tool-abc"]);
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        resolved,
+        {
+          repoTarball,
+          act,
+          fetchAction: async (repo, s) => {
+            asked.push(`${repo}@${s}`);
+            return tgz;
+          },
+        },
+        { pollMs: 20 },
+      ),
+    );
+    expect(result.state).toBe("success");
+    expect(asked).toEqual([`acme/tool@${sha}`]);
+    const dir = resolved.actions[0]?.dir ?? "";
+    expect(await Bun.file(`${dir}/action.yml`).text()).toBe("name: tool\n");
   });
 });

@@ -66,3 +66,26 @@ chmod 0755 "$root/act"
 mkdir -p "$root/repo"
 tar xzf "$root/repo.tgz" --no-same-owner -C "$root/repo"
 `;
+
+/** Fetches the source tarball of an action at an exact commit sha (never a tag or branch). */
+export type ActionFetcher = (repo: string, sha: string) => Promise<Uint8Array>;
+
+export const fetchActionTarball: ActionFetcher = async (repo, sha) => {
+  if (!/^[0-9a-f]{40}$/.test(sha))
+    throw new InfraError(`refusing to fetch ${repo} by non-sha ${sha}`);
+  const url = `https://codeload.github.com/${repo}/tar.gz/${sha}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  } catch (e) {
+    throw new InfraError(`cannot download ${url}`, e);
+  }
+  if (!res.ok) throw new InfraError(`download ${url} failed: HTTP ${res.status}`);
+  return res.bytes();
+};
+
+/** Sandbox script. Args: tarball dir. Unpacks a GitHub source tarball (one top dir) into dir. */
+export const EXTRACT_ACTION_SH = `set -eu
+mkdir -p "$2"
+tar xzf "$1" --strip-components=1 --no-same-owner -C "$2"
+`;

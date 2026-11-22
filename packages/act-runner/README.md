@@ -5,7 +5,8 @@ Runs one GitHub Actions job inside a sandbox using [nektos/act](https://github.c
 polling and offset-based log reads. No stream is needed for correctness.
 
 ```ts
-const plan = planJob(workflowYaml, "hello", { workflowPath: ".github/workflows/ci.yml" });
+const planned = planJob(workflowYaml, "hello", { workflowPath: ".github/workflows/ci.yml" });
+const plan = await resolveActions(planned); // tag -> commit sha for every `uses:`
 const run = runJob(provider, sandboxId, plan, { repoTarball });
 for (;;) {
   const r = await run.next();
@@ -36,6 +37,21 @@ ends as `infra_error`.
   pager until the timeout.
 - Sandbox image needs `bash`, `git`, `tar`, `sha256sum` (or `shasum`) and, for JavaScript actions,
   `node`.
+
+## Security rules
+
+- No container socket reaches a job: host mode mounts nothing, and act is started with
+  `--container-daemon-socket -`. A test pins this.
+- Every remote `uses:` is resolved to a commit sha before the run. `plan.actions` carries the
+  tag-to-sha mapping (`repo`, `ref`, `sha`). `runJob` refuses a plan with an unresolved remote
+  action. Remote actions are fetched by sha (`codeload.github.com/<repo>/tar.gz/<sha>`),
+  uploaded, and served to act with `--local-repository`, so a moved tag cannot change what runs.
+  Detecting tag moves over time is a later issue.
+- `plan.warnings` flags untrusted context interpolated straight into `run:` or
+  `with.script` (`github.event.pull_request.title`, `head_ref`, issue and comment bodies, commit
+  messages and so on). Pass such values through `env:` instead. A failing lint comes later.
+- The checkout stub only copies the repository the controller delivered. It never fetches, and a
+  test checks the stub text for network commands.
 
 ## Results
 
