@@ -20,6 +20,7 @@ import type { AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
 import type { ForgeFacts } from "./forge";
 import { publishGithubRelease } from "./publish/github-release";
+import { verifyOciImage } from "./publish/oci";
 import { publishNpm } from "./publish/npm";
 import type { PublishWiring, TargetResult } from "./publish/types";
 
@@ -390,7 +391,7 @@ export class ReleaseLane {
       }
       // A target the job publishes itself: the lane signed and approved it, and the release proxy
       // will hand the job the rules. An image has no strict path at all.
-      if (t.kind === "oci-image" || (t.mode === "compat" && !ensureCompat)) {
+      if (t.mode === "compat" && !ensureCompat) {
         await record({ target: key, state: "pending", reason: "awaiting_job" });
         continue;
       }
@@ -412,6 +413,22 @@ export class ReleaseLane {
             await publishNpm(key, t, ctx, token, {
               ...(w.npmRegistry ? { registry: w.npmRegistry } : {}),
               ...(w.fetch ? { fetch: w.fetch } : {}),
+            }),
+          );
+        } else if (t.kind === "oci-image") {
+          // After a compat push: what the registry holds must be the attested image, and our
+          // provenance goes on it as a referrer.
+          const cred = await w.credentials.secret(scope, t.secret, t.registry, req.tag, req.id);
+          if (!cred) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await verifyOciImage(key, t, ctx, cred, {
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+              releaseAssetFallback: Object.values(targets).some(
+                (x) => x.kind === "github-release" && x.provenanceAsset !== null,
+              ),
             }),
           );
         } else {
