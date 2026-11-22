@@ -57,28 +57,38 @@ test("longshore audit: checkpoint, verify, export, and tamper exit codes", async
     );
   }
   const base = ["--data-dir", dir, "--master-key-file", keyFile, "--org", "acme"];
+  // nothing is signed, and no key is made, until the operator sets the org up
   expect(await quiet(() => auditCommand(["checkpoint", ...base]))).toBe(0);
-  expect(await quiet(() => auditCommand(["verify", ...base]))).toBe(0);
+  expect(
+    await quiet(() =>
+      auditCommand(["export-key", ...base, "--out", join(tmp, "nokey.json")]).catch(() => 3),
+    ),
+  ).toBe(3);
+  const pub = join(tmp, "acme.pub.json");
+  expect(await quiet(() => auditCommand(["init-key", ...base, "--out", pub]))).toBe(0);
+  expect(
+    await quiet(() => auditCommand(["init-key", ...base, "--out", join(tmp, "again.json")])),
+  ).toBe(1);
+  expect(await quiet(() => auditCommand(["checkpoint", ...base]))).toBe(0);
 
   const out = join(tmp, "export");
   expect(await quiet(() => auditCommand(["export", ...base, "--dir", out]))).toBe(0);
   expect(readdirSync(out).length).toBe(1);
 
   // anchors kept off the server: the pinned key and the exported checkpoints
-  const pub = join(tmp, "acme.pub.json");
-  expect(await quiet(() => auditCommand(["export-key", ...base, "--out", pub]))).toBe(0);
   const exported = join(out, readdirSync(out)[0]!);
   const anchored = ["--pubkey", pub, "--anchor", exported];
   const lines: string[] = [];
   const log = console.log;
-  console.log = (m: string) => lines.push(String(m));
+  console.log = (...m: unknown[]) => lines.push(m.join(" "));
   const okCode = await auditCommand(["verify", ...base, ...anchored]);
   const looseCode = await auditCommand(["verify", ...base]);
   console.log = log;
   expect(okCode).toBe(0);
   expect(lines[0]).toContain("key pinned, checkpoints anchored");
-  expect(looseCode).toBe(0);
-  expect(lines[1]).toContain("unanchored: integrity only");
+  // the key was made after the first entries, so without the pinned key verify fails
+  expect(looseCode).toBe(1);
+  expect(lines.join("\n")).toContain("--pubkey");
   // the key file is never overwritten
   await expect(auditCommand(["export-key", ...base, "--out", pub])).rejects.toThrow();
 

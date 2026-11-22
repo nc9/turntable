@@ -9,6 +9,7 @@ import { AppAuth } from "./github/app-auth";
 import { registerCredentialRevoker } from "./incident";
 import { createForgeToken } from "./pins/forge-token";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
+import { AuditAnchor } from "./audit/anchor";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
@@ -41,7 +42,7 @@ Usage:
                    [--isolation-override <reason>]]
                   [--poll <config.json>]
   longshore secret set|rotate|delete|list --org <slug> --name <NAME> (--value-file <path> | --value-stdin)
-  longshore audit verify [--org <slug>] [--public-key <file>] | checkpoint | export | public-key
+  longshore audit init-key|adopt|verify|checkpoint|export-key|export (see longshore audit)
   longshore policy show | set [--org local] [--project local] [--require-sha-pins true|false]
                               [--allow-owners a,b | --clear-allowlist] [--data-dir ./data]
   longshore keys init [--file <path>] [--data-dir ./data]
@@ -324,7 +325,9 @@ async function serve(args: string[]): Promise<void> {
     });
     void webhooks.retryUnfinished().catch(() => {});
     // Signed audit checkpoints need the store's key; export sinks are opt in.
-    auditStops.push(startCheckpointer(db, store));
+    auditStops.push(
+      startCheckpointer(db, store, new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey)),
+    );
   }
   const sinks: AuditSink[] = [];
   const exportDir = process.env.LONGSHORE_AUDIT_EXPORT_DIR?.trim();

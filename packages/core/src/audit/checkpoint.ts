@@ -14,12 +14,15 @@ import type { Db } from "../db";
 import {
   auditHead,
   latestCheckpoint,
+  listCheckpoints,
   orgsWithAudit,
   putCheckpoint,
   type AuditCheckpoint,
 } from "../db/repos";
 import type { SecretStore } from "../secrets/store";
-import { canonicalJson } from "./chain";
+import { AuditAnchor, type AnchorState } from "./anchor";
+import { canonicalJson, GENESIS_HASH } from "./chain";
+import { verifySegment } from "./segment";
 import { auditFailure, flushAggregates } from "./failures";
 
 export const AUDIT_KEY_SECRET = "audit/signing-key";
@@ -67,30 +70,102 @@ export async function loadAuditKey(
   return pem ? keyFromPrivatePem(pem) : undefined;
 }
 
+/** The signing key, the sealed anchor state or the chain failed a check; nothing was signed. */
+export class AuditRefusal extends Error {
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.reason = reason;
+  }
+}
+
+/** Records the refusal in the org's own chain (throttled) so it is seen, then throws it. */
+async function refuse(db: Db, orgId: string, reason: string, message: string): Promise<never> {
+  await auditFailure(db, {
+    orgId,
+    principalKind: "system",
+    principalId: "audit",
+    source: orgId,
+    kind: `checkpoint_refused:${reason}`,
+    op: "audit_checkpoint",
+    outcome: `error:${reason}`,
+    detail: { message },
+  });
+  throw new AuditRefusal(reason, message);
+}
+
+/** Why an org cannot be set up: it already has a key, a state file or checkpoints. */
+export class AuditAlreadyInitialised extends Error {
+  constructor(orgId: string, why: string) {
+    super(`audit signing for org ${orgId} is already set up (${why})`);
+  }
+}
+
 /**
- * The org's signing key. Generated only while the org has never signed a checkpoint. Once one
- * exists, a missing key is an error and an audit alert, never a reason to make a new one: a new
- * key would let someone who deleted the old one re-sign a rewritten chain.
+ * The explicit, operator-run step that creates an org's signing key. It also writes the sealed
+ * anchor state (the "a key existed" marker and the last signed position). The checkpointer never
+ * does this: a key that goes missing is an alert, never a reason to make a new one.
  */
-export async function ensureAuditKey(db: Db, store: SecretStore, orgId: string): Promise<AuditKey> {
-  const existing = await loadAuditKey(store, orgId);
-  if (existing) return existing;
+export async function initAuditKey(
+  db: Db,
+  store: SecretStore,
+  anchor: AuditAnchor,
+  orgId: string,
+): Promise<AuditKey> {
+  if (await loadAuditKey(store, orgId)) throw new AuditAlreadyInitialised(orgId, "a key exists");
+  if (anchor.read(orgId)) throw new AuditAlreadyInitialised(orgId, "a state file exists");
   if (await latestCheckpoint(db, orgId)) {
-    await auditFailure(db, {
-      orgId,
-      principalKind: "system",
-      principalId: "audit",
-      source: orgId,
-      kind: "key_missing",
-      op: "audit_signing_key",
-      outcome: "error:key_missing",
-    });
-    throw new AuditKeyMissing(orgId);
+    throw new AuditAlreadyInitialised(orgId, "checkpoints exist");
   }
   const { privateKey } = generateKeyPairSync("ed25519");
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const key = keyFromPrivatePem(pem);
+  // State first: if the process dies between the two, the marker says a key existed and the
+  // missing key is refused loudly, rather than a key existing with no marker.
+  anchor.write(orgId, { keyId: key.keyId, lastSeq: 0, lastHash: GENESIS_HASH });
   await store.set(orgId, AUDIT_KEY_SECRET, pem);
-  return keyFromPrivatePem(pem);
+  return key;
+}
+
+/**
+ * For an org that signed checkpoints before the anchor existed: writes the anchor state from
+ * what the database holds now, after the whole chain and its checkpoints verify under the
+ * key in the store. This trusts the database as it is today, once, on the operator's say-so;
+ * pin the public key and keep the export off the server for anything stronger.
+ */
+export async function adoptAuditKey(
+  db: Db,
+  store: SecretStore,
+  anchor: AuditAnchor,
+  orgId: string,
+): Promise<AnchorState> {
+  const key = await loadAuditKey(store, orgId);
+  if (!key) throw new AuditKeyMissing(orgId);
+  if (anchor.read(orgId)) throw new AuditAlreadyInitialised(orgId, "a state file exists");
+  const cps = await listCheckpoints(db, orgId);
+  for (const c of cps) {
+    if (c.keyId !== key.keyId || !checkpointSignatureValid(key.publicKeyPem, c)) {
+      throw new AuditRefusal(
+        "checkpoint_invalid",
+        `checkpoint ${c.seq} does not verify under the store's key`,
+      );
+    }
+  }
+  const last = cps.at(-1);
+  // The whole chain from the start, and every checkpoint against it.
+  const seg = await verifySegment(
+    db,
+    orgId,
+    { seq: 0, hash: GENESIS_HASH },
+    cps.map((c) => ({ seq: c.seq, hash: c.hash })),
+  );
+  if (!seg.ok) throw new AuditRefusal("chain_invalid", seg.problem ?? "the chain does not verify");
+  anchor.write(orgId, {
+    keyId: key.keyId,
+    lastSeq: last?.seq ?? 0,
+    lastHash: last?.hash ?? GENESIS_HASH,
+  });
+  return anchor.read(orgId) as AnchorState;
 }
 
 /** What an operator keeps outside the server to anchor verification. */
@@ -148,22 +223,97 @@ export function checkpointSignatureValid(publicKeyPem: string, c: AuditCheckpoin
   }
 }
 
-/** Signs the current head of an org's chain unless it is already covered. Returns the checkpoint. */
+/**
+ * Signs the current head of an org's chain, unless it is already covered. Refuses (with an alert
+ * in the org's chain) unless every one of these holds:
+ *  - the sealed anchor state exists and opens (an org that was never set up is skipped, quietly),
+ *  - the signing key exists in the store and is the one the state names,
+ *  - the checkpoints table did not go backwards (it holds at least what was last signed),
+ *  - the stored latest checkpoint carries a valid signature and still matches the chain,
+ *  - the chain from the last signed (seq, hash) to the head re-derives: links and hashes.
+ * Only then is the head signed; the checkpoint is stored, then the anchor state advances.
+ */
 export async function createCheckpoint(
   db: Db,
   store: SecretStore,
+  anchor: AuditAnchor,
   orgId: string,
   now: () => number = Date.now,
 ): Promise<AuditCheckpoint | undefined> {
-  // First use writes the key, which is itself audited; do that before reading the head so the
-  // checkpoint covers it.
-  const key = await ensureAuditKey(db, store, orgId);
+  let state: AnchorState | undefined;
+  try {
+    state = anchor.read(orgId);
+  } catch (e) {
+    return await refuse(db, orgId, "state_corrupt", (e as Error).message);
+  }
+  const key = await loadAuditKey(store, orgId);
+  if (!state) {
+    if (key) {
+      return await refuse(
+        db,
+        orgId,
+        "state_missing",
+        "a signing key exists but its sealed state file is gone; if the chain is known good, run `longshore audit adopt --org <slug>`",
+      );
+    }
+    return undefined; // never set up: nothing to refuse, nothing to sign
+  }
+  if (!key) {
+    return await refuse(db, orgId, "key_missing", new AuditKeyMissing(orgId).message);
+  }
+  if (key.keyId !== state.keyId) {
+    return await refuse(
+      db,
+      orgId,
+      "key_replaced",
+      "the signing key is not the one this org was set up with",
+    );
+  }
   const head = await auditHead(db, orgId);
   if (!head || head.seq === null || head.hash === null) return undefined;
   const last = await latestCheckpoint(db, orgId);
-  if (last && last.seq >= head.seq) return undefined;
+  if ((last?.seq ?? 0) < state.lastSeq) {
+    return await refuse(
+      db,
+      orgId,
+      "checkpoints_backwards",
+      `the checkpoints table ends at ${last?.seq ?? 0}, before the last signed entry ${state.lastSeq}`,
+    );
+  }
+  const expect: { seq: number; hash: string }[] = [];
+  if (last) {
+    if (last.keyId !== key.keyId || !checkpointSignatureValid(key.publicKeyPem, last)) {
+      return await refuse(
+        db,
+        orgId,
+        "checkpoint_invalid",
+        `checkpoint ${last.seq} has no valid signature`,
+      );
+    }
+    if (last.seq === state.lastSeq && last.hash !== state.lastHash) {
+      return await refuse(
+        db,
+        orgId,
+        "checkpoint_mismatch",
+        `checkpoint ${last.seq} differs from what was signed`,
+      );
+    }
+    expect.push({ seq: last.seq, hash: last.hash });
+  }
+  const seg = await verifySegment(db, orgId, { seq: state.lastSeq, hash: state.lastHash }, expect);
+  if (!seg.ok) {
+    return await refuse(db, orgId, "chain_invalid", seg.problem ?? "the chain does not verify");
+  }
+  if (head.seq <= Math.max(last?.seq ?? 0, state.lastSeq)) {
+    // Covered. A checkpoint ahead of the state (a crash between the two writes) is caught up.
+    if (last && last.seq > state.lastSeq) {
+      anchor.write(orgId, { keyId: key.keyId, lastSeq: last.seq, lastHash: last.hash }, now());
+    }
+    return undefined;
+  }
   const cp = signCheckpoint(key, { orgId, seq: head.seq, hash: head.hash, signedAt: now() });
   await putCheckpoint(db, cp);
+  anchor.write(orgId, { keyId: key.keyId, lastSeq: cp.seq, lastHash: cp.hash }, now());
   return cp;
 }
 
@@ -176,6 +326,7 @@ export interface CheckpointPolicy {
 export async function checkpointDue(
   db: Db,
   store: SecretStore,
+  anchor: AuditAnchor,
   policy: CheckpointPolicy = {},
   now: () => number = Date.now,
 ): Promise<number> {
@@ -190,7 +341,12 @@ export async function checkpointDue(
     if (behind <= 0) continue;
     const age = last ? now() - last.signedAt : Number.POSITIVE_INFINITY;
     if (behind >= everyEntries || age >= everyMs) {
-      if (await createCheckpoint(db, store, orgId, now)) signed += 1;
+      try {
+        if (await createCheckpoint(db, store, anchor, orgId, now)) signed += 1;
+      } catch (e) {
+        // One org's refusal (already alerted in its chain) must not stop the others.
+        if (!(e instanceof AuditRefusal)) throw e;
+      }
     }
   }
   return signed;
@@ -200,12 +356,13 @@ export async function checkpointDue(
 export function startCheckpointer(
   db: Db,
   store: SecretStore,
+  anchor: AuditAnchor,
   opts: CheckpointPolicy & { intervalMs?: number; log?: (m: string) => void } = {},
 ): () => void {
   const log = opts.log ?? ((m: string) => console.warn(m));
   const timer = setInterval(() => {
     void flushAggregates(db).catch(() => {});
-    checkpointDue(db, store, opts).catch((e: unknown) =>
+    checkpointDue(db, store, anchor, opts).catch((e: unknown) =>
       log(`audit checkpoint failed: ${String(e)}`),
     );
   }, opts.intervalMs ?? 30_000);
