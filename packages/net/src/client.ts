@@ -139,7 +139,8 @@ export interface HttpClient {
   /**
    * A raw TCP connection to host:port for a CONNECT passthrough: the host is resolved here, every
    * answer must be public, and the socket goes to a validated address, never to a second lookup.
-   * The caller owns the socket.
+   * The client's `allowHosts` does NOT apply: it exists for the server's own fetches, and must not
+   * make an internal host reachable from a sandbox. The caller owns the socket.
    */
   tunnel(host: string, port: number, signal?: AbortSignal): Promise<net.Socket>;
 }
@@ -411,17 +412,18 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
     if (h === "" || !Number.isInteger(port) || port < 1 || port > 65535) {
       throw new SsrfError(host, "bad destination");
     }
-    const allowed = allow.has(h);
-    if (!allowed && (h === "localhost" || h.endsWith(".localhost"))) {
+    // A tunnel is opened for a sandbox, on its say-so. The operator's allowlist is for what the
+    // SERVER may fetch (a local Daytona, an internal registry), never for what a job may reach, so
+    // it is not consulted here: loopback, private, link-local and metadata addresses are always
+    // refused, and so is localhost. A private host a sandbox may reach would need its own list.
+    if (h === "localhost" || h.endsWith(".localhost")) {
       throw new SsrfError(h, "localhost is not allowed");
     }
     const addresses = isIP(h) ? [h] : await resolve(h);
     if (addresses.length === 0) throw new SsrfError(h, "the name did not resolve");
-    if (!allowed) {
-      for (const a of addresses) {
-        const why = blockedReason(a);
-        if (why) throw new SsrfError(h, `${a} is ${why}`);
-      }
+    for (const a of addresses) {
+      const why = blockedReason(a);
+      if (why) throw new SsrfError(h, `${a} is ${why}`);
     }
     let last: Error = new Error("no address");
     for (const ip of interleaveFamilies(addresses)) {

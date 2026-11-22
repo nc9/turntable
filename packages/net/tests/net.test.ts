@@ -537,7 +537,7 @@ describe("address fallback", () => {
 });
 
 describe("tunnel (raw TCP for a passthrough)", () => {
-  test("every refused address is refused before a connection, and an allowed host connects", async () => {
+  test("every refused address is refused before a connection", async () => {
     const refused = createHttpClient({ resolve: async () => ["10.0.0.1"] });
     await expect(refused.tunnel("db.example.test", 443)).rejects.toBeInstanceOf(SsrfError);
     const mixed = createHttpClient({ resolve: async () => ["93.184.216.34", "169.254.169.254"] });
@@ -546,12 +546,32 @@ describe("tunnel (raw TCP for a passthrough)", () => {
     await expect(refused.tunnel("127.0.0.1", 80)).rejects.toBeInstanceOf(SsrfError);
     await expect(refused.tunnel("x.example.test", 0)).rejects.toBeInstanceOf(SsrfError);
 
-    const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    // A name that resolves to a public address passes validation: only the connect can fail.
+    const pub = createHttpClient({ resolve: async () => ["93.184.216.34"], connectAttemptMs: 50 });
+    const err = await pub.tunnel("db.example.test", 443).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SsrfError);
+  });
+
+  test("the server's allowlist never opens a tunnel: allowed for safeFetch, refused for a sandbox", async () => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => new Response("internal"),
+    });
     try {
-      const allowed = createHttpClient({ allowHosts: ["127.0.0.1"] });
-      const s = await allowed.tunnel("127.0.0.1", server.port);
-      expect(s.remotePort).toBe(server.port);
-      s.destroy();
+      const client = createHttpClient({
+        allowHosts: ["registry.internal.test", "127.0.0.1", "localhost"],
+        resolve: async (h) => (h === "registry.internal.test" ? ["10.1.2.3"] : ["127.0.0.1"]),
+      });
+      // The server may fetch an allowlisted internal host (here: loopback over plain http).
+      const res = await client.fetch(`http://127.0.0.1:${server.port}/`);
+      expect(await res.text()).toBe("internal");
+      // A sandbox may not reach it, by name, by address, or as localhost.
+      await expect(client.tunnel("registry.internal.test", 443)).rejects.toBeInstanceOf(SsrfError);
+      await expect(client.tunnel("127.0.0.1", server.port!)).rejects.toBeInstanceOf(SsrfError);
+      await expect(client.tunnel("localhost", server.port!)).rejects.toBeInstanceOf(SsrfError);
+      await expect(client.tunnel("a.localhost", server.port!)).rejects.toBeInstanceOf(SsrfError);
     } finally {
       server.stop(true);
     }
