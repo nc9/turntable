@@ -6,7 +6,6 @@ import { and, asc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
-import type { JobState } from "../schema";
 import {
   appendLog,
   getRun,

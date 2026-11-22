@@ -1,7 +1,7 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
 // it with act in a provider sandbox. It shares executeJob with `turntable run`, so a job behaves
 // the same from the CLI and from the worker.
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,6 +24,7 @@ import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { snapshotRepo } from "../run/repo-archive";
+import { makeSafeReader } from "../run/safe-read";
 import { type RunStore, stepInputOf } from "../run/store";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -78,10 +79,8 @@ export function gitRepoSource(
         const snap = await snapshotRepo(dir);
         return {
           tarball: snap.tarball,
-          readFile: (p) => {
-            const f = join(dir, p);
-            return existsSync(f) ? readFileSync(f, "utf8") : undefined;
-          },
+          // Repo files are untrusted: no traversal, no symlinks, size-capped.
+          readFile: makeSafeReader(dir),
           dispose: () => rmSync(dir, { recursive: true, force: true }),
         };
       } catch (err) {

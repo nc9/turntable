@@ -161,3 +161,17 @@ describe("graph errors and unsupported jobs", () => {
     expect(local.jobs[0]?.unsupported).toContain("docker action");
   });
 });
+
+describe("local actions outside the repository", () => {
+  test("a job whose local action path leaves the repo is unsupported, and nothing is read for it", () => {
+    const reads: string[] = [];
+    const wp = planWorkflow(
+      "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./../../etc/x\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/ok\n",
+      { name: "push", ref: "refs/heads/main" },
+      { readFile: (p) => (reads.push(p), undefined) },
+    );
+    expect(wp.jobs.find((j) => j.id === "a")?.unsupported).toContain("outside the repository");
+    expect(wp.jobs.find((j) => j.id === "b")?.unsupported).toBeUndefined();
+    expect(reads.every((p) => p.startsWith(".github/actions/ok/"))).toBe(true);
+  });
+});
