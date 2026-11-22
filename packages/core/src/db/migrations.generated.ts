@@ -251,5 +251,12 @@ export const migrations: Migration[] = [
       "CREATE UNIQUE INDEX `approvers_org_key_unique` ON `approvers` (`org_id`,`public_key`);",
       "CREATE UNIQUE INDEX `approvers_id_org_unique` ON `approvers` (`id`,`org_id`);"
     ]
+  },
+  {
+    "tag": "0019_solid_next_avengers",
+    "when": 1795374299208,
+    "statements": [
+      "ALTER TABLE `projects` ADD `signing_environment` text;"
+    ]
   }
 ];
