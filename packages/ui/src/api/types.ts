@@ -33,7 +33,9 @@ export type Run = {
   event: string;
   ref: string;
   sha: string | null;
+  /** Title shown for the run. The REST API has no commit message yet, so the HTTP adapter derives one. */
   commitMessage: string;
+  /** Empty when the API does not report who triggered the run. */
   actor: string;
   status: JobState;
   createdAt: number;

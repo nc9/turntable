@@ -5,7 +5,9 @@ import type { Job, JobAttempt, JobState, Run } from "@/api/types";
 import { EmptyState, ErrorState } from "@/components/empty-state";
 import { Duration } from "@/components/live-clock";
 import { StateBadge, StateIcon } from "@/components/state-badge";
+import { getBackend } from "@/api";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +47,7 @@ export function AttemptChip({ attempt, job }: { attempt: JobAttempt; job?: Job }
 }
 
 function RunActions({ run, jobs }: { run: Run; jobs: Job[] }) {
+  const canRerun = getBackend().api.capabilities.rerun;
   const active = isActive(run.status);
   const failedJobs = jobs.filter((j) => j.state === "failure" || j.state === "infra_error");
   const doRerun = (jobId?: string) => {
@@ -69,22 +72,35 @@ function RunActions({ run, jobs }: { run: Run; jobs: Job[] }) {
           Cancel run
         </Button>
       ) : null}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="secondary" size="sm" disabled={run.id.startsWith("pending_")}>
-            <RotateCw />
-            Rerun
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => doRerun()}>Rerun everything (new run)</DropdownMenuItem>
-          {failedJobs.length > 0 ? (
-            <DropdownMenuItem onSelect={() => failedJobs.forEach((j) => doRerun(j.id))}>
-              Rerun failed jobs ({failedJobs.length})
+      {canRerun ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="secondary" size="sm" disabled={run.id.startsWith("pending_")}>
+              <RotateCw />
+              Rerun
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => doRerun()}>
+              Rerun everything (new run)
             </DropdownMenuItem>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
+            {failedJobs.length > 0 ? (
+              <DropdownMenuItem onSelect={() => failedJobs.forEach((j) => doRerun(j.id))}>
+                Rerun failed jobs ({failedJobs.length})
+              </DropdownMenuItem>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        <Tooltip label="Rerun is not available through the API yet">
+          <span tabIndex={0} className="inline-flex rounded-md">
+            <Button variant="secondary" size="sm" disabled>
+              <RotateCw />
+              Rerun
+            </Button>
+          </span>
+        </Tooltip>
+      )}
     </div>
   );
 }
@@ -149,7 +165,8 @@ export function RunPage() {
             <RefChip run={run} />
             <ShaChip sha={run.sha} />
             <span>
-              {run.event.replace("_", " ")} by {run.actor}
+              {run.event.replace("_", " ")}
+              {run.actor ? ` by ${run.actor}` : ""}
             </span>
             <span title={formatDateTime(run.createdAt)}>{formatRelative(run.createdAt)}</span>
             <span className="inline-flex items-center gap-1">

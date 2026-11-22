@@ -20,6 +20,12 @@ function loadProjects(orgId: string): Promise<Project[]> {
   return p;
 }
 
+/** Forget cached orgs and projects (after connecting to a different org). */
+export function resetDirectory(): void {
+  orgsCache = null;
+  projectsCache.clear();
+}
+
 type Loaded<T> = { data: T | null; error: string | null };
 
 function useCached<T>(key: string | null, load: () => Promise<T>): Loaded<T> {

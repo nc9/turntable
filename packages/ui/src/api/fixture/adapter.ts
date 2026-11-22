@@ -69,6 +69,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
   }, options.tickMs ?? 1000);
 
   const api: TurntableApi = {
+    capabilities: { rerun: true },
     listOrgs: () => delay(() => world.orgs.map((o) => ({ ...o }))),
     listProjects: (orgId) =>
       delay(() => world.projects.filter((p) => p.orgId === orgId).map((p) => ({ ...p }))),

@@ -106,7 +106,7 @@ function RunRowItem({
           <RefChip run={run} className="max-w-48" />
           <ShaChip sha={run.sha} />
           <span>{run.event.replace("_", " ")}</span>
-          <span>{run.actor}</span>
+          {run.actor ? <span>{run.actor}</span> : null}
         </div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-dim">

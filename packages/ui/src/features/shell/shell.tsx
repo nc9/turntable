@@ -36,7 +36,10 @@ import { useTheme } from "@/components/theme";
 import { rememberOrg } from "@/lib/directory";
 import { modKey, useHotkeys } from "@/lib/hotkeys";
 import { dismiss, useToasts } from "@/lib/toast";
+import { chooseBackend } from "@/api";
+import { disconnect, useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
+import { ConnectScreen } from "./connect";
 import { useConnectionStatus } from "@/db/sync";
 import { CommandPalette } from "./command-palette";
 import { useScope } from "./scope";
@@ -199,6 +202,12 @@ function Switcher() {
             ))}
           </>
         ) : null}
+        {chooseBackend() === "http" ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -206,15 +215,17 @@ function Switcher() {
 
 function LiveIndicator() {
   const status = useConnectionStatus();
-  const live = status === "live";
+  const live = status === "live" || status === "polling";
   return (
     <Tooltip
       label={
-        live
+        status === "live"
           ? "Live: updates stream in as they happen"
-          : status === "offline"
-            ? "Offline: showing the last known state"
-            : "Reconnecting"
+          : status === "polling"
+            ? "Updates arrive every few seconds"
+            : status === "offline"
+              ? "Offline: showing the last known state"
+              : "Reconnecting"
       }
     >
       <span
@@ -229,7 +240,13 @@ function LiveIndicator() {
         ) : (
           <WifiOff className="size-3.5" aria-hidden="true" />
         )}
-        {live ? "Live" : status === "offline" ? "Offline" : "Reconnecting"}
+        {status === "live"
+          ? "Live"
+          : status === "polling"
+            ? "Polling"
+            : status === "offline"
+              ? "Offline"
+              : "Reconnecting"}
       </span>
     </Tooltip>
   );
@@ -316,7 +333,7 @@ function ShortcutsDialog({
   );
 }
 
-export function Shell() {
+function ShellInner() {
   const scope = useScope();
   const navigate = useNavigate();
   const { toggle, pref } = useTheme();
@@ -458,4 +475,11 @@ export function Shell() {
       <Toaster />
     </div>
   );
+}
+
+/** Shows the connect screen until a token is held (real API only); the fixture needs none. */
+export function Shell() {
+  const auth = useAuth();
+  if (chooseBackend() === "http" && !auth.token) return <ConnectScreen />;
+  return <ShellInner />;
 }

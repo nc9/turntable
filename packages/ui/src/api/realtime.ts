@@ -50,7 +50,8 @@ export type RealtimeMessage =
   | StepMessage
   | CutMessage;
 
-export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "offline";
+/** "polling" means updates arrive on a timer (no push transport yet), not as they happen. */
+export type ConnectionStatus = "connecting" | "live" | "polling" | "reconnecting" | "offline";
 
 export type SubscribeOptions = {
   /** Resume change events after this cursor. Omit for live-only. */
