@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { parseLock, registryPackages } from "./lockfile";
+import { type SafeFetch, safeFetch } from "../packages/net/src/index";
 
 export const MIN_AGE_DAYS = 14;
 const DAY_MS = 86_400_000;
@@ -36,7 +37,7 @@ export function parseAllowlist(text: string): AllowEntry[] {
 export type PublishedAt = (name: string, version: string) => Promise<Date | null>;
 
 /** Publish time from the npm registry's packument `time` map. */
-export function registryPublishedAt(fetchFn: typeof fetch = fetch): PublishedAt {
+export function registryPublishedAt(fetchFn: SafeFetch = safeFetch): PublishedAt {
   const cache = new Map<string, Promise<Record<string, string>>>();
   return async (name, version) => {
     let p = cache.get(name);
