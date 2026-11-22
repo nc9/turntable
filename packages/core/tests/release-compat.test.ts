@@ -222,8 +222,10 @@ describe("rules for compat targets", () => {
   });
 
   test("oci: a named token host is carried into the rules, and only then", () => {
-    const plain = compatRules("img", OCI, rel).find((r) => r.id === "img:blobs")!;
-    expect(plain.inject).not.toHaveProperty("realmHost");
+    // without realmHost no rule carries one; with it, every rule does, including the anchored ones
+    const plain = compatRules("img", OCI, rel);
+    expect(plain.length).toBeGreaterThan(5);
+    for (const r of plain) expect(r.inject).not.toHaveProperty("realmHost");
     const hub = compatRules("img", { ...OCI, realmHost: "auth.docker.io" } as PublishTarget, rel);
     expect(
       hub.every((r) => r.inject.type === "oci-bearer" && r.inject.realmHost === "auth.docker.io"),
