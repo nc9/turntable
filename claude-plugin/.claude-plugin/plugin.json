@@ -1,0 +1,42 @@
+{
+  "name": "longshore",
+  "version": "0.0.0",
+  "description": "Pushes Longshore CI events (failed runs, approvals needed) into a running Claude Code session.",
+  "channels": [
+    {
+      "server": "longshore",
+      "displayName": "Longshore",
+      "userConfig": {
+        "url": {
+          "type": "string",
+          "title": "Longshore URL",
+          "description": "Base URL of your Longshore server, for example https://ci.example.com",
+          "sensitive": false
+        },
+        "org": {
+          "type": "string",
+          "title": "Org slug",
+          "description": "The Longshore org to watch.",
+          "sensitive": false
+        },
+        "token_file": {
+          "type": "string",
+          "title": "Token file",
+          "description": "Absolute path to a file (mode 0600) holding a reader-role token. The token itself is never entered here.",
+          "sensitive": false
+        }
+      }
+    }
+  ],
+  "mcpServers": {
+    "longshore": {
+      "command": "longshore",
+      "args": ["channel"],
+      "env": {
+        "LONGSHORE_URL": "${user_config.url}",
+        "LONGSHORE_ORG": "${user_config.org}",
+        "LONGSHORE_TOKEN_FILE": "${user_config.token_file}"
+      }
+    }
+  }
+}

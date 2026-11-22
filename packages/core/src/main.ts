@@ -45,6 +45,8 @@ Usage:
   longshore token revoke <id> [--data-dir ./data]
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
   longshore mcp [--token-file <path>] [--data-dir ./data]
+  longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
+                    [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore version
 
 Environment:
@@ -405,6 +407,10 @@ async function main(argv: string[]): Promise<void> {
     case "mcp": {
       const { mcpCommand } = await import("./mcp/cli");
       return await mcpCommand(rest);
+    }
+    case "channel": {
+      const { channelCommand } = await import("./channel/cli");
+      return await channelCommand(rest);
     }
     case "version":
     case "--version":
