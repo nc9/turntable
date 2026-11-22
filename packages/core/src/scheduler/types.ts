@@ -1,5 +1,5 @@
 import type { Provider } from "@longshore/provider-sdk";
-import type { Job, JobAttempt, Run, Scope } from "../db/repos";
+import type { Claim, Job, JobAttempt, Run, Scope } from "../db/repos";
 import type { StepInput } from "../db/repos";
 
 /** What a runner reports when it is done. `exitCode` is 0 for success, non-zero for failure. */
@@ -56,3 +56,12 @@ export type AttemptRunner = (ctx: AttemptContext) => Promise<AttemptOutcome>;
 
 /** Picks the provider for an attempt by the name stored on it. */
 export type ProviderResolver = (name: string) => Provider | undefined;
+
+/**
+ * Told when an attempt starts (or is re-attached after a restart) and when it has a result. Called
+ * after the fact and never awaited: an observer's slowness or failure cannot hold up a run.
+ */
+export interface AttemptObserver {
+  started(claim: Claim): void;
+  finished(claim: Claim, outcome: AttemptOutcome): void;
+}

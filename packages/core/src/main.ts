@@ -3,6 +3,8 @@ import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, openDatabase } from "./db";
 import { githubFacts } from "./github/api";
+import { CheckReporter } from "./checks/reporter";
+import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import { bootstrapToken } from "./ops/bootstrap";
@@ -28,6 +30,7 @@ const USAGE = `longshore ${VERSION}
 
 Usage:
   longshore serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
+                  [--public-url <base url>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
                    [--isolation-override <reason>]]
@@ -46,6 +49,7 @@ Usage:
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
   longshore policy set approve-run-min-role <operator|release_operator> [--org local]
   longshore policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
+  longshore policy set --checks-mode <off|shadow|live> [--org local] [--project <slug>]
   longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
@@ -59,6 +63,7 @@ Environment:
   LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
                     required for the GitHub App and its webhook endpoint
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
+  LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
   LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
@@ -78,6 +83,7 @@ async function startBackground(
     hosted?: boolean | undefined;
     "isolation-override"?: string | undefined;
   },
+  observer?: CheckReporter,
 ): Promise<{ stop(): Promise<void> }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   let scheduler: Scheduler | undefined;
@@ -135,6 +141,7 @@ async function startBackground(
         },
       ),
       leaseMs,
+      ...(observer ? { observer } : {}),
       globalCap: num("global-cap", v["global-cap"]),
       perOrgCap: num("org-cap", v["org-cap"]),
       log,
@@ -216,6 +223,7 @@ async function serve(args: string[]): Promise<void> {
       host: { type: "string", default: process.env.LONGSHORE_HOST ?? "127.0.0.1" },
       "data-dir": { type: "string", default: "./data" },
       "allowed-origin": { type: "string", multiple: true },
+      "public-url": { type: "string" },
       worker: { type: "boolean", default: false },
       "global-cap": { type: "string", default: "4" },
       "org-cap": { type: "string", default: "2" },
@@ -259,10 +267,20 @@ async function serve(args: string[]): Promise<void> {
     .filter((o) => o !== "");
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
+  let checks: CheckReporter | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const store = new SecretStore(db, loadMasterKey(keyFile));
     const auth = new AppAuth({ db, store });
+    // Check runs: a per-project setting (off by default); the reporter does nothing for a project
+    // that has not turned it on.
+    checks = new CheckReporter({
+      db,
+      auth,
+      api: githubCheckRunsApi(),
+      publicUrl: values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
+      log: (m) => console.log(`[longshore] checks: ${m}`),
+    });
     webhooks = createWebhookHandler({
       db,
       store,
@@ -280,7 +298,7 @@ async function serve(args: string[]): Promise<void> {
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
-  const background = await startBackground(db, values);
+  const background = await startBackground(db, values, checks);
 
   const stop = () => {
     void background

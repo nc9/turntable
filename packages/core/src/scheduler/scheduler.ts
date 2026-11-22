@@ -17,6 +17,7 @@ import {
 import { workflowReadiness } from "./workflow-readiness";
 import type {
   AttemptContext,
+  AttemptObserver,
   AttemptOutcome,
   AttemptRunner,
   AttemptStore,
@@ -39,6 +40,8 @@ export type SchedulerOptions = {
   perOrgCap?: number;
   /** Decides when a queued job may run and what becomes of dependents of a failed one. */
   readiness?: Readiness;
+  /** Told when attempts start and finish (check runs). Never awaited; its errors are logged. */
+  observer?: AttemptObserver;
   /** Run only this run's attempts (see ClaimOptions.onlyRun): `longshore run`'s own scheduler. */
   onlyRun?: string;
   now?: () => number;
@@ -55,7 +58,10 @@ const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reaso
  */
 export class Scheduler {
   readonly owner: string;
-  readonly #o: Required<Omit<SchedulerOptions, "owner" | "log" | "readiness" | "onlyRun">> & {
+  readonly #o: Required<
+    Omit<SchedulerOptions, "owner" | "log" | "readiness" | "onlyRun" | "observer">
+  > & {
+    observer?: AttemptObserver | undefined;
     onlyRun?: string | undefined;
     log: (message: string) => void;
     readiness: Readiness;
@@ -84,6 +90,7 @@ export class Scheduler {
       perOrgCap: o.perOrgCap ?? 2,
       readiness: o.readiness ?? workflowReadiness,
       onlyRun: o.onlyRun,
+      observer: o.observer,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
     };
@@ -184,6 +191,17 @@ export class Scheduler {
     this.#launch(claim, resume);
   }
 
+  /** Calls the observer without letting it affect the run. */
+  #notify(f: (o: AttemptObserver) => void): void {
+    const obs = this.#o.observer;
+    if (!obs) return;
+    try {
+      f(obs);
+    } catch (err) {
+      this.#o.log(`attempt observer failed: ${String(err)}`);
+    }
+  }
+
   #launch(claim: Claim, resume?: { sandboxId: string; execId: string }): void {
     const { attempt, scope } = claim;
     const controller = new AbortController();
@@ -276,9 +294,11 @@ export class Scheduler {
       } catch (err) {
         this.#o.log(`could not record outcome of ${attempt.id}: ${String(err)}`);
       }
+      this.#notify((o) => o.finished(claim, outcome));
     };
 
     const done = run().finally(() => this.#active.delete(attempt.id));
     this.#active.set(attempt.id, { controller, done });
+    this.#notify((o) => o.started(claim));
   }
 }

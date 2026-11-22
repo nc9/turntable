@@ -176,3 +176,20 @@ Runs started by `longshore run` are claimed only by the process that started the
 - **A manual `cancel` stops work at once** in the process that runs it: the worker is signalled and the sandbox destroyed when the cancel commits. A worker in another process notices at its next heartbeat.
 - **The job plan is stored on the attempt when it starts,** so a restarted server re-attaches to a running job with no repo fetch and no network.
 - **Concurrency groups** are tracked per project. A new run whose workflow sets `concurrency` with `cancel-in-progress: true` supersedes older unfinished runs of the same group: the new run is created first, then the older run's queued and running jobs are cancelled and the workers of the running ones are told to stop and their sandboxes destroyed. A group without `cancel-in-progress` queues like GitHub's: at most one run is running and one is pending. A new run waits behind the running one (its jobs are not claimed yet), and a newer pending run replaces the older pending one, which is cancelled. Reusable workflows and expression-built matrices are reported as unsupported.
+
+## Report results to GitHub as check runs
+
+With a GitHub App configured, the worker can report each job to GitHub as a check run on the run's head commit. It is off by default and set per project from the CLI only (no operation can change it, so an agent cannot turn it on):
+
+```sh
+longshore policy set --checks-mode shadow --org <slug> [--project <slug>]
+longshore serve --worker --public-url https://ci.example.com ...   # or LONGSHORE_PUBLIC_URL
+```
+
+- **`shadow`** posts `shadow / <job name>` (plus the matrix leg). The conclusion is always `neutral`, so it can never gate a merge. The real result is in the output title (`Shadow: failure`) and summary, and the details link opens the run in Longshore.
+- **`live`** posts `longshore / <job name>` with real conclusions: success, failure, cancelled and skipped map directly, and an infrastructure error is a `failure` titled "Longshore: infrastructure error".
+- **What the summary says.** The real result, the failing step as the runner recorded it, and an extract of the failure (the same extraction as `failure_digest`) redacted and capped at 1 KiB, in a code fence so log text cannot add links or mentions. Never more log than that.
+- **Token.** Each report mints an installation token for the one repository with `checks: write` and nothing else. The repo must be bound through the App installation; a repo bound without one, and local runs, are never reported.
+- **Reliable, never blocking.** The check run id is stored on the attempt, so a restart or re-attach updates the same check instead of adding another. A check created by a worker that died before storing its id is found by its external id (the attempt id). Requests are retried with backoff on outages and rate limits; a refusal (such as a missing permission) is logged and dropped. A GitHub outage never delays or fails a run.
+- **Not reported yet.** Jobs that never start (skipped by `if:` or a failed dependency, or cancelled while queued) get no check run.
+

@@ -78,6 +78,13 @@
       "when": 1795365759673,
       "tag": "0010_loose_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795366300821,
+      "tag": "0011_low_praxagora",
+      "breakpoints": true
     }
   ]
 }
