@@ -11,7 +11,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
     "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner",
-    "test": "bun run --sequential test:core test:core2 test:core3 test:ops test:ops2 test:provider test:redact test:ui test:act test:run",
+    "test": "bun run --sequential test:core test:core2 test:core3 test:ops test:ops2 test:provider test:redact test:ui test:act test:act2 test:run",
     "build": "bun run scripts/build.ts",
     "dev": "bun run packages/core/src/main.ts serve",
     "typecheck:core": "bun run --cwd packages/core typecheck",
@@ -29,12 +29,13 @@
     "test:ops": "bun test packages/core/tests/ops-dispatch.test.ts packages/core/tests/ops-ops.test.ts packages/core/tests/ops-rest.test.ts packages/core/tests/ops-openapi.test.ts packages/core/tests/ops-cli.test.ts packages/core/tests/realtime.test.ts",
     "openapi:gen": "bun run --cwd packages/core openapi:gen",
     "typecheck:act-runner": "bun run --cwd packages/act-runner typecheck",
-    "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/run-job.test.ts",
+    "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/run-job.test.ts packages/act-runner/tests/expr.test.ts packages/act-runner/tests/triggers.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
     "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts",
     "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts",
-    "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts",
-    "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts"
+    "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts packages/core/tests/run-workflow.test.ts",
+    "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts",
+    "test:act2": "bun test packages/act-runner/tests/workflow-plan.test.ts packages/act-runner/tests/split.test.ts packages/act-runner/tests/readiness.test.ts packages/act-runner/tests/squirrelscan-plan.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",

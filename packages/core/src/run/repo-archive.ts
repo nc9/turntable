@@ -71,3 +71,18 @@ export async function snapshotRepo(repoDir: string): Promise<RepoSnapshot> {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
+
+/** Files changed between `base` and HEAD, for path filters. */
+export async function changedFiles(repoDir: string, base: string): Promise<string[]> {
+  const out = await sh(repoDir, [
+    "git",
+    "-c",
+    "core.quotepath=false",
+    "diff",
+    "--name-only",
+    "--no-renames",
+    base,
+    "HEAD",
+  ]);
+  return out.split("\n").filter(Boolean);
+}

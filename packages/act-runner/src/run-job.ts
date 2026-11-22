@@ -26,6 +26,8 @@ export interface JobResult {
   exitCode?: number;
   /** Short human-readable cause. */
   reason: string;
+  /** The job's declared outputs, read after it ran (split jobs only; others have none). */
+  outputs?: Record<string, string>;
 }
 
 export type RunEvent =
@@ -179,8 +181,9 @@ export async function* runJob(
     if (inst.exitCode !== 0) return fail(`act install failed: ${inst.output.trim()}`);
 
     // Pin every `uses:` to its sha in the files act will read.
-    for (const f of plan.files) {
-      if (f.text === f.source) continue;
+    for (const [i, f] of plan.files.entries()) {
+      // The workflow itself is always uploaded: for a split job it exists only here.
+      if (i > 0 && f.text === f.source) continue;
       await withRetry(
         () => provider.files.put(sandboxId, `${L.repo}/${f.path}`, enc.encode(f.text)),
         maxErr,
@@ -208,6 +211,8 @@ export async function* runJob(
     );
     yield { kind: "phase", phase: "running" };
 
+    // Events of stub need jobs (split workflows) are not part of this job.
+    const mine = (ev: ActEvent): boolean => !("jobId" in ev && plan.stubIds.includes(ev.jobId));
     const parser = createActParser();
     const events: ActEvent[] = [];
     let offset = 0;
@@ -222,6 +227,7 @@ export async function* runJob(
       if (r.bytes.length > 0) {
         yield { kind: "log", offset, bytes: r.bytes };
         for (const ev of parser.push(dec.decode(r.bytes, { stream: true }))) {
+          if (!mine(ev)) continue;
           events.push(ev);
           yield { kind: "act", event: ev };
         }
@@ -246,11 +252,15 @@ export async function* runJob(
       await sleep(pollMs);
     }
     for (const ev of parser.end()) {
+      if (!mine(ev)) continue;
       events.push(ev);
       yield { kind: "act", event: ev };
     }
 
-    return decide(status, summarize(events));
+    const verdict = decide(status, summarize(events));
+    if (plan.outputNames.length === 0 || status.state === "lost") return verdict;
+    const outputs = await readOutputs(provider, sandboxId, plan, maxErr, pollMs);
+    return Object.keys(outputs).length > 0 ? { ...verdict, outputs } : verdict;
   } catch (e) {
     if (e instanceof PlanError) return fail(`plan rejected: ${e.message}`);
     if (e instanceof SandboxNotFoundError) return fail("sandbox is gone (cancelled or expired)");
@@ -307,3 +317,30 @@ export async function drain(
 }
 
 export { ACT_RELEASES };
+
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+
+/** Reads the files the generated export step wrote. A missing file is an output never set. */
+async function readOutputs(
+  provider: Provider,
+  sandboxId: string,
+  plan: JobPlan,
+  maxErr: number,
+  pollMs: number,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const name of plan.outputNames) {
+    try {
+      const bytes = await withRetry(
+        () => provider.files.get(sandboxId, `${plan.layout.outputsDir}/${name}`, MAX_OUTPUT_BYTES),
+        maxErr,
+        pollMs,
+      );
+      out[name] = dec.decode(bytes);
+    } catch (e) {
+      if (e instanceof SandboxNotFoundError) throw e;
+      // not written, or too large: the output stays unset
+    }
+  }
+  return out;
+}
