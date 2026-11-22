@@ -13,7 +13,7 @@ import {
   listEnvironmentRecords,
   parseTrust,
 } from "../db/repos";
-import { authorBlocked, liveEnvironmentRecords } from "./apply";
+import { authorBlocked, liveEnvironmentRecords, requiredApprovals } from "./apply";
 import { dbKeyStore } from "./store";
 import { statementHash, envStatementSchema } from "./statement";
 import { signatureSchema, verifySignature, type ApproverKeyStore } from "./verify";
@@ -74,17 +74,19 @@ export function createApprovalVerifier(
       const scope = { orgId: subject.orgId, projectId: subject.projectId };
       const policy = await getEnvPolicy(db, subject.orgId, environment);
       const keyPolicy = await getKeyPolicy(db, subject.orgId);
+      const run = await getRun(db, scope, subject.runId);
+      // A run made from a tag has an author nobody can name: one more approver than usual.
+      const required = run ? requiredApprovals(policy, run) : policy.required;
       const denied = (
         reason: Extract<ApprovalVerdict, { approved: false }>["reason"],
         have = 0,
       ): ApprovalVerdict => ({
         approved: false,
         environment,
-        required: policy.required,
+        required,
         have,
         reason,
       });
-      const run = await getRun(db, scope, subject.runId);
       if (!run) return denied("run_not_found");
       const trust = parseTrust(run);
       if (
@@ -128,7 +130,7 @@ export function createApprovalVerifier(
         // A key with no forge login is tied to no person and counts for nothing.
         const identity = approverIdentity(key);
         if (identity === null) continue;
-        if (authorBlocked(policy, key.forgeLogin, run.actor) !== null) {
+        if (authorBlocked(policy, key.forgeLogin, run) !== null) {
           selfApproved = true;
           continue;
         }
@@ -144,15 +146,14 @@ export function createApprovalVerifier(
       }
       const distinct = new Map<string, VerifiedApproval>();
       for (const a of good) if (!distinct.has(a.identity)) distinct.set(a.identity, a);
-      if (distinct.size >= policy.required)
+      if (distinct.size >= required)
         return {
           approved: true,
           environment,
-          required: policy.required,
+          required,
           approvals: [...distinct.values()],
         };
-      if (selfApproved && distinct.size < policy.required)
-        return denied("self_approval", distinct.size);
+      if (selfApproved && distinct.size < required) return denied("self_approval", distinct.size);
       if (all.length > 0 && all.every((r) => r.expiresAt <= now)) return denied("expired", 0);
       return denied("insufficient_approvals", distinct.size);
     },
