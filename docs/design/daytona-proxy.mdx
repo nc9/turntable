@@ -1,0 +1,120 @@
+---
+title: "Design: secrets proxy for Daytona sandboxes"
+description: How a Daytona sandbox reaches the secrets proxy and nothing else, how that is enforced and verified, and what it costs.
+---
+
+This is a design, not an implementation. It extends the [secrets proxy](/secrets-proxy), which today confines Docker sandboxes, to the hosted setup: the worker runs on a platform such as Railway and the sandboxes run in Daytona's cloud. Nothing here is built. Some facts about Daytona can only be settled on a real account, and they are listed as a spike below.
+
+## The problem
+
+The proxy only protects a secret if the sandbox has no other way out. With Docker, the sandbox sits alone on an internal network and a relay container is its only neighbour. A Daytona sandbox is in another provider's network. The worker cannot attach a network interface to it, and the proxy is not on the same host. The design has to answer four questions:
+
+1. How does a Daytona sandbox reach the proxy, and only the proxy?
+2. How is the proxy exposed, safely, to the public internet?
+3. How is "only the proxy" enforced and verified before a job runs?
+4. What happens when a credential leaks, and what does it cost?
+
+## What Daytona gives us
+
+From Daytona's [network limits documentation](https://www.daytona.io/docs/en/network-limits/) (checked at the time of writing, to be re-checked in the spike):
+
+| Feature | What it does | Fit |
+| --- | --- | --- |
+| `networkAllowList` | Outbound traffic limited to a comma-separated list of IPv4 CIDR blocks. At most 10 entries. No hostnames, no IPv6. Set at create time or on a running sandbox. | Good: a per-sandbox firewall, deny by default once set. |
+| `domainAllowList` | Outbound traffic limited to listed hostnames, `*.` wildcards allowed, up to 100 entries. | Useful if the proxy has no stable IP, but how a name is enforced (resolver, SNI, or resolved addresses) is not documented. |
+| `networkBlockAll` | No outbound traffic. | What the provider uses today for egress `none`. |
+| `outboundProxyUrl` | Create time only. Routes HTTP(S) through an upstream proxy and sets `HTTP_PROXY` and `HTTPS_PROXY` in the sandbox. Clients that ignore the variables are not routed. | Rejected below. |
+| VPN clients (Tailscale, OpenVPN and others) | The sandbox joins a private network. Per sandbox, Tier 3 and up. | Rejected below. |
+
+At create time only one of `networkAllowList`, `domainAllowList` and `networkBlockAll` may be set. Per-sandbox settings need Tier 3 or 4: on Tier 1 and 2 the organisation's policy applies and a sandbox cannot override it. The documentation is not consistent about whether Daytona's own "essential services" are reachable under an allow list. We do not rely on either reading: the canary measures what is reachable.
+
+## Options considered
+
+**A. Allow list to a public TLS endpoint, with a relay in the sandbox (recommended).** The sandbox is created with an allow list that contains only the proxy's public address. The proxy listens on a public TLS endpoint. A tiny relay inside the sandbox turns the plain local proxy address that tools use into a TLS connection to that endpoint.
+
+**B. `outboundProxyUrl`.** Daytona would point the sandbox at our proxy for us. Rejected: the URL would carry the per-attempt credential, so the credential would sit in Daytona's API request and in the sandbox record, which breaks the rule that the credential never appears in a provider call or log. It is only set at create time, and tools that ignore the variables go direct, so an allow list is needed anyway.
+
+**C. VPN or tailnet.** The proxy is reachable only on a private network that the sandbox joins. Rejected: joining needs a VPN credential inside the sandbox, which is itself a secret a job could use for more than the proxy. It also adds a long-lived control plane, a tier requirement and several seconds to every start.
+
+**D. mTLS with a per-attempt client certificate.** Rejected as the only control: clients disagree on whether they support client certificates for a proxy (curl does; most others do not). It could be added later as defence in depth.
+
+**E. Sandbox-initiated reverse tunnel.** Rejected: it needs the same public endpoint as A plus a second protocol.
+
+## Recommendation: option A
+
+### How the sandbox reaches the proxy
+
+- The provider creates the sandbox with `networkAllowList` set to the proxy endpoint, in one create call, so there is no window with open egress. If the endpoint has no stable address it uses `domainAllowList` with the one hostname, and the canary decides whether that is acceptable (see the spike).
+- Only the proxy endpoint is reachable. No `0.0.0.0/0`, no Daytona infrastructure range, no DNS server unless the spike shows the relay needs one. The relay connects to the endpoint's address directly with the endpoint's hostname as the TLS server name, and verifies the certificate against the system roots, so a hostile resolver or a spoofed address cannot impersonate the proxy.
+- After create, the provider uploads a small relay script with `files.put` and starts it as a detached exec. The relay listens on `127.0.0.1` inside the sandbox, forwards each connection over TLS to the endpoint, and holds no credential. Tools get `HTTP(S)_PROXY=http://<attempt credential>@127.0.0.1:<port>` through the same `0600` environment file the Docker path uses, never through an argv. The relay speaks plain TCP in both directions, so it works for tools that cannot talk to an HTTPS proxy.
+- The relay is a Node script, because the sandbox image already carries Node for act. If the image has no Node the provider refuses the sandbox; it does not fall back to something weaker.
+
+### How the proxy is exposed
+
+- The proxy gets its own public listener on its own port and hostname, separate from the HTTP API and UI, with a certificate from a public CA for that hostname (the platform's managed certificate, or the proxy's own ACME client). It speaks `CONNECT` over TLS (an HTTPS proxy); the existing per-attempt `Proxy-Authorization` rides inside TLS, so the credential is never on the wire in clear.
+- The listener does nothing before authentication except read a capped request head, with a short handshake and head deadline. Unauthenticated connections cost a handshake and are dropped. Failed authentications are rate limited per source address and globally, and logged without the presented value.
+- The credential is the one the proxy already issues: `attempt id : 256-bit random token`, only a hash stored, constant-time comparison, expiry and revocation checked on every request, tunnels closed on revoke. Its lifetime is the job's timeout plus a small margin, not hours.
+- The proxy and the API can run as separate services of the same deployment so a flaw in the public listener does not expose the API's process. Both need the vault and the database, so the split is of exposure, not of trust. That is a deployment choice, not a code change.
+
+### How "deny all except the proxy" is enforced and verified
+
+Enforced by the allow list at Daytona's firewall. Verified by the canary, from inside the sandbox, before the job runs, extending the Docker canary:
+
+1. **Direct paths closed.** The existing probes of a public address and the cloud metadata address must fail.
+2. **Private ranges closed.** Probes of RFC 1918 addresses and Daytona's own internal ranges must fail (the equivalent of the Docker host-address probe).
+3. **A non-proxy public address closed on the proxy's own port**, so an allow list that is wider than intended (for example a whole provider range) is caught.
+4. **The proxy open.** The relay reaches the endpoint, completes TLS with the right name, and gets the proxy's answer to a request without credentials (a 407).
+
+The provider returns the list of targets that must not be reachable, as the Docker provider does with `mustNotReach`, and the job runner refuses to run if the list is empty or any probe is reachable or cannot be completed.
+
+### What fails closed
+
+| Condition | Result |
+| --- | --- |
+| The account is below Tier 3, or the create call rejects the allow list | The provider refuses `deny-all-except-proxy`; the attempt ends as `infra_error`. |
+| The allow list is accepted but not enforced (a probe gets out) | The canary fails; the sandbox is destroyed, the job does not run. |
+| A probe cannot be run (no `curl` in the image) | Treated as a failure for a proxied job, not as unknown. |
+| The proxy endpoint is down or the certificate does not verify | The proxy probe fails; the attempt ends as `infra_error`. |
+| The relay does not start | Same. |
+| The worker restarts mid-job | The credential lived in the worker's memory; a re-attached proxied attempt is refused, as today. |
+| A credential expires or is revoked while a tunnel is open | The tunnel is closed. |
+
+### Threat model
+
+| Threat | Defence |
+| --- | --- |
+| **A stolen attempt credential** (a job prints it, or reads the environment file) | It is valid for one attempt, for the rules and passthrough hosts of that attempt only, and dies when the attempt ends or is revoked. A thief can do what the job could do through the proxy and no more. The credential is redacted from the job's log. A leaked credential is not a leaked secret: values never reach the sandbox. |
+| **Replay** after the attempt | Expired and revoked credentials get the same 407 as unknown ones. |
+| **Guessing a credential** from outside | 256 bits of randomness, constant-time comparison, rate limiting by source address. |
+| **Another tenant's sandbox** reaching our proxy | It has no credential, and it cannot use another attempt's: each credential names its attempt and the attempt's rules. The endpoint is public, so this rests on the credential, not on the network. |
+| **Our sandbox reaching other hosts** | The allow list, verified by the canary on every start. |
+| **A hostile job tunnelling data out through the proxy** | Only to hosts with a rule or a listed passthrough host and port, exactly as with Docker. |
+| **Interception between the relay and the proxy** | TLS with certificate and name verification in the relay. |
+| **Daytona itself** | Out of scope: it hosts the sandbox and sees what the sandbox sees, including the environment file in transit. The proxy exists so that raw secret values are never in that set. |
+| **Denial of service on the public listener** | Handshake and head deadlines, connection caps per source and in total, work only after authentication, and the platform's own protections. A flood costs availability of proxied jobs, not secrecy. |
+
+## Costs
+
+- **Per job:** one create with an allow list (no extra call), a few small file and exec calls for the relay, and four canary probes: roughly one to three seconds of sandbox time added to a start, billed as sandbox minutes like the rest of the job.
+- **Always on:** the proxy listener, a small service. If it shares the worker's process there is no extra service.
+- **Bandwidth:** traffic of proxied jobs goes through the platform that runs the proxy, so its egress is billed there. Rule hosts (a registry, an API) are small. Passthrough tunnels for checkout and package installs can be large: pre-staging sources and listing only the hosts a job needs keeps this down.
+- **Latency:** one extra hop per connection. Noticeable for many small requests, not for a build.
+- **Account requirement:** Tier 3 or above on the Daytona account that runs these jobs. Jobs that need no secrets stay on egress `none` and cost nothing extra.
+
+## Spike before building
+
+Each of these is a short experiment on a real account, with at most two labelled sandboxes, deleted afterwards:
+
+1. The tier of the account, and whether a per-sandbox `networkAllowList` can be set at create time.
+2. Whether a public hostname on the hosting platform has a stable address. If not, whether `domainAllowList` is enforced by the resolver (weak: a job can connect to an address it knows), by SNI or by resolved addresses, and whether the relay needs DNS at all.
+3. What is reachable under the allow list: Daytona's internal ranges, its DNS, its metadata, its toolbox address. These become the `mustNotReach` list.
+4. Whether the sandbox's image has `curl` and `node` (the probes and the relay).
+5. Whether the allow list can be updated on a running sandbox without a window of open egress (the create-time path avoids needing it).
+
+## What would be built
+
+1. Daytona `egressPolicy` gains `deny-all-except-proxy`, and `proxyReachability` becomes true only where the canary can verify it.
+2. `SandboxNetworkSpec.proxy` carries the public endpoint (host, port, TLS name); the Daytona provider maps it to the allow list, installs the relay and returns the local address and the `mustNotReach` list.
+3. The proxy gains a TLS listener mode, the per-source rate limits and the connection caps above.
+4. The canary gains the private-range and wrong-address probes. Nothing else in the job runner changes: it already works from `SandboxHandle.proxy` and `mustNotReach`.
+5. Tests: a fake Daytona API that records the create body (allow list present, no window), the relay against a local TLS proxy, the canary's refusal cases, and the live check script run by hand against a real account under the existing sandbox limits.
