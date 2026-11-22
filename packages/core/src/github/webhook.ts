@@ -38,6 +38,12 @@ export interface WebhookOptions {
   /** Failed signatures allowed per client per window before answering 429. Default 30 per minute. */
   maxFailures?: number;
   failureWindowMs?: number;
+  /**
+   * Trust the right-most X-Forwarded-For hop as the client address. Only set this when the
+   * server sits behind a proxy you control that appends the real peer. Otherwise every
+   * request shares one key, which is safe because a valid signature is never rate limited.
+   */
+  trustForwardedFor?: boolean;
   log?: (line: string) => void;
 }
 
@@ -89,8 +95,12 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
   const inflight = new Set<Promise<void>>();
   let sinceLastPurge = 0;
 
-  const clientKey = (req: Request): string =>
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const MAX_TRACKED = 10_000;
+  const clientKey = (req: Request): string => {
+    if (!o.trustForwardedFor) return "all";
+    const hops = (req.headers.get("x-forwarded-for") ?? "").split(",");
+    return hops[hops.length - 1]?.trim() || "unknown";
+  };
 
   const limited = (key: string): boolean => {
     const f = failures.get(key);
@@ -102,6 +112,10 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
     return f.count >= maxFailures;
   };
   const noteFailure = (key: string): void => {
+    if (failures.size >= MAX_TRACKED) {
+      for (const [k, v] of failures) if (v.resetAt <= now()) failures.delete(k);
+      if (failures.size >= MAX_TRACKED) failures.clear();
+    }
     const f = failures.get(key);
     if (!f || f.resetAt <= now()) failures.set(key, { count: 1, resetAt: now() + windowMs });
     else f.count += 1;
@@ -142,7 +156,9 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
       if (url.pathname !== WEBHOOK_PATH) return undefined;
       if (req.method !== "POST") return json(405, { error: "method not allowed" });
       const key = clientKey(req);
-      if (limited(key)) return json(429, { error: "too many invalid requests" });
+      // A client that keeps failing is refused before its body is read. A correctly signed
+      // request is never refused by the limiter: attackers cannot lock out GitHub's deliveries.
+      const throttled = limited(key);
 
       const app = await getGithubApp(o.db);
       if (!app) return json(503, { error: "no GitHub App is configured" });
@@ -161,7 +177,9 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
       }
       if (!secrets.some((s) => signatureMatches(s, raw, header))) {
         noteFailure(key);
-        return json(401, { error: "invalid signature" });
+        return throttled
+          ? json(429, { error: "too many invalid requests" })
+          : json(401, { error: "invalid signature" });
       }
 
       const delivery = req.headers.get("x-github-delivery") ?? "";

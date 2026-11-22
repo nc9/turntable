@@ -79,14 +79,23 @@ describe("signature", () => {
     expect(res?.status).toBe(401);
   });
 
-  test("repeated bad signatures from one client are rate limited", async () => {
+  test("repeated bad signatures are rate limited, valid signatures never are", async () => {
     const h = await harness();
     for (let i = 0; i < 3; i += 1) await h.post(installed, { secret: "no", xff: "1.2.3.4" });
     expect((await h.post(installed, { secret: "no", xff: "1.2.3.4" }))?.status).toBe(429);
-    // A valid request from someone else is unaffected, and the window expires.
-    expect((await h.post(installed, { xff: "5.6.7.8" }))?.status).toBe(202);
+    // Without a trusted proxy every client shares one key, yet a correctly signed delivery
+    // (GitHub's) still goes through: the limiter cannot be used to lock out real webhooks.
+    expect((await h.post(installed, { xff: "1.2.3.4" }))?.status).toBe(202);
+    expect((await h.post(installed, {}))?.status).toBe(202);
     h.advance(61_000);
     expect((await h.post(installed, { secret: "no", xff: "1.2.3.4" }))?.status).toBe(401);
+  });
+
+  test("a spoofed X-Forwarded-For is ignored unless a trusted proxy is configured", async () => {
+    const h = await harness();
+    // Rotating XFF values does not escape the limit: all share one key by default.
+    for (let i = 0; i < 3; i += 1) await h.post(installed, { secret: "no", xff: `9.9.9.${i}` });
+    expect((await h.post(installed, { secret: "no", xff: "8.8.8.8" }))?.status).toBe(429);
   });
 });
 
