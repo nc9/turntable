@@ -4,6 +4,7 @@ import {
   PlanError,
   assertNoDockerAccess,
   assertPinned,
+  localActionDir,
   planJob,
   resolveActions,
   rewriteUses,
@@ -246,5 +247,39 @@ describe("pinning fails closed whatever the YAML looks like", () => {
       expect(e).toBeInstanceOf(PlanError);
       expect((e as PlanError).feature).toBe("unpinned-action");
     }
+  });
+});
+
+describe("local action paths cannot leave the repository", () => {
+  const wfUses = (uses: string) =>
+    `name: t\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ${uses}\n`;
+  const planUses = (uses: string, readFile: (p: string) => string | undefined = () => undefined) =>
+    planJob(wfUses(uses), "a", { workflowPath: ".github/workflows/ci.yml", readFile });
+
+  test("localActionDir normalises inside paths and refuses the rest", () => {
+    expect(localActionDir("./.github/actions/x")).toBe(".github/actions/x");
+    expect(localActionDir("./.github/actions/x/")).toBe(".github/actions/x");
+    expect(localActionDir("./a/b/../c")).toBe("a/c");
+    expect(localActionDir("./")).toBe("");
+    for (const bad of ["./..", "./../x", "./a/../../x", "../x", "/etc/x", "./a\\b", "./a\0b"]) {
+      expect(localActionDir(bad), JSON.stringify(bad)).toBeUndefined();
+    }
+  });
+
+  test("a uses: that climbs out is a PlanError and nothing is read for it", () => {
+    for (const uses of ["./../../../../etc/x", "./a/../../b", "../x", "./.."]) {
+      const reads: string[] = [];
+      expect(() => planUses(uses, (p) => (reads.push(p), undefined)), uses).toThrow(PlanError);
+      expect(reads, uses).toEqual([]);
+    }
+  });
+
+  test("an ordinary local action is still read, including the repo root", () => {
+    const reads: string[] = [];
+    planUses("./.github/actions/x", (p) => (reads.push(p), undefined));
+    expect(reads).toEqual([".github/actions/x/action.yml", ".github/actions/x/action.yaml"]);
+    const root: string[] = [];
+    planUses("./", (p) => (root.push(p), undefined));
+    expect(root).toEqual(["action.yml", "action.yaml"]); // never an absolute "/action.yml"
   });
 });

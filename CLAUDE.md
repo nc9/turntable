@@ -1,6 +1,6 @@
-# Turntable
+# Longshore
 
-Turntable is an open source CI system. It runs GitHub Actions workflows outside GitHub, on the sandbox or container provider you choose. It ships as a single Bun binary with a built-in web UI. Providers and secret stores are plugins, and security is the core design goal. It is pre-alpha and under active development.
+Longshore is an open source CI system. It runs GitHub Actions workflows outside GitHub, on the sandbox or container provider you choose. It ships as a single Bun binary with a built-in web UI. Providers and secret stores are plugins, and security is the core design goal. It is pre-alpha and under active development.
 
 @AGENTS.md
 

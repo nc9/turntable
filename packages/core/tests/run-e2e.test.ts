@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DockerProvider } from "@turntable/provider-docker";
+import { DockerProvider } from "@longshore/provider-docker";
 import {
   ensureLocalTenant,
   listAttempts,
@@ -13,10 +13,10 @@ import {
   readLog,
 } from "../src/db";
 
-// CI only (TT_RUN_E2E=1, TT_BINARY=<compiled turntable>): needs Docker and network for the
+// CI only (TT_RUN_E2E=1, TT_BINARY=<compiled longshore>): needs Docker and network for the
 // pinned act download. Runs the real binary against examples/hello.
 const enabled = process.env.TT_RUN_E2E === "1" && !!process.env.TT_BINARY;
-const bin = resolve(process.env.TT_BINARY ?? "turntable");
+const bin = resolve(process.env.TT_BINARY ?? "longshore");
 const tmp = mkdtempSync(join(tmpdir(), "tt-run-e2e-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -51,7 +51,7 @@ const args = (repo: string, data: string, wf: string, job: string): string[] => 
 ];
 
 async function stored(data: string) {
-  const db = openDatabase(join(data, "turntable.db"));
+  const db = openDatabase(join(data, "longshore.db"));
   const scope = await ensureLocalTenant(db);
   const [run] = await listRuns(db, scope);
   const [job] = run ? await listJobs(db, scope, run.id) : [];
@@ -63,7 +63,7 @@ async function stored(data: string) {
   return { run, job, attempt, log, steps };
 }
 
-describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
+describe.skipIf(!enabled)("longshore run (compiled binary, docker)", () => {
   test("hello job: exit 0 and the run is stored with its log", async () => {
     const { repo, data } = await exampleRepo("ok");
     const p = Bun.spawn(args(repo, data, "ci.yml", "hello"), { stdout: "pipe", stderr: "inherit" });
@@ -118,4 +118,61 @@ describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
     expect(s.job).toMatchObject({ state: "cancelled" });
     expect(await new DockerProvider().count({})).toBe(0);
   }, 600_000);
+
+  test("whole workflow: needs, outputs, if, skipped and docker jobs, cache miss, runner.os", async () => {
+    const { repo, data } = await exampleRepo("pipeline");
+    const p = Bun.spawn(
+      [
+        bin,
+        "run",
+        join(repo, ".github/workflows/pipeline.yml"),
+        "--repo",
+        repo,
+        "--data-dir",
+        data,
+      ],
+      { stdout: "pipe", stderr: "inherit" },
+    );
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    if (code !== 0) console.log(out);
+    expect(code).toBe(0);
+    expect(out).toContain("got-version=1.2.3");
+    expect(out).toContain("got-result=success");
+    expect(out).toContain("got-os=Linux");
+    expect(out).toContain("finished after success");
+    const db = openDatabase(join(data, "longshore.db"));
+    const scope = await ensureLocalTenant(db);
+    const [run] = await listRuns(db, scope);
+    const jobs = run ? await listJobs(db, scope, run.id) : [];
+    db.close();
+    const state = (k: string) => jobs.find((j) => j.jobKey === k)?.state;
+    expect(run?.status).toBe("success");
+    expect(state("build")).toBe("success");
+    expect(state("test")).toBe("success");
+    expect(state("skipped")).toBe("skipped");
+    expect(state("images")).toBe("skipped");
+    expect(state("finish")).toBe("success");
+    expect(JSON.parse(jobs.find((j) => j.jobKey === "test")?.needs ?? "[]")).toEqual(["build"]);
+  }, 900_000);
+
+  test("a workflow that does not trigger exits 0 and stores nothing", async () => {
+    const { repo, data } = await exampleRepo("notrigger");
+    const p = Bun.spawn(
+      [
+        bin,
+        "run",
+        join(repo, ".github/workflows/pipeline.yml"),
+        "--repo",
+        repo,
+        "--data-dir",
+        data,
+        "--event",
+        "workflow_dispatch",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await p.exited).toBe(0);
+    expect(await new Response(p.stderr).text()).toContain("not triggered");
+  }, 120_000);
 });

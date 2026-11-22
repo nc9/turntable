@@ -36,7 +36,7 @@ export async function buildUi(): Promise<string[]> {
     },
     define: {
       "process.env.NODE_ENV": JSON.stringify("production"),
-      "process.env.TURNTABLE_UI_BACKEND": JSON.stringify(process.env.TURNTABLE_UI_BACKEND ?? ""),
+      "process.env.LONGSHORE_UI_BACKEND": JSON.stringify(process.env.LONGSHORE_UI_BACKEND ?? ""),
     },
   });
   if (!result.success) {

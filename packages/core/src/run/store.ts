@@ -1,17 +1,19 @@
 import {
   type Db,
   type Scope,
+  appendAudit,
+  appendLog,
+  type StepInput,
   createAttempt,
   createJob,
   createRun,
   setRunStatus,
   transitionJob,
   updateAttempt,
-  appendLog,
   upsertStep,
 } from "../db";
 import { aggregateRunStatus } from "../db/job-state";
-import type { StepResult, StepStage } from "../db/schema";
+import type { JobState, StepResult, StepStage } from "../db/schema";
 
 export type FinalState = "success" | "failure" | "infra_error" | "cancelled" | "skipped";
 
@@ -30,77 +32,120 @@ export interface StepRecord {
   logOffset: number;
 }
 
+export interface JobIds {
+  runId: string;
+  jobId: string;
+  attemptId: string;
+}
+
+export interface RunMeta {
+  workflowPath: string;
+  event: string;
+  ref: string;
+  sha?: string;
+  workflowName?: string;
+  commitMessage?: string;
+  actor?: string;
+  headBranch?: string;
+}
+
 /** What the orchestration needs from persistence. `dbRunStore` is the real one. */
 export interface RunStore {
-  begin(input: {
-    workflowPath: string;
-    event: string;
-    ref: string;
-    sha?: string;
-    workflowName?: string;
-    commitMessage?: string;
-    actor?: string;
-    headBranch?: string;
-    jobKey: string;
-    jobName: string;
-    provider: string;
-  }): Promise<{ runId: string; jobId: string; attemptId: string }>;
-  markRunning(ids: { runId: string; jobId: string; attemptId: string }): Promise<void>;
+  beginRun(meta: RunMeta): Promise<{ runId: string }>;
+  /** Creates a queued job row. */
+  createJob(
+    runId: string,
+    job: {
+      jobKey: string;
+      jobName: string;
+      needs: readonly string[];
+      matrix?: Record<string, unknown>;
+    },
+  ): Promise<{ jobId: string }>;
+  /** Creates an attempt and marks job, attempt and run running. */
+  startAttempt(runId: string, jobId: string, provider: string): Promise<JobIds>;
   setSandbox(attemptId: string, sandboxId: string): Promise<void>;
+  /** Records act's exec id as soon as it starts, so a controller restarted mid-run can re-attach. */
+  setExec?(attemptId: string, execId: string): Promise<void>;
+  /** Clears stored log, steps and cuts before a re-attached run replays the whole exec log. */
+  resetOutput?(attemptId: string): Promise<void>;
   appendLog(attemptId: string, offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(attemptId: string, step: StepRecord): Promise<void>;
+  /** A job that never ran (skipped, unsupported): state skipped, the reason kept as its log. */
+  skipJob(runId: string, jobId: string, provider: string, reason: string): Promise<void>;
+  /** A queued job that will not start (cancelled run, fail-fast). */
+  cancelQueuedJob(jobId: string): Promise<void>;
   /** `exitCode`: required non-zero for failure, 0 for success, absent otherwise. */
-  finish(
-    ids: { runId: string; jobId: string; attemptId: string },
+  finishJob(
+    ids: JobIds,
     state: FinalState,
     opts: { exitCode?: number; errorClass?: string },
   ): Promise<void>;
+  /** Sets the run status from the job states (continue-on-error failures count as success). */
+  finishRun(runId: string, states: readonly FinalState[]): Promise<void>;
+  /** Free-form record of how a run was launched (egress, provider, image). */
+  recordLaunch(info: Record<string, unknown>): Promise<void>;
 }
 
 export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
   return {
-    async begin(i) {
+    async beginRun(m) {
       const run = await createRun(db, scope, {
-        workflowPath: i.workflowPath,
-        event: i.event,
-        ref: i.ref,
-        ...(i.sha ? { sha: i.sha } : {}),
-        workflowName: i.workflowName,
-        commitMessage: i.commitMessage,
-        actor: i.actor,
-        headBranch: i.headBranch,
+        workflowPath: m.workflowPath,
+        event: m.event,
+        ref: m.ref,
+        ...(m.sha ? { sha: m.sha } : {}),
+        workflowName: m.workflowName,
+        commitMessage: m.commitMessage,
+        actor: m.actor,
+        headBranch: m.headBranch,
       });
-      const job = await createJob(db, scope, { runId: run.id, jobKey: i.jobKey, name: i.jobName });
-      if (!job) throw new Error("job creation failed");
-      const attempt = await createAttempt(db, scope, { jobId: job.id, provider: i.provider });
-      if (!attempt) throw new Error("attempt creation failed");
-      return { runId: run.id, jobId: job.id, attemptId: attempt.id };
+      return { runId: run.id };
     },
-    async markRunning(ids) {
-      await transitionJob(db, scope, ids.jobId, "running");
-      await updateAttempt(db, scope, ids.attemptId, { state: "running" });
-      await setRunStatus(db, scope, ids.runId, "running");
+    async createJob(runId, j) {
+      const job = await createJob(db, scope, {
+        runId,
+        jobKey: j.jobKey,
+        name: j.jobName,
+        needs: j.needs,
+        ...(j.matrix ? { matrix: j.matrix } : {}),
+      });
+      if (!job) throw new Error("job creation failed");
+      return { jobId: job.id };
+    },
+    async startAttempt(runId, jobId, provider) {
+      const attempt = await createAttempt(db, scope, { jobId, provider });
+      if (!attempt) throw new Error("attempt creation failed");
+      const ids = { runId, jobId, attemptId: attempt.id };
+      await transitionJob(db, scope, jobId, "running");
+      await updateAttempt(db, scope, attempt.id, { state: "running" });
+      await setRunStatus(db, scope, runId, "running");
+      return ids;
     },
     async setSandbox(attemptId, sandboxId) {
       await updateAttempt(db, scope, attemptId, { sandboxId });
+    },
+    async setExec(attemptId, execId) {
+      await updateAttempt(db, scope, attemptId, { execId });
     },
     async appendLog(attemptId, offset, bytes) {
       await appendLog(db, scope, attemptId, offset, bytes);
     },
     async recordStep(attemptId, step) {
-      await upsertStep(db, scope, {
-        attemptId,
-        stepKey: step.stepKey,
-        stage: stageOf(step.stage),
-        index: step.index,
-        name: step.name,
-        result: resultOf(step.result),
-        startedAt: step.startedAt ?? null,
-        finishedAt: step.endedAt ?? null,
-        logOffset: step.logOffset,
-      });
+      await upsertStep(db, scope, stepInputOf(attemptId, step));
     },
-    async finish(ids, state, opts) {
+    async skipJob(_runId, jobId, provider, reason) {
+      const attempt = await createAttempt(db, scope, { jobId, provider });
+      if (attempt) {
+        await appendLog(db, scope, attempt.id, 0, new TextEncoder().encode(`${reason}\n`));
+        await updateAttempt(db, scope, attempt.id, { state: "skipped" });
+      }
+      await transitionJob(db, scope, jobId, "skipped");
+    },
+    async cancelQueuedJob(jobId) {
+      await transitionJob(db, scope, jobId, "cancelled");
+    },
+    async finishJob(ids, state, opts) {
       const code = opts.exitCode ?? null;
       await transitionJob(db, scope, ids.jobId, state, { exitCode: code });
       await updateAttempt(db, scope, ids.attemptId, {
@@ -108,8 +153,35 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
         exitCode: code,
         ...(opts.errorClass ? { errorClass: opts.errorClass } : {}),
       });
-      await setRunStatus(db, scope, ids.runId, aggregateRunStatus([state]));
     },
+    async finishRun(runId, states) {
+      await setRunStatus(db, scope, runId, aggregateRunStatus(states as readonly JobState[]));
+    },
+    async recordLaunch(info) {
+      await appendAudit(db, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "run_local",
+        effect: "write",
+        outcome: "ok",
+        input: info,
+      });
+    },
+  };
+}
+
+/** The persisted shape of a step the runner reported. Shared by the CLI and the worker. */
+export function stepInputOf(attemptId: string, step: StepRecord): StepInput {
+  return {
+    attemptId,
+    stepKey: step.stepKey,
+    stage: stageOf(step.stage),
+    index: step.index,
+    name: step.name,
+    result: resultOf(step.result),
+    startedAt: step.startedAt ?? null,
+    finishedAt: step.endedAt ?? null,
+    logOffset: step.logOffset,
   };
 }
 

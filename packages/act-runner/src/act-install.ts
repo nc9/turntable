@@ -1,4 +1,4 @@
-import { InfraError } from "@turntable/provider-sdk";
+import { InfraError } from "@longshore/provider-sdk";
 
 /** nektos/act (MIT). Bump version and both hashes together, from the release's checksums.txt. */
 export const ACT_VERSION = "v0.2.97";

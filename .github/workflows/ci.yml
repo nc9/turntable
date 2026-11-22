@@ -1,4 +1,4 @@
-# Bootstrap CI on GitHub Actions. Turntable will run its own CI later.
+# Bootstrap CI on GitHub Actions. Longshore will run its own CI later.
 name: ci
 
 on:
@@ -39,8 +39,15 @@ jobs:
           fi
       - run: bun run test
       - run: bun run build
+        env:
+          # Re-signs the darwin binary with the pinned rcodesign and verifies the signature.
+          LONGSHORE_SIGN_DARWIN: "1"
+      - name: Darwin signature is fresh ad-hoc, and SHA256SUMS matches the signed files
+        run: |
+          bun run scripts/rcodesign.ts verify dist/longshore-darwin-arm64
+          (cd dist && sha256sum -c SHA256SUMS)
       - name: Smoke the linux-x64 binary
-        run: scripts/smoke.sh dist/turntable-linux-x64
+        run: scripts/smoke.sh dist/longshore-linux-x64
 
   provider-docker:
     runs-on: ubuntu-24.04
@@ -78,9 +85,9 @@ jobs:
         run: bun run test:act-e2e
       - name: Build the linux-x64 binary
         run: bun run scripts/build.ts bun-linux-x64
-      - name: turntable run end to end (compiled binary, docker provider)
+      - name: longshore run end to end (compiled binary, docker provider)
         env:
-          TT_BINARY: dist/turntable-linux-x64
+          TT_BINARY: dist/longshore-linux-x64
         run: bun run test:run-e2e
 
   docker:
@@ -98,3 +105,13 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+      - name: Build the amd64 image for a smoke run
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: longshore:smoke
+      - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token)
+        run: scripts/smoke-image.sh longshore:smoke

@@ -1,4 +1,4 @@
-import { redactString } from "@turntable/redact";
+import { redactString } from "@longshore/redact";
 import { z } from "zod";
 import { getJob, listAttempts, logSize, readLogRange } from "../../db/repos";
 import { defineOp } from "../define";

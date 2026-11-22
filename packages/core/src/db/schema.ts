@@ -161,13 +161,21 @@ export const runs = sqliteTable(
     event: text("event").notNull(),
     ref: text("ref").notNull(),
     sha: text("sha"),
-    /** Metadata the forge (or `turntable run`) supplies. All forge text: untrusted when shown. */
+    /** Metadata the forge (or `longshore run`) supplies. All forge text: untrusted when shown. */
     workflowName: text("workflow_name"),
     commitMessage: text("commit_message"),
     /** Forge login of whoever triggered it. */
     actor: text("actor"),
     headBranch: text("head_branch"),
     prNumber: integer("pr_number"),
+    /**
+     * Run-level planning facts as JSON text: the workflow `env`, the `github` and `vars`
+     * contexts that `if:` expressions see, and the `concurrency` setting. The scheduler reads it
+     * to decide when a job may run.
+     */
+    plan: text("plan"),
+    /** The workflow's concurrency group (project-wide), for cancel-in-progress. */
+    concurrencyGroup: text("concurrency_group"),
     /** Aggregate of its jobs; same vocabulary as job state. */
     status: text("status").notNull().default("queued"),
     createdAt: createdAt(),
@@ -180,6 +188,7 @@ export const runs = sqliteTable(
     check("runs_status_check", inList("status", JOB_STATES)),
     index("runs_project_created_idx").on(t.orgId, t.projectId, t.createdAt),
     index("runs_sha_idx").on(t.orgId, t.sha),
+    index("runs_concurrency_idx").on(t.orgId, t.projectId, t.concurrencyGroup),
   ],
 );
 
@@ -198,6 +207,10 @@ export const jobs = sqliteTable(
     matrix: text("matrix"),
     /** One of APPROVAL_KINDS or null. Validated in createJob, not by a CHECK: a CHECK would force a table rebuild. */
     approvalKind: text("approval_kind"),
+    /** The planned job as JSON text (key, ids, if:, outputs, continue-on-error ...). */
+    planned: text("planned"),
+    /** The job's outputs as a JSON object text, written when it finishes. */
+    outputs: text("outputs"),
     state: text("state").notNull().default("queued"),
     /** Set only for `success` and `failure`. */
     exitCode: integer("exit_code"),
@@ -233,6 +246,21 @@ export const jobAttempts = sqliteTable(
     errorClass: text("error_class"),
     /** Set when a person or agent asked for this attempt (a rerun); the reason they gave. */
     rerunReason: text("rerun_reason"),
+    /**
+     * The resolved job plan (actions pinned to shas, layout, argv, files) as JSON text, stored
+     * when the attempt starts, so a restarted controller can re-attach with no repo fetch.
+     */
+    plan: text("plan"),
+    /** The provider exec running the attempt, so a restarted controller can probe it. */
+    execId: text("exec_id"),
+    /**
+     * Scheduler lease. A worker that claims a queued attempt owns it until `lease_expires_at`
+     * and extends it by heartbeat. An expired lease on a running attempt means its worker is
+     * gone: the reconciler resolves it.
+     */
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: integer("lease_expires_at", { mode: "number" }),
+    heartbeatAt: integer("heartbeat_at", { mode: "number" }),
     createdAt: createdAt(),
     startedAt: integer("started_at", { mode: "number" }),
     finishedAt: integer("finished_at", { mode: "number" }),
@@ -245,6 +273,7 @@ export const jobAttempts = sqliteTable(
     unique("job_attempts_id_org_project_unique").on(t.id, t.orgId, t.projectId),
     unique("job_attempts_job_attempt_unique").on(t.jobId, t.attempt),
     check("job_attempts_state_check", inList("state", JOB_STATES)),
+    index("job_attempts_state_idx").on(t.state, t.id),
   ],
 );
 
@@ -404,5 +433,123 @@ export const logCuts = sqliteTable(
       columns: [t.attemptId, t.orgId, t.projectId],
       foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
     }),
+  ],
+);
+
+// ---- poll ingest ----
+
+/**
+ * One row per (repo, workflow, event, sha) the poller turned into a run. The unique key is what
+ * makes ingest idempotent, and its `created_at` is what the per-hour run cap counts.
+ */
+export const pollSeen = sqliteTable(
+  "poll_seen",
+  {
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    /** `owner/name`, lowercase. */
+    repo: text("repo").notNull(),
+    workflowPath: text("workflow_path").notNull(),
+    event: text("event").notNull(),
+    sha: text("sha").notNull(),
+    runId: text("run_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.projectId, t.repo, t.workflowPath, t.event, t.sha] }),
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    index("poll_seen_repo_created_idx").on(t.projectId, t.repo, t.createdAt),
+  ],
+);
+
+// ---- GitHub App, secrets, webhooks ----
+
+/**
+ * Built-in encrypted secrets (envelope encryption, see src/secrets). `ciphertext` is the whole
+ * sealed record; the (org, name) pair is bound into its AAD, so a row cannot be moved to another
+ * name or org. Values are never selected into any API response.
+ */
+export const secrets = sqliteTable(
+  "secrets",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    name: text("name").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.name] })],
+);
+
+/** The GitHub App this instance runs as. One per instance; its secrets live in `secrets`. */
+export const githubApps = sqliteTable("github_apps", {
+  /** The numeric GitHub App id, as text. */
+  appId: text("app_id").primaryKey(),
+  /** The org that owns the App and, with it, every installation of it. */
+  orgId: text("org_id")
+    .notNull()
+    .references(() => orgs.id),
+  slug: text("slug").notNull(),
+  name: text("name").notNull(),
+  ownerLogin: text("owner_login").notNull(),
+  htmlUrl: text("html_url").notNull(),
+  clientId: text("client_id").notNull(),
+  /** Set while the previous webhook secret is still accepted after a rotation. */
+  previousSecretExpiresAt: integer("previous_secret_expires_at", { mode: "number" }),
+  createdAt: createdAt(),
+});
+
+export const INSTALLATION_STATUSES = ["active", "suspended", "deleted"] as const;
+export type InstallationStatus = (typeof INSTALLATION_STATUSES)[number];
+
+/** Installations of the App, mapped to the org that owns it. Facts come from the API. */
+export const githubInstallations = sqliteTable(
+  "github_installations",
+  {
+    installationId: text("installation_id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    appId: text("app_id").notNull(),
+    accountLogin: text("account_login").notNull(),
+    accountId: text("account_id").notNull(),
+    accountType: text("account_type").notNull(),
+    repositorySelection: text("repository_selection").notNull(),
+    status: text("status").notNull().default("active"),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  () => [check("github_installations_status_check", inList("status", INSTALLATION_STATUSES))],
+);
+
+export const DELIVERY_STATUSES = ["received", "processed", "ignored", "failed"] as const;
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
+/**
+ * Every accepted webhook delivery, keyed by GitHub's delivery GUID: the dedupe key and the
+ * audit trail. Written BEFORE the 202, tagged with the App's org.
+ * `payload` is kept only for events a handler acts on, so an interrupted one can be retried.
+ */
+export const webhookDeliveries = sqliteTable(
+  "webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    /** The org that owns the App the delivery was addressed to. */
+    orgId: text("org_id").references(() => orgs.id),
+    forge: text("forge").notNull().default("github"),
+    event: text("event").notNull(),
+    action: text("action"),
+    installationId: text("installation_id"),
+    status: text("status").notNull().default("received"),
+    error: text("error"),
+    payload: text("payload"),
+    receivedAt: integer("received_at", { mode: "number" }).notNull().default(nowMs),
+    processedAt: integer("processed_at", { mode: "number" }),
+  },
+  (t) => [
+    index("webhook_deliveries_received_idx").on(t.receivedAt),
+    check("webhook_deliveries_status_check", inList("status", DELIVERY_STATUSES)),
   ],
 );

@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Gate } from "./gate";
+import { migrateLegacyDbFiles } from "./legacy-names";
 import { applyMigrations } from "./migrate";
 import { migrations } from "./migrations.generated";
 import * as schema from "./schema";
@@ -50,6 +51,7 @@ export type Db = {
 const ended = () => new Error("transaction handle used after it ended");
 
 export function openDatabase(path: string): Db {
+  migrateLegacyDbFiles(path);
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new Database(path, { create: true, strict: true });
   sqlite.run("PRAGMA journal_mode = WAL");
@@ -132,7 +134,7 @@ export function openDatabase(path: string): Db {
             try {
               hook();
             } catch (err) {
-              console.error("turntable: afterCommit hook failed", err);
+              console.error("longshore: afterCommit hook failed", err);
             }
           }
           return out;

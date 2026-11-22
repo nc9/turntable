@@ -65,7 +65,7 @@ test("GET /runs: query coercion, cursor pagination, untrusted header, security h
   }
   const first = await req("/api/v1/runs?limit=2", { token: reader });
   expect(first.status).toBe(200);
-  expect(first.headers.get("x-turntable-untrusted-content")).toBe("true");
+  expect(first.headers.get("x-longshore-untrusted-content")).toBe("true");
   expect(first.headers.get("cache-control")).toBe("no-store");
   expect(first.headers.get("x-content-type-options")).toBe("nosniff");
   expect(first.headers.get("content-type")).toContain("application/json");

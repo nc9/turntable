@@ -15,7 +15,11 @@ import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
 export * from "./api";
+export * from "./github";
 export * from "./events";
+export * from "./lease";
+export * from "./poll";
+export * from "./readiness";
 export * from "./rerun";
 
 export type Project = typeof s.projects.$inferSelect;
@@ -26,7 +30,7 @@ export type JobAttempt = typeof s.jobAttempts.$inferSelect;
 
 const now = () => Date.now();
 
-/** Metadata `turntable run` or the forge supplies with a run. Free text is length-capped. */
+/** Metadata `longshore run` or the forge supplies with a run. Free text is length-capped. */
 export type RunInput = {
   workflowPath: string;
   event: string;
@@ -37,6 +41,9 @@ export type RunInput = {
   actor?: string | undefined;
   headBranch?: string | undefined;
   prNumber?: number | undefined;
+  /** Run-level planning facts (JSON text); see `runs.plan`. */
+  plan?: string | undefined;
+  concurrencyGroup?: string | undefined;
 };
 
 const cap = (value: string | undefined, max: number): string | null =>
@@ -294,6 +301,8 @@ export function createRun(db: Db, scope: Scope, input: RunInput): Promise<Run> {
       actor: cap(input.actor, 100),
       headBranch: cap(input.headBranch, 255),
       prNumber: input.prNumber ?? null,
+      plan: input.plan ?? null,
+      concurrencyGroup: input.concurrencyGroup ?? null,
     });
     await appendEvent(h, scope, {
       type: "run.queued",
@@ -392,6 +401,8 @@ export function createJob(
     /** This leg's matrix values. */
     matrix?: Record<string, unknown> | undefined;
     approvalKind?: s.ApprovalKind | undefined;
+    /** The planned job (key, ids, if:, outputs, continue-on-error ...), stored as JSON. */
+    planned?: unknown;
   },
 ): Promise<Job | undefined> {
   return db.run(async (h) => {
@@ -412,6 +423,7 @@ export function createJob(
       needs: JSON.stringify(input.needs ?? []),
       matrix: input.matrix === undefined ? null : JSON.stringify(input.matrix),
       approvalKind: input.approvalKind ?? null,
+      planned: input.planned === undefined ? null : JSON.stringify(input.planned),
     });
     return getJob(h, scope, id);
   });
@@ -561,6 +573,7 @@ export function updateAttempt(
   patch: {
     state?: JobState;
     sandboxId?: string | null;
+    execId?: string | null;
     exitCode?: number | null;
     errorClass?: string | null;
   },

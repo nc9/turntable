@@ -1,9 +1,9 @@
 ---
 title: Quickstart
-description: Run the Turntable server from a binary or a container.
+description: Run the Longshore server from a binary or a container.
 ---
 
-Only what works today is listed here. You can run one job of a workflow locally with `turntable run`; the server does not schedule runs yet.
+Only what works today is listed here. You can run one job of a workflow locally with `longshore run`; the server does not schedule runs yet.
 
 ## Binary
 
@@ -17,8 +17,8 @@ bun run build
 Then run one:
 
 ```sh
-./dist/turntable-darwin-arm64 version
-./dist/turntable-darwin-arm64 serve --port 8080 --data-dir ./data
+./dist/longshore-darwin-arm64 version
+./dist/longshore-darwin-arm64 serve --port 8080 --data-dir ./data
 ```
 
 The binary works from an empty directory. Migrations and assets are embedded.
@@ -31,10 +31,10 @@ bun run dev
 
 ## Run a job
 
-`turntable run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
+`longshore run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
 
 ```sh
-./dist/turntable-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
+./dist/longshore-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
   --repo path/to/repo --data-dir ./data
 ```
 
@@ -43,7 +43,7 @@ Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the re
 - **What is delivered.** The committed tree (`git archive HEAD`) plus `.git`, which act's checkout stand-in copies into the workspace. Untracked and ignored files (such as `node_modules` or `.env`) and uncommitted edits are never sent. You get a warning when tracked files have uncommitted changes.
 - **No network by default.** The sandbox has no network access. `--egress open` is an explicit opt-in that prints a warning. act is downloaded and checked against a pinned sha256 on the host, and every `uses:` action is resolved to a commit sha and delivered by sha, so a moved tag cannot change what runs.
 - **Logs.** Output streams to your terminal as it happens and is stored in the database, after secret redaction, with byte offsets.
-- **One job only.** Workflows with `needs`, a matrix, `services`, `container`, `docker://` actions or non-Linux runners are refused before anything runs. See the act-runner README for the full support matrix.
+- **One job or the whole workflow.** With `-j <job>` a single job runs (no `needs` or matrix). Without `-j` the whole workflow runs: the trigger is checked first (`--event`, `--base-ref`, `--action`, and `--changed-from <rev>` for path filters), jobs run in dependency order with one sandbox each (`--max-parallel`, default 2), `needs` results and outputs flow into dependents, matrices expand into one job per leg, and job `if:` is evaluated. Jobs that need docker (`container`, `services`, `docker://`, a docker command or action), run on a non-Linux runner or call a reusable workflow are recorded as skipped with the reason as their log. A workflow that does not trigger for the event runs nothing and exits 0.
 - **Cancel.** Ctrl-C destroys the sandbox and marks the attempt cancelled. The sandbox is always destroyed when the run ends.
 - **Exit codes.** `0` success (or a job skipped by `if:`), `1` the job failed, `2` infrastructure error or a workflow that cannot be run, `130` cancelled.
 
@@ -52,11 +52,11 @@ Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the re
 Build and run the image:
 
 ```sh
-docker build -t turntable .
-docker run --rm -p 8080:8080 -v turntable-data:/data turntable
+docker build -t longshore .
+docker run --rm -p 8080:8080 -v longshore-data:/data longshore
 ```
 
-The image is distroless and runs as a non-root user. It stores data in `/data` and sets `TURNTABLE_HOST=0.0.0.0` so the published port is reachable.
+The image is distroless and runs as a non-root user. It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
 
 ## Check that it is up
 
@@ -66,16 +66,35 @@ curl http://127.0.0.1:8080/healthz
 
 The response is JSON with `ok` and the running `version`.
 
+## Deploy
+
+On a host where you cannot run commands in the container (Railway, Fly, a distroless image), bootstrap access with a token hash instead of `token create`:
+
+```sh
+# On your own machine: prints the token (stdout) and its sha256 (stderr).
+./dist/longshore-darwin-arm64 token generate
+```
+
+Keep the token. Set only the hash on the server:
+
+| Variable | Value |
+| --- | --- |
+| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | the `sha256:` value printed above |
+| `LONGSHORE_BOOTSTRAP_ORG` | optional, default `local` |
+| `PORT` | set by the host; `serve` uses it as the default port |
+
+On boot, if the org has no tokens yet, the server creates one `operator` token with that hash (valid 365 days). It does nothing when the org already has tokens, so the variable is safe to leave set. The token is never stored on the server or in its environment or logs; only its hash is. Use it as `Authorization: Bearer <token>`.
+
 ## Network binding
 
-`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `TURNTABLE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
+`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `LONGSHORE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
 
 ## Create your first API token
 
 Agents and scripts call the [REST API](/agent-interface) with a bearer token. Create the first one from the command line, because creating tokens over the network needs an org admin and sessions do not exist yet. Local access to the data directory is the trust root.
 
 ```sh
-TOKEN=$(./dist/turntable-darwin-arm64 token create \
+TOKEN=$(./dist/longshore-darwin-arm64 token create \
   --org local --project local --role reader --name my-agent --data-dir ./data)
 ```
 
@@ -90,8 +109,66 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/runs
 List and revoke tokens the same way:
 
 ```sh
-./dist/turntable-darwin-arm64 token list --org local --data-dir ./data
-./dist/turntable-darwin-arm64 token revoke <id> --data-dir ./data
+./dist/longshore-darwin-arm64 token list --org local --data-dir ./data
+./dist/longshore-darwin-arm64 token revoke <id> --data-dir ./data
 ```
 
 A revoked or expired token stops working at once. The OpenAPI document is at `/openapi.json`.
+
+## Run queued jobs on the server
+
+`serve` can also run jobs. Start it with `--worker` and it claims queued attempts, runs each one with act in a sandbox, and records the logs, steps and result. Reruns queued with the `rerun` operation are picked up the same way.
+
+```sh
+./dist/longshore-darwin-arm64 serve --worker --data-dir ./data
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--worker` | off | Run queued attempts in this process. |
+| `--global-cap` | 4 | Most attempts running at once. |
+| `--org-cap` | 2 | Most attempts running at once for one org, so one tenant cannot take every slot. |
+| `--lease-seconds` | 30 | How long a claim lasts without a heartbeat. |
+| `--provider` | `docker` | Sandbox provider: `docker` (built in) or `daytona` (not in this build yet). |
+| `--provider-config` | none | A JSON file of provider options (docker: `docker`, `maxFileBytes`). Secrets never go inline: a provider that needs a key reads it from a file named here. |
+| `--image` | node 22 | Sandbox image. |
+
+Each claim is a lease that the worker extends with heartbeats, and everything a worker writes is fenced by it. If a worker dies (a crash, `kill -9`, a lost host), its lease expires. On boot, and periodically after, the server resolves every attempt with an expired lease by probing its sandbox with `exec.status`:
+
+- **The exec still exists** (running, or finished while nobody watched): the server takes the lease over and re-attaches. The job runs in a detached exec that outlives the server, so a job that finished meanwhile keeps its real result. The worker replays the exec's whole log by offset, rewrites the stored log and steps, and records the real verdict (success, failure, or infra_error if act itself failed).
+- **The exec is lost, the sandbox is gone, or the provider cannot be reached**: whatever still runs is killed, the sandbox is destroyed, and the attempt is marked `infra_error` with the probe result. It never guesses a verdict.
+
+Attempts started by `longshore run` have no lease and are never touched. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
+
+## Poll a GitHub repo
+
+`serve --poll <config.json>` watches a public repo and queues a run for each new commit on its default branch, and for new head commits of open pull requests that pass the gate.
+
+```json
+{
+  "tokenFile": "/etc/longshore/github-token",
+  "repos": [
+    {
+      "repo": "acme/web",
+      "workflow": ".github/workflows/ci.yml",
+      "defaultBranch": "main",
+      "intervalSeconds": 60,
+      "prMode": "allowlist",
+      "authors": ["octocat"],
+      "maxRunsPerHour": 30
+    }
+  ]
+}
+```
+
+- `tokenFile` is required: polling is authenticated, so its rate limit is not shared with every other unauthenticated client. Put a token in a file outside the repo with mode 0600 (for example from `gh auth token`). The token is read once, sent only in the `Authorization` header and never put in a URL or a log. The config refuses an inline token. `allowUnauthenticated: true` opts out explicitly.
+- The GitHub client is read-only: every request is a GET, enforced in the client and covered by a test.
+- Polling is cheap. Requests are conditional (`If-None-Match`), and a 304 does not count against the rate limit. `intervalSeconds` is 30 to 3600 (default 60; 60 to 120 is the intended range). A failing poll backs off exponentially, never shorter than `Retry-After` or the rate-limit reset GitHub reports, and a success resets it. When the remaining budget is nearly gone the poller waits for the reset instead of spending it. The `ingest_status` operation shows the budget and each repo's last poll over MCP or REST.
+- `prMode` is `off` by default. With `allowlist`, a pull request runs only if its head repo is the configured repo (a fork never runs, whatever else is true), whoever opened it is in `authors`, and the author of its head commit is in `authors` too. A head commit with no linked GitHub account is refused. The author check is defense in depth, not identity: a commit author is whatever name and email the committer wrote, so anyone who can push can forge it. The real anchors are the same-repo head (pushing a branch there needs write access) and the PR opener (an authenticated GitHub identity). Hosted mode will need verified commits or per-sha approval, tracked on #17. A bot runs only if its exact login (`dependabot[bot]`) is listed. All of this comes from the API response.
+- Each (repo, workflow, event, sha) becomes a run once. `maxRunsPerHour` caps how many a repo can queue.
+- Runs land in the `org` and `project` you name (default: the built-in `local` ones), with the sha, ref, actor, commit message and PR number filled in. The project is bound to the repo so the worker knows what to fetch.
+- **The whole workflow is planned at ingest.** The trigger router applies `on:` (event, branch and tag filters, activity types). For a workflow with a `paths:` filter the poller asks the GitHub compare API which files changed (`base...head` for a pull request, the previously seen sha to the new one for a push; read-only, conditional like every request). A change that touches nothing the filter matches, such as docs only, creates no run and is remembered so it is not looked at again. If the changed files cannot be known (the first sight of a branch, a force push, more than 300 files) the filters are not applied and the workflow runs.
+- **Every job becomes a queued job up front,** with its `needs`, its matrix leg values and the planned job stored on it. Matrices expand to one job per leg. A job that cannot run here (docker, a non-Linux runner), whose `if:` is false, or that needs a job that failed is skipped as soon as that is known, with the reason as its log. `if: always()` and `failure()` jobs still run behind a failure, and a failed `continue-on-error` job counts as success for its dependents and the run. A failed matrix leg cancels the legs that have not started (`fail-fast`), and `max-parallel` limits legs running at once. Workflows with unknown `needs`, a dependency cycle or more than 256 jobs are refused.
+- **A job runs from a generated single-job workflow** whose stub need jobs carry the real results and outputs of its dependencies, so `needs.<job>.outputs.<name>` works. A job's outputs are stored when it finishes and handed to the jobs that need it.
+- **The job plan is stored on the attempt when it starts,** so a restarted server re-attaches to a running job with no repo fetch and no network.
+- **Concurrency groups** are tracked per project. A new run whose workflow sets `concurrency` with `cancel-in-progress: true` supersedes older unfinished runs of the same group: the new run is created first, then the older run's queued and running jobs are cancelled and the workers of the running ones are told to stop and their sandboxes destroyed. A group without `cancel-in-progress` does not queue runs behind each other yet; both run. Reusable workflows and expression-built matrices are reported as unsupported.

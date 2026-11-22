@@ -1,9 +1,9 @@
-# @turntable/redact
+# @longshore/redact
 
 Streaming secret redaction for job logs. Runs before anything is stored or shown.
 
 ```ts
-import { Redactor, SecretRegistry } from "@turntable/redact";
+import { Redactor, SecretRegistry } from "@longshore/redact";
 
 const registry = new SecretRegistry(); // one per job
 registry.register(jobSecretValue); // also covers base64 and URL-encoded forms

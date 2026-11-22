@@ -24,6 +24,11 @@ export interface PlanOptions {
    * would be invisible to pinning. Return undefined when the file is missing.
    */
   readFile: (path: string) => string | undefined;
+  /**
+   * The workflow is a generated single-job workflow (see splitJob): `needs` may name stub jobs
+   * and `strategy.matrix` is a single literal leg. Never set for a user's own workflow file.
+   */
+  split?: boolean;
 }
 
 export interface PlannedAction {
@@ -63,6 +68,28 @@ export interface PlanWarning {
   message: string;
 }
 
+/**
+ * The repo-relative directory of a local action reference (`./.github/actions/x`), normalised, or
+ * undefined when it leaves the repository (absolute, `..` segments that climb out, NUL bytes,
+ * backslashes). `./` alone is the repo root.
+ */
+export function localActionDir(uses: string): string | undefined {
+  if (uses.includes("\0") || uses.includes("\\")) return undefined;
+  const body = uses.replace(/\/$/, "");
+  if (body.startsWith("/")) return undefined;
+  const parts: string[] = [];
+  for (const seg of body.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return undefined;
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return parts.join("/");
+}
+
 export interface JobPlan {
   jobId: string;
   workflowPath: string;
@@ -82,6 +109,10 @@ export interface JobPlan {
   event: string;
   /** Files to overwrite in the delivered repo so every `uses:` is pinned to its sha. */
   files: PlanFile[];
+  /** Names of the job's declared `outputs:`. */
+  outputNames: string[];
+  /** Stub need jobs (split workflows). Their events are not part of this job. */
+  stubIds: string[];
   /** Non-fatal findings. Failing lints come later. */
   warnings: PlanWarning[];
   /** Full command: act binary then args. Run with cwd = layout.repo. */
@@ -123,7 +154,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   if (!isObj(job)) throw new PlanError("job", `no job "${jobId}" in workflow`);
 
   const needs = job.needs;
-  if (needs !== undefined && !(Array.isArray(needs) && needs.length === 0)) {
+  if (!opts.split && needs !== undefined && !(Array.isArray(needs) && needs.length === 0)) {
     throw new PlanError("needs", `job "${jobId}" uses needs; dependent jobs arrive in M1`);
   }
   if (job.uses !== undefined) {
@@ -135,7 +166,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   if (job.container !== undefined) {
     throw new PlanError("container", `job "${jobId}" uses container; host mode cannot run it`);
   }
-  if (isObj(job.strategy) && job.strategy.matrix !== undefined) {
+  if (!opts.split && isObj(job.strategy) && job.strategy.matrix !== undefined) {
     throw new PlanError("matrix", `job "${jobId}" uses a matrix; matrices arrive in M1`);
   }
 
@@ -173,11 +204,16 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
           `step uses ${uses}; docker actions are unsupported`,
         );
       }
-      if (uses.startsWith("./")) {
-        scanLocal(uses.replace(/^\.\//, "").replace(/\/$/, ""), depth + 1);
+      if (uses.startsWith("./") || uses.startsWith("../")) {
+        // A repo is untrusted: a local action path that leaves the repository is refused before
+        // anything is read (it could name a host file, such as a token).
+        const dir = localActionDir(uses);
+        if (dir === undefined) {
+          throw new PlanError("local action", `"${uses}" is a path outside the repository`);
+        }
+        scanLocal(dir, depth + 1);
         continue;
       }
-      if (uses.startsWith("../")) continue;
       if (actions.some((a) => a.uses === uses)) continue;
       const m = /^([^/@\s]+\/[^/@\s]+)((?:\/[^@\s]+)?)@(\S+)$/.exec(uses);
       if (!m) throw new PlanError("action ref", `cannot parse action reference "${uses}"`);
@@ -199,7 +235,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     if (depth > 5 || seenLocal.has(dir)) return;
     seenLocal.add(dir);
     for (const name of ["action.yml", "action.yaml"]) {
-      const path = `${dir}/${name}`;
+      const path = dir === "" ? name : `${dir}/${name}`;
       const text = opts.readFile(path);
       if (text === undefined) continue;
       files.push({ path, source: text, text });
@@ -227,6 +263,8 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     actions,
     files,
     warnings,
+    outputNames: isObj(job.outputs) ? Object.keys(job.outputs) : [],
+    stubIds: opts.split ? [needs ?? []].flat().map(String) : [],
     labels,
     event: opts.event ?? "push",
     argv: [],

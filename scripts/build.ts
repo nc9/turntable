@@ -1,11 +1,13 @@
 // Cross-compiles the single-file binary for each supported target.
 //   bun run scripts/build.ts                 all targets
 //   bun run scripts/build.ts bun-darwin-arm64  one or more named targets
-// Version comes from TURNTABLE_VERSION (a leading "v" is stripped) or root package.json.
+// LONGSHORE_SIGN_DARWIN=1 re-signs the darwin binary with rcodesign (ad-hoc) and verifies it.
+// Version comes from LONGSHORE_VERSION (a leading "v" is stripped) or root package.json.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareCompileEntry } from "../packages/ui/scripts/compile-entry";
+import { signAdhoc, verifySignature } from "./rcodesign";
 
 const TARGETS = ["bun-linux-x64", "bun-linux-arm64", "bun-darwin-arm64"] as const;
 
@@ -13,7 +15,7 @@ const root = join(import.meta.dir, "..");
 const dist = join(root, "dist");
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
-const version = (process.env.TURNTABLE_VERSION ?? pkg.version).replace(/^v/, "");
+const version = (process.env.LONGSHORE_VERSION ?? pkg.version).replace(/^v/, "");
 
 const requested = process.argv.slice(2);
 const targets = requested.length > 0 ? requested : [...TARGETS];
@@ -31,17 +33,24 @@ const entry = await prepareCompileEntry();
 
 const sums: string[] = [];
 for (const target of targets) {
-  const name = `turntable-${target.replace(/^bun-/, "")}`;
+  const name = `longshore-${target.replace(/^bun-/, "")}`;
   const outfile = join(dist, name);
   const result = await Bun.build({
     entrypoints: [entry],
     compile: { target: target as (typeof TARGETS)[number], outfile },
     minify: true,
-    define: { TURNTABLE_BUILD_VERSION: JSON.stringify(version) },
+    define: { LONGSHORE_BUILD_VERSION: JSON.stringify(version) },
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);
     throw new Error(`build failed for ${target}`);
+  }
+  // Re-sign darwin BEFORE hashing, so SHA256SUMS matches what users download. Release and CI
+  // set LONGSHORE_SIGN_DARWIN=1; a plain local build skips the rcodesign download.
+  if (target.includes("darwin") && process.env.LONGSHORE_SIGN_DARWIN === "1") {
+    await signAdhoc(outfile, name);
+    const facts = await verifySignature(outfile, name);
+    console.log(`${name}  re-signed (${facts.flags})`);
   }
   const bytes = readFileSync(outfile);
   sums.push(`${createHash("sha256").update(bytes).digest("hex")}  ${name}`);

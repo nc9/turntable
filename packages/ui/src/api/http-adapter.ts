@@ -1,4 +1,4 @@
-import type { ApiCapabilities, TurntableApi } from "./client";
+import type { ApiCapabilities, LongshoreApi } from "./client";
 import type {
   CheckSummary,
   CutRecord,
@@ -126,7 +126,7 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
 
 const FINISHED: readonly JobState[] = ["success", "failure", "infra_error", "cancelled"];
 
-export function createHttpApi(options: HttpApiOptions): TurntableApi {
+export function createHttpApi(options: HttpApiOptions): LongshoreApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const base = `${options.baseUrl ?? ""}/api/v1`;
   /** attemptId -> where to read its log, learned from get_run. */
@@ -177,7 +177,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     return (await res.json()) as T;
   }
 
-  const api: TurntableApi = {
+  const api: LongshoreApi = {
     capabilities: { rerun: false } satisfies ApiCapabilities,
 
     async listOrgs(): Promise<Org[]> {

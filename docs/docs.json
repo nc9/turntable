@@ -1,6 +1,6 @@
 {
   "$schema": "https://tangly.dev/schema/docs.json",
-  "name": "Turntable",
+  "name": "Longshore",
   "theme": "tang",
   "thumbnails": { "enabled": false },
   "colors": { "primary": "#D97706", "light": "#F59E0B", "dark": "#B45309" },
@@ -9,7 +9,14 @@
       { "group": "Get started", "pages": ["introduction", "quickstart", "configuration"] },
       {
         "group": "Concepts",
-        "pages": ["architecture", "agent-interface", "compatibility", "providers", "security"]
+        "pages": [
+          "architecture",
+          "agent-interface",
+          "compatibility",
+          "providers",
+          "security",
+          "github-app"
+        ]
       },
       { "group": "Project", "pages": ["contributing", "internals/bun-notes"] }
     ]

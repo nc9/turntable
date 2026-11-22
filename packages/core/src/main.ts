@@ -1,34 +1,187 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { ensureInstance, openDatabase } from "./db";
+import type { Provider } from "@longshore/provider-sdk";
+import { type Db, ensureInstance, openDatabase } from "./db";
+import { githubFacts } from "./github/api";
+import { AppAuth } from "./github/app-auth";
+import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
+import { bootstrapToken } from "./ops/bootstrap";
+import { loadMasterKey } from "./secrets/crypto";
+import { SecretStore } from "./secrets/store";
+import { generateToken, hashToken } from "./ops/tokens";
+import { loadPollConfig, Poller } from "./poll";
+import {
+  createActRunner,
+  createProvider,
+  gitRepoSource,
+  loadProviderConfig,
+  reconcileExpired,
+  Scheduler,
+} from "./scheduler";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { startServer } from "./server";
 import { VERSION } from "./version";
 
-const USAGE = `turntable ${VERSION}
+const USAGE = `longshore ${VERSION}
 
 Usage:
-  turntable serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
-  turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
+  longshore serve [--port 8080] [--host 127.0.0.1] [--data-dir ./data] [--allowed-origin <origin>]
+                  [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
+                   [--org-cap 2] [--lease-seconds 30] [--image <ref>]]
+                  [--poll <config.json>]
+  longshore keys init [--file <path>] [--data-dir ./data]
+  longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
+                              [--longshore-org local] [--master-key-file <path>]
+  longshore github-app rotate-webhook-secret | status [--master-key-file <path>] [--data-dir ./data]
+  longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
-  turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
-  turntable token revoke <id> [--data-dir ./data]
-  turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
-  turntable version
+  longshore token generate
+  longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
+  longshore token revoke <id> [--data-dir ./data]
+  longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
+  longshore version
 
 Environment:
-  TURNTABLE_HOST  default for --host (the container image sets 0.0.0.0)
-  TURNTABLE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
+  PORT  default for --port (Railway and similar hosts set it)
+  LONGSHORE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "longshore token generate"; on boot, an
+                    org with no tokens gets one operator token with this hash
+  LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
+  LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
+                    required for the GitHub App and its webhook endpoint
+  LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
+  LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
+
+/** Starts the worker and the poller when asked for. Returns a stop function. */
+async function startBackground(
+  db: Db,
+  v: {
+    worker?: boolean | undefined;
+    "global-cap"?: string | undefined;
+    "org-cap"?: string | undefined;
+    "lease-seconds"?: string | undefined;
+    image?: string | undefined;
+    poll?: string | undefined;
+    provider?: string | undefined;
+    "provider-config"?: string | undefined;
+  },
+): Promise<{ stop(): Promise<void> }> {
+  const log = (m: string) => console.log(`[longshore] ${m}`);
+  let scheduler: Scheduler | undefined;
+  let reconcileTimer: ReturnType<typeof setInterval> | undefined;
+  let poller: Poller | undefined;
+  let workerProvider: Provider | undefined;
+
+  if (v.worker) {
+    const providerName = v.provider ?? "docker";
+    const provider = createProvider(providerName, loadProviderConfig(v["provider-config"]));
+    workerProvider = provider;
+    // One provider per server for now; the name stored on an attempt is the provider it was made for.
+    const providers = () => provider;
+    const leaseMs = Number(v["lease-seconds"]) * 1000;
+    const num = (name: string, value: string | undefined): number => {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`invalid --${name}: ${value}`);
+      return n;
+    };
+    scheduler = new Scheduler({
+      db,
+      providers,
+      runner: createActRunner({
+        db,
+        source: gitRepoSource(),
+        ...(v.image ? { image: v.image } : {}),
+      }),
+      leaseMs,
+      globalCap: num("global-cap", v["global-cap"]),
+      perOrgCap: num("org-cap", v["org-cap"]),
+      log,
+    });
+    const sched = scheduler;
+    const reconcile = () =>
+      reconcileExpired(db, providers, {
+        log,
+        owner: sched.owner,
+        leaseMs,
+        // Re-attach to execs a dead worker left behind: the real result is recovered by replay.
+        adopt: (claim, resume) => sched.adopt(claim, resume),
+      });
+    // Boot reconcile before claiming: abandoned attempts are re-attached or resolved first.
+    const report = await reconcile();
+    if (report.resolved.length + report.adopted.length > 0) {
+      log(
+        `reconciled: ${report.adopted.length} re-attached, ${report.resolved.length} marked infra_error`,
+      );
+    }
+    scheduler.start();
+    reconcileTimer = setInterval(
+      () => {
+        void reconcile().catch((e) => log(`reconcile failed: ${String(e)}`));
+      },
+      Math.max(leaseMs, 10_000),
+    );
+    log("worker started");
+  }
+
+  if (v.poll) {
+    const pollConfig = loadPollConfig(v.poll);
+    if (v.worker && pollConfig.provider !== (v.provider ?? "docker")) {
+      throw new Error(
+        `poll config provider "${pollConfig.provider}" does not match --provider ${v.provider ?? "docker"}`,
+      );
+    }
+    poller = new Poller({
+      db,
+      config: pollConfig,
+      log,
+      onQueued: () => scheduler?.nudge(),
+      // A newer cancel-in-progress run took over running attempts: stop their workers now and
+      // destroy their sandboxes (the worker's own cleanup is the same; this is the backstop).
+      onSuperseded: (running) => {
+        scheduler?.abort(running.map((r) => r.attemptId));
+        for (const r of running) {
+          if (r.sandboxId && workerProvider) {
+            void workerProvider
+              .destroy(r.sandboxId)
+              .catch((e) => log(`could not destroy sandbox: ${String(e)}`));
+          }
+        }
+      },
+    });
+    poller.start();
+    log(`polling per ${v.poll}`);
+  }
+
+  return {
+    async stop() {
+      poller?.stop();
+      if (reconcileTimer) clearInterval(reconcileTimer);
+      if (scheduler) {
+        // Stop claiming, give running attempts a moment, then leave the rest: their leases
+        // expire and the next boot's reconcile re-attaches to them. Never abort them
+        // here, which would record a user cancel that never happened.
+        await Promise.race([scheduler.stop(), Bun.sleep(10_000)]);
+      }
+    },
+  };
+}
 
 async function serve(args: string[]): Promise<void> {
   const { values } = parseArgs({
     args,
     options: {
-      port: { type: "string", default: "8080" },
-      host: { type: "string", default: process.env.TURNTABLE_HOST ?? "127.0.0.1" },
+      port: { type: "string", default: process.env.PORT?.trim() || "8080" },
+      host: { type: "string", default: process.env.LONGSHORE_HOST ?? "127.0.0.1" },
       "data-dir": { type: "string", default: "./data" },
       "allowed-origin": { type: "string", multiple: true },
+      worker: { type: "boolean", default: false },
+      "global-cap": { type: "string", default: "4" },
+      "org-cap": { type: "string", default: "2" },
+      "lease-seconds": { type: "string", default: "30" },
+      image: { type: "string" },
+      poll: { type: "string" },
+      provider: { type: "string", default: "docker" },
+      "provider-config": { type: "string" },
     },
     strict: true,
   });
@@ -37,23 +190,57 @@ async function serve(args: string[]): Promise<void> {
     throw new Error(`invalid --port: ${values.port}`);
   }
   const dataDir = resolve(values["data-dir"]);
-  const db = openDatabase(join(dataDir, "turntable.db"));
+  const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
+
+  // First-boot access without a shell: see ops/bootstrap.ts.
+  const bootstrapHash = process.env.LONGSHORE_BOOTSTRAP_TOKEN_SHA256?.trim();
+  if (bootstrapHash) {
+    const r = await bootstrapToken(db, {
+      sha256: bootstrapHash,
+      org: process.env.LONGSHORE_BOOTSTRAP_ORG,
+    });
+    console.log(
+      r.status === "created"
+        ? `bootstrap: created an operator token for org ${r.org} (expires ${iso(r.expiresAt)})`
+        : `bootstrap: org ${r.org} already has tokens, nothing created`,
+    );
+  }
 
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
-    ...(process.env.TURNTABLE_ALLOWED_ORIGINS?.split(",") ?? []),
+    ...(process.env.LONGSHORE_ALLOWED_ORIGINS?.split(",") ?? []),
   ]
     .map((o) => o.trim())
     .filter((o) => o !== "");
-  const server = startServer({ port, host: values.host, db, allowedOrigins });
-  console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
+  let webhooks: WebhookHandler | undefined;
+  const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  if (keyFile) {
+    const store = new SecretStore(db, loadMasterKey(keyFile));
+    const auth = new AppAuth({ db, store });
+    webhooks = createWebhookHandler({ db, store, facts: githubFacts(auth) });
+    void webhooks.retryUnfinished().catch(() => {});
+  }
+  const server = startServer({
+    port,
+    host: values.host,
+    db,
+    allowedOrigins,
+    ...(webhooks ? { webhooks } : {}),
+  });
+  console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
+
+  const background = await startBackground(db, values);
 
   const stop = () => {
-    void server.stop().finally(() => {
-      db.close();
-      process.exit(0);
-    });
+    void background
+      .stop()
+      .then(() => server.stop())
+      .finally(() => {
+        db.close();
+        process.exit(0);
+      });
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
@@ -77,7 +264,17 @@ async function token(args: string[]): Promise<void> {
     allowPositionals: sub === "revoke",
     strict: true,
   });
-  const open = () => openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
+  const open = () => openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  if (sub === "generate") {
+    // No database: the token goes to stdout, its hash to stderr. Keep the token; set only the
+    // hash (LONGSHORE_BOOTSTRAP_TOKEN_SHA256) on the server.
+    const secret = generateToken();
+    console.error(
+      `sha256: ${hashToken(secret)}\nSet LONGSHORE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
+    );
+    console.log(secret);
+    return;
+  }
   if (sub === "create") {
     if (!values.org || !values.role || !values.name) {
       throw new Error("--org, --role and --name are required");
@@ -92,7 +289,7 @@ async function token(args: string[]): Promise<void> {
         expiresInDays:
           values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
       });
-      // Details to stderr, the secret alone to stdout, so `TOKEN=$(turntable token create ...)` works.
+      // Details to stderr, the secret alone to stdout, so `TOKEN=$(longshore token create ...)` works.
       console.error(
         `created ${created.role} token ${created.id} for ${created.org}${created.project ? `/${created.project}` : ""}, expires ${iso(created.expiresAt)}. It is shown once.`,
       );
@@ -124,7 +321,7 @@ async function token(args: string[]): Promise<void> {
     }
   } else if (sub === "revoke") {
     const [id] = positionals;
-    if (!id) throw new Error("usage: turntable token revoke <id> [--data-dir ./data]");
+    if (!id) throw new Error("usage: longshore token revoke <id> [--data-dir ./data]");
     const db = open();
     try {
       const done = await revokeTokenFromCli(db, id);
@@ -133,7 +330,7 @@ async function token(args: string[]): Promise<void> {
       db.close();
     }
   } else {
-    throw new Error("usage: turntable token <create|list|revoke> ...");
+    throw new Error("usage: longshore token <generate|create|list|revoke> ...");
   }
 }
 
@@ -144,6 +341,14 @@ async function main(argv: string[]): Promise<void> {
       return await serve(rest);
     case "token":
       return await token(rest);
+    case "keys": {
+      const { keysCommand } = await import("./github/cli");
+      return await keysCommand(rest);
+    }
+    case "github-app": {
+      const { githubAppCommand } = await import("./github/cli");
+      return await githubAppCommand(rest);
+    }
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));

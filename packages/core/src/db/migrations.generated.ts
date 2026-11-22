@@ -97,5 +97,41 @@ export const migrations: Migration[] = [
       "ALTER TABLE `runs` ADD `head_branch` text;",
       "ALTER TABLE `runs` ADD `pr_number` integer;"
     ]
+  },
+  {
+    "tag": "0005_pink_maximus",
+    "when": 1795347979398,
+    "statements": [
+      "CREATE TABLE `poll_seen` (\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`repo` text NOT NULL,\n\t`workflow_path` text NOT NULL,\n\t`event` text NOT NULL,\n\t`sha` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`project_id`, `repo`, `workflow_path`, `event`, `sha`),\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `poll_seen_repo_created_idx` ON `poll_seen` (`project_id`,`repo`,`created_at`);",
+      "ALTER TABLE `job_attempts` ADD `exec_id` text;",
+      "ALTER TABLE `job_attempts` ADD `lease_owner` text;",
+      "ALTER TABLE `job_attempts` ADD `lease_expires_at` integer;",
+      "ALTER TABLE `job_attempts` ADD `heartbeat_at` integer;",
+      "CREATE INDEX `job_attempts_state_idx` ON `job_attempts` (`state`,`id`);"
+    ]
+  },
+  {
+    "tag": "0006_fluffy_vance_astro",
+    "when": 1795349771958,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `plan` text;",
+      "ALTER TABLE `jobs` ADD `planned` text;",
+      "ALTER TABLE `jobs` ADD `outputs` text;",
+      "ALTER TABLE `runs` ADD `plan` text;",
+      "ALTER TABLE `runs` ADD `concurrency_group` text;",
+      "CREATE INDEX `runs_concurrency_idx` ON `runs` (`org_id`,`project_id`,`concurrency_group`);"
+    ]
+  },
+  {
+    "tag": "0007_violet_starbolt",
+    "when": 1795351041847,
+    "statements": [
+      "CREATE TABLE `github_apps` (\n\t`app_id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`slug` text NOT NULL,\n\t`name` text NOT NULL,\n\t`owner_login` text NOT NULL,\n\t`html_url` text NOT NULL,\n\t`client_id` text NOT NULL,\n\t`previous_secret_expires_at` integer,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `github_installations` (\n\t`installation_id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`app_id` text NOT NULL,\n\t`account_login` text NOT NULL,\n\t`account_id` text NOT NULL,\n\t`account_type` text NOT NULL,\n\t`repository_selection` text NOT NULL,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"github_installations_status_check\" CHECK(status IN ('active', 'suspended', 'deleted'))\n);",
+      "CREATE TABLE `secrets` (\n\t`org_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`ciphertext` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`org_id`, `name`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `webhook_deliveries` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text,\n\t`forge` text DEFAULT 'github' NOT NULL,\n\t`event` text NOT NULL,\n\t`action` text,\n\t`installation_id` text,\n\t`status` text DEFAULT 'received' NOT NULL,\n\t`error` text,\n\t`payload` text,\n\t`received_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`processed_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"webhook_deliveries_status_check\" CHECK(status IN ('received', 'processed', 'ignored', 'failed'))\n);",
+      "CREATE INDEX `webhook_deliveries_received_idx` ON `webhook_deliveries` (`received_at`);"
+    ]
   }
 ];

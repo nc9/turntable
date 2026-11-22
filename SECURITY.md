@@ -1,6 +1,6 @@
 # Security policy
 
-Turntable is pre-alpha and not yet suitable for production use.
+Longshore is pre-alpha and not yet suitable for production use.
 
 ## Reporting a vulnerability
 

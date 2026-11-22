@@ -123,7 +123,7 @@ export function createRestApi(env: DispatchEnv): (req: Request) => Promise<Respo
 
       if (!bearer) {
         return failure(new OpError("unauthenticated", "missing bearer token"), {
-          "www-authenticate": 'Bearer realm="turntable"',
+          "www-authenticate": 'Bearer realm="longshore"',
         });
       }
       const result = await dispatch(
@@ -136,18 +136,18 @@ export function createRestApi(env: DispatchEnv): (req: Request) => Promise<Respo
         return failure(
           result.error,
           result.error.code === "unauthenticated"
-            ? { "www-authenticate": 'Bearer realm="turntable"' }
+            ? { "www-authenticate": 'Bearer realm="longshore"' }
             : {},
         );
       }
       return json(
         result.output,
         200,
-        result.untrusted ? { "x-turntable-untrusted-content": "true" } : {},
+        result.untrusted ? { "x-longshore-untrusted-content": "true" } : {},
       );
     } catch (err) {
       if (err instanceof OpError) return failure(err);
-      console.error("turntable: REST adapter error", err);
+      console.error("longshore: REST adapter error", err);
       return failure(new OpError("internal", "internal error"));
     }
   };
