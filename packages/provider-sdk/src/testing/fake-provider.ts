@@ -208,6 +208,7 @@ function killExecDir(dir: string): void {
 
 const FAKE_INFO: ProviderInfo = {
   name: "fake",
+  isolation: "container",
   createFrom: ["image", "snapshot", "template"],
   exec: { detached: true, logsByOffset: true, streaming: false, tty: false },
   files: { upload: true, download: true },

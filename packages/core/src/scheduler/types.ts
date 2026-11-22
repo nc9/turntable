@@ -37,6 +37,11 @@ export interface AttemptContext {
    * outcome; one that cannot should end the attempt as infra_error.
    */
   resume?: { sandboxId: string; execId: string };
+  /**
+   * Lines the runner shows at the top of the job's log, ahead of its own output: policy facts
+   * the people reading the run should see (for example an isolation override).
+   */
+  notices?: readonly string[];
   /** Aborted when the lease is lost (cancelled, reconciled) or the scheduler stops hard. */
   signal: AbortSignal;
   store: AttemptStore;

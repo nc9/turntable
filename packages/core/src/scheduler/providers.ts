@@ -31,7 +31,7 @@ export function loadProviderConfig(path: string | undefined): Record<string, unk
   return raw as Record<string, unknown>;
 }
 
-const DOCKER_KEYS = new Set(["docker", "maxFileBytes"]);
+const DOCKER_KEYS = new Set(["docker", "maxFileBytes", "runtime"]);
 
 /**
  * Builds the provider named on the command line. It codes against the provider-sdk `Provider`
@@ -52,6 +52,8 @@ export function createProvider(name: string, config: Record<string, unknown> = {
       return new DockerProvider({
         ...(typeof config.docker === "string" ? { docker: config.docker } : {}),
         ...(typeof config.maxFileBytes === "number" ? { maxFileBytes: config.maxFileBytes } : {}),
+        // `runsc` (gVisor) makes the provider declare the gvisor isolation class.
+        ...(typeof config.runtime === "string" ? { hardening: { runtime: config.runtime } } : {}),
       });
     }
     case "daytona":
