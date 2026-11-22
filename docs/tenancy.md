@@ -29,4 +29,4 @@ One Turntable instance serves many orgs. An org is the tenant. Isolation is enfo
 
 ## Scope of the guarantee
 
-These rules cover the database layer. As later milestones land, the same org boundary applies to secrets, caches and sandboxes: none of them may be shared across orgs. Webhook routing (`resolveRepoScope`) is the one deliberately unscoped lookup, because the caller has no tenant yet.
+These rules cover the database layer. As later milestones land, the same org boundary applies to secrets, caches and sandboxes: none of them may be shared across orgs. Webhook routing (`resolveRepoScope`) is the one deliberately unscoped lookup, because the caller has no tenant yet. When a binding has an `installation_id`, the incoming installation must match it, so a same-named repo under another installation cannot route into the bound org.

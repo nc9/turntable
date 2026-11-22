@@ -141,7 +141,9 @@ test("writes need a project in scope and the composite FK blocks cross-org rows"
 test("repo binding is globally unique and resolves to its owning scope", () => {
   bindRepo(db, a, { forge: "github", owner: "acme", repo: "web", installationId: "42" });
   expect(() => bindRepo(db, b, { forge: "github", owner: "acme", repo: "web" })).toThrow();
-  expect(resolveRepoScope(db, { forge: "github", owner: "acme", repo: "web" })).toEqual(a);
+  expect(
+    resolveRepoScope(db, { forge: "github", owner: "acme", repo: "web", installationId: "42" }),
+  ).toEqual(a);
   expect(resolveRepoScope(db, { forge: "github", owner: "acme", repo: "nope" })).toBeUndefined();
   expect(listRepos(db, b)).toEqual([]);
 });
@@ -219,4 +221,15 @@ test("repo owner and name are case-insensitive; forge repo id survives renames",
   // two repos without an id do not collide on the id index
   bindRepo(db, b, { forge: "github", owner: "o1", repo: "r1" });
   bindRepo(db, b, { forge: "github", owner: "o2", repo: "r2" });
+});
+
+test("resolveRepoScope requires a matching installation when the binding has one", () => {
+  bindRepo(db, a, { forge: "github", owner: "acme", repo: "app", installationId: "100" });
+  const q = { forge: "github", owner: "acme", repo: "app" } as const;
+  expect(resolveRepoScope(db, { ...q, installationId: "100" })).toEqual(a);
+  expect(resolveRepoScope(db, { ...q, installationId: "200" })).toBeUndefined();
+  expect(resolveRepoScope(db, q)).toBeUndefined();
+  // unbound installation (null) still routes by name
+  bindRepo(db, b, { forge: "github", owner: "acme", repo: "legacy" });
+  expect(resolveRepoScope(db, { forge: "github", owner: "acme", repo: "legacy" })).toEqual(b);
 });

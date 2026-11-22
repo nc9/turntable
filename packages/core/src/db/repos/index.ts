@@ -78,6 +78,7 @@ export function renameProject(db: Db, scope: Scope, id: string, name: string): P
   return rows.length ? getProject(db, scope, id) : undefined;
 }
 
+// TODO(#19): prove the caller controls this repo/installation at bind time (GitHub App work).
 export function bindRepo(
   db: Db,
   scope: Scope,
@@ -121,7 +122,14 @@ export function listRepos(db: Db, scope: Scope): ProjectRepo[] {
  */
 export function resolveRepoScope(
   db: Db,
-  input: { forge: s.Forge; owner: string; repo: string; forgeRepoId?: string },
+  input: {
+    forge: s.Forge;
+    owner: string;
+    repo: string;
+    forgeRepoId?: string;
+    /** Installation the event came from. Required to match when the binding has one. */
+    installationId?: string;
+  },
 ): Required<Scope> | undefined {
   // Prefer the stable forge id (survives renames); fall back to case-insensitive owner/repo.
   const byId = input.forgeRepoId
@@ -149,7 +157,11 @@ export function resolveRepoScope(
         ),
       )
       .get();
-  return row ? { orgId: row.orgId, projectId: row.projectId } : undefined;
+  if (!row) return undefined;
+  // A bound installation must match: a same-named repo under another installation must not
+  // route into this org. A missing incoming installation counts as a mismatch.
+  if (row.installationId !== null && row.installationId !== input.installationId) return undefined;
+  return { orgId: row.orgId, projectId: row.projectId };
 }
 
 export function addMember(db: Db, scope: Scope, input: { userId: string; role: s.MemberRole }) {
