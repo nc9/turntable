@@ -289,7 +289,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         ...(githubToken !== undefined ? { githubToken } : {}),
         // A job holding a minted token, in its environment or behind the proxy, is secret-bearing:
         // an egress canary that cannot verify isolation refuses it instead of letting it run.
-        ...(githubToken !== undefined ? { secretBearing: true } : {}),
+        ...(githubToken !== undefined || ctx.proxy?.oidcUrl !== undefined
+          ? { secretBearing: true }
+          : {}),
+        // The job asked for an identity token and may have one: it gets the request URL and a
+        // placeholder, and the proxy attaches the real credential to that one path.
+        ...(ctx.proxy?.oidcUrl !== undefined
+          ? { oidc: { url: ctx.proxy.oidcUrl, token: PROXIED_TOKEN_PLACEHOLDER } }
+          : {}),
         signal: ctx.signal,
         ...(ctx.notices ? { notices: ctx.notices } : {}),
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),

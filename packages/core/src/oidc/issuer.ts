@@ -86,6 +86,16 @@ export class OidcIssuer {
     return `${this.#o.baseUrl.replace(/\/+$/, "")}/${orgSlug}`;
   }
 
+  /** The mint endpoint of an org's issuer. */
+  mintUrl(orgSlug: string): string {
+    return `${this.issuerUrl(orgSlug)}/token`;
+  }
+
+  /** Whether a job of this trust class may be given a token at all. */
+  allows(klass: string): boolean {
+    return this.#allow.includes(klass);
+  }
+
   discovery(orgSlug: string): Record<string, unknown> {
     const iss = this.issuerUrl(orgSlug);
     return {

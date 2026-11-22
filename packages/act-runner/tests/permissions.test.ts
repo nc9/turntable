@@ -46,3 +46,14 @@ describe("declaredPermissions", () => {
     expect(declaredPermissions("a: [", "a").permissions).toEqual({ ...DEFAULT_PERMISSIONS });
   });
 });
+
+describe("the plan records an id-token request", () => {
+  test("only a job that asked for id-token: write is marked", async () => {
+    const { planWorkflow } = await import("../src/workflow-plan");
+    const yaml =
+      "on: push\njobs:\n  a:\n    runs-on: x\n    permissions:\n      id-token: write\n    steps: []\n  b:\n    runs-on: x\n    steps: []\n";
+    const plan = planWorkflow(yaml, { name: "push", payload: {} } as never, {} as never);
+    expect(plan.jobs.find((j) => j.id === "a")?.idToken).toBe(true);
+    expect(plan.jobs.find((j) => j.id === "b")?.idToken).toBeUndefined();
+  });
+});

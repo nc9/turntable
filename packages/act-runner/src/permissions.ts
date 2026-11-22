@@ -83,3 +83,20 @@ export function declaredPermissions(workflowYaml: string, jobId: string): Declar
   }
   return { permissions: out, declared: true, notes };
 }
+
+/**
+ * Whether the job asked for an OIDC identity token: `id-token: write` in its own `permissions:`
+ * block, else in the workflow's (a job's block replaces the workflow's), or `write-all`. Anything
+ * else, including `id-token: read` and no block at all, is no. Pure, for the plan.
+ */
+export function wantsIdToken(workflow: unknown, job: unknown): boolean {
+  const root = isObj(workflow) ? workflow : {};
+  const j = isObj(job) ? job : {};
+  const raw = "permissions" in j ? j.permissions : root.permissions;
+  if (raw === "write-all") return true;
+  if (!isObj(raw)) return false;
+  for (const [name, level] of Object.entries(raw)) {
+    if (name.replaceAll("_", "-") === "id-token") return level === "write";
+  }
+  return false;
+}

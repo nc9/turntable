@@ -9,6 +9,7 @@ import {
   type Value,
 } from "./expr";
 import { lintError, localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
+import { wantsIdToken } from "./permissions";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers";
 
@@ -42,6 +43,8 @@ export interface PlannedJob {
   maxParallel?: number;
   /** The job's `environment:` (a name, or `name` of the mapping), when it is a literal. */
   environment?: string;
+  /** The job asked for an OIDC identity token (`permissions: id-token: write`). */
+  idToken?: true;
 }
 
 export interface WorkflowPlan {
@@ -370,6 +373,7 @@ export function planWorkflow(
         failFast,
         ...(maxParallel !== undefined ? { maxParallel } : {}),
         ...(environment !== undefined ? { environment } : {}),
+        ...(wantsIdToken(doc, job) ? { idToken: true as const } : {}),
       };
       // Static `if:` is decided now; one that reads needs waits for schedule time.
       if (job.if !== undefined && !unsupported) {

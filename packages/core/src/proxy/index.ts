@@ -52,6 +52,11 @@ export interface ProxyAccess {
    * proxy attaches it to requests to the run's own repository; the job never holds it.
    */
   setGithubToken(token: string | undefined): void;
+  /**
+   * The job may ask for an OIDC identity token: the full mint URL it should call (set when the
+   * attempt's rules carry the one OIDC rule). The credential for it lives only in the proxy.
+   */
+  oidcUrl?: string;
 }
 
 /** The rule `secret` that means "this attempt's GitHub token" (not a vault secret). */
@@ -62,6 +67,34 @@ export interface GithubTarget {
   owner: string;
   repo: string;
   installationId: string;
+}
+
+/** The rule `secret` that means "an attempt credential for this org's OIDC mint endpoint". */
+export const OIDC_CREDENTIAL_SECRET = "@oidc-credential";
+
+/**
+ * The one rule behind a job's OIDC token request: GET or POST on exactly the org's mint path, on
+ * the instance's own host, with the attempt credential as the bearer. No other path of the
+ * instance is reachable with it. `mintUrl` is `<issuer>/token`.
+ */
+export function oidcRule(mintUrl: string): Rule | undefined {
+  let u: URL;
+  try {
+    u = new URL(mintUrl);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol !== "https:" || u.search !== "" || u.hash !== "") return undefined;
+  return {
+    id: "oidc-mint",
+    host: u.hostname,
+    ...(u.port ? { port: Number(u.port) } : {}),
+    methods: ["GET", "POST"],
+    pathPrefix: u.pathname,
+    pathExact: true,
+    inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+    secret: OIDC_CREDENTIAL_SECRET,
+  };
 }
 
 const SAFE_GH = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -135,6 +168,11 @@ export interface SecretsProxyOptions {
   upstream?: SafeFetch;
   tunnel?: (host: string, port: number) => Promise<net.Socket>;
   now?: () => number;
+  /**
+   * Makes the attempt credential the OIDC mint endpoint accepts, at the moment of a request. It is
+   * short lived and goes straight into the request the proxy forwards; the job never sees it.
+   */
+  oidcCredential?: (who: { orgId: string; attemptId: string }) => string;
   log?: (message: string) => void;
 }
 
@@ -227,6 +265,13 @@ export class SecretsProxy {
       if (!live.githubToken) return { ok: false, reason: "no_github_token" };
       live.redact.register(live.githubToken);
       return { ok: true, value: live.githubToken };
+    }
+    if (rule.secret === OIDC_CREDENTIAL_SECRET) {
+      // Only the one rule oidcRule builds names it, and only a job registered with that rule.
+      if (!this.#o.oidcCredential) return { ok: false, reason: "no_oidc" };
+      const value = this.#o.oidcCredential({ orgId: scope.orgId, attemptId: scope.attemptId });
+      live.redact.register(value);
+      return { ok: true, value };
     }
     // Through the vault's one policy path, per request: class, scope, destination, rotation,
     // freeze and audit all apply. Nothing is read ahead of time.
@@ -357,7 +402,22 @@ export interface SecretsProxyRunnerOptions {
    * returning nothing: no GitHub rules.
    */
   github?: (ctx: AttemptContext) => Promise<GithubTarget | undefined>;
+  /**
+   * OIDC delivery: the mint URL (`<issuer>/token`) for this attempt's org, or undefined for a class
+   * or an instance that may not mint. Asked only for a job whose plan says `id-token: write`.
+   * The rule is added only when it answers, so a job that did not ask changes nothing.
+   */
+  oidcMintUrl?: (ctx: AttemptContext, klass: TrustClass) => Promise<string | undefined>;
 }
+
+const jobWantsIdToken = (planned: string | null | undefined): boolean => {
+  if (!planned) return false;
+  try {
+    return (JSON.parse(planned) as { idToken?: unknown }).idToken === true;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Wraps a runner: registers the attempt's rules before it starts and revokes them after, in a
@@ -381,7 +441,12 @@ export function withSecretsProxy(
     const vaultRules = mayHoldSecrets ? await o.proxy.rulesFor(ctx.scope) : [];
     const target = o.github ? await o.github(ctx) : undefined;
     const ghRules = target ? githubRules(target) : [];
-    const rules = [...vaultRules, ...ghRules];
+    const mintUrl =
+      o.oidcMintUrl && jobWantsIdToken(ctx.job.planned)
+        ? await o.oidcMintUrl(ctx, klass)
+        : undefined;
+    const oidc = mintUrl ? oidcRule(mintUrl) : undefined;
+    const rules = [...vaultRules, ...ghRules, ...(oidc ? [oidc] : [])];
     if (rules.length === 0) return runner(ctx);
     if (ctx.resume) {
       // Vault rules: the credential died with the old process, so the job cannot be resumed. With
@@ -403,7 +468,11 @@ export function withSecretsProxy(
     const revoke = (): void => o.proxy.release(ctx.attempt.id);
     ctx.signal.addEventListener("abort", revoke, { once: true });
     try {
-      return await runner({ ...ctx, proxy: access, redact });
+      return await runner({
+        ...ctx,
+        proxy: oidc && mintUrl ? { ...access, oidcUrl: `${mintUrl}?api-version=2.0` } : access,
+        redact,
+      });
     } finally {
       ctx.signal.removeEventListener("abort", revoke);
       revoke();

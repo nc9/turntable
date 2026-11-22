@@ -3,6 +3,10 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, getAttempt, openDatabase } from "./db";
+import { getOrgById } from "./db/repos";
+import { mintAttemptCredential } from "./oidc/attempt-credential";
+import type { AttemptContext } from "./scheduler/types";
+import type { TrustClass } from "./trust";
 import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
@@ -24,6 +28,7 @@ import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
+
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
@@ -55,6 +60,9 @@ import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
 import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
+
+/** A credential the proxy attaches to one OIDC request lives this long: one request, not a job. */
+const OIDC_REQUEST_CREDENTIAL_MS = 2 * 60 * 1000;
 
 const USAGE = `longshore ${VERSION}
 
@@ -150,7 +158,12 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
-  extras: { auth?: AppAuth; vault?: SecretVault; cache?: CacheService } = {},
+  extras: {
+    auth?: AppAuth;
+    vault?: SecretVault;
+    cache?: CacheService;
+    oidc?: { issuer: OidcIssuer; masterKey: Buffer };
+  } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -201,6 +214,17 @@ async function startBackground(
       secretsProxy = await SecretsProxy.start({
         db,
         vault: extras.vault,
+        ...(extras.oidc
+          ? {
+              oidcCredential: (who: { orgId: string; attemptId: string }) =>
+                mintAttemptCredential(
+                  extras.oidc!.masterKey,
+                  who,
+                  Date.now(),
+                  OIDC_REQUEST_CREDENTIAL_MS,
+                ),
+            }
+          : {}),
         ...(port ? { port: Number(port) } : {}),
         ...(process.env.LONGSHORE_PROXY_BIND?.trim()
           ? { bindHost: process.env.LONGSHORE_PROXY_BIND.trim() }
@@ -260,6 +284,15 @@ async function startBackground(
         ? withSecretsProxy(r, {
             proxy: secretsProxy,
             ...(jobTokens ? { github: githubTargetOf(db) } : {}),
+            ...(extras.oidc
+              ? {
+                  oidcMintUrl: async (ctx: AttemptContext, klass: TrustClass) => {
+                    if (!extras.oidc!.issuer.allows(klass)) return undefined;
+                    const org = await getOrgById(db, ctx.scope.orgId);
+                    return org ? extras.oidc!.issuer.mintUrl(org.slug) : undefined;
+                  },
+                }
+              : {}),
           })
         : r;
     scheduler = new Scheduler({
@@ -531,6 +564,7 @@ async function serve(args: string[]): Promise<void> {
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;
+  let oidcIssuer: { issuer: OidcIssuer; masterKey: Buffer } | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const masterKey = loadMasterKey(keyFile);
@@ -556,6 +590,7 @@ async function serve(args: string[]): Promise<void> {
         allowClasses: parseAllowClasses(process.env.LONGSHORE_OIDC_ALLOW_CLASSES),
       });
       oidc = createOidcHandler({ db, issuer, masterKey });
+      oidcIssuer = { issuer, masterKey };
     }
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
@@ -654,6 +689,7 @@ async function serve(args: string[]): Promise<void> {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
       ...(cache ? { cache } : {}),
+      ...(oidcIssuer ? { oidc: oidcIssuer } : {}),
     },
   );
 
