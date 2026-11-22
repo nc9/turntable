@@ -14,6 +14,14 @@ export const pollConfigSchema = z
      * authenticated so the rate limit is not shared with every other unauthenticated client.
      */
     tokenFile: z.string().min(1).optional(),
+    /**
+     * Name of an environment variable holding the token, for a platform with no shell and no
+     * files (Railway). The config never carries the token itself, only this name.
+     */
+    tokenEnv: z
+      .string()
+      .regex(/^[A-Z_][A-Z0-9_]{0,63}$/, "an environment variable name")
+      .optional(),
     /** Explicitly allow polling with no token (tests, a tiny setup). Default false. */
     allowUnauthenticated: z.boolean().default(false),
     /** For tests and GitHub Enterprise. */
@@ -73,30 +81,62 @@ export const pollConfigSchema = z
       .min(1),
   })
   .strict()
-  .refine((c) => c.tokenFile !== undefined || c.allowUnauthenticated, {
+  .refine((c) => c.tokenFile === undefined || c.tokenEnv === undefined, {
+    path: ["tokenEnv"],
+    message: "set only one of tokenFile and tokenEnv",
+  })
+  .refine((c) => c.tokenFile !== undefined || c.tokenEnv !== undefined || c.allowUnauthenticated, {
     path: ["tokenFile"],
-    message: "required (polling must be authenticated); set allowUnauthenticated to opt out",
+    message:
+      "required (polling must be authenticated): tokenFile or tokenEnv; set allowUnauthenticated to opt out",
   });
 
 export type PollConfig = z.infer<typeof pollConfigSchema>;
 export type PollRepoConfig = PollConfig["repos"][number];
 
-/** Parses a config file. Errors name the file and the field, never a secret. */
-export function loadPollConfig(path: string): PollConfig {
+/** Validates poll config text. Errors name the source and the field, never a secret. */
+export function parsePollConfig(text: string, source: string): PollConfig {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(text);
   } catch (err) {
     throw new Error(
-      `cannot read poll config ${path}: ${err instanceof Error ? err.message : "error"}`,
+      `cannot read poll config ${source}: ${err instanceof Error ? err.message : "error"}`,
     );
   }
   const parsed = pollConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
-    throw new Error(`invalid poll config ${path}:\n  ${issues.join("\n  ")}`);
+    throw new Error(`invalid poll config ${source}:\n  ${issues.join("\n  ")}`);
   }
   return parsed.data;
+}
+
+/** Parses a config file. */
+export function loadPollConfig(path: string): PollConfig {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new Error(
+      `cannot read poll config ${path}: ${err instanceof Error ? err.message : "error"}`,
+    );
+  }
+  return parsePollConfig(text, path);
+}
+
+/** The poll token from its file or its environment variable; undefined when neither is set. */
+export function readPollToken(
+  c: { tokenFile?: string | undefined; tokenEnv?: string | undefined },
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  if (c.tokenFile) return readToken(c.tokenFile);
+  if (c.tokenEnv) {
+    const v = env[c.tokenEnv]?.trim();
+    if (!v) throw new Error(`environment variable ${c.tokenEnv} (the poll token) is not set`);
+    return v;
+  }
+  return undefined;
 }
 
 /** Reads the token file, trimmed. Errors never include the content. */

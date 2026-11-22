@@ -24,12 +24,16 @@ import type { SecretStore } from "../secrets/store";
 import type { GithubFacts } from "./api";
 import { SECRET_WEBHOOK, SECRET_WEBHOOK_PREVIOUS } from "./app-auth";
 import { syncInstallation } from "./installations";
+import { clientAddress, parseTrustedProxies, type TrustedProxies } from "./trusted-proxies";
 
 export const WEBHOOK_PATH = "/api/v1/webhooks/github";
 /** GitHub's maximum webhook payload. */
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const RETENTION_MS = 30 * 86_400_000;
 const HANDLED = new Set(["installation", "installation_repositories"]);
+/** Events that only wake the poller for the repo they name. */
+const WAKE = new Set(["push", "pull_request"]);
+const REPO_NAME = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const GUID = /^[A-Za-z0-9-]{8,100}$/;
 
 export interface WebhookOptions {
@@ -41,16 +45,28 @@ export interface WebhookOptions {
   maxFailures?: number;
   failureWindowMs?: number;
   /**
-   * Trust the right-most X-Forwarded-For hop as the client address. Only set this when the
-   * server sits behind a proxy you control that appends the real peer. Otherwise every
-   * request shares one key, which is safe because a valid signature is never rate limited.
+   * The proxies in front of the server that you control (LONGSHORE_TRUSTED_PROXIES). The forwarded
+   * chain is believed only through them; otherwise the limiter keys on the socket peer, so a
+   * spoofed header gains nothing. A valid signature is never rate limited either way.
    */
-  trustForwardedFor?: boolean;
+  trustedProxies?: TrustedProxies;
+  /**
+   * Hosted multi-tenant mode: an installation nobody has claimed is not mapped to the App's own
+   * org (see installations.ts and the claim flow).
+   */
+  claimMode?: boolean;
+  /**
+   * A push or pull request event named this repository. Only the NAME is taken from the payload,
+   * to wake the poller for a repo it is already configured for; the poll re-fetches every fact
+   * from the API and applies the trust decision as for any run. An unconfigured repo is ignored.
+   */
+  onRepoEvent?: (repo: string, event: string) => void;
   log?: (line: string) => void;
 }
 
 export interface WebhookHandler {
-  handle(req: Request): Promise<Response | undefined>;
+  /** `peer` is the socket's remote address, used to key the failure limiter. */
+  handle(req: Request, peer?: string): Promise<Response | undefined>;
   /** Resolves when every delivery being processed has finished (tests, shutdown). */
   drain(): Promise<void>;
   /** Re-runs deliveries stored but never finished, for example after a crash. */
@@ -81,11 +97,9 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
   let sinceLastPurge = 0;
 
   const MAX_TRACKED = 10_000;
-  const clientKey = (req: Request): string => {
-    if (!o.trustForwardedFor) return "all";
-    const hops = (req.headers.get("x-forwarded-for") ?? "").split(",");
-    return hops[hops.length - 1]?.trim() || "unknown";
-  };
+  const trusted = o.trustedProxies ?? parseTrustedProxies(undefined);
+  const clientKey = (req: Request, peer: string | undefined): string =>
+    clientAddress(req.headers, peer, trusted);
 
   const limited = (key: string): boolean => {
     const f = failures.get(key);
@@ -117,7 +131,13 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
         return;
       }
       // The payload only says WHICH installation to look at; everything else is re-fetched.
-      const r = await syncInstallation(o.db, o.facts, installationId);
+      const r = await syncInstallation(o.db, o.facts, installationId, {
+        claimMode: o.claimMode === true,
+      });
+      if (r.outcome === "unclaimed") {
+        await finishDelivery(o.db, id, "ignored", "installation not claimed by any org");
+        return;
+      }
       const note =
         r.conflicts.length > 0
           ? `left alone (bound elsewhere): ${r.conflicts.join(", ")}`
@@ -136,11 +156,11 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
   };
 
   return {
-    async handle(req) {
+    async handle(req, peer) {
       const url = new URL(req.url);
       if (url.pathname !== WEBHOOK_PATH) return undefined;
       if (req.method !== "POST") return json(405, { error: "method not allowed" });
-      const key = clientKey(req);
+      const key = clientKey(req, peer);
       // A client that keeps failing is refused before its body is read. A correctly signed
       // request is never refused by the limiter: attackers cannot lock out GitHub's deliveries.
       const throttled = limited(key);
@@ -188,7 +208,11 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
         return json(400, { error: "missing or malformed X-GitHub-Delivery" });
       if (!/^[a-z_]{1,64}$/.test(event))
         return json(400, { error: "missing or malformed X-GitHub-Event" });
-      let payload: { action?: unknown; installation?: { id?: unknown } };
+      let payload: {
+        action?: unknown;
+        installation?: { id?: unknown };
+        repository?: { full_name?: unknown };
+      };
       try {
         payload = JSON.parse(new TextDecoder().decode(raw)) as typeof payload;
       } catch {
@@ -216,6 +240,16 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
         void purgeDeliveries(o.db, now() - RETENTION_MS);
       }
       if (handled) track(delivery);
+      const repo = payload.repository?.full_name;
+      if (WAKE.has(event) && typeof repo === "string" && REPO_NAME.test(repo)) {
+        try {
+          o.onRepoEvent?.(repo, event);
+        } catch (e) {
+          log(
+            `github webhook ${delivery}: wake failed: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
       return json(202, { status: handled ? "accepted" : "ignored" });
     },
 

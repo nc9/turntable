@@ -13,6 +13,7 @@ import {
 } from "../db/repos";
 import type { Op, OpContext } from "./define";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
 import { authenticateSigned } from "./signed";
@@ -27,6 +28,7 @@ export type DispatchEnv = {
   now?: () => number;
   /** Set when the server has a master key; the vault ops need it. */
   vault?: SecretVault | undefined;
+  claims?: InstallationClaims | undefined;
   /** WebAuthn relying party for human approvals (LONGSHORE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
 };
@@ -269,6 +271,7 @@ export async function dispatch(
       principal,
       now: env.now ?? Date.now,
       vault: env.vault,
+      claims: env.claims,
       webauthn: env.webauthn,
     });
     const target = op;

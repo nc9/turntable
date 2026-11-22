@@ -104,6 +104,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "request_release",
     "rotate_secret",
     "set_secret",
+    "start_installation_claim",
   ]);
   expect(
     hiddenFromMcp

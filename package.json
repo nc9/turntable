@@ -46,6 +46,7 @@
     "test:github": "bun test packages/core/tests/secrets.test.ts packages/core/tests/github-installations.test.ts packages/core/tests/github-webhook.test.ts packages/core/tests/github-app.test.ts packages/core/tests/github-serve.test.ts",
     "test:trust": "bun test packages/core/tests/trust.test.ts packages/core/tests/workflow-taint.test.ts",
     "test:oidc": "bun test packages/core/tests/oidc.test.ts",
+    "test:hosted": "bun test packages/core/tests/hosted-app.test.ts packages/core/tests/hosted-e2e.test.ts",
     "test:parity": "bun test packages/core/tests/pr-event-parity.test.ts",
     "test:release": "bun test packages/core/tests/release-lane.test.ts",
     "test:vault": "bun test packages/core/tests/vault.test.ts packages/core/tests/vault-ops.test.ts packages/core/tests/vault-cli.test.ts packages/core/tests/env-scrub.test.ts",

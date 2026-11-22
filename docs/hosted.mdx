@@ -1,0 +1,60 @@
+---
+title: Hosted deployment
+description: Running Longshore on a platform with no shell (Railway), connecting GitHub installations per org, and shadowing a repo's CI.
+---
+
+This page is for running one Longshore instance for several orgs on a platform that gives you environment variables and a volume, and no shell. It covers configuration from the environment alone, the installation claim flow, webhooks, and a shadow run.
+
+## Everything from the environment
+
+Every `serve` option has a variable (a flag, when given, wins):
+
+| Variable | Option |
+| --- | --- |
+| `PORT`, `LONGSHORE_HOST`, `LONGSHORE_DATA_DIR` | `--port`, `--host`, `--data-dir` |
+| `LONGSHORE_WORKER=1` | `--worker` |
+| `LONGSHORE_PROVIDER`, `LONGSHORE_PROVIDER_CONFIG`, `LONGSHORE_PROVIDER_CONFIG_JSON` | `--provider`, `--provider-config` |
+| `LONGSHORE_POLL`, `LONGSHORE_POLL_JSON` | `--poll` |
+| `LONGSHORE_IMAGE`, `LONGSHORE_GLOBAL_CAP`, `LONGSHORE_ORG_CAP`, `LONGSHORE_LEASE_SECONDS` | `--image`, `--global-cap`, `--org-cap`, `--lease-seconds` |
+| `LONGSHORE_HOSTED=1`, `LONGSHORE_ISOLATION_OVERRIDE` | `--hosted`, `--isolation-override` |
+
+With no files, the two configs can be JSON in a variable (`LONGSHORE_PROVIDER_CONFIG_JSON`, `LONGSHORE_POLL_JSON`). A config never carries a secret. The Daytona provider names the variable that holds its API key (`"apiKeyEnv": "DAYTONA_API_KEY"`, the default), and the poll config names the variable that holds the poll token (`"tokenEnv": "GITHUB_POLL_TOKEN"`) instead of a file. A token pasted into the config is refused.
+
+Example for a Daytona-backed worker that shadows one repo:
+
+```
+LONGSHORE_WORKER=1
+LONGSHORE_PROVIDER=daytona
+LONGSHORE_PROVIDER_CONFIG_JSON={"apiKeyEnv":"DAYTONA_API_KEY","maxLive":3}
+LONGSHORE_POLL_JSON={"tokenEnv":"GITHUB_POLL_TOKEN","provider":"daytona","repos":[{"repo":"acme/web","org":"acme","project":"web","workflow":".github/workflows/ci.yml","defaultBranch":"main","prMode":"approval"}]}
+LONGSHORE_HOSTED=1
+LONGSHORE_MASTER_KEY_FILE=/data/master.key
+DAYTONA_API_KEY=...
+GITHUB_POLL_TOKEN=...
+```
+
+## Webhooks wake the poller
+
+A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.
+
+Check runs post as `shadow / <job>`, always neutral, while the project's checks mode is `shadow`.
+
+## One instance, several orgs: claiming an installation
+
+By default every installation of the App maps to the org that owns the App. On a hosted instance, set `LONGSHORE_CLAIM_INSTALLATIONS=1` and each org claims its own installation:
+
+1. A signed-in principal of the org calls `start_installation_claim`. It needs an org-level token with `release_operator` or admin; a project-scoped token is refused. It returns a link to this Longshore instance carrying a `state`: an HMAC over the org, who started it, a nonce and an expiry (15 minutes), with the nonce stored and single use. Optionally pass `github_login` to restrict the claim to one GitHub user.
+2. Opening the link shows a confirmation page that names the Longshore org that will receive the installation. Confirming sets a short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie holding the nonce and sends the browser to GitHub. The callback needs that cookie, so a link forwarded to another browser, or a flow started by someone else, cannot be completed from a different one.
+3. The person installs the App, and GitHub sends the browser to the App's **setup URL**, `<public url>/api/v1/github/setup`, with `installation_id`, `state` and an authorization `code`. The App must have **Request user authorization (OAuth) during installation** enabled and that setup URL set (the manifest flow sets the setup URL; the OAuth option is on the App's settings page).
+4. The state names the org but does not prove the installation id, which is only a query parameter, and access is not ownership (every member of an organization can see its installations). So the callback exchanges the code for the user's token and requires that the user can reach the installation **and owns it**: for an organization account, `GET /user/memberships/orgs/{org}` with the user's token must say `role: admin` and `state: active`; for a personal account, the account must be the user. If `github_login` was given, it must match. It then re-fetches the installation with the App's own credentials (it must be our App) and only then maps it, and its repositories as projects, to the org in the state, consuming the nonce. A failed attempt does not burn the link. Every outcome is written to the org's audit chain as `claim_installation`, with the GitHub user id and login who claimed it.
+5. An installation another org already holds is never taken. An installation nobody has claimed is ignored by the webhook handler (stored as ignored), not mapped to the App's org.
+
+## Trusted proxies
+
+The webhook failure rate limit is keyed on the real client address. Name the proxies in front of the server, as addresses and CIDR ranges, in `LONGSHORE_TRUSTED_PROXIES` (for example `10.0.0.0/8,fd00::/8`). The client is the right-most `X-Forwarded-For` hop that is not one of them, and the header is read only when the socket peer is itself trusted. With none configured the limiter keys on the socket peer, so a spoofed header gains nothing. A correctly signed delivery is never rate limited. `LONGSHORE_TRUST_FORWARDED_FOR` is no longer read.
+
+## Known gaps
+
+- Repositories are ingested only if they are in the poll config. An installation binds a repo to a project, but a webhook for a bound repo that has no poll entry (no allowlist, workflow path or default branch) is ignored. Ingest straight from installation bindings is future work.
+- The manifest flow, the claim flow's OAuth exchange and secret rotation have been exercised against a fake GitHub only. Each needs one run against live GitHub.
+- `merge_group` events are not ingested.

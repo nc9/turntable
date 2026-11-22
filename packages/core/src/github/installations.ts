@@ -17,8 +17,18 @@ import {
 } from "../db/repos";
 import type { GithubFacts } from "./api";
 
+export interface SyncOptions {
+  /**
+   * Multi-tenant (hosted) mode: an installation belongs to the org that claimed it, so one nobody
+   * has claimed is left alone ("unclaimed") instead of being mapped to the org that owns the App.
+   */
+  claimMode?: boolean;
+  /** The org that just claimed the installation (the claim callback); never taken from a payload. */
+  claimedBy?: string;
+}
+
 export interface SyncResult {
-  outcome: "synced" | "suspended" | "deleted" | "unknown";
+  outcome: "synced" | "suspended" | "deleted" | "unknown" | "unclaimed";
   bound: string[];
   unbound: string[];
   /** Repos left alone because they are already bound elsewhere. */
@@ -41,15 +51,21 @@ export async function syncInstallation(
   db: Db,
   facts: GithubFacts,
   installationId: string,
+  opts: SyncOptions = {},
 ): Promise<SyncResult> {
   const result: SyncResult = { outcome: "synced", bound: [], unbound: [], conflicts: [] };
   const app = await getGithubApp(db);
   if (!app) throw new Error("no GitHub App is configured");
-  const scope = { orgId: app.orgId };
   const existing = await getInstallation(db, installationId);
-  if (existing && existing.orgId !== app.orgId) {
-    throw new Error(`installation ${installationId} is mapped to another org`);
+  // Which org owns this installation: the one it is already mapped to, then the one that just
+  // claimed it, then (single-tenant) the org that owns the App. An installation already mapped
+  // somewhere is never moved by a claim, and a hosted instance never guesses.
+  if (existing && opts.claimedBy !== undefined && existing.orgId !== opts.claimedBy) {
+    throw new Error(`installation ${installationId} is already claimed by another org`);
   }
+  const orgId = existing?.orgId ?? opts.claimedBy ?? (opts.claimMode ? undefined : app.orgId);
+  if (orgId === undefined) return { ...result, outcome: "unclaimed" };
+  const scope = { orgId };
 
   const inst = await facts.getInstallation(installationId);
   if (!inst) {
@@ -88,8 +104,8 @@ export async function syncInstallation(
     if (found) {
       // Already bound. Ours when it is in this org and from this installation; otherwise leave
       // it alone: an installation must never take a repo another binding owns.
-      const ours = found.orgId === app.orgId && found.installationId === installationId;
-      if (!ours && !(found.orgId === app.orgId && found.installationId === null)) {
+      const ours = found.orgId === orgId && found.installationId === installationId;
+      if (!ours && !(found.orgId === orgId && found.installationId === null)) {
         result.conflicts.push(repo.fullName);
       }
       continue;
@@ -104,7 +120,7 @@ export async function syncInstallation(
     );
     await bindRepo(
       db,
-      { orgId: app.orgId, projectId: project.id },
+      { orgId, projectId: project.id },
       {
         forge: "github",
         owner: repo.owner,

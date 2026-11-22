@@ -8,7 +8,14 @@ import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
 import { registerCredentialRevoker } from "./incident";
 import { createForgeToken } from "./pins/forge-token";
+import { parseTrustedProxies } from "./github/trusted-proxies";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
+import {
+  createClaimHandler,
+  githubUserVerifier,
+  InstallationClaims,
+  type ClaimHandler,
+} from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
@@ -21,12 +28,12 @@ import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { SecretsProxy, withSecretsProxy } from "./proxy";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
-import { loadPollConfig, Poller } from "./poll";
+import { Poller } from "./poll";
+import { resolvePollConfig, resolveProviderConfig, serveDefaults } from "./serve-config";
 import {
   createActRunner,
   createProvider,
   gitRepoSource,
-  loadProviderConfig,
   reconcileExpired,
   type AttemptRunner,
   Scheduler,
@@ -103,6 +110,14 @@ Environment:
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
+  LONGSHORE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
+                    the webhook failure limiter keys on the client the forwarded chain reports through them
+  LONGSHORE_CLAIM_INSTALLATIONS  set to 1 on a hosted instance: an org claims its own App installation
+                    (start_installation_claim, then GitHub redirects to /api/v1/github/setup)
+  LONGSHORE_WORKER, LONGSHORE_PROVIDER, LONGSHORE_PROVIDER_CONFIG, LONGSHORE_POLL, LONGSHORE_IMAGE,
+  LONGSHORE_GLOBAL_CAP, LONGSHORE_ORG_CAP, LONGSHORE_LEASE_SECONDS, LONGSHORE_ISOLATION_OVERRIDE, LONGSHORE_DATA_DIR
+                    the environment equivalent of each serve flag (a flag wins)
+  LONGSHORE_POLL_JSON, LONGSHORE_PROVIDER_CONFIG_JSON  the poll and provider configs as JSON, for hosts with no files
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
   LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
@@ -124,10 +139,10 @@ async function startBackground(
   },
   observer?: CheckReporter,
   extras: { auth?: AppAuth; vault?: SecretVault } = {},
-): Promise<{ stop(): Promise<void> }> {
+): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
-  const pollConfig = v.poll ? loadPollConfig(v.poll) : undefined;
+  const pollConfig = resolvePollConfig(v.poll);
   let scheduler: Scheduler | undefined;
   let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   let poller: Poller | undefined;
@@ -136,7 +151,7 @@ async function startBackground(
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
-    const provider = createProvider(providerName, loadProviderConfig(v["provider-config"]));
+    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]));
     workerProvider = provider;
     // Fail at startup, with the provider named, instead of at the first job.
     try {
@@ -280,6 +295,7 @@ async function startBackground(
   }
 
   return {
+    nudge: (repo) => poller?.nudge(repo) ?? false,
     async stop() {
       poller?.stop();
       if (reconcileTimer) clearInterval(reconcileTimer);
@@ -295,25 +311,34 @@ async function startBackground(
 }
 
 async function serve(args: string[]): Promise<void> {
+  // Every option has an environment variable (serve-config.ts), so a platform with no shell
+  // configures the whole server from variables. A flag wins over its variable.
+  const d = serveDefaults(process.env);
   const { values } = parseArgs({
     args,
     options: {
-      port: { type: "string", default: process.env.PORT?.trim() || "8080" },
-      host: { type: "string", default: process.env.LONGSHORE_HOST ?? "127.0.0.1" },
-      "data-dir": { type: "string", default: "./data" },
+      port: { type: "string", default: d.port },
+      host: { type: "string", default: d.host },
+      "data-dir": { type: "string", default: d.dataDir },
       "allowed-origin": { type: "string", multiple: true },
       "public-url": { type: "string" },
       roles: { type: "string" },
-      worker: { type: "boolean", default: false },
-      "global-cap": { type: "string", default: "4" },
-      "org-cap": { type: "string", default: "2" },
-      "lease-seconds": { type: "string", default: "30" },
-      image: { type: "string" },
-      poll: { type: "string" },
-      provider: { type: "string", default: "docker" },
-      "provider-config": { type: "string" },
-      hosted: { type: "boolean", default: false },
-      "isolation-override": { type: "string" },
+      worker: { type: "boolean", default: d.worker },
+      "global-cap": { type: "string", default: d.globalCap },
+      "org-cap": { type: "string", default: d.orgCap },
+      "lease-seconds": { type: "string", default: d.leaseSeconds },
+      image: { type: "string", ...(d.image ? { default: d.image } : {}) },
+      poll: { type: "string", ...(d.poll ? { default: d.poll } : {}) },
+      provider: { type: "string", default: d.provider },
+      "provider-config": {
+        type: "string",
+        ...(d.providerConfig ? { default: d.providerConfig } : {}),
+      },
+      hosted: { type: "boolean", default: d.hosted },
+      "isolation-override": {
+        type: "string",
+        ...(d.isolationOverride ? { default: d.isolationOverride } : {}),
+      },
     },
     strict: true,
   });
@@ -372,6 +397,11 @@ async function serve(args: string[]): Promise<void> {
     .filter((o) => o !== "");
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
+  let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  // Set once the poller exists: a push or pull request webhook wakes it for that repo.
+  let wake: ((repo: string) => void) | undefined;
+  // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
+  const claimMode = process.env.LONGSHORE_CLAIM_INSTALLATIONS === "1";
   let checks: CheckReporter | undefined;
   const auditStops: (() => void)[] = [];
   let appAuth: AppAuth | undefined;
@@ -420,12 +450,36 @@ async function serve(args: string[]): Promise<void> {
       name: "github-installation-tokens",
       revoke: () => auth.dropCached(),
     });
+    const ghFacts = githubFacts(auth);
     webhooks = createWebhookHandler({
       db,
       store,
-      facts: githubFacts(auth),
-      trustForwardedFor: process.env.LONGSHORE_TRUST_FORWARDED_FOR === "1",
+      facts: ghFacts,
+      trustedProxies: parseTrustedProxies(process.env.LONGSHORE_TRUSTED_PROXIES),
+      ...(claimMode ? { claimMode: true } : {}),
+      onRepoEvent: (repo) => wake?.(repo),
     });
+    if (claimMode) {
+      const starter = new InstallationClaims({
+        db,
+        store,
+        publicUrl: values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
+      });
+      claims = {
+        starter,
+        handler: createClaimHandler({
+          claims: starter,
+          facts: ghFacts,
+          user: githubUserVerifier({ db, store }),
+          log: (m) => console.warn(`[longshore] ${m}`),
+        }),
+      };
+    }
+    if (process.env.LONGSHORE_TRUST_FORWARDED_FOR !== undefined) {
+      console.warn(
+        "warning: LONGSHORE_TRUST_FORWARDED_FOR is no longer read; name your proxies in LONGSHORE_TRUSTED_PROXIES",
+      );
+    }
     void webhooks.retryUnfinished().catch(() => {});
     // Signed audit checkpoints need the store's key; export sinks are opt in.
     auditStops.push(
@@ -455,6 +509,7 @@ async function serve(args: string[]): Promise<void> {
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
         ...(oidc ? { oidc } : {}),
+        ...(claims ? { claims } : {}),
         trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
       })
@@ -475,6 +530,8 @@ async function serve(args: string[]): Promise<void> {
       ...(vault ? { vault } : {}),
     },
   );
+
+  wake = (repo) => void background.nudge(repo);
 
   const stop = () => {
     for (const s of auditStops) s();

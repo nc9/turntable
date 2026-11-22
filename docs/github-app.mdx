@@ -48,9 +48,9 @@ When GitHub reports an installation, Longshore does not trust the payload. It re
 The endpoint, `POST /api/v1/webhooks/github`, requires `LONGSHORE_MASTER_KEY_FILE`.
 
 - The body is capped at 25 MiB (GitHub's maximum), by `Content-Length` and by the streamed size.
-- The `X-Hub-Signature-256` HMAC-SHA256 is checked over the raw body with a constant-time compare, before anything is parsed. A bad signature gets `401` and stores nothing. Repeated failures from one client are rate limited (`429`).
+- The `X-Hub-Signature-256` HMAC-SHA256 is checked over the raw body with a constant-time compare, before anything is parsed. A bad signature gets `401` and stores nothing. Repeated failures from one client are rate limited (`429`), keyed on the real client address (see `LONGSHORE_TRUSTED_PROXIES` in [Hosted deployment](/hosted)).
 - The delivery GUID is stored before the `202`. A delivery with a GUID seen before is acknowledged and not run again. Deliveries are kept for 30 days.
-- Events with no handler are stored as ignored and acknowledged. A delivery interrupted before it finished is retried on the next start.
+- Events with no handler are stored as ignored and acknowledged. `push` and `pull_request` are ignored too, except that they wake the poller for the repo they name (see [Hosted deployment](/hosted)). A delivery interrupted before it finished is retried on the next start.
 - Handlers are idempotent.
 
 ## Rotating the webhook secret
