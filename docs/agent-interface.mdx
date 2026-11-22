@@ -70,7 +70,11 @@ No token role reaches `admin`, so a token can never create tokens.
 | `rerun` | write | operator | Queue a new attempt for failed jobs (or named jobs) of a run, with a required reason. At most 2 reruns per job per commit; audited. |
 | `approve_run` | write | release_operator (operator if the org lowered it) | Release a run held for an untrusted author. Bound to the run's head sha and workflow hash; never raises the trust class. Audited. |
 | `cancel` | destructive | operator | Cancel the queued, running and waiting jobs of a run. Audited. |
+| `list_secrets` | read | release_operator | The org's (or one project's) secrets: names, scopes, allowed trust classes, destination hosts, versions, last use. Never values. Cursor paging. |
+| `delete_secret` | destructive | release_operator | Delete a secret and every version. Audited. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
+
+Secret values are set only through the REST API (over https) or `longshore secret set`, never through MCP or the OpenAPI agent description: see [Secrets vault](/secrets-vault).
 
 `checks_for_sha` takes the latest run of each workflow for the full commit sha. Any failure, infrastructure error or cancellation is `RED`. Anything queued, running or waiting for approval is `PENDING`. Every workflow counts as required until required-check configuration exists.
 

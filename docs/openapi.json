@@ -3146,6 +3146,309 @@
         "x-longshore-min-role": "operator",
         "x-longshore-untrusted-output": false
       }
+    },
+    "/secrets": {
+      "delete": {
+        "operationId": "delete_secret",
+        "summary": "Delete a secret and every version of it.",
+        "description": "Permanently deletes the secret under that exact name and scope, with all its versions. Irreversible. Needs release_operator or admin; audited by name and scope.\n\nRequired role: release_operator. Side effects: destructive; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Name, e.g. DEPLOY_KEY."
+                  },
+                  "environment": {
+                    "description": "Limit to jobs that run in this environment.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "ref_pattern": {
+                    "description": "Limit to this ref pattern (main, release/*, refs/tags/v*).",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "versions_removed": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["name", "versions_removed"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "destructive",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      },
+      "get": {
+        "operationId": "list_secrets",
+        "summary": "List secrets: names, scopes, policy, versions and last use. Never values.",
+        "description": "Lists the org's secrets (or one project's, when a project is given) with their scope, allowed trust classes, destination hosts, versions and when each was last used. Values are never returned by any operation. Needs release_operator or admin, because names and scopes show what is worth attacking. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size, 1 to 100.",
+            "schema": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response's next_cursor.",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "project_id": {
+                            "description": "Null: the whole org.",
+                            "type": ["string", "null"]
+                          },
+                          "environment": {
+                            "type": ["string", "null"]
+                          },
+                          "ref_pattern": {
+                            "type": ["string", "null"]
+                          },
+                          "trust_classes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Classes allowed to use it. Never untrusted_pr."
+                          },
+                          "destinations": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Hosts a delivery may go to. Empty: nowhere."
+                          },
+                          "current_version": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "versions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "version": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "created_at": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "created_by": {
+                                  "type": "string"
+                                },
+                                "valid_until": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "End of the rotation overlap; null for the current one."
+                                }
+                              },
+                              "required": ["version", "created_at", "created_by", "valid_until"],
+                              "additionalProperties": false
+                            }
+                          },
+                          "created_at": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "updated_at": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "last_used_at": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "project_id",
+                          "environment",
+                          "ref_pattern",
+                          "trust_classes",
+                          "destinations",
+                          "current_version",
+                          "versions",
+                          "created_at",
+                          "updated_at",
+                          "last_used_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next_cursor": {
+                      "description": "Pass as cursor to get the next page; null on the last page.",
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["entries", "next_cursor"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "release_operator",
+        "x-longshore-untrusted-output": false
+      }
     }
   },
   "components": {
@@ -3176,7 +3479,8 @@
                   "method_not_allowed",
                   "conflict",
                   "payload_too_large",
-                  "internal"
+                  "internal",
+                  "unavailable"
                 ]
               },
               "message": {

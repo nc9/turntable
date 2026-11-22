@@ -32,11 +32,51 @@ ends as `infra_error`.
 - Tokenless checkout: the controller delivers the repo (with `.git`) as a tarball. Each pinned
   `actions/checkout@<ref>` is replaced by a composite stub that copies it into the workspace
   (`--no-skip-checkout --local-repository <ref>=<stub dir>`).
-- act runs under `env GIT_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0` (constants, set inside the
-  sandbox; no controller env). act gives run steps a pty, so without these `git log` blocks in a
-  pager until the timeout.
+- act runs under the step environment in `src/step-env.ts` (constants set inside the sandbox, no
+  controller env): `GIT_PAGER=cat`, `PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `LANG=C.UTF-8`, `TERM`
+  unset, and the step shims first on `PATH`. See "Parity assumptions" for why.
 - Sandbox image needs `bash`, `git`, `tar`, `sha256sum` (or `shasum`) and, for JavaScript actions,
   `node`.
+
+## Parity assumptions
+
+Each is a claim about GitHub's hosted runner that Longshore makes true for steps. A workflow that
+passes on GitHub must not fail here because of the environment. Numbers are stable: tests and
+issues cite them.
+
+1. **P1: no terminal on a step's stdin, stdout or stderr.** act v0.2.97 allocates a pty for every
+   host-mode command, unconditionally (`if true /* allocate Terminal */` in
+   `pkg/container/host_environment.go`; no flag or env disables it), so `[ -t 1 ]` and
+   `process.stdout.isTTY` are true. GitHub's runner captures steps through pipes. Longshore puts
+   shims for `bash`, `sh`, `python`, `python3`, `node` and `pwsh` first on `PATH` (act resolves a
+   step's interpreter through the PATH it inherits). A shim runs the real interpreter with stdin
+   from `/dev/null` and stdout and stderr (merged, as the runner captures them) on a pipe, and
+   forwards the pipe to act's pty; everything the step starts inherits it. Found by a parity
+   run of the squirrelscan CLI tests: its `fmt` colours when `process.stdout.isTTY &&
+   TERM !== "dumb"`, and two tests that assert the output has no escape sequence failed.
+   Known limits: the shim stays as the step's parent so output is fully flushed before act
+   moves on, which means act's step-timeout kill (SIGKILL of the direct child only) stops the
+   shim and not the interpreter; the sandbox is destroyed at job end. The interpreter still has
+   a controlling terminal (`/dev/tty` opens): dropping it needs a new session, which would stop
+   act's kill from reaching the step at all; git prompts are off (`GIT_TERMINAL_PROMPT=0`). An interpreter that a step puts ahead of the shims (a `node`
+   from `setup-node`) is not wrapped; it still inherits the wrapped step's pipes when started
+   from a shimmed shell.
+2. **P2: `CI=true` and `GITHUB_ACTIONS=true`.** act sets both for every step (`env["CI"] = "true"`
+   and `env["GITHUB_ACTIONS"] = "true"` in `pkg/runner/run_context.go`, v0.2.97). Pinned by the
+   end-to-end parity job.
+3. **P3: `TERM` is unset.** The runner process has no terminal, so none. `env -u TERM` keeps the
+   controller's own TERM out of the sandbox. bash itself reports `dumb` for an unset `TERM`, which
+   is what a bash step sees on GitHub. GitHub does not document this; it is read from the widely
+   reported `tput`/`clear` "TERM environment variable not set" errors on hosted runners.
+   Verify with a probe workflow on GitHub if it ever matters; the tests accept unset or `dumb`
+   and refuse anything else.
+4. **P4: `LANG=C.UTF-8` and `LC_ALL=C.UTF-8`.** (The customer's own controller runs each part as
+   `part.sh > file 2>&1` with the same locale, TERM unset or dumb, and stdin not a terminal.) act's own container mode sets it with the comment "Use same locale as
+   GitHub Actions" (`run_context.go`), and actions/runner-images sets no `LANG` or `LC_ALL` in
+   `/etc/environment`, so the Ubuntu image default applies. The sandbox image may have no locale
+   (POSIX), which changes sorting, case folding and character handling.
+5. **P5: no pager, no prompt.** `GIT_PAGER=cat`, `PAGER=cat`, `GIT_TERMINAL_PROMPT=0`. Not a
+   GitHub variable: with no terminal GitHub has no pager to block on, and git never prompts.
 
 ## Security rules
 

@@ -83,7 +83,7 @@ async function stdioSession(bearer: string) {
 
 const expectedTools = () =>
   registry
-    .documentedOps()
+    .mcpOps()
     .map((o) => o.name)
     .toSorted();
 

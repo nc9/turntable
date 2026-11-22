@@ -45,7 +45,8 @@ export interface RunFacts {
   actorPermission?: ForgePermission;
 }
 
-const normalizeRef = (ref: string): string => (ref.startsWith("refs/") ? ref : `refs/heads/${ref}`);
+export const normalizeRef = (ref: string): string =>
+  ref.startsWith("refs/") ? ref : `refs/heads/${ref}`;
 
 export function isProtectedRef(
   ref: string,

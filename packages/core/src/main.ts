@@ -13,6 +13,7 @@ import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/e
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
 import { SecretStore } from "./secrets/store";
+import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
 import {
@@ -38,6 +39,7 @@ Usage:
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
                    [--isolation-override <reason>]]
                   [--poll <config.json>]
+  longshore secret set|rotate|delete|list --org <slug> --name <NAME> (--value-file <path> | --value-stdin)
   longshore audit verify [--org <slug>] [--public-key <file>] | checkpoint | export | public-key
   longshore policy show | set [--org local] [--project local] [--require-sha-pins true|false]
                               [--allow-owners a,b | --clear-allowlist] [--data-dir ./data]
@@ -68,6 +70,8 @@ Environment:
                     required for the GitHub App and its webhook endpoint
   LONGSHORE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
   LONGSHORE_AUDIT_WEBHOOK_URL  POST audit batches here (HMAC with LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE)
+  LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control, so secret values
+                    sent through it over x-forwarded-proto: https are accepted
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
@@ -287,9 +291,12 @@ async function serve(args: string[]): Promise<void> {
   let checks: CheckReporter | undefined;
   const auditStops: (() => void)[] = [];
   let appAuth: AppAuth | undefined;
+  let vault: SecretVault | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
-    const store = new SecretStore(db, loadMasterKey(keyFile));
+    const masterKey = loadMasterKey(keyFile);
+    const store = new SecretStore(db, masterKey);
+    vault = new SecretVault({ db, masterKey });
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
     // that has not turned it on.
@@ -327,6 +334,8 @@ async function serve(args: string[]): Promise<void> {
     db,
     allowedOrigins,
     ...(webhooks ? { webhooks } : {}),
+    ...(vault ? { vault } : {}),
+    trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
@@ -452,6 +461,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "secret": {
+      const { secretCommand } = await import("./secrets/cli");
+      process.exit(await secretCommand(rest));
     }
     case "audit": {
       const { auditCommand } = await import("./audit/cli");

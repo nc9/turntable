@@ -9,6 +9,7 @@ export const ERROR_STATUS = {
   conflict: 409,
   payload_too_large: 413,
   internal: 500,
+  unavailable: 503,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

@@ -1,9 +1,11 @@
 import {
+  DOCKER_ENV_PASSTHROUGH,
   FileTooLargeError,
   InfraError,
   SandboxNotFoundError,
   SpecError,
   createWrappedExec,
+  scrubbedEnv,
   type Labels,
   type Provider,
   type ProviderInfo,
@@ -128,6 +130,7 @@ export class DockerProvider implements Provider {
         stdout: "pipe",
         stderr: "pipe",
         timeout: timeoutMs,
+        env: scrubbedEnv({}, DOCKER_ENV_PASSTHROUGH),
       }) as typeof proc;
     } catch (e) {
       throw new InfraError(`cannot run ${this.bin}`, e);
