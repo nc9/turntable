@@ -232,5 +232,24 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `incident_rotation_flags` ADD `source` text DEFAULT 'builtin' NOT NULL;"
     ]
+  },
+  {
+    "tag": "0018_clever_valkyrie",
+    "when": 1795373748633,
+    "statements": [
+      "CREATE TABLE `approval_challenges` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`kind` text NOT NULL,\n\t`statement_hash` text NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `approval_challenges_org_idx` ON `approval_challenges` (`org_id`,`expires_at`);",
+      "CREATE TABLE `approval_policies` (\n\t`org_id` text NOT NULL,\n\t`environment` text NOT NULL,\n\t`required` integer NOT NULL,\n\t`allow_author_approval` integer DEFAULT 0 NOT NULL,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tPRIMARY KEY(`org_id`, `environment`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `approval_records` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`kind` text NOT NULL,\n\t`run_id` text,\n\t`environment` text,\n\t`enrolment_id` text,\n\t`statement_hash` text NOT NULL,\n\t`statement` text NOT NULL,\n\t`method` text NOT NULL,\n\t`approver_id` text NOT NULL,\n\t`person` text NOT NULL,\n\t`signature` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `approval_records_run_idx` ON `approval_records` (`org_id`,`run_id`,`environment`);",
+      "CREATE INDEX `approval_records_enrol_idx` ON `approval_records` (`org_id`,`enrolment_id`);",
+      "CREATE UNIQUE INDEX `approval_records_hash_unique` ON `approval_records` (`org_id`,`statement_hash`);",
+      "CREATE TABLE `approver_enrolments` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`person` text NOT NULL,\n\t`forge_login` text,\n\t`kind` text NOT NULL,\n\t`credential_id` text,\n\t`public_key` text NOT NULL,\n\t`alg` text NOT NULL,\n\t`sign_count` integer DEFAULT 0 NOT NULL,\n\t`requested_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`activated_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `approver_enrolments_org_idx` ON `approver_enrolments` (`org_id`,`created_at`);",
+      "CREATE TABLE `approvers` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`person` text NOT NULL,\n\t`forge_login` text,\n\t`kind` text NOT NULL,\n\t`credential_id` text,\n\t`public_key` text NOT NULL,\n\t`alg` text NOT NULL,\n\t`sign_count` integer DEFAULT 0 NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE INDEX `approvers_org_person_idx` ON `approvers` (`org_id`,`person`);",
+      "CREATE UNIQUE INDEX `approvers_org_key_unique` ON `approvers` (`org_id`,`public_key`);",
+      "CREATE UNIQUE INDEX `approvers_id_org_unique` ON `approvers` (`id`,`org_id`);"
+    ]
   }
 ];

@@ -45,7 +45,9 @@ export function createRegistry(ops: readonly Op[]): OpRegistry {
     signatureOps: () =>
       ops.filter(
         (op) =>
-          op.auth.type === "signature" && "statement" in op.input.shape && "signature" in op.input.shape,
+          op.auth.type === "signature" &&
+          "statement" in op.input.shape &&
+          "signature" in op.input.shape,
       ),
     documentedOps: () =>
       ops.filter(
