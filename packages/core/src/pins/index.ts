@@ -7,7 +7,7 @@ import {
   resolveActions,
   type ActionRefResolver,
   type JobPlan,
-} from "@turntable/act-runner";
+} from "@longshore/act-runner";
 import type { Db } from "../db";
 import { getActionPolicy, observePin, type ActionPolicy, type Scope } from "../db/repos";
 
