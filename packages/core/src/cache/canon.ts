@@ -102,7 +102,7 @@ export async function canonicalizeArchive(
   dest: string,
   rules: ArchiveRules = DEFAULT_RULES,
   o: { maxOutputBytes?: number } = {},
-): Promise<{ entries: number; bytes: number }> {
+): Promise<{ entries: number; bytes: number; skipped: number }> {
   const head = Buffer.from(await Bun.file(src).slice(0, 8).arrayBuffer());
   const out = createWriteStream(dest, { mode: 0o600 });
   const comp: Transform =
@@ -144,7 +144,7 @@ export async function canonicalizeArchive(
   };
   let cur = 0; // data bytes of the entry being written, for its block padding
   const seq = { n: 0 };
-  let result: { entries: number; bytes: number } | undefined;
+  let result: { entries: number; bytes: number; skipped: number } | undefined;
   let walkError: unknown;
   try {
     result = await walkArchive(src, rules, {

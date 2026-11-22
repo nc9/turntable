@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_MAX_LIVE,
-  FOREIGN_CI_LABELS,
-  FOREIGN_WAIT_AT,
   HARD_MAX_LIVE,
   MAX_TTL_SECONDS,
   NAME_PREFIX,
@@ -21,8 +19,6 @@ describe("customer-account rules", () => {
     expect(HARD_MAX_LIVE).toBe(3);
     expect(MAX_TTL_SECONDS).toBe(1800);
     expect(NAME_PREFIX).toBe("longshore-dev-");
-    expect(FOREIGN_CI_LABELS).toEqual(["squirrel-pub-ci", "squirrel-ci", "squirrel-release"]);
-    expect(FOREIGN_WAIT_AT).toBe(8);
   });
 
   test("maxLive can be lowered, never raised past the ceiling", () => {
@@ -54,7 +50,7 @@ describe("customer-account rules", () => {
   test("ownership needs the label AND the name prefix", () => {
     const ok = { name: "longshore-dev-x", labels: { "longshore-dev": "1" } };
     expect(isOwn(ok)).toBe(true);
-    expect(isOwn({ ...ok, name: "squirrel-ci-1" })).toBe(false);
+    expect(isOwn({ ...ok, name: "acme-ci-1" })).toBe(false);
     expect(isOwn({ ...ok, labels: { "longshore-dev": "0" } })).toBe(false);
     expect(isOwn({ ...ok, labels: {} })).toBe(false);
     expect(isOwn({ name: "longshore-dev-x" })).toBe(false);
@@ -84,18 +80,27 @@ describe("customer-account rules", () => {
     expect(LIVE_STATES.some((s) => free.has(s))).toBe(false);
   });
 
-  test("owner CI is the label project with an exact CI name, or a snapshot with one", () => {
-    for (const name of FOREIGN_CI_LABELS) {
-      expect(isForeignCi({ labels: { project: name } })).toBe(true);
-      expect(isForeignCi({ snapshot: name })).toBe(true);
+  test("owner CI is the configured label key with an exact value, or a snapshot with one; with none configured nothing is", () => {
+    const labels = { key: "project", values: ["acme-pub-ci", "acme-ci", "acme-release"] };
+    for (const name of labels.values) {
+      expect(isForeignCi({ labels: { project: name } }, labels)).toBe(true);
+      expect(isForeignCi({ snapshot: name }, labels)).toBe(true);
     }
-    expect(isForeignCi({ labels: { project: "squirrel-pub-ci-2" } })).toBe(false);
-    expect(isForeignCi({ labels: { project: "SQUIRREL-CI" } })).toBe(false);
-    expect(isForeignCi({ labels: { lane: "squirrel-ci" } })).toBe(false); // right value, wrong key
-    expect(isForeignCi({ labels: { "squirrel-ci": "1" } })).toBe(false); // right name as a key
+    expect(isForeignCi({ labels: { project: "acme-pub-ci-2" } }, labels)).toBe(false);
+    expect(isForeignCi({ labels: { project: "ACME-CI" } }, labels)).toBe(false);
+    expect(isForeignCi({ labels: { lane: "acme-ci" } }, labels)).toBe(false); // right value, wrong key
+    expect(isForeignCi({ labels: { "acme-ci": "1" } }, labels)).toBe(false); // right name as a key
     expect(
-      isForeignCi({ labels: { project: "squirrel-dev" }, snapshot: "squirrel-dev-warm" }),
+      isForeignCi({ labels: { project: "acme-dev" }, snapshot: "acme-dev-warm" }, labels),
     ).toBe(false);
-    expect(isForeignCi({})).toBe(false);
+    expect(isForeignCi({}, labels)).toBe(false);
+    // The key is the operator's: another key works, and the default key means nothing.
+    const other = { key: "team", values: ["ci"] };
+    expect(isForeignCi({ labels: { team: "ci" } }, other)).toBe(true);
+    expect(isForeignCi({ labels: { project: "ci" } }, other)).toBe(false);
+    // None configured: no label check at all.
+    expect(isForeignCi({ labels: { project: "acme-ci" }, snapshot: "acme-ci" }, undefined)).toBe(
+      false,
+    );
   });
 });

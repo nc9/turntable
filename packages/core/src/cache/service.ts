@@ -40,6 +40,8 @@ export type CacheOptions = {
   /** Public base URL the sandbox reaches the service at, no trailing slash. */
   baseUrl: string;
   rules?: ArchiveRules;
+  /** Told when an archive was stored with entries dropped at denied paths (a count, no names). */
+  onNotice?: (g: CacheGrant, message: string) => void;
   /**
    * Most the unpacked contents of one archive may be, as a multiple of the size reserved for it
    * (default 8). Stops a compression bomb early, before it is written out.
@@ -281,7 +283,7 @@ export function createCacheService(o: CacheOptions): CacheService {
       const scratch = await o.store.scratchPath(id);
       try {
         if (staged === null) throw new ArchiveError("blob is missing");
-        await canonicalizeArchive(
+        const done = await canonicalizeArchive(
           staged,
           scratch,
           {
@@ -290,6 +292,11 @@ export function createCacheService(o: CacheOptions): CacheService {
           },
           { maxOutputBytes: o.maxEntryBytes },
         );
+        if (done.skipped > 0)
+          o.onNotice?.(
+            g,
+            `cache ${id}: dropped ${done.skipped} ${done.skipped === 1 ? "entry" : "entries"} at denied paths (git state, CI config, keys, startup files)`,
+          );
       } catch (err) {
         if (err instanceof ArchiveTooLargeError) return await bad(413, err.message);
         if (err instanceof ArchiveError) return await bad(400, `archive refused: ${err.message}`);

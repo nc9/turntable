@@ -136,6 +136,10 @@ export class SigningService {
       approvalOk: approval?.approved === true,
     });
     if (!decision.ok) return deny(decision.reason, decision.detail);
+    // A release signs only what a release-class run produced: nothing a lower class could write.
+    const lower = recorded.find((a) => a.klass !== "release");
+    if (lower) return deny("artifact_not_release_class", lower.name);
+
     if (req.verified) {
       const v = req.verified;
       const own = new Map(recorded.map((a) => [a.name, a.sha256]));
@@ -179,7 +183,9 @@ export class SigningService {
     const byproducts = req.verified
       ? []
       : (await listRunArtifacts(db, scope, run.id))
-          .filter((a) => !chosen.has(a.name))
+          // A statement vouches only for what a release-class attempt wrote: a lower-class
+          // artifact of the same run is left out, not listed next to the signed ones.
+          .filter((a) => !chosen.has(a.name) && a.klass === "release")
           .map((a) => ({ name: a.name, sha256: a.sha256 }));
     const actions = req.verified ? [] : await this.#actions(scope, run.id);
 
