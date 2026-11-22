@@ -1,10 +1,13 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
+import { GithubClient } from "../poll/github";
 import { policyCommand as actionPolicyCommand } from "../pins/cli";
 import {
   POLICY_USAGE,
   setChecksModePolicy,
+  setIngestPolicy,
+  showIngest,
   setSigningPolicy,
   showChecksMode,
   showSigning,
@@ -22,6 +25,12 @@ async function ownPolicy(args: string[]): Promise<void> {
       project: { type: "string" },
       egress: { type: "string" },
       "checks-mode": { type: "string" },
+      ingest: { type: "string" },
+      workflow: { type: "string" },
+      "default-branch": { type: "string" },
+      "pr-mode": { type: "string" },
+      authors: { type: "string" },
+      "merge-queue": { type: "boolean", default: false },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -49,6 +58,11 @@ async function ownPolicy(args: string[]): Promise<void> {
       }
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
+      for (const i of await showIngest(db, values.org)) {
+        console.log(
+          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue})` : "off"}`,
+        );
+      }
     } else if (
       values["release-refs"] !== undefined ||
       values["signing-key"] !== undefined ||
@@ -70,6 +84,24 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}; approval environment ${r.environment}`,
         );
       }
+    } else if (values.ingest !== undefined) {
+      const r = await setIngestPolicy(db, values.org, values.project, values.ingest, {
+        workflow: values.workflow,
+        defaultBranch: values["default-branch"],
+        prMode: values["pr-mode"],
+        authors: values.authors
+          ?.split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+        mergeQueue: values["merge-queue"],
+        // Asked once, now; the token (optional, for private repos) comes from the environment.
+        resolveDefaultBranch: (repo) =>
+          new GithubClient({
+            baseUrl: "https://api.github.com",
+            token: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+          }).repoDefaultBranch(repo),
+      });
+      console.error(`ingest ${r.project}: ${r.from ? "on" : "off"} -> ${r.to ? "on" : "off"}`);
     } else if (values["checks-mode"] !== undefined) {
       for (const r of await setChecksModePolicy(
         db,
@@ -103,7 +135,7 @@ export async function policyCommand(args: string[]): Promise<void> {
   const ours =
     rest.includes("approve-run-min-role") ||
     rest.some((a) =>
-      /^--(egress|checks-mode|release-refs|signing-key|signing-environment)(=|$)/.test(a),
+      /^--(egress|checks-mode|ingest|release-refs|signing-key|signing-environment)(=|$)/.test(a),
     );
   if (sub === "set" && ours) return ownPolicy(args);
   if (sub === "show") {

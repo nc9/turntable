@@ -155,7 +155,9 @@ async function startBackground(
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
-    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]));
+    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]), {
+      hosted: v.hosted === true || process.env.LONGSHORE_HOSTED === "1",
+    });
     workerProvider = provider;
     // Fail at startup, with the provider named, instead of at the first job.
     try {
@@ -330,6 +332,8 @@ async function startBackground(
     poller = new Poller({
       db,
       config: pollConfig,
+      // Repos bound by an installation are ingested once their project has ingest settings.
+      bindings: true,
       log,
       onQueued: () => scheduler?.nudge(),
       // A newer cancel-in-progress run took over running attempts: stop their workers now and

@@ -1,6 +1,7 @@
 // Human approvals (#46): enrolled approver keys, per-environment policy, single-use challenges,
 // pending enrolments and the signed records. Part of the only code allowed to name tenant tables.
-import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
+import { approverIdentity } from "../../approvals/identity";
+import { and, asc, desc, eq, gt, isNull, lte } from "drizzle-orm";
 import type { Db } from "..";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -131,6 +132,34 @@ export function getApprover(db: Db, orgId: string, id: string): Promise<Approver
   });
 }
 
+/**
+ * One forge login is one identity. Refuse a login an active approver already holds under a
+ * different person label: a second key for the same human is fine (same label, counts once), a
+ * second "person" for one login is the two-person rule being gamed.
+ */
+type Handle = Parameters<Parameters<Db["run"]>[0]>[0];
+
+async function assertIdentityFree(
+  h: Handle,
+  orgId: string,
+  a: { person: string; forgeLogin?: string | null | undefined },
+): Promise<void> {
+  const id = approverIdentity(a);
+  if (id === null) return;
+  const rows = await h.orm
+    .select()
+    .from(s.approvers)
+    .where(and(eq(s.approvers.orgId, orgId), isNull(s.approvers.revokedAt)));
+  const held = rows.find(
+    (r) =>
+      approverIdentity(r) === id && r.person.trim().toLowerCase() !== a.person.trim().toLowerCase(),
+  );
+  if (held)
+    throw new ApprovalConflict(
+      "that forge login already belongs to an enrolled approver under a different person",
+    );
+}
+
 export type NewApprover = {
   person: string;
   forgeLogin?: string | null | undefined;
@@ -149,6 +178,7 @@ export function insertApprover(
   now: number,
 ): Promise<Approver> {
   return db.run(async (h) => {
+    await assertIdentityFree(h, orgId, a);
     const row = {
       id: ulid(),
       orgId,
@@ -195,10 +225,36 @@ export function setSignCount(db: Db, orgId: string, id: string, count: number): 
   });
 }
 
-/** Distinct people holding at least one active key. */
-export async function activePeople(db: Db, orgId: string): Promise<string[]> {
+/**
+ * Distinct identities (verified forge logins) holding at least one active key. A key without a
+ * forge login has no identity and is left out.
+ */
+export async function activeIdentities(db: Db, orgId: string): Promise<string[]> {
   const rows = await listApprovers(db, orgId);
-  return [...new Set(rows.map((r) => r.person))];
+  return [...new Set(rows.flatMap((r) => approverIdentity(r) ?? []))];
+}
+
+/**
+ * The identities behind a set of records, by the approver key that signed (a revoked key still
+ * counts as who signed). A record whose key has no forge login, or is gone, counts for nothing.
+ */
+export async function recordIdentities(
+  db: Db,
+  orgId: string,
+  records: { approverId: string }[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const cache = new Map<string, string | null>();
+  for (const r of records) {
+    let id = cache.get(r.approverId);
+    if (id === undefined) {
+      const a = await getApprover(db, orgId, r.approverId);
+      id = a ? approverIdentity(a) : null;
+      cache.set(r.approverId, id);
+    }
+    if (id !== null) out.add(id);
+  }
+  return out;
 }
 
 // ---- challenges ----
@@ -210,6 +266,7 @@ export function insertChallenge(
     id: string;
     kind: "approve" | "enrol" | "register";
     statementHash: string;
+    principal: string;
     expiresAt: number;
   },
 ): Promise<void> {
@@ -243,7 +300,22 @@ export function consumeChallenge(
   });
 }
 
-export function countOpenChallenges(db: Db, orgId: string, now: number): Promise<number> {
+/** Drops challenge rows that have expired, so the table cannot grow without bound. */
+export function purgeExpiredChallenges(db: Db, orgId: string, now: number): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .delete(s.approvalChallenges)
+      .where(and(eq(s.approvalChallenges.orgId, orgId), lte(s.approvalChallenges.expiresAt, now)));
+  });
+}
+
+/** Open (unused, unexpired) challenges one principal holds. */
+export function countOpenChallenges(
+  db: Db,
+  orgId: string,
+  principal: string,
+  now: number,
+): Promise<number> {
   return db.run(async (h) => {
     const rows = await h.orm
       .select({ id: s.approvalChallenges.id })
@@ -251,6 +323,7 @@ export function countOpenChallenges(db: Db, orgId: string, now: number): Promise
       .where(
         and(
           eq(s.approvalChallenges.orgId, orgId),
+          eq(s.approvalChallenges.principal, principal),
           isNull(s.approvalChallenges.usedAt),
           gt(s.approvalChallenges.expiresAt, now),
         ),
@@ -269,6 +342,7 @@ export function insertEnrolment(
   now: number,
 ): Promise<Enrolment> {
   return db.run(async (h) => {
+    await assertIdentityFree(h, orgId, e);
     const row = {
       id: ulid(),
       orgId,

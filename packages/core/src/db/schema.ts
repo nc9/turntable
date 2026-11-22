@@ -130,6 +130,13 @@ export const projects = sqliteTable(
      * only from the CLI (`longshore policy set --checks-mode`).
      */
     checksMode: text("checks_mode").notNull().default("off"),
+    /**
+     * Ingest settings (JSON text, validated by the poll layer) for a repo bound to this project
+     * through a GitHub installation: workflow path, default branch, pull request mode, trusted
+     * authors, merge queue. Null (default): the project is not ingested. Set only from the CLI
+     * (`longshore policy set --ingest`), because it decides who is trusted.
+     */
+    ingestConfig: text("ingest_config"),
     /** Incident freeze for this project alone; the org's freeze applies on top of it. */
     frozenAt: integer("frozen_at", { mode: "number" }),
     frozenReason: text("frozen_reason"),
@@ -909,6 +916,8 @@ export const approvalChallenges = sqliteTable(
     kind: text("kind").notNull(),
     /** The statement hash the challenge was issued for (sha256 hex); empty for `register`. */
     statementHash: text("statement_hash").notNull(),
+    /** The principal that asked for it (`kind:id`), so the open-challenge cap is per caller. */
+    principal: text("principal"),
     expiresAt: integer("expires_at", { mode: "number" }).notNull(),
     usedAt: integer("used_at", { mode: "number" }),
   },

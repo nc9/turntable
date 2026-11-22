@@ -107,3 +107,17 @@ These were checked by running the conformance suite and a short capability test 
 
 - `nproc` and `/proc/meminfo` show the host, not the sandbox. Read limits from the sandbox's cgroup instead.
 - Listings are eventually consistent and deletion is asynchronous. The provider waits for both, which adds a few seconds to create and destroy.
+
+## Provider trust model
+
+A provider runs the job's untrusted code, so it is a trust boundary. This is exactly what one can see and do.
+
+**What a provider sees.** The sandbox spec (image or snapshot, resources, labels, TTL, egress policy), the files the scheduler uploads (the repository tarball and the plan), and every command and environment variable it is asked to run, which means the job's code and any secret value placed in its environment. Secrets that Longshore holds for a job are not placed in its sandbox when the secrets proxy is in use: the sandbox gets a placeholder and the proxy adds the real value on the way out. A provider also sees the job log bytes as they pass.
+
+**What a provider can do.** Create, list, exec in, read and write files of, and destroy sandboxes, through the `Provider` interface in `provider-sdk`, and nothing else. It is given only the credentials its own config names (an API key read from a file or an environment variable it is told about), and nothing from the vault, the database, the signing keys or the data directory.
+
+**Built-in providers** (`docker`, `daytona`) are code in the Longshore binary, so they are covered by the release's signatures and reviewed with it. They run in the server process. The server still checks them: at registration the declared capabilities must satisfy the contract (detached exec with offset logs, labels, listing by label, a TTL, and enforceable egress `none`) and must not exceed the provider's ceiling (Docker may declare up to `gvisor`, with the `runsc` runtime; Daytona only `container`; neither may declare egress policies beyond what was verified: Docker `none`, `open` and `deny-all-except-proxy`; Daytona those plus `proxy-domain-filtered` when the operator opts in, and never `allowlist`). A provider that fails is refused at startup, naming the reason.
+
+**External plugins** are not built in, and today there is no loader for them. The gate is in place: an unknown provider name is refused unless `LONGSHORE_PROVIDER_PLUGINS` (a JSON array of `{name, path, sha256}`) names it and the file at `path` has exactly that sha256, and it is refused in every case in hosted mode (`--hosted`), where third-party plugins are disabled. A plugin whose digest matches is reported as verified, then refused with a message that this build has no external loader. When a loader exists it must run the plugin as a separate process with an allowlisted environment (`pluginEnv`: `PATH`, `LANG`, `LC_ALL`, `TZ`, `TMPDIR` and the names the operator lists for that plugin, so never the master key, database settings or tokens of the server), no access to the data directory, and caps, timeouts and schema validation on its JSON-RPC messages. None of that is claimed to exist yet.
+
+**Assurance tiers.** The isolation class a provider declares (`container`, `gvisor`, `microvm`, `vm`) is its tier. The scheduler already requires a minimum tier per trust class (see isolation levels), so a weaker provider is refused for classes that need more, rather than trusted more.
