@@ -62,7 +62,7 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
   }
   expect([...ids].toSorted()).toEqual(
     registry
-      .documentedOps()
+      .mcpOps()
       .map((o) => o.name)
       .toSorted(),
   );
@@ -176,8 +176,8 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
     ),
   );
   for (const op of registry.ops.filter((o) => o.auth.type !== "signature")) {
-    const documented = registry.documentedOps().includes(op);
-    expect(tools.has(op.name)).toBe(registry.mcpOps().includes(op));
+    const documented = registry.mcpOps().includes(op);
+    expect(tools.has(op.name)).toBe(documented);
     expect(operationIds.has(op.name)).toBe(documented);
     if (documented) {
       expect(doc.paths[op.http.path]?.[op.http.method.toLowerCase()]?.operationId).toBe(op.name);
@@ -196,7 +196,7 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   );
   expect([...operationIds].toSorted()).toEqual(
     registry
-      .documentedOps()
+      .mcpOps()
       .map((o) => o.name)
       .toSorted(),
   );

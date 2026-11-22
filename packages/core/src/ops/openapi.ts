@@ -113,7 +113,7 @@ function operation(op: Op): Json {
 /** OpenAPI 3.1 document for every operation a bearer token can call. Deterministic. */
 export function buildOpenApi(registry: OpRegistry, version: string): Json {
   const paths: Record<string, Record<string, Json>> = {};
-  for (const op of registry.documentedOps()) {
+  for (const op of registry.mcpOps()) {
     (paths[op.http.path] ??= {})[op.http.method.toLowerCase()] = operation(op);
   }
   return {
