@@ -5,7 +5,8 @@ import { gzipSync } from "node:zlib";
 import net from "node:net";
 import tls from "node:tls";
 import { createHttpClient, type SafeFetch } from "@longshore/net";
-import { type RunningProxy, startProxy } from "../src/proxy";
+import { JobCa } from "../src/ca";
+import { type RunningProxy, sourceKey, startProxy } from "../src/proxy";
 import { AttemptRegistry } from "../src/registry";
 import type { AuditEvent, AuditSink, Rule, SecretScope, SecretSource } from "../src/types";
 
@@ -981,5 +982,244 @@ describe("passthrough tunnels", () => {
       await p2.close();
       echo.close();
     }
+  });
+});
+
+describe("a public TLS listener and its limits", () => {
+  const LISTEN_NAME = "proxy.example.test";
+  // The listener's certificate: a leaf for its public name from a throwaway CA (a test stand-in
+  // for the platform's public certificate).
+  const listenerCa = new JobCa({ label: "listener", now: Date.now(), ttlMs: 3_600_000 });
+  const leaf = listenerCa.leafFor(LISTEN_NAME);
+  const started: RunningProxy[] = [];
+  afterAll(async () => {
+    for (const p of started) await p.close();
+  });
+  const start = async (
+    over: Partial<Parameters<typeof startProxy>[0]> = {},
+  ): Promise<RunningProxy> => {
+    const p = await startProxy({
+      registry,
+      source,
+      audit,
+      upstream,
+      now: () => clock,
+      ...over,
+    });
+    started.push(p);
+    return p;
+  };
+
+  /** Dials the listener over TLS, verifying its name, and sends one CONNECT. */
+  async function overTls(p: RunningProxy, auth: string | undefined): Promise<string> {
+    const sock = tls.connect({
+      host: "127.0.0.1",
+      port: p.port,
+      servername: LISTEN_NAME,
+      ca: listenerCa.certPem,
+    });
+    await new Promise<void>((r, j) => {
+      sock.once("secureConnect", () => r());
+      sock.once("error", j);
+    });
+    sock.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\n${auth ? `Proxy-Authorization: ${auth}\r\n` : ""}\r\n`,
+    );
+    const head = await new Promise<string>((r) => {
+      sock.once("data", (d) => r(d.toString("latin1")));
+      sock.once("close", () => r(""));
+    });
+    sock.destroy();
+    return head;
+  }
+
+  test("CONNECT and the credential travel inside TLS: a good credential gets a tunnel, a bad one a 407", async () => {
+    const p = await start({ tls: { key: leaf.key, cert: leaf.cert } });
+    const { cred } = newAttempt();
+    expect((await overTls(p, basic(cred.username, cred.password))).startsWith("HTTP/1.1 200")).toBe(
+      true,
+    );
+    expect((await overTls(p, basic(cred.username, "wrong"))).startsWith("HTTP/1.1 407")).toBe(true);
+    expect((await overTls(p, undefined)).startsWith("HTTP/1.1 407")).toBe(true);
+  });
+
+  test("a plain-text client gets nothing from the TLS listener, and its credential is not read", async () => {
+    const p = await start({ tls: { key: leaf.key, cert: leaf.cert } });
+    const { cred } = newAttempt();
+    const raw = net.connect(p.port, "127.0.0.1");
+    await new Promise<void>((r) => raw.once("connect", () => r()));
+    raw.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+    );
+    const got = await new Promise<string>((r) => {
+      raw.on("data", (d) => r(d.toString("latin1")));
+      raw.once("close", () => r(""));
+      setTimeout(() => r(""), 1500);
+    });
+    expect(got.startsWith("HTTP/1.1 200")).toBe(false);
+    expect(got).not.toContain("Connection Established");
+    raw.destroy();
+  });
+
+  test("a client that does not trust the listener's name does not get as far as sending anything", async () => {
+    const p = await start({ tls: { key: leaf.key, cert: leaf.cert } });
+    const bad = tls.connect({
+      host: "127.0.0.1",
+      port: p.port,
+      servername: "other.example.test",
+      ca: listenerCa.certPem,
+    });
+    const failed = await new Promise<boolean>((r) => {
+      bad.once("secureConnect", () => r(false));
+      bad.once("error", () => r(true));
+    });
+    expect(failed).toBe(true);
+  });
+
+  /** Opens a TCP connection and resolves when it is up. */
+  const dial = async (p: RunningProxy): Promise<net.Socket> => {
+    const s = net.connect(p.port, "127.0.0.1");
+    await new Promise<void>((r, j) => {
+      s.once("connect", () => r());
+      s.once("error", j);
+    });
+    return s;
+  };
+  const closedWithin = (s: net.Socket, ms: number): Promise<boolean> =>
+    new Promise((r) => {
+      s.once("close", () => r(true));
+      setTimeout(() => r(false), ms);
+    });
+  /** One CONNECT with the given Authorization on a fresh connection; returns the head and the time taken. */
+  const connectOnce = async (
+    p: RunningProxy,
+    auth: string,
+  ): Promise<{ head: string; ms: number }> => {
+    const t0 = Date.now();
+    const s = await dial(p);
+    s.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${auth}\r\n\r\n`,
+    );
+    const head = await new Promise<string>((r) => {
+      s.once("data", (d) => r(d.toString("latin1")));
+      s.once("close", () => r(""));
+    });
+    s.destroy();
+    return { head, ms: Date.now() - t0 };
+  };
+
+  test("connections that have not authenticated are capped per source, and a slot comes back when one closes", async () => {
+    const p = await start({ limits: { maxUnauthenticatedPerSource: 3 } });
+    const socks = [await dial(p), await dial(p), await dial(p)];
+    expect(await closedWithin(await dial(p), 1500)).toBe(true);
+    socks[0]!.destroy();
+    await Bun.sleep(100);
+    const again = await dial(p);
+    expect(await closedWithin(again, 300)).toBe(false);
+    for (const s of [...socks, again]) s.destroy();
+  });
+
+  test("the unauthenticated cap holds over all sources; authenticated tunnels do not count against it, nor it against them", async () => {
+    const p = await start({ limits: { maxUnauthenticated: 2, maxUnauthenticatedPerSource: 50 } });
+    const { cred } = newAttempt();
+    // An authenticated tunnel, held open.
+    const tunnelSock = await dial(p);
+    tunnelSock.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+    );
+    await new Promise<void>((r) => tunnelSock.once("data", () => r()));
+    expect(p.stats().authenticated).toBe(1);
+    expect(p.stats().unauthenticated).toBe(0);
+    // Two idle unauthenticated connections fill the cap; the third is refused.
+    const idle = [await dial(p), await dial(p)];
+    expect(await closedWithin(await dial(p), 1500)).toBe(true);
+    expect(p.stats().unauthenticated).toBe(2);
+    // A client with a valid credential is refused only because the unauthenticated cap is full,
+    // and goes through again as soon as a slot is free: the tunnel above is untouched.
+    idle[0]!.destroy();
+    await Bun.sleep(100);
+    const ok = await connectOnce(p, basic(cred.username, cred.password));
+    expect(ok.head.startsWith("HTTP/1.1 200")).toBe(true);
+    expect(tunnelSock.destroyed).toBe(false);
+    for (const s of [...idle, tunnelSock]) s.destroy();
+  });
+
+  test("the total of open connections is capped", async () => {
+    const p = await start({ limits: { maxConnections: 2, maxUnauthenticatedPerSource: 50 } });
+    const socks = [await dial(p), await dial(p)];
+    expect(await closedWithin(await dial(p), 1500)).toBe(true);
+    for (const s of socks) s.destroy();
+  });
+
+  test("a failed authentication is answered later each time, for that source and username only", async () => {
+    const p = await start({
+      limits: { authFailureBaseDelayMs: 120, authFailureMaxDelayMs: 1000 },
+    });
+    const bad = (user: string): string => basic(user, "wrong");
+    const times: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await connectOnce(p, bad("alice"));
+      expect(r.head.startsWith("HTTP/1.1 407")).toBe(true);
+      times.push(r.ms);
+    }
+    // 120, 240, 480 ms: each later than the one before.
+    expect(times[0]!).toBeGreaterThanOrEqual(100);
+    expect(times[1]!).toBeGreaterThan(times[0]!);
+    expect(times[2]!).toBeGreaterThan(times[1]!);
+    // Another username from the same source starts again from the base delay.
+    const other = await connectOnce(p, bad("bob"));
+    expect(other.ms).toBeLessThan(times[2]!);
+  });
+
+  test("a valid credential is never delayed or refused because its source has failed many times", async () => {
+    const p = await start({
+      limits: { authFailureBaseDelayMs: 200, authFailureMaxDelayMs: 2000 },
+    });
+    const { cred } = newAttempt();
+    // The same address (a shared egress address) fails a lot, as another tenant's job would.
+    await Promise.all(
+      Array.from({ length: 6 }, () => connectOnce(p, basic("someone-else", "guess"))),
+    );
+    const t0 = Date.now();
+    const ok = await connectOnce(p, basic(cred.username, cred.password));
+    expect(ok.head.startsWith("HTTP/1.1 200")).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(150);
+  });
+
+  test("the CONNECT head has an absolute deadline: a client that drips one byte at a time runs out", async () => {
+    const p = await start({ limits: { headDeadlineMs: 700 } });
+    const s = await dial(p);
+    const t0 = Date.now();
+    const dripper = setInterval(() => s.write("C"), 150);
+    const closed = await closedWithin(s, 3000);
+    clearInterval(dripper);
+    expect(closed).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(2500);
+    // An idle client gets no longer than that either.
+    const quiet = await dial(p);
+    expect(await closedWithin(quiet, 2000)).toBe(true);
+  });
+
+  test("source keys: IPv6 by /64, IPv4-mapped as IPv4, IPv4 as is", () => {
+    expect(sourceKey("203.0.113.9")).toBe("203.0.113.9");
+    expect(sourceKey("::ffff:203.0.113.9")).toBe("203.0.113.9");
+    expect(sourceKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe(sourceKey("2001:db8:1:2::1"));
+    expect(sourceKey("2001:db8:1:2::1")).toBe("2001:db8:1:2::/64");
+    expect(sourceKey("2001:db8:1:3::1")).not.toBe(sourceKey("2001:db8:1:2::1"));
+    expect(sourceKey("2001:DB8::5")).toBe(sourceKey("2001:db8:0:0:1::5"));
+    expect(sourceKey(undefined)).toBe("unknown");
+  });
+
+  test("the per-source books are pruned: nothing is kept for a source that went away", async () => {
+    const p = await start({
+      limits: { authFailureWindowMs: 60, pruneMs: 40, authFailureBaseDelayMs: 1 },
+    });
+    await connectOnce(p, basic("alice", "wrong"));
+    await connectOnce(p, basic("bob", "wrong"));
+    expect(p.stats().tracked).toBeGreaterThan(0);
+    // (the proxy reads time from the test clock)
+    clock += 1000;
+    await Bun.sleep(300);
+    expect(p.stats().tracked).toBe(0);
   });
 });

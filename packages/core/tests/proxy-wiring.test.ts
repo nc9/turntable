@@ -353,3 +353,55 @@ describe("passthrough and secret-bearing egress", () => {
     expect(ok.state).toBe("success");
   });
 });
+
+describe("a public TLS listener for sandboxes in another provider's network", () => {
+  test("the endpoint handed to a provider carries its public name, port and addresses", async () => {
+    const ca = new (await import("@longshore/proxy")).JobCa({
+      label: "t",
+      now: Date.now(),
+      ttlMs: 60_000,
+    });
+    const leaf = ca.leafFor("proxy.example.test");
+    const p = await SecretsProxy.start({
+      db,
+      vault,
+      bindHost: "127.0.0.1",
+      tls: { key: leaf.key, cert: leaf.cert },
+      advertiseHost: "proxy.example.test",
+      advertisePort: 443,
+      advertiseAddresses: ["203.0.113.7"],
+    });
+    try {
+      await seed("protected");
+      let listen: unknown;
+      await withSecretsProxy(
+        async (c) => {
+          listen = c.proxy?.listen;
+          return done;
+        },
+        { proxy: p },
+      )(await ctxOf());
+      expect(listen).toEqual({
+        host: "proxy.example.test",
+        port: 443,
+        tlsName: "proxy.example.test",
+        addresses: ["203.0.113.7"],
+      });
+    } finally {
+      await p.stop();
+    }
+  });
+
+  test("without TLS the endpoint is just host and port, as for Docker", async () => {
+    await seed("protected");
+    let listen: unknown;
+    await withSecretsProxy(
+      async (c) => {
+        listen = c.proxy?.listen;
+        return done;
+      },
+      { proxy },
+    )(await ctxOf());
+    expect(Object.keys((listen ?? {}) as object).sort()).toEqual(["host", "port"]);
+  });
+});

@@ -3,7 +3,7 @@ title: "Design: secrets proxy for Daytona sandboxes"
 description: How a Daytona sandbox reaches the secrets proxy and nothing else, how that is enforced and verified, and what it costs.
 ---
 
-This is a design, not an implementation. It extends the [secrets proxy](/secrets-proxy), which today confines Docker sandboxes, to the hosted setup: the worker runs on a platform such as Railway and the sandboxes run in Daytona's cloud. Nothing here is built. Some facts about Daytona could only be settled on a real account, and the results of that spike are below; they changed the recommendation in one place (the allow-list mechanism).
+This started as a design; the provider path, the relay, the listener's TLS mode and its limits are now built (see [the secrets proxy](/secrets-proxy)), and a live check against a real account waits for a go. It extends the [secrets proxy](/secrets-proxy), which today confines Docker sandboxes, to the hosted setup: the worker runs on a platform such as Railway and the sandboxes run in Daytona's cloud. Nothing here is built. Some facts about Daytona could only be settled on a real account, and the results of that spike are below; they changed the recommendation in one place (the allow-list mechanism).
 
 ## The problem
 
@@ -158,7 +158,7 @@ So a domain list is enforced by a transparent filter on the TLS server name and 
 
 ## What the results change
 
-- **The mechanism is a choice, and the canary decides.** With a stable proxy address, use `networkAllowList` (a hard refusal, DNS silently dropped, no resolver needed). With an address that can change, use `domainAllowList` with the one proxy hostname: the relay's TLS connection carries that server name, so the filter delivers it. The provider takes the mechanism from the proxy endpoint it is given.
+- **The strict mechanism is the address allow list, and it is required.** With a stable proxy address, use `networkAllowList` (a hard refusal, DNS silently dropped, no resolver needed). A `domainAllowList` of the proxy hostname works (the relay's TLS connection carries that server name, so the filter delivers it) but rests on Daytona's filter parsing the first bytes correctly, so it is a separate, weaker policy (`proxy-domain-filtered`) that the provider offers only when the operator sets `allowDomainListConfinement: true`, and a job uses only when the endpoint has no stable address. `deny-all-except-proxy` is never the domain list.
 - **The relay still connects by address under a CIDR list** and by name under a domain list; under neither does it rely on a resolver that is not the proxy's.
 - **The canary probes with real requests.** A TCP connect is not a signal on Daytona (`networkBlockAll` and a domain list accept it and then drop); a probe passes only on the absence of an HTTP answer, which is what the existing canary tests.
 - **A residual that cannot be closed:** Daytona's gateway SSH port stays reachable under every setting. It sits in the same trust boundary as Daytona itself (see the threat model) and is listed there.
