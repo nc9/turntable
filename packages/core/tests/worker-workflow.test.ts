@@ -478,9 +478,10 @@ jobs:
     )!;
     expect(newQueued.id).toBeLessThan(oldCancelled.id);
 
-    // the worker running the old job is told to stop at once
-    expect(sched.abort(res.superseded.map((r) => r.attemptId))).toBe(1);
+    // the worker running the old job was told to stop at once, by the commit-time announcement
+    // (no heartbeat needed: heartbeatMs is its default here and the lease is 60 s)
     await sched.idle();
+    expect(sched.abort(res.superseded.map((r) => r.attemptId))).toBe(0); // already stopped
     expect(abortedBy).toHaveLength(1);
     // and its late result cannot overwrite the cancel
     expect((await listAttempts(db, scope, running.id))[0]?.state).toBe("cancelled");
@@ -594,4 +595,253 @@ describe("re-attach with the stored plan", () => {
     expect(log).toContain("job success");
     expect(await provider.list({})).toEqual([]); // the sandbox is destroyed after the replay
   }, 30_000);
+});
+
+describe("local composite actions at ingest", () => {
+  test("a docker step inside a local composite action marks its job unsupported at plan time; a path out of the repo is never requested", async () => {
+    const gh = makeGithub();
+    gh.state.files.set(
+      "*",
+      `on: push
+jobs:
+  dock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/dockerish
+  nested:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/outer
+  plain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/fine
+  escape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./../../../etc/x
+`,
+    );
+    const composite = (steps: string) => `name: a\nruns:\n  using: composite\n  steps:\n${steps}`;
+    gh.state.extra.set(
+      ".github/actions/dockerish/action.yml",
+      composite("    - shell: bash\n      run: docker build .\n"),
+    );
+    gh.state.extra.set(
+      ".github/actions/outer/action.yml",
+      composite("    - uses: ./.github/actions/dockerish\n"),
+    );
+    gh.state.extra.set(
+      ".github/actions/fine/action.yml",
+      composite("    - shell: bash\n      run: echo fine\n"),
+    );
+    await ingest(gh);
+    const [run] = await listRuns(db, scope);
+    const planned = Object.fromEntries(
+      (await listJobs(db, scope, run!.id)).map((j) => [j.jobKey, JSON.parse(j.planned!)]),
+    );
+    expect(planned.dock.unsupported).toContain("docker");
+    expect(planned.nested.unsupported).toContain("docker"); // found through the composite it uses
+    expect(planned.plain.unsupported).toBeUndefined();
+    expect(planned.escape.unsupported).toContain("outside the repository");
+    // nothing outside the repo was ever requested, and every request was a read
+    expect(gh.state.calls.some((c) => c.path.includes("..") || c.path.includes("etc/x"))).toBe(
+      false,
+    );
+    expect(new Set(gh.state.calls.map((c) => c.method))).toEqual(new Set(["GET"]));
+
+    // the unsupported jobs leave the queue with their reason as the log; the plain one runs
+    const sched = await makeScheduler(gh);
+    await drain(sched);
+    const jobs = await listJobs(db, scope, run!.id);
+    expect(Object.fromEntries(jobs.map((j) => [j.jobKey, j.state]))).toEqual({
+      dock: "skipped",
+      nested: "skipped",
+      plain: "success",
+      escape: "skipped",
+    });
+  });
+
+  test("a workflow with no local actions fetches none", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", PIPELINE);
+    await ingest(gh);
+    expect(
+      gh.state.calls.some((c) => c.path.includes("/contents/") && !c.path.includes("ci.yml")),
+    ).toBe(false);
+  });
+});
+
+describe("concurrency groups without cancel-in-progress queue like GitHub's", () => {
+  const WF = `on: push
+concurrency:
+  group: deploy
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 1
+  after:
+    needs: slow
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+`;
+
+  /** A scheduler whose jobs finish only when the test says so. */
+  function held() {
+    const releases = new Map<string, () => void>();
+    const sched = new Scheduler({
+      db,
+      providers: () => world.provider(),
+      leaseMs: 60_000,
+      globalCap: 10,
+      perOrgCap: 10,
+      runner: (ctx) =>
+        new Promise((resolve) => {
+          releases.set(`${ctx.run.id}/${ctx.job.jobKey}`, () =>
+            resolve({ state: "success", reason: "ok" }),
+          );
+          ctx.signal.addEventListener("abort", () =>
+            resolve({ state: "cancelled", reason: "stopped" }),
+          );
+        }),
+    });
+    return {
+      sched,
+      release: async (runId: string, key: string) => {
+        releases.get(`${runId}/${key}`)?.();
+        await Bun.sleep(30);
+        await sched.idle();
+      },
+    };
+  }
+
+  const push = async (gh: ReturnType<typeof makeGithub>, c: string) => {
+    gh.state.head = { sha: SHA(c), message: c, login: "octocat" };
+    return ingest(gh);
+  };
+
+  test("a newer run waits for the running one; a newer pending run replaces the older pending one", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", WF);
+    const { sched, release } = held();
+    await push(gh, "a");
+    const [a] = await listRuns(db, scope);
+    expect(await sched.tick()).toBe(1); // A's first job runs
+    expect((await getRun(db, scope, a!.id))?.status).toBe("running");
+
+    await push(gh, "b"); // pending behind A
+    const res = await push(gh, "c"); // replaces B as the pending run
+    expect(res.superseded).toEqual([]); // nothing was running in B
+    const runs = await listRuns(db, scope);
+    const bySha = Object.fromEntries(runs.map((r) => [r.sha, r]));
+    expect(bySha[SHA("a")]?.status).toBe("running"); // the running run is never touched
+    expect(bySha[SHA("b")]?.status).toBe("cancelled"); // the replaced pending run
+    expect(bySha[SHA("c")]?.status).toBe("queued");
+    const bAttempt = (
+      await listAttempts(db, scope, (await listJobs(db, scope, bySha[SHA("b")]!.id))[0]!.id)
+    )[0];
+    expect(bAttempt?.errorClass).toBe("replaced by a newer pending run");
+
+    // nothing of C starts while A is unfinished, even with free slots
+    expect(await sched.tick()).toBe(0);
+    await release(a!.id, "slow");
+    expect(await sched.tick()).toBe(1); // A's second job: A is still the running run
+    expect(
+      (await listJobs(db, scope, bySha[SHA("c")]!.id)).every((j) => j.state === "queued"),
+    ).toBe(true);
+    await release(a!.id, "after");
+    expect((await getRun(db, scope, a!.id))?.status).toBe("success");
+
+    // A is done: C goes
+    expect(await sched.tick()).toBe(1);
+    expect((await getRun(db, scope, bySha[SHA("c")]!.id))?.status).toBe("running");
+    expect((await getRun(db, scope, bySha[SHA("b")]!.id))?.status).toBe("cancelled"); // stays so
+  });
+
+  test("with nothing running, two queued runs are not replaced: the older goes first, the newer waits", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", WF);
+    const { sched, release } = held();
+    await push(gh, "a");
+    await push(gh, "b");
+    const runs = await listRuns(db, scope);
+    expect(runs.map((r) => r.status)).toEqual(["queued", "queued"]); // neither was cancelled
+    const [newer, older] = runs as [(typeof runs)[number], (typeof runs)[number]];
+    expect(await sched.tick()).toBe(1);
+    expect((await getRun(db, scope, older.id))?.status).toBe("running");
+    expect(await sched.tick()).toBe(0); // the newer waits
+    await release(older.id, "slow");
+    await sched.tick();
+    await release(older.id, "after");
+    expect(await sched.tick()).toBe(1);
+    expect((await getRun(db, scope, newer.id))?.status).toBe("running");
+  });
+
+  test("runs in another group, or with no group, are never held back", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", WF);
+    const { sched } = held();
+    await push(gh, "a");
+    gh.state.files.set(SHA("b"), WF.replace("group: deploy", "group: other"));
+    gh.state.files.set(SHA("c"), WF.replace("concurrency:\n  group: deploy\n", ""));
+    await push(gh, "b");
+    await push(gh, "c");
+    expect(await sched.tick()).toBe(3); // all three first jobs start at once
+  });
+});
+
+describe("manual cancel stops the worker at once", () => {
+  test("cancelling a running run aborts its runner and destroys the sandbox, with no heartbeat needed", async () => {
+    const { dispatch, registry } = await import("../src/ops");
+    const { mintToken } = await import("./ops-helpers");
+    const gh = makeGithub();
+    gh.state.files.set(
+      "*",
+      "on: push\njobs:\n  slow:\n    runs-on: ubuntu-latest\n    steps:\n      - run: sleep 3\n",
+    );
+    await ingest(gh);
+    const [run] = await listRuns(db, scope);
+    const [job] = await listJobs(db, scope, run!.id);
+    const provider = world.provider();
+    const act = await actTarball();
+    const sched = new Scheduler({
+      db,
+      providers: () => provider,
+      heartbeatMs: 100_000, // a heartbeat would not notice for a very long time
+      leaseMs: 600_000,
+      runner: createActRunner({
+        db,
+        source: sourceFor(gh, await repoTarball()),
+        resolver: staticResolver({}),
+        act,
+        planRoot: root,
+        pollMs: 30,
+      }),
+    });
+    expect(await sched.tick()).toBe(1);
+    let attempt = (await listAttempts(db, scope, job!.id))[0]!;
+    for (let i = 0; i < 200 && !(attempt.sandboxId && attempt.execId); i++) {
+      await Bun.sleep(25);
+      attempt = (await listAttempts(db, scope, job!.id))[0]!;
+    }
+    expect((await provider.list({})).length).toBe(1);
+
+    const token = (await mintToken(db, { orgId: scope.orgId }, "operator")).secret;
+    const t0 = Date.now();
+    const res = await dispatch({ registry, db }, { kind: "bearer", token }, "cancel", {
+      run_id: run!.id,
+    });
+    expect(res.ok).toBe(true);
+    await sched.idle(); // the runner returned: it was aborted, not left to finish
+    expect(Date.now() - t0).toBeLessThan(1500); // the job itself would have run for 3 s
+    expect(await provider.list({})).toEqual([]); // the sandbox is gone
+    expect((await listAttempts(db, scope, job!.id))[0]).toMatchObject({
+      state: "cancelled",
+      leaseOwner: null,
+    });
+    expect((await listJobs(db, scope, run!.id))[0]?.state).toBe("cancelled");
+    expect((await getRun(db, scope, run!.id))?.status).toBe("cancelled");
+  }, 20_000);
 });

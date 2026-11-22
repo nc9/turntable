@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import {
+  claimNextAttempt,
+  createLocalRun,
   ensureLocalTenant,
   listAttempts,
   listJobs,
@@ -13,7 +15,6 @@ import {
   readLog,
 } from "../src/db";
 import { runWorkflowLocal } from "../src/run/run-workflow";
-import { dbRunStore } from "../src/run/store";
 
 const tmp = mkdtempSync(join(tmpdir(), "tt-wf-test-"));
 const world = new FakeWorld({ hostPaths: [tmp], exec: { tickSeconds: 1 } });
@@ -122,7 +123,8 @@ async function go(
   const result = await runWorkflowLocal({
     provider: world.provider(),
     providerName: "fake",
-    store: dbRunStore(db, scope),
+    db,
+    scope,
     workflowPath: ".github/workflows/ci.yml",
     workflowYaml: yaml,
     event,
@@ -256,5 +258,38 @@ jobs:
     const audit = await listAudit(db, scope);
     expect(audit[0]?.op).toBe("run_local");
     expect(audit[0]?.input).toContain('"egress":"open"');
+  });
+
+  test("a local run is only claimed by its own process", async () => {
+    const db = openDatabase(":memory:");
+    const scope = await ensureLocalTenant(db);
+    const run = await createLocalRun(db, scope, {
+      provider: "fake",
+      jobs: [{ key: "a", name: "a", needs: [] }],
+      run: { workflowPath: ".github/workflows/ci.yml", event: "push", ref: "refs/heads/main" },
+    });
+    expect(run.local).toBe(true);
+    const base = { owner: "server", leaseMs: 30_000, now: Date.now(), globalCap: 4, perOrgCap: 4 };
+    // A server's worker (no onlyRun) never takes it; the starting process does.
+    expect(await claimNextAttempt(db, base)).toBeUndefined();
+    expect(await claimNextAttempt(db, { ...base, onlyRun: "other" })).toBeUndefined();
+    const mine = await claimNextAttempt(db, { ...base, owner: "cli", onlyRun: run.id });
+    expect(mine?.run.id).toBe(run.id);
+  });
+
+  test("a step that uses a path outside the repo is skipped with the reason, not run", async () => {
+    const wf = `on: push
+jobs:
+  bad:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./../outside
+`;
+    const { db, scope, result, out } = await go(wf);
+    expect(result.jobs[0]).toMatchObject({ state: "skipped" });
+    expect(result.jobs[0]?.reason).toContain("outside the repository");
+    expect(out).toContain("[bad] skipped:");
+    const [run] = await listRuns(db, scope);
+    expect(run?.status).toBe("skipped");
   });
 });

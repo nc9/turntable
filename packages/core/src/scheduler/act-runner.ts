@@ -23,6 +23,7 @@ import type { Db } from "../db";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
+import { prefixedOut } from "../run/prefixed-out";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
 import { type RunStore, stepInputOf } from "../run/store";
@@ -36,7 +37,29 @@ export interface Checkout {
 }
 
 export interface RepoSource {
-  checkout(run: Run, repo: { owner: string; repo: string }): Promise<Checkout>;
+  /** `repo` is undefined for a local run (`longshore run`), which has no bound repo. */
+  checkout(run: Run, repo: { owner: string; repo: string } | undefined): Promise<Checkout>;
+}
+
+/**
+ * The source of a `longshore run`: the tarball and files already read from the working repo. The
+ * workflow file is served from the text read at launch, so every job of the run plans from the
+ * same bytes even if the file changes while the run is going.
+ */
+export function localRepoSource(o: {
+  tarball: Uint8Array;
+  workflowPath: string;
+  workflowYaml: string;
+  readFile(path: string): string | undefined;
+}): RepoSource {
+  return {
+    async checkout() {
+      return {
+        tarball: o.tarball,
+        readFile: (p) => (p === o.workflowPath ? o.workflowYaml : o.readFile(p)),
+      };
+    },
+  };
 }
 
 const SAFE_PART = /^[A-Za-z0-9_.-]+$/;
@@ -67,7 +90,9 @@ export function gitRepoSource(
 ): RepoSource {
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
   return {
-    async checkout(run, { owner, repo }) {
+    async checkout(run, bound) {
+      if (!bound) throw new Error("run has no repo binding");
+      const { owner, repo } = bound;
       if (!SAFE_PART.test(owner) || !SAFE_PART.test(repo) || run.sha === null) {
         throw new Error("run has no sha or the repo binding is not a plain owner/name");
       }
@@ -104,6 +129,8 @@ export type ActRunnerOptions = {
   pollMs?: number;
   /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
   planRoot?: string;
+  /** Live terminal output of a job, line by line (`longshore run` prints it with a key prefix). */
+  out?: (jobKey: string, text: string) => void;
 };
 
 /**
@@ -174,11 +201,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     plan: JobPlan,
     repoTarball: Uint8Array | undefined,
   ): Promise<AttemptOutcome> => {
+    const sink = o.out
+      ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
+      : undefined;
     const res = await executeJob(
       {
         provider: ctx.provider,
         store: workerStore(ctx),
-        out: () => {},
+        out: sink ? sink.out : () => {},
         registry: new SecretRegistry(),
         signal: ctx.signal,
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
@@ -193,7 +223,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // A dead worker's exec: replay it for the real result instead of starting over. The plan
       // says which events are this job's and which outputs to read.
       ctx.resume,
-    );
+    ).finally(() => sink?.flush());
     return {
       state: res.state,
       ...(res.actExitCode === undefined ? {} : { exitCode: res.actExitCode }),
@@ -209,11 +239,17 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
 
     const { run: dbRun, job } = ctx;
-    const repo = (await listRepos(o.db, ctx.scope))[0];
-    if (!repo) return { state: "infra_error", reason: "project has no bound repo to fetch from" };
-    if (dbRun.sha === null) return { state: "infra_error", reason: "run has no sha" };
+    // A local run reads the working repo it was started from; the rest need a bound repo and sha.
+    const repo = dbRun.local ? undefined : (await listRepos(o.db, ctx.scope))[0];
+    if (!dbRun.local) {
+      if (!repo) return { state: "infra_error", reason: "project has no bound repo to fetch from" };
+      if (dbRun.sha === null) return { state: "infra_error", reason: "run has no sha" };
+    }
 
-    const checkout = await o.source.checkout(dbRun, { owner: repo.owner, repo: repo.repo });
+    const checkout = await o.source.checkout(
+      dbRun,
+      repo ? { owner: repo.owner, repo: repo.repo } : undefined,
+    );
     try {
       const workflowYaml = checkout.readFile(dbRun.workflowPath);
       if (workflowYaml === undefined) {
@@ -252,7 +288,11 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         plan = await resolveActions(jobPlan, o.resolver ?? githubResolver());
       } catch (err) {
         if (err instanceof PlanError) {
-          return { state: "infra_error", reason: `plan rejected: ${err.message}` };
+          const msg = `plan rejected: ${err.message}`;
+          // Shown where the job's log would be, not only as the attempt's error class.
+          await ctx.store.appendLog(0, new TextEncoder().encode(`${msg}\n`));
+          o.out?.(job.jobKey, `[${job.jobKey}] ${msg}\n`);
+          return { state: "infra_error", reason: msg };
         }
         throw err;
       }

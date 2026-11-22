@@ -1,19 +1,8 @@
 import { z } from "zod";
-import {
-  getRunRow,
-  listAttempts,
-  listJobs,
-  setRunStatus,
-  transitionJob,
-  updateAttempt,
-} from "../../db/repos";
-import { aggregateRunStatus } from "../../db/job-state";
-import type { JobState } from "../../db/schema";
+import { cancelRunJobs } from "../../db/repos";
 import { JOB_STATES } from "../../db/schema";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
-
-const CANCELLABLE: readonly JobState[] = ["queued", "running", "awaiting_approval"];
 
 export const cancel = defineOp({
   name: "cancel",
@@ -21,8 +10,9 @@ export const cancel = defineOp({
   description:
     "Cancels a run by moving every queued, running or awaiting-approval job to cancelled. Jobs " +
     "that already finished are left as they are. Idempotent: cancelling a finished or already " +
-    "cancelled run changes nothing. Destructive and audited; it needs the operator role. Today " +
-    "this updates state only; a running sandbox is stopped by the controller in a later change.",
+    "cancelled run changes nothing. Destructive and audited; it needs the operator role. A running " +
+    "job is stopped at once: its worker is told to abort and its sandbox is destroyed (a worker " +
+    "in another process stops at its next heartbeat).",
   input: z.object({ run_id: z.string().min(1).max(64) }),
   output: z.object({
     run_id: z.string(),
@@ -36,26 +26,16 @@ export const cancel = defineOp({
   scope: "org",
   http: { method: "POST", path: "/runs/{run_id}/cancel" },
   async handler(ctx, input) {
-    const run = await getRunRow(ctx.db, ctx.scope, input.run_id);
-    if (!run) throw new OpError("not_found", "run not found");
-    // TODO: ask the provider to kill the sandbox of each running attempt.
-    let cancelled = 0;
-    let unchanged = 0;
-    for (const job of await listJobs(ctx.db, ctx.scope, run.id)) {
-      if (!CANCELLABLE.includes(job.state as JobState)) {
-        unchanged++;
-        continue;
-      }
-      await transitionJob(ctx.db, ctx.scope, job.id, "cancelled");
-      const live = (await listAttempts(ctx.db, ctx.scope, job.id)).findLast(
-        (a) => a.state === "queued" || a.state === "running",
-      );
-      if (live) await updateAttempt(ctx.db, ctx.scope, live.id, { state: "cancelled" });
-      cancelled++;
-    }
-    const states = (await listJobs(ctx.db, ctx.scope, run.id)).map((j) => j.state as JobState);
-    const state = states.length === 0 ? "cancelled" : aggregateRunStatus(states);
-    await setRunStatus(ctx.db, ctx.scope, run.id, state);
-    return { run_id: run.id, state, cancelled_jobs: cancelled, unchanged_jobs: unchanged };
+    // One implementation (shared with supersession and Ctrl-C of a local run). Running attempts
+    // are announced after commit, so a worker in this process aborts and destroys the sandbox at
+    // once; another process's worker stops at its next heartbeat.
+    const res = await cancelRunJobs(ctx.db, ctx.scope, input.run_id);
+    if (!res) throw new OpError("not_found", "run not found");
+    return {
+      run_id: input.run_id,
+      state: res.state,
+      cancelled_jobs: res.cancelled,
+      unchanged_jobs: res.unchanged,
+    };
   },
 });

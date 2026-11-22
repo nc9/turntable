@@ -18,6 +18,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { groupBlocked } from "./poll";
 import {
   defaultReadiness,
   depStates,
@@ -50,6 +51,12 @@ export type ClaimOptions = {
   pageSize?: number;
   /** Most queued rows examined in one claim, across all orgs. Default 1000. */
   scanLimit?: number;
+  /**
+   * Claim only this run's attempts (a `longshore run` process running its own run), and count
+   * only its attempts against the caps. Without it, runs started by `longshore run` (`local`)
+   * are never claimed.
+   */
+  onlyRun?: string;
 };
 
 /**
@@ -75,7 +82,15 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     const running = await tx.orm
       .select({ orgId: s.jobAttempts.orgId, n: sql<number>`count(*)` })
       .from(s.jobAttempts)
-      .where(eq(s.jobAttempts.state, "running"))
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+      .where(
+        and(
+          eq(s.jobAttempts.state, "running"),
+          // A local run's attempts use only their own process's slots.
+          o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+        ),
+      )
       .groupBy(s.jobAttempts.orgId);
     const perOrg = new Map(running.map((r) => [r.orgId, Number(r.n)]));
     let total = 0;
@@ -86,11 +101,13 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       .select({ orgId: s.jobAttempts.orgId, oldest: sql<string>`min(${s.jobAttempts.id})` })
       .from(s.jobAttempts)
       .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
       .where(
         and(
           eq(s.jobAttempts.state, "queued"),
           eq(s.jobs.state, "queued"),
           isNull(s.jobAttempts.leaseOwner),
+          o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
         ),
       )
       .groupBy(s.jobAttempts.orgId);
@@ -113,12 +130,14 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           .select({ attempt: s.jobAttempts, job: s.jobs })
           .from(s.jobAttempts)
           .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+          .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
           .where(
             and(
               eq(s.jobAttempts.orgId, orgId),
               eq(s.jobAttempts.state, "queued"),
               eq(s.jobs.state, "queued"),
               isNull(s.jobAttempts.leaseOwner),
+              o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
               gt(s.jobAttempts.id, cursor.get(orgId)!),
             ),
           )
@@ -132,6 +151,10 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
         for (const c of page) {
           scanned++;
           const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
+          // A run waiting for its concurrency group (an older run of it is still going) starts
+          // nothing yet.
+          const candRun = await getRun(tx, scope, c.job.runId);
+          if (candRun && (await groupBlocked(tx, candRun))) continue;
           if (needsDecision(c.job)) {
             const siblings = await listJobs(tx, scope, c.job.runId);
             // Resolved earlier in this scan: no longer queued.

@@ -2,21 +2,14 @@
 import { and, count, desc, eq, gte, inArray, lt } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
-import { aggregateRunStatus } from "../job-state";
-import type { JobState } from "../schema";
 import {
+  cancelRunJobs,
   createAttempt,
   createJob,
   createRun,
-  listAttempts,
-  listJobs,
   type Run,
   type RunInput,
-  setRunStatus,
-  transitionJob,
-  updateAttempt,
 } from "./index";
-import { effectiveStates } from "./readiness";
 import { requireProject, type Scope, scoped } from "./scope";
 
 const SEEN_COLS = { orgId: s.pollSeen.orgId, projectId: s.pollSeen.projectId };
@@ -85,6 +78,47 @@ export type Superseded = {
   running: { attemptId: string; sandboxId: string | null; provider: string }[];
 };
 
+/** The run, its jobs and a queued attempt per job. Shared by the poller and `longshore run`. */
+async function insertPlannedRun(
+  tx: Db,
+  scope: Scope,
+  input: { run: RunInput; jobs: readonly PolledJob[]; provider: string },
+): Promise<Run> {
+  const run = await createRun(tx, scope, input.run);
+  for (const job of input.jobs) {
+    const created = await createJob(tx, scope, {
+      runId: run.id,
+      jobKey: job.key,
+      name: job.name,
+      needs: job.needs,
+      ...(job.matrix ? { matrix: job.matrix } : {}),
+      ...(job.planned === undefined ? {} : { planned: job.planned }),
+    });
+    if (created) await createAttempt(tx, scope, { jobId: created.id, provider: input.provider });
+  }
+  return run;
+}
+
+/**
+ * Creates a run started by `longshore run`: the planned jobs with queued attempts, marked
+ * `local` so only the starting process runs them. No poll marker, no concurrency group (a local
+ * run never waits for, or cancels, another).
+ */
+export function createLocalRun(
+  db: Db,
+  scope: Scope,
+  input: { run: RunInput; jobs: readonly PolledJob[]; provider: string },
+): Promise<Run> {
+  const invalid = validateJobGraph(input.jobs);
+  if (invalid) return Promise.reject(new Error(`invalid job graph: ${invalid}`));
+  return db.transaction((tx) =>
+    insertPlannedRun(tx, scope, {
+      ...input,
+      run: { ...input.run, local: true, concurrencyGroup: undefined },
+    }),
+  );
+}
+
 /**
  * Creates the run, its jobs and a queued attempt per job for something the poller found, once
  * per (repo, workflow, event, sha): a second call for the same key returns `undefined` and
@@ -129,18 +163,7 @@ export function createPolledRun(
         ),
       );
     if (Number(seen?.n ?? 0) > 0) return undefined;
-    const run = await createRun(tx, scope, input.run);
-    for (const job of input.jobs) {
-      const created = await createJob(tx, scope, {
-        runId: run.id,
-        jobKey: job.key,
-        name: job.name,
-        needs: job.needs,
-        ...(job.matrix ? { matrix: job.matrix } : {}),
-        ...(job.planned === undefined ? {} : { planned: job.planned }),
-      });
-      if (created) await createAttempt(tx, scope, { jobId: created.id, provider: input.provider });
-    }
+    const run = await insertPlannedRun(tx, scope, input);
     await tx.orm.insert(s.pollSeen).values({
       orgId: scope.orgId,
       ...key,
@@ -149,10 +172,9 @@ export function createPolledRun(
     });
     // The new run exists (rows and marker) before anything is cancelled: if this transaction
     // fails, nothing was superseded, and no moment has neither run (reliability rule R3).
-    const superseded =
-      input.cancelInProgress && run.concurrencyGroup
-        ? await supersedeOlderRuns(tx, scope, run)
-        : { runIds: [], running: [] };
+    const superseded = run.concurrencyGroup
+      ? await supersedeOlderRuns(tx, scope, run, input.cancelInProgress ? "all" : "pending")
+      : { runIds: [], running: [] };
     return { run, superseded };
   });
 }
@@ -180,16 +202,10 @@ export function countPolledSince(
   });
 }
 
-/**
- * Cancels the unfinished runs of the same concurrency group that are older than `run`: queued,
- * waiting and running jobs become cancelled, and their attempts too. Running attempts are
- * reported so the caller can stop their workers and destroy their sandboxes. Call it in the
- * transaction that created `run`, after the run exists.
- */
-export async function supersedeOlderRuns(db: Db, scope: Scope, run: Run): Promise<Superseded> {
-  const out: Superseded = { runIds: [], running: [] };
-  if (!run.concurrencyGroup) return out;
-  const older = await db.orm
+/** Unfinished runs of a run's concurrency group that are older than it. */
+async function olderUnfinished(db: Db, run: Run): Promise<Run[]> {
+  if (!run.concurrencyGroup) return [];
+  return db.orm
     .select()
     .from(s.runs)
     .where(
@@ -201,38 +217,51 @@ export async function supersedeOlderRuns(db: Db, scope: Scope, run: Run): Promis
         inArray(s.runs.status, ["queued", "running", "awaiting_approval"]),
       ),
     );
+}
+
+/**
+ * Applies a concurrency group to a run that was just created (call it in the same transaction,
+ * after the run exists, so there is no moment with neither run).
+ *
+ * - `all` (`cancel-in-progress: true`): every older unfinished run of the group is cancelled,
+ *   queued and running jobs alike.
+ * - `pending` (no cancel-in-progress, GitHub's semantics): a group has at most one running run
+ *   and one pending run. If a run is running, an older PENDING run (one that has not started) is
+ *   replaced, that is cancelled, and this run waits as the new pending one. The running run is
+ *   left alone, and this run's jobs are not claimed until it finishes (see `groupBlocked`).
+ *
+ * Running attempts that were cancelled are reported (and announced on the abort bus after
+ * commit) so their workers stop and their sandboxes are destroyed.
+ */
+export async function supersedeOlderRuns(
+  db: Db,
+  scope: Scope,
+  run: Run,
+  mode: "all" | "pending" = "all",
+): Promise<Superseded> {
+  const out: Superseded = { runIds: [], running: [] };
+  const older = await olderUnfinished(db, run);
+  // "Started" means the aggregate is anything but queued: some job ran or is waiting on approval.
+  const anyStarted = older.some((r) => r.status !== "queued");
   for (const old of older) {
-    const oldScope = { orgId: old.orgId, projectId: old.projectId };
-    for (const job of await listJobs(db, oldScope, old.id)) {
-      const state = job.state as JobState;
-      if (state !== "queued" && state !== "running" && state !== "awaiting_approval") continue;
-      const attempts = await listAttempts(db, oldScope, job.id);
-      for (const a of attempts) {
-        if (a.state === "running") {
-          out.running.push({ attemptId: a.id, sandboxId: a.sandboxId, provider: a.provider });
-        }
-        if (a.state === "queued" || a.state === "running" || a.state === "awaiting_approval") {
-          await updateAttempt(db, oldScope, a.id, {
-            state: "cancelled",
-            errorClass: "superseded by a newer run",
-          });
-          await db.orm
-            .update(s.jobAttempts)
-            .set({ leaseOwner: null, leaseExpiresAt: null })
-            .where(eq(s.jobAttempts.id, a.id));
-        }
-      }
-      await transitionJob(db, oldScope, job.id, "cancelled");
-    }
-    await setRunStatus(
-      db,
-      oldScope,
-      old.id,
-      aggregateRunStatus(effectiveStates(await listJobs(db, oldScope, old.id))),
-    );
+    if (mode === "pending" && (old.status !== "queued" || !anyStarted)) continue;
+    const res = await cancelRunJobs(db, scope, old.id, {
+      errorClass: mode === "all" ? "superseded by a newer run" : "replaced by a newer pending run",
+    });
+    if (!res) continue;
     out.runIds.push(old.id);
+    out.running.push(...res.running);
   }
   return out;
+}
+
+/**
+ * True when a run must wait for its concurrency group: it has not started and an older run of the
+ * same group is still unfinished. The scheduler does not claim its jobs until then.
+ */
+export async function groupBlocked(db: Db, run: Run): Promise<boolean> {
+  if (!run.concurrencyGroup || run.status !== "queued") return false;
+  return (await olderUnfinished(db, run)).length > 0;
 }
 
 /**
