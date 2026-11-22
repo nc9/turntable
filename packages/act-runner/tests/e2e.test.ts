@@ -145,6 +145,7 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     const { result, log, act } = await runExample("timeout.yml", "timeout");
     const took = Date.now() - started;
     expect(result.state).toBe("failure");
+    console.log(`TIMEOUT-LOG-BEGIN\n${log}\nTIMEOUT-LOG-END`);
     expect(log).toContain("hang-started");
     expect(log).not.toContain("hang-not-reached");
     // One minute of timeout plus setup and the cleanup step, nowhere near the 600 s sleep.
