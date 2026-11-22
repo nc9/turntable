@@ -82,20 +82,15 @@ export async function runFeed(o: FeedOptions): Promise<"aborted" | "auth"> {
   while (!o.signal.aborted) {
     try {
       if (cursor === null) {
-        // First start: skip history. Only events from now on are news.
-        let after = 0;
-        for (;;) {
-          const page = await o.api.events({
-            after,
-            types: [...o.filter.types],
-            limit: 200,
-            waitMs: 0,
-            signal: o.signal,
-          });
-          after = page.next_after;
-          if (page.events.length < 200) break;
-        }
-        cursor = after;
+        // First start: skip history. `after: "now"` returns the tip without reading the feed.
+        const tip = await o.api.events({
+          after: "now",
+          types: [...o.filter.types],
+          limit: 1,
+          waitMs: 0,
+          signal: o.signal,
+        });
+        cursor = tip.next_after;
         o.store.save(cursor);
       }
       const page = await o.api.events({

@@ -143,7 +143,7 @@ Local access to the data directory is the trust root. The command writes through
 
 Agents learn what happened through an event feed, the `events` operation (`GET /api/v1/events`):
 
-- **Cursor.** Every event has a monotonic `cursor`. Pass the last one back as `after` (the response's `next_after`) and you resume exactly where you stopped. Start from `after=0` for everything.
+- **Cursor.** Every event has a monotonic `cursor`. Pass the last one back as `after` (the response's `next_after`) and you resume exactly where you stopped. Start from `after=0` for everything, or `after=now` for the tip: no events, and `next_after` is the newest cursor.
 - **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required` and `infra.error`. Filter with `types` (a comma-separated list in a query string).
 - **Long-poll.** With `wait_ms` (up to 30000) and nothing new, the call waits for an event instead of returning empty. Waiters are capped per org (20) and across the instance (100); beyond either cap a call returns at once, so fall back to polling. The per-org cap keeps one tenant from using every slot.
 - **Transactional.** An event is written in the same transaction as the change it describes, and waiters are woken only after commit. A rolled-back change leaves no event.
@@ -243,4 +243,4 @@ A plugin manifest is in `claude-plugin/` for publishing the channel through a ma
 
 ### Resume and limits
 
-The channel long-polls the `events` operation and keeps its cursor in the state file, written after each handled event. After a dropped connection it backs off (1 s up to 30 s) and resumes from the cursor; after a restart it resumes from the state file. On the very first start it skips history, so only new events are reported. A burst of more than 10 matching events in one poll sends 10 and one summary line. A 401 or 403 sends one "channel stopped" notice and exits. The feed's `events` operation has no "from now" cursor yet, so the first start pages through existing events to find the end.
+The channel long-polls the `events` operation and keeps its cursor in the state file, written after each handled event. After a dropped connection it backs off (1 s up to 30 s) and resumes from the cursor; after a restart it resumes from the state file. On the very first start it reads the tip with `events` `after=now`, so only new events are reported. A burst of more than 10 matching events in one poll sends 10 and one summary line. A 401 or 403 sends one "channel stopped" notice and exits.

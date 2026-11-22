@@ -272,3 +272,40 @@ test("REST: events query string carries types as a comma list and long-polls", a
   expect((await get(`/jobs/${a.jobId}/steps`))!.status).toBe(200);
   expect((await get(`/jobs/${a.jobId}/cuts`))!.status).toBe(200);
 });
+
+test('events: after "now" returns nothing and starts at the tip; numeric cursors still work over REST', async () => {
+  await transitionJob(db, a.scope, a.jobId, "running");
+  const all = await run("events");
+  const tip = await run("events", { after: "now" });
+  expect(tip).toEqual({ events: [], next_after: all.next_after });
+
+  // Org scoped: another org's events do not move this org's tip.
+  const none = await run("events", { after: "now", types: ["run.finished"] });
+  expect(none.next_after).toBe(all.next_after);
+
+  // A subscriber that starts at the tip sees only what comes next.
+  await setRunStatus(db, a.scope, a.runId, "running");
+  const next = await run("events", { after: tip.next_after });
+  expect(next.events.map((e: { type: string }) => e.type)).toEqual(["run.started"]);
+
+  // Empty feed: tip is 0.
+  const fresh = await mintToken(db, { orgId: b.orgId }, "reader");
+  const bTip = await run("events", { after: "now" }, fresh.secret);
+  expect(bTip.events).toEqual([]);
+  expect(bTip.next_after).toBeGreaterThan(0); // org b has its own seeded events
+
+  const api = createRestApi(env);
+  const get = (path: string) =>
+    api(new Request(`http://x/api/v1${path}`, { headers: { authorization: `Bearer ${token}` } }))!;
+  const viaRest = (await (await get("/events?after=now"))!.json()) as {
+    events: unknown[];
+    next_after: number;
+  };
+  expect(viaRest).toEqual({ events: [], next_after: next.next_after });
+  const numeric = (await (await get(`/events?after=${all.next_after}`))!.json()) as {
+    events: { type: string }[];
+  };
+  expect(numeric.events.map((e) => e.type)).toEqual(["run.started"]);
+  expect((await get("/events?after=later"))!.status).toBe(400);
+  expect((await get("/events?after=-1"))!.status).toBe(400);
+});
