@@ -13,6 +13,7 @@ import {
   finishReleaseRequest,
   getFreeze,
   getRun,
+  listReleaseRequests,
   type ReleaseRequest,
 } from "../db/repos";
 import type { AttestationStore } from "./attest";
@@ -95,7 +96,12 @@ type Decision =
       result: unknown;
       facts: Record<string, unknown>;
       /** What was verified and signed, for the publish step. */
-      verified: { repo: string; digests: Record<string, string>; envelope: unknown };
+      verified: {
+        repo: string;
+        sha: string;
+        digests: Record<string, string>;
+        envelope: unknown;
+      };
     }
   | { status: "refused"; reason: LaneDenial; detail?: string; facts: Record<string, unknown> };
 
@@ -134,6 +140,18 @@ export class ReleaseLane {
     // target says how it went, and a re-run of the same request resumes where it stopped.
     let published: TargetResult[] = [];
     if (decision.status === "signed") {
+      // Remembered in the lane's own file: what the release proxy may hand rules out for.
+      this.#o.attest.approveRelease(
+        { ...scope, runId: req.runId },
+        {
+          repo: decision.verified.repo,
+          tag: req.tag,
+          sha: decision.verified.sha,
+          artifacts: Object.keys(decision.verified.digests),
+          envelope: JSON.stringify(decision.verified.envelope),
+        },
+        now(),
+      );
       try {
         published = await this.#publish(req, scope, decision.verified);
       } catch (err) {
@@ -264,7 +282,7 @@ export class ReleaseLane {
       status: "signed",
       result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
       facts,
-      verified: { repo: pinned, digests, envelope: out.envelope },
+      verified: { repo: pinned, sha: tag.sha, digests, envelope: out.envelope },
     };
   }
 
@@ -272,10 +290,48 @@ export class ReleaseLane {
    * Publishes to each declared target, in key order. Before each: an incident freeze stops it. A
    * target already done is not repeated. Whatever happens is recorded and audited, never a credential.
    */
+  /**
+   * After a publish job ran through the release proxy: makes sure every compat npm and GitHub
+   * target is really published, from the lane's own record of what it signed. A GitHub draft the
+   * job filled is checked asset by asset against the attested digests and then published (any
+   * asset that is missing or differs is replaced from the verified bytes first); an npm version
+   * that is already there is accepted only if its integrity is the approved one, and published
+   * by the lane if the job did not. An image has no lane-side step: the proxy pinned its manifest.
+   */
+  async finalize(a: { orgId: string; projectId: string; runId: string }): Promise<TargetResult[]> {
+    const scope = { orgId: a.orgId, projectId: a.projectId };
+    const approved = this.#o.attest.approvedRelease(a);
+    if (!approved) return [{ target: "*", state: "refused", reason: "not_approved" }];
+    const req = (await listReleaseRequests(this.#o.db, scope, 200))
+      .filter((r) => r.runId === a.runId && r.status === "signed")
+      .at(-1);
+    if (!req) return [{ target: "*", state: "refused", reason: "no_signed_request" }];
+    const tag = await this.#o.forge.tagCommit(approved.repo, approved.tag);
+    if (!tag.found || tag.sha !== approved.sha)
+      return [{ target: "*", state: "refused", reason: "tag_moved" }];
+    const digests = this.#o.attest.attestedDigests({
+      ...scope,
+      repo: approved.repo,
+      tag: approved.tag,
+    });
+    return this.#publish(
+      req,
+      scope,
+      { repo: approved.repo, sha: approved.sha, digests, envelope: approved.envelope },
+      true,
+    );
+  }
+
   async #publish(
     req: ReleaseRequest,
     scope: { orgId: string; projectId: string },
-    v: { repo: string; digests: Record<string, string>; envelope: unknown },
+    v: {
+      repo: string;
+      sha: string;
+      digests: Record<string, string>;
+      envelope: unknown;
+    },
+    ensureCompat = false,
   ): Promise<TargetResult[]> {
     const w = this.#o.publish;
     const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
@@ -290,7 +346,7 @@ export class ReleaseLane {
       tag: req.tag,
       digests: v.digests,
       readBytes: (name: string) => this.#o.bytes.read(req.runId, name),
-      provenance: JSON.stringify(v.envelope),
+      provenance: typeof v.envelope === "string" ? v.envelope : JSON.stringify(v.envelope),
     };
     const out: TargetResult[] = [];
     for (const key of keys) {
@@ -320,7 +376,8 @@ export class ReleaseLane {
         continue;
       }
       // A target may name only artifacts this request asked for and the lane verified.
-      const named = t.kind === "npm" ? [t.artifact] : t.assets;
+      const named =
+        t.kind === "npm" ? [t.artifact] : t.kind === "oci-image" ? [t.manifest] : t.assets;
       const stray = named.filter((n) => !(n in v.digests));
       if (stray.length > 0) {
         await record({
@@ -329,6 +386,12 @@ export class ReleaseLane {
           reason: "artifact_not_requested",
           detail: stray.join(", "),
         });
+        continue;
+      }
+      // A target the job publishes itself: the lane signed and approved it, and the release proxy
+      // will hand the job the rules. An image has no strict path at all.
+      if (t.kind === "oci-image" || (t.mode === "compat" && !ensureCompat)) {
+        await record({ target: key, state: "pending", reason: "awaiting_job" });
         continue;
       }
       try {

@@ -3,7 +3,7 @@
 // bytes, so nothing the workflow wrote decides what is published.
 import { createHash } from "node:crypto";
 import { safeFetch, type SafeFetch } from "@longshore/net";
-import { tarEntry } from "./tar";
+import { tarEntries, tarEntry } from "./tar";
 import type { NpmTarget, PublishContext, TargetResult } from "./types";
 
 const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
@@ -18,6 +18,65 @@ export const integrityOf = (bytes: Uint8Array): string =>
 export interface NpmOptions {
   registry?: string;
   fetch?: SafeFetch;
+}
+
+/**
+ * What a tarball is, from its own package.json: the name must be the target's, the version a
+ * semantic version equal to the tag, and the package not private. Used for the lane's own publish
+ * and to derive the document a compat publish must send.
+ */
+export function inspectNpmTarball(
+  bytes: Uint8Array,
+  pkg: string,
+  tag: string,
+):
+  | {
+      ok: true;
+      version: string;
+      manifest: Record<string, unknown>;
+      /** README files at the top of the tarball, by file name. */
+      readmes: Record<string, string>;
+    }
+  | { ok: false; reason: string; detail?: string } {
+  const raw = tarEntry(bytes, "package/package.json");
+  if (!raw)
+    return {
+      ok: false,
+      reason: "not_an_npm_tarball",
+      detail: "no package/package.json in the artifact",
+    };
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>;
+  } catch {
+    return { ok: false, reason: "not_an_npm_tarball", detail: "package.json is not JSON" };
+  }
+  const { name, version } = manifest;
+  if (name !== pkg)
+    return {
+      ok: false,
+      reason: "package_mismatch",
+      detail: `the tarball is ${String(name)}, the target says ${pkg}`,
+    };
+  if (typeof version !== "string" || !VERSION.test(version))
+    return {
+      ok: false,
+      reason: "bad_version",
+      detail: "the tarball's version is not a semantic version",
+    };
+  if (manifest.private === true) return { ok: false, reason: "private_package" };
+  // The release is the tag: v1.2.3 publishes version 1.2.3, never another.
+  if (version !== tag.replace(/^v/, ""))
+    return {
+      ok: false,
+      reason: "version_tag_mismatch",
+      detail: `the tarball is ${version}, the tag is ${tag}`,
+    };
+  const readmes: Record<string, string> = {};
+  for (const [n, b] of tarEntries(bytes, (x) => /^package\/readme(\.[^./]*)?$/i.test(x))) {
+    readmes[n.slice("package/".length)] = new TextDecoder().decode(b);
+  }
+  return { ok: true, version, manifest, readmes };
 }
 
 export async function publishNpm(
@@ -53,30 +112,9 @@ export async function publishNpm(
   const sha = createHash("sha256").update(bytes).digest("hex");
   if (ctx.digests[t.artifact] !== sha) return refuse("digest_mismatch", t.artifact);
 
-  const raw = tarEntry(bytes, "package/package.json");
-  if (!raw) return refuse("not_an_npm_tarball", "no package/package.json in the artifact");
-  let manifest: Record<string, unknown>;
-  try {
-    manifest = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>;
-  } catch {
-    return refuse("not_an_npm_tarball", "package.json is not JSON");
-  }
-  const name = manifest.name;
-  const version = manifest.version;
-  if (name !== t.package) {
-    return refuse(
-      "package_mismatch",
-      `the tarball is ${String(name)}, the target says ${t.package}`,
-    );
-  }
-  if (typeof version !== "string" || !VERSION.test(version)) {
-    return refuse("bad_version", "the tarball's version is not a semantic version");
-  }
-  if (manifest.private === true) return refuse("private_package");
-  // The release is the tag: v1.2.3 publishes version 1.2.3, never another.
-  if (version !== ctx.tag.replace(/^v/, "")) {
-    return refuse("version_tag_mismatch", `the tarball is ${version}, the tag is ${ctx.tag}`);
-  }
+  const insp = inspectNpmTarball(bytes, t.package, ctx.tag);
+  if (!insp.ok) return refuse(insp.reason, insp.detail);
+  const { version, manifest } = insp;
 
   const integrity = integrityOf(bytes);
   const shasum = createHash("sha1").update(bytes).digest("hex");

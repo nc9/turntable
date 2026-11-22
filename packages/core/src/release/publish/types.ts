@@ -7,11 +7,23 @@ import type { SafeFetch } from "@longshore/net";
 export const NPM_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 export const DIST_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const SECRET_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+export const REGISTRY_HOST =
+  /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+export const OCI_REPOSITORY = /^[a-z0-9]+([._-][a-z0-9]+)*(\/[a-z0-9]+([._-][a-z0-9]+)*)*$/;
+export const OCI_TAG = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 export const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/;
+
+/**
+ * Who performs the publish. `strict` (default): the lane, from the bytes it verified. `compat`:
+ * the project's own job, through the lane's release proxy, which attaches the credential only to
+ * the approved request; the lane then checks (and finishes) the result.
+ */
+export type PublishMode = "strict" | "compat";
 
 /** `npm publish` of one recorded tarball. */
 export interface NpmTarget {
   kind: "npm";
+  mode: PublishMode;
   /** The package name; the tarball's own package.json must say exactly this. */
   package: string;
   /** The recorded artifact that is the `npm pack` tarball. */
@@ -25,15 +37,37 @@ export interface NpmTarget {
 /** A GitHub Release for the tag, with the recorded artifacts (and the provenance) as assets. */
 export interface GithubReleaseTarget {
   kind: "github-release";
+  mode: PublishMode;
   /** Recorded artifacts to attach. */
   assets: string[];
   /** Name of the signed provenance asset; null to attach none. */
   provenanceAsset: string | null;
 }
 
-export type PublishTarget = NpmTarget | GithubReleaseTarget;
+/**
+ * A container image on an OCI registry. Compat mode only: the job pushes, the release proxy does
+ * the registry's token exchange and pins the manifest to the digest the lane attested.
+ */
+export interface OciTarget {
+  kind: "oci-image";
+  mode: "compat";
+  /** Registry host, for example `ghcr.io`. */
+  registry: string;
+  /** `owner/name`, lower-case. */
+  repository: string;
+  /** The recorded artifact that is the image manifest (JSON); its digest is the one pinned. */
+  manifest: string;
+  /** References the manifest may be pushed under, for example the version. */
+  tags: string[];
+  /** The registry user for the token exchange. */
+  username: string;
+  /** The release-class vault secret (the registry credential). */
+  secret: string;
+}
 
-export type TargetState = "published" | "already" | "refused" | "failed";
+export type PublishTarget = NpmTarget | GithubReleaseTarget | OciTarget;
+
+export type TargetState = "published" | "already" | "refused" | "failed" | "pending";
 
 export interface TargetResult {
   /** The target's key in the project's declaration. */

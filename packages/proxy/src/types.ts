@@ -7,7 +7,54 @@ export type Inject =
   /** `format` holds `{secret}`; the default is the bare value, for example `Bearer {secret}`. */
   | { type: "header"; name: string; format?: string }
   /** HTTP Basic: a fixed username and the secret as the password. */
-  | { type: "basic"; username: string };
+  | { type: "basic"; username: string }
+  /**
+   * An OCI registry (Docker distribution API) that hands out short-lived bearer tokens in
+   * exchange for a long-lived credential. The proxy answers the registry's challenge itself, with
+   * the secret as the Basic password and a token scoped to `scope` (for example
+   * `repository:owner/name:push,pull`), keeps the token in memory, and attaches it. The job
+   * never sees a challenge or a token. The token realm must be on `realmHost` (default: the rule's host).
+   */
+  | { type: "oci-bearer"; username: string; scope: string; realmHost?: string };
+
+/** What the lane computed from the verified tarball. */
+export interface NpmExpect {
+  name: string;
+  version: string;
+  tag: string;
+  access?: "public" | "restricted" | undefined;
+  /** The tarball's package.json. */
+  manifest: Record<string, unknown>;
+  /**
+   * The README files at the top of the tarball, by file name (`README.md`). The only `readme` text
+   * a document may carry is empty or exactly one of these; `readmeFilename` must name one.
+   */
+  readmes?: Readonly<Record<string, string>> | undefined;
+  /** The commit the approved tag points at: the only `gitHead` a document may carry. */
+  gitHead?: string | undefined;
+}
+
+/**
+ * A check on the body of a request that carries one (anything but GET and HEAD). A request that
+ * fails it is refused before any credential is attached.
+ */
+export type BodyCheck =
+  /**
+   * An npm publish document: one attachment whose sha256 is in `digests`, one version. With
+   * `expect`, the whole document must be the one the lane derived from the verified tarball: the
+   * name, exactly one version key, a version manifest equal to the tarball's own package.json plus
+   * `dist` (integrity required), `dist-tags` exactly `{ [tag]: version }`, and no other field
+   * (besides the few the npm client adds on its own, see `checkBody`).
+   */
+  | {
+      type: "npm-publish";
+      digests: readonly string[];
+      expect?: NpmExpect | undefined;
+    }
+  /** The whole body hashes to one of `digests` (lower-case hex sha256), for example an OCI manifest. */
+  | { type: "sha256"; digests: readonly string[] }
+  /** A JSON object whose top-level `field` equals `equals`, for example `draft: true`. */
+  | { type: "json"; field: string; equals: boolean | string | number };
 
 /** Where a credential may go. The job's rule list is the whole of what it may reach. */
 export interface Rule {
@@ -20,6 +67,14 @@ export interface Rule {
   methods: readonly string[];
   /** Starts with `/`; matched on segment boundaries. */
   pathPrefix: string;
+  /** The path must be exactly `pathPrefix`, not anything below it. */
+  pathExact?: boolean | undefined;
+  /**
+   * A scoped npm package, `@scope/name`. `pathPrefix` must then be `/@scope%2Fname`: the one place
+   * the proxy accepts an encoded slash, and only for this exact path (which implies `pathExact`).
+   */
+  npmPackage?: string | undefined;
+  bodyCheck?: BodyCheck | undefined;
   inject: Inject;
   /**
    * Headers (besides the always-forwarded few) the job may send to this host. A rule that injects
@@ -60,6 +115,8 @@ export interface AuditEvent {
   ruleId?: string;
   /** A short fixed reason. Never a value, a header or a body. */
   reason?: string;
+  /** Short facts for a refusal, such as the digest seen and the ones approved. Never a secret. */
+  detail?: string;
   /** Epoch ms. */
   at: number;
 }

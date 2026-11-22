@@ -101,9 +101,9 @@ For a bad release: never move or delete a tag that anyone may have used. Mark th
 
 ## What the pipeline guarantees
 
-- Third-party actions are pinned by commit SHA, and base images by digest. Downloaded tools (the darwin signer, `act`) are pinned by SHA-256.
-- A new dependency version in `bun.lock` must have been published at least 14 days ago. CI fails a pull request that adds a younger one, using the npm registry's publish time. Exceptions go in `.github/dep-age-allowlist.json` with a reason and an optional expiry.
-- An OpenSSF Scorecard run reports weekly and on every push to `main`, to the repository's code scanning.
+- Everything fetched at build or run time is pinned by something immutable, and CI fails on anything that is not (`scripts/check-pins.ts`, in the `check` job). A GitHub Action (and a reusable workflow) is pinned by full commit SHA. A container image, in a workflow, a Dockerfile or a test, is pinned by sha256 digest. A binary downloaded in a Dockerfile (PowerShell in the runner image) or in code (`act`) is pinned by version and checked against a committed sha256 before it is used. The toolchain version (`bun-version`) is exact. A line that names something this same job just built can say `pin-ok: <reason>` to be excused.
+- A new dependency version in `bun.lock` must have been published at least 14 days ago. CI fails a pull request that adds a younger one, using the npm registry's publish time, and only for versions that are new against the base branch's lockfile, so existing pins are not re-judged. A package with no registry publish time (a git or tarball dependency) needs an entry too. Exceptions go in `.github/dep-age-allowlist.json` with a reason and an optional expiry. Dependabot has the same 14-day cooldown, so it does not propose a version CI would refuse.
+- An OpenSSF Scorecard run reports weekly and on every push to `main`, to the repository's code scanning (SARIF). It runs with read access plus `security-events: write` (to upload) and `id-token: write` (to publish the public result), and every action in it is pinned by SHA.
 - Release notes are drafted from conventional commits, grouped by type, with breaking changes and migration files listed apart. `scripts/release-notes.ts` makes them from the git history, and `.github/release-notes-template.md` is the frame to edit before publishing.
 
 Report a vulnerability through the repository's private security advisories, not a public issue.

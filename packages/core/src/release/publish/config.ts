@@ -2,9 +2,14 @@ import {
   ARTIFACT_NAME,
   DIST_TAG,
   NPM_NAME,
+  OCI_REPOSITORY,
+  OCI_TAG,
+  REGISTRY_HOST,
   SECRET_NAME,
   type GithubReleaseTarget,
   type NpmTarget,
+  type OciTarget,
+  type PublishMode,
   type PublishTarget,
 } from "./types";
 
@@ -16,6 +21,12 @@ const need = (cond: boolean, why: string): void => {
   if (!cond) throw new PublishConfigError(why);
 };
 
+const modeOf = (o: Record<string, unknown>): PublishMode => {
+  const m = o.mode ?? "strict";
+  need(m === "strict" || m === "compat", "mode must be strict or compat");
+  return m as PublishMode;
+};
+
 /** Checks a declaration read from the CLI or from the lane's file; throws on anything off. */
 export function parseTarget(raw: unknown): PublishTarget {
   need(typeof raw === "object" && raw !== null && !Array.isArray(raw), "a target is an object");
@@ -23,6 +34,7 @@ export function parseTarget(raw: unknown): PublishTarget {
   if (o.kind === "npm") {
     const t: NpmTarget = {
       kind: "npm",
+      mode: modeOf(o),
       package: String(o.package ?? ""),
       artifact: String(o.artifact ?? ""),
       tag: String(o.tag ?? "latest"),
@@ -53,10 +65,44 @@ export function parseTarget(raw: unknown): PublishTarget {
     );
     const t: GithubReleaseTarget = {
       kind: "github-release",
+      mode: modeOf(o),
       assets,
       provenanceAsset: prov as string | null,
     };
     return t;
   }
-  throw new PublishConfigError("kind must be npm or github-release");
+  if (o.kind === "oci-image") {
+    need(modeOf(o) === "compat", "an image is published in compat mode only");
+    const tags = Array.isArray(o.tags) ? o.tags.map(String) : [];
+    const t: OciTarget = {
+      kind: "oci-image",
+      mode: "compat",
+      registry: String(o.registry ?? ""),
+      repository: String(o.repository ?? ""),
+      manifest: String(o.manifest ?? ""),
+      tags,
+      username: String(o.username ?? ""),
+      secret: String(o.secret ?? ""),
+    };
+    need(REGISTRY_HOST.test(t.registry), "registry must be a lower-case hostname");
+    need(
+      OCI_REPOSITORY.test(t.repository) && t.repository.length <= 200,
+      "repository must be a lower-case owner/name",
+    );
+    need(
+      ARTIFACT_NAME.test(t.manifest) && !t.manifest.split("/").includes(".."),
+      "manifest must be a recorded artifact name",
+    );
+    need(
+      tags.length > 0 && tags.length <= 10 && tags.every((x) => OCI_TAG.test(x)),
+      "tags must list 1 to 10 plain references",
+    );
+    need(
+      /^[\x21-\x7e]{1,64}$/.test(t.username) && !t.username.includes(":"),
+      "username must be printable, no colon",
+    );
+    need(SECRET_NAME.test(t.secret), "secret must name a release-class vault secret");
+    return t;
+  }
+  throw new PublishConfigError("kind must be npm, github-release or oci-image");
 }
