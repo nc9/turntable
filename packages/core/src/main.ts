@@ -330,12 +330,7 @@ async function serve(args: string[]): Promise<void> {
   });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
-  const background = await startBackground(
-    db,
-    values,
-    checks,
-    appAuth ? { auth: appAuth } : {},
-  );
+  const background = await startBackground(db, values, checks, appAuth ? { auth: appAuth } : {});
 
   const stop = () => {
     for (const s of auditStops) s();
