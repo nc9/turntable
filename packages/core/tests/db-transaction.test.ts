@@ -132,3 +132,46 @@ test("gate: shared holders overlap, an exclusive waiter blocks later shared ones
   (await r3)();
   expect(events).toEqual(["w", "r3"]);
 });
+
+test("root db inside a transaction joins it instead of deadlocking", async () => {
+  await db.transaction(async () => {
+    await createOrg(db, { slug: "joined", name: "J" }); // root handle, same async context
+    expect(await getOrgBySlug(db, "joined")).toBeDefined();
+  });
+  expect(await getOrgBySlug(db, "joined")).toBeDefined();
+});
+
+test("a rollback undoes root-db calls made inside the transaction", async () => {
+  await expect(
+    db.transaction(async () => {
+      await createOrg(db, { slug: "gone", name: "G" });
+      throw new Error("rollback");
+    }),
+  ).rejects.toThrow("rollback");
+  expect(await getOrgBySlug(db, "gone")).toBeUndefined();
+});
+
+test("root db.transaction inside a transaction is a savepoint", async () => {
+  await db.transaction(async () => {
+    await createOrg(db, { slug: "keep", name: "K" });
+    await expect(
+      db.transaction(async () => {
+        await createOrg(db, { slug: "drop", name: "D" });
+        throw new Error("inner");
+      }),
+    ).rejects.toThrow("inner");
+  });
+  expect(await getOrgBySlug(db, "keep")).toBeDefined();
+  expect(await getOrgBySlug(db, "drop")).toBeUndefined();
+});
+
+test("root db.transaction inside a plain repo call throws instead of hanging", async () => {
+  await expect(db.run(() => db.transaction(async () => {}))).rejects.toThrow("shared gate held");
+});
+
+test("root run inside a repo call joins it (no gate re-entry)", async () => {
+  await db.run(async () => {
+    await createOrg(db, { slug: "nested", name: "N" });
+  });
+  expect(await getOrgBySlug(db, "nested")).toBeDefined();
+});
