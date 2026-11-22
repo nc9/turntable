@@ -30,8 +30,8 @@
   --border: #ebebeb;
   --border-strong: #d4d4d4;
   --fg: #171717;
-  --fg-muted: #666666;
-  --fg-subtle: #8f8f8f;
+  --fg-muted: #595959;
+  --fg-subtle: #6a6a6a;
   --accent: #0070f3;
   --accent-fg: #ffffff;
   --ring: #0070f3;
@@ -40,8 +40,8 @@
   --st-queued: #6b6b6b;
   --st-running: #0070f3;
   --st-success: #11803b;
-  --st-failure: #d92d20;
-  --st-infra: #b25e00;
+  --st-failure: #c0241a;
+  --st-infra: #9a5200;
   --st-approval: #7c3aed;
   --st-cancelled: #6b6b6b;
   --st-queued-bg: #f2f2f2;
@@ -54,7 +54,7 @@
 
   --log-bg: #fafafa;
   --log-fg: #1f1f1f;
-  --log-gutter: #9a9a9a;
+  --log-gutter: #6b6b6b;
   --log-line-hover: #f0f0f0;
   --log-selected: #fff6d6;
   --log-match: #ffe58a;
@@ -72,7 +72,7 @@
   --ansi-5: #9333ea;
   --ansi-6: #0e7490;
   --ansi-7: #6b6b6b;
-  --ansi-8: #8f8f8f;
+  --ansi-8: #6b6b6b;
   --ansi-9: #e5484d;
   --ansi-10: #1a9d4b;
   --ansi-11: #a16207;
@@ -96,7 +96,7 @@
   --border-strong: #3a3a3a;
   --fg: #ededed;
   --fg-muted: #a1a1a1;
-  --fg-subtle: #7b7b7b;
+  --fg-subtle: #8a8a8a;
   --accent: #3291ff;
   --accent-fg: #0a0a0a;
   --ring: #3291ff;
@@ -119,7 +119,7 @@
 
   --log-bg: #0d0d0d;
   --log-fg: #dedede;
-  --log-gutter: #6b6b6b;
+  --log-gutter: #8a8a8a;
   --log-line-hover: #161616;
   --log-selected: #2f2a10;
   --log-match: #5c4a00;
@@ -129,7 +129,7 @@
   --log-notice-bg: #0f1f33;
   --log-group-bg: #141414;
 
-  --ansi-0: #5a5a5a;
+  --ansi-0: #8a8a8a;
   --ansi-1: #ff6166;
   --ansi-2: #3ecf6e;
   --ansi-3: #f5c451;
@@ -137,7 +137,7 @@
   --ansi-5: #c792ea;
   --ansi-6: #4dd0e1;
   --ansi-7: #cfcfcf;
-  --ansi-8: #7b7b7b;
+  --ansi-8: #8a8a8a;
   --ansi-9: #ff8a8e;
   --ansi-10: #6fe39a;
   --ansi-11: #ffd77a;
@@ -159,7 +159,7 @@
     --border-strong: #3a3a3a;
     --fg: #ededed;
     --fg-muted: #a1a1a1;
-    --fg-subtle: #7b7b7b;
+    --fg-subtle: #8a8a8a;
     --accent: #3291ff;
     --accent-fg: #0a0a0a;
     --ring: #3291ff;
@@ -180,7 +180,7 @@
     --st-cancelled-bg: #1a1a1a;
     --log-bg: #0d0d0d;
     --log-fg: #dedede;
-    --log-gutter: #6b6b6b;
+    --log-gutter: #8a8a8a;
     --log-line-hover: #161616;
     --log-selected: #2f2a10;
     --log-match: #5c4a00;
@@ -189,7 +189,7 @@
     --log-warning-bg: #2b1d08;
     --log-notice-bg: #0f1f33;
     --log-group-bg: #141414;
-    --ansi-0: #5a5a5a;
+    --ansi-0: #8a8a8a;
     --ansi-1: #ff6166;
     --ansi-2: #3ecf6e;
     --ansi-3: #f5c451;
@@ -197,7 +197,7 @@
     --ansi-5: #c792ea;
     --ansi-6: #4dd0e1;
     --ansi-7: #cfcfcf;
-    --ansi-8: #7b7b7b;
+    --ansi-8: #8a8a8a;
     --ansi-9: #ff8a8e;
     --ansi-10: #6fe39a;
     --ansi-11: #ffd77a;

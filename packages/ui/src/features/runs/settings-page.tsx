@@ -21,8 +21,10 @@ export function SettingsPage() {
         {rows.map(([k, v]) => (
           <div key={k} className="flex items-center gap-4 px-4 py-3 text-sm">
             <dt className="w-32 shrink-0 text-dim">{k}</dt>
-            <dd className="min-w-0 flex-1 truncate font-mono text-[13px]">{v || "-"}</dd>
-            <Lock className="size-3.5 text-faint" aria-label="Read-only" />
+            <dd className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[13px]">
+              <span className="min-w-0 flex-1 truncate">{v || "-"}</span>
+              <Lock className="size-3.5 shrink-0 text-faint" role="img" aria-label="Read-only" />
+            </dd>
           </div>
         ))}
       </dl>

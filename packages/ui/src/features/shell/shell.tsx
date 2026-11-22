@@ -159,7 +159,7 @@ function Switcher() {
           variant="ghost"
           size="sm"
           className="max-w-[60vw] gap-1.5 px-2 text-sm text-foreground"
-          aria-label="Switch org or project"
+          aria-label={`${label}. Switch org or project`}
         >
           <span className="truncate">{label}</span>
           <ChevronsUpDown className="size-3.5 text-faint" />
@@ -412,7 +412,7 @@ export function Shell() {
             size="sm"
             className="hidden w-52 justify-start gap-2 text-faint sm:inline-flex"
             onClick={() => setPaletteOpen(true)}
-            aria-label="Open command palette"
+            aria-label={`Search or jump to ${modKey()} K`}
             aria-keyshortcuts="Meta+K Control+K"
           >
             <Search />

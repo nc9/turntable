@@ -587,19 +587,19 @@ export function LogViewer({
         )}
         <div className="ml-auto flex flex-wrap items-center gap-0.5">
           <Tooltip label="Keep the view pinned to new output (f)">
-            <Toggle pressed={follow} onPressedChange={setFollow} aria-label="Follow tail">
+            <Toggle pressed={follow} onPressedChange={setFollow}>
               <ArrowDownToLine />
               Follow
             </Toggle>
           </Tooltip>
           <Tooltip label="Wrap long lines (w)">
-            <Toggle pressed={wrap} onPressedChange={setWrap} aria-label="Wrap lines">
+            <Toggle pressed={wrap} onPressedChange={setWrap}>
               <WrapText />
               Wrap
             </Toggle>
           </Tooltip>
           <Tooltip label="Show timestamps (t)">
-            <Toggle pressed={showTime} onPressedChange={setShowTime} aria-label="Show timestamps">
+            <Toggle pressed={showTime} onPressedChange={setShowTime}>
               <Clock />
               Time
             </Toggle>
@@ -607,12 +607,7 @@ export function LogViewer({
           <span className="mx-1 hidden h-4 w-px bg-line-strong sm:block" aria-hidden="true" />
           {selection ? (
             <Tooltip label="Copy a link to the selected lines">
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={copyLink}
-                aria-label="Copy link to selection"
-              >
+              <Button variant="ghost" size="xs" onClick={copyLink}>
                 <Link2 />
                 Link
               </Button>
@@ -623,12 +618,7 @@ export function LogViewer({
               selection ? `Copy the selected lines (${modKey()} C)` : "Copy the whole loaded log"
             }
           >
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => void copyLines()}
-              aria-label={selection ? "Copy selected lines" : "Copy log"}
-            >
+            <Button variant="ghost" size="xs" onClick={() => void copyLines()}>
               <Copy />
               {selection ? "Copy lines" : "Copy"}
             </Button>
@@ -639,7 +629,6 @@ export function LogViewer({
               size="xs"
               onClick={() => void download()}
               disabled={!attemptId || downloading}
-              aria-label="Download raw log"
             >
               <Download />
               {downloading ? "Downloading" : "Raw"}
