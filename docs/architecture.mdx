@@ -7,6 +7,20 @@ description: Process model, storage, migrations and the tenancy model.
 
 Turntable is one process. `turntable serve` opens the database, applies migrations, then starts an HTTP server. The scheduler, log pipeline and provider supervisor are planned to run in the same process. Sandboxes are separate, disposable environments created by providers, one per job.
 
+## Operations registry
+
+Planned. Every capability is defined once in an operations registry. The MCP server, REST API, CLI and UI all sit on that single layer, so no surface has capabilities the others lack. See [Agent interface](/agent-interface).
+
+```mermaid
+flowchart TD
+  MCP[MCP server] --> R
+  REST[REST + OpenAPI] --> R
+  CLI[CLI] --> R
+  UI[Web UI] --> R
+  R[Operations registry] --> Core[Core: scheduler, repos, providers]
+  Core --> DB[(SQLite / Postgres)]
+```
+
 ## Storage
 
 SQLite is the default and lives at `<data-dir>/turntable.db`. Postgres is planned for scale. Access goes through Drizzle ORM, and the schema uses portable column types (ULID text ids, epoch-ms integers, text plus CHECK for enums, no arrays) so the Postgres port stays mechanical.

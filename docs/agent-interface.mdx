@@ -1,0 +1,40 @@
+---
+title: Agent interface (MCP and API)
+description: How agents and scripts drive Turntable through MCP, REST, events and webhooks.
+---
+
+<Warning>
+  Planned. None of this is implemented yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#23](https://github.com/nc9/turntable/issues/23), [#24](https://github.com/nc9/turntable/issues/24), [#25](https://github.com/nc9/turntable/issues/25) and [#26](https://github.com/nc9/turntable/issues/26).
+</Warning>
+
+Turntable is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
+
+## Operations registry
+
+Each capability is defined once in an operations registry, with a name, typed input and output schemas, a required scope and a handler. The MCP server, REST API, CLI and UI are generated from or built on that registry. A new operation appears everywhere at once, and the surfaces cannot drift apart. Issue [#22](https://github.com/nc9/turntable/issues/22).
+
+## MCP server
+
+The MCP server exposes registry operations as tools. It supports streamable HTTP for remote agents and stdio for local ones. Issue [#23](https://github.com/nc9/turntable/issues/23).
+
+## REST and OpenAPI
+
+The same operations are served as a REST API, and Turntable publishes an OpenAPI 3.1 document generated from the registry. Issue [#24](https://github.com/nc9/turntable/issues/24).
+
+## Scoped agent tokens
+
+Agents authenticate with tokens limited to an org or project and to a set of operation scopes. A read-only token cannot trigger runs or read secrets. Secrets are never returned by any operation, see [Secrets and security](/security).
+
+## Event feed and webhooks
+
+Agents learn what happened through an event feed:
+
+- **Cursor.** Every event has a monotonic cursor, so a client resumes exactly where it stopped.
+- **Delivery.** Read by polling, long-poll or SSE over HTTP, and through MCP.
+- **Webhooks.** Signed outbound webhooks push events to a URL you choose. Receivers verify the signature.
+
+Issue [#25](https://github.com/nc9/turntable/issues/25).
+
+## Claude Code channel
+
+A Claude Code channel pushes events, such as a failed run, into a running Claude Code session, so an agent can react without polling. Issue [#26](https://github.com/nc9/turntable/issues/26).
