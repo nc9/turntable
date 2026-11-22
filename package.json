@@ -1,0 +1,23 @@
+{
+  "name": "turntable-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint",
+    "typecheck": "bun run --cwd packages/core typecheck",
+    "test": "bun test packages/core/tests",
+    "build": "bun run scripts/build.ts",
+    "dev": "bun run packages/core/src/main.ts serve"
+  },
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "oxfmt": "0.77.0",
+    "oxlint": "1.92.0"
+  }
+}
