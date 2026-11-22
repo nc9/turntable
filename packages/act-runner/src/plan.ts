@@ -24,6 +24,11 @@ export interface PlanOptions {
    * would be invisible to pinning. Return undefined when the file is missing.
    */
   readFile: (path: string) => string | undefined;
+  /**
+   * The workflow is a generated single-job workflow (see splitJob): `needs` may name stub jobs
+   * and `strategy.matrix` is a single literal leg. Never set for a user's own workflow file.
+   */
+  split?: boolean;
 }
 
 export interface PlannedAction {
@@ -82,6 +87,10 @@ export interface JobPlan {
   event: string;
   /** Files to overwrite in the delivered repo so every `uses:` is pinned to its sha. */
   files: PlanFile[];
+  /** Names of the job's declared `outputs:`. */
+  outputNames: string[];
+  /** Stub need jobs (split workflows). Their events are not part of this job. */
+  stubIds: string[];
   /** Non-fatal findings. Failing lints come later. */
   warnings: PlanWarning[];
   /** Full command: act binary then args. Run with cwd = layout.repo. */
@@ -123,7 +132,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   if (!isObj(job)) throw new PlanError("job", `no job "${jobId}" in workflow`);
 
   const needs = job.needs;
-  if (needs !== undefined && !(Array.isArray(needs) && needs.length === 0)) {
+  if (!opts.split && needs !== undefined && !(Array.isArray(needs) && needs.length === 0)) {
     throw new PlanError("needs", `job "${jobId}" uses needs; dependent jobs arrive in M1`);
   }
   if (job.uses !== undefined) {
@@ -135,7 +144,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   if (job.container !== undefined) {
     throw new PlanError("container", `job "${jobId}" uses container; host mode cannot run it`);
   }
-  if (isObj(job.strategy) && job.strategy.matrix !== undefined) {
+  if (!opts.split && isObj(job.strategy) && job.strategy.matrix !== undefined) {
     throw new PlanError("matrix", `job "${jobId}" uses a matrix; matrices arrive in M1`);
   }
 
@@ -227,6 +236,8 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     actions,
     files,
     warnings,
+    outputNames: isObj(job.outputs) ? Object.keys(job.outputs) : [],
+    stubIds: opts.split ? [needs ?? []].flat().map(String) : [],
     labels,
     event: opts.event ?? "push",
     argv: [],

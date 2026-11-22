@@ -118,4 +118,61 @@ describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
     expect(s.job).toMatchObject({ state: "cancelled" });
     expect(await new DockerProvider().count({})).toBe(0);
   }, 600_000);
+
+  test("whole workflow: needs, outputs, if, skipped and docker jobs, cache miss, runner.os", async () => {
+    const { repo, data } = await exampleRepo("pipeline");
+    const p = Bun.spawn(
+      [
+        bin,
+        "run",
+        join(repo, ".github/workflows/pipeline.yml"),
+        "--repo",
+        repo,
+        "--data-dir",
+        data,
+      ],
+      { stdout: "pipe", stderr: "inherit" },
+    );
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    if (code !== 0) console.log(out);
+    expect(code).toBe(0);
+    expect(out).toContain("got-version=1.2.3");
+    expect(out).toContain("got-result=success");
+    expect(out).toContain("got-os=Linux");
+    expect(out).toContain("finished after success");
+    const db = openDatabase(join(data, "turntable.db"));
+    const scope = await ensureLocalTenant(db);
+    const [run] = await listRuns(db, scope);
+    const jobs = run ? await listJobs(db, scope, run.id) : [];
+    db.close();
+    const state = (k: string) => jobs.find((j) => j.jobKey === k)?.state;
+    expect(run?.status).toBe("success");
+    expect(state("build")).toBe("success");
+    expect(state("test")).toBe("success");
+    expect(state("skipped")).toBe("skipped");
+    expect(state("images")).toBe("skipped");
+    expect(state("finish")).toBe("success");
+    expect(JSON.parse(jobs.find((j) => j.jobKey === "test")?.needs ?? "[]")).toEqual(["build"]);
+  }, 900_000);
+
+  test("a workflow that does not trigger exits 0 and stores nothing", async () => {
+    const { repo, data } = await exampleRepo("notrigger");
+    const p = Bun.spawn(
+      [
+        bin,
+        "run",
+        join(repo, ".github/workflows/pipeline.yml"),
+        "--repo",
+        repo,
+        "--data-dir",
+        data,
+        "--event",
+        "workflow_dispatch",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await p.exited).toBe(0);
+    expect(await new Response(p.stderr).text()).toContain("not triggered");
+  }, 120_000);
 });

@@ -1,0 +1,48 @@
+name: pipeline
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      os: ${{ steps.v.outputs.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A cache miss through act's built-in cache server must be a clean no-op.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/tt-demo
+          key: tt-${{ runner.os }}-demo
+      - id: v
+        run: |
+          echo "version=1.2.3" >> "$GITHUB_OUTPUT"
+          echo "os=${{ runner.os }}" >> "$GITHUB_OUTPUT"
+          echo "::notice::build done"
+  test:
+    needs: build
+    if: ${{ needs.build.outputs.version == '1.2.3' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "got-version=${{ needs.build.outputs.version }}"
+          echo "got-result=${{ needs.build.result }}"
+          echo "got-os=${{ needs.build.outputs.os }}"
+          test "${{ needs.build.outputs.os }}" = "Linux"
+  skipped:
+    needs: build
+    if: ${{ needs.build.outputs.version == 'nope' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo never
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker build -t example .
+  finish:
+    needs: [test, skipped]
+    if: ${{ !cancelled() && contains(fromJSON('["success", "skipped"]'), needs.skipped.result) }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "finished after ${{ needs.test.result }}"

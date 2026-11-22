@@ -5,3 +5,7 @@ export * from "./act-install";
 export * from "./checkout-stub";
 export * from "./layout";
 export * from "./workspace";
+export * from "./expr";
+export * from "./triggers";
+export * from "./workflow-plan";
+export * from "./split";

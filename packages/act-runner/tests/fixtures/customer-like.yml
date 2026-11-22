@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NO_TELEMETRY: "1"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      engine: ${{ steps.classify.outputs.engine }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: classify
+        run: |
+          echo "code=true" >> "$GITHUB_OUTPUT"
+          echo "engine=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::classified"
+
+  changelog-guard:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo guard
+
+  quality:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo quality
+
+  tests-a:
+    needs: quality
+    if: ${{ !cancelled() && needs.quality.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo a
+
+  engine-tests:
+    needs: [changes, quality]
+    if: ${{ !cancelled() && needs.quality.result == 'success' && (needs.changes.result != 'success' || needs.changes.outputs.engine != 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo engine
+
+  flaky:
+    needs: quality
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+
+  build:
+    needs: [changes, tests-a, engine-tests]
+    if: >-
+      ${{ !cancelled()
+      && needs.tests-a.result == 'success'
+      && contains(fromJSON('["success", "skipped"]'), needs.engine-tests.result) }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker build -t x .

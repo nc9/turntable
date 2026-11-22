@@ -9,6 +9,8 @@ export interface Layout {
   /** The delivered repo (with .git). act runs here and the checkout stub copies from here. */
   repo: string;
   stubs: string;
+  /** Where the generated export step writes job outputs, one file per output name. */
+  outputsDir: string;
 }
 
 export function layoutFor(root: string = DEFAULT_ROOT): Layout {
@@ -19,5 +21,6 @@ export function layoutFor(root: string = DEFAULT_ROOT): Layout {
     repoTarball: `${root}/repo.tgz`,
     repo: `${root}/repo`,
     stubs: `${root}/stubs`,
+    outputsDir: `${root}/outputs`,
   };
 }
