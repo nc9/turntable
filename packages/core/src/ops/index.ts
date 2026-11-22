@@ -1,8 +1,11 @@
 import { cancel } from "./definitions/cancel";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { createApiToken } from "./definitions/create-api-token";
+import { events } from "./definitions/events";
 import { getRun } from "./definitions/get-run";
+import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
+import { jobSteps } from "./definitions/job-steps";
 import { listRuns } from "./definitions/list-runs";
 import { createRegistry } from "./registry";
 
@@ -19,6 +22,9 @@ export const registry = createRegistry([
   listRuns,
   getRun,
   jobLog,
+  jobSteps,
+  jobCuts,
+  events,
   checksForSha,
   cancel,
   createApiToken,
