@@ -1,5 +1,5 @@
 import { Gauge } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { getBackend } from "@/api";
 import type { QuotaUsage } from "@/api/types";
 import { ErrorState } from "@/components/empty-state";
@@ -133,7 +133,9 @@ export function QuotasPage() {
       <p className="mt-6 text-sm text-dim">
         Limits are set by the instance operator on the server, never from here or over the API, so
         an org cannot raise its own:{" "}
-        <code className="font-mono text-xs">longshore quotas set --org {scope.orgSlug ?? "&lt;org&gt;"} ...</code>
+        <code className="font-mono text-xs">
+          longshore quotas set --org {scope.orgSlug ?? "&lt;org&gt;"} ...
+        </code>
         . The concurrency limit can only lower the instance's per-org cap.
       </p>
     </div>

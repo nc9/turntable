@@ -2,13 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createFixture } from "../src/api/fixture/adapter";
 import { createHttpApi } from "../src/api/http-adapter";
 import type { WireQuotas } from "../src/api/wire";
-import {
-  formatBytes,
-  formatQuotaValue,
-  parseLimitInput,
-  QUOTA_ROWS,
-  quotaLevel,
-} from "../src/lib/quota";
+import { formatBytes, formatQuotaValue, QUOTA_ROWS, quotaLevel } from "../src/lib/quota";
 
 const wire = (over: Partial<WireQuotas["limits"]> = {}): WireQuotas => ({
   limits: {
@@ -74,7 +68,10 @@ describe("fixture backend", () => {
       expect(q.limits.maxConcurrent).toBe(4);
       expect(q.usage.map((u) => u.metric)).toContain("sandbox_minutes");
       expect(q.usage.every((u) => u.held === null)).toBe(true);
-      expect(q.usage.find((u) => u.metric === "log_bytes")).toMatchObject({ limit: null, percent: null });
+      expect(q.usage.find((u) => u.metric === "log_bytes")).toMatchObject({
+        limit: null,
+        percent: null,
+      });
       // The API surface has no way to set limits: that is the operator's, on the host.
       expect("setQuotas" in fx.api).toBe(false);
     } finally {
@@ -98,9 +95,15 @@ describe("http adapter", () => {
     const got = await api.getQuotas();
     expect(calls[0]!.url.pathname).toBe("/api/v1/quotas");
     expect(calls[0]!.url.searchParams.get("org")).toBe("acme");
-    expect(got.limits).toMatchObject({ maxConcurrent: 3, maxSandboxMinutesPerDay: 600, maxLogBytes: null });
+    expect(got.limits).toMatchObject({
+      maxConcurrent: 3,
+      maxSandboxMinutesPerDay: 600,
+      maxLogBytes: null,
+    });
     expect(got.usage[1]!.held).toContain("reached its limit");
-    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe("Bearer tt_secret");
+    expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe(
+      "Bearer tt_secret",
+    );
     expect("setQuotas" in api).toBe(false);
   });
 
@@ -109,7 +112,12 @@ describe("http adapter", () => {
       org: () => "acme",
       token: () => "tt_project",
       fetch: (async () =>
-        json({ error: { code: "forbidden", message: "an org-level token is required to read quotas" } }, 403)) as unknown as typeof fetch,
+        json(
+          {
+            error: { code: "forbidden", message: "an org-level token is required to read quotas" },
+          },
+          403,
+        )) as unknown as typeof fetch,
     });
     await expect(api.getQuotas()).rejects.toThrow(/org-level token/);
   });

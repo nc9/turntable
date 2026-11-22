@@ -25,7 +25,6 @@ import type {
   ConsumeResult,
   JobDigest,
   OrgQuotas,
-  QuotaLimits,
   RerunResult,
   Whoami,
 } from "./types";
