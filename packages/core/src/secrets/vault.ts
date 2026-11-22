@@ -543,6 +543,7 @@ export class SecretVault {
         rec.ciphertext,
         vaultAad(req.orgId, secret.id, version, secret.name),
         "job",
+        req.orgId,
       );
     } catch {
       return deny("decrypt_failed", secret.id);
