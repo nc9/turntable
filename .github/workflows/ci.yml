@@ -76,6 +76,12 @@ jobs:
           # node:22-bookworm has all three; ubuntu:24.04 has none. Multi-arch index digest.
           TT_ACT_IMAGE: node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
         run: bun run test:act-e2e
+      - name: Build the linux-x64 binary
+        run: bun run scripts/build.ts bun-linux-x64
+      - name: turntable run end to end (compiled binary, docker provider)
+        env:
+          TT_BINARY: dist/turntable-linux-x64
+        run: bun run test:run-e2e
 
   docker:
     runs-on: ubuntu-24.04

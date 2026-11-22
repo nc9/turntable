@@ -19,10 +19,11 @@ export interface PlanOptions {
   /** Sandbox root dir. Default `/tmp/tt-act`. */
   root?: string;
   /**
-   * Reads a repo file (path relative to the repo root) so local composite actions can be scanned
-   * for remote actions and untrusted expressions. Return undefined when the file is missing.
+   * Reads a repo file (path relative to the repo root) so local composite actions are always
+   * scanned for remote actions and untrusted expressions. Required: without it, nested actions
+   * would be invisible to pinning. Return undefined when the file is missing.
    */
-  readFile?: (path: string) => string | undefined;
+  readFile: (path: string) => string | undefined;
 }
 
 export interface PlannedAction {
@@ -195,7 +196,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   };
 
   const scanLocal = (dir: string, depth: number): void => {
-    if (depth > 5 || seenLocal.has(dir) || !opts.readFile) return;
+    if (depth > 5 || seenLocal.has(dir)) return;
     seenLocal.add(dir);
     for (const name of ["action.yml", "action.yaml"]) {
       const path = `${dir}/${name}`;

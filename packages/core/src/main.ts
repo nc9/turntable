@@ -13,6 +13,7 @@ Usage:
                          --name <name> [--expires-days 90] [--data-dir ./data]
   turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
   turntable token revoke <id> [--data-dir ./data]
+  turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
   turntable version
 
 Environment:
@@ -135,6 +136,10 @@ async function main(argv: string[]): Promise<void> {
       return await serve(rest);
     case "token":
       return await token(rest);
+    case "run": {
+      const { runCommand } = await import("./run/cli");
+      process.exit(await runCommand(rest));
+    }
     case "version":
     case "--version":
       console.log(VERSION);
