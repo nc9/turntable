@@ -37,7 +37,7 @@ export type Candidate = {
   baseRef?: string;
   /** The base branch commit at poll time, stored on the run for `github.event`. */
   baseSha?: string;
-  event: "push" | "pull_request";
+  event: "push" | "pull_request" | "merge_group";
   ref: string;
   sha: string;
   actor: string | null;
@@ -200,6 +200,19 @@ function eventPayload(c: Candidate, repo: string, before?: string): Value {
       repository,
     };
   }
+  if (c.event === "merge_group") {
+    return {
+      action: "checks_requested",
+      merge_group: {
+        head_sha: c.sha,
+        head_ref: c.ref,
+        base_ref: `refs/heads/${c.baseRef ?? ""}`,
+        base_sha: c.baseSha ?? "",
+        head_commit: { id: c.sha, message: c.message },
+      },
+      repository,
+    };
+  }
   return {
     ref: c.ref,
     ...(before ? { before } : {}),
@@ -276,6 +289,75 @@ async function fetchLocalActions(
 
 /** True when the workflow has a path filter, so changed files are worth an API call. */
 const hasPathFilter = (yaml: string): boolean => /^\s*paths(-ignore)?\s*:/m.test(yaml);
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Merge queue candidates. A queue branch is only a name anyone with write access can create, so
+ * a run is made for one only when all of this holds, each fact fetched now: the name is
+ * `gh-readonly-queue/<default branch>/pr-<n>-<base sha>`; the branch tip's commit is signed and
+ * verified by GitHub and committed by GitHub's own address; PR n is open, in this repo (base and
+ * head) and opened by a listed author. The class is then decided by the trust module as for any
+ * merge_group (trusted_pr: no secrets, no write token).
+ */
+async function queueCandidates(
+  deps: IngestDeps,
+  cfg: PollRepoConfig,
+  scope: Required<Scope>,
+  out: Candidate[],
+  result: IngestResult,
+): Promise<void> {
+  const repo = cfg.repo;
+  const re = new RegExp(
+    `^refs/heads/gh-readonly-queue/${escapeRe(cfg.defaultBranch)}/pr-(\\d{1,9})-([0-9a-f]{40,64})$`,
+  );
+  const branches = (await deps.github.queueBranches(repo, cfg.defaultBranch)).slice(0, 20);
+  let pulls: Awaited<ReturnType<GithubClient["openPulls"]>> | undefined;
+  for (const b of branches) {
+    const m = re.exec(b.ref);
+    if (!m) continue;
+    const what = `merge_group ${b.sha.slice(0, 7)}`;
+    if (
+      await pollSeen(deps.db, scope, {
+        repo,
+        workflowPath: cfg.workflow,
+        event: "merge_group",
+        sha: b.sha,
+      })
+    ) {
+      continue;
+    }
+    const number = Number(m[1]);
+    pulls ??= await deps.github.openPulls(repo);
+    const pr = pulls.find((p) => p.number === number);
+    if (!pr) {
+      result.refused.push({ what, reason: `pr #${number} is not open` });
+      continue;
+    }
+    const opener = gatePullRequestOpener({ ...cfg, prMode: "allowlist" }, pr);
+    if (!opener.ok) {
+      result.refused.push({ what, reason: `pr #${number}: ${opener.reason}` });
+      continue;
+    }
+    const commit = await deps.github.queueCommit(repo, b.sha);
+    if (!commit.verified || lower(commit.committerEmail) !== "noreply@github.com") {
+      result.refused.push({ what, reason: "queue commit is not a verified GitHub commit" });
+      continue;
+    }
+    out.push({
+      event: "merge_group",
+      ref: b.ref,
+      sha: b.sha,
+      actor: pr.author,
+      message: commit.message,
+      headBranch: b.ref.slice("refs/heads/".length),
+      baseRef: cfg.defaultBranch,
+      baseSha: m[2] as string,
+      sameRepo: true,
+      allowlisted: true,
+    });
+  }
+}
 
 /**
  * One poll of one repo: finds the default branch head and (when allowed) open same-repo PRs by
@@ -433,6 +515,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
   }
 
+  if (cfg.mergeQueue) await queueCandidates(deps, cfg, scope, candidates, result);
+
   for (const c of candidates) {
     const what = `${c.event} ${c.sha.slice(0, 7)}`;
     const key = { repo, workflowPath: cfg.workflow, event: c.event, sha: c.sha };
@@ -462,7 +546,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         changedFiles = c.baseRef
           ? await deps.github.changedFiles(repo, c.baseRef, c.sha)
           : undefined;
-      } else {
+      } else if (c.event === "push") {
         const before = await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push");
         changedFiles =
           before && before !== c.sha

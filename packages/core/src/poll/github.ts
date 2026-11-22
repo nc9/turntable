@@ -177,6 +177,61 @@ export class GithubClient {
     return { author: body.author?.login ?? null, message: body.commit?.message ?? "" };
   }
 
+  /**
+   * The merge queue's temporary branches for a base branch: `gh-readonly-queue/<base>/pr-<n>-<sha>`,
+   * with the commit each points at. Anyone with write access can create a branch with that prefix,
+   * so the caller must not trust these without `queueCommit`.
+   */
+  async queueBranches(repo: string, base: string): Promise<{ ref: string; sha: string }[]> {
+    if (!/^[A-Za-z0-9._/-]{1,255}$/.test(base)) return [];
+    const prefix = `gh-readonly-queue/${base.split("/").map(encodeURIComponent).join("/")}/`;
+    try {
+      const body = (await this.#get(`/repos/${repo}/git/matching-refs/heads/${prefix}`)) as {
+        ref?: string;
+        object?: { sha?: string };
+      }[];
+      return (Array.isArray(body) ? body : []).flatMap((r) =>
+        typeof r.ref === "string" && typeof r.object?.sha === "string"
+          ? [{ ref: r.ref, sha: r.object.sha.toLowerCase() }]
+          : [],
+      );
+    } catch (err) {
+      if (err instanceof GithubError && err.status === 404) return [];
+      throw err;
+    }
+  }
+
+  /**
+   * What proves a merge queue commit was made by GitHub: a signature GitHub verified and GitHub's
+   * own committer address. Someone with write access can push a branch named like a queue branch,
+   * but cannot make GitHub sign it.
+   */
+  async queueCommit(
+    repo: string,
+    sha: string,
+  ): Promise<{
+    verified: boolean;
+    committerEmail: string | null;
+    parents: string[];
+    message: string;
+  }> {
+    if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new GithubError(400, "/commits/<invalid sha>");
+    const body = (await this.#get(`/repos/${repo}/commits/${sha.toLowerCase()}`)) as {
+      parents?: { sha?: string }[];
+      commit?: {
+        message?: string;
+        committer?: { email?: string } | null;
+        verification?: { verified?: boolean; reason?: string } | null;
+      };
+    };
+    return {
+      verified: body.commit?.verification?.verified === true,
+      committerEmail: body.commit?.committer?.email ?? null,
+      parents: (body.parents ?? []).flatMap((p) => (typeof p.sha === "string" ? [p.sha] : [])),
+      message: body.commit?.message ?? "",
+    };
+  }
+
   async openPulls(repo: string): Promise<PullRequest[]> {
     const body = (await this.#get(
       `/repos/${repo}/pulls?state=open&per_page=100&sort=updated&direction=desc`,

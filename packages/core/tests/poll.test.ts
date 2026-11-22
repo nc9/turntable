@@ -618,6 +618,8 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "commitInfo",
     "fileAt",
     "openPulls",
+    "queueBranches",
+    "queueCommit",
     "rateLimit",
   ]);
   for (const m of methods)

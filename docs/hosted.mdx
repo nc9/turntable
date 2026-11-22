@@ -57,4 +57,3 @@ The webhook failure rate limit is keyed on the real client address. Name the pro
 
 - Repositories are ingested only if they are in the poll config. An installation binds a repo to a project, but a webhook for a bound repo that has no poll entry (no allowlist, workflow path or default branch) is ignored. Ingest straight from installation bindings is future work.
 - The manifest flow, the claim flow's OAuth exchange and secret rotation have been exercised against a fake GitHub only. Each needs one run against live GitHub.
-- `merge_group` events are not ingested.
