@@ -23,7 +23,26 @@ Sandboxes get an egress policy: outbound traffic is denied by default and allowe
 
 ## Trust classes and fork PR gating
 
-Runs are classified by trust, for example a push to a protected branch versus a pull request from a fork. Untrusted runs get no secrets, and fork PRs wait in `awaiting_approval` until a maintainer approves. Issue [#17](https://github.com/nc9/turntable/issues/17).
+Every run the server ingests gets a trust class, decided once at ingest from forge facts that are re-fetched then (never taken from pull request text), and stored on the run with those facts and the reasons, so an audit or the UI can show why. `get_run` returns it as `trust`.
+
+| Class | Meaning | Secrets and write token |
+| --- | --- | --- |
+| `protected` | a push to a protected ref, a schedule, or a maintainer's manual run on one | allowed |
+| `release` | a release tag, or a maintainer's manual run on one | allowed |
+| `trusted_pr` | a same-repo pull request whose opener can write, a push to another branch, a writer's manual run | never |
+| `untrusted_pr` | everything else: a fork, an author who cannot write, an author whose permission could not be read | never |
+
+**Facts.** A pull request is trusted only if its head repo is the base repo (a fork is untrusted whatever its author's standing) and its opener has write, maintain or admin permission, read from `GET /repos/{owner}/{repo}/collaborators/{user}/permission` with the poller's token. The forge is not asked about a fork's author. If the token cannot ask (401, 403), the author is untrusted and the decision records `permission: unknown`; a rate limit or server error fails the poll, which retries, rather than deciding on a guess. `authors` in the poll config is an explicit trusted list that works without asking the forge, for same-repo pull requests only. Protected refs are the default branch, the project's `protectedRefs`, and any branch the forge reports as protected.
+
+**Waiting for a human.** A run classified `untrusted_pr` is created but every job waits in `awaiting_approval`, in the same transaction that creates it, so nothing can start. With `prMode: allowlist` nothing is held: only same-repo pull requests by listed authors run, and every other pull request is refused without a run. With `prMode: approval` every open pull request is ingested and untrusted ones are held. At most `maxWaitingRuns` (default 20) runs of a repo wait at once (a new push to a waiting pull request replaces it, so it is not blocked by the cap), and held runs do not count toward `maxRunsPerHour`, and neither do pull request markers that are untrusted or not yet classified, so strangers cannot use up the default branch's runs. Work on strangers' pull requests is bounded before any forge call is spent on it: the waiting cap is checked first, at most `maxNewPrsPerPoll` (default 5) pull requests from authors outside `authors` are examined per poll (the rest wait for the next poll), and a pull request skipped because the queue is full is remembered by head sha until room opens up.
+
+**Approval.** `approve_run` releases a held run. It needs the `release_operator` role by default; an org can lower that to `operator` with `longshore policy set approve-run-min-role operator --org <slug>` (`longshore policy show` reads it, and the change is audited). **The risk of lowering it:** an operator token may belong to an agent that has just read the untrusted pull request's title, body and diff, so a prompt injection in that text could get the agent to approve its own attacker's code. The sandbox still has no secrets, but it does run the code. Keep `release_operator`, and have a person approve, unless you accept that. The caller passes the run's `head_sha` and the `workflow_hash` shown by `get_run`; both must equal what the run was decided on, or the call is refused with 409. Approving means "I read this commit and this workflow." A new push to the pull request is a new run with its own hold and its own approval, and the older waiting run of that pull request is cancelled. Approval never raises the class: an approved fork run still gets no secrets and no write token, and the class on the run is not changed. The worker checks the same binding again before starting an untrusted run: no approval, a different sha, or a workflow file whose hash differs from the approved one ends the job as `infra_error`. **Labels and comments are never read**, so no label can approve a run.
+
+**Concurrency.** A held run's workflow file chooses its own `concurrency` group, so its group is rewritten to one scoped to its pull request (`untrusted:pr-<n>:<group>`). Runs record their repo, and pull request numbers, concurrency groups and caps are all scoped by it, because a project can bind several repos. It can neither cancel nor block a run of the default branch.
+
+**Manual runs.** A `workflow_dispatch` run is `protected` or `release` only when the person who started it is a maintainer (maintain or admin); a writer's is `trusted_pr`, and anyone else's, or an unknown actor's, is `untrusted_pr`, whatever the ref. Manual dispatch is not ingested yet; the rule is in the classifier.
+
+Issue [#17](https://github.com/nc9/turntable/issues/17).
 
 ## Workflow source and workspace taint
 
@@ -39,10 +58,10 @@ Two questions decide whether a run can be hijacked: whose workflow file does it 
 | `pull_request` | the PR head, like GitHub's own event | untrusted unless a same-repo, trusted author |
 | `pull_request_target`, `workflow_run`, `issue_comment`, `issues`, review and discussion events | the BASE branch (the default branch), never the head that triggered it | untrusted unless proven otherwise, and demoted when handed a non-protected ref |
 | `schedule` | the default branch | protected |
-| `workflow_dispatch` | the dispatched ref | by that ref |
+| `workflow_dispatch` | the dispatched ref | by who started it: maintainer protected or release, writer trusted, else untrusted |
 | `merge_group` | the merge queue commit | trusted |
 
-Protected branches and release tags are configured per project; until trust classes land, the defaults are `main`, `master`, `release/**` and `v*` tags. Anything not positively trusted is untrusted: an unknown event, an unknown author, an unknown fork status.
+Protected branches are the default branch plus the project's `protectedRefs`; release tags default to `v*`. Anything not positively trusted is untrusted: an unknown event, an unknown author, an unknown fork status.
 
 ### Credentials follow the class
 

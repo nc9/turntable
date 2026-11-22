@@ -44,6 +44,7 @@ Usage:
   longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
   longshore token revoke <id> [--data-dir ./data]
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
+  longshore policy show --org <slug> | set approve-run-min-role <operator|release_operator> --org <slug>
   longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore version
 
@@ -401,6 +402,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "policy": {
+      const { policyCommand } = await import("./ops/policy-command");
+      return await policyCommand(rest);
     }
     case "mcp": {
       const { mcpCommand } = await import("./mcp/cli");

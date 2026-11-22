@@ -17,7 +17,14 @@ import {
   readLog,
   recordExec,
   type Scope,
+  setProjectEgress,
+  transitionJob,
+  updateAttempt,
 } from "../src/db";
+import { dispatch, registry } from "../src/ops";
+import { setPolicy, showPolicy } from "../src/ops/policy-cli";
+import { credentialsFor } from "../src/trust";
+import { mintToken } from "./ops-helpers";
 import { GithubClient, pollConfigSchema, pollRepo, type PollRepoConfig } from "../src/poll";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
 import { makeGithub, SHA } from "./github-stub";
@@ -884,5 +891,494 @@ jobs:
     await drain(await makeScheduler(gh));
     const jobs = await listJobs(db, scope, prRun!.id);
     expect(jobs.map((j) => j.state)).toEqual(["success"]);
+  });
+});
+
+describe("trust classes and approval", () => {
+  const SIMPLE = `name: ci
+on: [push, pull_request]
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+  const ghWithWorkflow = () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SIMPLE);
+    return gh;
+  };
+  const APPROVAL_CFG = (over: Partial<PollRepoConfig> = {}) =>
+    CFG({ prMode: "approval", authors: [], ...over });
+  // A client with a token, so the forge is asked about authors (the stub accepts any value).
+  const ingestAs = (gh: ReturnType<typeof makeGithub>, cfg: PollRepoConfig = APPROVAL_CFG()) =>
+    pollRepo(
+      {
+        db,
+        github: new GithubClient({
+          fetch: gh.fetch,
+          baseUrl: "https://api.github.com",
+          token: "stub-token",
+        }),
+        provider: "fake",
+      },
+      cfg,
+    );
+  const prRuns = async () => (await listRuns(db, scope)).filter((r) => r.event === "pull_request");
+  const trustOf = (r: { trust: string | null }) => JSON.parse(r.trust!);
+  const bearer = async (role: "reader" | "operator" | "release_operator") => ({
+    kind: "bearer" as const,
+    token: (await mintToken(db, { orgId: scope.orgId }, role)).secret,
+  });
+  const approve = async (
+    cred: Awaited<ReturnType<typeof bearer>>,
+    runId: string,
+    over: Record<string, unknown> = {},
+  ) => {
+    const run = (await getRun(db, scope, runId))!;
+    return dispatch({ registry, db }, cred, "approve_run", {
+      run_id: runId,
+      head_sha: run.sha,
+      workflow_hash: trustOf(run).workflowHash,
+      ...over,
+    });
+  };
+  const PR = (over: Record<string, unknown> = {}) => ({
+    number: 7,
+    user: "stranger",
+    headSha: SHA("d"),
+    baseRef: "main",
+    ...over,
+  });
+
+  test("a fork PR is created but never runs; the forge is not asked about its author", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.roles.set("stranger", "write"); // would be trusted if it were same-repo
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [run] = await prRuns();
+    expect(run!.status).toBe("awaiting_approval");
+    expect(trustOf(run!)).toMatchObject({
+      class: "untrusted_pr",
+      facts: { sameRepo: false, actor: "stranger" },
+    });
+    expect(trustOf(run!).reasons.join(" ")).toContain("fork");
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.state)).toEqual(["awaiting_approval"]);
+    expect(gh.state.calls.some((c) => c.path.includes("/collaborators/"))).toBe(false);
+    // The scheduler claims the push run only, never the held one.
+    await drain(await makeScheduler(gh));
+    expect((await getRun(db, scope, run!.id))!.status).toBe("awaiting_approval");
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.state)).toEqual(["awaiting_approval"]);
+  });
+
+  test("a same-repo PR by a non-collaborator waits; so does one whose permission cannot be read", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.roles.set("reader-only", "read");
+    gh.state.pulls = [
+      PR({ number: 1, user: "reader-only", headSha: SHA("1") }),
+      PR({ number: 2, user: "nobody", headSha: SHA("2") }),
+    ];
+    await ingestAs(gh);
+    const runs = await prRuns();
+    expect(runs.map((r) => [r.prNumber, r.status, trustOf(r).class])).toEqual([
+      [2, "awaiting_approval", "untrusted_pr"],
+      [1, "awaiting_approval", "untrusted_pr"],
+    ]);
+    expect(trustOf(runs[1]!).facts.permission).toBe("read");
+    expect(trustOf(runs[0]!).facts.permission).toBe("none");
+
+    // A token that cannot ask (403) is "unknown": untrusted, and the reason says so.
+    gh.state.permissionStatus = 403;
+    gh.state.pulls = [PR({ number: 3, user: "maint", headSha: SHA("3") })];
+    await ingestAs(gh);
+    const unknown = (await prRuns()).find((r) => r.prNumber === 3)!;
+    expect(unknown.status).toBe("awaiting_approval");
+    expect(trustOf(unknown).facts.permission).toBe("unknown");
+    expect(trustOf(unknown).reasons.join(" ")).toContain("could not be read");
+  });
+
+  test("a rate limit or server error on the permission call propagates so the poll retries", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR()];
+    gh.state.permissionStatus = 500;
+    await expect(ingestAs(gh)).rejects.toThrow();
+    expect(await prRuns()).toHaveLength(0);
+  });
+
+  test("a collaborator with write runs at once as trusted_pr, with no secrets", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.roles.set("dev", "write");
+    gh.state.roles.set("boss", "maintain");
+    gh.state.pulls = [
+      PR({ number: 4, user: "dev", headSha: SHA("4") }),
+      PR({ number: 5, user: "boss", headSha: SHA("5") }),
+    ];
+    await ingestAs(gh);
+    const runs = await prRuns();
+    expect(runs.map((r) => [r.status, trustOf(r).class])).toEqual([
+      ["queued", "trusted_pr"],
+      ["queued", "trusted_pr"],
+    ]);
+    expect(credentialsFor("trusted_pr")).toEqual({ secrets: false, writeToken: false });
+    const sched = await makeScheduler(gh);
+    await drain(sched);
+    expect((await prRuns()).map((r) => r.status)).toEqual(["success", "success"]);
+  });
+
+  test("approval releases the run, is recorded, and never raises the class", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [held] = await prRuns();
+    const before = held!.trust;
+
+    // Roles and the binding are enforced.
+    expect((await approve(await bearer("operator"), held!.id)).ok).toBe(false);
+    const rel = await bearer("release_operator");
+    const wrongSha = await approve(rel, held!.id, { head_sha: SHA("e") });
+    expect(!wrongSha.ok && wrongSha.error.code).toBe("conflict");
+    const wrongHash = await approve(rel, held!.id, { workflow_hash: "0".repeat(64) });
+    expect(!wrongHash.ok && wrongHash.error.code).toBe("conflict");
+    expect((await getRun(db, scope, held!.id))!.status).toBe("awaiting_approval");
+
+    const ok = await approve(rel, held!.id);
+    expect(ok.ok && ok.output).toMatchObject({ state: "queued", released_jobs: 1 });
+    await drain(await makeScheduler(gh));
+    const after = (await getRun(db, scope, held!.id))!;
+    expect(after.status).toBe("success");
+    // The class is exactly what was decided, so credentials stay withheld.
+    expect(after.trust).toBe(before);
+    expect(trustOf(after).class).toBe("untrusted_pr");
+    expect(credentialsFor(trustOf(after).class)).toEqual({ secrets: false, writeToken: false });
+    expect(JSON.parse(after.approval!)).toMatchObject({
+      head_sha: SHA("d"),
+      workflow_hash: trustOf(after).workflowHash,
+    });
+    expect(JSON.parse(after.approval!).by).toStartWith("token:");
+
+    // Nothing waits any more: a second approval is refused.
+    const again = await approve(rel, held!.id);
+    expect(!again.ok && again.error.code).toBe("conflict");
+  });
+
+  test("a new push needs its own approval, and the old sha cannot approve the new run", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web", headSha: SHA("d") })];
+    await ingestAs(gh);
+    const [first] = await prRuns();
+    const rel = await bearer("release_operator");
+    expect((await approve(rel, first!.id)).ok).toBe(true);
+
+    gh.state.pulls = [PR({ headRepo: "evil/web", headSha: SHA("f") })];
+    await ingestAs(gh);
+    const second = (await prRuns()).find((r) => r.sha === SHA("f"))!;
+    expect(second.status).toBe("awaiting_approval");
+    expect(second.approval).toBeNull();
+    // The approved sha is not the new run's sha.
+    const stale = await approve(rel, second.id, { head_sha: SHA("d") });
+    expect(!stale.ok && stale.error.code).toBe("conflict");
+    await drain(await makeScheduler(gh));
+    expect((await getRun(db, scope, second.id))!.status).toBe("awaiting_approval");
+
+    // A waiting run of the same PR is replaced by the newer push, never left to approve.
+    gh.state.pulls = [PR({ headRepo: "evil/web", headSha: SHA("9") })];
+    await ingestAs(gh);
+    expect((await getRun(db, scope, second.id))!.status).toBe("cancelled");
+    const stale2 = await approve(rel, second.id);
+    expect(!stale2.ok && stale2.error.code).toBe("conflict");
+  });
+
+  test("a held run's workflow cannot name another run's concurrency group", async () => {
+    const gh = ghWithWorkflow();
+    const GROUPED = (cancel: boolean) => `name: ci
+on: [push, pull_request]
+concurrency:
+  group: ci
+  cancel-in-progress: ${cancel}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+    gh.state.files.set("*", GROUPED(false));
+    await ingestAs(gh);
+    const [push] = await listRuns(db, scope);
+    expect(push!.concurrencyGroup).toBe("ci");
+
+    // A fork's file asks for the same group with cancel-in-progress: it must not touch the push.
+    gh.state.files.set(SHA("d"), GROUPED(true));
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [held] = await prRuns();
+    expect(held!.concurrencyGroup).toBe("untrusted:pr-7:ci");
+    expect((await getRun(db, scope, push!.id))!.status).toBe("queued");
+    // Nor does it block later default-branch runs: its group is its own.
+    gh.state.head = { sha: SHA("b"), message: "next", login: "octocat" };
+    gh.state.files.set(SHA("b"), GROUPED(false));
+    await ingestAs(gh);
+    const sched = await makeScheduler(gh);
+    await drain(sched);
+    const pushes = (await listRuns(db, scope)).filter((r) => r.event === "push");
+    expect(pushes.map((r) => r.status)).toEqual(["success", "success"]);
+  });
+
+  test("the worker refuses an untrusted run with no approval, or an approval that no longer matches", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [held] = await prRuns();
+    // Released by some other means than approve_run: no approval is on record.
+    for (const j of await listJobs(db, scope, held!.id)) {
+      await transitionJob(db, scope, j.id, "queued");
+      const a = (await listAttempts(db, scope, j.id)).at(-1)!;
+      await updateAttempt(db, scope, a.id, { state: "queued" });
+    }
+    await drain(await makeScheduler(gh));
+    const [job] = await listJobs(db, scope, held!.id);
+    expect(job!.state).toBe("infra_error");
+    expect((await listAttempts(db, scope, job!.id))[0]!.errorClass).toContain("no approval");
+  });
+
+  test("a changed workflow file after approval is refused by its hash", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [held] = await prRuns();
+    expect((await approve(await bearer("release_operator"), held!.id)).ok).toBe(true);
+    // The tree the worker reads now differs from what was approved.
+    gh.state.files.set(SHA("d"), `${gh.state.files.get("*")}# changed\n`);
+    await drain(await makeScheduler(gh));
+    const [job] = await listJobs(db, scope, held!.id);
+    expect(job!.state).toBe("infra_error");
+    expect((await listAttempts(db, scope, job!.id))[0]!.errorClass).toContain("does not match");
+  });
+
+  test("runs waiting for approval are capped and do not use the hourly cap", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [
+      PR({ number: 1, headSha: SHA("1"), headRepo: "evil/web" }),
+      PR({ number: 2, headSha: SHA("2"), headRepo: "evil/web" }),
+    ];
+    const res = await ingestAs(gh, APPROVAL_CFG({ maxWaitingRuns: 1, maxRunsPerHour: 2 }));
+    expect(res.refused.map((r) => r.reason)).toContain("too many runs are waiting for approval");
+    // One push run and one held run: the held one does not count toward the hourly cap of 2,
+    // so the next default-branch commit still runs.
+    gh.state.head = { sha: SHA("b"), message: "next", login: "octocat" };
+    const next = await ingestAs(gh, APPROVAL_CFG({ maxWaitingRuns: 1, maxRunsPerHour: 2 }));
+    expect(next.refused.map((r) => r.reason)).not.toContain("hourly run cap reached");
+    expect((await listRuns(db, scope)).filter((r) => r.event === "push")).toHaveLength(2);
+  });
+
+  test("the default branch push is protected, from the project's refs and the forge", async () => {
+    const gh = ghWithWorkflow();
+    await ingestAs(gh);
+    const [push] = await listRuns(db, scope);
+    expect(trustOf(push!)).toMatchObject({ class: "protected", facts: { forgeProtected: true } });
+  });
+
+  test("get_run shows the decision and the approval", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [held] = await prRuns();
+    const rd = await bearer("reader");
+    const view = await dispatch({ registry, db }, rd, "get_run", { run_id: held!.id });
+    expect(view.ok && view.output).toMatchObject({
+      state: "awaiting_approval",
+      trust_class: "untrusted_pr",
+      trust: { class: "untrusted_pr", workflow_hash: trustOf(held!).workflowHash },
+      approval: null,
+    });
+  });
+
+  test("pull request numbers, groups and waiting caps are scoped by repo within one project", async () => {
+    const GROUPED = `name: ci
+on: [push, pull_request]
+concurrency:
+  group: ci
+  cancel-in-progress: true
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+    const web = makeGithub("acme/web");
+    const api = makeGithub("acme/api");
+    for (const g of [web, api]) g.state.files.set("*", GROUPED);
+    const cfgFor = (repo: string) => APPROVAL_CFG({ repo, maxWaitingRuns: 1 });
+    const pr = (headSha: string) => [PR({ number: 7, headSha, headRepo: "evil/x" })];
+    web.state.pulls = pr(SHA("1"));
+    api.state.pulls = pr(SHA("2"));
+    await ingestAs(web, cfgFor("acme/web"));
+    const apiRes = await ingestAs(api, cfgFor("acme/api"));
+    // The cap is per repo: web's waiting run does not stop api's.
+    expect(apiRes.refused.map((r) => r.reason)).not.toContain(
+      "too many runs are waiting for approval",
+    );
+    const held = (await prRuns()).filter((r) => r.prNumber === 7);
+    expect(held.map((r) => r.repo).toSorted()).toEqual(["acme/api", "acme/web"]);
+
+    // A new push to web's PR 7 replaces web's waiting run only.
+    web.state.pulls = pr(SHA("3"));
+    await ingestAs(web, cfgFor("acme/web"));
+    const byRepo = (repo: string) =>
+      Promise.all(
+        held
+          .filter((r) => r.repo === repo)
+          .map(async (r) => (await getRun(db, scope, r.id))!.status),
+      );
+    expect(await byRepo("acme/web")).toEqual(["cancelled"]);
+    expect(await byRepo("acme/api")).toEqual(["awaiting_approval"]);
+
+    // A cancel-in-progress push in one repo does not cancel the other repo's run of the group.
+    web.state.head = { sha: SHA("b"), message: "x", login: "octocat" };
+    api.state.head = { sha: SHA("c"), message: "y", login: "octocat" };
+    await ingestAs(api, cfgFor("acme/api"));
+    const apiPush = (await listRuns(db, scope)).find(
+      (r) => r.event === "push" && r.repo === "acme/api",
+    )!;
+    await ingestAs(web, cfgFor("acme/web"));
+    expect((await getRun(db, scope, apiPush.id))!.status).toBe("queued");
+  });
+
+  test("run.plan carries the decided class and the egress: repo config, else project setting, else none", async () => {
+    const plan = async () => JSON.parse((await listRuns(db, scope))[0]!.plan!);
+    const gh1 = ghWithWorkflow();
+    await ingestAs(gh1);
+    expect(await plan()).toMatchObject({ trust: "protected", egress: "none" });
+
+    const gh2 = ghWithWorkflow();
+    gh2.state.head = { sha: SHA("b"), message: "x", login: "octocat" };
+    await setProjectEgress(db, scope, "allowlist");
+    await ingestAs(gh2);
+    expect(await plan()).toMatchObject({ egress: "allowlist" });
+
+    const gh3 = ghWithWorkflow();
+    gh3.state.head = { sha: SHA("c"), message: "x", login: "octocat" };
+    await ingestAs(gh3, APPROVAL_CFG({ egress: "open" }));
+    expect(await plan()).toMatchObject({ trust: "protected", egress: "open" });
+
+    // A held fork run records its class too.
+    const gh4 = ghWithWorkflow();
+    gh4.state.head = { sha: SHA("c"), message: "x", login: "octocat" };
+    gh4.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh4);
+    const held = (await prRuns())[0]!;
+    expect(JSON.parse(held.plan!)).toMatchObject({ trust: "untrusted_pr", egress: "allowlist" });
+  });
+
+  test("a flood of fork PRs is bounded before any forge call: waiting cap first, a per-poll budget, a memo", async () => {
+    const gh = ghWithWorkflow();
+    const shaOf = (i: number) => (i + 1).toString(16).padStart(40, "0");
+    gh.state.pulls = Array.from({ length: 100 }, (_, i) =>
+      PR({ number: i + 1, user: `u${i}`, headSha: shaOf(i), headRepo: "evil/web" }),
+    );
+    const prShas = new Set(gh.state.pulls.map((p) => p.headSha));
+    const cfg = APPROVAL_CFG({ maxWaitingRuns: 20, maxNewPrsPerPoll: 5 });
+    const overCap = new Set<string>();
+    const poll = () =>
+      pollRepo(
+        {
+          db,
+          github: new GithubClient({
+            fetch: gh.fetch,
+            baseUrl: "https://api.github.com",
+            token: "stub-token",
+          }),
+          provider: "fake",
+          overCap,
+        },
+        cfg,
+      );
+    const prFetches = () =>
+      gh.state.calls.filter((c) => {
+        const ref = /[?&]ref=([0-9a-f]{40})/.exec(c.path)?.[1];
+        return c.path.includes("/contents/") && ref !== undefined && prShas.has(ref);
+      }).length;
+
+    // The first poll still ingests the default branch push, and only 5 PRs.
+    const first = await poll();
+    expect(prFetches()).toBe(5);
+    expect((await listRuns(db, scope)).filter((r) => r.event === "push")).toHaveLength(1);
+    expect(first.created).toHaveLength(6);
+    for (let i = 0; i < 12; i++) await poll();
+    // 20 held, and every fetch round beyond that was refused before it was spent.
+    expect(await prRuns()).toHaveLength(20);
+    expect(prFetches()).toBeLessThanOrEqual(25);
+    expect(gh.state.calls.some((c) => c.path.includes("/collaborators/"))).toBe(false);
+    // The memo means a full queue is not re-reported every poll.
+    const again = await poll();
+    expect(again.refused).toHaveLength(0);
+    expect(overCap.size).toBeGreaterThan(0);
+    // The default branch still gets its runs while the queue is full.
+    gh.state.head = { sha: SHA("b"), message: "next", login: "octocat" };
+    const next = await poll();
+    expect(next.created).toHaveLength(1);
+
+    // Room opens up: the memo clears and one more is admitted.
+    const [one] = await prRuns();
+    await dispatch({ registry, db }, await bearer("operator"), "cancel", { run_id: one!.id });
+    await poll();
+    expect(await prRuns()).toHaveLength(21);
+  });
+
+  test("untrusted and unclassified pull request markers never use the trusted hourly budget", async () => {
+    // A workflow that never triggers for pull requests: every PR becomes a "skipped" marker.
+    const gh = makeGithub();
+    gh.state.files.set(
+      "*",
+      "name: ci\non:\n  push:\n    branches: [main]\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+    );
+    gh.state.pulls = Array.from({ length: 12 }, (_, i) =>
+      PR({
+        number: i + 1,
+        user: `u${i}`,
+        headSha: (i + 1).toString(16).padStart(40, "0"),
+        headRepo: "evil/web",
+      }),
+    );
+    const cfg = APPROVAL_CFG({ maxRunsPerHour: 2, maxNewPrsPerPoll: 12 });
+    await ingestAs(gh, cfg);
+    const { countPolledSince } = await import("../src/db");
+    expect(await countPolledSince(db, scope, "acme/web", 0)).toBe(1); // the push only
+    gh.state.head = { sha: SHA("b"), message: "next", login: "octocat" };
+    const res = await ingestAs(gh, cfg);
+    expect(res.refused.map((r) => r.reason)).not.toContain("hourly run cap reached");
+    expect((await listRuns(db, scope)).filter((r) => r.event === "push")).toHaveLength(2);
+  });
+
+  test("approve_run's minimum role is an org policy: release_operator by default, operator if lowered", async () => {
+    const gh = ghWithWorkflow();
+    gh.state.pulls = [PR({ headRepo: "evil/web" })];
+    await ingestAs(gh);
+    const [held] = await prRuns();
+    const op = await bearer("operator");
+    const reader = await bearer("reader");
+    const denied = await approve(op, held!.id);
+    expect(!denied.ok && denied.error.code).toBe("forbidden");
+
+    expect(await showPolicy(db, "local")).toEqual({ approveRunMinRole: "release_operator" });
+    await expect(setPolicy(db, "local", "approve-run-min-role", "admin")).rejects.toThrow();
+    await expect(setPolicy(db, "local", "nope", "operator")).rejects.toThrow();
+    expect(await setPolicy(db, "local", "approve-run-min-role", "operator")).toMatchObject({
+      from: "release_operator",
+      to: "operator",
+    });
+    expect(await showPolicy(db, "local")).toEqual({ approveRunMinRole: "operator" });
+    // A reader is still refused; an operator may now approve.
+    const noRead = await approve(reader, held!.id);
+    expect(!noRead.ok && noRead.error.code).toBe("forbidden");
+    const ok = await approve(op, held!.id);
+    expect(ok.ok).toBe(true);
+    const { listAudit } = await import("../src/db");
+    expect((await listAudit(db, { orgId: scope.orgId })).map((a) => a.op)).toContain("policy_set");
+
+    // The tool description tells agents the real requirement.
+    const { mcpTools } = await import("../src/ops/mcp");
+    const tool = mcpTools(registry).find((t) => t.name === "approve_run")!;
+    expect(tool.description).toContain("release_operator, or operator if the org lowered it");
+    expect(tool.description).not.toContain("Requires role operator.");
   });
 });

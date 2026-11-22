@@ -2,6 +2,8 @@
 // `#get` (the only place a request is made) and covered by a test. The token, when there is
 // one, goes into the Authorization header and nowhere else: never a URL, an error, a log line
 // or a returned value.
+import type { ForgePermission } from "../trust";
+
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 /** What GitHub last said about the rate limit, from the `x-ratelimit-*` headers. */
@@ -232,6 +234,52 @@ export class GithubClient {
     } catch (err) {
       if (err instanceof GithubError && (err.status === 404 || err.status === 422))
         return undefined;
+      throw err;
+    }
+  }
+
+  /**
+   * What a user may do in the repo, from `GET /repos/{o}/{r}/collaborators/{user}/permission`.
+   * Uses `role_name` (admin, maintain, write, triage, read, or a custom role) because the legacy
+   * `permission` field folds maintain into write and triage into read; a custom role falls back
+   * to the legacy field. A user who is not a collaborator, or does not exist, is `none`. Returns
+   * `unknown` when the token is not allowed to ask (401, 403, or no token): the caller must then
+   * treat the user as untrusted. Rate limits and server errors propagate, so the poll retries.
+   */
+  async collaboratorPermission(repo: string, user: string): Promise<ForgePermission | "unknown"> {
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]|\[bot\])*$/.test(user) || user.length > 100) return "none";
+    if (!this.#token) return "unknown";
+    try {
+      const body = (await this.#get(
+        `/repos/${repo}/collaborators/${encodeURIComponent(user)}/permission`,
+      )) as { permission?: string; role_name?: string };
+      const known = ["admin", "maintain", "write", "triage", "read", "none"] as const;
+      const role = body.role_name;
+      if (role && (known as readonly string[]).includes(role)) return role as ForgePermission;
+      const legacy = body.permission;
+      // A custom role: only the legacy field's verdict, and never above write.
+      if (legacy === "admin" || legacy === "write" || legacy === "read" || legacy === "none") {
+        return legacy === "admin" ? "write" : legacy;
+      }
+      return "unknown";
+    } catch (err) {
+      if (err instanceof GithubError) {
+        if (err.status === 404) return "none";
+        if (err.status === 401 || err.status === 403) return "unknown";
+      }
+      throw err;
+    }
+  }
+
+  /** Whether the forge says a branch is protected (`GET /repos/{o}/{r}/branches/{branch}`). */
+  async branchProtected(repo: string, branch: string): Promise<boolean | undefined> {
+    try {
+      const body = (await this.#get(`/repos/${repo}/branches/${encodeURIComponent(branch)}`)) as {
+        protected?: boolean;
+      };
+      return typeof body.protected === "boolean" ? body.protected : undefined;
+    } catch (err) {
+      if (err instanceof GithubError && [401, 403, 404].includes(err.status)) return undefined;
       throw err;
     }
   }

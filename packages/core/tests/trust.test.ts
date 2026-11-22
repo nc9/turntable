@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   assessJob,
+  decideRun,
+  needsApproval,
   classifyRun,
   credentialsFor,
   isProtectedRef,
   isReleaseRef,
   lintFailsFor,
   workflowSourceRef,
+  type ForgePermission,
 } from "../src/trust";
 
 describe("classification", () => {
@@ -125,5 +128,79 @@ describe("credentials and lint by class", () => {
     expect(lintFailsFor("release")).toBe(true);
     expect(lintFailsFor("trusted_pr")).toBe(false);
     expect(lintFailsFor("untrusted_pr")).toBe(false);
+  });
+});
+
+describe("manual dispatch", () => {
+  const dispatchOn = (ref: string, actorPermission?: ForgePermission) =>
+    classifyRun({
+      event: "workflow_dispatch",
+      ref,
+      ...(actorPermission ? { actorPermission } : {}),
+    });
+
+  test("only a maintainer's manual run is protected or release", () => {
+    expect(dispatchOn("refs/heads/main", "admin")).toBe("protected");
+    expect(dispatchOn("refs/heads/main", "maintain")).toBe("protected");
+    expect(dispatchOn("refs/tags/v1.0.0", "maintain")).toBe("release");
+    // Write access can start a manual run, but it never counts as protected.
+    expect(dispatchOn("refs/heads/main", "write")).toBe("trusted_pr");
+    expect(dispatchOn("refs/heads/main", "triage")).toBe("untrusted_pr");
+    expect(dispatchOn("refs/heads/main", "read")).toBe("untrusted_pr");
+    expect(dispatchOn("refs/heads/main", "none")).toBe("untrusted_pr");
+    // An unknown actor is not a maintainer.
+    expect(dispatchOn("refs/heads/main")).toBe("untrusted_pr");
+  });
+});
+
+describe("decideRun", () => {
+  const base = { workflowHash: "h".repeat(64), now: 1_800_000_000_000 };
+  const pr = (over: Parameters<typeof decideRun>[0] extends infer T ? Partial<T> : never) =>
+    decideRun({ event: "pull_request", ref: "refs/pull/5/head", ...base, ...over });
+
+  test("a PR is trusted only when the head is in the repo and the author can write", () => {
+    expect(pr({ sameRepo: true, permission: "write" }).class).toBe("trusted_pr");
+    expect(pr({ sameRepo: true, permission: "maintain" }).class).toBe("trusted_pr");
+    expect(pr({ sameRepo: true, permission: "read" }).class).toBe("untrusted_pr");
+    expect(pr({ sameRepo: true, permission: "triage" }).class).toBe("untrusted_pr");
+    expect(pr({ sameRepo: true, permission: "none" }).class).toBe("untrusted_pr");
+    expect(pr({ sameRepo: true, permission: "unknown" }).class).toBe("untrusted_pr");
+    expect(pr({ sameRepo: true }).class).toBe("untrusted_pr");
+    // A fork is untrusted whatever the author's permission or allowlisting.
+    expect(pr({ sameRepo: false, permission: "admin", allowlisted: true }).class).toBe(
+      "untrusted_pr",
+    );
+    expect(pr({}).class).toBe("untrusted_pr");
+    // The explicit trusted list works without asking the forge, for a same-repo PR only.
+    expect(pr({ sameRepo: true, allowlisted: true }).class).toBe("trusted_pr");
+  });
+
+  test("the decision records its facts and reasons, and its JSON leads with the class", () => {
+    const d = pr({ sameRepo: true, actor: "dev", permission: "read" });
+    expect(d.facts).toMatchObject({ sameRepo: true, actor: "dev", permission: "read" });
+    expect(d.reasons.join(" ")).toContain("read permission");
+    expect(d.workflowHash).toBe(base.workflowHash);
+    // The cap query matches on this prefix.
+    expect(JSON.stringify(d).startsWith('{"class":"untrusted_pr"')).toBe(true);
+  });
+
+  test("pushes: the project's protected refs and the forge's protection decide", () => {
+    const push = (ref: string, over = {}) =>
+      decideRun({ event: "push", ref, sameRepo: true, ...base, ...over });
+    expect(push("refs/heads/trunk", { protectedRefs: ["refs/heads/trunk"] }).class).toBe(
+      "protected",
+    );
+    expect(push("refs/heads/trunk", { protectedRefs: [] }).class).toBe("trusted_pr");
+    expect(push("refs/heads/staging", { protectedRefs: [], forgeProtected: true }).class).toBe(
+      "protected",
+    );
+    expect(push("refs/tags/v1.2.3").class).toBe("release");
+  });
+
+  test("only untrusted_pr needs approval", () => {
+    expect(needsApproval("untrusted_pr")).toBe(true);
+    for (const k of ["protected", "release", "trusted_pr"] as const) {
+      expect(needsApproval(k)).toBe(false);
+    }
   });
 });

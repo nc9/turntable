@@ -7,6 +7,8 @@ export type StubPull = {
   headSha: string;
   baseRef?: string;
   headRef?: string;
+  /** `owner/name` of the head repo; null is a deleted fork. Default: the base repo. */
+  headRepo?: string | null;
 };
 
 export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/ci.yml") {
@@ -19,6 +21,11 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     compare: new Map<string, string[]>(),
     /** Other repo files by path (local composite actions), served for any sha. */
     extra: new Map<string, string>(),
+    /** Collaborator role_name by login; a login not listed is not a user (404). */
+    roles: new Map<string, string>(),
+    /** Answer the permission endpoint with this status instead (403: token cannot ask; 500). */
+    permissionStatus: undefined as number | undefined,
+    protectedMain: true,
     calls: [] as { path: string; method: string | undefined }[],
   };
   const fetchStub = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -33,6 +40,22 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
         commit: { message: state.head.message },
         author: { login: state.head.login },
       });
+    }
+    if (path === `/repos/${repo}/branches/main`) return json({ protected: state.protectedMain });
+    const perm = new RegExp(`^/repos/${repo}/collaborators/([^/]+)/permission$`).exec(path);
+    if (perm) {
+      if (state.permissionStatus) return new Response("no", { status: state.permissionStatus });
+      const role = state.roles.get(perm[1] as string);
+      if (role === undefined) return new Response("not found", { status: 404 });
+      const legacy =
+        role === "admin"
+          ? "admin"
+          : role === "write" || role === "maintain"
+            ? "write"
+            : role === "none"
+              ? "none"
+              : "read";
+      return json({ permission: legacy, role_name: role });
     }
     const commit = new RegExp(`^/repos/${repo}/commits/([0-9a-f]{40})$`).exec(path);
     if (commit) {
@@ -49,7 +72,11 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
           number: p.number,
           title: `PR ${p.number}`,
           user: { login: p.user },
-          head: { sha: p.headSha, ref: p.headRef ?? "topic", repo: { full_name: repo } },
+          head: {
+            sha: p.headSha,
+            ref: p.headRef ?? "topic",
+            repo: p.headRepo === null ? null : { full_name: p.headRepo ?? repo },
+          },
           base: { ref: p.baseRef ?? "main", repo: { full_name: repo } },
         })),
       );

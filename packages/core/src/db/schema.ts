@@ -80,6 +80,12 @@ export const orgs = sqliteTable("orgs", {
   name: text("name").notNull(),
   /** JSON array of allowed action owners (`actions`, `docker`, ...). Null means no allowlist. */
   actionOwnerAllowlist: text("action_owner_allowlist"),
+  /**
+   * Lowest agent role that may call `approve_run` in this org: `release_operator` (default) or
+   * `operator`. An operator token may belong to an agent that has just read an untrusted pull
+   * request's text, which is why the default is the stricter role.
+   */
+  approveRunMinRole: text("approve_run_min_role").notNull().default("release_operator"),
   createdAt: createdAt(),
 });
 
@@ -94,6 +100,11 @@ export const projects = sqliteTable(
     name: text("name").notNull(),
     /** 1: every `uses:` must already be a full commit sha; tags and branches are refused. */
     requireShaPins: integer("require_sha_pins").notNull().default(0),
+    /**
+     * Sandbox egress for the project's server runs: `none`, `open` or `allowlist`. A repo's own
+     * `egress` in the poll config overrides it. Default `none`.
+     */
+    egress: text("egress").notNull().default("none"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -185,6 +196,22 @@ export const runs = sqliteTable(
      * worker never claims them, so a shared data directory is safe.
      */
     local: integer("local", { mode: "boolean" }).notNull().default(false),
+    /**
+     * The repo a poll-created run is for (`owner/name`, lower case); null for local runs and
+     * runs from before this column. A project may bind several repos, so pull request numbers,
+     * concurrency groups and waiting caps are all scoped by it.
+     */
+    repo: text("repo"),
+    /**
+     * The trust decision (JSON text: class, reasons, the forge facts it came from, the workflow
+     * hash, when). Null for runs with no decision (local runs, runs from before trust classes).
+     */
+    trust: text("trust"),
+    /**
+     * Who approved this run and for what (JSON text: by, at, head_sha, workflow_hash); null until
+     * approved. An approval is bound to the sha and workflow hash, and never raises the class.
+     */
+    approval: text("approval"),
     /** Aggregate of its jobs; same vocabulary as job state. */
     status: text("status").notNull().default("queued"),
     createdAt: createdAt(),

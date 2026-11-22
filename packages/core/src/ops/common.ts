@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Run } from "../db/repos";
+import { parseTrust, type Run } from "../db/repos";
 import { JOB_STATES } from "../db/schema";
 import { OpError } from "./errors";
 
@@ -67,6 +67,12 @@ export const runSummarySchema = z.object({
   head_branch: z.string().nullable(),
   pr_number: z.int().nullable().describe("Pull request number, when the run is for one."),
   state: jobStateSchema,
+  trust_class: z
+    .enum(["protected", "release", "trusted_pr", "untrusted_pr"])
+    .nullable()
+    .describe(
+      "How far the run is trusted (decided at ingest from re-fetched forge facts); null for runs with no decision. untrusted_pr runs wait for approval and never get secrets.",
+    ),
   created_at: z.string(),
   started_at: z.string().nullable(),
   finished_at: z.string().nullable(),
@@ -88,6 +94,7 @@ export function toRunSummary(row: Run & { projectSlug: string }): RunSummary {
     head_branch: row.headBranch,
     pr_number: row.prNumber,
     state: row.status as RunSummary["state"],
+    trust_class: (parseTrust(row)?.class as RunSummary["trust_class"] | undefined) ?? null,
     created_at: iso(row.createdAt)!,
     started_at: iso(row.startedAt),
     finished_at: iso(row.finishedAt),

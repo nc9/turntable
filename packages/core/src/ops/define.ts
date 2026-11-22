@@ -39,6 +39,11 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
   output: O;
   effect: Effect;
   auth: OpAuth;
+  /**
+   * For an op whose real role requirement is set in the handler (per org policy): replaces the
+   * generated "Requires role X." sentence in tool descriptions, so agents are not misled.
+   */
+  roleNote?: string;
   /** True when the output carries log or forge text (branch names, workflow paths, log lines). */
   untrustedOutput: boolean;
   /**
@@ -65,6 +70,7 @@ export type Op = {
   output: z.ZodType;
   effect: Effect;
   auth: OpAuth;
+  roleNote?: string | undefined;
   untrustedOutput: boolean;
   scope: "org" | "project";
   http: HttpBinding;
@@ -127,6 +133,7 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     output: spec.output,
     effect: spec.effect,
     auth: spec.auth,
+    roleNote: spec.roleNote,
     untrustedOutput: spec.untrustedOutput,
     scope: spec.scope,
     http: spec.http,

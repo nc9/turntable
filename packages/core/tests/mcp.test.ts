@@ -8,7 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createJob, createAttempt, type Db, transitionJob, upsertStep } from "../src/db";
 import { resultText, UNTRUSTED_NOTICE } from "../src/mcp/envelope";
 import { readTokenFile, runMcpStdio } from "../src/mcp/stdio";
-import { registry } from "../src/ops";
+import { registry, roleSatisfies } from "../src/ops";
 import { compileSafeRegex, SafeRegexError } from "../src/ops/safe-regex";
 import { startServer } from "../src/server";
 import { addLog, mintToken, seedWorld, type Tenant } from "./ops-helpers";
@@ -83,7 +83,7 @@ async function stdioSession(bearer: string) {
 
 const expectedTools = () =>
   registry
-    .tokenOps()
+    .documentedOps()
     .map((o) => o.name)
     .toSorted();
 
@@ -178,6 +178,26 @@ describe("tools", () => {
     expect(byId.body.error.code).toBe("not_found");
     const log = await call(client, "job_log", { job_id: b.jobId });
     expect(log.isError).toBe(true);
+    await client.close();
+  });
+
+  test("ops no token role can call are not listed, but stay refused", async () => {
+    const hidden = registry.ops.filter(
+      (o) => o.auth.type === "token" && !registry.documentedOps().includes(o),
+    );
+    expect(hidden.map((o) => o.name)).toContain("create_api_token");
+    const client = await httpClient();
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    for (const o of hidden) expect(names).not.toContain(o.name);
+    // Every listed op is callable by some token role; every hidden one by none.
+    const tokenRoles = ["reader", "operator", "release_operator"] as const;
+    for (const o of registry.documentedOps()) {
+      expect(tokenRoles.some((r) => roleSatisfies(r, o.auth.minRole))).toBe(true);
+    }
+    for (const o of hidden) {
+      expect(tokenRoles.some((r) => roleSatisfies(r, o.auth.minRole))).toBe(false);
+    }
+    await expect(client.callTool({ name: "create_api_token", arguments: {} })).rejects.toThrow();
     await client.close();
   });
 

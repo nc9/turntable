@@ -55,7 +55,31 @@ export const getRun = defineOp({
     "about the code). Use it after list_runs or checks_for_sha to see what failed and where to " +
     "read the log (job_log). Read-only. Names and refs come from the forge: untrusted text.",
   input: z.object({ run_id: z.string().min(1).max(64) }),
-  output: runSummarySchema.extend({ jobs: z.array(jobSchema) }),
+  output: runSummarySchema.extend({
+    trust: z
+      .object({
+        class: z.enum(["protected", "release", "trusted_pr", "untrusted_pr"]),
+        reasons: z.array(z.string()).describe("Why the run got this class, in plain words."),
+        facts: z
+          .record(z.string(), z.unknown())
+          .describe("The forge facts the class was decided from (repo match, permission)."),
+        workflow_hash: z
+          .string()
+          .describe("sha256 of the workflow file; pass it to approve_run with the head sha."),
+        decided_at: z.string(),
+      })
+      .nullable(),
+    approval: z
+      .object({
+        by: z.string(),
+        at: z.string(),
+        head_sha: z.string(),
+        workflow_hash: z.string(),
+      })
+      .nullable()
+      .describe("Who approved the run and what they approved; null until approved."),
+    jobs: z.array(jobSchema),
+  }),
   effect: "read",
   auth: { type: "token", minRole: "reader" },
   untrustedOutput: true,
@@ -68,8 +92,27 @@ export const getRun = defineOp({
       listJobs(ctx.db, ctx.scope, run.id),
       listRunAttempts(ctx.db, ctx.scope, run.id),
     ]);
+    const decision = run.trust ? (JSON.parse(run.trust) as Record<string, unknown>) : undefined;
+    const approval = run.approval
+      ? (JSON.parse(run.approval) as {
+          by: string;
+          at: number;
+          head_sha: string;
+          workflow_hash: string;
+        })
+      : undefined;
     return {
       ...toRunSummary(run),
+      trust: decision
+        ? {
+            class: decision.class as "protected",
+            reasons: decision.reasons as string[],
+            facts: decision.facts as Record<string, unknown>,
+            workflow_hash: decision.workflowHash as string,
+            decided_at: iso(decision.decidedAt as number)!,
+          }
+        : null,
+      approval: approval ? { ...approval, at: iso(approval.at)! } : null,
       jobs: jobs.map((job) => {
         const mine = attempts.filter((a) => a.jobId === job.id);
         const latest = mine.at(-1);

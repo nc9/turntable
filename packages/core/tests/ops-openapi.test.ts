@@ -62,7 +62,7 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
   }
   expect([...ids].toSorted()).toEqual(
     registry
-      .tokenOps()
+      .documentedOps()
       .map((o) => o.name)
       .toSorted(),
   );
@@ -83,10 +83,12 @@ test("MCP tool list equals the registry minus signature ops", () => {
     handler: async () => ({}),
   });
   const withSig = createRegistry([...registry.ops, sig]);
-  expect(mcpTools(withSig).map((t) => t.name)).toEqual(
-    withSig.ops.filter((o) => o.auth.type !== "signature").map((o) => o.name),
+  expect(mcpTools(withSig).map((t) => t.name)).toEqual(withSig.documentedOps().map((o) => o.name));
+  expect(withSig.documentedOps().map((o) => o.name)).not.toContain("approve_release");
+  // Ops no token role can call (create_api_token needs admin) are not listed.
+  expect(mcpTools(registry).map((t) => t.name)).toEqual(
+    registry.documentedOps().map((o) => o.name),
   );
-  expect(mcpTools(registry).map((t) => t.name)).toEqual(registry.ops.map((o) => o.name));
 
   for (const tool of mcpTools(registry)) {
     expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
@@ -172,9 +174,12 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
     ),
   );
   for (const op of registry.ops.filter((o) => o.auth.type !== "signature")) {
-    expect(tools.has(op.name)).toBe(true);
-    expect(operationIds.has(op.name)).toBe(true);
-    expect(doc.paths[op.http.path]?.[op.http.method.toLowerCase()]?.operationId).toBe(op.name);
+    const documented = registry.documentedOps().includes(op);
+    expect(tools.has(op.name)).toBe(documented);
+    expect(operationIds.has(op.name)).toBe(documented);
+    if (documented) {
+      expect(doc.paths[op.http.path]?.[op.http.method.toLowerCase()]?.operationId).toBe(op.name);
+    }
     // REST: the route exists. Unauthenticated, it answers 401, not 404 (no route) or 405.
     const path = op.http.path.replaceAll(/\{[^}]+\}/g, "x");
     const res = await api(new Request(`http://x/api/v1${path}`, { method: op.http.method }));
@@ -183,13 +188,13 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   // and nothing extra: no adapter lists an op the registry does not have
   expect([...tools].toSorted()).toEqual(
     registry
-      .tokenOps()
+      .documentedOps()
       .map((o) => o.name)
       .toSorted(),
   );
   expect([...operationIds].toSorted()).toEqual(
     registry
-      .tokenOps()
+      .documentedOps()
       .map((o) => o.name)
       .toSorted(),
   );
