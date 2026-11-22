@@ -32,6 +32,7 @@ import {
   type FileFacts,
   type ForwardedSnapshot,
 } from "../src/doctor/types";
+import { controlPost } from "@longshore/net";
 import { cachedDoctor } from "../src/doctor/cache";
 import { channelMac, startChannel } from "../src/release/channel";
 import { mintToken, seedWorld } from "./ops-helpers";
@@ -547,20 +548,21 @@ describe("the release channel", () => {
       expect(released).toEqual([]);
       expect(registers).toBe(0);
       const ts = Date.now();
-      const post = (mac: string) =>
-        fetch("http://lane/v1/health", {
-          unix: socket,
-          method: "POST",
-          body: JSON.stringify({ ts, mac }),
-        } as RequestInit);
-      expect((await post(channelMac(key, "health", [], ts))).status).toBe(200);
-      expect((await post(channelMac("x".repeat(32), "health", [], ts))).status).toBe(401);
+      const post = (path: string, body: object) =>
+        controlPost({ unix: socket }, path, body, { timeoutMs: 5000 });
+      expect(
+        (await post("/v1/health", { ts, mac: channelMac(key, "health", [], ts) })).status,
+      ).toBe(200);
+      expect(
+        (await post("/v1/health", { ts, mac: channelMac("x".repeat(32), "health", [], ts) }))
+          .status,
+      ).toBe(401);
       // A health MAC is not a revoke MAC: it cannot be replayed against a state-changing op.
-      const cross = await fetch("http://lane/v1/revoke", {
-        unix: socket,
-        method: "POST",
-        body: JSON.stringify({ attemptId: "a1", ts, mac: channelMac(key, "health", [], ts) }),
-      } as RequestInit);
+      const cross = await post("/v1/revoke", {
+        attemptId: "a1",
+        ts,
+        mac: channelMac(key, "health", [], ts),
+      });
       expect(cross.status).toBe(401);
       expect(released).toEqual([]);
     });
