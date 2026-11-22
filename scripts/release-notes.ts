@@ -161,7 +161,7 @@ if (import.meta.main) {
       to: { type: "string" },
       from: { type: "string" },
       out: { type: "string" },
-      repo: { type: "string", default: process.env.GITHUB_REPOSITORY ?? "nc9/longshore" },
+      repo: { type: "string", default: process.env.GITHUB_REPOSITORY ?? "nc9/turntable" },
       template: { type: "string", default: join(root, ".github", "release-notes-template.md") },
     },
   });

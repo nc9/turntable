@@ -4,7 +4,7 @@ description: How Longshore versions its releases, how to verify a download, and 
 ---
 
 <Note>
-  Pre-alpha. The first release has not been published yet. This page describes what each release will carry, and the commands below work once a tag exists. Replace `nc9/longshore` with the repository you downloaded from if it differs.
+  Pre-alpha. The first release has not been published yet. This page describes what each release will carry, and the commands below work once a tag exists. Replace `nc9/turntable` with the repository you downloaded from if it differs.
 </Note>
 
 ## Versions
@@ -36,7 +36,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 That proves the file matches the published list. The list itself comes from the same release, so also check the attestation, which is signed by the build and not by whoever can edit the release page:
 
 ```sh
-gh attestation verify longshore-linux-x64 --repo nc9/longshore
+gh attestation verify longshore-linux-x64 --repo nc9/turntable
 ```
 
 A pass prints the workflow, the tag and the commit. A failure means the file was not built by this repository's release workflow. Do not run it.
@@ -44,7 +44,7 @@ A pass prints the workflow, the tag and the commit. A failure means the file was
 To check the SBOM is the one the build attested:
 
 ```sh
-gh attestation verify longshore-linux-x64 --repo nc9/longshore \
+gh attestation verify longshore-linux-x64 --repo nc9/turntable \
   --predicate-type https://cyclonedx.org/bom
 ```
 
@@ -57,7 +57,7 @@ Pin by digest, not by tag. Tags can move; a digest cannot.
 ```sh
 docker buildx imagetools inspect ghcr.io/nc9/longshore:0.1.0-alpha.1
 # note the Digest: sha256:...
-gh attestation verify oci://ghcr.io/nc9/longshore@sha256:<digest> --repo nc9/longshore
+gh attestation verify oci://ghcr.io/nc9/longshore@sha256:<digest> --repo nc9/turntable
 ```
 
 Then run or deploy `ghcr.io/nc9/longshore@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
