@@ -363,6 +363,7 @@ async function buildWorld(): Promise<World> {
 /** How a field that names something of A's is filled. Unmapped id-like fields fail the suite. */
 const FIELD: Record<string, (w: World) => unknown> = {
   run_id: (w) => w.aOnly.runId,
+  consumer_run_id: (w) => w.aOnly.runId, // check_artifact_consumption
   job_id: (w) => w.aOnly.jobId,
   attempt_id: (w) => w.aOnly.attemptId,
   name: () => A_RULE, // proxy rule name; also a valid secret name
