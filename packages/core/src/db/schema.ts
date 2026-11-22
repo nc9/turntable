@@ -78,6 +78,8 @@ export const orgs = sqliteTable("orgs", {
   id: text("id").primaryKey(),
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
+  /** JSON array of allowed action owners (`actions`, `docker`, ...). Null means no allowlist. */
+  actionOwnerAllowlist: text("action_owner_allowlist"),
   createdAt: createdAt(),
 });
 
@@ -90,6 +92,8 @@ export const projects = sqliteTable(
       .references(() => orgs.id),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
+    /** 1: every `uses:` must already be a full commit sha; tags and branches are refused. */
+    requireShaPins: integer("require_sha_pins").notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [
@@ -556,5 +560,30 @@ export const webhookDeliveries = sqliteTable(
   (t) => [
     index("webhook_deliveries_received_idx").on(t.receivedAt),
     check("webhook_deliveries_status_check", inList("status", DELIVERY_STATUSES)),
+  ],
+);
+
+/**
+ * The tag-to-sha map per project: every resolution of an action ref is remembered, so a tag that
+ * later points at a different commit (a moved tag) is detected. `pending_sha` is the commit a
+ * moved tag now points at, held until an operator accepts it.
+ */
+export const actionPins = sqliteTable(
+  "action_pins",
+  {
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    /** `owner/repo`, lowercase. */
+    repo: text("repo").notNull(),
+    ref: text("ref").notNull(),
+    sha: text("sha").notNull(),
+    pendingSha: text("pending_sha"),
+    firstSeen: integer("first_seen", { mode: "number" }).notNull().default(nowMs),
+    lastSeen: integer("last_seen", { mode: "number" }).notNull().default(nowMs),
+    acceptedAt: integer("accepted_at", { mode: "number" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.projectId, t.repo, t.ref] }),
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
   ],
 );

@@ -16,7 +16,6 @@ import {
   PlanError,
   type PlannedJob,
   planJob,
-  resolveActions,
   splitJob,
   workflowHeadCheckouts,
 } from "@longshore/act-runner";
@@ -28,6 +27,8 @@ import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { snapshotRepo } from "../run/repo-archive";
 import { makeSafeReader } from "../run/safe-read";
+import { resolvePlanActions } from "../pins";
+import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { assessJob, lintFailsFor } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
@@ -131,6 +132,8 @@ export type ActRunnerOptions = {
   // Test seams.
   act?: ActTarball;
   fetchAction?: ActionFetcher;
+  /** Verifies an action sha belongs to its repo (default: the GitHub API). */
+  reachable?: ReachabilityChecker;
   pollMs?: number;
   /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
   planRoot?: string;
@@ -301,14 +304,26 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               failOnLint,
               ...root,
             });
-        plan = await resolveActions(jobPlan, o.resolver ?? githubResolver());
+        plan = await resolvePlanActions(jobPlan, {
+          db: o.db,
+          scope: ctx.scope,
+          klass: trust.klass,
+          base: o.resolver ?? githubResolver(),
+          readFile: checkout.readFile,
+          ...(o.reachable ? { reachable: o.reachable } : {}),
+          ...(o.fetchAction ? { fetchTarball: o.fetchAction } : {}),
+          warn: (m) => console.warn(`action pins: ${m}`),
+        });
       } catch (err) {
         if (err instanceof PlanError) {
-          const msg = `plan rejected: ${err.message}`;
-          // Shown where the job's log would be, not only as the attempt's error class.
+          // A plan rejection (policy, moved tag, unpinned or unreachable action, unsupported
+          // feature) is deterministic and the user can act on it: a failure, never retried.
+          // infra_error stays for transient causes (a resolver network error, a provider down).
+          const msg = `${err.feature === "lint" ? "lint" : "policy"}: ${err.message}`;
+          // Shown where the job's log would be, not only as the attempt's reason.
           await ctx.store.appendLog(0, new TextEncoder().encode(`${msg}\n`));
           o.out?.(job.jobKey, `[${job.jobKey}] ${msg}\n`);
-          return { state: "infra_error", reason: msg };
+          return { state: "failure", reason: msg };
         }
         throw err;
       }

@@ -166,6 +166,7 @@ export async function runCommand(args: string[]): Promise<number> {
       egress: values.egress,
       canary: true,
       resolver: githubResolver(),
+      pins: { db, scope },
       signal: ac.signal,
     });
     console.error(`\nrun ${result.runId} job ${values.j}: ${result.state} (${result.reason})`);
