@@ -19,6 +19,7 @@ import {
   type RunningProxy,
 } from "@longshore/proxy";
 import { dockerBridgeGateway } from "@longshore/provider-docker";
+import type { ProxyEndpoint } from "@longshore/provider-sdk";
 import { SecretRegistry } from "@longshore/redact";
 import type { SafeFetch } from "@longshore/net";
 import type { Db } from "../db";
@@ -39,7 +40,7 @@ import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../scheduler
 /** What a runner needs to put a job behind the proxy. */
 export interface ProxyAccess {
   /** The proxy as the provider's host reaches it (the provider gives the sandbox its own route). */
-  listen: { host: string; port: number };
+  listen: ProxyEndpoint;
   credential: AttemptCredential;
   /**
    * The attempt has vault rules, so it must run behind the proxy. Without them the proxy is only
@@ -119,6 +120,17 @@ export interface SecretsProxyOptions {
   port?: number;
   /** How the provider's host names this machine. Default `host.docker.internal`. */
   advertiseHost?: string;
+  /**
+   * Serve over TLS on a public name (for sandboxes in another provider's network, such as
+   * Daytona). The certificate is for `advertiseHost`.
+   */
+  tls?: { key: string; cert: string };
+  /** The port sandboxes are told to use, when it differs from the one bound (a platform that forwards). */
+  advertisePort?: number;
+  /** The endpoint's stable IPv4 addresses, for a provider that filters by address. */
+  advertiseAddresses?: readonly string[];
+  /** Limits on the listener (see the proxy's limits). */
+  limits?: Parameters<typeof startProxy>[0]["limits"];
   /** Test seams: where requests and passthrough tunnels really go. */
   upstream?: SafeFetch;
   tunnel?: (host: string, port: number) => Promise<net.Socket>;
@@ -185,6 +197,8 @@ export class SecretsProxy {
       audit,
       host: bind,
       port: o.port ?? 0,
+      ...(o.tls ? { tls: o.tls } : {}),
+      ...(o.limits ? { limits: o.limits } : {}),
       ...(o.upstream ? { upstream: o.upstream } : {}),
       ...(o.tunnel ? { tunnel: o.tunnel } : {}),
       ...(o.now ? { now: o.now } : {}),
@@ -303,7 +317,13 @@ export class SecretsProxy {
     });
     return {
       access: {
-        listen: { host: this.#o.advertiseHost ?? "host.docker.internal", port: this.port },
+        listen: {
+          host: this.#o.advertiseHost ?? "host.docker.internal",
+          port: this.#o.advertisePort ?? this.port,
+          // The name the certificate is for, when this is a public TLS listener.
+          ...(this.#o.tls ? { tlsName: this.#o.advertiseHost ?? "host.docker.internal" } : {}),
+          ...(this.#o.advertiseAddresses ? { addresses: this.#o.advertiseAddresses } : {}),
+        },
         credential,
         vaultRules: o.vaultRules ?? true,
         setGithubToken: (token) => {

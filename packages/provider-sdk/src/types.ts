@@ -8,9 +8,19 @@ export type Labels = Readonly<Record<string, string>>;
 
 /**
  * `none`: no network egress at all. `open`: unrestricted egress. `allowlist`: only listed hosts.
- * `deny-all-except-proxy`: only the controller-side proxy is reachable.
+ * `deny-all-except-proxy`: only the controller-side proxy is reachable, enforced at the network
+ * level (by address, or by the provider's own isolation).
+ * `proxy-domain-filtered`: only the proxy's name is reachable, enforced by a filter that reads the
+ * TLS server name. Weaker (it depends on that filter parsing correctly), so a provider offers it
+ * only when its operator has opted in, and a caller uses it only when the strict one is not
+ * possible (no stable address).
  */
-export type EgressPolicy = "none" | "open" | "allowlist" | "deny-all-except-proxy";
+export type EgressPolicy =
+  | "none"
+  | "open"
+  | "allowlist"
+  | "deny-all-except-proxy"
+  | "proxy-domain-filtered";
 
 /**
  * How strongly a sandbox is separated from the host and from other sandboxes, weakest first.
@@ -67,6 +77,23 @@ export interface SandboxResources {
   diskGb?: number;
 }
 
+/**
+ * Where the secrets proxy is, for a provider whose sandboxes are on a network the controller does
+ * not share (Daytona): a public TLS endpoint. A provider that shares a host with the proxy
+ * (Docker) uses `host` and `port` only.
+ */
+export interface ProxyEndpoint {
+  host: string;
+  port: number;
+  /** The name its certificate is for, sent as the TLS server name. Default `host`. */
+  tlsName?: string;
+  /**
+   * Its stable IPv4 addresses. A provider that filters by address allows exactly these and
+   * connects to one of them; without them it filters by `tlsName`.
+   */
+  addresses?: readonly string[];
+}
+
 export interface SandboxNetworkSpec {
   egress: EgressPolicy;
   /**
@@ -74,7 +101,7 @@ export interface SandboxNetworkSpec {
    * own host sees it (for Docker, `host.docker.internal` and the port). The sandbox can reach the
    * proxy and nothing else; `SandboxHandle.proxy` says how.
    */
-  proxy?: { host: string; port: number };
+  proxy?: ProxyEndpoint;
   /** Hostnames for the `allowlist` policy. */
   allowHosts?: readonly string[];
 }
