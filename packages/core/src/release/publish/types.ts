@@ -61,6 +61,11 @@ export interface OciTarget {
   tags: string[];
   /** The registry user for the token exchange. */
   username: string;
+  /**
+   * The one host whose token endpoint may be called, when it is not the registry's own (Docker
+   * Hub's `auth.docker.io`). An exact hostname; the endpoint must be https on that host.
+   */
+  realmHost?: string | undefined;
   /** The release-class vault secret (the registry credential). */
   secret: string;
 }
