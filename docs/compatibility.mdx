@@ -12,7 +12,7 @@ Longshore promises that unsupported features fail loudly at parse or plan time. 
 | Unsupported | Rejected with an error that names the feature. |
 
 <Note>
-  Nothing is implemented yet. The classification below is the plan for v1, and every row is planned.
+  Longshore runs workflows through [act](https://github.com/nektos/act), one job per sandbox. The table below says what v1 supports; rows still being proven against real workflows say so.
 </Note>
 
 ## Pull request events
@@ -21,17 +21,18 @@ Steps see the event as they do on GitHub where it matters: act is given a `githu
 
 **Known difference:** GitHub runs `pull_request` workflows on the merge commit (`refs/pull/N/merge`). Longshore runs the pull request head sha. This is deliberate for now, and `github.sha` is the head sha.
 
-## Planned support
+## Support
 
 | Feature | Status |
 | --- | --- |
-| Triggers: `push`, `pull_request`, `schedule`, `workflow_dispatch` | Planned |
-| `needs`, job outputs, `matrix` | Planned |
-| `concurrency` | Planned |
-| Reusable workflows | Planned |
-| Composite and JavaScript actions | Planned |
-| `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STEP_SUMMARY` | Planned |
-| Services and job containers | Planned, run by the core |
+| Triggers: `push` (branch and tag filters, `paths`), `pull_request`, `merge_group` | Supported, see [Quickstart](/quickstart) |
+| Triggers: `schedule`, `workflow_dispatch` | Not ingested yet |
+| `needs`, job outputs, `matrix` (with `fail-fast` and `max-parallel`), `if:`, `continue-on-error` | Supported |
+| `concurrency` | Supported with differences: groups are scoped to the repo, and a pull request run's group is rewritten so it cannot cancel the default branch, see [Security](/security#trust-classes-and-fork-pr-gating) |
+| Composite and JavaScript actions | Supported, resolved to a commit sha before the run, see [Security](/security#action-pins-and-moved-tags) |
+| `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STEP_SUMMARY` | Handled by act |
+| Reusable workflows | Not yet verified |
+| Services and job containers | A job that needs docker is skipped with the reason as its log |
 
 ## Unsupported in v1
 
@@ -39,7 +40,7 @@ Steps see the event as they do on GitHub where it matters: act is given a `githu
 | --- | --- |
 | Windows runners | Not in v1. |
 | macOS runners | Not in v1. A future provider plugin could offer them. |
-| GitHub artifact attestations | Longshore signed provenance is the planned substitute. |
+| GitHub artifact attestations | [Longshore signed provenance](/signing) is the substitute. |
 | GitHub OIDC claims | Longshore's own OIDC issuer replaces them. |
 
 ## Runner image toolset
