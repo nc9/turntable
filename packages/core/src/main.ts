@@ -2,7 +2,12 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, openDatabase } from "./db";
+import { githubFacts } from "./github/api";
+import { AppAuth } from "./github/app-auth";
+import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import { bootstrapToken } from "./ops/bootstrap";
+import { loadMasterKey } from "./secrets/crypto";
+import { SecretStore } from "./secrets/store";
 import { generateToken, hashToken } from "./ops/tokens";
 import { loadPollConfig, Poller } from "./poll";
 import {
@@ -24,6 +29,10 @@ Usage:
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>]]
                   [--poll <config.json>]
+  longshore keys init [--file <path>] [--data-dir ./data]
+  longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
+                              [--longshore-org local] [--master-key-file <path>]
+  longshore github-app rotate-webhook-secret | status [--master-key-file <path>] [--data-dir ./data]
   longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
   longshore token generate
@@ -37,6 +46,8 @@ Environment:
   LONGSHORE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "longshore token generate"; on boot, an
                     org with no tokens gets one operator token with this hash
   LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
+  LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
+                    required for the GitHub App and its webhook endpoint
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
   LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
@@ -202,7 +213,22 @@ async function serve(args: string[]): Promise<void> {
   ]
     .map((o) => o.trim())
     .filter((o) => o !== "");
-  const server = startServer({ port, host: values.host, db, allowedOrigins });
+  // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
+  let webhooks: WebhookHandler | undefined;
+  const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  if (keyFile) {
+    const store = new SecretStore(db, loadMasterKey(keyFile));
+    const auth = new AppAuth({ db, store });
+    webhooks = createWebhookHandler({ db, store, facts: githubFacts(auth) });
+    void webhooks.retryUnfinished().catch(() => {});
+  }
+  const server = startServer({
+    port,
+    host: values.host,
+    db,
+    allowedOrigins,
+    ...(webhooks ? { webhooks } : {}),
+  });
   console.log(`longshore ${VERSION} listening on http://${server.hostname}:${server.port}`);
 
   const background = await startBackground(db, values);
@@ -315,6 +341,14 @@ async function main(argv: string[]): Promise<void> {
       return await serve(rest);
     case "token":
       return await token(rest);
+    case "keys": {
+      const { keysCommand } = await import("./github/cli");
+      return await keysCommand(rest);
+    }
+    case "github-app": {
+      const { githubAppCommand } = await import("./github/cli");
+      return await githubAppCommand(rest);
+    }
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));

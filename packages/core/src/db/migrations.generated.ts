@@ -122,5 +122,16 @@ export const migrations: Migration[] = [
       "ALTER TABLE `runs` ADD `concurrency_group` text;",
       "CREATE INDEX `runs_concurrency_idx` ON `runs` (`org_id`,`project_id`,`concurrency_group`);"
     ]
+  },
+  {
+    "tag": "0007_violet_starbolt",
+    "when": 1795351041847,
+    "statements": [
+      "CREATE TABLE `github_apps` (\n\t`app_id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`slug` text NOT NULL,\n\t`name` text NOT NULL,\n\t`owner_login` text NOT NULL,\n\t`html_url` text NOT NULL,\n\t`client_id` text NOT NULL,\n\t`previous_secret_expires_at` integer,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `github_installations` (\n\t`installation_id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`app_id` text NOT NULL,\n\t`account_login` text NOT NULL,\n\t`account_id` text NOT NULL,\n\t`account_type` text NOT NULL,\n\t`repository_selection` text NOT NULL,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"github_installations_status_check\" CHECK(status IN ('active', 'suspended', 'deleted'))\n);",
+      "CREATE TABLE `secrets` (\n\t`org_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`ciphertext` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`org_id`, `name`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `webhook_deliveries` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text,\n\t`forge` text DEFAULT 'github' NOT NULL,\n\t`event` text NOT NULL,\n\t`action` text,\n\t`installation_id` text,\n\t`status` text DEFAULT 'received' NOT NULL,\n\t`error` text,\n\t`payload` text,\n\t`received_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`processed_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"webhook_deliveries_status_check\" CHECK(status IN ('received', 'processed', 'ignored', 'failed'))\n);",
+      "CREATE INDEX `webhook_deliveries_received_idx` ON `webhook_deliveries` (`received_at`);"
+    ]
   }
 ];
