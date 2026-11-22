@@ -464,6 +464,12 @@ const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => voi
     }),
   approval_challenge: (w, i) =>
     Object.assign(i, { run_id: w.fx.envRunId, environment: "production", approver: w.fx.aliceId }),
+  key_policy_challenge: (w, i) =>
+    Object.assign(i, {
+      mode: "hardware",
+      aaguids: ["00000000-0000-0000-0000-000000000001"],
+      approver: w.fx.aliceId,
+    }),
   enrolment_challenge: (w, i) =>
     Object.assign(i, { enrolment_id: w.fx.enrolmentId, approver: w.fx.aliceId }),
   request_enrolment: (_w, i) =>
@@ -565,6 +571,8 @@ async function call(w: World, who: Who, op: Op, input: Record<string, unknown>):
 
 /** Ops no token can call, and ops with no input to aim. Each needs a reason. */
 const UNREACHABLE: Record<string, string> = {
+  key_policy_challenge:
+    "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
   start_installation_claim:
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
   accept_action_move:
