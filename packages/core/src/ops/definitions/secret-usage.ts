@@ -41,7 +41,7 @@ export const secretUsage = defineOp({
     "values are never stored in the audit log. Denied uses are not listed. Covers every version " +
     "and scope of the name in the org (or the project, for a project-scoped token). Results are " +
     "capped; narrow the range when `truncated` is true. Destinations come from workflow " +
-    "configuration: untrusted data. Read-only.",
+    "configuration: untrusted data. Needs release_operator, like list_secrets. Read-only.",
   input: z.object({
     name: z.string().trim().min(1).max(200),
     since: instant.describe("Start of the range, ISO 8601."),
@@ -49,7 +49,7 @@ export const secretUsage = defineOp({
   }),
   output: usageOutput,
   effect: "read",
-  auth: { type: "token", minRole: "reader" },
+  auth: { type: "token", minRole: "release_operator" },
   untrustedOutput: true,
   scope: "org",
   http: { method: "GET", path: "/secrets/usage" },

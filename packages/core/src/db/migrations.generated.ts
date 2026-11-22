@@ -214,5 +214,23 @@ export const migrations: Migration[] = [
       "ALTER TABLE `projects` ADD `frozen_reason` text;",
       "ALTER TABLE `projects` ADD `frozen_by` text;"
     ]
+  },
+  {
+    "tag": "0016_sharp_kabuki",
+    "when": 1795372070630,
+    "statements": [
+      "CREATE TABLE `artifacts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text NOT NULL,\n\t`run_id` text NOT NULL,\n\t`attempt_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`sha256` text NOT NULL,\n\t`size` integer NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`run_id`,`org_id`,`project_id`) REFERENCES `runs`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`attempt_id`,`org_id`,`project_id`) REFERENCES `job_attempts`(`id`,`org_id`,`project_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"artifacts_sha256_check\" CHECK(length(\"artifacts\".\"sha256\") = 64)\n);",
+      "CREATE INDEX `artifacts_sha256_idx` ON `artifacts` (`org_id`,`sha256`);",
+      "CREATE UNIQUE INDEX `artifacts_run_name_unique` ON `artifacts` (`org_id`,`project_id`,`run_id`,`name`);",
+      "ALTER TABLE `projects` ADD `release_refs` text;",
+      "ALTER TABLE `projects` ADD `signing_key` text;"
+    ]
+  },
+  {
+    "tag": "0017_lying_imperial_guard",
+    "when": 1795373427913,
+    "statements": [
+      "ALTER TABLE `incident_rotation_flags` ADD `source` text DEFAULT 'builtin' NOT NULL;"
+    ]
   }
 ];

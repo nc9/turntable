@@ -1,0 +1,1 @@
+ALTER TABLE `incident_rotation_flags` ADD `source` text DEFAULT 'builtin' NOT NULL;

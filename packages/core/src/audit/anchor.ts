@@ -6,7 +6,14 @@
 //     longer extends what was signed, is refused).
 // The file is sealed with the master key: someone with only the database cannot forge or edit
 // it, and an edit by someone without the master key fails to open.
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { open, seal, SecretDecryptError } from "../secrets/crypto";
 
@@ -61,6 +68,14 @@ export class AuditAnchor {
     } catch {
       throw new AnchorCorrupt(orgId);
     }
+  }
+
+  /** Org ids that have a state file here. Used so an org whose database rows are gone is still checked. */
+  orgIds(): string[] {
+    if (!existsSync(this.#dir)) return [];
+    return readdirSync(this.#dir)
+      .map((f) => /^([0-9A-Za-z]+)\.state$/.exec(f)?.[1])
+      .filter((x): x is string => x !== undefined);
   }
 
   /** Atomic: written to a temp file and renamed over the old one. Mode 0600. */

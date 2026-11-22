@@ -222,6 +222,8 @@ export type IncidentStatus = {
   reason: string | null;
   frozenAt: number | null;
   frozenBy: string | null;
+  /** Secrets still waiting for rotation; the names come only to release_operator and above. */
+  rotationRequiredCount: number;
   rotationRequired: { name: string; reason: string; flaggedBy: string; flaggedAt: number }[];
 };
 

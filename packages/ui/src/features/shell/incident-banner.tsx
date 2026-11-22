@@ -27,7 +27,8 @@ export function IncidentBanner() {
   }, [reload]);
   const s = q.data;
   if (!s?.frozen) return null;
-  const n = s.rotationRequired.length;
+  const n = s.rotationRequiredCount;
+  const names = s.rotationRequired;
   return (
     <div
       role="alert"
@@ -46,10 +47,14 @@ export function IncidentBanner() {
           {s.frozenAt ? ` ${formatRelative(s.frozenAt)}` : ""}. Running jobs were stopped and
           nothing new starts until it is unfrozen.
           {n > 0
-            ? ` ${n} ${n === 1 ? "secret needs" : "secrets need"} rotation: ${s.rotationRequired
-                .slice(0, 5)
-                .map((r) => sanitize(r.name))
-                .join(", ")}${n > 5 ? ` and ${n - 5} more` : ""}.`
+            ? ` ${n} ${n === 1 ? "secret needs" : "secrets need"} rotation${
+                names.length > 0
+                  ? `: ${names
+                      .slice(0, 5)
+                      .map((r) => sanitize(r.name))
+                      .join(", ")}${n > 5 ? ` and ${n - 5} more` : ""}`
+                  : ""
+              }.`
             : ""}
         </p>
       </div>

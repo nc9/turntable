@@ -278,8 +278,10 @@ test("signature ops are refused for every principal, and absent from every token
     }),
   );
   expect(res?.status).toBe(404);
-  // and the shipped registry has none at all
-  expect(registry.ops.filter((o) => o.auth.type === "signature")).toEqual([]);
+  // The shipped registry has exactly one: sign_release.
+  expect(registry.ops.filter((o) => o.auth.type === "signature").map((o) => o.name)).toEqual([
+    "sign_release",
+  ]);
 });
 
 test("input is strict and validated; output is validated and stripped", async () => {
@@ -361,4 +363,37 @@ test("a failing write rolls back and is audited; a project op needs a project", 
   const audit = await listAudit(db, { orgId: a.orgId });
   expect(audit.some((r) => r.op === "boom" && r.outcome === "error:internal")).toBe(true);
   void getOrgById;
+});
+
+test("sign_release is a signature op: no token of any role can reach it, over any adapter", async () => {
+  const input = { run_id: a.runId, artifacts: ["x.bin"], environment: "production" };
+  for (const role of ["reader", "operator", "release_operator"] as const) {
+    const { secret } = await mintToken(db, a.scope, role);
+    const res = await call(secret, "sign_release", input);
+    expect(!res.ok && res.error.code).toBe("signature_required");
+  }
+  // An in-process member principal is refused too: it carries no signature either.
+  const viaMember = await dispatch(
+    env,
+    { kind: "principal", principal: a.admin },
+    "sign_release",
+    input,
+  );
+  expect(!viaMember.ok && viaMember.error.code).toBe("signature_required");
+  expect(registry.tokenOps().map((o) => o.name)).not.toContain("sign_release");
+  expect(registry.documentedOps().map((o) => o.name)).not.toContain("sign_release");
+  const { mcpTools } = await import("../src/ops/mcp");
+  expect(mcpTools(registry).map((t) => t.name)).not.toContain("sign_release");
+  const { buildOpenApi } = await import("../src/ops/openapi");
+  expect(JSON.stringify(buildOpenApi(registry, "x"))).not.toContain("sign_release");
+  const { createRestApi } = await import("../src/ops/rest");
+  const { secret } = await mintToken(db, a.scope, "release_operator");
+  const rest = await createRestApi(env)(
+    new Request(`http://x/api/v1/runs/${a.runId}/sign`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secret}` },
+      body: JSON.stringify(input),
+    }),
+  );
+  expect(rest?.status).toBe(404);
 });

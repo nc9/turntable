@@ -804,6 +804,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       reason: frozen ? "Deploy key may have leaked in a build log" : null,
       frozenAt: frozen ? now() - 14 * 60_000 : null,
       frozenBy: frozen ? "member:maya" : null,
+      rotationRequiredCount: frozen ? 2 : 0,
       rotationRequired: frozen
         ? [
             {
