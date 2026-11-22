@@ -359,3 +359,88 @@ test("system secrets are in a different table and unreachable from the vault", a
   expect(await store.get(a.orgId, "audit/signing-key")).toBe("PRIVATE");
   void createOrg;
 });
+
+describe("publish credentials (release lane only)", () => {
+  const pub = (
+    t: Tenant,
+    name = "NPM_TOKEN",
+    destination = "registry.npmjs.org",
+    tag = "v1.0.0",
+  ) => ({
+    orgId: t.orgId,
+    projectId: t.projectId,
+    name,
+    destination,
+    tag,
+    requestId: "req-1",
+  });
+  const setNpm = (extra: Record<string, unknown> = {}, policy: Record<string, unknown> = {}) =>
+    vault.set(a.orgId, "t", { name: "NPM_TOKEN", ...extra }, SENTINEL, {
+      destinations: ["registry.npmjs.org"],
+      trustClasses: ["release"],
+      ...policy,
+    });
+  let lane: SecretVault;
+  beforeEach(() => {
+    lane = new SecretVault({ db, masterKey, lane: "release", now: () => now });
+  });
+
+  test("the main lane can never use one", async () => {
+    await setNpm();
+    expect(await vault.usePublishCredential(pub(a))).toEqual({
+      ok: false,
+      reason: "release_lane_only",
+    } as never);
+  });
+
+  test("the release lane gets the value for an allowed destination, audited without it", async () => {
+    await setNpm();
+    expect(await lane.usePublishCredential(pub(a))).toMatchObject({ ok: true, value: SENTINEL });
+    const used = (await chainedAudit(db, a.orgId, 0, 100)).find((x) => x.op === "secret_use")!;
+    expect(used.outcome).toBe("ok");
+    expect(JSON.parse(used.input)).toMatchObject({ secret: "NPM_TOKEN", request: "req-1" });
+    expect(used.input).not.toContain(SENTINEL);
+  });
+
+  test("refused: other destination, wrong class, ref mismatch, environment, other project", async () => {
+    await setNpm();
+    expect((await lane.usePublishCredential(pub(a, "NPM_TOKEN", "evil.example.com"))).ok).toBe(
+      false,
+    );
+    expect(await lane.usePublishCredential(pub(a, "MISSING"))).toMatchObject({
+      reason: "no_match",
+    });
+
+    await vault.set(a.orgId, "t", { name: "PROT" }, SENTINEL, {
+      destinations: ["registry.npmjs.org"],
+      trustClasses: ["protected"],
+    });
+    expect(await lane.usePublishCredential(pub(a, "PROT"))).toMatchObject({
+      reason: "class_not_allowed",
+    });
+
+    await vault.set(a.orgId, "t", { name: "REF", refPattern: "refs/tags/v2.*" }, SENTINEL, {
+      destinations: ["registry.npmjs.org"],
+      trustClasses: ["release"],
+    });
+    expect(await lane.usePublishCredential(pub(a, "REF"))).toMatchObject({ reason: "no_match" });
+
+    await vault.set(a.orgId, "t", { name: "ENV", environment: "prod" }, SENTINEL, {
+      destinations: ["registry.npmjs.org"],
+      trustClasses: ["release"],
+    });
+    expect(await lane.usePublishCredential(pub(a, "ENV"))).toMatchObject({ reason: "no_match" });
+
+    const p2 = await createProject(db, { orgId: a.orgId }, { slug: "other2", name: "Other2" });
+    await vault.set(a.orgId, "t", { name: "OTHER", projectId: p2.id }, SENTINEL, {
+      destinations: ["registry.npmjs.org"],
+      trustClasses: ["release"],
+    });
+    expect(await lane.usePublishCredential(pub(a, "OTHER"))).toMatchObject({ reason: "no_match" });
+    const denied = (await chainedAudit(db, a.orgId, 0, 200)).filter((x) =>
+      x.outcome.startsWith("error:"),
+    );
+    expect(denied.length).toBeGreaterThan(0);
+    expect(JSON.stringify(denied)).not.toContain(SENTINEL);
+  });
+});

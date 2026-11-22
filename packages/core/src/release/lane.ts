@@ -18,6 +18,9 @@ import {
 import type { AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
 import type { ForgeFacts } from "./forge";
+import { publishGithubRelease } from "./publish/github-release";
+import { publishNpm } from "./publish/npm";
+import type { PublishWiring, TargetResult } from "./publish/types";
 
 /** The part of the signing service the lane uses (SigningService.signRelease). */
 export interface ReleaseSigner {
@@ -75,6 +78,8 @@ export interface LaneOptions {
   records: ArtifactRecords;
   attest: AttestationStore;
   signer: ReleaseSigner;
+  /** Publishes the signed release to the project's declared targets, when given. */
+  publish?: PublishWiring;
   /** This lane's identity in claimed_by. */
   owner: string;
   now?: () => number;
@@ -85,7 +90,13 @@ const TAG = /^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/;
 const sha256 = (b: Uint8Array): string => createHash("sha256").update(b).digest("hex");
 
 type Decision =
-  | { status: "signed"; result: unknown; facts: Record<string, unknown> }
+  | {
+      status: "signed";
+      result: unknown;
+      facts: Record<string, unknown>;
+      /** What was verified and signed, for the publish step. */
+      verified: { repo: string; digests: Record<string, string>; envelope: unknown };
+    }
   | { status: "refused"; reason: LaneDenial; detail?: string; facts: Record<string, unknown> };
 
 export class ReleaseLane {
@@ -119,12 +130,33 @@ export class ReleaseLane {
       await this.#audit(scope, req, "error:lane_error", { detail: msg.slice(0, 300) });
       return true;
     }
+    // Signed: now publish what was verified. A failure here never un-signs the release; each
+    // target says how it went, and a re-run of the same request resumes where it stopped.
+    let published: TargetResult[] = [];
+    if (decision.status === "signed") {
+      try {
+        published = await this.#publish(req, scope, decision.verified);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        published = [
+          { target: "*", state: "failed", reason: "publish_error", detail: msg.slice(0, 200) },
+        ];
+        await this.#audit(scope, req, "error:publish_error", { detail: msg.slice(0, 200) });
+      }
+    }
     await finishReleaseRequest(
       this.#o.db,
       req.id,
       this.#o.owner,
       decision.status === "signed"
-        ? { status: "signed", result: decision.result, facts: decision.facts }
+        ? {
+            status: "signed",
+            result: {
+              ...(decision.result as Record<string, unknown>),
+              ...(published.length > 0 ? { published } : {}),
+            },
+            facts: decision.facts,
+          }
         : {
             status: "refused",
             reason: decision.reason,
@@ -232,7 +264,118 @@ export class ReleaseLane {
       status: "signed",
       result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
       facts,
+      verified: { repo: pinned, digests, envelope: out.envelope },
     };
+  }
+
+  /**
+   * Publishes to each declared target, in key order. Before each: an incident freeze stops it. A
+   * target already done is not repeated. Whatever happens is recorded and audited, never a credential.
+   */
+  async #publish(
+    req: ReleaseRequest,
+    scope: { orgId: string; projectId: string },
+    v: { repo: string; digests: Record<string, string>; envelope: unknown },
+  ): Promise<TargetResult[]> {
+    const w = this.#o.publish;
+    const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
+    const keys = Object.keys(targets);
+    if (!w || keys.length === 0) return [];
+    const now = this.#o.now ?? Date.now;
+    const id = { orgId: scope.orgId, projectId: scope.projectId, repo: v.repo, tag: req.tag };
+    const ctx = {
+      scope,
+      requestId: req.id,
+      repo: v.repo,
+      tag: req.tag,
+      digests: v.digests,
+      readBytes: (name: string) => this.#o.bytes.read(req.runId, name),
+      provenance: JSON.stringify(v.envelope),
+    };
+    const out: TargetResult[] = [];
+    for (const key of keys) {
+      const t = targets[key]!;
+      const record = async (r: TargetResult): Promise<void> => {
+        this.#o.attest.setPublishState(id, key, r.state, r.reason ?? null, now());
+        await this.#audit(
+          scope,
+          req,
+          `publish:${key}:${r.state}${r.reason ? `:${r.reason}` : ""}`,
+          {
+            target: key,
+            kind: t.kind,
+            ...(r.detail ? { detail: r.detail } : {}),
+            ...r.facts,
+          },
+        );
+        out.push(r);
+      };
+      if ((await getFreeze(this.#o.db, scope)).frozen) {
+        await record({ target: key, state: "refused", reason: "frozen" });
+        continue;
+      }
+      const prior = this.#o.attest.publishState(id, key);
+      if (prior && (prior.state === "published" || prior.state === "already")) {
+        out.push({ target: key, state: "already", reason: "recorded" });
+        continue;
+      }
+      // A target may name only artifacts this request asked for and the lane verified.
+      const named = t.kind === "npm" ? [t.artifact] : t.assets;
+      const stray = named.filter((n) => !(n in v.digests));
+      if (stray.length > 0) {
+        await record({
+          target: key,
+          state: "refused",
+          reason: "artifact_not_requested",
+          detail: stray.join(", "),
+        });
+        continue;
+      }
+      try {
+        if (t.kind === "npm") {
+          const registry = w.npmRegistry ?? "https://registry.npmjs.org";
+          const token = await w.credentials.secret(
+            scope,
+            t.secret,
+            new URL(registry).hostname,
+            req.tag,
+            req.id,
+          );
+          if (!token) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await publishNpm(key, t, ctx, token, {
+              ...(w.npmRegistry ? { registry: w.npmRegistry } : {}),
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+            }),
+          );
+        } else {
+          const token = await w.credentials.githubToken();
+          if (!token) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await publishGithubRelease(key, t, ctx, token, {
+              ...(w.githubApi ? { api: w.githubApi } : {}),
+              ...(w.githubUploads ? { uploads: w.githubUploads } : {}),
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+            }),
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await record({
+          target: key,
+          state: "failed",
+          reason: "exception",
+          detail: msg.slice(0, 200),
+        });
+      }
+    }
+    return out;
   }
 
   #audit(
