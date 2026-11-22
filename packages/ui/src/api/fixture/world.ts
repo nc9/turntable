@@ -886,6 +886,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
           source: "default" as const,
         },
       ],
+      warnings: [],
     };
   }
 

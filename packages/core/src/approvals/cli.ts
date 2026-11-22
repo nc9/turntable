@@ -13,13 +13,14 @@ import {
   revokeApprover,
   setEnvPolicy,
 } from "../db/repos";
+import { approvalWarnings } from "./apply";
 import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "./keys";
 
 export const APPROVALS_USAGE = `Usage:
   longshore approvals keygen --out <private-key-file>
       Makes an ed25519 approver key. The private key is written (mode 0600) to the file and never
       leaves it; the public key is printed. Run it on the machine that will hold the key.
-  longshore approvals bootstrap --org <slug> --person <name> [--forge-login <login>] --public-key <file|text>
+  longshore approvals bootstrap --org <slug> --person <name> --forge-login <login> --public-key <file|text>
       Enrols the FIRST approver of an org. Refused once any approver exists: after that, new keys
       need a quorum of existing approvers (request_enrolment / approve_enrolment).
   longshore approvals sign --key <private-key-file> --statement <file|->
@@ -99,7 +100,7 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     }
     const now = Date.now();
     if (sub === "bootstrap") {
-      if (!values.person || !values["public-key"]) return usage();
+      if (!values.person || !values["public-key"] || !values["forge-login"]) return usage();
       if ((await listApprovers(db, org.id)).length > 0) {
         console.error(
           "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
@@ -111,7 +112,7 @@ export async function approvalsCommand(args: string[]): Promise<number> {
         org.id,
         {
           person: values.person,
-          forgeLogin: values["forge-login"] ?? null,
+          forgeLogin: values["forge-login"],
           kind: "ed25519",
           publicKey: parseEd25519PublicKey(read(values["public-key"])),
           alg: "EdDSA",
@@ -119,10 +120,8 @@ export async function approvalsCommand(args: string[]): Promise<number> {
         },
         now,
       );
-      if (!values["forge-login"])
-        console.error(
-          "warning: no --forge-login, so this approver is not recognised as the author of their own runs and could approve them.",
-        );
+      for (const w of await approvalWarnings(db, org.id, ["production", "release"]))
+        console.error(`warning: ${w}`);
       console.log(JSON.stringify({ approver_id: a.id, person: a.person }));
       return 0;
     }
@@ -153,6 +152,11 @@ export async function approvalsCommand(args: string[]): Promise<number> {
               kind: a.kind,
               forge_login: a.forgeLogin,
             })),
+            warnings: await approvalWarnings(db, org.id, [
+              "production",
+              "release",
+              ...(await listEnvPolicies(db, org.id)).map((p) => p.environment),
+            ]),
             policies: (await listEnvPolicies(db, org.id)).map((p) => ({
               environment: p.environment,
               required: p.required,

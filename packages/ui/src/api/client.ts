@@ -100,7 +100,7 @@ export interface LongshoreApi {
   registerChallenge(): Promise<{ challenge: string; rpId: string; expiresAt: number }>;
   requestEnrolment(args: {
     person: string;
-    forgeLogin?: string;
+    forgeLogin: string;
     webauthn: { challenge: string; clientDataJson: string; attestationObject: string };
   }): Promise<{ enrolmentId: string; keyFingerprint: string; required: number; expiresAt: number }>;
   enrolmentChallenge(args: {

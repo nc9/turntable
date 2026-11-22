@@ -3752,9 +3752,16 @@
                         "required": ["environment", "required", "allow_author_approval", "source"],
                         "additionalProperties": false
                       }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Ways the approval setup is weaker than it looks, such as too few approvers."
                     }
                   },
-                  "required": ["approvers", "pending_enrolments", "policies"],
+                  "required": ["approvers", "pending_enrolments", "policies", "warnings"],
                   "additionalProperties": false
                 }
               }
@@ -4126,9 +4133,10 @@
                     "description": "A name for the human who holds the key."
                   },
                   "forge_login": {
-                    "description": "Their forge login, so they cannot approve runs they authored.",
                     "type": "string",
-                    "maxLength": 100
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Their forge login. Required: an approval is refused when it cannot be shown that the approver is not the run's author."
                   },
                   "ed25519_public_key": {
                     "type": "string",
@@ -4167,7 +4175,7 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["person"],
+                "required": ["person", "forge_login"],
                 "additionalProperties": false
               }
             }

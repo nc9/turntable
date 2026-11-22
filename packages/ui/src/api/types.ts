@@ -305,6 +305,8 @@ export type ApproversOverview = {
     allowAuthorApproval: boolean;
     source: "configured" | "default";
   }[];
+  /** Ways the approval setup is weaker than it looks, such as too few approvers. */
+  warnings: string[];
 };
 
 export type EnvironmentApprovalResult = {

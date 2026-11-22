@@ -391,7 +391,12 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
   const approvers = ok(op("/approvers", "get"));
   expectKeys(
     approvers,
-    keysOf<WireApprovers>({ approvers: true, pending_enrolments: true, policies: true }),
+    keysOf<WireApprovers>({
+      approvers: true,
+      pending_enrolments: true,
+      policies: true,
+      warnings: true,
+    }),
   );
   expectKeys(approvers.properties!.approvers!.items!, [
     "id",

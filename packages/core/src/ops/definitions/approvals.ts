@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
+  approvalWarnings,
   applyEnrolmentApproval,
   applyEnvironmentApproval,
   enrolmentQuorum,
@@ -197,6 +198,9 @@ export const approversOverview = defineOp({
         source: z.enum(["configured", "default"]),
       }),
     ),
+    warnings: z
+      .array(z.string())
+      .describe("Ways the approval setup is weaker than it looks, such as too few approvers."),
   }),
   effect: "read",
   auth: { type: "token", minRole: "reader" },
@@ -245,6 +249,7 @@ export const approversOverview = defineOp({
       })),
       pending_enrolments: pending,
       policies,
+      warnings: await approvalWarnings(ctx.db, orgId, [...names]),
     };
   },
 });
@@ -445,9 +450,11 @@ export const requestEnrolment = defineOp({
     forge_login: z
       .string()
       .trim()
+      .min(1)
       .max(100)
-      .optional()
-      .describe("Their forge login, so they cannot approve runs they authored."),
+      .describe(
+        "Their forge login. Required: an approval is refused when it cannot be shown that the approver is not the run's author.",
+      ),
     ed25519_public_key: z.string().max(4096).optional(),
     webauthn: z
       .strictObject({
@@ -533,7 +540,7 @@ export const requestEnrolment = defineOp({
         orgId,
         {
           person: input.person,
-          forgeLogin: input.forge_login ?? null,
+          forgeLogin: input.forge_login,
           ...key,
           requestedBy: principalLabel(ctx.principal),
           expiresAt: now + ENROLMENT_TTL_MS,

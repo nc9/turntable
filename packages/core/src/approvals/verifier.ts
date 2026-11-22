@@ -5,7 +5,7 @@
 // approver key (the org's enrolled keys, or the caller's own key store).
 import type { Db } from "../db";
 import { getEnvPolicy, getRun, listEnvironmentRecords, parseTrust } from "../db/repos";
-import { liveEnvironmentRecords } from "./apply";
+import { authorBlocked, liveEnvironmentRecords } from "./apply";
 import { dbKeyStore } from "./store";
 import { statementHash, envStatementSchema } from "./statement";
 import { signatureSchema, verifySignature, type ApproverKeyStore } from "./verify";
@@ -112,12 +112,7 @@ export function createApprovalVerifier(
         } catch {
           continue;
         }
-        if (
-          !policy.allowAuthorApproval &&
-          key.forgeLogin !== null &&
-          run.actor !== null &&
-          key.forgeLogin.toLowerCase() === run.actor.toLowerCase()
-        ) {
+        if (authorBlocked(policy, key.forgeLogin, run.actor) !== null) {
           selfApproved = true;
           continue;
         }

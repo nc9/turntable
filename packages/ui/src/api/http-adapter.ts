@@ -558,6 +558,7 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
           allowAuthorApproval: p.allow_author_approval,
           source: p.source,
         })),
+        warnings: w.warnings,
       };
     },
 
@@ -606,7 +607,7 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         {},
         {
           person,
-          ...(forgeLogin ? { forge_login: forgeLogin } : {}),
+          forge_login: forgeLogin,
           webauthn: {
             challenge: webauthn.challenge,
             client_data_json: webauthn.clientDataJson,

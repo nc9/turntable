@@ -240,6 +240,7 @@ export type WireApprovers = {
     allow_author_approval: boolean;
     source: "configured" | "default";
   }[];
+  warnings: string[];
 };
 
 export type WireChallenge = {

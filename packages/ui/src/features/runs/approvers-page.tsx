@@ -53,13 +53,15 @@ export function ApproversPage() {
   const register = () =>
     run(async () => {
       if (person.trim() === "") throw new Error("Enter the person's name first.");
+      if (forge.trim() === "")
+        throw new Error("Enter their forge login: approvals are refused without it.");
       const rc = await api.registerChallenge();
       const created = simulated
         ? { clientDataJson: "fixture", attestationObject: "fixture" }
         : await createPasskey({ challenge: rc.challenge, rpId: rc.rpId, person: person.trim() });
       const r = await api.requestEnrolment({
         person: person.trim(),
-        ...(forge.trim() ? { forgeLogin: forge.trim() } : {}),
+        forgeLogin: forge.trim(),
         webauthn: { challenge: rc.challenge, ...created },
       });
       setPerson("");
@@ -102,6 +104,19 @@ export function ApproversPage() {
         People whose keys can approve a release. A run needs approvals from distinct people, and its
         author cannot approve it.
       </p>
+
+      {d.warnings.length > 0 ? (
+        <div
+          role="note"
+          className="mt-5 rounded-lg border border-st-infra/40 bg-st-infra-bg p-3.5 text-sm"
+        >
+          {d.warnings.map((w) => (
+            <p key={w} className="text-foreground">
+              {sanitize(w)}
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       <section aria-labelledby="keys-h" className="mt-6">
         <h2 id="keys-h" className="mb-2 text-sm font-semibold">
@@ -234,6 +249,7 @@ export function ApproversPage() {
               </label>
               <Input
                 id="ap-forge"
+                required
                 value={forge}
                 onChange={(e) => setForge(e.target.value)}
                 className="mt-1.5"
@@ -242,7 +258,7 @@ export function ApproversPage() {
                 aria-describedby="ap-forge-help"
               />
               <p id="ap-forge-help" className="mt-1 text-xs text-dim">
-                Lets the rule that authors cannot approve their own runs recognise them.
+                Required. Lets the rule that authors cannot approve their own runs recognise them.
               </p>
             </div>
             <div className="sm:col-span-2">

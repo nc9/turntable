@@ -9,6 +9,8 @@ import {
   consumeChallenge,
   getEnrolment,
   getEnvPolicy,
+  getOrgById,
+  getProject,
   getRun,
   insertRecord,
   listEnrolmentRecords,
@@ -47,6 +49,45 @@ async function verified(
     if (e instanceof VerifyError) throw new OpError("unauthenticated", "signature not accepted");
     throw e;
   }
+}
+
+/**
+ * A signed statement names its tenant. It applies only where it was signed for: the org slug (and
+ * the project slug, for an environment statement) must be those of the scope the request resolved
+ * to, so a statement valid for one org or project can never be spent in another.
+ */
+async function checkTenant(c: Ctx, statement: { org: string; project?: string }): Promise<void> {
+  const org = await getOrgById(c.db, c.scope.orgId);
+  if (!org || org.slug !== statement.org)
+    throw new OpError("conflict", "the statement is for another org");
+  if (statement.project !== undefined) {
+    const project = c.scope.projectId
+      ? await getProject(c.db, { orgId: c.scope.orgId }, c.scope.projectId)
+      : undefined;
+    if (!project || project.slug !== statement.project)
+      throw new OpError("conflict", "the statement is for another project");
+  }
+}
+
+/**
+ * The run's author may not approve it. This fails closed: when the approver's forge login or the
+ * run's author is unknown, it cannot be established that they are different people, so the
+ * approval is refused (unless the environment's policy allows author approval).
+ */
+export function authorBlocked(
+  policy: { allowAuthorApproval: boolean },
+  approverForgeLogin: string | null,
+  runActor: string | null,
+): "author" | "unknown" | null {
+  if (policy.allowAuthorApproval) return null;
+  if (
+    approverForgeLogin === null ||
+    approverForgeLogin === "" ||
+    runActor === null ||
+    runActor === ""
+  )
+    return "unknown";
+  return approverForgeLogin.toLowerCase() === runActor.toLowerCase() ? "author" : null;
 }
 
 function checkExpiry(expiresAt: number, now: number): void {
@@ -144,6 +185,7 @@ export async function applyEnvironmentApproval(
   signature: SignatureMaterial,
 ): Promise<EnvironmentApprovalResult> {
   const v = await verified(c, statement, signature);
+  await checkTenant(c, statement);
   checkExpiry(statement.expires_at, c.now);
   const run = await getRun(c.db, c.scope, statement.run_id);
   if (!run) throw new OpError("not_found", "run not found");
@@ -155,14 +197,13 @@ export async function applyEnvironmentApproval(
   if (!(await waitingEnvironments(c.db, c.scope, run.id)).includes(statement.environment))
     throw new OpError("conflict", "no job of this run waits for approval in that environment");
   const policy = await getEnvPolicy(c.db, c.scope.orgId, statement.environment);
-  if (
-    !policy.allowAuthorApproval &&
-    v.key.forgeLogin !== null &&
-    run.actor !== null &&
-    v.key.forgeLogin.toLowerCase() === run.actor.toLowerCase()
-  ) {
-    throw new OpError("forbidden", "the author of a run cannot approve it");
-  }
+  const blocked = authorBlocked(policy, v.key.forgeLogin, run.actor);
+  if (blocked === "author") throw new OpError("forbidden", "the author of a run cannot approve it");
+  if (blocked === "unknown")
+    throw new OpError(
+      "forbidden",
+      "cannot establish that the approver is not the author of this run (the approver's forge login or the run's author is unknown)",
+    );
   await consumeProof(c, v, "approve", statement.nonce);
   await record(c, v, signature, {
     kind: "environment",
@@ -219,6 +260,7 @@ export async function applyEnrolmentApproval(
   signature: SignatureMaterial,
 ): Promise<EnrolmentApprovalResult> {
   const v = await verified(c, statement, signature);
+  await checkTenant(c, statement);
   checkExpiry(statement.expires_at, c.now);
   const e = await getEnrolment(c.db, c.scope.orgId, statement.enrolment_id);
   if (!e || e.activatedAt !== null || e.expiresAt <= c.now)
@@ -262,4 +304,32 @@ export async function applyEnrolmentApproval(
     activated: approverId !== null,
     approver_id: approverId,
   };
+}
+
+/**
+ * Warnings about how strong the approval setup is. The two-person rule is only as strong as who
+ * can enrol approvers: with fewer people enrolled than an environment requires, a single approver
+ * enrols further identities alone (the quorum is capped by who could sign), so "two people" can
+ * be one person with two keys.
+ */
+export async function approvalWarnings(
+  db: Db,
+  orgId: string,
+  environments: string[],
+): Promise<string[]> {
+  const people = (await activePeople(db, orgId)).length;
+  const out: string[] = [];
+  let max = 0;
+  for (const environment of environments) {
+    max = Math.max(max, (await getEnvPolicy(db, orgId, environment)).required);
+  }
+  if (people === 0)
+    out.push(
+      "No approver is enrolled, so no protected job can be approved. Enrol the first one with longshore approvals bootstrap.",
+    );
+  else if (people < max)
+    out.push(
+      `Approvals need ${max} distinct people but only ${people} ${people === 1 ? "is" : "are"} enrolled. Until ${max} people are enrolled, a sole approver can enrol more keys alone, so the two-person rule is not yet a guarantee.`,
+    );
+  return out;
 }

@@ -161,14 +161,14 @@ let t = 1_800_000_000_000;
 const now = () => t;
 
 type Person = { name: string; id: string; priv: string };
-async function ed25519Approver(person: string, forgeLogin?: string): Promise<Person> {
+async function ed25519Approver(person: string, forgeLogin?: string | null): Promise<Person> {
   const k = generateEd25519();
   const a = await insertApprover(
     db,
     orgId,
     {
       person,
-      forgeLogin: forgeLogin ?? null,
+      forgeLogin: forgeLogin === undefined ? `${person}-gh` : forgeLogin,
       kind: "ed25519",
       publicKey: k.publicSpki,
       alg: "EdDSA",
@@ -515,13 +515,13 @@ describe("two approvers release a production job", () => {
 });
 
 describe("WebAuthn approvals", () => {
-  async function passkey(person: string, forge?: string) {
+  async function passkey(person: string, forge: string = `${person}-gh`) {
     // Enrolled through the same path production uses once a first approver exists.
     const dev = softAuthenticator();
     const ch = await ok(releaseTok, "register_challenge");
     const enrol = await ok(releaseTok, "request_enrolment", {
       person,
-      ...(forge ? { forge_login: forge } : {}),
+      forge_login: forge,
       webauthn: { challenge: ch.challenge, ...snake(dev.register(ch.challenge)) },
     });
     return { dev, enrol };
@@ -605,6 +605,7 @@ describe("WebAuthn approvals", () => {
   test("the first approver cannot come from the API", async () => {
     const r = await call(releaseTok, "request_enrolment", {
       person: "x",
+      forge_login: "x-gh",
       ed25519_public_key: generateEd25519().publicSpki,
     });
     expect(!r.ok && r.error.code).toBe("conflict");
@@ -829,12 +830,28 @@ describe("offline signature and CLI", () => {
           "cli-org",
           "--person",
           "mallory",
+          "--forge-login",
+          "mallory-gh",
           "--public-key",
           pub,
           "--data-dir",
           dir,
         ]),
       ).toBe(1);
+      // A forge login is required: without it an approval could not be told from the author's.
+      expect(
+        await approvalsCommand([
+          "bootstrap",
+          "--org",
+          "cli-org",
+          "--person",
+          "x",
+          "--public-key",
+          pub,
+          "--data-dir",
+          dir,
+        ]),
+      ).toBe(2);
       expect(
         await approvalsCommand([
           "policy",
@@ -860,5 +877,170 @@ describe("offline signature and CLI", () => {
       console.error = err;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---- tenant binding, the author check failing closed, and the weak-setup warning ----
+
+describe("review hardening", () => {
+  async function otherOrgAndProject() {
+    const other = await createOrg(db, { slug: "globex", name: "Globex" });
+    const otherProject = await createProject(db, { orgId }, { slug: "web", name: "Web" });
+    return { other, otherProject };
+  }
+
+  test("a statement that names another org or another project is refused, even when otherwise valid", async () => {
+    const alice = await ed25519Approver("alice");
+    const c = await challenge(alice.id);
+    const { other } = await otherOrgAndProject();
+    // Another org: the key is not enrolled there, so the signature is not accepted at all...
+    const wrongOrg: EnvStatement = { ...c.statement, org: other.slug };
+    const r1 = await approve(wrongOrg, {
+      kind: "ed25519",
+      signature: signEd25519(alice.priv, canonicalStatement(wrongOrg)),
+    });
+    expect(r1.ok).toBe(false);
+    // ...and applying it directly to this scope (a token relay, or a bug) is refused as a conflict.
+    const relay = await call(operatorTok, "submit_approval", {
+      statement: wrongOrg,
+      signature: {
+        kind: "ed25519",
+        signature: signEd25519(alice.priv, canonicalStatement(wrongOrg)),
+      },
+      project: "app",
+    });
+    expect(relay.ok).toBe(false);
+    // Another project of the same org: signed by a valid key, for a project the run is not in.
+    const wrongProject: EnvStatement = { ...c.statement, project: "web", nonce: "p".repeat(24) };
+    const sig = {
+      kind: "ed25519",
+      signature: signEd25519(alice.priv, canonicalStatement(wrongProject)),
+    };
+    const r2 = await approve(wrongProject, sig);
+    expect(r2.ok).toBe(false);
+    const viaRelay = await call(operatorTok, "submit_approval", {
+      statement: wrongProject,
+      signature: sig,
+      project: "app",
+    });
+    expect(!viaRelay.ok && viaRelay.error.code).toBe("forbidden");
+    // The same statement bound to the right org and project works.
+    const right = await approve(c.statement, await signOffline(alice, c));
+    expect(right.ok).toBe(true);
+  });
+
+  test("the tenant check lives in the apply step too, not only at the edges", async () => {
+    const { applyEnvironmentApproval } = await import("../src/approvals/apply");
+    const alice = await ed25519Approver("alice");
+    const c = await challenge(alice.id);
+    const forProject: EnvStatement = { ...c.statement, project: "web", nonce: "q".repeat(24) };
+    await expect(
+      applyEnvironmentApproval({ db, scope, now: t, rp: RP }, forProject, {
+        kind: "ed25519",
+        signature: signEd25519(alice.priv, canonicalStatement(forProject)),
+      }),
+    ).rejects.toThrow(/another project/);
+    const forOrg: EnvStatement = { ...c.statement, org: "globex", nonce: "r".repeat(24) };
+    await expect(
+      applyEnvironmentApproval({ db, scope, now: t, rp: RP }, forOrg, {
+        kind: "ed25519",
+        signature: signEd25519(alice.priv, canonicalStatement(forOrg)),
+      }),
+    ).rejects.toThrow(/another org/);
+  });
+
+  test("the author check fails closed: an approver with no forge login, or a run with no author, is refused", async () => {
+    const noLogin = await ed25519Approver("nologin", null);
+    const c = await challenge(noLogin.id);
+    const r = await approve(c.statement, await signOffline(noLogin, c));
+    expect(!r.ok && r.error.code).toBe("forbidden");
+    expect(!r.ok && r.error.message).toContain("cannot establish");
+    // A run whose author is unknown.
+    const anon = await makeRun({ sha: "9".repeat(40) });
+    await db.run(async (h) => {
+      await h.orm.run(sql`update runs set actor = NULL where id = ${anon}`);
+    });
+    const bob = await ed25519Approver("bob");
+    const c2 = await challenge(bob.id, "production", anon);
+    const r2 = await approve(c2.statement, await signOffline(bob, c2));
+    expect(!r2.ok && r2.error.code).toBe("forbidden");
+    expect(!r2.ok && r2.error.message).toContain("cannot establish");
+    // The solo policy waives the check, as documented.
+    await setEnvPolicy(db, orgId, {
+      environment: "production",
+      required: 1,
+      allowAuthorApproval: true,
+      by: "t",
+      now: t,
+    });
+    const c3 = await challenge(noLogin.id);
+    expect((await approve(c3.statement, await signOffline(noLogin, c3))).ok).toBe(true);
+  });
+
+  test("the verifier does not count an approval it cannot show is not the author's", async () => {
+    const verifier = createApprovalVerifier(db, { rp: RP });
+    const alice = await ed25519Approver("alice");
+    const bob = await ed25519Approver("bob");
+    for (const p of [alice, bob]) {
+      const c = await challenge(p.id);
+      await approve(c.statement, await signOffline(p, c));
+    }
+    const subject = {
+      orgId,
+      projectId: scope.projectId,
+      runId,
+      headSha: SHA,
+      workflowHash: WF_HASH,
+    };
+    expect((await verifier.verify(subject, "production", { now: t })).approved).toBe(true);
+    // The run's author becomes unknown after the fact: the approvals stop counting.
+    await db.run(async (h) => {
+      await h.orm.run(sql`update runs set actor = NULL where id = ${runId}`);
+    });
+    const v = await verifier.verify(subject, "production", { now: t });
+    expect(!v.approved && v.reason).toBe("self_approval");
+  });
+
+  test("enrolment requires a forge login", async () => {
+    await ed25519Approver("alice");
+    const r = await call(releaseTok, "request_enrolment", {
+      person: "carl",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(!r.ok && r.error.code).toBe("invalid_input");
+    const ok2 = await call(releaseTok, "request_enrolment", {
+      person: "carl",
+      forge_login: "carl-gh",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    expect(ok2.ok).toBe(true);
+  });
+
+  test("a setup with fewer approvers than an environment needs says so, in the API and the CLI", async () => {
+    const empty = await ok(releaseTok, "approvers_overview");
+    expect(empty.warnings.join(" ")).toContain("No approver is enrolled");
+    await ed25519Approver("alice");
+    const one = await ok(releaseTok, "approvers_overview");
+    expect(one.warnings.join(" ")).toContain("need 2 distinct people but only 1 is enrolled");
+    expect(one.warnings.join(" ")).toContain("sole approver can enrol more keys alone");
+    await ed25519Approver("bob");
+    expect((await ok(releaseTok, "approvers_overview")).warnings).toEqual([]);
+    // A policy of one needs no second person.
+    const { approvalWarnings } = await import("../src/approvals/apply");
+    await setEnvPolicy(db, orgId, {
+      environment: "production",
+      required: 1,
+      allowAuthorApproval: false,
+      by: "t",
+      now: t,
+    });
+    await setEnvPolicy(db, orgId, {
+      environment: "release",
+      required: 1,
+      allowAuthorApproval: false,
+      by: "t",
+      now: t,
+    });
+    expect(await approvalWarnings(db, orgId, ["production", "release"])).toEqual([]);
   });
 });
