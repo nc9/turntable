@@ -1,0 +1,20 @@
+{
+  "name": "@turntable/act-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@turntable/provider-sdk": "workspace:*",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@turntable/provider-docker": "workspace:*",
+    "@types/bun": "1.4.4"
+  }
+}

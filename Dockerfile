@@ -13,6 +13,7 @@ COPY packages/provider-conformance/package.json packages/provider-conformance/pa
 COPY packages/provider-docker/package.json packages/provider-docker/package.json
 COPY packages/redact/package.json packages/redact/package.json
 COPY packages/ui/package.json packages/ui/package.json
+COPY packages/act-runner/package.json packages/act-runner/package.json
 RUN bun install --frozen-lockfile
 COPY . .
 RUN case "${TARGETARCH}" in \
