@@ -128,14 +128,23 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
       .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
       .from(s.logChunks)
       .where(eq(s.logChunks.orgId, orgId));
+    // A size below zero (a row that predates the check in recordArtifact) never lowers the sum.
     const [arts] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.artifacts.size}), 0)`.mapWith(Number) })
+      .select({
+        n: sql<number>`coalesce(sum(case when ${s.artifacts.size} > 0 then ${s.artifacts.size} else 0 end), 0)`.mapWith(
+          Number,
+        ),
+      })
       .from(s.artifacts)
       .where(eq(s.artifacts.orgId, orgId));
     // The control-plane cache counts too: complete entries and live reservations (the cache has
     // its own per-class shares inside this org; this is the org-wide figure).
     const [cache] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)`.mapWith(Number) })
+      .select({
+        n: sql<number>`coalesce(sum(case when ${s.cacheEntries.size} > 0 then ${s.cacheEntries.size} else 0 end), 0)`.mapWith(
+          Number,
+        ),
+      })
       .from(s.cacheEntries)
       .where(eq(s.cacheEntries.orgId, orgId));
     return {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -200,6 +201,69 @@ describe("quota enforcement at claim", () => {
       });
     });
     expect((await quotaUsage(db, a.orgId, NOW)).storedBytes).toBe(57);
+  });
+});
+
+describe("artifact sizes cannot be used to dodge the stored-bytes quota", () => {
+  const rec = async (name: string, size: number, bytes?: Uint8Array) => {
+    const y = await queued(a, name);
+    return recordArtifact(db, a.scope, {
+      runId: y.run.id,
+      attemptId: y.attempt.id,
+      name,
+      sha256: bytes ? createHash("sha256").update(bytes).digest("hex") : "a".repeat(64),
+      size,
+      ...(bytes ? { bytes } : {}),
+    });
+  };
+  const stored = async () => (await quotaUsage(db, a.orgId, NOW)).storedBytes;
+
+  test("a negative, NaN, infinite, fractional or unsafe size is refused, and nothing is recorded", async () => {
+    for (const size of [-1, -1_000_000, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 60]) {
+      await expect(rec(`bad-${String(size)}`, size)).rejects.toThrow("non-negative integer");
+    }
+    expect(await stored()).toBe(0);
+  });
+
+  test("with the bytes in hand the size must be exactly their length", async () => {
+    const bytes = new Uint8Array(10).fill(7);
+    await expect(rec("short", 3, bytes)).rejects.toThrow("size does not match");
+    await expect(rec("long", 11, bytes)).rejects.toThrow("size does not match");
+    expect(await stored()).toBe(0);
+    const ok = await rec("exact", 10, bytes);
+    expect(ok.size).toBe(10);
+    expect(await stored()).toBe(10);
+  });
+
+  test("zero and a reported size without bytes are fine", async () => {
+    expect((await rec("empty", 0)).size).toBe(0);
+    expect((await rec("reported", 40)).size).toBe(40);
+    expect(await stored()).toBe(40);
+  });
+
+  test("the sum itself ignores a negative size already in the table", async () => {
+    await rec("honest", 40);
+    // A row from before the check (or written around it): it must not subtract from the total.
+    await rec("sneaky", 5);
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.artifacts)
+        .set({ size: -1_000_000 })
+        .where(eq(s.artifacts.name, "sneaky"));
+      await h.orm.insert(s.cacheEntries).values({
+        orgId: a.orgId,
+        projectId: a.projectId,
+        klass: "protected",
+        refScope: "-",
+        key: "neg",
+        version: "v",
+        size: -500,
+        complete: 1,
+        createdAt: NOW,
+        usedAt: NOW,
+      });
+    });
+    expect(await stored()).toBe(40);
   });
 });
 
