@@ -112,3 +112,10 @@ test("egress is none unless the run's plan, or an explicit runner option, says o
   expect(egressForRun(JSON.stringify({ egress: "none" }), "open")).toBe("open"); // an explicit local opt-in
   expect(egressForRun(JSON.stringify({ egress: "open" }), "none")).toBe("open");
 });
+
+test("isolation is declared from what the provider really is: docker is a container, gvisor only with runsc, daytona a container", () => {
+  expect(createProvider("docker", {}).info.isolation).toBe("container");
+  expect(createProvider("docker", { runtime: "runc" }).info.isolation).toBe("container");
+  expect(createProvider("docker", { runtime: "runsc" }).info.isolation).toBe("gvisor");
+  expect(createProvider("daytona", {}).info.isolation).toBe("container");
+});

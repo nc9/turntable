@@ -35,6 +35,8 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `--provider-config` | none | A JSON file of provider options. Secrets never go in it. |
 | `--global-cap`, `--org-cap` | `4`, `2` | Most jobs at once, in total and per org. |
 | `--image` | built in | The image jobs run in (Docker). |
+| `--hosted` | off | This is a hosted, multi-tenant instance: every job needs a `microvm` or `vm` provider. Also set by `LONGSHORE_HOSTED=1`. |
+| `--isolation-override` | none | A reason. Lets jobs run on a provider weaker than their trust class requires. Audited and shown at the top of each affected job's log. |
 
 ### Daytona options
 

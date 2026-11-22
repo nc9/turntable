@@ -102,6 +102,7 @@ test("a hosted instance refuses container and gvisor for every run", async () =>
 
 test("an explicit override lets it run, is audited with the reason, and shows on the job's log", async () => {
   const box: { seen?: AttemptContext | undefined } = {};
+  const seen = (): AttemptContext | undefined => box.seen;
   const { policy: p, audits } = policy({
     override: { reason: "dev box, no untrusted code expected" },
   });
@@ -123,12 +124,12 @@ test("an explicit override lets it run, is audited with the reason, and shows on
       reason: "dev box, no untrusted code expected",
     },
   });
-  expect(box.seen?.notices?.[0]).toContain("isolation override");
-  expect(box.seen?.notices?.[0]).toContain("dev box, no untrusted code expected");
+  expect(seen()?.notices?.[0]).toContain("isolation override");
+  expect(seen()?.notices?.[0]).toContain("dev box, no untrusted code expected");
   // an override does not touch jobs that meet the minimum: no audit row, no notice
   audits.length = 0;
-  box.seen = undefined;
+  delete box.seen;
   await runner(ctx("container"));
   expect(audits).toHaveLength(0);
-  expect(box.seen?.notices).toBeUndefined();
+  expect(seen()?.notices).toBeUndefined();
 });

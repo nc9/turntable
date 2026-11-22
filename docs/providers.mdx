@@ -38,6 +38,27 @@ The sandbox spec has no environment variable field. Providers never receive secr
 
 A provider conformance suite will exercise the contract: detached exec, offset logs, exit code recovery and cleanup. First-party and third-party providers must pass it.
 
+## Isolation levels
+
+Every provider declares an `isolation` class in its info, weakest first:
+
+| Class | Meaning |
+| --- | --- |
+| `container` | Processes share the host kernel. |
+| `gvisor` | A user-space kernel intercepts system calls. |
+| `microvm` | The sandbox has its own kernel in a lightweight VM. |
+| `vm` | A full virtual machine. |
+
+A provider declares only what it has verified. Docker declares `container`, or `gvisor` when it runs with the `runsc` runtime (`"runtime": "runsc"` in its provider config). Daytona declares `container`: its sandboxes report the `container` class, and the `linux-vm` class has not been exercised.
+
+The scheduler enforces a minimum before a job starts:
+
+- A job from an untrusted author needs `gvisor` or stronger. A job is untrusted when it needed the untrusted-author approval, or its run's plan says `"trust": "untrusted"`.
+- On a hosted instance (`serve --hosted`, or `LONGSHORE_HOSTED=1`), every job needs `microvm` or `vm`.
+- Otherwise any provider will do.
+
+A job on a provider that is too weak ends as `infra_error` with a reason naming both classes, and never starts. To run anyway, start the server with `--isolation-override "<reason>"`. The override is explicit and audited: each affected job writes an audit entry (run, job, attempt, provider, required and actual class, reason) and starts its log with a line saying so.
+
 ## Daytona
 
 The Daytona provider (`packages/provider-daytona`) runs jobs in Daytona sandboxes through its REST API with plain `fetch`. It supports detached exec through the shared wrapper, file upload and download, listing by label, and TTL backstops.
