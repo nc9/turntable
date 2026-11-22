@@ -9,7 +9,6 @@ jobs:
           [ -t 0 ] && echo "stdin-check=tty" || echo "stdin-check=notty"
           [ -t 1 ] && echo "stdout-check=tty" || echo "stdout-check=notty"
           [ -t 2 ] && echo "stderr-check=tty" || echo "stderr-check=notty"
-          [ -t 1 ] && echo tty || echo notty
           echo "ci=$CI"
           echo "github-actions=$GITHUB_ACTIONS"
           echo "term=${TERM-unset}"

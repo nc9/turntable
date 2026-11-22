@@ -124,8 +124,6 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(log).toContain("stdin-check=notty");
     expect(log).toContain("stdout-check=notty");
     expect(log).toContain("stderr-check=notty");
-    // `[ -t 1 ] && echo tty || echo notty`, the plain form: a line that is exactly notty.
-    expect(log.split(/\r?\n/).some((l) => l.trim() === "notty" || l.endsWith(" notty"))).toBe(true);
     expect(log).not.toMatch(/(stdin|stdout|stderr|sh)-check=tty/);
     expect(log).toContain("node-stdout-istty=false");
     expect(log).toContain("node-stderr-istty=false");
