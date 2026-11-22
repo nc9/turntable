@@ -8,3 +8,7 @@ data/
 .env
 .env.*
 .DS_Store
+
+# private working notes
+CLAUDE.local.md
+.private/
