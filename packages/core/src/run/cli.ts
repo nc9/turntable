@@ -13,13 +13,14 @@ import { dbRunStore } from "./store";
 export const RUN_USAGE = `Usage:
   longshore run <workflow-path> [-j <job>] [--repo <dir>] [--provider docker] [--image <ref>]
                 [--data-dir ./data] [--event push] [--egress none|open]
-                [--base-ref <branch>] [--action opened] [--changed-from <rev>] [--max-parallel 2]
+                [--base-ref <branch>] [--base-sha <sha>] [--action opened] [--changed-from <rev>] [--max-parallel 2]
 
 With -j, runs that one job (no needs or matrix). Without it, runs the whole workflow: the
 trigger (branches, paths) is checked for --event, jobs run in dependency order with one
 sandbox each, and jobs that cannot run here (docker) or whose if: is false are skipped.
 --changed-from <rev> supplies the changed files for path filters (git diff <rev> HEAD);
---base-ref and --action describe pull_request and merge_group events.
+--base-ref, --base-sha and --action describe pull_request and merge_group events (the base sha is
+what github.event.pull_request.base.sha renders as in a step).
 Every job runs in a fresh sandbox with act (host mode) and the run is recorded in the database.
 The committed tree of --repo (git archive HEAD, plus .git) is delivered; uncommitted and
 ignored files are not. Exit code: 0 success, 1 failure, 2 infra error or unrunnable workflow,
@@ -38,6 +39,7 @@ export async function runCommand(args: string[]): Promise<number> {
       event: { type: "string", default: "push" },
       egress: { type: "string", default: "none" },
       "base-ref": { type: "string" },
+      "base-sha": { type: "string" },
       action: { type: "string" },
       "changed-from": { type: "string" },
       "max-parallel": { type: "string", default: "2" },
@@ -124,6 +126,7 @@ export async function runCommand(args: string[]): Promise<number> {
           ...(files ? { changedFiles: files } : {}),
         },
         sha: snap.sha,
+        ...(values["base-sha"] ? { baseSha: values["base-sha"] } : {}),
         commitMessage: snap.commitMessage,
         ...(snap.actor ? { actor: snap.actor } : {}),
         ...(snap.headBranch ? { headBranch: snap.headBranch } : {}),

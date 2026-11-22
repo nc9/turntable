@@ -6,6 +6,8 @@ export type StubPull = {
   user: string;
   headSha: string;
   baseRef?: string;
+  /** The base branch commit. Default: 40 `b`s. */
+  baseSha?: string;
   headRef?: string;
   /** `owner/name` of the head repo; null is a deleted fork. Default: the base repo. */
   headRepo?: string | null;
@@ -77,7 +79,7 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
             ref: p.headRef ?? "topic",
             repo: p.headRepo === null ? null : { full_name: p.headRepo ?? repo },
           },
-          base: { ref: p.baseRef ?? "main", repo: { full_name: repo } },
+          base: { ref: p.baseRef ?? "main", sha: p.baseSha ?? SHA("b"), repo: { full_name: repo } },
         })),
       );
     }

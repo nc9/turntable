@@ -57,6 +57,8 @@ export type PullRequest = {
   baseRepo: string;
   /** The base branch the PR targets. */
   baseRef: string;
+  /** The commit the base branch pointed at when the PR was read. For `github.event`. */
+  baseSha?: string;
 };
 
 type Cached = { etag: string; body: unknown };
@@ -183,7 +185,7 @@ export class GithubClient {
       title?: string;
       user?: { login?: string } | null;
       head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
-      base?: { ref?: string; repo?: { full_name?: string } };
+      base?: { ref?: string; sha?: string; repo?: { full_name?: string } };
     }[];
     return body.flatMap((p) => {
       const baseRepo = p.base?.repo?.full_name;
@@ -198,6 +200,7 @@ export class GithubClient {
           headRepo: p.head.repo?.full_name ?? null,
           baseRepo,
           baseRef: p.base?.ref ?? "",
+          ...(typeof p.base?.sha === "string" ? { baseSha: p.base.sha.toLowerCase() } : {}),
         },
       ];
     });
