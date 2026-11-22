@@ -4,6 +4,7 @@ import {
   listExpiredLeases,
   type Readiness,
   takeExpiredLease,
+  updateAttempt,
 } from "../db/repos";
 import type { Db } from "../db";
 import type { ProviderResolver } from "./types";
@@ -101,11 +102,25 @@ export async function reconcileExpired(
           // destroying the sandbox below ends it anyway
         }
       }
+      let destroyed = false;
       try {
         await provider.destroy(attempt.sandboxId);
+        destroyed = true;
       } catch (err) {
         // The sandbox's own ttl is the backstop for one we could not destroy.
         log(`could not destroy sandbox ${attempt.sandboxId}: ${String(err)}`);
+      }
+      // Recorded without the lease (it expired): the confirmed destroy ends the billed life. A
+      // destroy that failed records nothing: the time is never guessed.
+      if (destroyed) {
+        await updateAttempt(
+          db,
+          { orgId: attempt.orgId, projectId: attempt.projectId },
+          attempt.id,
+          { sandboxDestroyedAt: (opts.now ?? Date.now)() },
+        ).catch((err) =>
+          log(`could not record the destroy of ${attempt.sandboxId}: ${String(err)}`),
+        );
       }
     }
     const scope = { orgId: attempt.orgId, projectId: attempt.projectId };

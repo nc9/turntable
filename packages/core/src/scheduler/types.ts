@@ -17,7 +17,12 @@ export type AttemptOutcome = {
 /** Persistence a runner may use while running. Every call is fenced by the attempt's lease. */
 export interface AttemptStore {
   /** Records the sandbox (and exec) so a restarted controller can find and probe them. */
-  setExec(where: { sandboxId?: string; execId?: string }): Promise<void>;
+  setExec(where: {
+    sandboxId?: string;
+    execId?: string;
+    sandboxCreatedAt?: number;
+    sandboxDestroyedAt?: number;
+  }): Promise<void>;
   /** Stores the resolved job plan (JSON), so a restarted controller can re-attach without the repo. */
   setPlan(planJson: string): Promise<void>;
   /** Records the class the attempt runs as, once, before the sandbox starts (the vault reads it). */

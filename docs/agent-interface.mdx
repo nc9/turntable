@@ -78,6 +78,7 @@ No token role reaches `admin`, so a token can never create tokens.
 | `incident_freeze` | destructive | release_operator | Incident response: stop scheduling for the org or a project, kill running jobs, drop cached tokens, flag secret names for rotation. Audited. See [Incident response](/security#incident-response). |
 | `incident_unfreeze` | write | release_operator | Resume scheduling. Clears the pause only; rotation flags stay. Audited. |
 | `incident_status` | read | reader | Whether the scope is frozen, why, and how many secrets still need rotation. Their names are listed only for release_operator and above. |
+| `sandbox_usage` | read | reader | Exact sandbox time per UTC day, from the provider's create to its confirmed destroy (waiting for capacity is not counted), with how many attempts have no confirmed destroy. The number quotas limit. |
 | `secret_usage` | read | release_operator | Where a secret name was used in a time range: runs, jobs, attempts and destinations, from the audit log. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
