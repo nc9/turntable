@@ -204,34 +204,58 @@ describe("quota enforcement at claim", () => {
 });
 
 describe("notices", () => {
-  test("80% and 100% each fire once per window, as events, and re-arm for the next window", async () => {
+  const quotaEvents = async (orgId: string) =>
+    (await listEvents(db, { orgId }, { after: 0, limit: 100 })).filter((e) =>
+      e.type.startsWith("quota."),
+    );
+
+  test("80% and 100% each fire once per window, as quota.* events, and re-arm for the next window", async () => {
     await set(a, { maxSandboxMinutesPerDay: 100 });
     await usedMinutes(a, 85);
     await queued(a, "q");
     await claim();
     await claim();
-    let ev = (await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 })).filter((e) =>
-      e.payload.includes("quota_"),
-    );
-    expect(ev.map((e) => JSON.parse(e.payload).error_class)).toEqual(["quota_warning"]);
+    let ev = await quotaEvents(a.orgId);
+    expect(ev.map((e) => e.type)).toEqual(["quota.warning"]);
     await usedMinutes(a, 20, 10 * MIN);
     await queued(a, "q2");
     await claim();
     await claim();
-    ev = (await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 })).filter((e) =>
-      e.payload.includes("quota_"),
-    );
-    expect(ev.map((e) => JSON.parse(e.payload).error_class)).toEqual([
-      "quota_warning",
-      "quota_reached",
-    ]);
+    ev = await quotaEvents(a.orgId);
+    expect(ev.map((e) => e.type)).toEqual(["quota.warning", "quota.reached"]);
     expect(JSON.parse(ev[1]!.payload)).toMatchObject({ metric: "sandbox_minutes", limit: 100 });
-    // Only a's events, never b's.
+    // org-level: no project, no run; and not an infra fault
+    expect(ev.every((e) => e.projectId === null && e.runId === null)).toBe(true);
     expect(
-      (await listEvents(db, { orgId: b.orgId }, { after: 0, limit: 100 })).filter((e) =>
-        e.payload.includes("quota_"),
+      (await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 })).filter(
+        (e) => e.type === "infra.error" && e.payload.includes("quota"),
       ),
     ).toEqual([]);
+    // Only a's events, never b's: not through the repo, and not through the events operation.
+    expect(await quotaEvents(b.orgId)).toEqual([]);
+    const tokenB = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
+    const seenByB = await dispatch({ registry, db }, { kind: "bearer", token: tokenB }, "events", {
+      types: ["quota.warning", "quota.reached"],
+    });
+    expect(seenByB.ok && (seenByB.output as { events: unknown[] }).events).toEqual([]);
+    const tokenA = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const seenByA = await dispatch({ registry, db }, { kind: "bearer", token: tokenA }, "events", {
+      types: ["quota.reached"],
+    });
+    expect(
+      seenByA.ok && (seenByA.output as { events: { type: string }[] }).events.map((e) => e.type),
+    ).toEqual(["quota.reached"]);
+    // a project-scoped token of the same org sees org-level notices no more than another org does
+    const tokenAp = (await mintToken(db, a.scope, "reader")).secret;
+    const seenByAp = await dispatch(
+      { registry, db },
+      { kind: "bearer", token: tokenAp },
+      "events",
+      {
+        types: ["quota.warning", "quota.reached"],
+      },
+    );
+    expect(seenByAp.ok && (seenByAp.output as { events: unknown[] }).events).toEqual([]);
   });
 });
 
