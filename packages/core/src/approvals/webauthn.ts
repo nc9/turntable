@@ -1,11 +1,18 @@
-// WebAuthn, server side, with node:crypto: registration with attestation "none" and assertion
-// verification for ES256 and EdDSA keys. We do not validate attestation statements: an approver
-// key is trusted because an existing quorum enrolled it, not because a vendor certified it.
+// WebAuthn, server side, with node:crypto: registration (attestation "none", or "packed" checked
+// against pinned vendor roots for the hardware key policy) and assertion verification for ES256
+// and EdDSA keys. Under the default policy an approver key is trusted because an existing quorum
+// enrolled it; under `hardware` it must also carry a verified vendor attestation.
 // Every check that matters is here: the challenge, the origin, the relying party id hash, the
 // user-presence and user-verification flags, the signature over authData and the client data
 // hash, and a sign counter that must not go backwards.
 import { createHash, createPublicKey, verify, type KeyObject } from "node:crypto";
 import { decodeCbor, type Cbor } from "./cbor";
+import {
+  AttestationError,
+  verifyAttestation,
+  type AttestationResult,
+  type TrustAnchors,
+} from "./attestation";
 
 export type RelyingParty = { rpId: string; origins: readonly string[] };
 
@@ -116,15 +123,23 @@ export type RegistrationInput = {
   attestationObject: string; // base64url
 };
 
-/** Verifies a `navigator.credentials.create` result with attestation "none". */
+/**
+ * Verifies a `navigator.credentials.create` result. Attestation "none" is accepted and reported
+ * unverified; "packed" is checked against the pinned vendor roots (see attestation.ts) and reports
+ * whether a pinned chain signed it. Any other format is refused.
+ */
 export function verifyRegistration(
   input: RegistrationInput,
-  expect: { challenge: string; rp: RelyingParty },
-): { credentialId: string; publicKey: string; alg: "ES256" | "EdDSA"; signCount: number } {
-  parseClientData(Buffer.from(input.clientDataJSON, "base64url"), {
-    type: "webauthn.create",
-    ...expect,
-  });
+  expect: { challenge: string; rp: RelyingParty; anchors?: TrustAnchors; now?: number },
+): {
+  credentialId: string;
+  publicKey: string;
+  alg: "ES256" | "EdDSA";
+  signCount: number;
+  attestation: AttestationResult;
+} {
+  const clientDataRaw = Buffer.from(input.clientDataJSON, "base64url");
+  parseClientData(clientDataRaw, { type: "webauthn.create", ...expect });
   let att: Cbor;
   try {
     att = decodeCbor(Buffer.from(input.attestationObject, "base64url")).value;
@@ -132,13 +147,23 @@ export function verifyRegistration(
     throw new WebAuthnError("bad attestation object");
   }
   if (!(att instanceof Map)) throw new WebAuthnError("bad attestation object");
-  if (att.get("fmt") !== "none") throw new WebAuthnError('only attestation "none" is accepted');
   const authData = att.get("authData");
   if (!(authData instanceof Uint8Array)) throw new WebAuthnError("no authenticator data");
   const a = parseAuthData(authData, true);
   checkRpAndFlags(a, expect.rp);
+  let attestation: AttestationResult;
+  try {
+    attestation = verifyAttestation(att, authData, sha256(clientDataRaw), {
+      ...(expect.anchors ? { anchors: expect.anchors } : {}),
+      ...(expect.now === undefined ? {} : { now: expect.now }),
+    });
+  } catch (e) {
+    if (e instanceof AttestationError) throw new WebAuthnError(e.message);
+    throw e;
+  }
   const { spki, alg } = coseToSpki(a.attested!.coseKey);
   return {
+    attestation,
     credentialId: a.attested!.credentialId.toString("base64url"),
     publicKey: spki,
     alg,

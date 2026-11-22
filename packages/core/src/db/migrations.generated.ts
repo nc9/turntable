@@ -298,5 +298,16 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `approval_challenges` ADD `principal` text;"
     ]
+  },
+  {
+    "tag": "0025_magenta_magdalene",
+    "when": 1795382724371,
+    "statements": [
+      "CREATE TABLE `approval_key_policies` (\n\t`org_id` text PRIMARY KEY NOT NULL,\n\t`policy` text NOT NULL,\n\t`generation` integer DEFAULT 0 NOT NULL,\n\t`presets` text DEFAULT '[]' NOT NULL,\n\t`aaguids` text DEFAULT '[]' NOT NULL,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "ALTER TABLE `approver_enrolments` ADD `aaguid` text;",
+      "ALTER TABLE `approver_enrolments` ADD `attested` integer DEFAULT false NOT NULL;",
+      "ALTER TABLE `approvers` ADD `aaguid` text;",
+      "ALTER TABLE `approvers` ADD `attested` integer DEFAULT false NOT NULL;"
+    ]
   }
 ];

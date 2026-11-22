@@ -290,10 +290,28 @@ export type Approver = {
   createdAt: number;
   /** Why the key counts toward no approval or quorum; null when it does. */
   notCounting: string | null;
+  /** A pinned vendor attestation chain verified when the key was enrolled. */
+  attested: boolean;
+  aaguid: string | null;
 };
+
+/** A key policy change, signed by a quorum of the counted approvers. */
+export type PolicyStatement = {
+  type: string;
+  org: string;
+  old: KeyPolicy;
+  new: KeyPolicy;
+  allowlist_hash: string;
+  approver: string;
+  expires_at: number;
+  nonce: string;
+};
+
+export type KeyPolicy = { mode: "any" | "hardware"; presets: string[]; aaguids: string[] };
 
 export type ApproversOverview = {
   approvers: Approver[];
+  keyPolicy: KeyPolicy;
   pendingEnrolments: {
     id: string;
     person: string;
