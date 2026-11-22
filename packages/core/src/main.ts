@@ -39,6 +39,7 @@ Usage:
   longshore token list --org <slug> [--project <slug>] [--data-dir ./data]
   longshore token revoke <id> [--data-dir ./data]
   longshore run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
+  longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore version
 
 Environment:
@@ -48,6 +49,7 @@ Environment:
   LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
   LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
                     required for the GitHub App and its webhook endpoint
+  LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_HOST  default for --host (the container image sets 0.0.0.0)
   LONGSHORE_ALLOWED_ORIGINS  comma-separated extra origins allowed to open the realtime WebSocket
 `;
@@ -366,6 +368,10 @@ async function main(argv: string[]): Promise<void> {
     case "run": {
       const { runCommand } = await import("./run/cli");
       process.exit(await runCommand(rest));
+    }
+    case "mcp": {
+      const { mcpCommand } = await import("./mcp/cli");
+      return await mcpCommand(rest);
     }
     case "version":
     case "--version":
