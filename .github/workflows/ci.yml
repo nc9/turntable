@@ -88,6 +88,8 @@ jobs:
       - name: longshore run end to end (compiled binary, docker provider)
         env:
           TT_BINARY: dist/longshore-linux-x64
+          # Read-only: lifts the unauthenticated rate limit of the action commit verification.
+          LONGSHORE_GITHUB_TOKEN: ${{ github.token }}
         run: bun run test:run-e2e
 
   docker:

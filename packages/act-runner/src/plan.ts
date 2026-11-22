@@ -1,4 +1,5 @@
 import { parse } from "yaml";
+import { InfraError } from "@longshore/provider-sdk";
 import { layoutFor, type Layout } from "./layout";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 
@@ -52,6 +53,8 @@ export interface PlannedAction {
   kind: "checkout" | "remote";
   /** Where the action lives in the sandbox. */
   dir: string;
+  /** For an action found inside a remote composite: the `uses:` of that composite. */
+  nestedIn?: string;
 }
 
 /** A repo file the plan owns: the workflow and any local composite actions it reaches. */
@@ -295,6 +298,11 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
 }
 
 /** Builds the act command. Remote actions are keyed by sha once known, else by the written ref. */
+/** Rebuilds the act command from the plan (after its actions changed). */
+export function rebuildArgv(plan: JobPlan): JobPlan {
+  return withArgv(plan);
+}
+
 function withArgv(plan: JobPlan): JobPlan {
   const argv = [
     plan.layout.act,
@@ -408,21 +416,32 @@ export type ActionRefResolver = (owner: string, repo: string, ref: string) => Pr
 /** Default resolver: the GitHub API, which also dereferences annotated tags. */
 export function githubResolver(token?: string): ActionRefResolver {
   return async (owner, repo, ref) => {
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
-      {
-        headers: {
-          Accept: "application/vnd.github.sha",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    let res: Response;
+    try {
+      res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+        {
+          headers: {
+            Accept: "application/vnd.github.sha",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          signal: AbortSignal.timeout(30_000),
         },
-        signal: AbortSignal.timeout(30_000),
-      },
-    );
-    if (!res.ok) {
-      throw new PlanError(
-        "action ref",
-        `cannot resolve ${owner}/${repo}@${ref}: HTTP ${res.status}`,
       );
+    } catch (e) {
+      // The network, not the workflow: retryable.
+      throw new InfraError(`cannot reach GitHub to resolve ${owner}/${repo}@${ref}`, e);
+    }
+    if (!res.ok) {
+      // 404 and 422 mean the ref does not exist (deterministic). Anything else (rate limit,
+      // 5xx, auth) is GitHub's state, not the workflow's, and may pass: retryable.
+      if (res.status === 404 || res.status === 422) {
+        throw new PlanError(
+          "action ref",
+          `cannot resolve ${owner}/${repo}@${ref}: HTTP ${res.status}`,
+        );
+      }
+      throw new InfraError(`resolving ${owner}/${repo}@${ref} failed: HTTP ${res.status}`);
     }
     const sha = (await res.text()).trim();
     if (!/^[0-9a-f]{40}$/.test(sha)) {

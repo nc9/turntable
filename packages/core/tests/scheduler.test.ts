@@ -639,7 +639,7 @@ test("scoped lease operations cannot touch another org's attempt", async () => {
   expect(await heartbeatAttempt(db, sibling, id, "w1", T0, 1000)).toBe(false);
 });
 
-test("the act runner reports a rejected plan, a missing repo binding and a missing workflow as infra_error", async () => {
+test("the act runner reports a missing repo binding and a missing workflow as infra_error, and a rejected plan as a policy failure", async () => {
   const { bindRepo } = await import("../src/db");
   const { createActRunner } = await import("../src/scheduler");
   const world = new FakeWorld();
@@ -670,8 +670,57 @@ test("the act runner reports a rejected plan, a missing repo binding and a missi
     expect((await run(undefined)).errorClass).toContain("workflow w.yml not found");
     const matrix = `jobs:\n  build:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        n: [1, 2]\n    steps:\n      - run: echo hi\n`;
     const rejected = await run(matrix);
-    expect(rejected.state).toBe("infra_error");
-    expect(rejected.errorClass).toStartWith("plan rejected:");
+    // Deterministic and user-actionable: a failure with a policy reason, not an infra_error.
+    expect(rejected.state).toBe("failure");
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.errorClass).toBeNull();
+    const log = await readLog(db, s, rejected.id);
+    expect(Buffer.concat(log.map((c) => c.bytes)).toString()).toContain("policy: ");
+  } finally {
+    world.dispose();
+  }
+});
+
+test("a resolver that cannot reach GitHub is a retryable infra_error; an unknown tag is a policy failure", async () => {
+  const { bindRepo } = await import("../src/db");
+  const { createActRunner } = await import("../src/scheduler");
+  const { InfraError } = await import("@longshore/provider-sdk");
+  const { PlanError } = await import("@longshore/act-runner");
+  const world = new FakeWorld();
+  try {
+    const s = await seedOrg("a");
+    await bindRepo(db, s, { forge: "github", owner: "acme", repo: "web" });
+    const yaml = `on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: acme/tool@v1\n`;
+    const source = {
+      checkout: async () => ({
+        tarball: new Uint8Array(),
+        readFile: (p: string) => (p === "w.yml" ? yaml : undefined),
+      }),
+    };
+    const run = async (resolver: () => Promise<string>) => {
+      const q = await queueRun(s);
+      const sched = new Scheduler({
+        db,
+        providers: () => world.provider(),
+        runner: createActRunner({ db, source, resolver }),
+        ...big,
+      });
+      await sched.tick();
+      await sched.idle();
+      return (await listAttempts(db, s, q.build.jobId))[0]!;
+    };
+    const transient = await run(async () => {
+      throw new InfraError("GitHub is down");
+    });
+    expect(transient.state).toBe("infra_error");
+    expect(transient.errorClass).toContain("GitHub is down");
+
+    const missing = await run(async () => {
+      throw new PlanError("action ref", "cannot resolve acme/tool@v1: HTTP 404");
+    });
+    expect(missing.state).toBe("failure");
+    const log = await readLog(db, s, missing.id);
+    expect(Buffer.concat(log.map((c) => c.bytes)).toString()).toContain("policy: cannot resolve");
   } finally {
     world.dispose();
   }

@@ -3,13 +3,17 @@
 // path that plans a job (the CLI, the scheduler) applies the same rules.
 import {
   PlanError,
+  expandNestedActions,
   githubResolver,
   resolveActions,
+  type ActionFetcher,
   type ActionRefResolver,
   type JobPlan,
+  type PlannedAction,
 } from "@longshore/act-runner";
 import type { Db } from "../db";
 import { getActionPolicy, observePin, type ActionPolicy, type Scope } from "../db/repos";
+import { githubReachability, impostorError, type ReachabilityChecker } from "./reachability";
 
 /**
  * How much a run is trusted, for pin policy. Protected and release runs fail on a moved tag;
@@ -47,15 +51,19 @@ export class MovedTagError extends PlanError {
 }
 
 /** Refuses what the project's policy forbids, before anything is resolved or fetched. */
+export function checkActionOwner(a: { uses: string; repo: string }, policy: ActionPolicy): void {
+  const owner = a.repo.split("/")[0]?.toLowerCase() ?? "";
+  if (policy.allowedOwners !== null && !policy.allowedOwners.includes(owner)) {
+    throw new PlanError(
+      "action-owner",
+      `${a.uses} is from "${owner}", which is not in the org's allowed action owners (${policy.allowedOwners.join(", ") || "none"})`,
+    );
+  }
+}
+
 export function enforceActionPolicy(plan: JobPlan, policy: ActionPolicy): void {
   for (const a of plan.actions) {
-    const owner = a.repo.split("/")[0]?.toLowerCase() ?? "";
-    if (policy.allowedOwners !== null && !policy.allowedOwners.includes(owner)) {
-      throw new PlanError(
-        "action-owner",
-        `${a.uses} is from "${owner}", which is not in the org's allowed action owners (${policy.allowedOwners.join(", ") || "none"})`,
-      );
-    }
+    checkActionOwner(a, policy);
     if (policy.requireShaPins && !SHA.test(a.ref)) {
       throw new PlanError(
         "require-sha-pins",
@@ -96,19 +104,51 @@ export interface ResolvePlanOptions {
   klass: PinClass;
   base?: ActionRefResolver;
   warn?: (message: string) => void;
+  /** Verifies a sha belongs to the named repo (default: the GitHub compare and tags APIs). */
+  reachable?: ReachabilityChecker;
+  /** Fetches action tarballs by sha, to read nested actions (default: codeload). */
+  fetchTarball?: ActionFetcher;
 }
 
-/** Applies the project's action policy, then resolves and pins every action of the plan. */
+/**
+ * Applies the project's action policy, then pins every action of the plan and everything those
+ * actions pull in:
+ *  - the user's own `uses:` pass the allowlist and `require_sha_pins` first;
+ *  - tags are resolved through the pin store (moved tags);
+ *  - every sha, given or resolved, must be reachable from a branch or tag of its own repo
+ *    (impostor commits from forks are refused);
+ *  - each remote action is read at its sha, and the actions inside a composite go through the
+ *    same resolution, allowlist and reachability, recursively, so act never fetches by tag.
+ * Nested actions are not subject to `require_sha_pins`: the project does not write them, Longshore
+ * pins them.
+ */
 export async function resolvePlanActions(plan: JobPlan, o: ResolvePlanOptions): Promise<JobPlan> {
-  enforceActionPolicy(plan, await getActionPolicy(o.db, o.scope));
-  return resolveActions(
-    plan,
-    createPinningResolver({
-      db: o.db,
-      scope: o.scope,
-      base: o.base ?? githubResolver(),
-      klass: o.klass,
-      ...(o.warn ? { warn: o.warn } : {}),
-    }),
-  );
+  const policy = await getActionPolicy(o.db, o.scope);
+  enforceActionPolicy(plan, policy);
+  const resolve = createPinningResolver({
+    db: o.db,
+    scope: o.scope,
+    base: o.base ?? githubResolver(),
+    klass: o.klass,
+    ...(o.warn ? { warn: o.warn } : {}),
+  });
+  // LONGSHORE_GITHUB_TOKEN (read-only is enough) lifts the unauthenticated API rate limit.
+  const token = process.env.LONGSHORE_GITHUB_TOKEN?.trim();
+  const reachable = o.reachable ?? githubReachability(token ? { token } : {});
+  const verify = async (a: PlannedAction): Promise<void> => {
+    if (a.kind !== "remote" || !a.sha) return;
+    const [owner = "", repo = ""] = a.repo.split("/");
+    if (!(await reachable(owner, repo, a.sha))) throw impostorError(a.repo, a.sha);
+  };
+
+  const resolved = await resolveActions(plan, resolve);
+  for (const a of resolved.actions) await verify(a);
+  return expandNestedActions(resolved, {
+    resolve,
+    ...(o.fetchTarball ? { fetchTarball: o.fetchTarball } : {}),
+    check: async (a) => {
+      checkActionOwner(a, policy);
+      await verify(a);
+    },
+  });
 }
