@@ -77,6 +77,12 @@ export interface AttemptSpec {
   runId: string;
   jobId: string;
   rules: readonly Rule[];
+  /**
+   * Hosts with no rule are refused, unless they match one of these (exact host, or `*.suffix` for
+   * any subdomain) on one of its ports: then they get a plain tunnel (nothing injected, the job's
+   * own TLS end to end). Empty or absent: rule hosts only.
+   */
+  passthroughHosts?: readonly { host: string; ports: readonly number[] }[] | undefined;
   /** How long the credential lives. */
   ttlMs: number;
 }

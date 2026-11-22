@@ -107,6 +107,10 @@ jobs:
         env:
           TT_ACT_IMAGE: node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
         run: bun run test:missing-tool-e2e
+      - name: A job behind the secrets proxy (internal network and relay)
+        env:
+          TT_ACT_IMAGE: node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
+        run: bun run test:proxy-e2e
       - name: Build the linux-x64 binary
         run: bun run scripts/build.ts bun-linux-x64
       - name: longshore run end to end (compiled binary, docker provider)

@@ -33,6 +33,7 @@
     "typecheck:act-runner": "bun run --cwd packages/act-runner typecheck",
     "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/missing-tool.test.ts packages/act-runner/tests/run-job.test.ts packages/act-runner/tests/expr.test.ts packages/act-runner/tests/triggers.test.ts",
     "test:missing-tool-e2e": "TT_ACT_E2E=1 bun test packages/core/tests/missing-tool-e2e.test.ts",
+    "test:proxy-e2e": "TT_PROXY_E2E=1 bun test packages/core/tests/proxy-e2e.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
     "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts",
     "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts packages/core/tests/mcp.test.ts packages/core/tests/incident.test.ts packages/core/tests/approvals.test.ts packages/core/tests/failure-digest.test.ts packages/core/tests/channel.test.ts packages/core/tests/checks.test.ts",
@@ -53,7 +54,7 @@
     "test:pins": "bun test packages/core/tests/action-pins.test.ts packages/core/tests/forge-token.test.ts",
     "typecheck:net": "bun run --cwd packages/net typecheck",
     "typecheck:proxy": "bun run --cwd packages/proxy typecheck",
-    "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/http.test.ts packages/proxy/tests/proxy.test.ts",
+    "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/http.test.ts packages/proxy/tests/proxy.test.ts packages/core/tests/proxy-wiring.test.ts packages/core/tests/proxy-rules-ops.test.ts",
     "typecheck:signer": "bun run --cwd packages/signer typecheck",
     "test:signer": "bun test packages/signer/tests/signer.test.ts packages/signer/tests/kms.test.ts packages/core/tests/signing.test.ts packages/core/tests/verify-cli.test.ts",
     "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts"

@@ -3,6 +3,11 @@ import { SpecError, type Labels, type SandboxSpec } from "@longshore/provider-sd
 /** Label on every container this provider creates. Listing and destroying only touch these. */
 export const MANAGED_LABEL = "longshore.managed";
 export const EXPIRES_LABEL = "longshore.expires-at";
+/** Labels that link a proxied sandbox to its relay container and internal network. */
+export const NET_LABEL = "longshore.net";
+export const RELAY_LABEL = "longshore.relay";
+/** Port the relay listens on, inside the sandbox's internal network. */
+export const RELAY_PORT = 3128;
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 
@@ -72,8 +77,12 @@ export function buildRunArgs(
   if (spec.snapshot !== undefined || spec.template !== undefined) {
     throw new SpecError("docker provider supports image only");
   }
-  if (spec.network.egress !== "none" && spec.network.egress !== "open") {
+  const proxied = spec.network.egress === "deny-all-except-proxy";
+  if (spec.network.egress !== "none" && spec.network.egress !== "open" && !proxied) {
     throw new SpecError(`docker provider cannot enforce egress policy ${spec.network.egress}`);
+  }
+  if (proxied && spec.network.proxy === undefined) {
+    throw new SpecError("deny-all-except-proxy needs network.proxy");
   }
   if (!Number.isInteger(spec.ttlSeconds) || spec.ttlSeconds <= 0) {
     throw new SpecError("ttlSeconds must be a positive integer");
@@ -86,9 +95,12 @@ export function buildRunArgs(
       ...spec.labels,
       [MANAGED_LABEL]: "1",
       [EXPIRES_LABEL]: String(nowMs + spec.ttlSeconds * 1000),
+      ...(proxied ? { [NET_LABEL]: netName(spec.name), [RELAY_LABEL]: relayName(spec.name) } : {}),
     }),
   );
   if (spec.network.egress === "none") args.push("--network", "none");
+  // An internal network has no route out; its only other member is the relay.
+  if (proxied) args.push("--network", netName(spec.name));
   if (hardening.noNewPrivileges) args.push("--security-opt", "no-new-privileges");
   if (hardening.pidsLimit > 0) args.push("--pids-limit", String(hardening.pidsLimit));
   for (const cap of hardening.capDrop) {
@@ -137,3 +149,92 @@ export function buildInspectArgs(ids: readonly string[]): string[] {
 export const PUT_SH = 'mkdir -p "$(dirname "$1")" && cat > "$1"';
 /** Script for files.get. Args: path limit. Reads at most limit bytes. */
 export const GET_SH = 'head -c "$2" "$1"';
+
+export const netName = (sandboxName: string): string => `${sanitizeName(sandboxName)}-net`;
+export const relayName = (sandboxName: string): string => `${sanitizeName(sandboxName)}-relay`;
+
+/** An internal network (no route out) for one sandbox. Labelled so a sweep can find it. */
+export function buildNetworkCreateArgs(name: string, nowMs: number, ttlSeconds: number): string[] {
+  return [
+    "network",
+    "create",
+    "--internal",
+    // No address for the host on this network (Docker 28+): the sandbox cannot reach the host's
+    // own listeners through the gateway. Without this a service on 0.0.0.0 would be reachable.
+    "-o",
+    "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+    ...labelArgs({ [MANAGED_LABEL]: "1", [EXPIRES_LABEL]: String(nowMs + ttlSeconds * 1000) }),
+    "--",
+    assertRef(name),
+  ];
+}
+
+/**
+ * The relay's program. It forwards one local port to the controller's proxy, and exits at the
+ * sandbox's TTL. node: the relay runs in the sandbox image, so no extra image is pulled. This text
+ * runs inside the relay container, not in the control plane.
+ */
+export const RELAY_JS = `
+const { createServer, connect } = require("net");
+const [lp, host, port, ttl] = process.argv.slice(1);
+createServer((c) => {
+  const u = connect(Number(port), host);
+  const k = () => { c.destroy(); u.destroy(); };
+  c.on("error", k); u.on("error", k); c.on("close", k); u.on("close", k);
+  c.pipe(u); u.pipe(c);
+}).listen(Number(lp), "0.0.0.0", () => console.log("ready"));
+setTimeout(() => process.exit(0), Number(ttl) * 1000);
+`;
+
+/** The relay container: on the default bridge (it reaches the host), joined to the internal network afterwards. */
+export function buildRelayRunArgs(spec: SandboxSpec, nowMs: number): string[] {
+  if (spec.image === undefined || spec.network.proxy === undefined) {
+    throw new SpecError("relay needs an image and a proxy address");
+  }
+  const { host, port } = spec.network.proxy;
+  if (!/^[A-Za-z0-9.-]{1,253}$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new SpecError("invalid proxy address");
+  }
+  return [
+    "run",
+    "-d",
+    "--rm",
+    "--init",
+    "--name",
+    relayName(spec.name),
+    ...labelArgs({
+      [RELAY_LABEL]: sanitizeName(spec.name),
+      [EXPIRES_LABEL]: String(nowMs + spec.ttlSeconds * 1000),
+    }),
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "--security-opt",
+    "no-new-privileges",
+    "--cap-drop",
+    "ALL",
+    "--pids-limit",
+    "64",
+    "--memory",
+    "128m",
+    "--read-only",
+    "--",
+    assertImage(spec.image),
+    "node",
+    "-e",
+    RELAY_JS,
+    String(RELAY_PORT),
+    host,
+    String(port),
+    String(spec.ttlSeconds),
+  ];
+}
+
+/** The first host address of an IPv4 subnet (`172.20.0.0/16` gives `172.20.0.1`), or undefined. */
+export function firstAddress(subnet: string): string | undefined {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(subnet);
+  if (!m) return undefined;
+  const parts = m.slice(1, 5).map(Number);
+  if (parts.some((p) => p > 255) || Number(m[5]) > 30) return undefined;
+  parts[3] = (parts[3] ?? 0) + 1;
+  return parts.join(".");
+}

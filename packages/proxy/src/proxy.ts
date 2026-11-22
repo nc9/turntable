@@ -15,6 +15,7 @@ import {
   checkPath,
   hostAllowed,
   matchRule,
+  passthroughAllowed,
   wireValue,
   MIN_INJECTABLE,
 } from "./rules";
@@ -27,6 +28,11 @@ export interface ProxyOptions {
   audit: AuditSink;
   /** Where requests go. Default: the validated outbound client, redirects never followed. */
   upstream?: SafeFetch;
+  /**
+   * Opens a TCP connection to a destination for a passthrough tunnel (validated addresses only).
+   * Without it no attempt gets a passthrough. Default: the validated outbound client's tunnel.
+   */
+  tunnel?: (host: string, port: number) => Promise<net.Socket>;
   host?: string;
   port?: number;
   now?: () => number;
@@ -134,7 +140,10 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
     upstreamTimeoutMs: 30_000,
     ...o.limits,
   };
-  const upstream: SafeFetch = o.upstream ?? createHttpClient().fetch;
+  const client = o.upstream && o.tunnel ? undefined : createHttpClient();
+  const upstream: SafeFetch = o.upstream ?? client!.fetch;
+  // A test that injects its own upstream and no tunnel gets no passthrough: nothing real is dialled.
+  const dialTunnel = o.tunnel ?? (o.upstream ? undefined : client!.tunnel);
   /** Every secret form injected so far in an attempt: the set scrubbed from its responses. */
   const injected = new WeakMap<Attempt, SecretRegistry>();
   /** Tunnel slots held by CONNECTs whose audit write is still pending. */
@@ -190,7 +199,13 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
     }
     const host = authority[1]!.toLowerCase();
     const port = Number(authority[2]);
-    if (!hostAllowed(attempt.rules, host, port)) {
+    // A host with a rule is intercepted (injection). Any other host is refused, unless the
+    // attempt was registered with passthrough: then it is a plain tunnel, nothing is injected.
+    const passthrough = !hostAllowed(attempt.rules, host, port);
+    if (
+      passthrough &&
+      !(passthroughAllowed(attempt.spec.passthroughHosts, host, port) && dialTunnel)
+    ) {
       await deny({ attemptId: id, host, port, reason: "no_rule_for_host" });
       raw.end(text(403, "Forbidden"));
       return;
@@ -207,21 +222,58 @@ export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {
       reserved.set(attempt, (reserved.get(attempt) ?? 1) - 1);
     };
     try {
-      await record({ kind: "tunnel", attemptId: id, host, port });
+      await record({
+        kind: "tunnel",
+        attemptId: id,
+        host,
+        port,
+        ...(passthrough ? { reason: "passthrough" } : {}),
+      });
     } catch {
       release();
       raw.end(text(502, "Bad Gateway"));
       return;
     }
+    let upstreamSocket: net.Socket | undefined;
+    if (passthrough) {
+      try {
+        upstreamSocket = await dialTunnel!(host, port);
+      } catch {
+        release();
+        await deny({ attemptId: id, host, port, reason: "upstream_blocked" });
+        raw.end(text(502, "Bad Gateway"));
+        return;
+      }
+      upstreamSocket.on("error", () => upstreamSocket?.destroy());
+    }
 
     release();
     // The peer may have gone while the audit write ran: its close event is already past.
-    if (raw.destroyed) return;
+    if (raw.destroyed) return void upstreamSocket?.destroy();
     // Nor may the attempt have been revoked or expired meanwhile: revoke already swept the set.
-    if (!o.registry.live(attempt)) return void raw.destroy();
+    if (!o.registry.live(attempt)) {
+      upstreamSocket?.destroy();
+      return void raw.destroy();
+    }
     raw.setTimeout(0);
     attempt.tunnels.add(raw);
     raw.once("close", () => attempt.tunnels.delete(raw));
+    if (upstreamSocket) {
+      const up = upstreamSocket;
+      const end = (): void => {
+        raw.destroy();
+        up.destroy();
+      };
+      raw.on("close", end);
+      up.on("close", end);
+      raw.setTimeout(lim.idleMs, end);
+      up.setTimeout(lim.idleMs, end);
+      raw.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.rest.length > 0) up.write(head.rest);
+      raw.pipe(up);
+      up.pipe(raw);
+      return;
+    }
     if (head.rest.length > 0) raw.unshift(head.rest);
     raw.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     const leaf = attempt.ca.leafFor(host);

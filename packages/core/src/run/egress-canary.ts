@@ -86,3 +86,44 @@ export async function probeEgress(
     await Bun.sleep(o.pollMs ?? 250);
   }
 }
+
+const PROXY_PROBE_SH = String.raw`
+command -v curl >/dev/null 2>&1 || exit 125
+code=$(curl -s -m 5 --connect-timeout 5 -o /dev/null -w '%{http_code}' -x "http://$1:$2" "http://proxy-canary.invalid/" 2>/dev/null)
+[ -n "$code" ] && [ "$code" != 000 ] && exit 0
+exit 10
+`;
+
+export type ProxyVerdict = { kind: "open" } | { kind: "closed"; why: string };
+
+/**
+ * Whether the sandbox can reach the secrets proxy at the address it was given. A plain-HTTP
+ * request through the proxy is refused by it (it only tunnels), but any HTTP answer shows the
+ * path is open.
+ */
+export async function probeProxy(
+  provider: Provider,
+  sandboxId: string,
+  proxy: { host: string; port: number },
+  o: CanaryOptions = {},
+): Promise<ProxyVerdict> {
+  const timeoutSeconds = o.timeoutSeconds ?? 30;
+  const { execId } = await provider.exec.start(sandboxId, {
+    argv: ["sh", "-c", PROXY_PROBE_SH, "canary", proxy.host, String(proxy.port)],
+    timeoutSeconds,
+  });
+  const deadline = Date.now() + (timeoutSeconds + 15) * 1000;
+  for (;;) {
+    if (o.signal?.aborted) return { kind: "closed", why: "cancelled" };
+    const s = await provider.exec.status(sandboxId, execId);
+    if (s.state !== "running") {
+      if (s.state === "exited" && s.exitCode === 0) return { kind: "open" };
+      if (s.state === "exited" && s.exitCode === 125) {
+        return { kind: "closed", why: "no curl in the image" };
+      }
+      return { kind: "closed", why: s.state === "exited" ? "no answer" : `probe ${s.state}` };
+    }
+    if (Date.now() > deadline) return { kind: "closed", why: "probe timed out" };
+    await Bun.sleep(o.pollMs ?? 250);
+  }
+}
