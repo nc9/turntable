@@ -25,7 +25,9 @@ const rest = redactor.end(); // flush once at end of stream
 - Bearer tokens in `Authorization` headers (the `Bearer` prefix stays)
 - URL userinfo (`scheme://user:pass@host`): everything between `://` and the last `@` of the
   token, so an empty username and a `/` in the password are covered. A first segment that looks
-  like a port (`host:8080/`) is not userinfo
+  like a port (`host:8080/x`) is userinfo only when an `@` follows in the same token (so
+  `localhost:4873/@scope/pkg` is redacted, a known false positive); an over-long username
+  (256+ characters) or password redacts the rest of the token
 - Registered exact values, plus their base64 (padded and unpadded), base64url and URL-encoded
   forms, and the base64 core of the value as embedded at each of the 3 byte alignments inside a
   larger base64 blob
@@ -46,8 +48,8 @@ complete lines go out at once. A registered value that contains a newline switch
 emission back to the plain window rule.
 
 A key line (`aws_secret_access_key:` or `Authorization: Bearer` at the end of a line) is held
-until the next line arrives, so a YAML-style value on the following line is still redacted. Key
-and value may be separated by whitespace and at most one newline. The patterns and the hold
+until a non-blank line arrives, so a YAML-style value on a later line is still redacted. Key and
+value may be separated by up to 130 whitespace characters in total, blank lines included. The patterns and the hold
 are built from the same whitespace constants, and a differential test (streaming split at every
 offset equals one-shot, over every whitespace and newline gap) keeps them from drifting.
 
@@ -75,6 +77,10 @@ Trade-offs:
   (bounded memory). A JWT over-long in any segment, a `ghp_` token over 255 characters and a
   URL password over 256 characters are all covered. An over-long URL password takes the rest of
   its whitespace-delimited token with it.
+- **A token run never swallows what follows it.** When an over-long token's run would absorb a
+  PEM BEGIN marker or a key name (`aws_secret_access_key`, `Authorization`), it stops there and
+  the context is scanned on its own, one shot or streamed. A tail that could still grow into
+  such a start is kept raw until the next chunk.
 - **The stream is never cut inside a match, prefix included.** A cut that would fall between
   `Authorization: Bearer ` and its value steps back to the start of the prefix.
 - **Base64 image data and git SHAs** are untouched: no built-in pattern matches bare hex or

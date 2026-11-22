@@ -4,9 +4,9 @@
  * upper bounds also give each pattern a maximum match length, which sizes the streaming
  * carry-over window. A token longer than its bound is still redacted in full: see `run`.
  *
- * Only the key/value patterns (aws secret, bearer) may span a newline, and only ONE, so a
- * YAML-style value on the line after its key is still found; the redactor holds the single
- * trailing key line for that (see KEY_LINE_END). Every other pattern is single-line (PEM blocks are handled separately), which
+ * Only the key/value patterns (aws secret, bearer) may span newlines, within one bounded
+ * whitespace gap, so a YAML-style value on a later line is still found; the redactor holds the
+ * key line (and any blank lines after it) for that (see KEY_LINE_END). Every other pattern is single-line (PEM blocks are handled separately), which
  * is what lets the redactor emit complete lines immediately.
  *
  * With `keepPrefix`, capture group 1 (a key name or header prefix) stays in the output and the
@@ -43,9 +43,14 @@ export const PEM_END_MAX = 80;
 const WS_MAX = 64;
 /** Line-local whitespace: anything but newline, so CR, FF and VT count. */
 const WS = `[^\\S\\n]{0,${WS_MAX}}`;
-/** Gap between a key and its value: whitespace, at most ONE newline, whitespace. */
-const GAP = `${WS}\\r?\\n?${WS}`;
-const GAP_MAX = WS_MAX + 2 + WS_MAX;
+/**
+ * Gap between a key and its value: up to GAP_MAX whitespace characters in total, newlines
+ * (blank lines) included. The redactor holds a key line while only whitespace follows it, within
+ * the same bound.
+ */
+export const KEY_GAP_MAX = 130;
+const GAP_MAX = KEY_GAP_MAX;
+const GAP = `\\s{0,${GAP_MAX}}`;
 /** Whitespace after a key on its own line: as much as GAP can swallow without the newline. */
 const GAP_ON_LINE = `[^\\S\\n]{0,${GAP_MAX}}`;
 
@@ -105,10 +110,11 @@ export const PATTERNS: readonly Pattern[] = [
   },
   {
     // The whole userinfo between `://` and the last `@` of the token is redacted: the username
-    // may be empty, the password may hold `/`. A first segment that is a port (`host:8080/`) is
-    // not userinfo.
+    // may be empty, the password may hold `/`. `host:8080/x@y` therefore counts as userinfo (a
+    // false positive we accept over a leak); without a later `@` in the token, a port is left
+    // alone (see the long variants).
     name: "url-userinfo",
-    re: /([a-z][a-z0-9+.-]{1,31}:\/\/)[^\s:@/?#]{0,256}:(?!\d{1,5}(?:\/|$))[^\s]{1,256}(?=@)/gi,
+    re: /([a-z][a-z0-9+.-]{1,31}:\/\/)[^\s:@/?#]{0,256}:[^\s]{1,256}(?=@)/gi,
     maxLength: 32 + 3 + 256 + 1 + 256 + 1,
     keepPrefix: true,
     needs: "@",
@@ -122,6 +128,15 @@ export const PATTERNS: readonly Pattern[] = [
     needs: "://",
     run: "\\S",
   },
+  {
+    // An over-long username (no `:` within 256 characters): redact it and the rest of the token.
+    name: "url-userinfo-long-user",
+    re: /([a-z][a-z0-9+.-]{1,31}:\/\/)[^\s:@/?#]{257}/gi,
+    maxLength: 32 + 3 + 257,
+    keepPrefix: true,
+    needs: "://",
+    run: "\\S",
+  },
 ];
 
 /** Largest pattern match, used to size the carry-over window. */
@@ -131,7 +146,7 @@ export const MAX_PATTERN_LENGTH: number = Math.max(
 );
 
 /**
- * End of a line that names a key whose value may follow on the next line (one newline at most,
+ * End of a line that names a key whose value may follow on a later line (whitespace only between,
  * see GAP). Built from the same WS as the patterns. Test it against the last KEY_LINE_SPAN
  * characters of one line, never the whole line.
  */

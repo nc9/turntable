@@ -488,6 +488,10 @@ function twoChunks(text: string, i: number): string {
   return r.push(text.slice(0, i)) + r.push(text.slice(i)) + r.end();
 }
 
+// A stream may emit two adjacent replacements (the swallowed token's, then the next secret's)
+// where one shot merges them into one. Cosmetic, so compare with adjacent `***` collapsed.
+const norm = (s: string): string => s.replaceAll(/(?:\*\*\*)+/g, R);
+
 /** Streams `text` in fixed-size chunks. */
 function chunked(text: string, size: number): string {
   const r = new Redactor();
@@ -596,10 +600,10 @@ describe("url userinfo", () => {
       expect(chunked(`a ${u} b`, 500)).toBe(out);
     }
   });
-  test("a port or a scoped npm path is not userinfo", () => {
+  test("a port is not userinfo unless an @ follows in the same token", () => {
     const clean = [
-      "http://localhost:4873/@scope/pkg",
-      "https://example.com:8080/a@b",
+      "http://localhost:4873/path/to/pkg",
+      "https://example.com:8080/a b@c",
       "https://user@example.com/path",
     ];
     for (const c of clean) expect(redactString(c)).toBe(c);
@@ -617,7 +621,7 @@ describe("differential: streaming at every split equals one shot", () => {
     " ".repeat(64),
     " ".repeat(65),
   ];
-  const newlines = ["", "\n", "\n\n"];
+  const newlines = ["", "\n", "\n\n", "\n \n\t\n"];
   const keys: [string, (gap: string) => string][] = [
     ["aws", (gap) => `aws_secret_access_key:${gap}${AWS_SECRET}`],
     ["aws quoted", (gap) => `"aws_secret_access_key": ${gap}"${AWS_SECRET}"`],
@@ -681,8 +685,97 @@ describe("differential: streaming at every split equals one shot", () => {
     }
   });
 
-  test("only one newline is allowed between key and value", () => {
+  test("blank lines between key and value are redacted, up to the gap bound", () => {
     const two = `aws_secret_access_key:\n\n${AWS_SECRET}\n`;
-    expect(redactString(two)).toBe(two);
+    expect(redactString(two)).toBe(`aws_secret_access_key:\n\n${R}\n`);
+    const far = `aws_secret_access_key:${"\n".repeat(200)}${AWS_SECRET}\n`;
+    expect(redactString(far)).toBe(far); // beyond the gap bound: not a match
   });
+});
+
+describe("#53: context after an over-bound token run is still scanned", () => {
+  const seg = (n: number): string => "aB3_x".repeat(Math.ceil(n / 5)).slice(0, n);
+  const tokens: [string, string][] = [
+    ["jwt payload over bound", `ey${SPLIT}J${seg(30)}.ey${SPLIT}J${seg(6000)}`],
+    ["github token over bound", `gh${SPLIT}p_${"a1B2".repeat(200)}`],
+    ["long userinfo password", urlOf(`user:${"p4ss".repeat(100)}`, "")],
+  ];
+  const pem = `-----BE${SPLIT}GIN PRIVATE KEY-----\nMIIEdummybody\n-----EN${SPLIT}D PRIVATE KEY-----`;
+  const followers: [string, string][] = [
+    ["pem block", `${pem}\nafter`],
+    ["aws key line then value", `aws_secret_access_key:\n  ${AWS_SECRET}\nafter`],
+    ["bearer key line then value", `Authorization: Bearer\n  abcdef1234567890XYZ\nafter`],
+  ];
+
+  for (const [tname, token] of tokens) {
+    for (const [fname, follower] of followers) {
+      const text = `k ${token}${tname.startsWith("long userinfo") ? " " : ""}${follower}`;
+      const join = 2 + token.length;
+      test(`${tname} followed by ${fname}: streaming equals one shot`, () => {
+        const whole = redactString(text);
+        expect(whole).not.toContain("MIIEdummybody");
+        expect(whole).not.toContain(AWS_SECRET);
+        expect(whole).not.toContain("abcdef1234567890XYZ");
+        // every offset around the join, sampled elsewhere
+        const offsets = new Set<number>();
+        for (let i = Math.max(0, join - 60); i <= Math.min(text.length, join + 80); i++) {
+          offsets.add(i);
+        }
+        for (let i = 0; i <= text.length; i += 211) offsets.add(i);
+        for (const i of offsets) {
+          const out = twoChunks(text, i);
+          if (norm(out) !== norm(whole)) {
+            throw new Error(`split ${i}: ${JSON.stringify(out.slice(0, 300))}`);
+          }
+        }
+        for (const size of [37, 101, 1024]) expect(norm(chunked(text, size))).toBe(norm(whole));
+      });
+    }
+  }
+
+  test("a held partial marker after the run completes across chunks", () => {
+    const token = `gh${SPLIT}p_${"a1B2".repeat(200)}`;
+    const r = new Redactor();
+    let out = r.push(`k ${token}`);
+    out += r.push("-----BE");
+    out += r.push(`GIN PRIVATE KEY-----\nMIIEbody\n-----EN${SPLIT}D PRIVATE KEY-----\nz`);
+    out += r.end();
+    expect(norm(out)).toBe(`k ${R}\nz`);
+  });
+});
+
+describe("#53: url userinfo edge cases, streaming equals one shot", () => {
+  const long = (n: number) => "u".repeat(n);
+  const cases: [string, string, string][] = [
+    [
+      "port-like password with an @ later in the token",
+      urlOf("user:1234/abc", "host.io/x"),
+      urlOf(R, "host.io/x"),
+    ],
+    [
+      "port then scoped path",
+      "see http://localhost:4873/@scope/pkg ok",
+      "see http://***@scope/pkg ok",
+    ],
+    [
+      "port without @ is left alone",
+      "http://localhost:4873/path ok",
+      "http://localhost:4873/path ok",
+    ],
+    ["username of 256 chars", urlOf(`${long(256)}:pw12345678`, "h.io/"), urlOf(R, "h.io/")],
+    ["username over 256 chars", urlOf(`${long(300)}:pw12345678`, "h.io/"), "https://***"],
+    ["username over 256 chars, no colon", urlOf(long(400), "h.io/"), "https://***"],
+  ];
+  for (const [name, input, expected] of cases) {
+    test(name, () => {
+      const text = `a ${input} b`;
+      const whole = redactString(text);
+      expect(whole).toBe(`a ${expected} b`);
+      for (let i = 0; i <= text.length; i += 7) {
+        const out = twoChunks(text, i);
+        if (out !== whole) throw new Error(`split ${i}: ${JSON.stringify(out)}`);
+      }
+      expect(chunked(text, 50)).toBe(whole);
+    });
+  }
 });
