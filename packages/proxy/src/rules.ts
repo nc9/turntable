@@ -84,6 +84,21 @@ function compileBodyCheck(c: BodyCheck, bad: (why: string) => never): void {
   }
 }
 
+const SHA256_SEGMENT = /^sha256:[0-9a-f]{64}$/;
+
+/** True when `path` has exactly the shape (see `Rule.pathShape`). A trailing slash is a segment. */
+export function shapeMatches(path: string, shape: string): boolean {
+  const p = path.split("/");
+  const sh = shape.split("/");
+  if (p.length !== sh.length) return false;
+  return sh.every((want, i) => {
+    const got = p[i] as string;
+    if (want === "*") return got !== "";
+    if (want === "{sha256}") return SHA256_SEGMENT.test(got);
+    return got === want;
+  });
+}
+
 export function compileRule(r: Rule): CompiledRule {
   const bad = (why: string): never => {
     throw new RuleError(`rule ${r.id}: ${why}`);
@@ -105,6 +120,22 @@ export function compileRule(r: Rule): CompiledRule {
     if (r.pathPrefix !== npmPath(r.npmPackage))
       bad(`pathPrefix for npmPackage ${r.npmPackage} must be ${npmPath(r.npmPackage)}`);
   } else if (checkPath(r.pathPrefix) !== undefined) bad("pathPrefix must be a canonical path");
+  if (r.pathShape !== undefined) {
+    if (r.npmPackage !== undefined) bad("pathShape cannot be combined with npmPackage");
+    if (!r.pathShape.startsWith("/")) bad("pathShape must start with /");
+    const literal: string[] = [];
+    let wild = false;
+    for (const seg of r.pathShape.split("/").slice(1)) {
+      if (seg === "*" || seg === "{sha256}") wild = true;
+      else if (/[*{}]/.test(seg)) bad("pathShape wildcards must be a whole segment");
+      else if (!wild) literal.push(seg);
+    }
+    if (!wild) bad("pathShape needs a wildcard segment; use pathExact for a fixed path");
+    const lit = `/${literal.join("/")}`;
+    if (checkPath(lit) !== undefined) bad("pathShape literal segments must be a canonical path");
+    if (r.pathPrefix !== lit && r.pathPrefix !== `${lit}/`)
+      bad(`pathPrefix for this pathShape must be ${lit}`);
+  }
   if (r.bodyCheck) compileBodyCheck(r.bodyCheck, bad);
   const inject: Inject = r.inject;
   if (inject.type === "header") {
@@ -230,7 +261,13 @@ export function matchRule(
   if (forMethod.length === 0) return { ok: false, reason: "no_rule_for_method" };
   // The longest matching prefix wins, so a narrow rule beats a broad one.
   const hits = forMethod
-    .filter((r) => (r.pathExact ? path === r.pathPrefix : underPrefix(path, r.pathPrefix)))
+    .filter((r) =>
+      r.pathShape !== undefined
+        ? shapeMatches(path, r.pathShape)
+        : r.pathExact
+          ? path === r.pathPrefix
+          : underPrefix(path, r.pathPrefix),
+    )
     .toSorted((a, b) => b.pathPrefix.length - a.pathPrefix.length);
   const best = hits[0];
   return best ? { ok: true, rule: best } : { ok: false, reason: "no_rule_for_path" };

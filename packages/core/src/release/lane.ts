@@ -315,12 +315,19 @@ export class ReleaseLane {
       repo: approved.repo,
       tag: approved.tag,
     });
-    return this.#publish(
+    const results = await this.#publish(
       req,
       scope,
       { repo: approved.repo, sha: approved.sha, digests, envelope: approved.envelope },
       true,
     );
+    // Done: every target is published or was already. From here the release cannot be registered
+    // with the proxy again (a re-run of finalize still resumes a failed target, since a failed
+    // one leaves it open).
+    if (results.every((r) => r.state === "published" || r.state === "already")) {
+      this.#o.attest.markFinalized(a, (this.#o.now ?? Date.now)());
+    }
+    return results;
   }
 
   async #publish(

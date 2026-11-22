@@ -163,23 +163,28 @@ export type ResolvedArtifact = {
 export async function resolveArtifactConsumption(
   db: Db,
   scope: Scope,
-  consumerRunId: string,
+  consumerRunId: string | { klass: string },
   sources: readonly ArtifactSource[],
   quarantine: readonly ArtifactSource[] = [],
 ): Promise<ResolvedArtifact[]> {
-  const run = await db.run((h) =>
-    h.orm
-      .select({ trust: s.runs.trust })
-      .from(s.runs)
-      .where(
-        scoped(
-          scope,
-          { orgId: s.runs.orgId, projectId: s.runs.projectId },
-          eq(s.runs.id, consumerRunId),
-        ),
-      )
-      .limit(1),
-  );
+  // A consumer is a run (its class from its stored decision) or, to ask "may a build of this
+  // class take it", a class by name.
+  const run =
+    typeof consumerRunId !== "string"
+      ? [{ trust: JSON.stringify({ class: consumerRunId.klass, workflowHash: "" }) }]
+      : await db.run((h) =>
+          h.orm
+            .select({ trust: s.runs.trust })
+            .from(s.runs)
+            .where(
+              scoped(
+                scope,
+                { orgId: s.runs.orgId, projectId: s.runs.projectId },
+                eq(s.runs.id, consumerRunId),
+              ),
+            )
+            .limit(1),
+        );
   const consumer = run[0] ? (parseTrust(run[0])?.class ?? "untrusted_pr") : undefined;
   const asked = new Set(quarantine.map((q) => `${q.runId}\n${q.name}`));
   const out: ResolvedArtifact[] = [];

@@ -380,3 +380,29 @@ export type LogSlice = {
   /** True when the attempt is finished and `offset + bytes.length === size`. */
   done: boolean;
 };
+
+/** One recorded artifact with its provenance, set by the control plane when it was recorded. */
+export type Artifact = {
+  name: string;
+  size: number;
+  /** Lower-case hex sha256. */
+  sha256: string;
+  /** `computed` when the control plane hashed the bytes itself, `reported` when the recorder gave it. */
+  digestSource: "reported" | "computed";
+  /** Trust class of the attempt that produced it (capped by its run's class). */
+  trustClass: TrustClass | string;
+  runSha: string | null;
+  attemptId: string;
+  createdAt: number;
+};
+
+export type ConsumeDecision = "allow" | "quarantine" | "deny";
+
+export type ConsumeResult = {
+  runId: string;
+  name: string;
+  decision: ConsumeDecision;
+  reason: string | null;
+  trustClass: string | null;
+  sha256: string | null;
+};

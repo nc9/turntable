@@ -9,6 +9,9 @@ import { dirname } from "node:path";
 import { parseTarget } from "./publish/config";
 import type { PublishTarget } from "./publish/types";
 
+/** How long an approval can be registered with the proxy: a publish job starts soon after, or not at all. */
+export const APPROVAL_TTL_MS = 6 * 3_600_000;
+
 export type AttestCheck = { state: "new" } | { state: "same" } | { state: "mismatch"; why: string };
 
 export class AttestationStore {
@@ -42,9 +45,19 @@ export class AttestationStore {
       `CREATE TABLE IF NOT EXISTS approved_releases (
          org_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL, repo TEXT NOT NULL,
          tag TEXT NOT NULL, sha TEXT NOT NULL, artifacts TEXT NOT NULL, approved_at INTEGER NOT NULL,
-         envelope TEXT,
+         envelope TEXT, expires_at INTEGER, finalized_at INTEGER,
          PRIMARY KEY (org_id, project_id, run_id))`,
     );
+    // A file made before approvals expired and could be finalized: add the columns. A row without
+    // an expiry is treated as approved_at plus the default window.
+    const cols = this.#db
+      .query<{ name: string }, []>("PRAGMA table_info(approved_releases)")
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("expires_at"))
+      this.#db.run("ALTER TABLE approved_releases ADD COLUMN expires_at INTEGER");
+    if (!cols.includes("finalized_at"))
+      this.#db.run("ALTER TABLE approved_releases ADD COLUMN finalized_at INTEGER");
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS pinned_repos (
          org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL,
@@ -153,7 +166,18 @@ export class AttestationStore {
     return { state: "same" };
   }
 
-  /** The lane signed this run's release: remembered in this file, for the release proxy. */
+  /**
+   * The lane signed this run's release: remembered in this file, for the release proxy. The
+   * approval lasts `ttlMs`; after that, or once the release is finalized, the proxy hands out no
+   * rules for it.
+   *
+   * Order matters: `approved_at` is set once, at the first approval of the run, and never moved
+   * (its row id breaks ties), because "newest approved release" is read from it. Signing a run
+   * again therefore cannot make an older release the newest and roll a mutable tag back. Signing
+   * again refreshes only the window, and only for an unfinalized run that no newer approval has
+   * replaced; for any other run it changes nothing. Returns whether the approval is open for
+   * registration after the call.
+   */
   approveRelease(
     id: { orgId: string; projectId: string; runId: string },
     r: {
@@ -165,10 +189,23 @@ export class AttestationStore {
       envelope?: string;
     },
     now: number,
-  ): void {
+    ttlMs: number = APPROVAL_TTL_MS,
+  ): boolean {
+    const existing = this.approvedRelease(id);
+    if (existing) {
+      if (existing.finalizedAt !== undefined || !this.isNewestApproved(id)) return false;
+      this.#db
+        .query(
+          "UPDATE approved_releases SET expires_at = ? WHERE org_id = ? AND project_id = ? AND run_id = ?",
+        )
+        .run(now + ttlMs, id.orgId, id.projectId, id.runId);
+      return true;
+    }
     this.#db
       .query(
-        "INSERT INTO approved_releases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, run_id) DO UPDATE SET repo = excluded.repo, tag = excluded.tag, sha = excluded.sha, artifacts = excluded.artifacts, approved_at = excluded.approved_at, envelope = excluded.envelope",
+        `INSERT INTO approved_releases
+           (org_id, project_id, run_id, repo, tag, sha, artifacts, approved_at, envelope, expires_at, finalized_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       )
       .run(
         id.orgId,
@@ -180,29 +217,80 @@ export class AttestationStore {
         JSON.stringify(r.artifacts),
         now,
         r.envelope ?? null,
+        now + ttlMs,
       );
+    return true;
   }
 
-  approvedRelease(id: {
-    orgId: string;
-    projectId: string;
-    runId: string;
-  }):
-    | { repo: string; tag: string; sha: string; artifacts: string[]; envelope: string | undefined }
+  /** The release is done (every target published): it can no longer be registered with the proxy. */
+  markFinalized(id: { orgId: string; projectId: string; runId: string }, now: number): void {
+    this.#db
+      .query(
+        "UPDATE approved_releases SET finalized_at = COALESCE(finalized_at, ?) WHERE org_id = ? AND project_id = ? AND run_id = ?",
+      )
+      .run(now, id.orgId, id.projectId, id.runId);
+  }
+
+  /**
+   * True when no other approved release of the project was approved after this one: only the
+   * newest may move a mutable name (an image's `latest`) forward.
+   */
+  isNewestApproved(id: { orgId: string; projectId: string; runId: string }): boolean {
+    const mine = this.#db
+      .query<{ approved_at: number; rowid: number }, [string, string, string]>(
+        "SELECT approved_at, rowid FROM approved_releases WHERE org_id = ? AND project_id = ? AND run_id = ?",
+      )
+      .get(id.orgId, id.projectId, id.runId);
+    if (!mine) return false;
+    const newer = this.#db
+      .query<{ n: number }, [string, string, string, number, number, number]>(
+        `SELECT count(*) AS n FROM approved_releases
+         WHERE org_id = ? AND project_id = ? AND run_id != ?
+           AND (approved_at > ? OR (approved_at = ? AND rowid > ?))`,
+      )
+      .get(id.orgId, id.projectId, id.runId, mine.approved_at, mine.approved_at, mine.rowid);
+    return (newer?.n ?? 0) === 0;
+  }
+
+  approvedRelease(id: { orgId: string; projectId: string; runId: string }):
+    | {
+        repo: string;
+        tag: string;
+        sha: string;
+        artifacts: string[];
+        envelope: string | undefined;
+        approvedAt: number;
+        expiresAt: number;
+        finalizedAt: number | undefined;
+      }
     | undefined {
     const row = this.#db
       .query<
-        { repo: string; tag: string; sha: string; artifacts: string; envelope: string | null },
+        {
+          repo: string;
+          tag: string;
+          sha: string;
+          artifacts: string;
+          envelope: string | null;
+          approved_at: number;
+          expires_at: number | null;
+          finalized_at: number | null;
+        },
         [string, string, string]
       >(
-        "SELECT repo, tag, sha, artifacts, envelope FROM approved_releases WHERE org_id = ? AND project_id = ? AND run_id = ?",
+        "SELECT repo, tag, sha, artifacts, envelope, approved_at, expires_at, finalized_at FROM approved_releases WHERE org_id = ? AND project_id = ? AND run_id = ?",
       )
       .get(id.orgId, id.projectId, id.runId);
     return row
       ? {
-          ...row,
+          repo: row.repo,
+          tag: row.tag,
+          sha: row.sha,
           artifacts: JSON.parse(row.artifacts) as string[],
           envelope: row.envelope ?? undefined,
+          approvedAt: row.approved_at,
+          expiresAt: row.expires_at ?? row.approved_at + APPROVAL_TTL_MS,
+          finalizedAt: row.finalized_at ?? undefined,
         }
       : undefined;
   }
