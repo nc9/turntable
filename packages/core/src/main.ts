@@ -65,6 +65,7 @@ Usage:
   longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
+  longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
   longshore version
 
 Environment:
@@ -530,6 +531,10 @@ async function main(argv: string[]): Promise<void> {
     case "channel": {
       const { channelCommand } = await import("./channel/cli");
       return await channelCommand(rest);
+    }
+    case "verify": {
+      const { verifyCommand } = await import("./verify/cli");
+      process.exit(await verifyCommand(rest));
     }
     case "version":
     case "--version":

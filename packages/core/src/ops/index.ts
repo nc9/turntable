@@ -8,6 +8,7 @@ import { failureDigest } from "./definitions/failure-digest";
 import { listOrgs } from "./definitions/list-orgs";
 import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
+import { signRelease } from "./definitions/sign-release";
 import { whoami } from "./definitions/whoami";
 import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
@@ -41,6 +42,7 @@ export const registry = createRegistry([
   cancel,
   rerun,
   approveRunOp,
+  signRelease,
   whoami,
   listOrgs,
   listProjects,

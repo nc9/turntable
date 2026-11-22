@@ -16,6 +16,7 @@ import {
   latestCheckpoint,
   listCheckpoints,
   orgsWithAudit,
+  orgsWithSecretName,
   putCheckpoint,
   type AuditCheckpoint,
 } from "../db/repos";
@@ -80,16 +81,24 @@ export class AuditRefusal extends Error {
 }
 
 /** Records the refusal in the org's own chain (throttled) so it is seen, then throws it. */
-async function refuse(db: Db, orgId: string, reason: string, message: string): Promise<never> {
+async function refuse(
+  db: Db,
+  orgId: string,
+  reason: string,
+  message: string,
+  opts: { inSystemChain?: boolean } = {},
+): Promise<never> {
   await auditFailure(db, {
-    orgId,
+    // A truncated chain is not a place to write an alert: it would extend what was cut. The
+    // alert goes in the system chain, naming the org.
+    orgId: opts.inSystemChain ? undefined : orgId,
     principalKind: "system",
     principalId: "audit",
     source: orgId,
     kind: `checkpoint_refused:${reason}`,
     op: "audit_checkpoint",
     outcome: `error:${reason}`,
-    detail: { message },
+    detail: { message, ...(opts.inSystemChain ? { org_id: orgId } : {}) },
   });
   throw new AuditRefusal(reason, message);
 }
@@ -270,6 +279,17 @@ export async function createCheckpoint(
     );
   }
   const head = await auditHead(db, orgId);
+  // The sealed state says what was signed. A chain that is gone, or that ends before it, was
+  // truncated: say so, and do not carry on as if there were nothing to sign.
+  if (state.lastSeq > 0 && (!head || head.seq === null || head.seq < state.lastSeq)) {
+    return await refuse(
+      db,
+      orgId,
+      "chain_invalid",
+      `the chain ${head?.seq ? `ends at ${head.seq}` : "is empty"}, before the last signed entry ${state.lastSeq}: it was truncated`,
+      { inSystemChain: true },
+    );
+  }
   if (!head || head.seq === null || head.hash === null) return undefined;
   const last = await latestCheckpoint(db, orgId);
   if ((last?.seq ?? 0) < state.lastSeq) {
@@ -322,6 +342,17 @@ export interface CheckpointPolicy {
   everyMs?: number;
 }
 
+/**
+ * Every org the checkpointer must look at: those with audit rows, those with a sealed state file
+ * and those holding a signing key. An org whose rows were all deleted still has the last two.
+ */
+export async function auditedOrgIds(db: Db, anchor: AuditAnchor): Promise<string[]> {
+  const ids = new Set(await orgsWithAudit(db));
+  for (const id of anchor.orgIds()) ids.add(id);
+  for (const id of await orgsWithSecretName(db, AUDIT_KEY_SECRET)) ids.add(id);
+  return [...ids];
+}
+
 /** One pass over every org: checkpoint those that are due. Returns how many were signed. */
 export async function checkpointDue(
   db: Db,
@@ -333,20 +364,29 @@ export async function checkpointDue(
   const everyEntries = policy.everyEntries ?? CHECKPOINT_EVERY_ENTRIES;
   const everyMs = policy.everyMs ?? CHECKPOINT_EVERY_MS;
   let signed = 0;
-  for (const orgId of await orgsWithAudit(db)) {
+  for (const orgId of await auditedOrgIds(db, anchor)) {
     const head = await auditHead(db, orgId);
-    if (!head || head.seq === null) continue;
+    let state: AnchorState | undefined;
+    try {
+      state = anchor.read(orgId);
+    } catch {
+      state = undefined; // createCheckpoint refuses a corrupt state, with an alert
+    }
+    const truncated =
+      state !== undefined &&
+      state.lastSeq > 0 &&
+      (!head || head.seq === null || head.seq < state.lastSeq);
     const last = await latestCheckpoint(db, orgId);
-    const behind = head.seq - (last?.seq ?? 0);
-    if (behind <= 0) continue;
+    const behind = (head?.seq ?? 0) - (last?.seq ?? 0);
     const age = last ? now() - last.signedAt : Number.POSITIVE_INFINITY;
-    if (behind >= everyEntries || age >= everyMs) {
-      try {
-        if (await createCheckpoint(db, store, anchor, orgId, now)) signed += 1;
-      } catch (e) {
-        // One org's refusal (already alerted in its chain) must not stop the others.
-        if (!(e instanceof AuditRefusal)) throw e;
-      }
+    // A truncation or an unreadable state is checked every pass, never waited out.
+    const due = truncated || (behind > 0 && (behind >= everyEntries || age >= everyMs));
+    if (!due) continue;
+    try {
+      if (await createCheckpoint(db, store, anchor, orgId, now)) signed += 1;
+    } catch (e) {
+      // One org's refusal (already alerted) must not stop the others.
+      if (!(e instanceof AuditRefusal)) throw e;
     }
   }
   return signed;

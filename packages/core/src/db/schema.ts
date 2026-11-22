@@ -110,6 +110,16 @@ export const projects = sqliteTable(
      */
     egress: text("egress").notNull().default("none"),
     /**
+     * Ref patterns (JSON array text) that count as a release for signing, for example
+     * `["refs/tags/v*"]`. Null: the default, `refs/tags/v*`.
+     */
+    releaseRefs: text("release_refs"),
+    /**
+     * The key releases are signed with: `builtin:<name>`, `aws-kms:<key id or ARN>` or
+     * `gcp-kms:<key version name>`. Null: this project cannot sign.
+     */
+    signingKey: text("signing_key"),
+    /**
      * Whether the server reports job results to the forge as check runs: `off` (default),
      * `shadow` (always neutral, the real result in the text) or `live` (real conclusions). Set
      * only from the CLI (`longshore policy set --checks-mode`).
@@ -787,4 +797,40 @@ export const incidentRotationFlags = sqliteTable(
     clearedAt: integer("cleared_at", { mode: "number" }),
   },
   (t) => [index("incident_rotation_flags_org_idx").on(t.orgId, t.name)],
+);
+
+/**
+ * Artifacts recorded for a run, by name and sha256. Insert-only: a row is never updated or
+ * deleted, and a name is recorded once per run, so what was recorded is what gets signed. The
+ * signing service signs digests from here and from nowhere else.
+ */
+export const artifacts = sqliteTable(
+  "artifacts",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    runId: text("run_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    name: text("name").notNull(),
+    /** Lower-case hex. */
+    sha256: text("sha256").notNull(),
+    size: integer("size", { mode: "number" }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    // The run and the attempt must be in this org and project: no row can point across tenants.
+    foreignKey({
+      columns: [t.runId, t.orgId, t.projectId],
+      foreignColumns: [runs.id, runs.orgId, runs.projectId],
+    }),
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+    unique("artifacts_run_name_unique").on(t.orgId, t.projectId, t.runId, t.name),
+    check("artifacts_sha256_check", sql`length(${t.sha256}) = 64`),
+    index("artifacts_sha256_idx").on(t.orgId, t.sha256),
+  ],
 );

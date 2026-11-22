@@ -14,6 +14,8 @@ import {
   setProjectChecksMode,
   getOrgBySlug,
   getProjectBySlug,
+  getProjectSigning,
+  setProjectSigning,
   getProjectEgress,
   listProjects,
   setApproveRunMinRole,
@@ -190,6 +192,79 @@ export async function showChecksMode(
     out.push({
       project: p.slug,
       mode: await getProjectChecksMode(db, { orgId: org.id, projectId: p.id }),
+    });
+  }
+  return out;
+}
+
+/**
+ * Sets how a project signs releases: the ref patterns that count as a release and the key to sign
+ * with. Without --project, every project of the org. A key reference is `builtin:<name>`,
+ * `aws-kms:<key id or ARN>` or `gcp-kms:<key version name>`.
+ */
+export async function setSigningPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  patch: { releaseRefs?: string[] | undefined; signingKey?: string | undefined },
+): Promise<{ project: string; releaseRefs: string[]; signingKey: string | null }[]> {
+  const { parseKeyRef } = await import("../signing");
+  if (patch.signingKey !== undefined && patch.signingKey !== "" && !parseKeyRef(patch.signingKey)) {
+    throw new Error("--signing-key must be builtin:<name>, aws-kms:<key> or gcp-kms:<key version>");
+  }
+  for (const r of patch.releaseRefs ?? []) {
+    if (!/^refs\/(heads|tags)\/[A-Za-z0-9._/*-]{1,200}$/.test(r)) {
+      throw new Error(`--release-refs entry ${r} must be a refs/heads/ or refs/tags/ pattern`);
+    }
+  }
+  const org = await orgOf(db, orgSlug);
+  const projects = projectSlug
+    ? [await getProjectBySlug(db, { orgId: org.id }, projectSlug)]
+    : await listProjects(db, { orgId: org.id });
+  if (projects.length === 0 || projects.some((p) => p === undefined)) {
+    throw new Error(
+      projectSlug ? `no project ${projectSlug} in org ${orgSlug}` : "org has no projects",
+    );
+  }
+  const out: { project: string; releaseRefs: string[]; signingKey: string | null }[] = [];
+  for (const p of projects) {
+    const scope = { orgId: org.id, projectId: p!.id };
+    await db.transaction(async (tx) => {
+      await setProjectSigning(tx, scope, {
+        ...(patch.releaseRefs === undefined ? {} : { releaseRefs: patch.releaseRefs }),
+        ...(patch.signingKey === undefined
+          ? {}
+          : { signingKey: patch.signingKey === "" ? null : patch.signingKey }),
+      });
+      await appendAudit(tx, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "ok",
+        input: {
+          key: "signing",
+          project: p!.slug,
+          release_refs: patch.releaseRefs ?? null,
+          signing_key: patch.signingKey ?? null,
+        },
+      });
+    });
+    out.push({ project: p!.slug, ...(await getProjectSigning(db, scope)) });
+  }
+  return out;
+}
+
+export async function showSigning(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; releaseRefs: string[]; signingKey: string | null }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; releaseRefs: string[]; signingKey: string | null }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    out.push({
+      project: p.slug,
+      ...(await getProjectSigning(db, { orgId: org.id, projectId: p.id })),
     });
   }
   return out;
