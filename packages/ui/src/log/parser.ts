@@ -86,7 +86,14 @@ const TRUE_COLOR = 0x1000000;
 
 const ESCAPE_RE =
   // oxlint-disable-next-line no-control-regex
-  /\u001b(?:\[([0-?]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g;
+  /\u001b(?:\[([0-?]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[ -/]*[0-~])/g;
+// Controls that could spoof UI chrome or hide text: C0 (except tab, CR, ESC and BEL, which are handled
+// below: BEL may terminate an OSC), DEL, C1 (including the 8-bit CSI/OSC introducers), and bidirectional overrides.
+// oxlint-disable-next-line no-control-regex
+const STRAY_RE = /[\u001b\u0007]/g;
+const UNSAFE_RE =
+  // oxlint-disable-next-line no-control-regex
+  /[\u0000-\u0006\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 const TS_RE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) /;
 const COMMAND_RE = /^::([A-Za-z-]+)(?: ([^\n]*?))?::(.*)$/;
 
@@ -305,7 +312,8 @@ export class LogParser {
       s = tail.length > 0 ? tail : s.slice(0, cr);
     }
     const startedStyled = this.fg !== -1 || this.bg !== -1 || this.flags !== 0;
-    if (!startedStyled && s.indexOf("\u001b") === -1) return { text: s, segs: null };
+    if (!startedStyled && s.indexOf("\u001b") === -1)
+      return { text: s.replaceAll("\u0007", ""), segs: null };
     const segs: Seg[] = [];
     let text = "";
     let last = 0;
@@ -314,7 +322,7 @@ export class LogParser {
     let m: RegExpExecArray | null;
     while ((m = ESCAPE_RE.exec(s)) !== null) {
       if (m.index > last) {
-        const piece = s.slice(last, m.index);
+        const piece = s.slice(last, m.index).replace(STRAY_RE, "");
         segs.push({ text: piece, style: this.styleId() });
         text += piece;
       }
@@ -325,7 +333,7 @@ export class LogParser {
       last = m.index + m[0].length;
     }
     if (last < s.length) {
-      const piece = s.slice(last);
+      const piece = s.slice(last).replace(STRAY_RE, "");
       segs.push({ text: piece, style: this.styleId() });
       text += piece;
     }
@@ -351,7 +359,8 @@ export class LogParser {
     }
   }
 
-  private processLine(raw: string, offset: number): void {
+  private processLine(input: string, offset: number): void {
+    const raw = input.replace(UNSAFE_RE, "");
     let rest = raw;
     let ts: number | null = null;
     const tsMatch = TS_RE.exec(rest);

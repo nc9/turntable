@@ -238,3 +238,47 @@ describe("search and scale", () => {
     expect(p.lines.map((l) => l.text.length).reduce((a, b) => a + b, 0)).toBe(200_000);
   });
 });
+
+describe("untrusted input neutralisation", () => {
+  const OSC = "\u001b]";
+  const BEL = "\u0007";
+  const textOf = (s: string) => parseAll(bytes(s)).lines.map((l) => l.text);
+
+  test("OSC 8 hyperlinks are dropped; only the visible text survives", () => {
+    expect(textOf(`see ${OSC}8;;https://evil.example${BEL}click me${OSC}8;;${BEL} now\n`)).toEqual([
+      "see click me now",
+    ]);
+    expect(textOf(`${OSC}8;;https://evil.example\u001b\\link${OSC}8;;\u001b\\\n`)).toEqual([
+      "link",
+    ]);
+  });
+
+  test("title-setting OSC and unterminated OSC never reach the output", () => {
+    expect(textOf(`a${OSC}0;pwned${BEL}b\n`)).toEqual(["ab"]);
+    expect(textOf(`a${OSC}0;never ends\n`)).toEqual(["a"]);
+  });
+
+  test("cursor movement, erase and other CSI are removed, only SGR styles remain", () => {
+    const p = parseAll(bytes("x\u001b[2J\u001b[H\u001b[10;5Hy\u001b[1A\u001b[Kz\u001b[31mred\n"));
+    expect(p.lines[0]?.text).toBe("xyzred");
+    expect(p.styles.length).toBe(2); // default plus red
+  });
+
+  test("lone escapes, C1 introducers, bell, backspace and bidi overrides are stripped", () => {
+    expect(textOf("a\u001b7b\u001bc\n")).toEqual(["ab"]);
+    expect(textOf("a\u009b31mb\u009d0;t\u0007c\n")).toEqual(["a31mb0;tc"]);
+    expect(textOf("a\u0007\u0008\u007fb\n")).toEqual(["ab"]);
+    expect(textOf("ok ‮evil⁦ ‏\n")).toEqual(["ok evil "]);
+  });
+
+  test("annotation text is plain text: markup stays literal and escapes are stripped", () => {
+    const p = parseAll(
+      bytes(
+        `::error title=<b>x</b>::<img src=x onerror=alert(1)>${OSC}8;;https://e${BEL}hi${OSC}8;;${BEL}\n`,
+      ),
+    );
+    const a = p.annotations[0]!;
+    expect(a.title).toBe("<b>x</b>");
+    expect(p.lines[0]?.text).toBe("<img src=x onerror=alert(1)>hi");
+  });
+});
