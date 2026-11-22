@@ -57,6 +57,8 @@ longshore policy show --org <slug>
 
 The approval environment defaults to `release` and is set with `--signing-environment <name>`. It is the project's own setting: `sign_release` takes no environment from the caller, refuses a request that names a different one, asks for approval in the project's environment, and records it in the provenance (`internalParameters.environment`) and the audit row.
 
+A `builtin:<name>` key is looked up inside the org that owns the run (the org id is part of the stored name), so a project cannot name another org's key, and the same name in two orgs is two keys. A key outside Longshore (`aws-kms:`, `gcp-kms:`) may belong to one org only: `policy set` refuses a reference another org already uses, and signing is refused with `key_shared` if two orgs come to name the same one. Keys made before this change were stored under the bare name; create them again with `release init-key --org` and pin the new public key.
+
 Release refs default to `refs/tags/v*`. An empty `--signing-key ''` unsets the key, and a project with no key cannot sign. Both are changed from the CLI only.
 
 ## Verifying

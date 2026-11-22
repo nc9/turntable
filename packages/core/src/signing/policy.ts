@@ -14,7 +14,8 @@ export type SigningDenial =
   | "environment_mismatch"
   | "verification_mismatch"
   | "no_approval"
-  | "no_backend";
+  | "no_backend"
+  | "key_shared";
 
 export interface SigningFacts {
   /** The run's stored class (`runs.trust`), undefined when it has none. */
