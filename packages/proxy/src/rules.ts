@@ -277,6 +277,8 @@ const NPM_VERSION_EXTRA = new Set([
   "readmeFilename",
 ]);
 
+const SEMVERISH = /^\d{1,6}\.\d{1,6}\.\d{1,6}(-[0-9A-Za-z.-]{1,64})?(\+[0-9A-Za-z.-]{1,64})?$/;
+
 const no = (reason: string, detail?: string): BodyVerdict => ({
   ok: false,
   reason,
@@ -299,6 +301,11 @@ function checkNpmDocument(o: Record<string, unknown>, bytes: Buffer, e: NpmExpec
     return no("access_mismatch");
   if (o.description !== undefined && o.description !== e.manifest.description)
     return no("manifest_mismatch", "description");
+  // Text npmjs.com shows must come from the verified tarball, never from the job.
+  const readmes = e.readmes ?? {};
+  const readmeOk = (v: unknown): boolean =>
+    v === undefined || v === "" || (typeof v === "string" && Object.values(readmes).includes(v));
+  if (!readmeOk(o.readme)) return no("readme_not_from_tarball", "readme");
   const versions = o.versions;
   if (typeof versions !== "object" || versions === null || Array.isArray(versions))
     return no("version_count");
@@ -308,12 +315,26 @@ function checkNpmDocument(o: Record<string, unknown>, bytes: Buffer, e: NpmExpec
   const mv = (versions as Record<string, unknown>)[e.version];
   if (typeof mv !== "object" || mv === null || Array.isArray(mv)) return no("manifest_mismatch");
   const m = mv as Record<string, unknown>;
+  if (!readmeOk(m.readme)) return no("readme_not_from_tarball", "versions.readme");
+  if (m.readmeFilename !== undefined) {
+    if (typeof m.readmeFilename !== "string" || !Object.hasOwn(readmes, m.readmeFilename))
+      return no("readme_filename_mismatch");
+    if (m.readme !== undefined && m.readme !== "" && m.readme !== readmes[m.readmeFilename])
+      return no("readme_filename_mismatch", "readme is not that file");
+  }
+  if (m.gitHead !== undefined && (e.gitHead === undefined || m.gitHead !== e.gitHead))
+    return no("git_head_mismatch");
+  for (const k of ["_nodeVersion", "_npmVersion"] as const) {
+    if (m[k] !== undefined && (typeof m[k] !== "string" || !SEMVERISH.test(m[k])))
+      return no("client_version_malformed", k);
+  }
   for (const [k, v] of Object.entries(m)) {
     if (k === "dist" || NPM_VERSION_EXTRA.has(k)) continue;
     if (!Object.hasOwn(e.manifest, k)) return no("unexpected_field", `versions.${k}`);
     if (!isDeepStrictEqual(v, e.manifest[k])) return no("manifest_mismatch", k);
   }
   for (const k of Object.keys(e.manifest)) {
+    if (NPM_VERSION_EXTRA.has(k)) continue;
     if (!Object.hasOwn(m, k)) return no("manifest_mismatch", `${k} missing`);
   }
   if (m._id !== undefined && m._id !== `${e.name}@${e.version}`)

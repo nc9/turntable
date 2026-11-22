@@ -183,6 +183,7 @@ export class ReleaseProxy {
     }
     // The npm publish document is derived from the tarball the lane reads and hashes now.
     const npmManifests: Record<string, Record<string, unknown>> = {};
+    const npmReadmes: Record<string, Record<string, string>> = {};
     for (const t of Object.values(targets)) {
       if (t.kind !== "npm" || t.mode !== "compat" || npmManifests[t.artifact]) continue;
       const bytes = await this.#o.bytes.read(a.runId, t.artifact);
@@ -195,6 +196,7 @@ export class ReleaseProxy {
         return refuse("artifact_unverified");
       }
       npmManifests[t.artifact] = insp.manifest;
+      npmReadmes[t.artifact] = insp.readmes;
     }
     const rules: Rule[] = Object.entries(targets).flatMap(([key, t]) =>
       compatRules(key, t, {
@@ -203,6 +205,8 @@ export class ReleaseProxy {
         digests,
         githubDraftId,
         npmManifests,
+        npmReadmes,
+        sha: approved.sha,
       }),
     );
     if (rules.length === 0) return refuse("no_compat_targets");

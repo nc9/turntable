@@ -21,6 +21,10 @@ export interface CompatRelease {
    * publish document a job may send is derived from it; without it there is no npm rule.
    */
   npmManifests?: Readonly<Record<string, Record<string, unknown>>> | undefined;
+  /** The README files of each of those tarballs, by file name, for the same artifact names. */
+  npmReadmes?: Readonly<Record<string, Readonly<Record<string, string>>>> | undefined;
+  /** The commit the tag points at, the only `gitHead` a publish document may carry. */
+  sha?: string | undefined;
   /** Digests the lane attested, by artifact name (lower-case hex sha256). */
   digests: Readonly<Record<string, string>>;
 }
@@ -52,6 +56,8 @@ function npmRules(key: string, t: NpmTarget, r: CompatRelease): Rule[] {
           tag: t.tag,
           access: t.access,
           manifest,
+          readmes: r.npmReadmes?.[t.artifact] ?? {},
+          gitHead: r.sha,
         },
       },
     },

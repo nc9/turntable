@@ -25,6 +25,13 @@ export interface NpmExpect {
   access?: "public" | "restricted" | undefined;
   /** The tarball's package.json. */
   manifest: Record<string, unknown>;
+  /**
+   * The README files at the top of the tarball, by file name (`README.md`). The only `readme` text
+   * a document may carry is empty or exactly one of these; `readmeFilename` must name one.
+   */
+  readmes?: Readonly<Record<string, string>> | undefined;
+  /** The commit the approved tag points at: the only `gitHead` a document may carry. */
+  gitHead?: string | undefined;
 }
 
 /**

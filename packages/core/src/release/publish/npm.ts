@@ -3,7 +3,7 @@
 // bytes, so nothing the workflow wrote decides what is published.
 import { createHash } from "node:crypto";
 import { safeFetch, type SafeFetch } from "@longshore/net";
-import { tarEntry } from "./tar";
+import { tarEntries, tarEntry } from "./tar";
 import type { NpmTarget, PublishContext, TargetResult } from "./types";
 
 const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
@@ -30,7 +30,13 @@ export function inspectNpmTarball(
   pkg: string,
   tag: string,
 ):
-  | { ok: true; version: string; manifest: Record<string, unknown> }
+  | {
+      ok: true;
+      version: string;
+      manifest: Record<string, unknown>;
+      /** README files at the top of the tarball, by file name. */
+      readmes: Record<string, string>;
+    }
   | { ok: false; reason: string; detail?: string } {
   const raw = tarEntry(bytes, "package/package.json");
   if (!raw)
@@ -66,7 +72,11 @@ export function inspectNpmTarball(
       reason: "version_tag_mismatch",
       detail: `the tarball is ${version}, the tag is ${tag}`,
     };
-  return { ok: true, version, manifest };
+  const readmes: Record<string, string> = {};
+  for (const [n, b] of tarEntries(bytes, (x) => /^package\/readme(\.[^./]*)?$/i.test(x))) {
+    readmes[n.slice("package/".length)] = new TextDecoder().decode(b);
+  }
+  return { ok: true, version, manifest, readmes };
 }
 
 export async function publishNpm(
