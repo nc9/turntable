@@ -18,13 +18,16 @@ import {
 } from "@longshore/proxy";
 import type { SafeFetch } from "@longshore/net";
 import type { ProxyEndpoint } from "@longshore/provider-sdk";
+import { createHash } from "node:crypto";
 import type net from "node:net";
 import type { Db } from "../db";
 import { appendAudit, getFreeze } from "../db/repos";
 import type { SecretVault } from "../secrets/vault";
 import type { AttestationStore } from "./attest";
 import { compatRules, RELEASE_GITHUB_SECRET } from "./compat";
+import type { ArtifactBytes } from "./artifacts";
 import type { ForgeFacts } from "./forge";
+import { inspectNpmTarball } from "./publish/npm";
 import { ensureDraft } from "./publish/github-release";
 
 export interface ReleaseProxyOptions {
@@ -33,6 +36,8 @@ export interface ReleaseProxyOptions {
   vault: SecretVault;
   attest: AttestationStore;
   forge: ForgeFacts;
+  /** The artifact bytes, to derive the npm publish document from the verified tarball. */
+  bytes: ArtifactBytes;
   /** The lane's own GitHub write credential, for the GitHub rules. */
   githubToken: () => Promise<string | undefined>;
   bindHost?: string;
@@ -58,6 +63,7 @@ export type RegisterRefusal =
   | "repo_mismatch"
   | "tag_moved"
   | "draft_unavailable"
+  | "artifact_unverified"
   | "already_registered"
   | "no_compat_targets";
 
@@ -175,8 +181,29 @@ export class ReleaseProxy {
       }
       githubDraftId = d.id;
     }
+    // The npm publish document is derived from the tarball the lane reads and hashes now.
+    const npmManifests: Record<string, Record<string, unknown>> = {};
+    for (const t of Object.values(targets)) {
+      if (t.kind !== "npm" || t.mode !== "compat" || npmManifests[t.artifact]) continue;
+      const bytes = await this.#o.bytes.read(a.runId, t.artifact);
+      const insp =
+        bytes && createHash("sha256").update(bytes).digest("hex") === digests[t.artifact]
+          ? inspectNpmTarball(bytes, t.package, approved.tag)
+          : undefined;
+      if (!insp?.ok) {
+        this.#o.log?.(`release proxy: ${t.artifact} is not the verified npm tarball`);
+        return refuse("artifact_unverified");
+      }
+      npmManifests[t.artifact] = insp.manifest;
+    }
     const rules: Rule[] = Object.entries(targets).flatMap(([key, t]) =>
-      compatRules(key, t, { repo: approved.repo, tag: approved.tag, digests, githubDraftId }),
+      compatRules(key, t, {
+        repo: approved.repo,
+        tag: approved.tag,
+        digests,
+        githubDraftId,
+        npmManifests,
+      }),
     );
     if (rules.length === 0) return refuse("no_compat_targets");
     this.#live.set(a.attemptId, {

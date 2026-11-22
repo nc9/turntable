@@ -110,6 +110,7 @@ export async function serveRelease(
         vault,
         attest,
         forge,
+        bytes: dirArtifacts(cfg.artifactDir),
         githubToken: async () => cfg.githubPublishToken,
         bindHost: cfg.proxy.bind,
         port: cfg.proxy.port,

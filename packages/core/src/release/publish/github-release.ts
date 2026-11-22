@@ -130,19 +130,24 @@ export async function publishGithubRelease(
     return { missing, different };
   };
 
+  /** Names of assets the release holds that nobody asked for. */
+  const extras = (rel: Release): string[] =>
+    rel.assets.map((a) => a.name).filter((n) => !want.has(n));
+
   let rel = await lookup();
   if (rel && "error" in rel) return failed(`http_${rel.error}`, "reading the release");
 
   if (rel && !rel.draft) {
     // Published: matching is a success, anything else a refusal. Never modified.
     const d = await differences(rel);
-    if (d.missing.length === 0 && d.different.length === 0) {
+    const more = extras(rel);
+    if (d.missing.length === 0 && d.different.length === 0 && more.length === 0) {
       return { target: key, state: "already", facts: { release: rel.id, assets: expected } };
     }
     return refuse(
       "republish_mismatch",
-      `the published release ${ctx.tag} differs: ${[...d.missing.map((n) => `${n} missing`), ...d.different.map((n) => `${n} differs`)].join(", ")}`,
-      { release: rel.id },
+      `the published release ${ctx.tag} differs: ${[...d.missing.map((n) => `${n} missing`), ...d.different.map((n) => `${n} differs`), ...more.map((n) => `${n} unexpected`)].join(", ")}`,
+      { release: rel.id, ...(more.length > 0 ? { extras: more } : {}) },
     );
   }
 
@@ -184,6 +189,16 @@ export async function publishGithubRelease(
   // What the draft now holds must be exactly what was sent, before anything is published.
   const after = await lookup();
   if (!after || "error" in after) return failed("lookup_failed", "re-reading the draft");
+  // The set must be exactly what was asked for: an asset a job attached on top is not published
+  // (the draft is left as it is, for a person to look at) and the names are audited.
+  const more = extras(after);
+  if (more.length > 0) {
+    return refuse(
+      "unexpected_assets",
+      `the draft holds assets that were not asked for: ${more.join(", ")}`,
+      { release: draft.id, extras: more },
+    );
+  }
   const d = await differences(after);
   if (d.missing.length > 0 || d.different.length > 0) {
     return refuse(

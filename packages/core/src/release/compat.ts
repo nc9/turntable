@@ -16,6 +16,11 @@ export interface CompatRelease {
   tag: string;
   /** The draft release the lane created for the tag: the only release a job may upload to. */
   githubDraftId?: number | undefined;
+  /**
+   * The package.json of each npm tarball the lane read and verified, by artifact name. The
+   * publish document a job may send is derived from it; without it there is no npm rule.
+   */
+  npmManifests?: Readonly<Record<string, Record<string, unknown>>> | undefined;
   /** Digests the lane attested, by artifact name (lower-case hex sha256). */
   digests: Readonly<Record<string, string>>;
 }
@@ -24,7 +29,8 @@ const bearer = { type: "header", name: "Authorization", format: "Bearer {secret}
 
 function npmRules(key: string, t: NpmTarget, r: CompatRelease): Rule[] {
   const digest = r.digests[t.artifact];
-  if (!digest) return [];
+  const manifest = r.npmManifests?.[t.artifact];
+  if (!digest || !manifest || typeof manifest.version !== "string") return [];
   return [
     {
       id: `${key}:npm`,
@@ -35,7 +41,19 @@ function npmRules(key: string, t: NpmTarget, r: CompatRelease): Rule[] {
       inject: bearer,
       secret: t.secret,
       forwardHeaders: ["npm-auth-type", "npm-command", "npm-scope"],
-      bodyCheck: { type: "npm-publish", digests: [digest] },
+      // The whole document, not just the bytes: the lane derives it from the tarball's own
+      // package.json, so a job cannot publish other metadata, dist-tags or versions.
+      bodyCheck: {
+        type: "npm-publish",
+        digests: [digest],
+        expect: {
+          name: t.package,
+          version: manifest.version,
+          tag: t.tag,
+          access: t.access,
+          manifest,
+        },
+      },
     },
   ];
 }
