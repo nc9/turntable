@@ -28,6 +28,14 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     /** Answer the permission endpoint with this status instead (403: token cannot ask; 500). */
     permissionStatus: undefined as number | undefined,
     protectedMain: true,
+    /** Merge queue branches (`gh-readonly-queue/main/...`) and what GitHub says about each commit. */
+    queue: [] as {
+      ref: string;
+      sha: string;
+      verified?: boolean;
+      committerEmail?: string;
+      message?: string;
+    }[],
     calls: [] as { path: string; method: string | undefined }[],
   };
   const fetchStub = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -58,6 +66,22 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
               ? "none"
               : "read";
       return json({ permission: legacy, role_name: role });
+    }
+    if (path === `/repos/${repo}/git/matching-refs/heads/gh-readonly-queue/main/`) {
+      return json(state.queue.map((q) => ({ ref: q.ref, object: { sha: q.sha } })));
+    }
+    const queued = new RegExp(`^/repos/${repo}/commits/([0-9a-f]{40})$`).exec(path);
+    const qc = queued ? state.queue.find((q) => q.sha === queued[1]) : undefined;
+    if (qc) {
+      return json({
+        sha: qc.sha,
+        parents: [{ sha: SHA("b") }],
+        commit: {
+          message: qc.message ?? "Merge pull request from gh-readonly-queue",
+          committer: { email: qc.committerEmail ?? "noreply@github.com" },
+          verification: { verified: qc.verified ?? true, reason: "valid" },
+        },
+      });
     }
     const commit = new RegExp(`^/repos/${repo}/commits/([0-9a-f]{40})$`).exec(path);
     if (commit) {
