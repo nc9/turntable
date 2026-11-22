@@ -33,6 +33,7 @@
         "@longshore/provider-docker": "workspace:*",
         "@longshore/provider-sdk": "workspace:*",
         "@longshore/redact": "workspace:*",
+        "@longshore/signer": "workspace:*",
         "@modelcontextprotocol/sdk": "1.32.2",
         "drizzle-orm": "0.45.4",
         "yaml": "2.9.1",
@@ -104,6 +105,16 @@
     "packages/redact": {
       "name": "@longshore/redact",
       "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+      },
+    },
+    "packages/signer": {
+      "name": "@longshore/signer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@longshore/net": "workspace:*",
+      },
       "devDependencies": {
         "@types/bun": "1.4.4",
       },
@@ -292,6 +303,8 @@
     "@longshore/proxy": ["@longshore/proxy@workspace:packages/proxy"],
 
     "@longshore/redact": ["@longshore/redact@workspace:packages/redact"],
+
+    "@longshore/signer": ["@longshore/signer@workspace:packages/signer"],
 
     "@longshore/ui": ["@longshore/ui@workspace:packages/ui"],
 
