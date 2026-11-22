@@ -325,6 +325,33 @@ test("a run topic delivers only that run's events", async () => {
 
 // ---- logs ----
 
+test("a log tail is woken by the append, not by a poll: low latency, and no reads while idle (#77)", async () => {
+  // A safety poll far longer than the test: any prompt delivery below came from the notifier.
+  rt.stop();
+  await server.stop(true);
+  start({ logPollMs: 60_000 });
+  const c = await connect(reader);
+  c.send({ op: "subscribe", id: "log", topic: `attempt:${a.attemptId}:log`, from_offset: 0 });
+  await c.until((m) => m.type === "subscribed");
+  // Quiet: no database reads for longer than the old 250 ms poll interval.
+  await new Promise((r) => setTimeout(r, 100));
+  const orig = db.run.bind(db);
+  let reads = 0;
+  db.run = ((f: never) => {
+    reads++;
+    return orig(f);
+  }) as typeof db.run;
+  await new Promise((r) => setTimeout(r, 700));
+  expect(reads).toBe(0);
+  db.run = orig as typeof db.run;
+  // An append reaches the subscriber well inside the old poll interval.
+  const t0 = performance.now();
+  await appendAt("hello\n", 0);
+  await c.until((m) => m.type === "log" && m.bytes > 0, 2000);
+  expect(performance.now() - t0).toBeLessThan(200);
+  c.close();
+});
+
 test("log tail: chunks arrive in order with offsets, from an offset, then eof when the attempt ends", async () => {
   const text1 = "line one\nline two\n";
   let at = 0;

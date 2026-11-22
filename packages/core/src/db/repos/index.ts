@@ -10,7 +10,7 @@ import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { ulid } from "../ulid";
-import { appendEvent } from "./events";
+import { appendEvent, notifyLogAppended } from "./events";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
@@ -24,6 +24,7 @@ export * from "./incident";
 export * from "./audit";
 export * from "./vault";
 export * from "./release";
+export * from "./cache";
 export * from "./cancel";
 export * from "./pins";
 export * from "./verdicts";
@@ -700,6 +701,7 @@ export function appendLog(
         bytes: Buffer.from(bytes),
       })
       .onConflictDoNothing();
+    notifyLogAppended(h, scope.orgId, attemptId);
     return true;
   });
 }

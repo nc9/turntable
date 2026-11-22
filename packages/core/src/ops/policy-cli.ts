@@ -4,6 +4,8 @@
 import type { Db } from "../db";
 import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
+  getProjectCacheReleaseRestore,
+  setProjectCacheReleaseRestore,
   APPROVE_RUN_ROLES,
   appendAudit,
   type ApproveRunRole,
@@ -35,6 +37,7 @@ export const POLICY_USAGE = `Usage:
   longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
       [--merge-queue] [--data-dir ./data]
+  longshore policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
 Default release_operator. operator lets any operator token approve, including an agent that has
@@ -402,6 +405,47 @@ export async function showSigning(
       project: p.slug,
       ...(await getProjectSigning(db, { orgId: org.id, projectId: p.id })),
     });
+  }
+  return out;
+}
+
+/**
+ * Lets (or stops) release-class jobs restore caches that release-class jobs wrote. Off by
+ * default: a release job restores nothing. Local only, like egress: no operation sets it.
+ */
+export async function setCacheReleaseRestorePolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  value: string,
+): Promise<{ project: string; from: boolean; to: boolean }[]> {
+  if (value !== "on" && value !== "off")
+    throw new Error("--cache-release-restore must be on or off");
+  const org = await orgOf(db, orgSlug);
+  const projects = projectSlug
+    ? [await getProjectBySlug(db, { orgId: org.id }, projectSlug)]
+    : await listProjects(db, { orgId: org.id });
+  if (projects.length === 0 || projects.some((p) => p === undefined)) {
+    throw new Error(
+      projectSlug ? `no project ${projectSlug} in org ${orgSlug}` : "org has no projects",
+    );
+  }
+  const out: { project: string; from: boolean; to: boolean }[] = [];
+  for (const p of projects) {
+    const scope = { orgId: org.id, projectId: p!.id };
+    const from = await getProjectCacheReleaseRestore(db, scope);
+    await db.transaction(async (tx) => {
+      await setProjectCacheReleaseRestore(tx, scope, value === "on");
+      await appendAudit(tx, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "ok",
+        input: { key: "cache_release_restore", project: p!.slug, from, to: value === "on" },
+      });
+    });
+    out.push({ project: p!.slug, from, to: value === "on" });
   }
   return out;
 }

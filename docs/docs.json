@@ -14,6 +14,7 @@
           "agent-interface",
           "compatibility",
           "providers",
+          "cache",
           "security",
           "secrets-vault",
           "oidc",

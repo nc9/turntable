@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import {
   ARTIFACT_NAME,
   DIST_TAG,
@@ -82,8 +83,14 @@ export function parseTarget(raw: unknown): PublishTarget {
       manifest: String(o.manifest ?? ""),
       tags,
       username: String(o.username ?? ""),
+      ...(o.realmHost !== undefined ? { realmHost: String(o.realmHost) } : {}),
       secret: String(o.secret ?? ""),
     };
+    if (t.realmHost !== undefined)
+      need(
+        REGISTRY_HOST.test(t.realmHost) && isIP(t.realmHost) === 0,
+        "realmHost must be one lower-case hostname (no wildcard, no address)",
+      );
     need(REGISTRY_HOST.test(t.registry), "registry must be a lower-case hostname");
     need(
       OCI_REPOSITORY.test(t.repository) && t.repository.length <= 200,
