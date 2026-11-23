@@ -167,7 +167,7 @@
     },
     {
       "tag": "0041_approval_policy_settings",
-      "sha256": "73975b662d9e053a02ab35a7a29ca81ae85e3454971704ac2822c7a2abdc1704"
+      "sha256": "4826635307b333eb84a4a5e8b37b9f022f795055fb9bc2e5e6a13c9a34e3eecf"
     }
   ],
   "pg": [
@@ -221,7 +221,7 @@
     },
     {
       "tag": "0012_approval_policy_settings",
-      "sha256": "370ccbdf9d59c82250a24c8f5a5ab37d093b914ad6905ccf19f05af57b99032e"
+      "sha256": "487d3cfc7d0e08b95b8da68c0a2cfc33c0b7439f0398fa5ba85e35aae6b17939"
     }
   ]
 }

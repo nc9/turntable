@@ -1,5 +1,6 @@
+-- #345: the events type CHECK is dropped (the type is validated in code, see EVENT_TYPES), so a new
+-- event type never needs a migration.
 ALTER TABLE "events" DROP CONSTRAINT "events_type_check";--> statement-breakpoint
-ALTER TABLE "events" ADD CONSTRAINT "events_type_check" CHECK (type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled', 'approval.policy_loosened'));--> statement-breakpoint
 -- #345: every org's approval policies are copied into one `approval_policy` setting, so the
 -- resolver reads what the table held. The table stays (nothing reads or writes it any more), so
 -- rolling the binary back loses nothing but changes made after this ran.

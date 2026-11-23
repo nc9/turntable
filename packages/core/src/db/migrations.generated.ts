@@ -473,11 +473,11 @@ export const migrations: Migration[] = [
   },
   {
     "tag": "0041_approval_policy_settings",
-    "when": 1795433995064,
+    "when": 1795434274412,
     "statements": [
-      "-- #345: approval_policy joins the event types, and the approval policies move onto the settings\n-- registry. The events table is rebuilt for its CHECK: keep the AUTOINCREMENT high-water mark, so\n-- a feed cursor never meets a reused id.\nPRAGMA foreign_keys=OFF;",
+      "-- #345: the approval policies move onto the settings registry, and the events type CHECK is\n-- dropped for good (the type is validated in code, see EVENT_TYPES), so this is the last events\n-- rebuild. Keep the AUTOINCREMENT high-water mark, so a feed cursor never meets a reused id.\nPRAGMA foreign_keys=OFF;",
       "CREATE TEMP TABLE `__events_seq` AS SELECT seq FROM sqlite_sequence WHERE name = 'events';",
-      "CREATE TABLE `__new_events` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`public_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`type` text NOT NULL,\n\t`run_id` text,\n\t`job_id` text,\n\t`attempt_id` text,\n\t`payload` text DEFAULT '{}' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"events_type_check\" CHECK(type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled', 'approval.policy_loosened'))\n);",
+      "CREATE TABLE `__new_events` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`public_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`type` text NOT NULL,\n\t`run_id` text,\n\t`job_id` text,\n\t`attempt_id` text,\n\t`payload` text DEFAULT '{}' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action\n);",
       "INSERT INTO `__new_events`(\"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\") SELECT \"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\" FROM `events`;",
       "DROP TABLE `events`;",
       "ALTER TABLE `__new_events` RENAME TO `events`;",

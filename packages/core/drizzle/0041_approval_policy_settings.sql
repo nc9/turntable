@@ -1,6 +1,6 @@
--- #345: approval_policy joins the event types, and the approval policies move onto the settings
--- registry. The events table is rebuilt for its CHECK: keep the AUTOINCREMENT high-water mark, so
--- a feed cursor never meets a reused id.
+-- #345: the approval policies move onto the settings registry, and the events type CHECK is
+-- dropped for good (the type is validated in code, see EVENT_TYPES), so this is the last events
+-- rebuild. Keep the AUTOINCREMENT high-water mark, so a feed cursor never meets a reused id.
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
 CREATE TEMP TABLE `__events_seq` AS SELECT seq FROM sqlite_sequence WHERE name = 'events';--> statement-breakpoint
 CREATE TABLE `__new_events` (
@@ -15,8 +15,7 @@ CREATE TABLE `__new_events` (
 	`payload` text DEFAULT '{}' NOT NULL,
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	FOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "events_type_check" CHECK(type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled', 'approval.policy_loosened'))
+	FOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
 INSERT INTO `__new_events`("id", "public_id", "org_id", "project_id", "type", "run_id", "job_id", "attempt_id", "payload", "created_at") SELECT "id", "public_id", "org_id", "project_id", "type", "run_id", "job_id", "attempt_id", "payload", "created_at" FROM `events`;--> statement-breakpoint
