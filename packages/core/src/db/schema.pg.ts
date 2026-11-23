@@ -1134,7 +1134,7 @@ export const approvalRecords = pgTable(
       .notNull()
       .references(() => orgs.id),
     projectId: text("project_id"),
-    /** `environment`, `enrol` or `policy`. */
+    /** `environment`, `enrol`, `policy` or `run` (an untrusted-run approval, #324). */
     kind: text("kind").notNull(),
     runId: text("run_id"),
     environment: text("environment"),

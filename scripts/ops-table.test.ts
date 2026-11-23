@@ -18,6 +18,7 @@ const MCP_OFF: Record<string, string> = {
   set_secret: "the value would sit in an agent's context",
   rotate_secret: "the value would sit in an agent's context",
   approval_challenge: "an agent may relay a signed statement, never create one for signing",
+  approve_run_challenge: "an agent may relay a signed statement, never create one for signing",
   enrolment_challenge: "approver enrolment is a human act",
   register_challenge: "approver enrolment is a human act",
   request_enrolment: "approver enrolment is a human act",
@@ -40,6 +41,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: the App's id, owner and unclaimed installations are the operator's",
   instance_doctor:
     "instance administrator ops are REST only: instance-wide readiness facts, never an agent's",
+  instance_ingest_status:
+    "instance administrator ops are REST only: cross-tenant poll health is the operator's view, never an agent's",
   instance_audit_verify:
     "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",

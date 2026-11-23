@@ -12,7 +12,7 @@ import {
   submitApproval,
 } from "./definitions/approvals";
 import { dbBackupOp } from "./definitions/db-backup";
-import { approveRunOp } from "./definitions/approve-run";
+import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
@@ -62,6 +62,7 @@ import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
 import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
+import { instanceIngestStatusOp } from "./definitions/instance-ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
@@ -106,6 +107,7 @@ export const registry = createRegistry([
   cancel,
   rerun,
   approveRunOp,
+  approveRunChallengeOp,
   signRelease,
   whoami,
   doctor,
@@ -126,6 +128,7 @@ export const registry = createRegistry([
   moveRepoBindingOp,
   instanceListOrgs,
   instanceDoctorOp,
+  instanceIngestStatusOp,
   instanceAuditVerifyOp,
   setQuotas,
   bootstrapApprover,

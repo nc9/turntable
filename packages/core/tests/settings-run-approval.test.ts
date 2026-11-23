@@ -16,7 +16,6 @@ import { setSandboxPolicy } from "../src/ops/policy-cli";
 import { settingsRegistry, untrustedRunApprovalSetting } from "../src/settings/definitions";
 import { loadSettingsRuntime } from "../src/settings/boot";
 import { resolveSetting, type SettingsRuntime, storeTarget } from "../src/settings/resolve";
-import { SettingsConfigError } from "../src/settings/toml";
 import { mintToken, rawExec, seedWorld, type Tenant } from "./ops-helpers";
 
 let db: Db;
@@ -284,17 +283,15 @@ describe("the same refusals on every path", () => {
     expect(r.ok).toBe(false);
   });
 
-  test("selecting human is refused by the registry: op, alias, CLI, toml and env", async () => {
+  test("human is selectable: op, alias and CLI, and the registry no longer refuses it", async () => {
+    expect(untrustedRunApprovalSetting.refuse).toBeUndefined();
     const inst = await asInstance(rt(), {
       target_project: a.projectSlug,
       untrusted_run_approval: "human",
     });
-    expect(!inst.ok && inst.error.message).toMatch(/isn't available yet \(#324\)/);
-    await expect(
-      setSandboxPolicy(db, "org-a", a.projectSlug, { untrustedRunApproval: "human" }),
-    ).rejects.toThrow(/isn't available yet \(#324\)/);
-    expect(untrustedRunApprovalSetting.refuse?.("human")).toMatch(/#324/);
-    expect(() => lock("human", "org-a", a.projectSlug)).toThrow(SettingsConfigError);
+    expect(inst.ok).toBe(true);
+    await setSandboxPolicy(db, "org-a", a.projectSlug, { untrustedRunApproval: "human" });
+    expect(() => lock("human", "org-a", a.projectSlug)).not.toThrow();
   });
 
   test("the alias writes through to the settings table and audits old and new", async () => {
@@ -386,8 +383,8 @@ describe("strictness: an org tightens, only the instance administrator loosens (
 
   // An admin write lands between the owner's read and write, taking a different lock.
   const raced = async (adminValue: string, ownerInput: Record<string, unknown>) => {
-    // `human` is not selectable through the ops yet (#324), so the admin's write is the stored
-    // row it will leave: the registry's value check is not what this race is about.
+    // The admin's write is put as the stored row it will leave: the registry's value check is
+    // not what this race is about.
     const mid = () =>
       putStoredSetting(
         db,

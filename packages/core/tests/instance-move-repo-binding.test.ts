@@ -26,7 +26,8 @@ import { syncInstallation } from "../src/github/installations";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { mcpTools } from "../src/ops/mcp";
-import { GithubClient, pollConfigSchema, pollRepo } from "../src/poll";
+import { checkPollHealth } from "../src/doctor/checks";
+import { GithubClient, Poller, pollConfigSchema, pollRepo } from "../src/poll";
 import { ingestStatus, resetIngestStatus } from "../src/poll/status";
 import { fakeFacts, inst, repo, setup } from "./github-helpers";
 import { mintToken } from "./ops-helpers";
@@ -127,7 +128,9 @@ describe("move_repo_binding", () => {
       repo: "acme/api",
       org: "acme",
       project: "poll",
+      intervalSeconds: 60,
       lastPollAt: null,
+      lastSuccessAt: null,
       lastOutcome: null,
       lastError: null,
       nextPollAt: null,
@@ -177,7 +180,9 @@ describe("move_repo_binding", () => {
       repo: "acme/api",
       org: "beta",
       project: "web",
+      intervalSeconds: 60,
       lastPollAt: null,
+      lastSuccessAt: null,
       lastOutcome: null,
       lastError: null,
       nextPollAt: null,
@@ -260,6 +265,33 @@ describe("move_repo_binding", () => {
     expect(fetched).toBe(0);
     expect(await listRepos(db, scopeA)).toHaveLength(0);
     expect(await listRepos(db, scopeB)).toHaveLength(1);
+  });
+
+  test("a repo skipped every interval never records a success and doctor warns after 3 intervals", async () => {
+    resetIngestStatus();
+    await pollRepo(deps(), entry("acme", "poll"));
+    expect((await move()).ok).toBe(true);
+    const t0 = 1_800_000_000_000;
+    let now = t0;
+    const cfg = pollConfigSchema.parse({
+      allowUnauthenticated: true,
+      repos: [{ ...entry("acme", "poll"), intervalSeconds: 60 }],
+    });
+    const poller = new Poller({ db, config: cfg, fetch: fetchStub, now: () => now, log: () => {} });
+    poller.start();
+    poller.stop();
+    ingestStatus.running = true;
+    ingestStatus.startedAt = t0;
+    for (let n = 0; n < 4; n++) {
+      await poller.pollAll();
+      now += 60_000;
+    }
+    const st = ingestStatus.repos.get("acme/api")!;
+    expect(st).toMatchObject({ lastOutcome: "error", lastSuccessAt: null, intervalSeconds: 60 });
+    expect(st.consecutiveFailures).toBe(0);
+    expect(checkPollHealth(t0 + 180_000).status).toBe("pass");
+    expect(checkPollHealth(t0 + 180_001).status).toBe("warn");
+    resetIngestStatus();
   });
 
   test("the old project's history and in-flight attempts stay, readable in the old org only", async () => {

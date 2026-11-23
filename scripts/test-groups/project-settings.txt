@@ -7,3 +7,4 @@ packages/core/tests/instance-bootstrap.test.ts
 packages/core/tests/instance-bootstrap-boot.test.ts
 packages/core/tests/settings-run-approval.test.ts
 packages/core/tests/settings-approval-policy.test.ts
+packages/core/tests/untrusted-run-human-approval.test.ts

@@ -7,12 +7,16 @@ import { z } from "zod";
 import { canonicalJson } from "../audit/chain";
 
 export const ENV_STATEMENT_TYPE = "longshore.approve_environment.v1";
+/** New statement types use the new name; only the frozen types above stay `longshore.*`. */
+export const RUN_STATEMENT_TYPE = "turntable.approve_run.v1";
 export const ENROL_STATEMENT_TYPE = "longshore.approve_enrolment.v1";
 
 /** A statement is valid for at most this long after it is checked. */
 export const MAX_STATEMENT_TTL_MS = 7 * 24 * 3600_000;
 /** How long a server-issued challenge (and the nonce in its statement) lives. */
 export const CHALLENGE_TTL_MS = 10 * 60_000;
+/** A run approval statement is valid for at most this long: it is signed and spent in one sitting. */
+export const MAX_RUN_STATEMENT_TTL_MS = 10 * 60_000;
 
 const hex = (min: number, max: number) => z.string().regex(new RegExp(`^[0-9a-f]{${min},${max}}$`));
 const nonce = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
@@ -33,6 +37,25 @@ export const envStatementSchema = z.strictObject({
   nonce,
 });
 export type EnvStatement = z.infer<typeof envStatementSchema>;
+
+/**
+ * A person's approval of one run held for an untrusted author (#324). It binds the run, the commit
+ * and workflow they read, and the trust class they approved, so it cannot be spent on another.
+ */
+export const runStatementSchema = z.strictObject({
+  type: z.literal(RUN_STATEMENT_TYPE),
+  org: slug,
+  project: slug,
+  run_id: z.string().min(1).max(64),
+  head_sha: hex(40, 64),
+  workflow_hash: hex(64, 64),
+  /** The trust class of the run when the statement was issued (`untrusted_pr`, `release`...). */
+  trust_class: z.string().min(1).max(40),
+  approver: z.string().min(1).max(64),
+  expires_at: z.int().positive(),
+  nonce,
+});
+export type RunStatement = z.infer<typeof runStatementSchema>;
 
 export const enrolStatementSchema = z.strictObject({
   type: z.literal(ENROL_STATEMENT_TYPE),
@@ -94,6 +117,7 @@ export const policyDigest = (s: PolicyStatement): string =>
 
 export const statementSchema = z.discriminatedUnion("type", [
   envStatementSchema,
+  runStatementSchema,
   enrolStatementSchema,
   policyStatementSchema,
 ]);
