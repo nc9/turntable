@@ -391,6 +391,14 @@ export const jobAttempts = sqliteTable(
      */
     skipCheckClaimedAt: integer("skip_check_claimed_at", { mode: "number" }),
     /**
+     * When the check reporter found nothing to post for this skipped attempt (checks off, a local
+     * run, a repo not installed through the App) and stopped looking. Null: not dismissed. The
+     * sweep skips dismissed attempts, so a restart does not re-sweep them.
+     */
+    checkDismissedAt: integer("check_dismissed_at", { mode: "number" }),
+    /** Why it was dismissed (`DismissReason`), so an event that resolves the reason can clear it. */
+    checkDismissedReason: text("check_dismissed_reason"),
+    /**
      * The resolved job plan (actions pinned to shas, layout, argv, files) as JSON text, stored
      * when the attempt starts, so a restarted controller can re-attach with no repo fetch.
      */

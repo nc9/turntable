@@ -15,6 +15,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { clearRecentDismissals, type DismissReason } from "./dismissals";
 import { getEnvPolicy, plannedEnvironment } from "./approvals";
 import { requireProject, type Scope, scoped } from "./scope";
 
@@ -367,6 +368,8 @@ export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Pr
       .update(s.projects)
       .set({ checksMode: mode })
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+    // Checks turned on: skips dismissed while they were off get their check on the next sweep.
+    if (mode !== "off") await clearRecentDismissals(h, { ...scope, projectId }, ["checks_off"]);
   });
 }
 
@@ -432,7 +435,7 @@ export function getAttemptCheckRunId(
 
 /**
  * Attempts that ended `skipped` without ever starting (the scheduler resolved the job: a false
- * `if:`, a failed need, every shard path-skipped) and have no forge check yet, newest first, across
+ * `if:`, a failed need, every shard path-skipped) and have no forge check yet and were not dismissed, newest first, across
  * every org (system work for the check reporter). An attempt that ran and was skipped by its
  * runner has `started_at` and is reported through the observer instead.
  */
@@ -451,6 +454,7 @@ export function listUnreportedSkips(
           eq(s.jobAttempts.state, "skipped"),
           isNull(s.jobAttempts.startedAt),
           isNull(s.jobAttempts.checkRunId),
+          isNull(s.jobAttempts.checkDismissedAt),
           eq(s.runs.local, false),
           gte(s.jobAttempts.createdAt, opts.since),
         ),
@@ -458,6 +462,28 @@ export function listUnreportedSkips(
       .orderBy(desc(s.jobAttempts.id))
       .limit(opts.limit),
   );
+}
+
+/** Marks a skipped attempt as having nothing to post (and why), so the sweep stops selecting it. */
+export function dismissSkippedCheck(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  now: number,
+  reason: DismissReason,
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .update(s.jobAttempts)
+      .set({ checkDismissedAt: now, checkDismissedReason: reason })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+        ),
+      );
+  });
 }
 
 /**
