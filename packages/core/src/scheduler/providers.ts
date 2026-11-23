@@ -204,8 +204,8 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
 /**
  * Daytona, for a shared account. The key is never in the config: `apiKeyFile` names a file that
  * holds it (or `apiKeyEnv` an environment variable; default `DAYTONA_API_KEY`). The label and name
- * prefix `longshore-dev`, the 30 minute backstops, the owner-CI preflight and the cap of 3 live
- * sandboxes are fixed in the provider and cannot be configured away.
+ * prefix `longshore-dev`, the 30 minute backstops, the owner-CI preflight and the ceiling of 5 live
+ * sandboxes (the default is 2) are fixed in the provider and cannot be configured away.
  */
 function createDaytona(config: Record<string, unknown>): Provider {
   const unknown = Object.keys(config).filter((k) => !DAYTONA_KEYS.has(k));

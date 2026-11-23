@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, getAttempt, openDatabase } from "./db";
@@ -22,6 +22,9 @@ import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
+import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
+import { appendAudit } from "./db/repos";
+import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
@@ -103,6 +106,8 @@ Environment:
   LONGSHORE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "longshore token generate"; on boot, an
                     org with no tokens gets one operator token with this hash
   LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
+  LONGSHORE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create LONGSHORE_MASTER_KEY_FILE on first boot when it is
+                    absent (a host with no shell); never overwrites an existing file
   LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
                     required for the GitHub App and its webhook endpoint
   LONGSHORE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
@@ -419,6 +424,7 @@ async function serve(args: string[]): Promise<void> {
       "database-url": { type: "string" },
       "allowed-origin": { type: "string", multiple: true },
       "public-url": { type: "string" },
+      "init-master-key": { type: "boolean", default: false },
       roles: { type: "string" },
       worker: { type: "boolean", default: d.worker },
       "global-cap": { type: "string", default: d.globalCap },
@@ -472,8 +478,38 @@ async function serve(args: string[]): Promise<void> {
     console.log(`dropped privileges to ${process.env.LONGSHORE_DROP_PRIVILEGES}`);
   if (privilege === "root_allowed")
     console.warn("warning: running as root (LONGSHORE_ALLOW_ROOT=1)");
+  // A platform with no shell cannot run `keys init`: when asked to, create the key file once, here,
+  // before anything reads it. Never overwrites; without the opt-in an absent file stays an error.
+  let masterKeyCreated: string | undefined;
+  const keyPath = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  if (keyPath && autoInitRequested(process.env, values["init-master-key"])) {
+    if (
+      autoInitMasterKey(resolve(keyPath), dataDir, (m) => console.log(`[longshore] ${m}`)) ===
+      "created"
+    ) {
+      masterKeyCreated = resolve(keyPath);
+    }
+  } else if (!keyPath && autoInitRequested(process.env, values["init-master-key"])) {
+    throw new Error(
+      "--init-master-key (LONGSHORE_MASTER_KEY_AUTOINIT) needs LONGSHORE_MASTER_KEY_FILE",
+    );
+  }
   const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
+  if (masterKeyCreated) {
+    await appendAudit(
+      db,
+      { orgId: await systemOrgId(db) },
+      {
+        principalKind: "system",
+        principalId: "first-boot",
+        op: "master_key_created",
+        effect: "write",
+        outcome: "ok",
+        input: { file: basename(masterKeyCreated) },
+      },
+    );
+  }
 
   // First-boot access without a shell: see ops/bootstrap.ts.
   const bootstrapHash = process.env.LONGSHORE_BOOTSTRAP_TOKEN_SHA256?.trim();

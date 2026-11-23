@@ -33,6 +33,17 @@ DAYTONA_API_KEY=...
 GITHUB_POLL_TOKEN=...
 ```
 
+## The master key on a host with no shell
+
+`longshore keys init` needs a shell, and Railway has none. Set `LONGSHORE_MASTER_KEY_FILE` to a path on the volume (for example `/data/master.key`) and `LONGSHORE_MASTER_KEY_AUTOINIT=1` (or start with `--init-master-key`). If the file is **absent** at start, Longshore creates it once with 32 random bytes and mode 0600, and records `master_key_created` in the system org's audit chain. The log names the path and never the key.
+
+- It never overwrites. If the file exists it is used as it is, even if it is the wrong size (the server then refuses to start, as it always does).
+- Two replicas starting together are safe: the file is written whole to a private temporary file and linked into place, so exactly one creates it and the other reads a complete file.
+- It is refused when the key's directory or the data dir can be read or written by other users and is not owned by the server process. A directory the process owns is tightened to remove the access, and the log says so.
+- Without the opt-in an absent file is an error, as before.
+
+**The volume now holds the key, so a volume backup is also a copy of the key.** Anyone who can read a backup of the volume can read every stored secret in it. Back the key up on its own, somewhere else (a secrets manager), and keep volume backups under the same access rules. Losing the file loses every secret sealed with it. Turn the opt-in off once the key exists if you want a missing file to be an error again.
+
 ## Webhooks wake the poller
 
 A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.
