@@ -4,6 +4,7 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
   PolicyStatement,
   EnrolStatement,
   EnvironmentApprovalResult,
@@ -92,6 +93,8 @@ export interface LongshoreApi {
   /** Environments of a run waiting on a human, the policy and who approved so far. */
   approvalStatus(args: { runId: string }): Promise<ApprovalStatus>;
   approversOverview(): Promise<ApproversOverview>;
+  /** Sandbox minutes per UTC day for the last `days` days, with the quota limit if one is set. */
+  sandboxUsage(args: { days: number }): Promise<SandboxUsage>;
   /** The statement to sign for a run and environment, with its single-use challenge. */
   approvalChallenge(args: {
     runId: string;
