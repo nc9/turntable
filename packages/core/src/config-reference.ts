@@ -391,6 +391,26 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     description: "Rotate audit entries and checkpoints to JSONL files here.",
   },
   {
+    name: "TURNTABLE_AUDIT_STATE_DIR",
+    area: "Audit",
+    default: "`<master key file>.audit-state`, else `<data dir>/audit-state`",
+    description:
+      "Directory of the sealed audit anchor state. Point it at a separate mount or secrets volume: state beside the database it anchors is restored with it. `turntable doctor` warns while it is inside the data directory.",
+  },
+  {
+    name: "TURNTABLE_AUDIT_ANCHOR_SINK_URL",
+    area: "Audit",
+    description:
+      "Where each org's latest signed audit anchor is POSTed, on every checkpoint and on an interval. The environment name of the `audit_anchor_sink_url` setting, which `turntable.toml` and `instance_set_setting` also set. Signed with `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE`.",
+  },
+  {
+    name: "TURNTABLE_AUDIT_ANCHOR_EXPORT_MINUTES",
+    area: "Audit",
+    default: "60",
+    description:
+      "Minutes between anchor exports besides the one on each checkpoint. The environment name of the `audit_anchor_export_minutes` setting.",
+  },
+  {
     name: "TURNTABLE_AUDIT_WEBHOOK_URL",
     area: "Audit",
     description:
@@ -400,7 +420,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE",
     area: "Audit",
     description:
-      "File holding the HMAC secret for audit webhook batches (`x-longshore-signature: sha256=...`).",
+      "File holding the HMAC secret for audit webhook batches and anchor exports (`x-longshore-signature: sha256=...`).",
   },
   // ---- OIDC ----
   {

@@ -54,7 +54,7 @@ Set `TURNTABLE_MASTER_KEY` to 32 random bytes as base64 (`openssl rand -base64 3
 - It is read once at boot and deleted from the process environment before any child process, provider or plugin starts. Children are also spawned with an allowlisted environment that never carries it.
 - Setting it together with `TURNTABLE_MASTER_KEY_FILE` is an error, and the server does not start. `TURNTABLE_MASTER_KEY_AUTOINIT` creates a key file and is not used with the variable: remove it.
 - A host with a separate secrets mount can keep using `TURNTABLE_MASTER_KEY_FILE`; `doctor` warns when that file sits inside the data directory.
-- With a variable there is no key file to sit next to, so the audit anchor state lives in `<data dir>/audit-state`. It is on the volume, so a restored volume restores it too.
+- With a variable there is no key file to sit next to, so the audit anchor state lives in `<data dir>/audit-state` unless `TURNTABLE_AUDIT_STATE_DIR` names another directory. In the data directory it is on the volume, so a restored volume restores it too: mount a separate volume for `TURNTABLE_AUDIT_STATE_DIR`, and set `audit_anchor_sink_url` (`TURNTABLE_AUDIT_ANCHOR_SINK_URL`) so each org's latest signed anchor also leaves the instance. `turntable doctor` warns until the state is outside the data directory. See [Security](/security#audit-log-integrity-and-export).
 - The offline commands (`secret`, `oidc`, `github-app`, `audit`) read the variable the same way.
 
 ### Rotating the master key with no shell

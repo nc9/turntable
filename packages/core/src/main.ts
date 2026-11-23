@@ -29,6 +29,7 @@ import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
+import { createAnchorExporter } from "./audit/anchor-export";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import {
@@ -801,6 +802,11 @@ async function serve(args: string[]): Promise<void> {
   const claimMode = process.env.TURNTABLE_CLAIM_INSTALLATIONS === "1";
   let checks: CheckReporter | undefined;
   const auditStops: (() => void)[] = [];
+  // One HMAC secret signs both the audit export and the anchor export.
+  const auditSecretFile = process.env.TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE?.trim();
+  const auditWebhookSecret = auditSecretFile
+    ? (await Bun.file(auditSecretFile).text()).trim()
+    : undefined;
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;
@@ -912,9 +918,14 @@ async function serve(args: string[]): Promise<void> {
       );
     }
     void webhooks.retryUnfinished().catch(() => {});
-    // Signed audit checkpoints need the store's key; export sinks are opt in.
+    // Signed audit checkpoints need the store's key; export sinks are opt in. Each checkpoint
+    // also sends the org's anchor to the off-instance sink, when `audit_anchor_sink_url` is set.
+    const anchors = createAnchorExporter({ db, settings, secret: auditWebhookSecret });
     auditStops.push(
-      startCheckpointer(db, store, new AuditAnchor(auditStateDir(masterKeys, dataDir), masterKey)),
+      anchors.start(),
+      startCheckpointer(db, store, new AuditAnchor(auditStateDir(masterKeys, dataDir), masterKey), {
+        onCheckpoint: (orgId, cp) => anchors.onCheckpoint(orgId, cp),
+      }),
     );
   }
   const sinks: AuditSink[] = [];
@@ -922,9 +933,7 @@ async function serve(args: string[]): Promise<void> {
   if (exportDir) sinks.push(jsonlSink(resolve(exportDir)));
   const exportUrl = process.env.TURNTABLE_AUDIT_WEBHOOK_URL?.trim();
   if (exportUrl) {
-    const secretFile = process.env.TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE?.trim();
-    const secret = secretFile ? (await Bun.file(secretFile).text()).trim() : undefined;
-    sinks.push(webhookSink(exportUrl, secret ? { secret } : {}));
+    sinks.push(webhookSink(exportUrl, auditWebhookSecret ? { secret: auditWebhookSecret } : {}));
   }
   if (sinks.length > 0) auditStops.push(startExporter(db, sinks));
   const webauthn = relyingPartyFromEnv(

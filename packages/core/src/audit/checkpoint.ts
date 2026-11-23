@@ -340,6 +340,8 @@ export async function createCheckpoint(
 export interface CheckpointPolicy {
   everyEntries?: number;
   everyMs?: number;
+  /** Called after each checkpoint is signed and stored (the off-instance anchor export). */
+  onCheckpoint?: (orgId: string, cp: AuditCheckpoint) => void;
 }
 
 /**
@@ -391,7 +393,11 @@ export async function checkpointDue(
       truncated || stateProblem || (behind > 0 && (behind >= everyEntries || age >= everyMs));
     if (!due) continue;
     try {
-      if (await createCheckpoint(db, store, anchor, orgId, now)) signed += 1;
+      const cp = await createCheckpoint(db, store, anchor, orgId, now);
+      if (cp) {
+        signed += 1;
+        policy.onCheckpoint?.(orgId, cp);
+      }
     } catch (e) {
       // One org's refusal (already alerted) must not stop the others.
       if (!(e instanceof AuditRefusal)) throw e;

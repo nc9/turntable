@@ -138,7 +138,9 @@ export async function verifyAudit(
       problems.push(`anchor checkpoint ${an.seq} has no valid signature under a trusted key`);
     const at = hashes.get(an.seq);
     if (at === undefined) {
-      problems.push(`anchor checkpoint ${an.seq} covers an entry the chain no longer has`);
+      problems.push(
+        `anchor checkpoint ${an.seq} covers an entry the chain no longer has: the chain ends at ${headSeq}, behind the exported anchor (rolled back or truncated)`,
+      );
     } else if (at !== an.hash) {
       problems.push(`anchor checkpoint ${an.seq} does not match the entry at that position`);
     }

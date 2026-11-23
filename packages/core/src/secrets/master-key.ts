@@ -9,7 +9,7 @@
 //
 // For a rotation, TURNTABLE_MASTER_KEY_PREVIOUS (or _PREVIOUS_FILE) names the key the sealed rows
 // are under now; see rewrap.ts.
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { AuditAnchor } from "../audit/anchor";
 import { loadMasterKey } from "./crypto";
 
@@ -137,9 +137,20 @@ export function masterKeyForCommand(flagFile: string | undefined, env: Env = pro
   return k.key;
 }
 
+/** Names the directory the audit anchor state lives in, off the data volume (#362). */
+export const AUDIT_STATE_DIR_ENV = "TURNTABLE_AUDIT_STATE_DIR";
+
 /**
- * Where the audit anchor state lives: next to the key file when there is one, else under the data
- * directory (a key from the environment has no file to sit next to).
+ * Where the audit anchor state lives: `TURNTABLE_AUDIT_STATE_DIR` when set (a separate mount or
+ * secrets volume), else next to the key file when there is one, else under the data directory (a
+ * key from the environment has no file to sit next to).
  */
-export const auditStateDir = (keys: MasterKeys, dataDir: string): string =>
-  keys.file ? AuditAnchor.dirFor(keys.file) : join(dataDir, "audit-state");
+export const auditStateDir = (
+  keys: Pick<MasterKeys, "file"> | undefined,
+  dataDir: string,
+  env: Record<string, string | undefined> = process.env,
+): string => {
+  const set = env[AUDIT_STATE_DIR_ENV]?.trim();
+  if (set) return resolve(set);
+  return keys?.file ? AuditAnchor.dirFor(keys.file) : join(dataDir, "audit-state");
+};
