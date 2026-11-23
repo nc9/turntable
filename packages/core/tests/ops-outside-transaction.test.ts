@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { registry } from "../src/ops";
 
 // Edit this list only after review. Every entry gives up the dispatcher's atomic op + audit row.
-const ALLOWED_OUTSIDE_TRANSACTION = ["db_backup"];
+const ALLOWED_OUTSIDE_TRANSACTION = [
+  "db_backup", // cannot run inside a transaction
+  "resync_installation", // makes GitHub API calls, which must not hold the write transaction
+];
 
 test("only allowlisted ops run outside the dispatcher's transaction", () => {
   const actual = registry.ops
