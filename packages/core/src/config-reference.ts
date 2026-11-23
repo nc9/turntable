@@ -544,15 +544,28 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       'A JSON array of `{ "name", "path", "sha256" }`: external provider plugins, each loaded only if the file at `path` has that digest. Never in hosted mode. See [Providers](/providers).',
   },
   {
+    name: "TURNTABLE_BACKUP_BEFORE_MIGRATE",
+    area: "Server",
+    description:
+      "Set to `1` to back up the SQLite database at boot when migrations are pending, before they run. A failed backup stops the boot. See [Backups](/instance-admin#backups).",
+  },
+  {
+    name: "TURNTABLE_BACKUP_KEEP",
+    area: "Server",
+    default: "10",
+    description: "How many backups to keep under `<data-dir>/backups`.",
+  },
+  {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",
     area: "Worker and provider",
     description:
-      "The sandbox size map (JSON): which `runs-on` labels get how many CPUs and how much memory. Set only one of this and `TURNTABLE_SANDBOX_SIZES_FILE`.",
+      "The sandbox size map (JSON): which `runs-on` labels get how many CPUs and how much memory. Set only one of this and `TURNTABLE_SANDBOX_SIZES_FILE`. A run classified `untrusted_pr` gets `untrustedClass`, then `default`, then the provider's own size: set `untrustedClass` to a small class on a hosted or multi-tenant instance (see [Hosted](/hosted#sandbox-sizes-set-untrustedclass-explicitly)). See [Sandbox size per job](/providers#sandbox-size-per-job).",
   },
   {
     name: "TURNTABLE_SANDBOX_SIZES_FILE",
     area: "Worker and provider",
-    description: "A file holding the sandbox size map. The same as `TURNTABLE_SANDBOX_SIZES_JSON`.",
+    description:
+      "A file holding the sandbox size map. The same as `TURNTABLE_SANDBOX_SIZES_JSON`, including the `untrustedClass` advice: set it to a small class on a hosted or multi-tenant instance.",
   },
   {
     name: "TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256",

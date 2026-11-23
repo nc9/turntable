@@ -161,6 +161,8 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_CLAIM_INSTALLATIONS` |  | off | Set to `1` on a hosted instance: an org claims its own GitHub App installation (`start_installation_claim`, then GitHub redirects to `/api/v1/github/setup`). |
 | `TURNTABLE_DATABASE_URL` | `--database-url` | SQLite in the data dir | Postgres connection URL. Every subcommand that opens the database uses it. See [Postgres](/postgres). |
 | `TURNTABLE_UI_DIR` |  | `packages/ui/dist` | Serve the web UI from this directory (it needs an `index.html`). Only for a run from source: the compiled binary serves its embedded UI and ignores it with a warning. |
+| `TURNTABLE_BACKUP_BEFORE_MIGRATE` |  |  | Set to `1` to back up the SQLite database at boot when migrations are pending, before they run. A failed backup stops the boot. See [Backups](/instance-admin#backups). |
+| `TURNTABLE_BACKUP_KEEP` |  | 10 | How many backups to keep under `<data-dir>/backups`. |
 
 ### Worker and provider
 
@@ -185,8 +187,8 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB` |  | 512 | Most a checkout may unpack in total (1 to 16384 MiB). |
 | `TURNTABLE_CHECKOUT_MAX_TARBALL_MIB` |  | 256 | Largest tarball the checkout child may hand back (1 to 4096 MiB). |
 | `TURNTABLE_PROVIDER_PLUGINS` |  |  | A JSON array of `{ "name", "path", "sha256" }`: external provider plugins, each loaded only if the file at `path` has that digest. Never in hosted mode. See [Providers](/providers). |
-| `TURNTABLE_SANDBOX_SIZES_JSON` |  |  | The sandbox size map (JSON): which `runs-on` labels get how many CPUs and how much memory. Set only one of this and `TURNTABLE_SANDBOX_SIZES_FILE`. |
-| `TURNTABLE_SANDBOX_SIZES_FILE` |  |  | A file holding the sandbox size map. The same as `TURNTABLE_SANDBOX_SIZES_JSON`. |
+| `TURNTABLE_SANDBOX_SIZES_JSON` |  |  | The sandbox size map (JSON): which `runs-on` labels get how many CPUs and how much memory. Set only one of this and `TURNTABLE_SANDBOX_SIZES_FILE`. A run classified `untrusted_pr` gets `untrustedClass`, then `default`, then the provider's own size: set `untrustedClass` to a small class on a hosted or multi-tenant instance (see [Hosted](/hosted#sandbox-sizes-set-untrustedclass-explicitly)). See [Sandbox size per job](/providers#sandbox-size-per-job). |
+| `TURNTABLE_SANDBOX_SIZES_FILE` |  |  | A file holding the sandbox size map. The same as `TURNTABLE_SANDBOX_SIZES_JSON`, including the `untrustedClass` advice: set it to a small class on a hosted or multi-tenant instance. |
 
 ### Secrets and keys
 
