@@ -211,13 +211,11 @@ export async function verifyRunApproval(
     throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
   const violation = keyPolicyViolation(await getKeyPolicy(c.db, c.scope.orgId), v.key);
   if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
-  // The author may not approve their own run, under the switch release approvals use. A run has
-  // no environment, so the org-wide `production` policy stands in (as it does for enrolments).
-  // Only a known, equal login refuses: an unknown author is not a signal here, since the
-  // untrusted authors this gate exists for are outsiders to the org's approvers.
-  const authorPolicy = await getEnvPolicy(c.db, c.scope.orgId, "production");
+  // The author may not approve their own run, and no policy switch loosens that: the untrusted
+  // authors this gate exists for are outsiders, and a trusted maintainer's own runs are never
+  // held. The login compared is run.actor, the PR author the poller's trust decision judged (the
+  // run records no separate pusher). An unknown author is not refused, since it is no signal.
   if (
-    !authorPolicy.allowAuthorApproval &&
     run.actor !== null &&
     run.actor !== "" &&
     v.key.forgeLogin !== null &&

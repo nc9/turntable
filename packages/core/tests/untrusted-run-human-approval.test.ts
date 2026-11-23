@@ -392,7 +392,7 @@ describe("the approver is not the run's author (#408)", () => {
     }
   });
 
-  test("the org policy allowing author approval lets the author approve", async () => {
+  test("no policy lets the author approve: allowAuthorApproval=true on production is ignored", async () => {
     const alice = await approverIn(a, "alice-gh");
     await setEnvPolicy(db, a.orgId, {
       environment: "production",
@@ -402,8 +402,23 @@ describe("the approver is not the run's author (#408)", () => {
       now: clock,
     });
     const h = await held(a, "untrusted_pr", "Alice-GH");
+    const r = await signed(h, alice);
+    expect(code(r)).toBe("forbidden");
+    expect(!r.ok && r.error.message).toMatch(/approver_is_author/);
+    expect(await states(a.scope, h.runId)).toEqual(["awaiting_approval"]);
+  });
+
+  test("the PR author is refused even when they did not push the head", async () => {
+    // The run records the judged PR author only, so a push by someone else changes nothing.
+    const alice = await approverIn(a, "alice-gh");
+    const h = await held(a, "untrusted_pr", "alice-gh");
+    expect(code(await signed(h, alice))).toBe("forbidden");
+  });
+
+  test("an unknown author is not refused", async () => {
+    const alice = await approverIn(a, "alice-gh");
+    const h = await held(a, "untrusted_pr");
     expect((await signed(h, alice)).ok).toBe(true);
-    expect(await states(a.scope, h.runId)).toEqual(["queued"]);
   });
 
   test("a different approver is unaffected", async () => {
