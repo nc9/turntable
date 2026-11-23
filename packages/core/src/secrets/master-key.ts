@@ -114,19 +114,25 @@ export function takeMasterKeys(env: Env = process.env): MasterKeys | undefined {
 }
 
 /**
- * The master key for a command that runs on its own (`secret`, `oidc`, `github`, `audit`): a
- * `--master-key-file`, else the environment. Same rules as the server; deletes the variables.
+ * The master keys for a command that runs on its own (`secret`, `oidc`, `github`, `audit`, `keys
+ * reseal`): a `--master-key-file`, else the environment. Same rules as the server; deletes the
+ * variables.
  */
-export function masterKeyForCommand(flagFile: string | undefined, env: Env = process.env): Buffer {
+export function masterKeysForCommand(
+  flagFile: string | undefined,
+  env: Env = process.env,
+): MasterKeys {
   if (flagFile) {
     if (set(env[MASTER_KEY_ENV])) {
+      delete env[MASTER_KEY_ENV];
+      delete env[PREVIOUS_KEY_ENV];
       throw new MasterKeyConfigError(
         `--master-key-file and ${MASTER_KEY_ENV} are both given: use one`,
       );
     }
     delete env[MASTER_KEY_ENV];
     delete env[PREVIOUS_KEY_ENV];
-    return loadMasterKey(flagFile);
+    return { key: loadMasterKey(flagFile), source: "file", file: flagFile };
   }
   const k = takeMasterKeys(env);
   if (!k) {
@@ -134,8 +140,11 @@ export function masterKeyForCommand(flagFile: string | undefined, env: Env = pro
       `set ${MASTER_KEY_ENV} or ${MASTER_KEY_FILE_ENV}, or pass --master-key-file`,
     );
   }
-  return k.key;
+  return k;
 }
+
+export const masterKeyForCommand = (flagFile: string | undefined, env: Env = process.env): Buffer =>
+  masterKeysForCommand(flagFile, env).key;
 
 /**
  * Where the audit anchor state lives: next to the key file when there is one, else under the data
