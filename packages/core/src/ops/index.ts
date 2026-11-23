@@ -38,6 +38,8 @@ import {
   setProjectSettings,
 } from "./definitions/project-settings";
 import { createApiToken } from "./definitions/create-api-token";
+import { listApiTokensOp } from "./definitions/list-api-tokens";
+import { revokeApiTokenOp } from "./definitions/revoke-api-token";
 import { events } from "./definitions/events";
 import { failureDigest } from "./definitions/failure-digest";
 import { listOrgs } from "./definitions/list-orgs";
@@ -115,6 +117,8 @@ export const registry = createRegistry([
   listProjects,
   ingestStatusOp,
   createApiToken,
+  listApiTokensOp,
+  revokeApiTokenOp,
   listActionPinsOp,
   listArtifacts,
   checkArtifactConsumption,

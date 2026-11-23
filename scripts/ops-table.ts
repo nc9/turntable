@@ -20,6 +20,8 @@ export const CLI_COMMANDS: Readonly<Record<string, string>> = {
   delete_secret: "secret delete",
   list_secrets: "secret list",
   create_api_token: "token create",
+  list_api_tokens: "token list",
+  revoke_api_token: "token revoke",
   incident_freeze: "incident freeze",
   incident_unfreeze: "incident unfreeze",
   incident_status: "incident status",
