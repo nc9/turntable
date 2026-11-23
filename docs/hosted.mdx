@@ -270,7 +270,7 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/settings" \
   -d '{"key":"scheduling_class","value":"yield","target_org":"local","target_project":"dogfood"}'
 ```
 
-A normal job that waits at the global or org cap preempts the newest running yield job, which is requeued under a new attempt and starts over. Under the global cap this is cross-org, because yield is instance-wide: a yield project in org A can be preempted by normal work in org B. See [Providers](/providers#scheduling-class-yield-to-other-projects).
+A normal job that waits at the global or org cap preempts the newest running yield job, which is requeued under a new attempt and starts over. Under the global cap this is cross-org, because yield is instance-wide: a yield project in org A can be preempted by normal work in org B. See [Providers](/providers#scheduling-class-yield-to-other-projects). There is no preemption limit by default. An operator can set `preempt_max_per_job` (with `preempt_window_minutes`, both instance settings) so that a job preempted that often is left alone until it finishes. That bounds wasted yield minutes but can make normal work wait for a capped yield job, so on a shared hosted instance enable it only with the affected tenants' agreement. Also, and `sandbox_usage` with `group_by: "project"` reports each project's preemptions and the minutes they wasted apart from useful minutes.
 
 ## Sandbox sizes: set `untrustedClass` explicitly
 

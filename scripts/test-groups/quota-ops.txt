@@ -1,0 +1,5 @@
+packages/core/tests/instance-ingest-status.test.ts
+packages/core/tests/org-quotas.test.ts
+packages/core/tests/quotas-cli.test.ts
+packages/core/tests/instance-admin.test.ts
+packages/core/tests/bootstrap-approver.test.ts

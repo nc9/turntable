@@ -69,6 +69,9 @@ const usage: SandboxUsage = {
       name: "API",
       days: [day("2026-11-21", 5), day("2026-11-22", 4)],
       totalMinutes: 9,
+      preemptions: 0,
+      preemptedMinutes: 0,
+      usefulMinutes: 9,
     },
     {
       id: "p2",
@@ -76,6 +79,9 @@ const usage: SandboxUsage = {
       name: "Web",
       days: [day("2026-11-21", 0), day("2026-11-22", 3)],
       totalMinutes: 3,
+      preemptions: 0,
+      preemptedMinutes: 0,
+      usefulMinutes: 3,
     },
   ],
 };

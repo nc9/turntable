@@ -1,0 +1,4 @@
+packages/core/tests/oidc.test.ts
+packages/core/tests/job-oidc.test.ts
+packages/core/tests/job-oidc-source.test.ts
+packages/core/tests/job-oidc-runner.test.ts

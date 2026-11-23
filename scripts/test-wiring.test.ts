@@ -1,10 +1,12 @@
-// Every test file must be named in some package.json script, or CI never runs it. `bun run test`
-// runs only the `test:*` scripts, each an explicit file list, so a test file added without a script
-// entry passes review and goes green while testing nothing. This guard fails the build for it.
+// Every test file must be named in a test group file (scripts/test-groups/<group>.txt) or in some
+// package.json script, or CI never runs it. `bun run test` runs only the `test:*` scripts, each an
+// explicit file list, so a test file added without a list entry passes review and goes green while
+// testing nothing. This guard fails the build for it.
 // A file that must not run in CI goes in ALLOWED below, with the reason.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { readGroup, testScripts, parseGroupCall } from "./test-groups";
 
 const root = join(import.meta.dir, "..");
 
@@ -40,7 +42,7 @@ export function testFiles(repo: string = root): string[] {
     .toSorted();
 }
 
-/** Every path-like word in every script of the root and package package.json files, root-relative. */
+/** Every path-like word in every script of the root and package package.json files, plus every line of the test group files of the root `test:*` scripts, root-relative. */
 export function scriptPaths(repo: string = root): Set<string> {
   const out = new Set<string>();
   const add = (pkgFile: string, base: string): void => {
@@ -55,6 +57,10 @@ export function scriptPaths(repo: string = root): Set<string> {
       }
   };
   add(join(repo, "package.json"), "");
+  for (const cmd of Object.values(testScripts(repo))) {
+    const call = parseGroupCall(cmd);
+    if (call) for (const f of readGroup(call.group, repo)) if (TEST_FILE.test(f)) out.add(f);
+  }
   for (const p of readdirSync(join(repo, "packages")))
     add(join(repo, "packages", p, "package.json"), `packages/${p}`);
   return out;
@@ -69,7 +75,7 @@ export function problems(
   const out: string[] = [];
   for (const f of files)
     if (!named.has(f) && !(f in allowed))
-      out.push(`${f} is named in no package.json script, so CI never runs it`);
+      out.push(`${f} is in no test group file or package.json script, so CI never runs it`);
   for (const [f, why] of Object.entries(allowed)) {
     if (!files.includes(f)) out.push(`allowlist entry ${f} is not a test file (stale)`);
     else if (named.has(f))
@@ -96,7 +102,7 @@ describe("the check itself", () => {
   const files = ["packages/a/tests/x.test.ts", "packages/a/tests/y.test.ts"];
   test("a test file in no script is reported; a listed one is not", () => {
     expect(problems(files, new Set(["packages/a/tests/x.test.ts"]), {})).toEqual([
-      "packages/a/tests/y.test.ts is named in no package.json script, so CI never runs it",
+      "packages/a/tests/y.test.ts is in no test group file or package.json script, so CI never runs it",
     ]);
   });
   test("a longer path that merely contains a name does not count as naming it", () => {

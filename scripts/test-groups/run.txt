@@ -1,0 +1,5 @@
+packages/core/tests/run-local.test.ts
+packages/core/tests/repo-archive.test.ts
+packages/core/tests/run-workflow.test.ts
+packages/core/tests/safe-read.test.ts
+packages/core/tests/log-cut.test.ts

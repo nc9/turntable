@@ -1,0 +1,1 @@
+packages/core/tests/artifacts-e2e.test.ts

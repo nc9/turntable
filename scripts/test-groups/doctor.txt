@@ -1,0 +1,2 @@
+packages/core/tests/doctor.test.ts
+packages/core/tests/read-only.test.ts

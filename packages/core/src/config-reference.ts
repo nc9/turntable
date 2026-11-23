@@ -654,6 +654,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Hours `create_org_token` is refused for an org that has had a token, counted from when its last token was revoked or expired (minimum 1). The environment name of the `org_remint_delay_hours` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
+    name: "TURNTABLE_PREEMPT_MAX_PER_JOB",
+    area: "Server",
+    default: "0",
+    description:
+      "How many times one `yield` job may be preempted inside the window before it is no longer preempted until it finishes (0 to 1000; 0 means no limit). Enabling it bounds wasted yield minutes but can make normal work wait for a capped yield job; on a shared hosted instance, enable it only with the affected tenants' agreement. The environment name of the `preempt_max_per_job` setting, which `turntable.toml` and `instance_set_setting` also set. See [Providers](/providers#scheduling-class-yield-to-other-projects).",
+  },
+  {
+    name: "TURNTABLE_PREEMPT_WINDOW_MINUTES",
+    area: "Server",
+    default: "60",
+    description:
+      "The window, in minutes, over which the preemptions of one job are counted (1 to 10080). The environment name of the `preempt_window_minutes` setting, which `turntable.toml` and `instance_set_setting` also set.",
+  },
+  {
     name: "TURNTABLE_APPROVAL_POLICY",
     area: "Server",
     description:

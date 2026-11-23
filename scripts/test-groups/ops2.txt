@@ -1,0 +1,14 @@
+packages/core/tests/ops-events.test.ts
+packages/core/tests/ops-gaps.test.ts
+packages/core/tests/mcp.test.ts
+packages/core/tests/mcp-untrusted-marker.test.ts
+packages/core/tests/incident.test.ts
+packages/core/tests/approvals.test.ts
+packages/core/tests/attestation.test.ts
+packages/core/tests/failure-digest.test.ts
+packages/core/tests/channel.test.ts
+packages/core/tests/checks.test.ts
+packages/core/tests/job-shards-checks.test.ts
+packages/core/tests/skipped-checks.test.ts
+packages/core/tests/skipped-check-claim.test.ts
+packages/core/tests/skipped-dismissed.test.ts

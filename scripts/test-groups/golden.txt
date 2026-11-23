@@ -1,0 +1,1 @@
+packages/core/tests/release-golden.test.ts

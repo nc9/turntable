@@ -1,0 +1,9 @@
+packages/core/tests/project-sandbox-settings.test.ts
+packages/core/tests/instance-admin.test.ts
+packages/core/tests/instance-create-org.test.ts
+packages/core/tests/instance-move-repo-binding.test.ts
+packages/core/tests/untrusted-run-approval.test.ts
+packages/core/tests/instance-bootstrap.test.ts
+packages/core/tests/instance-bootstrap-boot.test.ts
+packages/core/tests/settings-run-approval.test.ts
+packages/core/tests/settings-approval-policy.test.ts

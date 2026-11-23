@@ -1,0 +1,12 @@
+packages/core/tests/server-pages.test.ts
+packages/core/tests/secrets.test.ts
+packages/core/tests/github-installations.test.ts
+packages/core/tests/github-webhook.test.ts
+packages/core/tests/github-app.test.ts
+packages/core/tests/github-hosted-manifest.test.ts
+packages/core/tests/github-serve.test.ts
+packages/core/tests/github-adopt-binding.test.ts
+packages/core/tests/github-resync.test.ts
+packages/core/tests/github-poll-rebind.test.ts
+packages/core/tests/github-regrant-reattach.test.ts
+packages/core/tests/github-claim-consume-pin.test.ts
