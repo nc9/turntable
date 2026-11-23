@@ -12,7 +12,7 @@ export const END = "{/* ops:end */}";
 /**
  * The CLI command that does the same thing as an operation, where one exists. Written by hand
  * because the CLI is not generated from the registry; `scripts/ops-table.test.ts` checks every
- * key is a real operation and every command is in `longshore`'s usage text.
+ * key is a real operation and every command is in `turntable`'s usage text.
  */
 export const CLI_COMMANDS: Readonly<Record<string, string>> = {
   set_secret: "secret set",
@@ -33,7 +33,7 @@ export function surfaces(op: Op): { rest: string; mcp: boolean; cli: string } {
   return {
     rest: routed ? `${op.http.method} /api/v1${op.http.path}` : "",
     mcp: registry.mcpOps().includes(op),
-    cli: CLI_COMMANDS[op.name] ? `longshore ${CLI_COMMANDS[op.name]}` : "",
+    cli: CLI_COMMANDS[op.name] ? `turntable ${CLI_COMMANDS[op.name]}` : "",
   };
 }
 

@@ -54,7 +54,7 @@ describe("the operations table", () => {
     for (const [name, cmd] of Object.entries(CLI_COMMANDS)) {
       expect(registry.get(name)).toBeDefined();
       const [group] = cmd.split(" ");
-      expect(main).toContain(`longshore ${group} `);
+      expect(main).toContain(`turntable ${group} `);
     }
   });
 
