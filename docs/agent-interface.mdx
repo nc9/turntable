@@ -4,7 +4,7 @@ description: How agents and scripts drive Longshore through MCP, REST, events an
 ---
 
 <Note>
-  The operations registry, agent tokens, the REST API, the OpenAPI document, the MCP server and the realtime feed are built. Signed outbound webhooks and SSE are not (issue [#25](https://github.com/nc9/turntable/issues/25)). The CLI covers the host and setup commands; most day-to-day operations are reached through REST and MCP.
+  The operations registry, agent tokens, the REST API, the OpenAPI document, the MCP server and the realtime feed are built. Server-sent events and signed outbound webhooks are built (issue [#25](https://github.com/nc9/turntable/issues/25)). The CLI covers the host and setup commands; most day-to-day operations are reached through REST and MCP.
 </Note>
 
 Longshore is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
@@ -165,7 +165,31 @@ Agents learn what happened through an event feed, the `events` operation (`GET /
 
 Event payloads carry forge text (refs, workflow paths, step names). Treat them as untrusted data.
 
-Planned: delivery by SSE, and signed outbound webhooks that push events to a URL you choose, with a signature receivers verify. Issue [#25](https://github.com/nc9/turntable/issues/25).
+### Server-sent events
+
+`GET /api/v1/events/stream` sends the same feed as server-sent events, with the same scoping as `events` (it runs that operation as your token).
+
+```sh
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "https://ci.example.com/api/v1/events/stream?after=now&types=run.finished"
+```
+
+- **Frames.** `id: <cursor>`, `event: <type>`, `data: <the event as JSON>`. Query: `after` (a cursor or `now`, the default), `types` (comma-separated), `project` (a slug).
+- **Resume.** Reconnect with `Last-Event-ID` (a browser's `EventSource` does it for you; it wins over `after`) and you get the events after that one, none lost and none repeated. The token goes in the `Authorization` header, never the URL.
+- **Heartbeat.** A comment line (`: hb`) every 15 seconds keeps proxies from closing an idle stream.
+- **Slow readers.** A connection that falls more than 1 MiB behind gets a final `event: error` with `slow_client` and is closed. Reconnect from the last id. Streams are capped per org, and the token is checked again every 30 seconds, so a revoked token ends its stream.
+
+### Outbound webhooks
+
+An org admin can have events pushed to a URL. Operations: `create_webhook`, `webhook_endpoints`, `rotate_webhook_secret`, `disable_webhook`, `enable_webhook`, `webhook_deliveries` (REST and MCP, org admins only, all audited).
+
+- **Request.** `POST` of one event as JSON (`cursor`, `id`, `type`, `org`, `project`, `run_id`, `job_id`, `attempt_id`, `payload`, `created_at`), with `Longshore-Event`, `Longshore-Cursor` and `Longshore-Delivery` (the same on every retry, for deduplication). Delivery is at least once.
+- **Signature.** `Longshore-Signature: t=<unix seconds>,v1=<hex>`, where `v1` is HMAC-SHA256 over `<t>.<raw body>` with the org's signing secret. The timestamp is part of what is signed, so check it (reject a `t` older than five minutes) as well as the digest. Compare in constant time.
+- **Secret.** One per org, shown once when the first endpoint is created and again by `rotate_webhook_secret`, sealed with the org's key. After a rotation the previous secret keeps signing for 24 hours, so the header carries two `v1` values during that time; accept either.
+- **Where it can go.** `https` URLs with no credentials, on public addresses only. Private, loopback, link-local and metadata addresses are refused when the endpoint is created and again at connect time (the connection is pinned to the checked address). Redirects are never followed and count as a failure.
+- **Retries.** Any answer other than 2xx, a timeout (10 seconds) or a refused connection is retried with backoff (30 seconds growing to 6 hours, eight attempts in all), then abandoned. `webhook_deliveries` is the log: state, attempts, last status or error, and the start of the receiver's answer.
+- **Auto-disable.** After 20 failed attempts in a row the endpoint is disabled and an `infra.error` event with `error_class: webhook_disabled` is appended. `enable_webhook` resumes it where it left off.
+- **Resume.** Each endpoint keeps its own cursor over the feed. A new endpoint starts at the tip (`from_start` replays everything), and a restart neither skips nor repeats an event.
 
 ## Realtime WebSocket
 

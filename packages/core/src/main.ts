@@ -28,6 +28,7 @@ import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
+import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
@@ -598,11 +599,20 @@ async function serve(args: string[]): Promise<void> {
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;
+  let outboundWebhooks: WebhookService | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const masterKey = loadMasterKey(keyFile);
     const store = new SecretStore(db, masterKey);
     vault = new SecretVault({ db, masterKey });
+    outboundWebhooks = new WebhookService({
+      db,
+      masterKey,
+      log: (m) => console.warn(`[longshore] ${m}`),
+    });
+    // Delivery runs in the process that serves the API: one loop per web process, and rows are
+    // claimed with a lease, so two processes never send the same delivery at once.
+    if (roles.has("web")) auditStops.push(outboundWebhooks.start());
     // Per-org OIDC issuer: needs a public https base, which is what an issuer URL is.
     const publicUrl = (values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL)?.trim();
     const oidcBase =
@@ -709,6 +719,7 @@ async function serve(args: string[]): Promise<void> {
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
         ...(oidc ? { oidc } : {}),
+        ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
         ...(cache ? { cache } : {}),
         instanceOrgCap: Number.isInteger(Number(values["org-cap"]))

@@ -3,6 +3,7 @@ import type { Db } from "../db";
 import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { WebhookService } from "../webhooks/service";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import type { Principal } from "./principal";
@@ -36,6 +37,8 @@ export type OpContext = {
   claims?: InstallationClaims | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
   instanceOrgCap?: number | undefined;
+  /** Outbound webhooks; absent without a master key. */
+  webhooks?: WebhookService | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent (tests inject their own). */
