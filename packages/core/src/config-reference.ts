@@ -130,7 +130,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256",
     area: "Server",
     description:
-      "sha256 of a token from `turntable token generate --instance`. On boot, an instance with no unrevoked instance token gets one instance-administrator token with this hash, expiring in 30 days at most. Otherwise it is ignored. Rotate the token once, then remove the variable.",
+      "sha256 of a token from `turntable token generate --instance`. On boot, an instance with no active (unexpired, unrevoked) instance token gets one instance-administrator token with this hash, expiring in 30 days at most. Otherwise it is ignored, and a hash that was registered before is never registered again. Rotate the token once, then remove the variable.",
   },
   {
     name: "TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS",

@@ -44,13 +44,14 @@ TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256=<the hash>
 curl -fsS -X POST -H "Authorization: Bearer $(cat instance-token.txt)" "$URL/api/v1/instance/tokens/rotate"
 ```
 
-- **Only when there is none.** On boot the hash is registered only if the instance has no *unrevoked* instance token. Otherwise it is ignored, with one log line: `instance bootstrap hash ignored: an instance token exists`. It can never re-bootstrap over an existing token. An expired token that was never revoked still counts as existing. If every token is revoked, the hash registers again, unless that same hash was already used and revoked: a revoked token is never brought back.
+- **Only when there is no active token.** On boot the hash is registered only if the instance has no *active* instance token, meaning one that is neither expired nor revoked. Otherwise it is ignored, with one log line: `instance bootstrap hash ignored: an instance token exists`. An expired or revoked token does not block, so a lapsed token never locks you out.
+- **A hash registers once, ever.** A hash that was registered before is refused whether that token is active, expired or revoked, with a distinct log line: `instance bootstrap hash refused: that hash was already registered once`. It is never renewed. To recover after a token lapses, generate a new token offline and set its new hash.
 - **Idempotent.** The same hash on every boot is the same row, never a duplicate.
 - **Short-lived.** The token expires in 30 days at most. `TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS` (1 to 30) can lower that and never raise it. It is audited as `instance_bootstrap_token_registered` in the system org's chain, without the hash.
 - **Never logged.** Neither the hash nor a token appears in any log line. A malformed hash stops the boot with a message that does not repeat the value. The old name `LONGSHORE_INSTANCE_BOOTSTRAP_TOKEN_SHA256` still works, with a deprecation warning.
 - **Rotate, then remove the variable.** Rotation is an instance operation over REST and the CLI, never on MCP: instance tokens are not MCP credentials. It mints a new token (secret shown once, hash stored) and revokes the caller's token, in one transaction. After that the variable does nothing, so remove it.
 
-An instance token has no `kind` field: it is minted by the operator, never by an agent, so it is the person kind in effect.
+Instance tokens are always the operator's: they hold no org role and can't approve runs, so there is no `kind` field.
 
 ## Backups
 

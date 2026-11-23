@@ -185,7 +185,7 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_HSTS_MAX_AGE` |  | 31536000 | `Strict-Transport-Security` max-age in seconds on https responses. `0` or `off` disables it. |
 | `TURNTABLE_HSTS_INCLUDE_SUBDOMAINS` |  | on | Set to `0` to drop `includeSubDomains` from the HSTS header. |
 | `TURNTABLE_BOOTSTRAP_TOKEN_SHA256` |  |  | sha256 of a token from `turntable token generate`. On boot, an org with no tokens gets one operator token with this hash. |
-| `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256` |  |  | sha256 of a token from `turntable token generate --instance`. On boot, an instance with no unrevoked instance token gets one instance-administrator token with this hash, expiring in 30 days at most. Otherwise it is ignored. Rotate the token once, then remove the variable. |
+| `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256` |  |  | sha256 of a token from `turntable token generate --instance`. On boot, an instance with no active (unexpired, unrevoked) instance token gets one instance-administrator token with this hash, expiring in 30 days at most. Otherwise it is ignored, and a hash that was registered before is never registered again. Rotate the token once, then remove the variable. |
 | `TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS` |  | 30 | Lifetime in days of the bootstrap instance token, from 1 to 30. It can lower the limit, never raise it. |
 | `TURNTABLE_BOOTSTRAP_ORG` |  | local | The org that receives the bootstrap token. |
 | `TURNTABLE_NET_ALLOW_HOSTS` |  |  | Comma-separated hostnames or IP literals the outbound HTTP client may reach even when they resolve to a private address (an audit webhook on a private network, a mock in tests). Everything else private is refused. |

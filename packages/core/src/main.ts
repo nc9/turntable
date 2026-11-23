@@ -622,7 +622,7 @@ async function serve(args: string[]): Promise<void> {
         ? `instance bootstrap: registered an instance token (expires ${iso(r.expiresAt)}). Rotate it, then remove TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256.`
         : r.reason === "an instance token exists"
           ? "instance bootstrap hash ignored: an instance token exists"
-          : "instance bootstrap hash ignored: that token was already used and revoked",
+          : "instance bootstrap hash refused: that hash was already registered once. Generate a new token and set its hash instead.",
     );
   }
 

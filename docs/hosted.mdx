@@ -47,7 +47,7 @@ GITHUB_POLL_TOKEN=...
 
 ## Instance administrator access on a host with no shell
 
-To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is unrevoked, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
+To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is active, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
 
 ## Webhooks wake the poller
 

@@ -46,13 +46,14 @@ describe("bootstrapInstanceToken", () => {
     expect(await findInstanceTokenByHash(db, hash)).toBeUndefined();
   });
 
-  test("an unrevoked but expired token still counts as existing", async () => {
+  test("an expired token does not block, and a new hash registers", async () => {
     await createInstanceTokenFromCli(db, { name: "ops", now: () => 0 });
     const r = await bootstrapInstanceToken(db, { sha256: hash, now: () => 400 * DAY });
-    expect(r.status).toBe("skipped");
+    expect(r.status).toBe("created");
+    expect(await listInstanceTokens(db)).toHaveLength(2);
   });
 
-  test("when every token is revoked, the hash registers (revoked tokens do not count)", async () => {
+  test("a revoked token does not block, and a new hash registers", async () => {
     const old = await createInstanceTokenFromCli(db, { name: "ops" });
     await revokeInstanceTokenFromCli(db, old.id);
     const r = await bootstrapInstanceToken(db, { sha256: hash });
@@ -60,20 +61,50 @@ describe("bootstrapInstanceToken", () => {
     expect(await listInstanceTokens(db)).toHaveLength(2);
   });
 
-  test("the same hash across two boots is one row", async () => {
-    expect((await bootstrapInstanceToken(db, { sha256: hash })).status).toBe("created");
-    expect((await bootstrapInstanceToken(db, { sha256: hash })).status).toBe("skipped");
+  test("the same hash across two boots while active is one row, with no renewal", async () => {
+    const first = await bootstrapInstanceToken(db, { sha256: hash, now: () => 0 });
+    if (first.status !== "created") throw new Error("expected created");
+    const again = await bootstrapInstanceToken(db, { sha256: hash, now: () => DAY });
+    expect(again.status).toBe("skipped");
+    const rows = await listInstanceTokens(db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.expiresAt).toBe(first.expiresAt);
+  });
+
+  test("a previously registered hash is refused when it is expired", async () => {
+    const first = await bootstrapInstanceToken(db, { sha256: hash, now: () => 0 });
+    if (first.status !== "created") throw new Error("expected created");
+    const again = await bootstrapInstanceToken(db, { sha256: hash, now: () => 400 * DAY });
+    expect(again).toEqual({ status: "skipped", reason: "hash already registered" });
+    const [row] = await listInstanceTokens(db);
+    expect(row!.expiresAt).toBe(first.expiresAt);
     expect(await listInstanceTokens(db)).toHaveLength(1);
   });
 
-  test("a revoked bootstrap hash is never brought back", async () => {
+  test("a previously registered hash is refused when it is revoked", async () => {
     const first = await bootstrapInstanceToken(db, { sha256: hash });
     if (first.status !== "created") throw new Error("expected created");
     await revokeInstanceTokenFromCli(db, first.tokenId);
     const again = await bootstrapInstanceToken(db, { sha256: hash });
-    expect(again).toEqual({ status: "skipped", reason: "hash already used and revoked" });
+    expect(again).toEqual({ status: "skipped", reason: "hash already registered" });
     const [row] = await listInstanceTokens(db);
     expect(row!.revokedAt).not.toBeNull();
+  });
+
+  test("a previously registered hash is refused when it is active", async () => {
+    await bootstrapInstanceToken(db, { sha256: hash });
+    const again = await bootstrapInstanceToken(db, { sha256: hash });
+    expect(again.status).toBe("skipped");
+    expect(await listInstanceTokens(db)).toHaveLength(1);
+  });
+
+  test("an old hash is refused even after a newer token lapses", async () => {
+    await bootstrapInstanceToken(db, { sha256: hash, now: () => 0 });
+    const other = hashToken(generateInstanceToken());
+    const second = await bootstrapInstanceToken(db, { sha256: other, now: () => 40 * DAY });
+    expect(second.status).toBe("created");
+    const again = await bootstrapInstanceToken(db, { sha256: hash, now: () => 100 * DAY });
+    expect(again).toEqual({ status: "skipped", reason: "hash already registered" });
   });
 
   test("expiry is 30 days by default and never higher; a lower value is honoured", async () => {

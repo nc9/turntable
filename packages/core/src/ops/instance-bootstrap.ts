@@ -1,8 +1,8 @@
 // First-boot instance-administrator access without a shell (#330). The image is distroless, so
 // `token create --instance` cannot run inside it. The operator generates a `tti_` token offline
 // (`turntable token generate --instance`), keeps it, and sets only its sha256 as
-// TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256. On boot, an instance with no unrevoked instance token
-// gets one row with that hash. The secret never touches the environment or the logs, and neither
+// TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256. On boot, an instance with no active instance token
+// gets one row with that hash. A hash is registered once, ever. The secret never touches the environment or the logs, and neither
 // does the hash: this module returns ids and times only.
 //
 // An instance token holds no org grant and has no `kind` column: it is minted by the operator on
@@ -27,7 +27,7 @@ export const BOOTSTRAP_EXPIRY_ENV = "TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS";
 
 export type InstanceBootstrapResult =
   | { status: "created"; tokenId: string; expiresAt: number }
-  | { status: "skipped"; reason: "an instance token exists" | "hash already used and revoked" };
+  | { status: "skipped"; reason: "an instance token exists" | "hash already registered" };
 
 /** Parses the expiry variable. Unset is the maximum; anything outside 1..30 stops the boot. */
 export function bootstrapExpiryDays(raw: string | undefined): number {
@@ -56,15 +56,19 @@ export async function bootstrapInstanceToken(
       `${BOOTSTRAP_EXPIRY_ENV} must be an integer from 1 to ${BOOTSTRAP_MAX_EXPIRY_DAYS}`,
     );
   }
-  // Unrevoked, not unexpired: an expired token that was never revoked still counts, so a restart
-  // cannot quietly hand a fresh credential to whoever holds the env var.
-  const existing = (await listInstanceTokens(db)).some((r) => r.revokedAt === null);
-  if (existing) return { status: "skipped", reason: "an instance token exists" };
-  // The same hash is the same row. A revoked row is never brought back.
+  // Only an active token (unrevoked and unexpired) blocks, so a lapsed or revoked one cannot lock
+  // the operator out of a shell-less instance.
+  const at = (opts.now ?? Date.now)();
+  const active = (await listInstanceTokens(db)).some(
+    (r) => r.revokedAt === null && (r.expiresAt === null || r.expiresAt > at),
+  );
+  if (active) return { status: "skipped", reason: "an instance token exists" };
+  // A hash that was ever registered (expired or revoked now) is never renewed: recovery is a new
+  // offline token and a new hash, not the same env value forever.
   if (await findInstanceTokenByHash(db, hash)) {
-    return { status: "skipped", reason: "hash already used and revoked" };
+    return { status: "skipped", reason: "hash already registered" };
   }
-  const expiresAt = (opts.now ?? Date.now)() + days * DAY_MS;
+  const expiresAt = at + days * DAY_MS;
   const orgId = await systemOrgId(db);
   try {
     const row = await db.transaction(async (tx) => {
