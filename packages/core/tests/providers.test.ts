@@ -34,6 +34,12 @@ test("daytona is selectable and its options are validated strictly", () => {
   for (const ok of [true, false, {}, { cpuLimit: 150, region: "eu", sandboxClass: "container" }]) {
     expect(() => createProvider("daytona", { ownerCiPreflight: ok })).not.toThrow();
   }
+  for (const ok of ["org-usage", "own-fleet"]) {
+    expect(() => createProvider("daytona", { quotaMode: ok })).not.toThrow();
+  }
+  for (const bad of ["own", "", 1, true]) {
+    expect(() => createProvider("daytona", { quotaMode: bad })).toThrow(/quotaMode/);
+  }
   for (const bad of [
     "yes",
     1,

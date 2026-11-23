@@ -109,6 +109,7 @@ const DAYTONA_KEYS = new Set([
   "ttlSeconds",
   "capacityWaitSeconds",
   "ownerCiPreflight",
+  "quotaMode",
   "ownerCiLabels",
   "ownerCiLabelWaitAt",
   "allowDomainListConfinement",
@@ -214,6 +215,10 @@ function createDaytona(config: Record<string, unknown>): Provider {
     );
   }
   const preflight = ownerCiPreflightOf(config.ownerCiPreflight);
+  const quotaMode = config.quotaMode;
+  if (quotaMode !== undefined && quotaMode !== "org-usage" && quotaMode !== "own-fleet") {
+    throw new Error('daytona provider option quotaMode must be "org-usage" or "own-fleet"');
+  }
   const labels = ownerCiLabelsOf(config.ownerCiLabels);
   const labelWaitAt = int(config, "ownerCiLabelWaitAt", 1, 1000);
   if (labelWaitAt !== undefined && labels === undefined)
@@ -246,6 +251,7 @@ function createDaytona(config: Record<string, unknown>): Provider {
     // server name, which the strict address allow list does not.
     ...(domainOk === true ? { allowDomainListConfinement: true } : {}),
     ...(preflight !== undefined ? { ownerCiPreflight: preflight } : {}),
+    ...(quotaMode ? { quotaMode } : {}),
     ...(labels ? { ownerCiLabels: labels } : {}),
     ...(labelWaitAt !== undefined ? { ownerCiLabelWaitAt: labelWaitAt } : {}),
     clampTtl: true,
