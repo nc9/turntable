@@ -135,7 +135,7 @@ export function startServer(options: ServeOptions) {
   async function route(req: Request, srv: Bun.Server<WsData>): Promise<Response | undefined> {
     const hook = await options.webhooks?.handle(req, srv.requestIP(req)?.address);
     if (hook) return hook;
-    const manifest = await options.appManifest?.handle(req);
+    const manifest = await options.appManifest?.handle(req, srv.requestIP(req)?.address);
     if (manifest) return manifest;
     const claimed = await options.claims?.handler.handle(req);
     if (claimed) return claimed;

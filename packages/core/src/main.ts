@@ -626,6 +626,7 @@ async function serve(args: string[]): Promise<void> {
           publicUrl: publicBase,
           setupTokenSha256: setupHash,
           ...(claimMode ? { claimFlow: true } : {}),
+          trustedProxies: parseTrustedProxies(process.env.LONGSHORE_TRUSTED_PROXIES),
           onReplaced: () => auth.dropCached(),
           log: (m) => console.log(`[longshore] ${m}`),
         });

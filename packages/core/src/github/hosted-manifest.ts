@@ -29,7 +29,10 @@ import {
 } from "../db/repos";
 import { hashToken } from "../ops/tokens";
 import type { SecretStore } from "../secrets/store";
+import { signAppJwt } from "./app-auth";
 import { buildManifest, convertManifest, manifestPage, storeApp } from "./manifest";
+import { clientAddress, parseTrustedProxies, type TrustedProxies } from "./trusted-proxies";
+import { WEBHOOK_PATH } from "./webhook";
 
 export const MANIFEST_PATH = "/api/v1/instance/github-app/manifest";
 export const MANIFEST_CALLBACK_PATH = "/api/v1/github/app-callback";
@@ -37,7 +40,7 @@ export const MANIFEST_COOKIE = "ls_manifest";
 export const MANIFEST_TTL_MS = 15 * 60_000;
 export const SECRET_MANIFEST_KEY = "github-app/manifest-state-key";
 const COOKIE_PATH = "/api/v1/github";
-/** Failed setup-token attempts allowed per minute, for the whole instance. */
+/** Failed setup-token attempts allowed per minute, per client address. */
 export const SETUP_FAILURES_PER_MINUTE = 10;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -62,6 +65,13 @@ interface StatePayload {
   e: number;
   /** The request asked to replace an existing App. */
   r: boolean;
+  /**
+   * MAC of the browser-binding secret. The cookie holds the secret itself, which never appears in
+   * a URL, so someone who sees the state (history, referer, GitHub) cannot finish the flow.
+   */
+  k: string;
+  /** The GitHub organization the App was requested under, when one was. */
+  g?: string;
 }
 
 export interface HostedManifestOptions {
@@ -79,10 +89,13 @@ export interface HostedManifestOptions {
   log?: (line: string) => void;
   /** Called after an App is replaced, so cached installation tokens of the old one are dropped. */
   onReplaced?: () => void;
+  /** The proxies in front of the server, for keying the failure limiter on the real client. */
+  trustedProxies?: TrustedProxies;
 }
 
 export interface HostedManifestHandler {
-  handle(req: Request): Promise<Response | undefined>;
+  /** `peer` is the socket's remote address, used to key the failure limiter. */
+  handle(req: Request, peer?: string): Promise<Response | undefined>;
 }
 
 const esc = (v: string): string =>
@@ -139,25 +152,23 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
   const log = o.log ?? (() => {});
   const cookieAttrs = `Path=${COOKIE_PATH}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
   const clearCookie = `${MANIFEST_COOKIE}=; Max-Age=0; ${cookieAttrs}`;
-  let failWindow = 0;
-  let failCount = 0;
-
-  /** Setup-token attempts are bounded for the whole instance: the token is high entropy, this only stops noise. */
-  const tooManyFailures = (): boolean => {
-    const t = now();
-    if (t - failWindow >= 60_000) {
-      failWindow = t;
-      failCount = 0;
-    }
-    return failCount >= SETUP_FAILURES_PER_MINUTE;
+  const trusted = o.trustedProxies ?? parseTrustedProxies(undefined);
+  /** Failed setup-token attempts per client in the current minute. A correct token is never counted or refused. */
+  const failures = new Map<string, { windowStart: number; count: number }>();
+  const MAX_TRACKED = 10_000;
+  const overLimit = (client: string): boolean => {
+    const f = failures.get(client);
+    return (
+      f !== undefined && now() - f.windowStart < 60_000 && f.count >= SETUP_FAILURES_PER_MINUTE
+    );
   };
-  const noteFailure = (): void => {
+  const noteFailure = (client: string): void => {
     const t = now();
-    if (t - failWindow >= 60_000) {
-      failWindow = t;
-      failCount = 0;
-    }
-    failCount += 1;
+    const f = failures.get(client);
+    if (!f || t - f.windowStart >= 60_000) {
+      if (failures.size >= MAX_TRACKED) failures.clear();
+      failures.set(client, { windowStart: t, count: 1 });
+    } else f.count += 1;
   };
 
   /** The state key: created on first start, sealed in the owning org's store. */
@@ -174,6 +185,10 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
   const sign = (key: Buffer, body: string): string =>
     b64u(createHmac("sha256", key).update(`m1.${body}`).digest());
 
+  /** The MAC of the browser-binding secret, bound to the nonce. Only this goes in the state. */
+  const bindMac = (key: Buffer, secret: string, nonce: string): string =>
+    b64u(createHmac("sha256", key).update(`m1.bind.${secret}.${nonce}`).digest());
+
   /** The state's payload when its signature and expiry hold; undefined for anything else. */
   const verify = async (state: string): Promise<StatePayload | undefined> => {
     const parts = state.split(".");
@@ -189,7 +204,9 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       typeof p.o !== "string" ||
       typeof p.n !== "string" ||
       typeof p.e !== "number" ||
-      typeof p.r !== "boolean"
+      typeof p.r !== "boolean" ||
+      typeof p.k !== "string" ||
+      (p.g !== undefined && typeof p.g !== "string")
     )
       return undefined;
     // The key is the claimed org's; nothing in the body is trusted until the MAC holds.
@@ -238,7 +255,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       { formAction: "'self'" },
     );
 
-  const start = async (req: Request): Promise<Response> => {
+  const start = async (req: Request, peer: string | undefined): Promise<Response> => {
     const form = await req.formData().catch(() => undefined);
     const field = (name: string): string => {
       const v = form?.get(name);
@@ -246,9 +263,12 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     };
     const bearer = /^Bearer +(\S+)$/i.exec(req.headers.get("authorization") ?? "")?.[1];
     const token = bearer ?? field("setup_token");
-    if (tooManyFailures()) return note(429, "Too many attempts", "Wait a minute and try again.");
+    // The token is checked first: a correct one is never throttled, so noise from elsewhere
+    // cannot lock the operator out. Only failures are counted, per client address.
     if (!token || !safeEqual(hashToken(token), hash)) {
-      noteFailure();
+      const client = clientAddress(req.headers, peer, trusted);
+      if (overLimit(client)) return note(429, "Too many attempts", "Wait a minute and try again.");
+      noteFailure(client);
       await auditFailure(
         o.db,
         {
@@ -256,7 +276,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
           principalId: "unknown",
           op: "github_app_manifest_start",
           outcome: "error:unauthenticated",
-          source: "setup-token",
+          source: `setup-token:${clientAddress(req.headers, peer, trusted)}`,
         },
         now,
       );
@@ -296,9 +316,18 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
 
     const key = (await keyFor(org.id, true))!;
     const nonce = randomBytes(18).toString("base64url");
+    // The cookie holds this secret; the state holds only its MAC.
+    const bindSecret = randomBytes(24).toString("base64url");
     const expiresAt = now() + MANIFEST_TTL_MS;
     const body = b64u(
-      JSON.stringify({ o: org.id, n: nonce, e: expiresAt, r: rotate } satisfies StatePayload),
+      JSON.stringify({
+        o: org.id,
+        n: nonce,
+        e: expiresAt,
+        r: rotate,
+        k: bindMac(key, bindSecret, nonce),
+        ...(ghOrg ? { g: ghOrg } : {}),
+      } satisfies StatePayload),
     );
     const state = `m1.${body}.${sign(key, body)}`;
     await createManifestNonce(
@@ -322,9 +351,44 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     return new Response(manifestPage(manifest, state, ghOrg || undefined), {
       status: 200,
       headers: headers("https://github.com", [
-        `${MANIFEST_COOKIE}=${nonce}; Max-Age=${MANIFEST_TTL_MS / 1000}; ${cookieAttrs}`,
+        `${MANIFEST_COOKIE}=${bindSecret}; Max-Age=${MANIFEST_TTL_MS / 1000}; ${cookieAttrs}`,
       ]),
     });
+  };
+
+  /**
+   * Why a converted App is not the one this instance asked for, or undefined when it is: its
+   * owner is the requested organization, its page is on github.com, and, read back with its own
+   * credentials, its webhook points at this instance.
+   */
+  const appMismatch = async (
+    c: Awaited<ReturnType<typeof convertManifest>>,
+    ghOrg: string | undefined,
+  ): Promise<string | undefined> => {
+    if (ghOrg && c.owner.login.toLowerCase() !== ghOrg.toLowerCase())
+      return "the App is owned by a different account than requested";
+    if (c.html_url !== `https://github.com/apps/${c.slug}`)
+      return "the App's page is not on github.com";
+    try {
+      const res = await (o.fetch ?? safeFetch)(
+        `${o.apiBase ?? "https://api.github.com"}/app/hook/config`,
+        {
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${signAppJwt(String(c.id), c.pem, now())}`,
+            "user-agent": "longshore",
+          },
+          signal: AbortSignal.timeout(30_000),
+        },
+      );
+      if (!res.ok) return "the App's webhook settings could not be read back";
+      const j = (await res.json()) as { url?: unknown };
+      if (j.url !== `${base}${WEBHOOK_PATH}`)
+        return "the App's webhook does not point at this instance";
+    } catch {
+      return "the App's webhook settings could not be read back";
+    }
+    return undefined;
   };
 
   const finish = async (req: Request, url: URL): Promise<Response> => {
@@ -352,7 +416,8 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     };
     // The browser that started the flow is the one that must finish it.
     const cookie = cookieValue(req, MANIFEST_COOKIE);
-    if (!cookie || !safeEqual(cookie, st.n)) {
+    const key = await keyFor(st.o, false);
+    if (!cookie || !key || !safeEqual(bindMac(key, cookie, st.n), st.k)) {
       return refuse(
         403,
         "Open the page from this instance and finish in the same browser. Start again.",
@@ -372,6 +437,23 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     }
     try {
       const conv = await convertManifest(code, o.fetch ?? safeFetch, o.apiBase);
+      // Nothing is sealed until the App is shown to be the one this instance's manifest made: a
+      // code from someone else's App (a stolen link, a tampered form) would otherwise put their
+      // credentials here. GitHub lets the person edit the name, so the name is not checked.
+      const mismatch = await appMismatch(conv, st.g);
+      if (mismatch) {
+        await audit(st.o, "github_app_manifest_callback", "error:app_mismatch", {
+          reason: mismatch,
+          app_id: String(conv.id),
+        });
+        log(`github app manifest refused: ${mismatch}`);
+        return note(
+          502,
+          "Could not create the App",
+          "GitHub returned an App that does not match this request, so it was not stored. Start again.",
+          [clearCookie],
+        );
+      }
       const app = await storeApp(o.db, o.store, st.o, conv, {
         principal: { kind: "setup-token", id: "env" },
         replace: existing !== undefined,
@@ -400,11 +482,11 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
   };
 
   return {
-    async handle(req) {
+    async handle(req, peer) {
       const url = new URL(req.url);
       if (url.pathname === MANIFEST_PATH) {
         if (req.method === "GET") return formPage();
-        if (req.method === "POST") return start(req);
+        if (req.method === "POST") return start(req, peer);
         return note(405, "Method not allowed", "Use GET for the form or POST to submit it.");
       }
       if (url.pathname === MANIFEST_CALLBACK_PATH) {

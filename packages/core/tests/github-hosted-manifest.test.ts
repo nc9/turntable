@@ -51,6 +51,9 @@ let replacedCalls: number;
 /** What GitHub says for each code. */
 let answer: (code: string) => Response;
 let first: ManifestConversion;
+/** What the App's own webhook config says when read back with its credentials. */
+let hookUrl: string;
+let hookReads: number;
 
 const make = (extra: { claimFlow?: boolean } = {}) =>
   createHostedManifestHandler({
@@ -62,6 +65,12 @@ const make = (extra: { claimFlow?: boolean } = {}) =>
     log: (l) => logs.push(l),
     onReplaced: () => (replacedCalls += 1),
     fetch: (async (url: string | URL | Request) => {
+      if (String(url).endsWith("/app/hook/config")) {
+        hookReads += 1;
+        return hookUrl === ""
+          ? new Response("no", { status: 403 })
+          : Response.json({ url: hookUrl });
+      }
       const code = /app-manifests\/([^/]+)\/conversions/.exec(String(url))?.[1] ?? "";
       exchanged.push(code);
       return answer(code);
@@ -78,6 +87,8 @@ beforeEach(async () => {
   logs = [];
   exchanged = [];
   replacedCalls = 0;
+  hookUrl = `${BASE}/api/v1/webhooks/github`;
+  hookReads = 0;
   first = conv(4242);
   answer = () => Response.json(first, { status: 201 });
   resetFailureThrottle();
@@ -166,15 +177,33 @@ describe("starting the flow", () => {
     ).toBe(true);
   });
 
-  test("failed attempts are bounded for the whole instance", async () => {
+  test("failed attempts are bounded per client, and a correct token is never throttled", async () => {
+    const bad = (i: number, from: string) =>
+      handler.handle(form({ org: "acme", setup_token: `bad${i}` }), from);
     for (let i = 0; i < SETUP_FAILURES_PER_MINUTE; i++)
-      expect((await handler.handle(form({ org: "acme", setup_token: `bad${i}` })))!.status).toBe(
-        401,
-      );
-    // Even the right token waits out the window.
-    expect((await handler.handle(asOperator({ org: "acme" })))!.status).toBe(429);
+      expect((await bad(i, "198.51.100.1"))!.status).toBe(401);
+    // That client is now throttled...
+    expect((await bad(99, "198.51.100.1"))!.status).toBe(429);
+    // ...but the operator, with the right token, is not, even from the saturated address,
+    expect((await handler.handle(asOperator({ org: "acme" }), "198.51.100.1"))!.status).toBe(200);
+    // and noise from one address cannot lock out another.
+    expect((await bad(0, "198.51.100.2"))!.status).toBe(401);
     now += 61_000;
-    expect((await handler.handle(asOperator({ org: "acme" })))!.status).toBe(200);
+    expect((await bad(100, "198.51.100.1"))!.status).toBe(401);
+  });
+
+  test("a forwarded-for header does not move a client to a fresh budget unless its proxy is trusted", async () => {
+    for (let i = 0; i < SETUP_FAILURES_PER_MINUTE; i++)
+      await handler.handle(form({ org: "acme", setup_token: `bad${i}` }), "198.51.100.1");
+    const spoof = new Request(`${BASE}${MANIFEST_PATH}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-forwarded-for": "192.0.2.77",
+      },
+      body: "org=acme&setup_token=bad",
+    });
+    expect((await handler.handle(spoof, "198.51.100.1"))!.status).toBe(429);
   });
 
   test("the setup token works as a bearer header or a form field, and a good start gives the manifest page", async () => {
@@ -318,6 +347,34 @@ describe("the callback", () => {
     expect(await ops()).toContainEqual(["github_app_manifest_callback", "error:no_binding"]);
   });
 
+  test("a stolen state is not enough: the nonce in it is not the cookie secret", async () => {
+    const f = await startFlow();
+    const body = f.state!.split(".")[1]!;
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as {
+      n: string;
+      k: string;
+    };
+    // Everything an eavesdropper on the URL sees: the state, and so the nonce and the MAC.
+    for (const guess of [payload.n, payload.k, f.state!]) {
+      const res = await callback(f.state, "attacker-code", guess);
+      expect(res.status).toBe(403);
+    }
+    expect(f.state).not.toContain(f.cookie!);
+    expect(exchanged).toEqual([]);
+    expect(await getGithubApp(db)).toBeUndefined();
+    expect(await ops()).toContainEqual(["github_app_manifest_callback", "error:no_binding"]);
+    // The link was not burned by the failed guesses: the real browser finishes.
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
+  });
+
+  test("each flow has its own cookie secret, and one flow's cookie does not open another's state", async () => {
+    const a = await startFlow();
+    const b = await startFlow();
+    expect(a.cookie).not.toBe(b.cookie);
+    expect((await callback(a.state, "good-code", b.cookie)).status).toBe(403);
+    expect(exchanged).toEqual([]);
+  });
+
   test("a forged, altered or foreign state is refused", async () => {
     const f = await startFlow();
     const [v, body, sig] = f.state!.split(".") as [string, string, string];
@@ -417,6 +474,81 @@ describe("a second create", () => {
     expect(res.status).toBe(409);
     expect(exchanged).toEqual([]);
     expect((await getGithubApp(db))!.appId).toBe("4242");
+  });
+});
+
+describe("the App that comes back must be the one that was asked for", () => {
+  const refused = async (fields: Record<string, string> = {}) => {
+    const f = await startFlow(fields);
+    const res = await callback(f.state, "good-code", f.cookie);
+    expect(res.status).toBe(502);
+    expect(await getGithubApp(db)).toBeUndefined();
+    for (const name of [SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK, SECRET_CLIENT])
+      expect(await store.get(orgId, name)).toBeUndefined();
+    expect(await ops()).toContainEqual(["github_app_manifest_callback", "error:app_mismatch"]);
+    return res;
+  };
+
+  test("a code for an App whose webhook points somewhere else stores nothing", async () => {
+    hookUrl = "https://attacker.example.test/hook";
+    await refused();
+    expect(hookReads).toBe(1);
+  });
+
+  test("an unreadable webhook config stores nothing", async () => {
+    hookUrl = "";
+    await refused();
+  });
+
+  test("an App owned by another account than the requested organization stores nothing", async () => {
+    first = { ...conv(4242), owner: { login: "someone-else" } };
+    await refused({ gh_org: "acme-inc" });
+  });
+
+  test("an owner that matches the requested organization is accepted, whatever the case", async () => {
+    first = { ...conv(4242), owner: { login: "ACME-Inc" } };
+    const f = await startFlow({ gh_org: "acme-inc" });
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
+  });
+
+  test("an App page that is not on github.com stores nothing", async () => {
+    first = { ...conv(4242), html_url: "https://evil.example.test/apps/longshore-4242" };
+    await refused();
+  });
+
+  test("the credentials of a refused App are not in the audit chain or the log", async () => {
+    hookUrl = "https://attacker.example.test/hook";
+    await refused();
+    const everything = JSON.stringify(await chainedAudit(db, orgId, 0, 100)) + logs.join("\n");
+    for (const secret of [first.client_secret, first.webhook_secret, "BEGIN"])
+      expect(everything).not.toContain(secret);
+  });
+
+  test("the read-back is made with the new App's own JWT, never with a stored credential", async () => {
+    const seen: string[] = [];
+    handler = createHostedManifestHandler({
+      db,
+      store,
+      publicUrl: BASE,
+      setupTokenSha256: hashToken(SETUP_TOKEN),
+      now: () => now,
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url).endsWith("/app/hook/config")) {
+          seen.push(String((init?.headers as Record<string, string>).authorization));
+          return Response.json({ url: `${BASE}/api/v1/webhooks/github` });
+        }
+        return Response.json(first, { status: 201 });
+      }) as never,
+    });
+    const f = await startFlow();
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
+    expect(seen).toHaveLength(1);
+    const [h, p] = seen[0]!.replace("Bearer ", "").split(".") as [string, string];
+    expect(JSON.parse(Buffer.from(h, "base64url").toString())).toEqual({
+      alg: "RS256",
+      typ: "JWT",
+    });
+    expect(JSON.parse(Buffer.from(p, "base64url").toString()).iss).toBe("4242");
   });
 });
 
