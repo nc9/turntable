@@ -247,7 +247,7 @@ describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
     expect(await waitUntil(async () => (await running("sleep 31341")).length > 0, 5000)).toBe(true);
     // Let the shim set up its watcher before the group goes.
     expect(
-      await waitUntil(async () => (await running("my($shim,$rpid,$grace)")).length > 0, 5000),
+      await waitUntil(async () => (await running("my($shim,$rpid,$grace,$dir)")).length > 0, 5000),
     ).toBe(true);
     process.kill(-p.pid, "SIGKILL");
     await p.exited;
