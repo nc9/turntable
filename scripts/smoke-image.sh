@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Runs the built image and proves it works at runtime: libc fit, healthz, the UI and its CSP, PORT
-# as the default port, first-boot access via a bootstrap token hash, and the tools a worker job
-# needs on the control plane (git over https as the unprivileged user, and tar).
+# Runs the built (distroless) image and proves it works at runtime: libc fit, healthz, the UI
+# and its CSP, PORT as the default port, first-boot access via a bootstrap token hash, and a real
+# worker checkout of a commit over https.
 # Usage: scripts/smoke-image.sh longshore:smoke
 set -euo pipefail
 image="$1"
@@ -59,7 +59,7 @@ asset=$(grep -Eo '(src|href)="/[^"]+\.(js|css)"' /tmp/tt-index.html | head -1 | 
 test -n "$asset" || { echo "the app shell references no embedded asset"; exit 1; }
 curl -fsS -o /tmp/tt-asset -w '%{http_code} %{content_type} %{size_download}\n' "http://127.0.0.1:$port$asset" | tee /tmp/tt-asset-info
 awk '$1==200 && $3>0 {ok=1} END{exit !ok}' /tmp/tt-asset-info || { echo "embedded asset $asset not served"; exit 1; }
-# The binary runs in the image: `version` proves exec and libc.
+# The binary runs in the distroless image with no shell: `version` proves exec and libc.
 docker run --rm --entrypoint /longshore "$image" version || { echo "version command failed"; exit 1; }
 # The image starts as root so it can own a root-owned volume, and drops before opening anything:
 # the running server must be uid 65532, real, effective and saved (so root cannot be regained).
@@ -114,27 +114,15 @@ assert_uid "$cid" 0
 remove_container "$cid"
 echo "image: root refused unless allowed ok"
 
-# 5. The control plane fetches a run's commit with git and packs it with tar (gitRepoSource in
-# scheduler/act-runner.ts, run/repo-archive.ts). An image without them runs the server and fails
-# every job ("Executable not found in $PATH: git"), which none of the checks above would notice.
-# This does what gitRepoSource does, as the unprivileged user, in the environment it uses: a depth-1
-# fetch BY SHA over https from a small public repository (needs network and the CA bundle), a
-# detached checkout, and a tar of the result. The sha is the repository's default-branch head, fixed.
-for tool in git tar; do
-  docker run --rm --user 65532:65532 --entrypoint "$tool" "$image" --version | head -1 || { echo "$tool is not in the image"; exit 1; }
-done
-out=$(docker run --rm --user 65532:65532 --entrypoint sh \
-  -e GIT_TERMINAL_PROMPT=0 -e GIT_CONFIG_NOSYSTEM=1 "$image" -c '
-    set -eu
-    dir=$(mktemp -d)
-    cd "$dir"
-    export HOME="$dir"
-    git init -q
-    git remote add origin https://github.com/octocat/Hello-World.git
-    git fetch -q --depth 1 https://github.com/octocat/Hello-World.git 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d
-    git checkout -q --detach FETCH_HEAD
-    test "$(git rev-parse HEAD)" = 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d
-    tar -czf - . | wc -c
-  ' 2>&1) || { echo "git fetch by sha in the image failed:"; echo "$out"; exit 1; }
-test "$(echo "$out" | tail -1)" -gt 0 2>/dev/null || { echo "tar of the checkout is empty: $out"; exit 1; }
-echo "image: git fetch by sha over https and tar as 65532 ok"
+# 5. A real worker checkout. The control plane fetches a run's commit before any sandbox exists
+# (gitRepoSource). It does it in process (no git, no tar in this image), so this runs the very code
+# path the worker uses, as the unprivileged user, against a small public repository at a fixed
+# commit: a depth-1 fetch over https with every object verified, the tree and .git written, packed.
+# `fetch-source` prints one line and exits 0 only when all of that worked. An image whose worker
+# cannot check out a commit fails every job, which none of the checks above would notice.
+out=$(docker run --rm --user 65532:65532 --entrypoint /longshore "$image" \
+  fetch-source octocat/Hello-World 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d --file README 2>&1) \
+  || { echo "worker checkout failed in the image:"; echo "$out"; exit 1; }
+echo "$out" | grep -Eq '^ok 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d files=[1-9][0-9]* tarball=[1-9][0-9]* file=README:[1-9][0-9]*$' \
+  || { echo "unexpected checkout output: $out"; exit 1; }
+echo "image: worker checkout (in-process git fetch by sha over https) ok: $out"

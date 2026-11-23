@@ -3,11 +3,11 @@
 // action is read at its sha: a composite's nested actions are resolved, checked and delivered
 // locally the same way (recursively, depth-capped), a docker action is refused, and anything
 // that cannot be resolved refuses the plan.
-import { scrubbedEnv } from "@longshore/provider-sdk";
 import { parse } from "yaml";
 import type { ActionFetcher } from "./act-install";
 import { fetchActionTarball } from "./act-install";
 import { classifyActionRuntime } from "./action-runtime";
+import { readTarGz } from "./tar";
 import {
   PlanError,
   localActionDir,
@@ -23,36 +23,28 @@ export const MAX_NESTED_DEPTH = 5;
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-async function tar(args: string[], stdin: Uint8Array): Promise<{ code: number; out: Uint8Array }> {
-  const p = Bun.spawn(["tar", ...args], {
-    stdin: new Blob([stdin]),
-    stdout: "pipe",
-    stderr: "pipe",
-    env: scrubbedEnv(),
-  });
-  const [out, code] = await Promise.all([new Response(p.stdout).bytes(), p.exited]);
-  return { code, out };
-}
-
 /** Reads `<subpath>/action.yml` (or .yaml) from a GitHub source tarball, or undefined. */
 export async function readActionYml(tgz: Uint8Array, subpath: string): Promise<string | undefined> {
-  const listed = await tar(["tzf", "-"], tgz);
-  if (listed.code !== 0)
+  let entries;
+  try {
+    entries = readTarGz(tgz, { maxBytes: ACTION_TAR_MAX_BYTES });
+  } catch {
     throw new PlanError("nested-action", "an action tarball could not be read");
-  const names = new TextDecoder().decode(listed.out).split("\n");
+  }
   const want = subpath ? `${subpath.replace(/\/+$/, "")}/` : "";
   for (const file of ["action.yml", "action.yaml"]) {
-    const member = names.find((n) => {
-      const rest = n.replace(/^[^/]+\//, "");
-      return n.includes("/") && rest === `${want}${file}`;
+    const member = entries.find((e) => {
+      if (e.type !== "file" || !e.path.includes("/")) return false;
+      const rest = e.path.replace(/^[^/]+\//, "");
+      return rest === `${want}${file}`;
     });
-    if (member) {
-      const r = await tar(["xzOf", "-", member], tgz);
-      if (r.code === 0) return new TextDecoder().decode(r.out);
-    }
+    if (member) return new TextDecoder().decode(member.data);
   }
   return undefined;
 }
+
+/** An action's source tarball, unpacked, is at most this large. */
+const ACTION_TAR_MAX_BYTES = 256 * 1024 * 1024;
 
 export interface NestedHooks {
   /** Resolves a nested tag or branch to a sha (the pin-aware resolver). */

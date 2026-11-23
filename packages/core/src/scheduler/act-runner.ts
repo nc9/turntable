@@ -1,7 +1,6 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
 // it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
 // the same from the CLI and from the worker.
-import { scrubbedEnv } from "@longshore/provider-sdk";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +18,7 @@ import {
   planJob,
   rebuildArgv,
   splitJob,
+  tarGzDirectory,
   workflowHeadCheckouts,
 } from "@longshore/act-runner";
 import type { JobCacheProvider } from "../cache/job";
@@ -29,7 +29,7 @@ import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { buildActEvent } from "../run/act-event";
-import { snapshotRepo } from "../run/repo-archive";
+import { fetchCommit, materialize } from "../run/git-fetch";
 import { makeSafeReader } from "../run/safe-read";
 import { resolvePlanActions } from "../pins";
 import type { ForgeToken } from "../pins/forge-token";
@@ -84,18 +84,6 @@ export function localRepoSource(o: {
 
 const SAFE_PART = /^[A-Za-z0-9_.-]+$/;
 
-async function git(cwd: string, argv: string[]): Promise<void> {
-  const p = Bun.spawn(["git", ...argv], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    // No prompts, no credentials, no system config: this only ever reads public repos.
-    env: scrubbedEnv({ HOME: cwd, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" }),
-  });
-  const [err, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
-  if (code !== 0) throw new Error(`git ${argv[0]} failed: ${err.trim().split("\n")[0]}`);
-}
-
 /** A remote URL with a user or password in it would be stored in the repo's config. */
 export function assertNoCredentials(u: string): void {
   let parsed: URL | undefined;
@@ -110,11 +98,13 @@ export function assertNoCredentials(u: string): void {
 }
 
 /**
- * Fetches exactly the run's commit from a public repo with git (a depth-1 fetch by sha) and packs
- * it the way `longshore run` does: the committed tree plus .git.
+ * Fetches exactly the run's commit from a public repo, in process (see run/git-fetch.ts: git's
+ * smart-HTTP protocol at depth 1, every object verified), writes the tree and the `.git` git would
+ * have made, and packs them the way `longshore run` does. No `git` or `tar` binary is run, so the
+ * control plane needs neither.
  */
 export function gitRepoSource(
-  o: { cloneUrl?: (owner: string, repo: string) => string } = {},
+  o: { cloneUrl?: (owner: string, repo: string) => string; fetch?: SafeFetch } = {},
 ): RepoSource {
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
   return {
@@ -126,18 +116,19 @@ export function gitRepoSource(
       }
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
       try {
-        await git(dir, ["init", "-q"]);
         // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
         // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
         // Never with credentials in the URL.
         const remote = o.cloneUrl ? url(owner, repo) : `https://github.com/${owner}/${repo}`;
         assertNoCredentials(remote);
-        await git(dir, ["remote", "add", "origin", remote]);
-        await git(dir, ["fetch", "-q", "--depth", "1", url(owner, repo), run.sha]);
-        await git(dir, ["checkout", "-q", "--detach", "FETCH_HEAD"]);
-        const snap = await snapshotRepo(dir);
+        const fetched = await fetchCommit({
+          url: url(owner, repo),
+          sha: run.sha.toLowerCase(),
+          ...(o.fetch ? { fetch: o.fetch } : {}),
+        });
+        materialize(dir, fetched, remote);
         return {
-          tarball: snap.tarball,
+          tarball: tarGzDirectory(dir),
           // Repo files are untrusted: no traversal, no symlinks, size-capped.
           readFile: makeSafeReader(dir),
           dispose: () => rmSync(dir, { recursive: true, force: true }),

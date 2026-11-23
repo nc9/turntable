@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { planJob, rebuildArgv } from "@longshore/act-runner";
 import { buildActEvent, type ActEventRun } from "../src/run/act-event";
 import { snapshotRepo, TAR_ENV, tarMetadataArgs } from "../src/run/repo-archive";
+import { serveGitRepo } from "./git-http-server";
 import { assertNoCredentials, gitRepoSource } from "../src/scheduler";
 
 const BASE = "b".repeat(40);
@@ -206,11 +207,15 @@ describe("the repo archive and the checkout", () => {
   test("the checkout has an origin remote, like actions/checkout leaves", async () => {
     const repo = makeRepo("origin-src");
     const sha = git(repo, "rev-parse", "HEAD").trim();
-    const url = `file://${repo}`;
-    const checkout = await gitRepoSource({ cloneUrl: () => url }).checkout({ sha } as never, {
-      owner: "acme",
-      repo: "web",
-    });
+    const server = serveGitRepo(repo);
+    const url = server.url;
+    const checkout = await gitRepoSource({ cloneUrl: () => url, fetch: server.fetch }).checkout(
+      { sha } as never,
+      {
+        owner: "acme",
+        repo: "web",
+      },
+    );
     try {
       const out = join(tmp, "origin.tgz");
       writeFileSync(out, checkout.tarball);
@@ -219,6 +224,7 @@ describe("the repo archive and the checkout", () => {
       execFileSync("tar", ["xzf", out, "-C", x]);
       expect(git(x, "remote", "get-url", "origin").trim()).toBe(url);
     } finally {
+      server.stop();
       checkout.dispose?.();
     }
   }, 30_000);

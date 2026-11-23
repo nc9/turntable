@@ -102,6 +102,7 @@ Usage:
   longshore quotas get --url <https://host> --org <slug> [--token-file <path>]  (remote read)
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
+  longshore fetch-source <owner/name> <sha> [--file <path>]   check that a commit can be fetched, as a worker does
   longshore parity --run <id> --repo <owner/name> --app-id <n> [--json]   compare a run with another CI's checks
   longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
   longshore version
@@ -955,6 +956,10 @@ async function main(argv: string[]): Promise<void> {
     case "channel": {
       const { channelCommand } = await import("./channel/cli");
       return await channelCommand(rest);
+    }
+    case "fetch-source": {
+      const { fetchSourceCommand } = await import("./run/fetch-source-cli");
+      process.exit(await fetchSourceCommand(rest));
     }
     case "parity": {
       const { parityCommand } = await import("./parity/cli");

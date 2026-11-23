@@ -89,6 +89,8 @@ For **protected and release** runs a finding fails planning with the list of fin
 
 The workspace is a tarball the controller delivered at one sha. The checkout stand-in only copies it and never touches the network, and a sandbox has no network unless an operator opts in. A job therefore cannot fetch a different ref, a fork, or the PR head on its own. Remote actions are fetched by sha by the controller, not the job.
 
+The controller gets a polled run's commit without running `git` or `tar`: it speaks git's smart-HTTP protocol (v2) to the public repository from inside the server, asks for exactly that sha at depth 1, and checks every object it receives (each object's SHA-1, the pack checksum, and that the commit it holds is the one asked for) before writing anything. The repository's contents are untrusted when it writes them: a path named `.git` in any case, `..`, one with a slash, a backslash or a NUL, a symlinked `.gitmodules`, a write through a symlink, an unsupported file mode, or a repository over the size and file-count caps is refused, and a submodule becomes an empty directory that is never fetched. No credential is sent. It then packs the tree and the `.git` it built into the tarball the sandbox receives, with a tar writer in the same process, so the server image needs neither program (it is distroless). `longshore fetch-source <owner/name> <sha>` runs this same code and says what it got, for a smoke test or to check that a host can reach GitHub.
+
 ## Action pins and moved tags
 
 Before a run starts, every `uses:` reference is resolved to a commit sha, and the action is fetched by that sha. Longshore also remembers, per project, every tag-to-sha resolution it has made (`action_pins`: repository, ref, sha, first and last seen).

@@ -57,7 +57,7 @@ docker build -t longshore .
 docker run --rm -p 8080:8080 -v longshore-data:/data longshore
 ```
 
-The image is Debian slim with `git` and `tar` (the server fetches a run's commit with them) and the server runs as the non-root user `65532`. It starts as root only to take ownership of its data directory and drops to `65532` before it opens anything (see [Root-owned volumes](#root-owned-volumes)). It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
+The image is distroless (the server runs no other program: it fetches and packs a run's commit in process) and the server runs as the non-root user `65532`. It starts as root only to take ownership of its data directory and drops to `65532` before it opens anything (see [Root-owned volumes](#root-owned-volumes)). It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
 
 ## Check that it is up
 
@@ -69,7 +69,7 @@ The response is JSON with `ok` and the running `version`.
 
 ## Deploy
 
-On a host where you cannot run commands in the container (Railway, Fly), bootstrap access with a token hash instead of `token create`:
+On a host where you cannot run commands in the container (Railway, Fly, a distroless image), bootstrap access with a token hash instead of `token create`:
 
 ```sh
 # On your own machine: prints the token (stdout) and its sha256 (stderr).
