@@ -12,7 +12,7 @@
 // class. `untrustedClass` fixes what such a run gets whatever it asks for, and the ceilings clamp
 // every class (so a typo in a class cannot exceed them). An unknown label gets the default.
 import { z } from "zod";
-import type { SandboxResources } from "@longshore/provider-sdk";
+import type { SandboxResources } from "@turntable/provider-sdk";
 
 const pos = (max: number) => z.number().int().positive().max(max);
 const NAME = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);

@@ -83,8 +83,8 @@ export function resolveProviderConfig(
 }
 
 /** The sandbox size map comes from this variable (a JSON document) or from the file named by the next. */
-export const SANDBOX_SIZES_JSON_ENV = "LONGSHORE_SANDBOX_SIZES_JSON";
-export const SANDBOX_SIZES_FILE_ENV = "LONGSHORE_SANDBOX_SIZES_FILE";
+export const SANDBOX_SIZES_JSON_ENV = "TURNTABLE_SANDBOX_SIZES_JSON";
+export const SANDBOX_SIZES_FILE_ENV = "TURNTABLE_SANDBOX_SIZES_FILE";
 
 /** The operator's sandbox size map, or undefined when none is configured (providers' default sizes). */
 export function resolveSandboxSizes(env: Env = process.env): SandboxSizes | undefined {

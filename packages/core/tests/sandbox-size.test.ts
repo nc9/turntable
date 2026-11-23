@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { planWorkflow } from "@longshore/act-runner";
+import { planWorkflow } from "@turntable/act-runner";
 import { parseSandboxSizes, sizeFor, untrustedForSize } from "../src/scheduler/sandbox-size";
 import { resolveSandboxSizes } from "../src/serve-config";
 
@@ -114,14 +114,14 @@ describe("the size map", () => {
 
   test("it comes from the environment: JSON or a file, not both", () => {
     expect(resolveSandboxSizes({})).toBeUndefined();
-    expect(resolveSandboxSizes({ LONGSHORE_SANDBOX_SIZES_JSON: CFG })?.default).toBe("small");
+    expect(resolveSandboxSizes({ TURNTABLE_SANDBOX_SIZES_JSON: CFG })?.default).toBe("small");
     expect(() =>
       resolveSandboxSizes({
-        LONGSHORE_SANDBOX_SIZES_JSON: CFG,
-        LONGSHORE_SANDBOX_SIZES_FILE: "/x",
+        TURNTABLE_SANDBOX_SIZES_JSON: CFG,
+        TURNTABLE_SANDBOX_SIZES_FILE: "/x",
       }),
     ).toThrow("only one");
-    expect(() => resolveSandboxSizes({ LONGSHORE_SANDBOX_SIZES_JSON: "{}" })).toThrow("classes");
+    expect(() => resolveSandboxSizes({ TURNTABLE_SANDBOX_SIZES_JSON: "{}" })).toThrow("classes");
   });
 });
 

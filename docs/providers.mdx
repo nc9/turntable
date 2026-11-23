@@ -121,7 +121,7 @@ Two settings belong to the instance operator, one project at a time. A tenant mu
 
 ## Sandbox size per job
 
-By default every sandbox gets the provider's own default size (Docker: no limits; Daytona: the snapshot's). To give some jobs more, the operator maps `runs-on` labels to a size class. It is server configuration, not stored in the database and not a migration: set `LONGSHORE_SANDBOX_SIZES_JSON` (or `LONGSHORE_SANDBOX_SIZES_FILE`) to a document like this.
+By default every sandbox gets the provider's own default size (Docker: no limits; Daytona: the snapshot's). To give some jobs more, the operator maps `runs-on` labels to a size class. It is server configuration, not stored in the database and not a migration: set `TURNTABLE_SANDBOX_SIZES_JSON` (or `TURNTABLE_SANDBOX_SIZES_FILE`) to a document like this.
 
 ```json
 {

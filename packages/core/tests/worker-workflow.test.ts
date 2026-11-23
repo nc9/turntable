@@ -447,7 +447,7 @@ jobs:
     const specs: { job: string; spec: Parameters<Provider["create"]>[0] }[] = [];
     const provider: Provider = Object.assign(Object.create(real) as Provider, {
       create: (spec: Parameters<Provider["create"]>[0]) => {
-        specs.push({ job: spec.labels["longshore.job"] as string, spec });
+        specs.push({ job: spec.labels["turntable.job"] as string, spec });
         return real.create(spec);
       },
     });

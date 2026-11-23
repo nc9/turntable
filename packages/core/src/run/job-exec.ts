@@ -10,9 +10,9 @@ import {
   type ActTarball,
   type ActionFetcher,
   type JobPlan,
-} from "@longshore/act-runner";
-import type { Provider, ProxyEndpoint, SandboxResources } from "@longshore/provider-sdk";
-import { Redactor, SecretRegistry, redactString } from "@longshore/redact";
+} from "@turntable/act-runner";
+import type { Provider, ProxyEndpoint, SandboxResources } from "@turntable/provider-sdk";
+import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
 
