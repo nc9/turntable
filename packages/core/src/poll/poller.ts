@@ -2,10 +2,13 @@ import type { Db } from "../db";
 import { appendAudit, listIngestBindings } from "../db/repos";
 import { backoffMs } from "./backoff";
 import {
+  ANONYMOUS_REQUESTS_PER_HOUR,
   ingestSettingsSchema,
+  minAnonymousIntervalSeconds,
   type PollConfig,
   type PollRepoConfig,
   readPollToken,
+  requestsPerPoll,
 } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
 import { newTagCaches, pollRepo } from "./ingest";
@@ -65,10 +68,12 @@ export class Poller {
   #lastRefresh = 0;
   #refreshTimer: ReturnType<typeof setInterval> | undefined;
   #running = false;
+  #anonymous = false;
 
   constructor(o: PollerOptions) {
     this.#o = o;
     const token = readPollToken(o.config);
+    this.#anonymous = token === undefined;
     this.#github = new GithubClient({
       ...(o.fetch ? { fetch: o.fetch } : {}),
       baseUrl: o.config.apiBaseUrl,
@@ -182,10 +187,30 @@ export class Poller {
     for (const cfg of this.#allRepos()) await this.#pollOne(cfg.repo);
   }
 
+  /**
+   * Polling with no token is limited to 60 requests an hour for the whole address, and GitHub
+   * counts a 304 against it for an anonymous caller. Say so when the intervals cannot fit.
+   */
+  #warnAnonymous(): void {
+    const repos = this.#o.config.repos;
+    const total = repos.reduce((n, r) => n + requestsPerPoll(r), 0);
+    const perHour = repos.reduce((n, r) => n + (requestsPerPoll(r) * 3600) / r.intervalSeconds, 0);
+    const log = this.#o.log ?? (() => {});
+    log(
+      `polling without a token: GitHub allows ${ANONYMOUS_REQUESTS_PER_HOUR} requests an hour per address; this config makes about ${Math.round(perHour)} an hour in steady state`,
+    );
+    if (perHour > ANONYMOUS_REQUESTS_PER_HOUR * 0.75) {
+      log(
+        `warning: use intervalSeconds of at least ${minAnonymousIntervalSeconds(total)} for ${repos.length} repo(s), or set tokenFile or tokenEnv`,
+      );
+    }
+  }
+
   start(): void {
     if (this.#running) return;
     this.#running = true;
     ingestStatus.running = true;
+    if (this.#anonymous) this.#warnAnonymous();
     for (const cfg of this.#o.config.repos) void this.#loop(cfg.repo);
     if (this.#o.bindings) {
       void this.refreshBindings().catch((e) =>

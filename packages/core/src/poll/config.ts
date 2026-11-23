@@ -204,3 +204,32 @@ export function readToken(path: string): string {
   if (text === "") throw new Error(`token file ${path} is empty`);
   return text;
 }
+
+/** GitHub's anonymous budget, per address per hour. 304 answers to conditional requests count too. */
+export const ANONYMOUS_REQUESTS_PER_HOUR = 60;
+
+/**
+ * Requests one steady-state poll of a repo makes: the default branch's head, its protection, then
+ * one each for tag refs, open pull requests and merge queue branches when those are on.
+ */
+export function requestsPerPoll(r: {
+  tagRefs?: readonly unknown[] | undefined;
+  prMode?: string | undefined;
+  mergeQueue?: boolean | undefined;
+}): number {
+  return (
+    2 +
+    ((r.tagRefs?.length ?? 0) > 0 ? 1 : 0) +
+    (r.prMode && r.prMode !== "off" ? 1 : 0) +
+    (r.mergeQueue ? 1 : 0)
+  );
+}
+
+/**
+ * The shortest interval, in seconds, that keeps polling `requests` requests per cycle under 75%
+ * of the anonymous budget, leaving a quarter for the extra calls a change costs and for webhook
+ * wake-ups. All repos share one address, so pass the total of every repo's requests.
+ */
+export function minAnonymousIntervalSeconds(requestsPerCycleTotal: number): number {
+  return Math.ceil((requestsPerCycleTotal * 3600) / (ANONYMOUS_REQUESTS_PER_HOUR * 0.75));
+}
