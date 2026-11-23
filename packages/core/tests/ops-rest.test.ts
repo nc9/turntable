@@ -152,6 +152,7 @@ test("GET /openapi.json is served without auth and matches the registry", async 
         [
           ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
           ...registry.signatureOps(),
+          ...registry.instanceOps(),
         ].map((o) => o.http.path),
       ),
     ].toSorted(),

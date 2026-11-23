@@ -1,0 +1,54 @@
+---
+title: Postgres
+description: Running Longshore on Postgres instead of SQLite.
+---
+
+Longshore stores everything in one database. SQLite is the default and is all a single instance needs. Postgres is for an instance that must scale past one connection, survive a lost disk with its own backups, or run several processes against one database.
+
+## Choosing it
+
+```sh
+longshore serve --database-url postgres://USER@HOST:5432/longshore
+# or
+LONGSHORE_DATABASE_URL=postgres://USER@HOST:5432/longshore longshore serve
+```
+
+Every other subcommand that opens the database (`token`, `policy`, `secret`, `audit`, and the rest) reads `LONGSHORE_DATABASE_URL`. Without it the database is SQLite in the data directory, as before. When the server needs a password it goes in the URL after the user (`USER:PASSWORD@HOST`). The URL is a secret: give it through the environment or a secret file rather than a command line you share. The process picks its dialect once at start, so `--database-url` on a process that was started on SQLite is an error, not a switch.
+
+Migrations are applied at start, in one transaction under an advisory lock, so several processes starting together apply them once. A failed migration leaves nothing behind. The database user needs to create tables in its schema.
+
+There is no native dependency: Postgres goes through Bun's built-in SQL client, so the single binary is still one file for every target.
+
+## One schema, two dialects
+
+`packages/core/src/db/schema.sqlite.ts` is the schema. `schema.pg.ts` is generated from it by `bun run --cwd packages/core db:pg-schema` (never edited), and `db:generate` produces the SQLite and the Postgres migrations together and embeds both. CI regenerates and fails if any of them is stale. The schema uses portable types only, so the mirror is mechanical:
+
+| SQLite | Postgres |
+| --- | --- |
+| integer timestamps and sizes (epoch milliseconds) | `bigint` (read as a JS number) |
+| offsets, sequence numbers, ids that count | `bigint`; the event feed id is an identity column |
+| text ids, JSON as text, enums as text with CHECK | the same |
+| 0/1 flag | `boolean` |
+| blob | `bytea` (read as a Buffer) |
+
+Postgres starts from one baseline migration of the current schema rather than replaying the SQLite history, whose table rebuilds mean nothing there. After that each schema change adds one migration to each. A parity test applies both sets to an empty database and checks the tables, columns, nullability and indexes agree.
+
+## Transactions
+
+The repos are written against one contract (see `src/db/index.ts`). What SQLite gets from a single exclusive connection, Postgres gets from the isolation level:
+
+- A root `db.transaction` is `SERIALIZABLE`, and is run again when Postgres reports a serialization failure or a deadlock. That covers the read-then-write patterns (claiming an attempt, appending to the audit chain, create-if-absent) across processes as well as within one. A transaction function can therefore run more than once, so it must do database work only; `afterCommit` hooks run once, after the commit that succeeded.
+- A nested `tx.transaction` is a savepoint. A root `db` used inside a transaction joins it, and a handle used after its transaction ended throws, as on SQLite.
+- Outside a transaction, repo calls run concurrently on the connection pool.
+
+The audit chain is the hottest read-then-write: every write operation appends to its org's chain. Left to SERIALIZABLE alone, writers to one org would collide and retry. So `db.transaction(fn, { lock: key })` queues root transactions of one process that name the same key (the dispatcher and `appendAudit` use `audit:<org id>`) before they take a connection: they run one after another, a wait instead of a retry, and a long queue never holds pool connections. Other orgs are unaffected. SQLite ignores the key; its transactions are already exclusive. Across processes (several replicas on one database) SERIALIZABLE and the retry still decide, and each round commits one. A database advisory lock was considered for that case and not used: under SERIALIZABLE the transaction's snapshot is taken at its first statement, before a waiting lock is granted, so the lock would hand back a stale view of the chain and the retry would happen anyway.
+
+## Testing
+
+`LONGSHORE_TEST_DB=pglite bun test <files>` runs a test file on Postgres compiled to WASM, in process. It is memory-heavy, so give it a handful of files at a time. `LONGSHORE_TEST_DB=postgres://...` uses a real server; every `openDatabase(':memory:')` in the tests becomes a freshly emptied database there. `bun run pg:test` runs the core and ops suites that way, and CI runs it against a Postgres service. Tests that are about SQLite itself, or that start a second process with its own database, are listed in `scripts/run-tests-pg.ts` with the reason.
+
+## Not yet
+
+- Row-level security. Tenant isolation is in the repos; RLS would add a second wall at the database.
+- Moving data between SQLite and Postgres. A new Postgres database starts empty.
+- The release lane's own attestation file stays SQLite: it is deliberately outside the main database.

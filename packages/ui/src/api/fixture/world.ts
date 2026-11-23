@@ -11,6 +11,7 @@ import type {
   OrgQuotas,
   QuotaLimits,
   QuotaMetric,
+  LogNotice,
   KeyPolicy,
   PolicyStatement,
   EnrolStatement,
@@ -641,6 +642,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     done: boolean;
     steps: GeneratedLog["steps"];
     cuts: GeneratedLog["cuts"];
+    notices: Omit<LogNotice, "attemptId">[];
   } | null {
     const a = attempts.get(attemptId);
     if (!a || a.startedAt == null) return null;
@@ -654,8 +656,28 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       durationMs,
     });
     const finished = a.finishedAt != null;
+    // A system notice, out of band from the log text: attempts whose log was cut also had a cache
+    // archive with entries at denied paths dropped.
+    const notices: Omit<LogNotice, "attemptId">[] =
+      log.cuts.length > 0
+        ? [
+            {
+              kind: "notice",
+              atOffset: 0,
+              source: "cache",
+              text: "cache: 3 entries dropped (denied paths)",
+            },
+          ]
+        : [];
     if (finished)
-      return { log, available: log.bytes.length, done: true, steps: log.steps, cuts: log.cuts };
+      return {
+        log,
+        available: log.bytes.length,
+        done: true,
+        steps: log.steps,
+        cuts: log.cuts,
+        notices,
+      };
     const p = Math.min(1, Math.max(0, (now() - a.startedAt) / durationMs));
     const lines = Math.floor(log.lineCount * p);
     const available = lines === 0 ? 0 : (log.lineEnds[lines - 1] ?? 0);
@@ -665,6 +687,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       done: false,
       steps: log.steps.filter((st) => st.logOffset <= available),
       cuts: log.cuts.filter((c) => c.atOffset <= available),
+      notices,
     };
   }
 

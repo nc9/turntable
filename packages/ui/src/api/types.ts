@@ -154,6 +154,19 @@ export type CutRecord = {
   reason: string;
 };
 
+/**
+ * A system notice the control plane put on an attempt's log (the cache dropped entries, a hold
+ * reason). Recorded apart from the log text, so a job's output cannot forge one. `atOffset` is
+ * where the stored log ended when it was added.
+ */
+export type LogNotice = {
+  attemptId: string;
+  kind: "notice";
+  atOffset: number;
+  source: string;
+  text: string;
+};
+
 /** The caller, from `whoami`. */
 export type Whoami = {
   kind: "token" | "member";

@@ -250,8 +250,9 @@ test("job_steps and job_cuts", () => {
     }),
   );
   const cuts = ok(op("/jobs/{job_id}/cuts", "get"));
-  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true }));
+  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true, notices: true }));
   expectKeys(cuts.properties!.cuts!.items!, ["at_offset", "omitted_bytes", "reason"]);
+  expectKeys(cuts.properties!.notices!.items!, ["at_offset", "source", "text"]);
 });
 
 test("failure_digest", () => {

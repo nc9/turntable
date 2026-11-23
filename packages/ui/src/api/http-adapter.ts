@@ -12,6 +12,7 @@ import type {
   EnvironmentApprovalResult,
   CheckSummary,
   CutRecord,
+  LogNotice,
   GrepHit,
   GrepResult,
   IncidentStatus,
@@ -397,6 +398,21 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         atOffset: c.at_offset,
         omittedBytes: c.omitted_bytes,
         reason: c.reason,
+      }));
+    },
+
+    async jobNotices({ attemptId }): Promise<LogNotice[]> {
+      const k = known(attemptId);
+      const w = await call<WireCuts>("GET", `/jobs/${encodeURIComponent(k.jobId)}/cuts`, {
+        org: org(),
+        attempt: k.attempt,
+      });
+      return w.notices.map((n) => ({
+        attemptId,
+        kind: "notice" as const,
+        atOffset: n.at_offset,
+        source: n.source,
+        text: n.text,
       }));
     },
 

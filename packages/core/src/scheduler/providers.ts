@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
-import { DaytonaProvider, HARD_MAX_LIVE, type OwnerCiPreflight } from "@longshore/provider-daytona";
+import {
+  DaytonaProvider,
+  HARD_MAX_LIVE,
+  type OwnerCiPreflight,
+  parseFleetName,
+} from "@longshore/provider-daytona";
 import { DockerProvider } from "@longshore/provider-docker";
 import type { Provider } from "@longshore/provider-sdk";
 import {
@@ -109,6 +114,8 @@ const DAYTONA_KEYS = new Set([
   "ttlSeconds",
   "capacityWaitSeconds",
   "ownerCiPreflight",
+  "quotaMode",
+  "fleet",
   "ownerCiLabels",
   "ownerCiLabelWaitAt",
   "allowDomainListConfinement",
@@ -169,11 +176,13 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
   if (v === false) return false;
   if (typeof v !== "object" || v === null || Array.isArray(v)) {
     throw new Error(
-      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, region, sandboxClass }",
+      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, diskLimitGiB, memLimitGiB, region, sandboxClass }",
     );
   }
   const o = v as Record<string, unknown>;
-  const unknown = Object.keys(o).filter((k) => !["cpuLimit", "region", "sandboxClass"].includes(k));
+  const unknown = Object.keys(o).filter(
+    (k) => !["cpuLimit", "region", "sandboxClass", "diskLimitGiB", "memLimitGiB"].includes(k),
+  );
   if (unknown.length > 0) {
     throw new Error(`unknown ownerCiPreflight option(s): ${unknown.join(", ")}`);
   }
@@ -189,6 +198,14 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
     }
     out.cpuLimit = o.cpuLimit;
   }
+  for (const k of ["diskLimitGiB", "memLimitGiB"] as const) {
+    const x = o[k];
+    if (x === undefined) continue;
+    if (typeof x !== "number" || !Number.isInteger(x) || x < 1 || x > 1_000_000) {
+      throw new Error(`ownerCiPreflight.${k} must be an integer from 1 to 1000000`);
+    }
+    out[k] = x;
+  }
   for (const k of ["region", "sandboxClass"] as const) {
     const x = o[k];
     if (x === undefined) continue;
@@ -203,8 +220,8 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
 /**
  * Daytona, for a shared account. The key is never in the config: `apiKeyFile` names a file that
  * holds it (or `apiKeyEnv` an environment variable; default `DAYTONA_API_KEY`). The label and name
- * prefix `longshore-dev`, the 30 minute backstops, the owner-CI preflight and the cap of 3 live
- * sandboxes are fixed in the provider and cannot be configured away.
+ * prefix come from `fleet` (default `longshore-dev`), the 30 minute backstops, the owner-CI preflight and the ceiling of 10 live
+ * sandboxes (the default is 2) are fixed in the provider and cannot be configured away.
  */
 function createDaytona(config: Record<string, unknown>): Provider {
   const unknown = Object.keys(config).filter((k) => !DAYTONA_KEYS.has(k));
@@ -214,6 +231,10 @@ function createDaytona(config: Record<string, unknown>): Provider {
     );
   }
   const preflight = ownerCiPreflightOf(config.ownerCiPreflight);
+  const quotaMode = config.quotaMode;
+  if (quotaMode !== undefined && quotaMode !== "org-usage" && quotaMode !== "own-fleet") {
+    throw new Error('daytona provider option quotaMode must be "org-usage" or "own-fleet"');
+  }
   const labels = ownerCiLabelsOf(config.ownerCiLabels);
   const labelWaitAt = int(config, "ownerCiLabelWaitAt", 1, 1000);
   if (labelWaitAt !== undefined && labels === undefined)
@@ -230,6 +251,8 @@ function createDaytona(config: Record<string, unknown>): Provider {
   const baseUrl = str(config, "baseUrl");
   const snapshot = str(config, "snapshot");
   const target = str(config, "target");
+  const fleet = str(config, "fleet");
+  if (fleet !== undefined) parseFleetName(fleet);
   const maxLive = int(config, "maxLive", 1, HARD_MAX_LIVE);
   const ttl = int(config, "ttlSeconds", 60, 1800);
   const wait = int(config, "capacityWaitSeconds", 1, 3600);
@@ -238,6 +261,7 @@ function createDaytona(config: Record<string, unknown>): Provider {
     ...(baseUrl ? { baseUrl } : {}),
     ...(snapshot ? { snapshot } : {}),
     ...(target ? { target } : {}),
+    ...(fleet ? { fleet } : {}),
     ...(maxLive !== undefined ? { maxLive } : {}),
     ...(wait !== undefined ? { capacityWaitMs: wait * 1000 } : {}),
     // The scheduler asks for job timeout plus slack, usually past 30 minutes: clamp instead of
@@ -246,6 +270,7 @@ function createDaytona(config: Record<string, unknown>): Provider {
     // server name, which the strict address allow list does not.
     ...(domainOk === true ? { allowDomainListConfinement: true } : {}),
     ...(preflight !== undefined ? { ownerCiPreflight: preflight } : {}),
+    ...(quotaMode ? { quotaMode } : {}),
     ...(labels ? { ownerCiLabels: labels } : {}),
     ...(labelWaitAt !== undefined ? { ownerCiLabelWaitAt: labelWaitAt } : {}),
     clampTtl: true,

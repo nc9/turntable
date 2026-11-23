@@ -18,6 +18,7 @@ import type {
   RunFilter,
   StepEvent,
   CutRecord,
+  LogNotice,
   ApproveResult,
   GrepResult,
   IncidentStatus,
@@ -59,6 +60,8 @@ export interface LongshoreApi {
   jobSteps(args: { attemptId: string }): Promise<StepEvent[]>;
   /** Output-cap cuts for an attempt, as metadata (never text in the log). */
   jobCuts(args: { attemptId: string }): Promise<CutRecord[]>;
+  /** System notices for an attempt (never text in the log). */
+  jobNotices(args: { attemptId: string }): Promise<LogNotice[]>;
   checksForSha(args: { projectId: string; sha: string }): Promise<CheckSummary>;
   /** Reruns jobs of a run (by job key; omit for the failed ones) with a reason that is audited. */
   rerun(args: { runId: string; jobKeys?: string[]; reason: string }): Promise<RerunResult>;
