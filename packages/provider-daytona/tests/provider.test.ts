@@ -518,7 +518,7 @@ describe("only ever our own sandboxes", () => {
 });
 
 describe("eventually consistent listings", () => {
-  test("create returns only once the sandbox is listed; destroy only once it is gone from the listing", async () => {
+  test("counts are right at once despite a lagging listing", async () => {
     await mock.stop();
     mock = startMock({ listLagMs: 150 });
     const p = make({ maxLive: 2 });
@@ -527,6 +527,105 @@ describe("eventually consistent listings", () => {
     await p.destroy(a.id);
     expect(await p.count({ labels: { g: "1" } })).toBe(0); // and gone at once
     expect(await p.destroyByLabels({ g: "1" })).toBe(0);
+  });
+});
+
+describe("the own-fleet count comes from recorded ids, not from listings", () => {
+  const broken = async () => {
+    await mock.stop();
+    mock = startMock({ listBroken: true });
+  };
+
+  test("a listing that returns nothing for new sandboxes does not hide them from the count or the cap", async () => {
+    await broken();
+    const p = make({ maxLive: 1, capacityWaitMs: 60 });
+    expect(p.diagnose().counting).toEqual({ mode: "recorded-ids", tracked: 0 });
+    const a = await p.create(spec({ name: "a" }));
+    // The mock's label-filtered list is empty (as Daytona's was, even a minute later).
+    expect(
+      (
+        await fetch(`${mock.url}/sandbox?labels=${encodeURIComponent('{"longshore-dev":"1"}')}`, {
+          headers: { authorization: "Bearer test-key-not-a-secret" },
+        }).then((r) => r.json() as Promise<{ items: unknown[] }>)
+      ).items,
+    ).toEqual([]);
+    expect(await p.count({})).toBe(1);
+    expect(p.diagnose().counting).toEqual({ mode: "recorded-ids", tracked: 1 });
+    await expect(p.create(spec({ name: "b" }))).rejects.toThrow(/already 1 live sandboxes of ours/);
+    await p.destroy(a.id);
+    expect(await p.count({})).toBe(0);
+  });
+
+  test("a listing that still shows a deleted sandbox as started does not count it", async () => {
+    await broken();
+    const p = make({ maxLive: 1 });
+    const a = await p.create(spec({ name: "a" }));
+    await p.destroy(a.id);
+    const stale = await fetch(`${mock.url}/sandbox`, {
+      headers: { authorization: "Bearer test-key-not-a-secret" },
+    }).then((r) => r.json() as Promise<{ items: { id: string; state: string }[] }>);
+    expect(stale.items.map((s) => [s.id, s.state])).toEqual([[a.id, "started"]]); // the lie
+    expect(await p.count({})).toBe(0);
+    const b = await p.create(spec({ name: "b" })); // the cap is free again
+    await p.destroy(b.id);
+  });
+
+  test("an id the get says is gone leaves the set, so a crashed worker's sandbox stops counting", async () => {
+    await broken();
+    const p = make({ maxLive: 1 });
+    const a = await p.create(spec({ name: "a" }));
+    mock.sandboxes.delete(a.id); // gone behind our back (its own ttl)
+    expect(await p.count({})).toBe(0);
+    expect(p.diagnose().counting.tracked).toBe(0);
+  });
+
+  test("a boot with a recorded live sandbox adopts it, counts it, and cleans it up", async () => {
+    await broken();
+    const before = make({ maxLive: 1 });
+    const a = await before.create(spec({ name: "a" }));
+    // The process restarts: a fresh provider knows nothing, and the listing cannot tell it.
+    const after = make({ maxLive: 1, capacityWaitMs: 60 });
+    expect(await after.count({})).toBe(0);
+    after.adopt([a.id, "not a valid id!", "x".repeat(300)]);
+    expect(after.diagnose().counting.tracked).toBe(1);
+    expect(await after.count({})).toBe(1);
+    await expect(after.create(spec({ name: "b" }))).rejects.toThrow(/max 1/);
+    await after.destroy(a.id);
+    expect(mock.sandboxes.size).toBe(0);
+    expect(await after.count({})).toBe(0);
+  });
+
+  test("adopting an id that is not ours, or a stranger's, never acts on it", async () => {
+    await broken();
+    const foreign = mock.addForeign("someone-elses", { project: "other" });
+    const p = make({ maxLive: 1 });
+    p.adopt([foreign, "no-such-sandbox"]);
+    expect(await p.count({})).toBe(0); // not ours: dropped, not counted
+    expect(p.diagnose().counting.tracked).toBe(0);
+    expect(mock.sandboxes.has(foreign)).toBe(true);
+    expect(mock.requests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  test("destroyByLabels works from the recorded ids when the listing is blind", async () => {
+    await broken();
+    const p = make({ maxLive: 3 });
+    await p.create(spec({ name: "a", labels: { g: "1" } }));
+    await p.create(spec({ name: "b", labels: { g: "1" } }));
+    await p.create(spec({ name: "c", labels: { g: "2" } }));
+    expect(await p.destroyByLabels({ g: "1" })).toBe(2);
+    expect(await p.count({})).toBe(1);
+    expect(mock.sandboxes.size).toBe(1);
+    await p.destroyByLabels({ g: "2" });
+    expect(mock.sandboxes.size).toBe(0);
+  });
+
+  test("a failing listing never fails a count: the recorded ids carry it", async () => {
+    const p = make({ maxLive: 2 });
+    const a = await p.create(spec({ name: "a" }));
+    mock.setHugeList(true);
+    expect(await p.count({})).toBe(1);
+    mock.setHugeList(false);
+    await p.destroy(a.id);
   });
 });
 
@@ -648,7 +747,8 @@ describe("api key and errors", () => {
     const p = make({ fetch: counter.fetch });
     mock.setHugeList(true);
     const before = counter.read.bytes;
-    const err = await p.count({}).catch((e: unknown) => e);
+    // The healthcheck reads the listing strictly; count() only uses it as a best-effort extra.
+    const err = await p.healthcheck().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InfraError);
     // stopped at the first chunk that crossed the 16 MiB cap
     const got = counter.read.bytes - before;

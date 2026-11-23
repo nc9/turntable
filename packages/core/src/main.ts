@@ -43,7 +43,9 @@ import {
   createActRunner,
   createProvider,
   gitRepoSource,
+  adoptRecordedSandboxes,
   reconcileExpired,
+  sweepUndestroyedSandboxes,
   type AttemptRunner,
   Scheduler,
   withEgressPolicy,
@@ -320,14 +322,25 @@ async function startBackground(
       log,
     });
     const sched = scheduler;
-    const reconcile = () =>
-      reconcileExpired(db, providers, {
+    const reconcile = async () => {
+      // A provider that cannot trust its listings (Daytona) counts its own fleet by recorded id:
+      // tell it which sandboxes the database says are still ours before anything else.
+      await adoptRecordedSandboxes(db, providers);
+      const done = await reconcileExpired(db, providers, {
         log,
         owner: sched.owner,
         leaseMs,
         // Re-attach to execs a dead worker left behind: the real result is recovered by replay.
         adopt: (claim, resume) => sched.adopt(claim, resume),
       });
+      const swept = await sweepUndestroyedSandboxes(db, providers, { log });
+      if (swept.destroyed + swept.failed > 0) {
+        log(
+          `sandbox sweep: ${swept.destroyed} destroyed, ${swept.failed} failed (retried next time)`,
+        );
+      }
+      return done;
+    };
     // Boot reconcile before claiming: abandoned attempts are re-attached or resolved first.
     const report = await reconcile();
     if (report.resolved.length + report.adopted.length > 0) {
