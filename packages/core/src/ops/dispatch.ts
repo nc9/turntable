@@ -94,11 +94,11 @@ export class AuthFailure extends OpError {
 
 /** The input as audited: fields that carry a secret value never go into the log. */
 export function redactInput(op: Op, input: unknown): unknown {
-  const any = op.secretInputFields.length > 0 || op.auditOmitFields.length > 0;
+  const any = op.secretInputFields.length > 0 || op.logOmitFields.length > 0;
   if (!any || input === null || typeof input !== "object") return input;
   const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
   for (const f of op.secretInputFields) if (f in out) out[f] = "[redacted]";
-  for (const f of op.auditOmitFields) if (f in out) out[f] = "[omitted]";
+  for (const f of op.logOmitFields) if (f in out) out[f] = "[omitted]";
   return out;
 }
 

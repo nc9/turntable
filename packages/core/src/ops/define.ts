@@ -100,7 +100,7 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
    * key: the log carries its fingerprint through `auditDetail` instead). Replaced with "[omitted]"
    * in every audit entry. Unlike `secretInputFields` they may travel over http and in OpenAPI.
    */
-  auditOmitFields?: readonly string[];
+  logOmitFields?: readonly string[];
   /** False keeps the op out of MCP tools: a value in tool input sits in an agent's context. */
   mcp?: boolean;
   /**
@@ -131,7 +131,7 @@ export type Op = {
   http: HttpBinding;
   oneTimeSecretFields: readonly string[];
   secretInputFields: readonly string[];
-  auditOmitFields: readonly string[];
+  logOmitFields: readonly string[];
   mcp: boolean;
   outsideTransaction: boolean;
   auditDetail?: ((output: unknown) => Record<string, unknown>) | undefined;
@@ -166,9 +166,9 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     if (spec.http.method === "GET")
       throw new Error(`${spec.name}: a value-bearing op cannot be a GET`);
   }
-  for (const f of spec.auditOmitFields ?? []) {
+  for (const f of spec.logOmitFields ?? []) {
     if (!(f in spec.input.shape))
-      throw new Error(`${spec.name}: auditOmitFields names "${f}", not an input field`);
+      throw new Error(`${spec.name}: logOmitFields names "${f}", not an input field`);
   }
   for (const param of pathParams(spec.http.path)) {
     if (!(param in spec.input.shape)) {
@@ -214,7 +214,7 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     http: spec.http,
     oneTimeSecretFields: spec.oneTimeSecretFields ?? [],
     secretInputFields: spec.secretInputFields ?? [],
-    auditOmitFields: spec.auditOmitFields ?? [],
+    logOmitFields: spec.logOmitFields ?? [],
     mcp: spec.mcp ?? true,
     outsideTransaction: spec.outsideTransaction ?? false,
     auditDetail: spec.auditDetail ? (out) => spec.auditDetail!(out as z.infer<O>) : undefined,

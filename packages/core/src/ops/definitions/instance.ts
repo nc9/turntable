@@ -240,7 +240,7 @@ export const bootstrapApprover = defineOp({
   http: { method: "POST", path: "/instance/approvers/bootstrap" },
   mcp: false,
   // Only the public key's fingerprint is audited, never the key text itself.
-  auditOmitFields: ["public_key"],
+  logOmitFields: ["public_key"],
   auditDetail: (o) => ({ approver_id: o.approver_id, key_fingerprint: o.key_fingerprint }),
   async handler(ctx, i) {
     const org = await getOrgBySlug(ctx.db, i.target_org);
