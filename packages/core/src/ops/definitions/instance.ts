@@ -35,7 +35,6 @@ import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
 import { ambientSettings } from "../../settings/ambient";
 import { orgTokenRemintDelaySetting } from "../../settings/definitions";
-import { resolveSetting } from "../../settings/resolve";
 import { doctorForApi, doctorOutput } from "./doctor";
 import { quotaView, quotaViewSchema } from "./quotas";
 
