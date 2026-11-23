@@ -10,7 +10,13 @@ import type { SettingScope } from "../schema";
 /** `orgId` is null for instance scope and the owning org otherwise. */
 export type SettingTarget = { kind: SettingScope; id: string; orgId: string | null };
 
-export type StoredSetting = { value: unknown; updatedBy: string; updatedAt: number };
+export type StoredSetting = {
+  value: unknown;
+  /** The stored JSON text, the token a compare-and-set write compares against. */
+  raw: string;
+  updatedBy: string;
+  updatedAt: number;
+};
 
 const inTarget = (t: SettingTarget) =>
   and(
@@ -38,7 +44,7 @@ export function getStoredSetting(
   return db.run(async (h) => {
     const [r] = await h.orm.select().from(s.settings).where(where(t, key)).limit(1);
     return r
-      ? { value: parse(r.value), updatedBy: r.updatedBy, updatedAt: r.updatedAt }
+      ? { value: parse(r.value), raw: r.value, updatedBy: r.updatedBy, updatedAt: r.updatedAt }
       : undefined;
   });
 }
@@ -50,13 +56,18 @@ export function listStoredSettings(db: Db, t: SettingTarget): Promise<Map<string
     return new Map(
       rows.map((r) => [
         r.key,
-        { value: parse(r.value), updatedBy: r.updatedBy, updatedAt: r.updatedAt },
+        { value: parse(r.value), raw: r.value, updatedBy: r.updatedBy, updatedAt: r.updatedAt },
       ]),
     );
   });
 }
 
-/** Stores a value (replacing any), or removes the stored one when `value` is undefined. */
+/**
+ * Stores a value (replacing any), or removes the stored one when `value` is undefined. With
+ * `expect` it is a compare-and-set: it writes only if the stored text is still `expect.raw` (or
+ * there is still no row, for an undefined `raw`) and returns false, writing nothing, when another
+ * writer got there first. Without it the write is unconditional and always returns true.
+ */
 export function putStoredSetting(
   db: Db,
   t: SettingTarget,
@@ -64,7 +75,8 @@ export function putStoredSetting(
   value: unknown,
   by: string,
   now: number,
-): Promise<void> {
+  expect?: { raw: string | undefined },
+): Promise<boolean> {
   // The shape the CHECK enforces, and the one it cannot: a project's row belongs to its org.
   if (t.kind === "instance" ? t.orgId !== null : t.orgId === null) {
     throw new Error(
@@ -82,16 +94,47 @@ export function putStoredSetting(
         .limit(1);
       if (!p) throw new Error(`setting ${key}: project ${t.id} is not in org ${t.orgId}`);
     }
-    await tx.orm.delete(s.settings).where(where(t, key));
-    if (value === undefined) return;
-    await tx.orm.insert(s.settings).values({
+    const row = {
       scopeKind: t.kind,
       scopeId: t.id,
       orgId: t.orgId,
       key,
-      value: JSON.stringify(value),
+      value: value === undefined ? "" : JSON.stringify(value),
       updatedBy: by,
       updatedAt: now,
-    });
+    };
+    if (!expect) {
+      await tx.orm.delete(s.settings).where(where(t, key));
+      if (value !== undefined) await tx.orm.insert(s.settings).values(row);
+      return true;
+    }
+    // Each branch is one conditional statement, so it holds on both dialects without relying on
+    // the isolation level: the row is matched on the text that was read, or not touched.
+    const same = and(where(t, key), eq(s.settings.value, expect.raw ?? ""));
+    if (expect.raw === undefined) {
+      if (value === undefined) {
+        const [r] = await tx.orm
+          .select({ k: s.settings.key })
+          .from(s.settings)
+          .where(where(t, key))
+          .limit(1);
+        return r === undefined;
+      }
+      const ins = await tx.orm
+        .insert(s.settings)
+        .values(row)
+        .onConflictDoNothing()
+        .returning({ k: s.settings.key });
+      return ins.length > 0;
+    }
+    const hit =
+      value === undefined
+        ? await tx.orm.delete(s.settings).where(same).returning({ k: s.settings.key })
+        : await tx.orm
+            .update(s.settings)
+            .set({ value: row.value, updatedBy: by, updatedAt: now })
+            .where(same)
+            .returning({ k: s.settings.key });
+    return hit.length > 0;
   });
 }

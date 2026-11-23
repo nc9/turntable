@@ -19,6 +19,7 @@ import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
 import {
+  instanceDoctorOp,
   instanceListOrgs,
   instanceWhoami,
   rotateInstanceTokenOp,
@@ -117,6 +118,7 @@ export const registry = createRegistry([
   createOrgOp,
   createOrgTokenOp,
   instanceListOrgs,
+  instanceDoctorOp,
   setQuotas,
   dbBackupOp,
   acceptActionMoveOp,

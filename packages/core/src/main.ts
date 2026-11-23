@@ -990,8 +990,9 @@ async function serve(args: string[]): Promise<void> {
           : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
-        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`turntable doctor` on the host).
-        ...(hostedMode ? {} : { doctor: doctorRun }),
+        // The `doctor` op is owner-member only (in-process) and `instance_doctor` is a `tti_` token's:
+        // no org token reaches either, so a hosted instance serves it too.
+        doctor: doctorRun,
         forwarded,
       })
     : undefined;
