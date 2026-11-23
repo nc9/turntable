@@ -20,6 +20,7 @@ import type {
   Job,
   JobDigest,
   RerunResult,
+  Setting,
   Whoami,
   JobAttempt,
   JobState,
@@ -61,6 +62,8 @@ import type {
   WireRun,
   WireRunDetail,
   WireRunList,
+  WireSetting,
+  WireSettings,
   WireSteps,
   WireWhoami,
 } from "./wire";
@@ -128,6 +131,22 @@ function challengeOf<S>(w: WireChallenge): ApprovalChallenge<S> {
     rpId: w.rp_id,
     passkeyId: w.passkey_id,
     challengeExpiresAt: ms(w.challenge_expires_at) ?? 0,
+  };
+}
+
+export function mapSetting(w: WireSetting): Setting {
+  return {
+    key: w.key,
+    // The org ops never return an instance setting; anything else reads as an org setting.
+    scope: w.scope === "project" ? "project" : "org",
+    description: w.description,
+    value: w.value,
+    default: w.default,
+    source: w.source,
+    locked: w.locked,
+    lockedBy: w.locked_by,
+    role: w.role as Setting["role"],
+    mcpEditable: w.mcp_editable,
   };
 }
 
@@ -526,6 +545,41 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         nextOffset: w.next_offset,
         totalBytes: w.total_bytes,
       };
+    },
+
+    async listSettings(args): Promise<Setting[]> {
+      const out: WireSetting[] = [];
+      let cursor: string | undefined;
+      do {
+        const w = await call<WireSettings>("GET", "/settings", {
+          org: org(),
+          project: args?.project,
+          limit: 100,
+          cursor,
+        });
+        out.push(...w.settings);
+        cursor = w.next_cursor ?? undefined;
+      } while (cursor);
+      // With a project the op returns the org's settings too; a project is asked for its own.
+      return out
+        .map(mapSetting)
+        .filter((s) => (args?.project === undefined ? s.scope === "org" : s.scope === "project"));
+    },
+
+    async setSetting({ key, value, unset, project }): Promise<Setting> {
+      return mapSetting(
+        await call<WireSetting>(
+          "POST",
+          "/settings",
+          {},
+          {
+            org: org(),
+            key,
+            ...(project !== undefined ? { project } : {}),
+            ...(unset ? { unset: true } : { value }),
+          },
+        ),
+      );
     },
 
     async incidentStatus(args): Promise<IncidentStatus> {

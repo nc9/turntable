@@ -28,6 +28,7 @@ import type {
   JobDigest,
   OrgQuotas,
   RerunResult,
+  Setting,
   Whoami,
 } from "./types";
 
@@ -149,6 +150,21 @@ export interface TurntableApi {
   }): Promise<ConsumeResult[]>;
   /** The org's quotas, usage against each, and why work is held (`get_quotas`). */
   getQuotas(): Promise<OrgQuotas>;
+  /**
+   * The org's settings, or with a project the project's own (`list_settings`). Each carries its
+   * effective value, source and lock.
+   */
+  listSettings(args?: { project?: string }): Promise<Setting[]>;
+  /**
+   * Sets a setting's stored value, or with `unset` removes it (`set_setting`). Rejects with the
+   * server's refusal (locked, role, validation) as the error message.
+   */
+  setSetting(args: {
+    key: string;
+    value?: unknown;
+    unset?: boolean;
+    project?: string;
+  }): Promise<Setting>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;
