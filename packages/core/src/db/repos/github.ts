@@ -628,7 +628,8 @@ export function getInstallationClaim(
 
 /**
  * Consumes a claim: atomic, so a state is accepted once. Returns the claim, or undefined when the
- * nonce is unknown, expired, already used or an App manifest nonce.
+ * nonce is unknown, expired, already used, an App manifest nonce, or
+ * pinned to a different installation than the one given.
  */
 export function consumeInstallationClaim(
   db: Db,
@@ -652,6 +653,11 @@ export function consumeInstallationClaim(
           notLike(s.installationClaims.startedBy, `${MANIFEST_NONCE_PREFIX}%`),
           isNull(s.installationClaims.usedAt),
           gt(s.installationClaims.expiresAt, now),
+          // A claim pinned to an installation (#390) is never spent for another one.
+          or(
+            isNull(s.installationClaims.installationId),
+            eq(s.installationClaims.installationId, installationId),
+          ),
         ),
       )
       .returning();
