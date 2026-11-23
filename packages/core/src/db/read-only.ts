@@ -3,19 +3,24 @@
 // an instance that has not started yet. The returned `orm` is only for queries.
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { drizzle as drizzleBunSql } from "drizzle-orm/bun-sql";
 import { databaseUrl, DIALECT } from "./dialect";
+import { openPostgresReadOnly, type PgTarget } from "./pg";
 import { migrations as sqliteMigrations } from "./migrations.generated";
 import { migrations as pgMigrations } from "./migrations.pg.generated";
 
-/** Opens the existing SQLite file at `path` (throws when it is not there), or the Postgres database the process was pointed at. */
-export function openReadOnly(path: string): { orm: unknown; close(): void } {
+/**
+ * Opens the existing SQLite file at `path` (throws when it is not there), or the Postgres database
+ * the process was pointed at. On Postgres every connection has `default_transaction_read_only = on`,
+ * so a write fails with SQLSTATE 25006. `target` is for tests, which run on a schema or PGlite.
+ */
+export function openReadOnly(path: string, target?: PgTarget): { orm: unknown; close(): void } {
   if (DIALECT === "pg") {
     const url = databaseUrl();
-    if (!url) throw new Error("the process runs on Postgres but no database was configured");
+    if (!url && !target) {
+      throw new Error("the process runs on Postgres but no database was configured");
+    }
     // Connects on the first query, so an unreachable server shows up as a failed check.
-    const orm = drizzleBunSql(url);
-    return { orm, close: () => void orm.$client.close() };
+    return openPostgresReadOnly(target ?? { url: url! });
   }
   const sqlite = new Database(path, { readonly: true, strict: true });
   return { orm: drizzle(sqlite), close: () => sqlite.close() };

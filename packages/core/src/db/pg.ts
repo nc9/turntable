@@ -98,20 +98,27 @@ export type PgTarget = { url: string; schema?: string } | { pglite: true; isolat
 /** One shared in-process PGlite per process (tests): reset between databases, see `reset`. */
 let sharedPglite: { client: { close(): Promise<void> }; orm: PgOrm } | undefined;
 
-function connect(target: PgTarget): { orm: PgOrm; close: () => Promise<void> } {
+function connect(target: PgTarget, readOnly = false): { orm: PgOrm; close: () => Promise<void> } {
   if ("url" in target) {
-    const orm = target.schema
-      ? drizzleBunSql({
-          connection: {
-            url: target.url,
-            // a test database is small and short-lived: few connections, closed when idle
-            max: 4,
-            idleTimeout: 1,
-            connection: { search_path: target.schema },
-          },
-          schema: pgSchema,
-        })
-      : drizzleBunSql(target.url, { schema: pgSchema });
+    // Startup parameters: the server applies them to every connection of the pool before any query.
+    const params = {
+      ...(target.schema ? { search_path: target.schema } : {}),
+      ...(readOnly ? { default_transaction_read_only: "on" } : {}),
+    };
+    const orm =
+      target.schema || readOnly
+        ? drizzleBunSql({
+            connection: {
+              url: target.url,
+              ...(target.schema
+                ? // a test database is small and short-lived: few connections, closed when idle
+                  { max: 4, idleTimeout: 1 }
+                : {}),
+              connection: params,
+            },
+            schema: pgSchema,
+          })
+        : drizzleBunSql(target.url, { schema: pgSchema });
     return {
       orm: orm as unknown as PgOrm,
       close: async () => void (await orm.$client.close()),
@@ -132,6 +139,26 @@ function connect(target: PgTarget): { orm: PgOrm; close: () => Promise<void> } {
     sharedPglite = made;
   }
   return { orm: sharedPglite!.orm, close: async () => {} };
+}
+
+/**
+ * A Postgres handle that cannot write, for `turntable doctor`: `default_transaction_read_only = on`
+ * for the life of every connection. A real server gets it as a startup parameter, so it holds
+ * before the first query. PGlite (tests) is one shared session: the setting is issued first on it
+ * (its queries run in order) and `close` puts it back. It never resets or migrates anything.
+ */
+export function openPostgresReadOnly(target: PgTarget): { orm: unknown; close(): void } {
+  const { orm, close } = connect(target, true);
+  if ("pglite" in target) {
+    const client = (orm as unknown as { $client: { exec(q: string): Promise<unknown> } }).$client;
+    const on = client.exec("SET default_transaction_read_only = on");
+    on.catch(() => {});
+    return {
+      orm,
+      close: () => void on.then(() => client.exec("RESET default_transaction_read_only")),
+    };
+  }
+  return { orm, close: () => void close() };
 }
 
 /**
