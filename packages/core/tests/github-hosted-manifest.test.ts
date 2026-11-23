@@ -4,9 +4,14 @@ import { resetFailureThrottle } from "../src/audit/failures";
 import {
   bindRepo,
   chainedAudit,
+  consumeInstallationClaim,
+  consumeManifestNonce,
+  createInstallationClaim,
+  createManifestNonce,
   createOrg,
   createProject,
   getGithubApp,
+  getInstallationClaim,
   listInstallationBindings,
   openDatabase,
   setGithubApp,
@@ -987,5 +992,31 @@ describe("through the server", () => {
       on.stop(true);
       off.stop(true);
     }
+  });
+});
+
+describe("manifest nonces and installation claims never consume each other", () => {
+  const gh = { userId: "1", login: "acme" };
+
+  test("an app-manifest: nonce row cannot be consumed or read as an installation claim", async () => {
+    await createManifestNonce(
+      db,
+      { orgId },
+      { nonce: "m-nonce", startedBy: "u", expiresAt: now + 1000 },
+    );
+    expect(await getInstallationClaim(db, "m-nonce")).toBeUndefined();
+    expect(await consumeInstallationClaim(db, "m-nonce", "99", now, gh)).toBeUndefined();
+    // Untouched: the manifest flow can still consume it.
+    expect(await consumeManifestNonce(db, "m-nonce", now)).toBe(true);
+  });
+
+  test("an installation claim row cannot be consumed as a manifest nonce", async () => {
+    await createInstallationClaim(
+      db,
+      { orgId },
+      { nonce: "c-nonce", startedBy: "u", expiresAt: now + 1000 },
+    );
+    expect(await consumeManifestNonce(db, "c-nonce", now)).toBe(false);
+    expect((await consumeInstallationClaim(db, "c-nonce", "99", now, gh))?.nonce).toBe("c-nonce");
   });
 });
