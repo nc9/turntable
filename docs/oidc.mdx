@@ -36,6 +36,20 @@ Every org has its own keys, so a key that signs for one org never signs for anot
 
 Only a running attempt, proven by its attempt credential (an HMAC bound to one attempt and org, expiring, in its own key domain), and only as the class the scheduler recorded for it. `untrusted_pr` and `trusted_pr` get nothing by default; `LONGSHORE_OIDC_ALLOW_CLASSES` widens that and you should not widen it to `untrusted_pr`. An unrecorded class, an attempt that is not running, a missing or malformed audience and a credential for another org are all refused. Every mint and every refusal is audited (attempt, run, job, audience, `jti`, never the token).
 
+## Limiting the audiences a project may ask for
+
+`aud` is chosen by the job, per request. By default any printable string works, so a job that may mint at all can get a token for any relying party that trusts this org's issuer. A project can name the audiences it really uses, and a request for any other is refused and audited (`audience_not_allowed`, with the audience that was asked for):
+
+```sh
+longshore policy set --oidc-audiences sts.amazonaws.com,my-vault --org acme --project api
+longshore policy set --oidc-audiences any --org acme --project api   # lift the limit
+longshore policy show --org acme                                     # oidc-audiences per project
+```
+
+The same is the `set_oidc_audiences` operation (org admins only, never an agent token; one project, 1 to 20 audiences, or `null` to lift the limit) and `list_projects` shows each project's `oidc_audiences` (`null` means any). Matching is exact. A project with no list behaves as before.
+
+**On a hosted instance, set it on every project that mints tokens.** Your cloud trust policies should pin `sub` as well, but this closes the gap one layer earlier: a compromised job in an allowed trust class cannot obtain a token for an audience nobody listed.
+
 ## Rotation
 
 `longshore oidc rotate --org <slug>` makes a new key current. The old key stays in the JWKS for 10 minutes (the longest a token lives) plus 5 minutes of grace, so every token it signed stays verifiable until it expires; after that it is deleted. `longshore oidc status --org <slug>` lists the published keys.

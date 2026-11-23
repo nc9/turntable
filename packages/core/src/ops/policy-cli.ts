@@ -2,10 +2,13 @@
 // directory is the trust root (like `longshore token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { validAudience } from "../oidc/issuer";
 import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
   getProjectCacheReleaseRestore,
+  getProjectOidcAudiences,
   setProjectCacheReleaseRestore,
+  setProjectOidcAudiences,
   APPROVE_RUN_ROLES,
   appendAudit,
   type ApproveRunRole,
@@ -39,6 +42,8 @@ export const POLICY_USAGE = `Usage:
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
       [--merge-queue] [--data-dir ./data]
   longshore policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
+  longshore policy set --oidc-audiences <aud,aud,...|any> --org <slug> [--project <slug>] [--data-dir ./data]
+      (the audiences a project's jobs may mint OIDC tokens for; "any" lifts the limit)
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
 Default release_operator. operator lets any operator token approve, including an agent that has
@@ -450,6 +455,82 @@ export async function setCacheReleaseRestorePolicy(
       });
     });
     out.push({ project: p!.slug, from, to: value === "on" });
+  }
+  return out;
+}
+
+/**
+ * Limits the audiences a project's jobs may ask the org's OIDC issuer for, or lifts the limit
+ * (`any`). Audited like the other policy settings.
+ */
+export async function setOidcAudiencesPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  value: string,
+): Promise<{ project: string; from: string[] | null; to: string[] | null }[]> {
+  const to =
+    value.trim() === "any"
+      ? null
+      : [
+          ...new Set(
+            value
+              .split(",")
+              .map((x) => x.trim())
+              .filter(Boolean),
+          ),
+        ];
+  if (to !== null) {
+    if (to.length === 0 || to.length > 20)
+      throw new Error("--oidc-audiences takes 1 to 20 values, or any");
+    for (const a of to) {
+      if (!validAudience(a)) {
+        throw new Error(
+          `not an audience (one printable string, no spaces, up to 256 characters): ${a}`,
+        );
+      }
+    }
+  }
+  const org = await orgOf(db, orgSlug);
+  const projects = projectSlug
+    ? [await getProjectBySlug(db, { orgId: org.id }, projectSlug)]
+    : await listProjects(db, { orgId: org.id });
+  if (projects.length === 0 || projects.some((p) => p === undefined)) {
+    throw new Error(
+      projectSlug ? `no project ${projectSlug} in org ${orgSlug}` : "org has no projects",
+    );
+  }
+  const out: { project: string; from: string[] | null; to: string[] | null }[] = [];
+  for (const p of projects) {
+    const scope = { orgId: org.id, projectId: p!.id };
+    const from = await getProjectOidcAudiences(db, scope);
+    await db.transaction(async (tx) => {
+      await setProjectOidcAudiences(tx, scope, to);
+      await appendAudit(tx, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "ok",
+        input: { key: "oidc_audiences", project: p!.slug, from, to },
+      });
+    });
+    out.push({ project: p!.slug, from, to });
+  }
+  return out;
+}
+
+export async function showOidcAudiences(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; audiences: string[] | null }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; audiences: string[] | null }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    out.push({
+      project: p.slug,
+      audiences: await getProjectOidcAudiences(db, { orgId: org.id, projectId: p.id }),
+    });
   }
   return out;
 }
