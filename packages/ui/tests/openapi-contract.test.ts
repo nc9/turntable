@@ -592,12 +592,28 @@ test("incident_status", () => {
 
 test("sandbox_usage: the days and totals the Usage page reads", () => {
   const o = op("/usage/sandbox", "get");
-  expect((o.parameters ?? []).map((p) => p.name)).toContain("days");
+  expect((o.parameters ?? []).map((p) => p.name)).toEqual(
+    expect.arrayContaining(["days", "group_by"]),
+  );
   const out = ok(o);
   expectKeys(
     out,
-    keysOf<WireSandboxUsage>({ days: true, total_seconds: true, total_minutes: true }),
+    keysOf<Omit<WireSandboxUsage, "projects">>({
+      days: true,
+      total_seconds: true,
+      total_minutes: true,
+    }),
   );
+  // `projects` is optional: only an answer to group_by=project has it.
+  expect(Object.keys(out.properties!)).toContain("projects");
+  expectKeys(out.properties!.projects!.items!, [
+    "project_id",
+    "project_slug",
+    "project_name",
+    "days",
+    "total_seconds",
+    "total_minutes",
+  ]);
   expectKeys(out.properties!.days!.items!, [
     "day",
     "sandbox_seconds",
