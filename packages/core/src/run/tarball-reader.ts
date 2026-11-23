@@ -36,12 +36,12 @@ export async function tarballReader(
     const parts = path.split("/");
     for (let i = 1; i < parts.length; i += 1) {
       const parent = entries.get(parts.slice(0, i).join("/"));
-      if (parent && (parent.type === "symlink" || parent.type === "link"))
+      if (parent && parent.type === "symlink")
         throw new UnsafePathError(path, "resolves through a symlink");
     }
     const e = entries.get(path);
     if (!e) return undefined;
-    if (e.type === "symlink" || e.type === "link") throw new UnsafePathError(path, "is a symlink");
+    if (e.type === "symlink") throw new UnsafePathError(path, "is a symlink");
     if (e.type !== "file") return undefined;
     if (e.size > maxFile) throw new UnsafePathError(path, `larger than ${maxFile} bytes`);
     if (e.data === undefined)

@@ -380,7 +380,7 @@ export async function tarGzDirectoryToFile(
 // ---- scanning a tarball without unpacking it ----
 
 export interface ScannedEntry {
-  type: TarEntry["type"];
+  type: "file" | "dir" | "symlink";
   size: number;
   linkTarget?: string;
   /** The contents, only for a file small enough and while the capture budget lasts. */
@@ -397,11 +397,104 @@ export interface ScanOptions {
   captureTotal: number;
 }
 
+export class TarFormatError extends Error {
+  constructor(message: string) {
+    super(`tar: ${message}`);
+    this.name = "TarFormatError";
+  }
+}
+
+const bad = (m: string): never => {
+  throw new TarFormatError(m);
+};
+const zero = (h: Uint8Array, from: number, to: number): boolean => {
+  for (let i = from; i < to; i += 1) if (h[i] !== 0) return false;
+  return true;
+};
+/** `len - 1` octal digits and a NUL, exactly as the writer's `num` writes them. */
+function strictOctal(h: Uint8Array, off: number, len: number, what: string): number {
+  const s = Buffer.from(h.subarray(off, off + len - 1)).toString("latin1");
+  if (!new RegExp(`^[0-7]{${len - 1}}$`).test(s) || h[off + len - 1] !== 0)
+    bad(`the ${what} field is not canonical`);
+  return Number.parseInt(s, 8);
+}
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+const PAX_VALUE_CAP = 64 * 1024;
+
+/** A path as our writer writes it: no absolute path, no empty, `.` or `..` segment, no `./` prefix, no doubled slash. */
+function canonical(path: string, dir: boolean): string[] {
+  let p = path;
+  if (dir) {
+    if (!p.endsWith("/") || p.endsWith("//"))
+      bad("a directory name does not end in exactly one slash");
+    p = p.slice(0, -1);
+  } else if (p.endsWith("/")) {
+    bad("a file name ends in a slash");
+  }
+  if (p === "") bad("an entry has an empty name");
+  const segs = p.split("/");
+  for (const s of segs) {
+    if (s === "") bad("an entry name has an empty segment (absolute path or doubled slash)");
+    if (s === "." || s === "..") bad("an entry name has a . or .. segment");
+    if (s.includes("\0")) bad("an entry name has a NUL");
+  }
+  return segs;
+}
+
+/** The records our writer emits, and only those: `path` and `linkpath`, each over 100 bytes, each once. */
+function strictPax(data: Uint8Array): { path?: string; linkpath?: string } {
+  const out: Record<string, string | undefined> = {};
+  let i = 0;
+  if (data.length === 0 || data.length > PAX_VALUE_CAP) bad("a pax header has a bad size");
+  while (i < data.length) {
+    let sp = i;
+    while (sp < data.length && data[sp] !== 0x20) sp += 1;
+    const lenText = Buffer.from(data.subarray(i, sp)).toString("latin1");
+    if (!/^[1-9][0-9]{0,5}$/.test(lenText)) bad("a pax record has a bad length");
+    const len = Number(lenText);
+    if (i + len > data.length || data[i + len - 1] !== 0x0a || sp >= i + len)
+      bad("a pax record is not framed by its length");
+    let rec: string;
+    try {
+      rec = utf8.decode(data.subarray(sp + 1, i + len - 1));
+    } catch {
+      return bad("a pax record is not valid UTF-8");
+    }
+    const eq = rec.indexOf("=");
+    if (eq <= 0) bad("a pax record has no key");
+    const key = rec.slice(0, eq);
+    const value = rec.slice(eq + 1);
+    if (key !== "path" && key !== "linkpath")
+      bad(
+        `a pax record names ${JSON.stringify(key.slice(0, 20))}, which this archive never carries`,
+      );
+    if (out[key] !== undefined) bad("a pax record is repeated");
+    if (value.includes("\0")) bad("a pax value has a NUL");
+    if (Buffer.byteLength(value) <= 100) bad("a pax value is short enough to need no pax record");
+    out[key] = value;
+    i += len;
+  }
+  return {
+    ...(out.path !== undefined ? { path: out.path } : {}),
+    ...(out.linkpath !== undefined ? { linkpath: out.linkpath } : {}),
+  };
+}
+
 /**
  * Reads a gzip tarball as a stream and keeps the LIST of entries and the contents of small files
  * only, so memory is bounded by `captureTotal` however large the repository, and the inflate
  * runs off the event loop. This is how the server reads what it plans from: the same bytes it
  * will deliver, not a directory a child process also wrote.
+ *
+ * It is STRICT. The archive comes from a child process that could be compromised, and what the
+ * server plans from must be exactly what GNU tar, in the sandbox, will extract. So it accepts only
+ * what `tarGzDirectoryToFile` writes and refuses everything else, never normalising and accepting:
+ * canonical names only (no absolute, empty, `.` or `..` segments, `./` prefixes, doubled or
+ * trailing slashes on files); every entry's parent a directory entry before it (so nothing is
+ * under a symlink, and nothing is implied); no duplicate names; no hard links, devices or any
+ * type but file, directory, symlink; only `path` and `linkpath` pax records, each framed exactly
+ * and consistent with its header; canonical header fields and checksums; and exactly two zero
+ * blocks at the end with nothing after them.
  */
 export async function scanTarGz(
   tgz: Uint8Array,
@@ -415,122 +508,201 @@ export async function scanTarGz(
   let total = 0;
   let captured = 0;
   let pending: Buffer = Buffer.alloc(0);
-  let pax = new Map<string, string>();
-  let longName: string | undefined;
-  let longLink: string | undefined;
-  // What the stream is in the middle of: a header to read, or `left` bytes of an entry's data.
-  let cur:
-    | {
-        meta: "x" | "g" | "L" | "K" | undefined;
-        name: string;
-        type: TarEntry["type"] | "other";
-        size: number;
-        left: number;
-        pad: number;
-        link: string;
-        keep: Buffer[] | undefined;
-      }
-    | undefined;
+  let zeroBlocks = 0;
+  let pax: { path?: string; linkpath?: string } | undefined;
+  let first = true;
+  type Cur = {
+    kind: "pax" | "entry";
+    type: ScannedEntry["type"];
+    key: string;
+    segs: string[];
+    size: number;
+    left: number;
+    pad: number;
+    link: Uint8Array;
+    keep: Buffer[] | undefined;
+  };
+  let cur: Cur | undefined;
   const take = (n: number): Buffer => {
     const b = pending.subarray(0, n);
     pending = pending.subarray(n);
     return b;
   };
+  const header = (h: Buffer): void => {
+    if (!checksumOk(h)) bad("a header checksum does not match");
+    if (h.subarray(148, 156).toString("latin1") !== `${octalOf(h, 148)}\0 `)
+      bad("the checksum field is not canonical");
+    if (
+      h.subarray(257, 263).toString("latin1") !== "ustar\0" ||
+      h.subarray(263, 265).toString("latin1") !== "00"
+    )
+      bad("a header is not ustar");
+    if (!zero(h, 265, 329) || !zero(h, 329, 345) || !zero(h, 345, 500) || !zero(h, 500, 512))
+      bad("a header has fields this archive never sets");
+    if (strictOctal(h, 108, 8, "uid") !== 0 || strictOctal(h, 116, 8, "gid") !== 0)
+      bad("a header has an owner");
+    const mode = strictOctal(h, 100, 8, "mode");
+    if (mode > 0o777) bad("a header has mode bits beyond the permissions");
+    const size = strictOctal(h, 124, 12, "size");
+    strictOctal(h, 136, 12, "mtime");
+    const ch = String.fromCharCode(h[156]!);
+    const nameField = h.subarray(0, 100);
+    const nul = nameField.indexOf(0);
+    const nameBytes = nul < 0 ? nameField : nameField.subarray(0, nul);
+    if (nul >= 0 && !zero(nameField, nul, 100)) bad("a name field has bytes after its end");
+    const linkField = h.subarray(157, 257);
+    const lnul = linkField.indexOf(0);
+    const linkBytes = lnul < 0 ? linkField : linkField.subarray(0, lnul);
+    if (lnul >= 0 && !zero(linkField, lnul, 100)) bad("a link field has bytes after its end");
+    if (ch === "x") {
+      if (pax) bad("two pax headers in a row");
+      if (
+        Buffer.from(nameBytes).toString("latin1") !== "PaxHeader" ||
+        mode !== 0o644 ||
+        linkBytes.length !== 0
+      )
+        bad("a pax header is not the one this archive writes");
+      cur = {
+        kind: "pax",
+        type: "file",
+        key: "",
+        segs: [],
+        size,
+        left: size,
+        pad: (BLOCK - (size % BLOCK)) % BLOCK,
+        link: linkBytes,
+        keep: [],
+      };
+      return;
+    }
+    if (ch !== "0" && ch !== "5" && ch !== "2")
+      bad(`an entry has the type ${JSON.stringify(ch)}, which this archive never carries`);
+    const type: ScannedEntry["type"] = ch === "0" ? "file" : ch === "5" ? "dir" : "symlink";
+    if (type !== "file" && size !== 0) bad("a directory or symlink has a size");
+    if (type !== "symlink" && linkBytes.length !== 0)
+      bad("an entry that is no symlink has a link target");
+    // The name: the header's, or the pax path it must be the first 100 bytes of.
+    let name: string;
+    if (pax?.path !== undefined) {
+      const full = Buffer.from(pax.path);
+      if (!full.subarray(0, 100).equals(Buffer.from(nameBytes)) || nameBytes.length !== 100)
+        bad("a header name does not match its pax path");
+      name = pax.path;
+    } else {
+      try {
+        name = utf8.decode(nameBytes);
+      } catch {
+        return bad("an entry name is not valid UTF-8");
+      }
+    }
+    if (pax?.linkpath !== undefined) {
+      if (type !== "symlink") bad("a pax linkpath on something that is not a symlink");
+      if (
+        !Buffer.from(pax.linkpath).subarray(0, 100).equals(Buffer.from(linkBytes)) ||
+        linkBytes.length !== 100
+      )
+        bad("a header link target does not match its pax linkpath");
+    }
+    const link = pax?.linkpath !== undefined ? Buffer.from(pax.linkpath) : linkBytes;
+    pax = undefined;
+    let key: string;
+    let segs: string[];
+    if (first && type === "dir" && name === "./") {
+      key = ".";
+      segs = [];
+    } else {
+      segs = canonical(name, type === "dir");
+      key = segs.join("/");
+      if (!out.has(".") && !first) bad("an entry comes before the root directory");
+    }
+    if (first && key !== ".") bad("the archive does not start with its root directory");
+    first = false;
+    if (out.has(key)) bad("an entry name is repeated");
+    if (key !== ".") {
+      const parent = segs.length === 1 ? "." : segs.slice(0, -1).join("/");
+      const p = out.get(parent);
+      if (!p) bad("an entry has no directory entry before it for its parent");
+      else if (p.type !== "dir") bad("an entry is under a symlink or a file");
+    }
+    if (out.size >= o.maxEntries) bad("too many entries");
+    const wantData = type === "file" && size <= o.captureUpTo && captured + size <= o.captureTotal;
+    if (wantData) captured += size;
+    cur = {
+      kind: "entry",
+      type,
+      key,
+      segs,
+      size,
+      left: size,
+      pad: (BLOCK - (size % BLOCK)) % BLOCK,
+      link,
+      keep: wantData ? [] : undefined,
+    };
+  };
   const finish = (): void => {
     const c = cur!;
     cur = undefined;
     const data = c.keep ? Buffer.concat(c.keep) : undefined;
-    if (c.meta === "x") {
-      for (const [k, v] of paxRecords(data ?? new Uint8Array())) pax.set(k, v);
+    if (c.kind === "pax") {
+      if (c.size !== data!.length) bad("a pax header is not as long as it says");
+      pax = strictPax(data!);
       return;
     }
-    if (c.meta === "L") longName = cstr(data ?? new Uint8Array(), 0, data?.length ?? 0);
-    else if (c.meta === "K") longLink = cstr(data ?? new Uint8Array(), 0, data?.length ?? 0);
-    if (c.meta !== undefined) return;
-    if (c.type === "other") return;
-    if (out.size >= o.maxEntries) throw new Error("tar: too many entries");
-    const name = (c.type === "dir" ? c.name.replace(/\/+$/, "") : c.name).replace(/^\.\//, "");
-    out.set(name, {
+    out.set(c.key, {
       type: c.type,
       size: c.size,
-      ...(c.type === "symlink" || c.type === "link" ? { linkTarget: c.link } : {}),
+      ...(c.type === "symlink" ? { linkTarget: Buffer.from(c.link).toString("utf8") } : {}),
       ...(c.type === "file" && data ? { data } : {}),
     });
   };
   for await (const chunk of gz) {
     total += chunk.length;
-    if (total > o.maxUnpackedBytes) throw new Error("tar: archive is too large");
+    if (total > o.maxUnpackedBytes) bad("archive is too large");
     pending = pending.length === 0 ? (chunk as Buffer) : Buffer.concat([pending, chunk as Buffer]);
     for (;;) {
+      if (zeroBlocks >= 2) {
+        // The two zero blocks END the archive: whatever follows, even zeros, is refused.
+        if (pending.length > 0) bad("there is data after the end of the archive");
+        break;
+      }
       if (cur === undefined) {
         if (pending.length < BLOCK) break;
         const h = take(BLOCK);
-        if (h.every((x) => x === 0)) {
-          cur = undefined;
-          pending = Buffer.alloc(0);
-          break;
+        if (zero(h, 0, BLOCK)) {
+          zeroBlocks += 1;
+          continue;
         }
-        if (!checksumOk(h)) throw new Error("tar: bad header checksum");
-        const ch = String.fromCharCode(h[156] === 0 ? 0x30 : h[156]!);
-        const size = octal(h, 124, 12);
-        const prefix = cstr(h, 345, 155);
-        const name =
-          pax.get("path") ??
-          longName ??
-          (prefix ? `${prefix}/${cstr(h, 0, 100)}` : cstr(h, 0, 100));
-        const link = pax.get("linkpath") ?? longLink ?? cstr(h, 157, 100);
-        const paxSize = pax.get("size");
-        const real = paxSize !== undefined ? Number(paxSize) : size;
-        const meta = ch === "x" || ch === "g" || ch === "L" || ch === "K" ? ch : undefined;
-        const type: TarEntry["type"] | "other" =
-          ch === "0" || ch === "7"
-            ? "file"
-            : ch === "5"
-              ? "dir"
-              : ch === "2"
-                ? "symlink"
-                : ch === "1"
-                  ? "link"
-                  : "other";
-        if (meta === undefined) {
-          pax = new Map();
-          longName = undefined;
-          longLink = undefined;
-        }
-        const wantData =
-          meta !== undefined ||
-          (type === "file" && real <= o.captureUpTo && captured + real <= o.captureTotal);
-        const left = meta === undefined ? real : size;
-        cur = {
-          meta: meta as "x" | "g" | "L" | "K" | undefined,
-          name,
-          type,
-          size: real,
-          left,
-          pad: (BLOCK - (left % BLOCK)) % BLOCK,
-          link,
-          keep: wantData ? [] : undefined,
-        };
-        if (meta === undefined && type === "file" && wantData) captured += real;
-        if (left === 0 && cur.pad === 0) finish();
+        if (zeroBlocks !== 0) bad("a zero block is followed by data");
+        header(h);
+        if (cur!.left === 0 && cur!.pad === 0) finish();
         continue;
       }
-      // data of the current entry
-      if (cur.left > 0) {
+      const c: Cur = cur;
+      if (c.left > 0) {
         if (pending.length === 0) break;
-        const n = Math.min(cur.left, pending.length);
+        const n = Math.min(c.left, pending.length);
         const piece = take(n);
-        cur.keep?.push(Buffer.from(piece));
-        cur.left -= n;
-        if (cur.left > 0) break;
+        c.keep?.push(Buffer.from(piece));
+        c.left -= n;
+        if (c.left > 0) break;
       }
-      if (cur.pad > 0) {
-        if (pending.length < cur.pad) break;
-        take(cur.pad);
-        cur.pad = 0;
+      if (c.pad > 0) {
+        if (pending.length < c.pad) break;
+        if (!zero(take(c.pad), 0, c.pad)) bad("padding after file data is not zero");
+        c.pad = 0;
       }
       finish();
     }
   }
+  if (zeroBlocks !== 2 || cur !== undefined || pending.length > 0)
+    bad("the archive is cut short or has no end");
+  if (pax) bad("a pax header is not followed by an entry");
   return out;
+}
+
+/** The checksum a header should carry, as the six octal digits the field holds. */
+function octalOf(h: Uint8Array, _off: number): string {
+  let sum = 0;
+  for (let i = 0; i < BLOCK; i += 1) sum += i >= 148 && i < 156 ? 32 : h[i]!;
+  return sum.toString(8).padStart(6, "0");
 }

@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -13,8 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
-import { scanTarGz, writeTar } from "@longshore/act-runner";
+import { scanTarGz, tarGzDirectoryToFile } from "@longshore/act-runner";
 import { readChildTarball, runCheckoutChild, sweepOldCheckouts } from "../src/run/checkout-child";
 import { makeCheckpoint } from "../src/run/fetch-source-cli";
 import { tarballReader } from "../src/run/tarball-reader";
@@ -25,7 +25,6 @@ const tmp = mkdtempSync(join(tmpdir(), "ls-cotrust-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 const SHA = "b".repeat(40);
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 /** A stub child: copies `tarball` (gzip bytes) to --out (or not), writes a different workflow into --dir, prints a line. */
 function stubChild(
@@ -63,19 +62,22 @@ console.log(${lineExpr});`,
   return [process.execPath, f];
 }
 
-const tarWith = (
+let archiveN = 0;
+/** A real archive: a directory packed by the writer the child uses, so it has the shape the scanner accepts. */
+async function archive(
   files: Record<string, string>,
-  extra: Parameters<typeof writeTar>[0] = [],
-): Uint8Array =>
-  writeTar([
-    ...Object.entries(files).map(([path, text]) => ({
-      path,
-      type: "file" as const,
-      mode: 0o644,
-      data: enc(text),
-    })),
-    ...extra,
-  ]);
+  links: Record<string, string> = {},
+): Promise<Uint8Array> {
+  const d = mkdtempSync(join(tmp, "arch-"));
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(d, path.split("/").slice(0, -1).join("/")), { recursive: true });
+    writeFileSync(join(d, path), text);
+  }
+  for (const [path, target] of Object.entries(links)) symlinkSync(target, join(d, path));
+  const out = join(tmp, `arch-${archiveN++}.tgz`);
+  await tarGzDirectoryToFile(d, out, { maxBytes: 1e8 });
+  return new Uint8Array(readFileSync(out));
+}
 
 const run = (
   command: string[],
@@ -92,7 +94,7 @@ const run = (
 describe("the child's output is not trusted", () => {
   test("the server plans from the TARBALL: a workflow different in the directory is never seen", async () => {
     const cmd = stubChild("planned", {
-      tarball: gzipSync(tarWith({ ".github/workflows/ci.yml": "name: delivered\n" })),
+      tarball: await archive({ ".github/workflows/ci.yml": "name: delivered\n" }),
       dirFile: [".github/workflows/ci.yml", "name: shown-to-the-planner\n"],
     });
     const co = await run(cmd);
@@ -112,7 +114,7 @@ describe("the child's output is not trusted", () => {
     await expect(
       run(
         stubChild("badsize", {
-          tarball: gzipSync(tarWith({ a: "b" })),
+          tarball: await archive({ a: "b" }),
           line: (s) => `ok ${"b".repeat(40)} files=1 tarball=${s + 5}`,
         }),
       ),
@@ -121,7 +123,7 @@ describe("the child's output is not trusted", () => {
     await expect(
       run(
         stubChild("badsha", {
-          tarball: gzipSync(tarWith({ a: "b" })),
+          tarball: await archive({ a: "b" }),
           line: (s) => `ok ${"c".repeat(40)} files=1 tarball=${s}`,
         }),
       ),
@@ -162,40 +164,36 @@ describe("the child's output is not trusted", () => {
 });
 
 describe("reading from the tarball keeps the safe reader's rules", () => {
-  test("a symlink, a file under a symlink, a traversal, an oversize file and a file past the keep budget are refused loudly", async () => {
-    const tgz = gzipSync(
-      tarWith({ "ok.yml": "fine\n", "big.txt": "x".repeat(2000), "later.txt": "kept? no" }, [
-        { path: "link.yml", type: "symlink", mode: 0o777, linkTarget: "/etc/passwd" },
-        { path: "d", type: "symlink", mode: 0o777, linkTarget: "/etc" },
-        { path: "d/hosts", type: "file", mode: 0o644, data: enc("through") },
-      ]),
+  test("a symlink, a traversal, an oversize file and a file past the keep budget are refused loudly", async () => {
+    const tgz = await archive(
+      { "a-ok.yml": "fine\n", "b-big.txt": "x".repeat(2000), "c-later.txt": "kept? no" },
+      { "d-link.yml": "/etc/passwd" },
     );
     const read = await tarballReader(tgz, {
       maxUnpackedBytes: 1e6,
       maxFileBytes: 1000,
       captureTotal: 10,
     });
-    expect(read("ok.yml")).toBe("fine\n");
+    expect(read("a-ok.yml")).toBe("fine\n");
     expect(read("missing")).toBeUndefined();
-    expect(() => read("link.yml")).toThrow(UnsafePathError);
-    expect(() => read("d/hosts")).toThrow(UnsafePathError);
+    expect(() => read("d-link.yml")).toThrow(UnsafePathError);
     expect(() => read("../x")).toThrow(UnsafePathError);
-    expect(() => read("big.txt")).toThrow(/larger than/);
-    expect(() => read("later.txt")).toThrow(/more text than a checkout keeps/);
+    expect(() => read("b-big.txt")).toThrow(/larger than/);
+    expect(() => read("c-later.txt")).toThrow(/more text than a checkout keeps/);
   });
 
   test("the scan lists everything and keeps only small files; a bomb and too many entries are stopped", async () => {
     const files: Record<string, string> = {};
     for (let i = 0; i < 50; i += 1) files[`d/f${i}`] = "y".repeat(100);
     files["huge"] = "z".repeat(500_000);
-    const tgz = gzipSync(tarWith(files));
+    const tgz = await archive(files);
     const m = await scanTarGz(tgz, {
       maxUnpackedBytes: 5e6,
       maxEntries: 1000,
       captureUpTo: 1000,
       captureTotal: 3000,
     });
-    expect(m.size).toBe(51);
+    expect(m.size).toBe(53); // the root, d, 50 files and huge
     expect(m.get("huge")!.data).toBeUndefined(); // listed, not kept
     expect(m.get("huge")!.size).toBe(500_000);
     expect([...m.values()].filter((e) => e.data).length).toBe(30); // the keep budget (3000 / 100)
@@ -227,13 +225,13 @@ describe("cleanup is not done on the event loop, and a failed checkout leaves no
       (await Bun.$`ls ${tmpdir()}`.text()).split("\n").filter((n) => n.startsWith("tt-src-")),
     );
     const ok = await run(
-      stubChild("clean-ok", { tarball: gzipSync(tarWith({ a: "b" })), dirFile: ["x.txt", "tree"] }),
+      stubChild("clean-ok", { tarball: await archive({ a: "b" }), dirFile: ["x.txt", "tree"] }),
     );
     ok.dispose?.();
     await expect(
       run(
         stubChild("clean-bad", {
-          tarball: gzipSync(tarWith({ a: "b" })),
+          tarball: await archive({ a: "b" }),
           line: (s) => `ok ${"c".repeat(40)} files=1 tarball=${s}`,
         }),
       ),
