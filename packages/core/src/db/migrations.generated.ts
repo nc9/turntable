@@ -458,7 +458,7 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0039_attempt_sandbox_ttl",
+    "tag": "0040_attempt_sandbox_ttl",
     "when": 1795427014778,
     "statements": [
       "ALTER TABLE `job_attempts` ADD `sandbox_ttl_seconds` integer;"

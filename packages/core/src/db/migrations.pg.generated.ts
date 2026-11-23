@@ -206,7 +206,7 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0010_attempt_sandbox_ttl",
+    "tag": "0011_attempt_sandbox_ttl",
     "when": 1795427015421,
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"sandbox_ttl_seconds\" bigint;"

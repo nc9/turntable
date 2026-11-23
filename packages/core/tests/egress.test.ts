@@ -178,7 +178,7 @@ function jobEnv(world: FakeWorld, extra: Record<string, unknown>) {
     env: {
       provider: world.provider(),
       store: {
-        setSandbox: async () => {},
+        setSandbox: async (_a: string, _s: string, _c?: number, _ttl?: number): Promise<void> => {},
         finishJob: async () => {},
         appendLog: async () => {},
         recordStep: async () => {},
@@ -342,7 +342,7 @@ test("the sandbox's effective TTL is recorded with it: the shorter of the ask an
         registry: new SecretRegistry(),
         timeoutSeconds: 60,
       });
-      env.store.setSandbox = async (_a: string, _s: string, _c?: number, ttl?: number) => {
+      env.store.setSandbox = async (_a, _s, _c, ttl) => {
         seen.push(ttl);
         throw new Error("stop after the sandbox is recorded");
       };
