@@ -1,0 +1,39 @@
+---
+title: Parity with another CI
+description: Compare one of your runs with the checks another CI posted for the same commit, job by job.
+---
+
+When you move a workflow to Longshore you want to know that it gives the same answers as the CI it replaces. `longshore parity` takes one of your runs, reads the check runs a GitHub App posted for the same commit, pairs them by name and says for each job whether the two agree.
+
+```sh
+longshore parity --run <run id> --repo owner/name --app-id <n> \
+  --url https://longshore.example.com --org acme --token-file ~/.longshore/token
+```
+
+`--app-id` is the numeric id of the App whose check runs are the reference. It is always passed in; nothing is built in. The command only reads, on both sides.
+
+## What it reads
+
+- Your run, over the REST API, with a reader token from `--token-file` (or `LONGSHORE_TOKEN_FILE`; mode 0600). The server is `--url` or `LONGSHORE_URL`, the org `--org` or `LONGSHORE_ORG`. For each skipped job it also reads the first line of the job's log, which is where the reason is stored.
+- GitHub's check runs for the run's commit, filtered to the App you named. It needs no token for a public repository. For a private one, or to avoid the unauthenticated rate limit, give `--github-token-file` (or `LONGSHORE_GITHUB_TOKEN_FILE`). Tokens are read from files, never from the command line, and are sent only in a header to their own host.
+
+## How jobs are compared
+
+Jobs are paired by name, exactly first and then ignoring case. Each side's result is reduced to success, failure, cancelled, skipped, error or pending (an infrastructure error on our side, and a check conclusion such as `action_required`, are `error` and never match). A job that has not finished on either side is `PENDING`, not a divergence.
+
+Two rules cover how CI systems report jobs that did not run.
+
+- Our `skipped` equals their `success` when our job was gated off by its own `if:`. A required check has to report something, and a CI that reports a skipped required job as a success is behaving correctly. The output names the `if:` expression. A skip for any other reason, such as an unsupported job or an `if:` that could not be evaluated, is a divergence.
+- Their contexts that we do not run are listed as **not ours**, and our jobs that they do not post as **not reported**. Neither counts as a divergence.
+
+## Output
+
+A table with our state and duration next to theirs and a `MATCH` or `DIVERGE` verdict, divergences first, then pending, then matches. After it come the two unpaired lists and a totals line, for example:
+
+```text
+3 match (1 by the gated-skip rule), 3 diverge, 1 pending, 1 not ours, 1 not reported
+```
+
+With `--json` the same report is printed as one JSON object (`run`, `sha`, `repo`, `appId`, `rows`, `notOurs`, `notReported`, `totals`). Durations are shown for comparison and never decide a verdict.
+
+The exit status is 0 when nothing diverges, 1 when something does, and 2 for a usage or request error, so a script can gate on it.
