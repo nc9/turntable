@@ -7,6 +7,8 @@ import {
   createAttempt,
   createJob,
   createRun,
+  type Job,
+  type JobAttempt,
   type Run,
   type RunInput,
   setRunStatus,
@@ -426,6 +428,36 @@ export function getAttemptCheckRunId(
       .limit(1);
     return row?.id ?? null;
   });
+}
+
+/**
+ * Attempts that ended `skipped` without ever starting (the scheduler resolved the job: a false
+ * `if:`, a failed need, every shard path-skipped) and have no forge check yet, newest first, across
+ * every org (system work for the check reporter). An attempt that ran and was skipped by its
+ * runner has `started_at` and is reported through the observer instead.
+ */
+export function listUnreportedSkips(
+  db: Db,
+  opts: { since: number; limit: number },
+): Promise<{ attempt: JobAttempt; job: Job; run: Run }[]> {
+  return db.run((h) =>
+    h.orm
+      .select({ attempt: s.jobAttempts, job: s.jobs, run: s.runs })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+      .where(
+        and(
+          eq(s.jobAttempts.state, "skipped"),
+          isNull(s.jobAttempts.startedAt),
+          isNull(s.jobAttempts.checkRunId),
+          eq(s.runs.local, false),
+          gte(s.jobAttempts.createdAt, opts.since),
+        ),
+      )
+      .orderBy(desc(s.jobAttempts.id))
+      .limit(opts.limit),
+  );
 }
 
 export function setAttemptCheckRunId(
