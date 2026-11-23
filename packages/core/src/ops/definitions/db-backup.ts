@@ -41,6 +41,10 @@ export const dbBackupOp = defineOp({
   scope: "org",
   http: { method: "POST", path: "/instance/db-backup" },
   mcp: false,
+  // VACUUM INTO of a large database takes seconds. It reads through its own connection, so it
+  // must not sit inside the dispatcher's write transaction, which would block every other writer.
+  outsideTransaction: true,
+  auditDetail: (o) => ({ name: o.name, size_bytes: o.size_bytes, sha256: o.sha256 }),
   async handler(ctx, i) {
     const cfg = ctx.backup;
     if (cfg?.dialect === "pg") throw new OpError("invalid_input", PG_BACKUP_MESSAGE);

@@ -335,6 +335,32 @@ export async function dispatch(
       const output = validateOutput(target, await target.handler(ctx(env.db), input));
       return { ok: true, op: target, output, untrusted: target.untrustedOutput };
     }
+    if (target.outsideTransaction) {
+      // The handler runs without the write lock; the audit row gets its own short transaction.
+      let output: unknown;
+      try {
+        output = validateOutput(target, await target.handler(ctx(env.db), input));
+      } catch (err) {
+        const code = err instanceof OpError ? err.code : "internal";
+        await audit(`error:${code}`, input);
+        throw err;
+      }
+      const detail = target.auditDetail?.(output) ?? {};
+      await env.db.transaction(
+        async (tx) => {
+          await appendAudit(tx, scope, {
+            principalKind: principal.kind,
+            principalId: principal.id,
+            op: target.name,
+            effect: target.effect,
+            outcome: "ok",
+            input: { ...(redactInput(target, input) as object), ...detail },
+          });
+        },
+        { lock: `audit:${scope.orgId}` },
+      );
+      return { ok: true, op: target, output, untrusted: target.untrustedOutput };
+    }
     try {
       const output = await env.db.transaction(
         async (tx) => {

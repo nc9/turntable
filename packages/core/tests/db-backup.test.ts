@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSy
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sql } from "drizzle-orm";
 import { systemOrgId } from "../src/audit/failures";
 import { type Db, listAudit, openDatabase } from "../src/db";
 import {
@@ -167,8 +168,93 @@ sqliteOnly("the operation", () => {
     const rows = await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 20 });
     const row = rows.find((x) => x.op === "db_backup");
     expect(row).toMatchObject({ outcome: "ok", effect: "write", principalKind: "instance" });
-    expect(JSON.parse(row!.input)).toEqual({ keep: 3 });
+    expect(JSON.parse(row!.input)).toEqual({
+      keep: 3,
+      name: out.name,
+      size_bytes: out.size_bytes,
+      sha256: out.sha256,
+    });
   });
+
+  test("a failed backup is audited as an error, and the audit write is its own transaction", async () => {
+    const r = await call(
+      {},
+      env({ backup: { dialect: "sqlite", dataDir: dir, dbPath: join(dir, "nope.db"), keep: 10 } }),
+    );
+    expect(r.ok).toBe(false);
+    const rows = await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 20 });
+    expect(rows.find((x) => x.op === "db_backup")?.outcome).toBe("error:internal");
+  });
+
+  test("a large backup does not fail concurrent writers, in or out of process", async () => {
+    const seed = new Database(dbPath);
+    seed.run("CREATE TABLE blobs (id INTEGER PRIMARY KEY, b BLOB)");
+    seed.run("CREATE TABLE probe_w (id INTEGER PRIMARY KEY AUTOINCREMENT, who TEXT)");
+    seed.run("INSERT INTO blobs (b) VALUES (zeroblob(1048576))");
+    // Doubling the table is a fast way to reach ~512 MB of pages without per-row work.
+    for (let i = 0; i < 9; i++)
+      seed.run("INSERT INTO blobs (b) SELECT randomblob(1048576) FROM blobs");
+    seed.close();
+
+    // A writer with its own connection, as another process would be, inserting in a loop.
+    const src = `
+      import { Database } from "bun:sqlite";
+      const d = new Database(${JSON.stringify(dbPath)});
+      d.run("PRAGMA busy_timeout = 10000");
+      let ok = 0, failed = 0, maxMs = 0;
+      self.onmessage = () => { self.postMessage({ ok, failed, maxMs }); close(); };
+      const loop = () => {
+        const t = performance.now();
+        try { d.run("INSERT INTO probe_w (who) VALUES ('worker')"); ok++; } catch { failed++; }
+        maxMs = Math.max(maxMs, performance.now() - t);
+        setTimeout(loop, 1);
+      };
+      loop();
+    `;
+    const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+    const worker = new Worker(url);
+    let inProcess = 0;
+    let inProcessFailed = 0;
+    let stop = false;
+    const loop = (async () => {
+      while (!stop) {
+        try {
+          await db.transaction(async (tx) => {
+            await (tx.orm as unknown as { run(q: unknown): unknown }).run(
+              sql`INSERT INTO probe_w (who) VALUES ('main')`,
+            );
+          });
+          inProcess++;
+        } catch {
+          inProcessFailed++;
+        }
+        await new Promise((r) => setTimeout(r, 1));
+      }
+    })();
+    await new Promise((r) => setTimeout(r, 50));
+    const started = performance.now();
+    const r = await call();
+    const took = performance.now() - started;
+    stop = true;
+    await loop;
+    const counts = await new Promise<{ ok: number; failed: number; maxMs: number }>((resolve) => {
+      worker.onmessage = (e) => resolve(e.data);
+      worker.postMessage("done");
+    });
+    expect(r.ok).toBe(true);
+    expect(took).toBeGreaterThan(1000);
+    expect(inProcessFailed).toBe(0);
+    expect(inProcess).toBeGreaterThan(0);
+    expect(counts.failed).toBe(0);
+    expect(counts.ok).toBeGreaterThan(0);
+    // No writer waited out the copy: the old write-transaction wrapper held them for all of it.
+    expect(counts.maxMs).toBeLessThan(took / 2);
+    if (!r.ok) return;
+    const out = r.output as { path: string };
+    const copy = new Database(out.path, { readonly: true });
+    expect(copy.query("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+    copy.close();
+  }, 120_000);
 
   test("no org token of any role, and no member, can take it; nothing is written", async () => {
     const t = await seedTenant(db, "org-a");
