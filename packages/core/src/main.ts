@@ -444,6 +444,7 @@ async function startBackground(
     poller = new Poller({
       db,
       config: pollConfig,
+      ...(extras.auth ? { auth: extras.auth } : {}),
       // Repos bound by an installation are ingested once their project has ingest settings.
       bindings: true,
       log,

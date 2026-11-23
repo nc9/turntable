@@ -93,6 +93,16 @@ A signed `push` or `pull_request` webhook for a repo the poller is configured fo
 
 Check runs post as `shadow / <job>`, always neutral, while the project's checks mode is `shadow`.
 
+## The API budget of the poller
+
+GitHub counts requests per credential. Polling with no token shares 60 requests an hour per address with every other unauthenticated call, including action resolution. The poll token has its own 5,000 an hour, shared by every repo that uses it.
+
+A repo bound through the GitHub App is polled with a token minted for that one repo instead, with `contents`, `metadata` and `pull_requests` read and nothing else. Each installation has its own 5,000 an hour, so the repos of one instance do not draw on each other's budget or on the fallback. The token is short-lived, held in memory only (the App's token cache, which an incident freeze clears), never logged and never returned by an operation. The ETag cache is kept across token renewals, and a `304` is not counted against the limit.
+
+The binding must be in the same org and project the repo is polled into. A repo with no installation, and any repo whose token cannot be minted, uses the poll token, or no token. A failed mint is logged once per poll interval and the poll goes ahead on the fallback.
+
+`ingest_status` shows the auth mode of each repo (`anonymous`, `token` or `installation`) and its budget, plus `rate_limit_by_mode`: the last seen budget of each mode, as `anonymous`, `poll_token` and `installation` (for `installation`, the repo with the least left).
+
 ## Creating the GitHub App on an instance with no shell
 
 `turntable github-app create` serves a page on the machine that holds the data directory, which a platform with no shell cannot do. The instance can run the same manifest flow itself.
