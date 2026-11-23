@@ -5,6 +5,7 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
   Artifact,
   ConsumeResult,
   OrgQuotas,
@@ -336,6 +337,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       }
       const attempt = makeAttempt(row, 1, start);
       attempt.finishedAt = start + plan.durationMs;
+      closeSandbox(attempt);
       attempt.state = plan.outcome;
       if (plan.outcome === "infra_error") {
         attempt.errorClass = rng.pick([
@@ -346,6 +348,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
         attempts.set(attempt.id, attempt);
         const a2 = makeAttempt(row, 2, attempt.finishedAt + 4000);
         a2.finishedAt = a2.startedAt! + plan.durationMs;
+        closeSandbox(a2);
         a2.state = "success";
         a2.exitCode = 0;
         attempts.set(a2.id, a2);
@@ -371,6 +374,13 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     runs.set(run.id, run);
   }
 
+  /** A finished attempt's sandbox is destroyed half a second after it ends. */
+  function closeSandbox(a: JobAttempt): void {
+    if (a.sandboxCreatedAt === null || a.finishedAt === null) return;
+    a.sandboxDestroyedAt = a.finishedAt + 500;
+    a.sandboxSeconds = (a.sandboxDestroyedAt - a.sandboxCreatedAt) / 1000;
+  }
+
   function makeAttempt(job: Job, n: number, start: number): JobAttempt {
     return {
       id: id(start),
@@ -386,6 +396,9 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       createdAt: start,
       startedAt: start,
       finishedAt: null,
+      sandboxCreatedAt: start,
+      sandboxDestroyedAt: null,
+      sandboxSeconds: null,
     };
   }
 
@@ -487,6 +500,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
           const plan = plans.get(`${row.id}:${a.attempt}`)!;
           if (a.startedAt != null && t >= a.startedAt + plan.durationMs) {
             a.finishedAt = a.startedAt + plan.durationMs;
+            closeSandbox(a);
             a.state = plan.outcome;
             if (plan.outcome === "infra_error") {
               a.errorClass = rng.pick([
@@ -1045,6 +1059,29 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
   }
 
+  /** Deterministic sandbox minutes per UTC day, with the last day an estimate. */
+  function sandboxUsage(days: number): SandboxUsage {
+    const day = 86_400_000;
+    const today = Math.floor(now() / day) * day;
+    const rows = Array.from({ length: days }, (_, i) => {
+      const start = today - (days - 1 - i) * day;
+      const minutes = 40 + ((i * 53) % 260);
+      const attempts = 6 + ((i * 7) % 19);
+      return {
+        day: new Date(start).toISOString().slice(0, 10),
+        seconds: minutes * 60,
+        minutes,
+        attempts,
+        estimatedAttempts: i === days - 1 ? 1 : 0,
+      };
+    });
+    return {
+      days: rows,
+      totalMinutes: rows.reduce((n, r) => n + r.minutes, 0),
+      limitMinutesPerDay: 240,
+    };
+  }
+
   function approversOverview(): ApproversOverview {
     return {
       keyPolicy: {
@@ -1301,6 +1338,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     ingestStatus,
     approvalStatus,
     approversOverview,
+    sandboxUsage,
     getArtifacts,
     checkArtifactConsumption,
     getQuotas,
