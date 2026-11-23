@@ -274,10 +274,11 @@ function workerStore(ctx: AttemptContext): RunStore {
     recordLaunch: async () => {},
     finishRun: async () => {},
     finishJob: async () => {},
-    setSandbox: (_id, sandboxId, createdAt) =>
+    setSandbox: (_id, sandboxId, createdAt, ttlSeconds) =>
       ctx.store.setExec({
         sandboxId,
         ...(createdAt === undefined ? {} : { sandboxCreatedAt: createdAt }),
+        ...(ttlSeconds === undefined ? {} : { sandboxTtlSeconds: ttlSeconds }),
       }),
     setSandboxDestroyed: (_id, at) => ctx.store.setExec({ sandboxDestroyedAt: at }),
     setExec: (_id, execId) => ctx.store.setExec({ execId }),

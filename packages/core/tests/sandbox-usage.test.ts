@@ -334,3 +334,51 @@ describe("group_by project", () => {
     expect((await call(tok, { group_by: "org" })).ok).toBe(false);
   });
 });
+
+describe("the grace for an unconfirmed destroy follows the attempt's recorded TTL", () => {
+  const limit = (graceMs: number) => ({
+    from: at(0, 0),
+    to: at(1, 0),
+    now: at(1, 0),
+    graceMs,
+  });
+  const FALLBACK = 30 * 60_000;
+
+  test("a 600 s TTL counts the finish plus 600 s", async () => {
+    const id = await life(a, at(0, 10), null, at(0, 10, 20));
+    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
+    expect((await getAttempt(db, a.scope, id))!.sandboxTtlSeconds).toBe(600);
+    expect(await sandboxSeconds(db, a.scope, limit(FALLBACK))).toEqual({
+      seconds: 30 * 60,
+      estimated: 1,
+    });
+  });
+
+  test("a null TTL uses the fallback constant", async () => {
+    await life(a, at(0, 10), null, at(0, 10, 20));
+    expect((await sandboxSeconds(db, a.scope, limit(FALLBACK))).seconds).toBe(50 * 60);
+  });
+
+  test("a confirmed destroy uses the destroy time, whatever the TTL", async () => {
+    const id = await life(a, at(0, 10), at(0, 10, 25), at(0, 10, 20));
+    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
+    expect(await sandboxSeconds(db, a.scope, limit(FALLBACK))).toEqual({
+      seconds: 25 * 60,
+      estimated: 0,
+    });
+  });
+
+  test("a short TTL also drops the attempt from a window its grace no longer reaches", async () => {
+    const id = await life(a, at(0, 10), null, at(0, 10, 20));
+    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
+    // From 10:35: the finish plus 600 s ended at 10:30, plus the 30 min fallback would still reach.
+    const w = { from: at(0, 10, 35), to: at(1, 0), now: at(1, 0), graceMs: FALLBACK };
+    expect((await sandboxSeconds(db, a.scope, w)).seconds).toBe(0);
+  });
+
+  test("the usage page (no grace) ignores the TTL", async () => {
+    const id = await life(a, at(0, 10), null, at(0, 10, 20));
+    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
+    expect((await sandboxSeconds(db, a.scope, win(0, 1))).seconds).toBe(20 * 60);
+  });
+});

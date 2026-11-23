@@ -242,6 +242,7 @@ export async function executeJob(
           `provider ${env.provider.info.name} cannot confine a sandbox to the secrets proxy; the job was not run`,
         );
       }
+      const ttlSeconds = (env.timeoutSeconds ?? 3600) + 900;
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
         labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
@@ -251,14 +252,22 @@ export async function executeJob(
         ...((env.snapshot ?? env.sandbox?.snapshot)
           ? { snapshot: (env.snapshot ?? env.sandbox?.snapshot) as string }
           : {}),
-        ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
+        ttlSeconds,
         network:
           proxied && pick
             ? { egress: pick, proxy: proxied.listen }
             : { egress: env.egress ?? "none" },
       });
       sandboxId = sb.id;
-      await env.store.setSandbox(ids.attemptId, sb.id, Date.now());
+      // A provider with its own cap (Daytona) may end the sandbox sooner than asked: that is how
+      // long it can outlive the attempt, so the quota grace follows it.
+      const cap = env.provider.info.ttlSeconds;
+      await env.store.setSandbox(
+        ids.attemptId,
+        sb.id,
+        Date.now(),
+        cap === undefined ? undefined : Math.min(ttlSeconds, cap),
+      );
       let proxyUrl: string | undefined;
       if (proxied) {
         if (!sb.proxy) {

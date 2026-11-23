@@ -160,6 +160,10 @@
     {
       "tag": "0039_untrusted_run_approval_to_settings",
       "sha256": "8ab96221cd7993e1a8bd647b2103ed429e041d6d91bb508175261ca371919ae5"
+    },
+    {
+      "tag": "0040_attempt_sandbox_ttl",
+      "sha256": "26af83345d5b1a062362a04ab27f21049b77c7ed3d8606e0dc436347db826ce1"
     }
   ],
   "pg": [
@@ -206,6 +210,10 @@
     {
       "tag": "0010_untrusted_run_approval_to_settings",
       "sha256": "7559f31a96522fa6eba0af17a6f8a4c96b87e7c1042308f007ec9fdd41ccfbb6"
+    },
+    {
+      "tag": "0011_attempt_sandbox_ttl",
+      "sha256": "4c32112e78acd7e0e7942602d4ad6ffd53cab3adf227453967de027b17a6dfee"
     }
   ]
 }

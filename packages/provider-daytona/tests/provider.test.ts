@@ -187,6 +187,8 @@ describe("what is sent on create", () => {
     const lower = make({ clampTtl: true, maxTtlSeconds: 600 });
     expect(lower.buildCreateBody(spec({ ttlSeconds: 3900 }))).toMatchObject({ ttlMinutes: 10 });
     expect(lower.buildCreateBody(spec({ ttlSeconds: 120 }))).toMatchObject({ ttlMinutes: 2 });
+    expect(lower.info.ttlSeconds).toBe(600);
+    expect(clamp.info.ttlSeconds).toBe(1800);
     expect(() => make({ maxTtlSeconds: 3600 })).toThrow(RangeError);
     expect(() => make({ maxTtlSeconds: 30 })).toThrow(RangeError);
   });

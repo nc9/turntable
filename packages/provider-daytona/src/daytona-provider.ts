@@ -282,6 +282,7 @@ export class DaytonaProvider implements Provider {
       },
       resources: { cpus: true, memoryMb: true, diskGb: true },
       ttl: true,
+      ttlSeconds: this.maxTtl,
       labels: true,
       list: true,
       listByLabel: true,

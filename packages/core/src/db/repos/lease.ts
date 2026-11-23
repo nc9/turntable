@@ -366,6 +366,8 @@ export function recordExec(
     execId?: string | undefined;
     /** Epoch ms the provider's create returned. */
     sandboxCreatedAt?: number | undefined;
+    /** The provider's effective TTL for the sandbox, in seconds. */
+    sandboxTtlSeconds?: number | undefined;
     /** Epoch ms the provider confirmed the destroy. */
     sandboxDestroyedAt?: number | undefined;
   },
@@ -379,6 +381,9 @@ export function recordExec(
         ...(where.sandboxCreatedAt === undefined
           ? {}
           : { sandboxCreatedAt: where.sandboxCreatedAt }),
+        ...(where.sandboxTtlSeconds === undefined
+          ? {}
+          : { sandboxTtlSeconds: where.sandboxTtlSeconds }),
         ...(where.sandboxDestroyedAt === undefined
           ? {}
           : { sandboxDestroyedAt: where.sandboxDestroyedAt }),
