@@ -6538,7 +6538,7 @@
       "get": {
         "operationId": "sandbox_usage",
         "summary": "Exact sandbox time per UTC day: from the provider's create to its confirmed destroy.",
-        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. Read-only.\n\nRequired role: reader. Read-only.",
+        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out); each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "days",
@@ -6550,6 +6550,16 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 92
+            }
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "required": false,
+            "description": "`project` adds a per-project breakdown under `projects`.",
+            "schema": {
+              "type": "string",
+              "enum": ["project"]
             }
           },
           {
@@ -6615,6 +6625,75 @@
                           "sandbox_minutes",
                           "attempts",
                           "estimated_attempts"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "projects": {
+                      "description": "Present only with `group_by: project`.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "project_id": {
+                            "type": "string"
+                          },
+                          "project_slug": {
+                            "type": "string"
+                          },
+                          "project_name": {
+                            "type": "string"
+                          },
+                          "days": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "day": {
+                                  "type": "string",
+                                  "description": "UTC day, YYYY-MM-DD."
+                                },
+                                "sandbox_seconds": {
+                                  "type": "number"
+                                },
+                                "sandbox_minutes": {
+                                  "type": "number"
+                                },
+                                "attempts": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "estimated_attempts": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "day",
+                                "sandbox_seconds",
+                                "sandbox_minutes",
+                                "attempts",
+                                "estimated_attempts"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "total_seconds": {
+                            "type": "number"
+                          },
+                          "total_minutes": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "project_id",
+                          "project_slug",
+                          "project_name",
+                          "days",
+                          "total_seconds",
+                          "total_minutes"
                         ],
                         "additionalProperties": false
                       }

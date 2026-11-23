@@ -12,6 +12,7 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/github-serve.test.ts", // the real server, on 127.0.0.1
   "packages/core/tests/release-prereqs.test.ts", // the real server, on 127.0.0.1
   "packages/core/tests/github-app.test.ts", // the manifest loopback page
+  "packages/core/tests/github-hosted-manifest.test.ts", // the hosted manifest routes, on 127.0.0.1
   "packages/core/tests/cache.test.ts", // the cache service under test, on 127.0.0.1
   "packages/core/tests/mcp.test.ts", // the MCP transport, on 127.0.0.1
   "packages/core/tests/realtime.test.ts", // the realtime server, on 127.0.0.1
@@ -24,6 +25,8 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/job-token-proxy.test.ts", // the same proxy, dialled on 127.0.0.1
   "packages/core/tests/release-compat.test.ts", // the release proxy, dialled on 127.0.0.1
   "packages/core/tests/proxy-e2e.test.ts", // the same proxy, dialled on 127.0.0.1 (CI only)
+  "packages/core/tests/job-oidc.test.ts", // the same proxy, dialled on 127.0.0.1
+  "packages/core/tests/vault-jwt-e2e.test.ts", // a Vault dev server in a container, on 127.0.0.1
 ]);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "data", "drizzle"]);

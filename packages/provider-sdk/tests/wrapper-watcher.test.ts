@@ -50,6 +50,18 @@ describe.each(SHELLS)("the timeout watcher under %s", (shell) => {
     expect(processes()).not.toContain("sleep 31343");
   }, 30_000);
 
+  test("a timed-out script that runs a child WITHOUT exec leaves nothing behind (the whole group is stopped)", async () => {
+    const t0 = Date.now();
+    // `cmd.sh` is a shell that starts two sleeps and waits: the shell and both children must go.
+    const d = await runExec(shell, "sleep 31344 & sleep 31344", 1);
+    expect(Date.now() - t0).toBeLessThan(15_000);
+    expect(existsSync(join(d, "timedout"))).toBe(true);
+    // A child that is not in the signalled group would live on for its full 31344 seconds.
+    const left = processes().filter((l) => l === "sleep 31344");
+    for (const l of left) Bun.spawnSync(["pkill", "-x", "-f", l]); // do not leak from a failing test
+    expect(left).toEqual([]);
+  }, 30_000);
+
   test("a command that finishes first leaves no watcher behind, however fast it finishes", async () => {
     const base = 1_000_000 + Math.floor(Math.random() * 8_000_000);
     const N = 150;

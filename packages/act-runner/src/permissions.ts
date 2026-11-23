@@ -83,3 +83,28 @@ export function declaredPermissions(workflowYaml: string, jobId: string): Declar
   }
   return { permissions: out, declared: true, notes };
 }
+
+/**
+ * Whether the job asked for an OIDC token: `permissions: id-token: write` on the job, or on the
+ * workflow when the job has no `permissions` of its own (a job's block replaces the workflow's),
+ * or `write-all`. This is GitHub's own switch; absent or `read`/`none` means no token.
+ */
+export function wantsIdToken(workflowYaml: string, jobId: string): boolean {
+  let doc: unknown;
+  try {
+    doc = parse(workflowYaml, { merge: true });
+  } catch {
+    return false;
+  }
+  return wantsIdTokenIn(doc, jobId);
+}
+
+/** The same question for an already parsed workflow document (the planner has one). */
+export function wantsIdTokenIn(doc: unknown, jobId: string): boolean {
+  const root = isObj(doc) ? doc : {};
+  const job = isObj(root.jobs) && isObj(root.jobs[jobId]) ? (root.jobs[jobId] as object) : {};
+  const raw =
+    "permissions" in job ? (job as { permissions?: unknown }).permissions : root.permissions;
+  if (raw === "write-all") return true;
+  return isObj(raw) && raw["id-token"] === "write";
+}

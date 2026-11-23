@@ -212,3 +212,34 @@ jobs:
     expect(j.unsupported).toContain("environment");
   });
 });
+
+describe("the id-token flag on a planned job", () => {
+  const plan = (head: string, jobPerm: string) =>
+    planWorkflow(
+      `name: t\non: push\n${head}jobs:\n  a:\n    runs-on: ubuntu-latest\n${jobPerm}    steps:\n      - run: echo hi\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`,
+      push,
+      { readFile },
+    ).jobs;
+  const flag = (jobs: ReturnType<typeof plan>, id: string) =>
+    jobs.find((j) => j.id === id)!.idToken;
+
+  test("set only for a job that asked, with the job block replacing the workflow's", () => {
+    // Nothing asked: not set at all, so a stored plan stays as small as before.
+    expect(flag(plan("", ""), "a")).toBeUndefined();
+    // The workflow's block applies to a job with none of its own.
+    const wfLevel = plan("permissions:\n  id-token: write\n", "");
+    expect([flag(wfLevel, "a"), flag(wfLevel, "b")]).toEqual([true, true]);
+    // A job's own block replaces it, in both directions.
+    const off = plan(
+      "permissions:\n  id-token: write\n",
+      "    permissions:\n      contents: read\n",
+    );
+    expect([flag(off, "a"), flag(off, "b")]).toEqual([undefined, true]);
+    const on = plan("", "    permissions:\n      id-token: write\n");
+    expect([flag(on, "a"), flag(on, "b")]).toEqual([true, undefined]);
+    // write-all counts; read-all and id-token: read do not.
+    expect(flag(plan("permissions: write-all\n", ""), "a")).toBe(true);
+    expect(flag(plan("permissions: read-all\n", ""), "a")).toBeUndefined();
+    expect(flag(plan("permissions:\n  id-token: read\n", ""), "a")).toBeUndefined();
+  });
+});

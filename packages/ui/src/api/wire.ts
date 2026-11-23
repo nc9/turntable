@@ -58,6 +58,21 @@ export type WireSandboxUsage = {
   }[];
   total_seconds: number;
   total_minutes: number;
+  /** Present with `group_by=project`: each project that had a sandbox alive in the window. */
+  projects?: {
+    project_id: string;
+    project_slug: string;
+    project_name: string;
+    days: {
+      day: string;
+      sandbox_seconds: number;
+      sandbox_minutes: number;
+      attempts: number;
+      estimated_attempts: number;
+    }[];
+    total_seconds: number;
+    total_minutes: number;
+  }[];
 };
 
 export type WireJob = {

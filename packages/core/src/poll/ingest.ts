@@ -60,7 +60,42 @@ export type Candidate = {
   tagProtection?: TagProtection;
   /** The annotated tag's tagger name: display only (see `facts.taggerLabel`), never the actor. */
   taggerLabel?: string;
+  /** A push's `before` and where it came from (see `resolveBefore`). */
+  before?: string | undefined;
+  beforeSource?: BeforeSource;
 };
+
+/** Most missed default-branch pushes one poll turns into runs when `everyPush` is on. */
+const MAX_GAP_PUSHES = 5;
+
+/** Where a push run's `before` came from, recorded in the run's trust facts. */
+export type BeforeSource = "events" | "first_parent" | "last_polled" | "none";
+
+/**
+ * GitHub's `before` for a default-branch push to `sha`, as close as the API lets us get, in order:
+ * (a) the events API's PushEvent for that head (GitHub's own value, but delayed and bounded);
+ * (b) the commit's first parent when it has exactly one (right for a one-commit push, the squash
+ *     merge case; a multi-commit fast-forward would have an older `before`);
+ * (c) the last sha the poller handled for the repo, which spans every push it missed.
+ * The source is recorded so a divergence from GitHub can be told apart.
+ */
+async function resolveBefore(
+  deps: IngestDeps,
+  cfg: PollRepoConfig,
+  scope: Required<Scope>,
+  events: () => Promise<{ ref: string; head: string; before: string }[]>,
+  sha: string,
+): Promise<{ before: string | undefined; source: BeforeSource }> {
+  const ref = `refs/heads/${cfg.defaultBranch}`;
+  const ev = (await events()).find((e) => e.ref === ref && e.head === sha.toLowerCase());
+  if (ev) return { before: ev.before, source: "events" };
+  const info = await deps.github.commitInfo(cfg.repo, sha);
+  if (info.parents.length === 1) return { before: info.parents[0], source: "first_parent" };
+  const last = await lastPolledSha(deps.db, scope, cfg.repo, cfg.workflow, "push");
+  return last && last !== sha
+    ? { before: last, source: "last_polled" }
+    : { before: undefined, source: "none" };
+}
 
 export type GateVerdict = { ok: true } | { ok: false; reason: string };
 
@@ -669,6 +704,31 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     sameRepo: true,
     ...(forgeProtected === undefined ? {} : { forgeProtected }),
   });
+  // Pushes the poller missed between two polls: GitHub ran CI for each. Opt-in, the newest few,
+  // oldest first so each is its own run in push order; a force push (the last handled sha is not
+  // on the head's first-parent history) has no such gap to fill.
+  if (cfg.everyPush) {
+    const last = await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push");
+    if (last !== undefined && last !== head.sha) {
+      const gap = await deps.github.firstParentsSince(repo, head.sha, last, MAX_GAP_PUSHES + 1);
+      if (gap?.reached) {
+        const missed = gap.shas.filter((s) => s !== head.sha).slice(0, MAX_GAP_PUSHES);
+        for (const sha of missed.toReversed()) {
+          const info = await deps.github.commitInfo(repo, sha);
+          candidates.splice(candidates.length - 1, 0, {
+            event: "push",
+            ref: `refs/heads/${cfg.defaultBranch}`,
+            sha,
+            actor: info.author,
+            message: info.message,
+            headBranch: cfg.defaultBranch,
+            sameRepo: true,
+            ...(forgeProtected === undefined ? {} : { forgeProtected }),
+          });
+        }
+      }
+    }
+  }
 
   if (cfg.prMode === "approval") {
     // Stranger-controlled work is bounded before any forge call is spent on it: a waiting cap
@@ -791,6 +851,10 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   if (cfg.tagRefs.length > 0) await tagCandidates(deps, cfg, scope, head.sha, candidates, result);
   if (cfg.mergeQueue) await queueCandidates(deps, cfg, scope, candidates, result);
 
+  // The events API is read at most once a poll, and only when a push run is about to be planned.
+  let eventsMemo: Promise<{ ref: string; head: string; before: string }[]> | undefined;
+  const pushEvents = () => (eventsMemo ??= deps.github.pushEvents(repo));
+
   for (const c of candidates) {
     const what = `${c.event} ${c.sha.slice(0, 7)}`;
     // A tag run is its own thing even at the default branch's head: it is keyed by the tag.
@@ -816,6 +880,11 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
 
     // Changed files, for path filters: base..head for a PR, before..after for a push. Unknown
     // (no base, a force push, too many files) means the filters are not applied.
+    if (c.event === "push" && c.tag === undefined) {
+      const r = await resolveBefore(deps, cfg, scope, pushEvents, c.sha);
+      c.before = r.before;
+      c.beforeSource = r.source;
+    }
     let changedFiles: string[] | undefined;
     if (hasPathFilter(yaml)) {
       if (c.event === "pull_request") {
@@ -823,10 +892,9 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           ? await deps.github.changedFiles(repo, c.baseRef, c.sha)
           : undefined;
       } else if (c.event === "push" && c.tag === undefined) {
-        const before = await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push");
         changedFiles =
-          before && before !== c.sha
-            ? await deps.github.changedFiles(repo, before, c.sha)
+          c.before && c.before !== c.sha && !/^0+$/.test(c.before)
+            ? await deps.github.changedFiles(repo, c.before, c.sha)
             : undefined;
       }
     }
@@ -845,9 +913,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       event: eventPayload(
         c,
         repo,
-        c.event === "push" && c.tag === undefined
-          ? ((await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push")) ?? undefined)
-          : undefined,
+        c.event === "push" && c.tag === undefined ? c.before : undefined,
       ),
     };
 
@@ -916,7 +982,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     });
     // A tag run records how its creation is governed. One a ruleset does not protect is created
     // HELD: it waits for approval by a release operator (sha and workflow bound) like any held run.
-    const decision =
+    const tagged =
       c.tag === undefined
         ? base
         : {
@@ -936,6 +1002,10 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
               ...(c.taggerLabel ? { taggerLabel: c.taggerLabel } : {}),
             },
           };
+    const decision =
+      c.beforeSource === undefined
+        ? tagged
+        : { ...tagged, facts: { ...tagged.facts, beforeSource: c.beforeSource } };
     const untrusted = needsApproval(decision.class);
     const hold = untrusted || tagHeld;
     if (!hold && capReached()) {
