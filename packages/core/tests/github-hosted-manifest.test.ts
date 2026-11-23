@@ -297,6 +297,7 @@ describe("starting the flow", () => {
     ) as Record<string, any>;
     expect(claim.setup_url).toBe(`${BASE}/api/v1/github/setup`);
     expect(claim.request_oauth_on_install).toBe(true);
+    expect(claim.public).toBe(true);
   });
 
   test("the page may post only to GitHub, the cookie is HttpOnly, Lax and Secure, and nothing is cached", async () => {

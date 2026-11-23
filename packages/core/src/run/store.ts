@@ -66,7 +66,13 @@ export interface RunStore {
   /** Creates an attempt and marks job, attempt and run running. */
   startAttempt(runId: string, jobId: string, provider: string): Promise<JobIds>;
   /** `createdAt`: epoch ms the provider's create returned (the sandbox is billed from here). */
-  setSandbox(attemptId: string, sandboxId: string, createdAt?: number): Promise<void>;
+  setSandbox(
+    attemptId: string,
+    sandboxId: string,
+    createdAt?: number,
+    /** The provider's effective TTL for the sandbox, in seconds (absent when it reports none). */
+    ttlSeconds?: number,
+  ): Promise<void>;
   /** The provider confirmed the sandbox is destroyed, at `at` (epoch ms). */
   setSandboxDestroyed?(attemptId: string, at: number): Promise<void>;
   /** Records act's exec id as soon as it starts, so a controller restarted mid-run can re-attach. */
@@ -135,10 +141,11 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
       await setRunStatus(db, scope, runId, "running");
       return ids;
     },
-    async setSandbox(attemptId, sandboxId, createdAt) {
+    async setSandbox(attemptId, sandboxId, createdAt, ttlSeconds) {
       await updateAttempt(db, scope, attemptId, {
         sandboxId,
         ...(createdAt === undefined ? {} : { sandboxCreatedAt: createdAt }),
+        ...(ttlSeconds === undefined ? {} : { sandboxTtlSeconds: ttlSeconds }),
       });
     },
     async setSandboxDestroyed(attemptId, at) {

@@ -37,6 +37,8 @@ Subscribed events are `push`, `pull_request` and `check_run`. GitHub also sends 
 
 The webhook URL is `<url>/api/v1/webhooks/github`. The `--turntable-org` flag chooses which Turntable org owns the App and its installations (default `local`).
 
+The App is created private, so only the account that owns it can install it. To let other accounts install it (the [claim flow](/hosted#one-instance-several-orgs-claiming-an-installation)), open the App's settings on GitHub, go to **Advanced**, and choose **Make public**. The instance-hosted manifest flow does this for you when `TURNTABLE_CLAIM_INSTALLATIONS=1`.
+
 Install the App on the repositories you want from the link the command prints.
 
 ## Installations, orgs and projects

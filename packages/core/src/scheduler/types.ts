@@ -21,6 +21,7 @@ export interface AttemptStore {
     sandboxId?: string;
     execId?: string;
     sandboxCreatedAt?: number;
+    sandboxTtlSeconds?: number;
     sandboxDestroyedAt?: number;
   }): Promise<void>;
   /** Stores the resolved job plan (JSON), so a restarted controller can re-attach without the repo. */

@@ -72,7 +72,7 @@ Check runs post as `shadow / <job>`, always neutral, while the project's checks 
 3. The reply is a page that sends the manifest to GitHub. Approve it there. GitHub sends the browser back to `<public url>/api/v1/github/app-callback`, which exchanges the one-time code and seals the App's id, private key, webhook secret and client secret in the encrypted store. They are never printed, logged or shown, and the page says only the App's name and where to install it.
 4. Install the App on your repositories, then remove `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` from the variables.
 
-The manifest asks for the least it needs: `checks` write; `contents`, `metadata` and `pull_requests` read; events `push`, `pull_request` and `check_run`. Merge queue runs are found by the poller, and a `merge_group` webhook is not subscribed to, because GitHub requires another permission for it. With `TURNTABLE_CLAIM_INSTALLATIONS=1` the manifest also carries the setup URL and asks for user authorization on install, which the [claim flow](#one-instance-several-orgs-claiming-an-installation) needs.
+The manifest asks for the least it needs: `checks` write; `contents`, `metadata` and `pull_requests` read; events `push`, `pull_request` and `check_run`. Merge queue runs are found by the poller, and a `merge_group` webhook is not subscribed to, because GitHub requires another permission for it. With `TURNTABLE_CLAIM_INSTALLATIONS=1` the manifest also carries the setup URL and asks for user authorization on install, which the [claim flow](#one-instance-several-orgs-claiming-an-installation) needs. In that mode the App is also created **public**, because a private App can be installed only by the account that owns it, and the claim flow exists for other accounts to install it. That is safe: an installation nobody has claimed is ignored (it maps to no org and nothing runs), and a claim needs proof that the installer owns the installation. Without claim mode the App is private. An App created before this change is private: open its settings on GitHub, go to **Advanced**, and choose **Make public**.
 
 How it is protected:
 
@@ -190,6 +190,7 @@ Before you start: an instance on a public https URL with `TURNTABLE_MASTER_KEY_F
 3. Run `turntable github-app status`. Expect the App listed with no secret in the output.
 4. On GitHub, open the App settings. Check these: the permissions are the four in [GitHub App](/github-app), the events are `push`, `pull_request` and `check_run`, the webhook URL is `<public url>/api/v1/webhooks/github`, and the setup URL is `<public url>/api/v1/github/setup`.
 5. Turn on **Request user authorization (OAuth) during installation**. The manifest cannot set it.
+6. The loopback command always creates a private App. If other accounts will install it, choose **Make public** under **Advanced**.
 
 ### 2. Webhook delivery
 

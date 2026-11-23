@@ -633,6 +633,7 @@ export function updateAttempt(
     errorClass?: string | null;
     sandboxCreatedAt?: number | null;
     sandboxDestroyedAt?: number | null;
+    sandboxTtlSeconds?: number | null;
   },
 ): Promise<JobAttempt | undefined> {
   return db.transaction(async (h) => {

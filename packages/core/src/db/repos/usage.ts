@@ -32,13 +32,14 @@ export interface SandboxUsageWindow {
   /**
    * For a limit, where an attempt that finished with no confirmed destroy ends: its finish plus
    * this long, never past `now`. A sandbox the provider never confirmed destroying may still be
-   * alive (and billing) until its TTL, so a quota counts to there. Absent (the Usage page): the
-   * attempt's finish.
+   * alive (and billing) until its TTL, so a quota counts to there. The attempt's own recorded
+   * sandbox TTL is the grace; this is the fallback for one with none (a legacy row, a provider
+   * that reports no TTL). Absent (the Usage page): the attempt's finish.
    */
   graceMs?: number;
 }
 
-/** The provider TTL a sandbox may outlive its attempt by when no destroy was confirmed. */
+/** The grace for an unconfirmed destroy when the attempt recorded no TTL: Daytona's longest. */
 export const DEFAULT_SANDBOX_GRACE_MS = 30 * 60_000;
 
 /** The start of the UTC day containing `ms`. */
@@ -59,7 +60,10 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
   // a crash between create and record) falls back to when the attempt started: it holds or held
   // a sandbox, and counting it from the start over-counts rather than counting nothing.
   const start = sql<number>`coalesce(${s.jobAttempts.sandboxCreatedAt}, ${s.jobAttempts.startedAt})`;
-  const grace = w.graceMs ?? 0;
+  const fallback = w.graceMs ?? 0;
+  // Where an unconfirmed attempt's sandbox may last to: its finish plus its own recorded TTL, or
+  // the fallback when it has none. Without a limit's grace it is the finish alone.
+  const graceExpr = sql<number>`case when ${s.jobAttempts.sandboxTtlSeconds} is null then ${fallback} when ${s.jobAttempts.sandboxTtlSeconds} > 0 then ${s.jobAttempts.sandboxTtlSeconds} * 1000 else 0 end`;
   const rows = await db.run((h) =>
     h.orm
       .select({
@@ -67,6 +71,7 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
         started: s.jobAttempts.startedAt,
         destroyed: s.jobAttempts.sandboxDestroyedAt,
         finished: s.jobAttempts.finishedAt,
+        ttl: s.jobAttempts.sandboxTtlSeconds,
         projectId: s.jobAttempts.projectId,
       })
       .from(s.jobAttempts)
@@ -83,7 +88,9 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
             and(
               isNull(s.jobAttempts.sandboxDestroyedAt),
               isNotNull(s.jobAttempts.finishedAt),
-              gt(s.jobAttempts.finishedAt, w.from - grace),
+              fallback > 0
+                ? gt(sql`${s.jobAttempts.finishedAt} + ${graceExpr}`, w.from)
+                : gt(s.jobAttempts.finishedAt, w.from),
             ),
             and(isNull(s.jobAttempts.sandboxDestroyedAt), isNull(s.jobAttempts.finishedAt)),
           ),
@@ -94,6 +101,7 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
     const begin = (r.created ?? r.started) as number;
     // Confirmed destroy; else the attempt's finish (plus the grace for a limit, never past now);
     // else (still running) now. Never before the start.
+    const grace = fallback > 0 ? Math.max(0, r.ttl === null ? fallback : r.ttl * 1000) : 0;
     const unconfirmedEnd =
       r.finished === null ? w.now : grace > 0 ? Math.min(w.now, r.finished + grace) : r.finished;
     const end = Math.max(begin, r.destroyed ?? unconfirmedEnd);
