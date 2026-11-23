@@ -40,7 +40,9 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
     url: base,
     hook_attributes: { url: `${base}${WEBHOOK_PATH}`, active: true },
     redirect_url: o.redirectUrl,
-    public: false,
+    // A private App installs only on its owner's account. The claim flow exists for other accounts
+    // to install it, and an unclaimed installation is ignored, so it is public only then.
+    public: o.claimFlow === true,
     default_permissions: {
       checks: "write",
       contents: "read",
