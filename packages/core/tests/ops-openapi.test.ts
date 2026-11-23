@@ -91,7 +91,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
   const withSig = createRegistry([...registry.ops, sig]);
   expect(mcpTools(withSig).map((t) => t.name)).toEqual(withSig.mcpOps().map((o) => o.name));
   expect(withSig.documentedOps().map((o) => o.name)).not.toContain("approve_release");
-  // Ops no token role can call (create_api_token needs admin) are not listed.
+  // Ops no token role can call are not listed.
   expect(mcpTools(registry).map((t) => t.name)).toEqual(registry.mcpOps().map((o) => o.name));
   // Ops that carry a secret value are REST and CLI only: never in an agent's tool list.
   const hiddenFromMcp = registry.documentedOps().filter((o) => !o.mcp);
@@ -104,6 +104,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "add_proxy_passthrough_host",
     "approval_challenge",
     "approve_run_challenge",
+    "create_api_token",
     "enrolment_challenge",
     "incident_unfreeze",
     "key_policy_challenge",

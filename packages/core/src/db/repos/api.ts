@@ -2,6 +2,7 @@
 // Like index.ts, this is part of the only code allowed to name tenant tables.
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
+import { DIALECT } from "../dialect";
 import * as s from "../schema";
 import type { AgentRole, JobState, TokenKind } from "../schema";
 import { ulid } from "../ulid";
@@ -12,6 +13,21 @@ export type ApiToken = typeof s.apiTokens.$inferSelect;
 // ---- tokens ----
 
 const TOKEN_COLS = { orgId: s.apiTokens.orgId, projectId: s.apiTokens.projectId };
+
+/**
+ * Serialises token minting and revoking of one org for the rest of the transaction (#437), so a
+ * count of active tokens cannot go stale between the check and the write. Take it first in the
+ * transaction. On Postgres it is a transaction-scoped advisory lock (a waiter holds an older
+ * snapshot, so SERIALIZABLE re-runs it against the winner). SQLite's write transactions are
+ * already exclusive, so it is a no-op there, and outside a transaction there is nothing to hold.
+ */
+export function lockOrgTokens(db: Db, orgId: string): Promise<void> {
+  if (DIALECT !== "pg") return Promise.resolve();
+  return db.run(async (h) => {
+    const orm = h.orm as unknown as { execute(q: unknown): Promise<unknown> };
+    await orm.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`tokens:${orgId}`}, 0))`);
+  });
+}
 
 /** Stores a token by hash. `scope.projectId` narrows it to one project; absent means the org. */
 export function insertApiToken(

@@ -1,27 +1,40 @@
 import { z } from "zod";
-import { getOrgById, insertApiToken } from "../../db/repos";
+import {
+  appendEvent,
+  findApiTokenById,
+  getOrgById,
+  insertApiToken,
+  lockOrgTokens,
+} from "../../db/repos";
 import { AGENT_ROLES, TOKEN_KINDS } from "../../db/schema";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { principalLabel } from "../principal";
+import { roleSatisfies } from "../roles";
 import { assertMintable, generateToken, hashToken } from "../tokens";
 
 const DAY_MS = 86_400_000;
 
 export const createApiToken = defineOp({
   name: "create_api_token",
-  // Token minting: no agent role can call it, and a token must never be minted into an agent's context.
+  // Credential minting stays a REST act: a token must never be minted into an agent's context.
   mcp: false,
   summary: "Create an agent token, scoped to the org or one project. Shown once.",
   description:
-    "Creates a bearer token for an agent or script, with a role (reader, operator or " +
-    "release_operator), scoped to the org or to one project (pass project). The secret is " +
-    "returned once in `token` and cannot be read again: only its hash is stored. Tokens expire " +
-    "after expires_in_days (default 90, max 365). Org admins only; no agent token can create " +
-    "tokens. `kind` is `agent` (default: an MCP client or script) or `person` (a human's own " +
-    "token); it is fixed at mint time. Projects that set untrusted_run_approval to `no_agents` " +
-    "(the default) refuse agent tokens as run approvers, so mint a person token only for a " +
-    "human. Writes and is audited. Grant the least role and the narrowest scope that works.",
+    "Creates a bearer token with a role (reader, operator or release_operator), scoped to the " +
+    "org or to one project (pass project). The secret is returned once in `token` and cannot be " +
+    "read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max " +
+    "365). Callable by an org admin (in-process) or by a bearer token of role operator or above " +
+    "in its own org, which can never escalate: the new token's role is at most the caller's, " +
+    "its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, " +
+    "never the reverse or another project), and it expires no later than the caller does. " +
+    "`kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); " +
+    "an agent token may mint only agent tokens, with a role of at most operator. Fixed at mint " +
+    "time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent " +
+    "tokens as run approvers, so mint a person token only for a human. Writes and is audited " +
+    "(the audit entry names the minting token), and emits an `org.token_minted` event. Not an " +
+    "MCP tool: credential minting is a REST act. Grant the least role and the narrowest scope " +
+    "that works.",
   input: z.object({
     name: z.string().min(1).max(80).describe("A label, e.g. the agent or pipeline that uses it."),
     role: z.enum(AGENT_ROLES).describe("reader: read-only. operator: also cancel and rerun."),
@@ -43,24 +56,46 @@ export const createApiToken = defineOp({
   }),
   oneTimeSecretFields: ["token"],
   effect: "write",
-  auth: { type: "token", minRole: "admin" },
+  auth: { type: "token", minRole: "operator" },
   untrustedOutput: false,
   scope: "org",
   http: { method: "POST", path: "/tokens" },
   async handler(ctx, input) {
-    // Defense in depth: the dispatcher already requires admin, which no token role reaches.
-    if (ctx.principal.kind !== "member") {
-      throw new OpError("forbidden", "only org members can create tokens");
+    const p = ctx.principal;
+    if (ctx.transport === "mcp" || ctx.viaMcp) {
+      throw new OpError("forbidden", "create_api_token is not available over MCP");
     }
-    assertMintable(ctx.principal, {
+    if (p.kind === "member") {
+      // The in-process admin path, as before.
+      if (!roleSatisfies(p.role, "admin")) {
+        throw new OpError("forbidden", "only org admins can create tokens");
+      }
+    } else if (p.kind !== "token") {
+      throw new OpError("forbidden", "this principal cannot create tokens");
+    }
+    // Serialise per org with the revoke path, then check the caller against fresh state.
+    await lockOrgTokens(ctx.db, ctx.scope.orgId);
+    assertMintable(p, {
       role: input.role,
       projectId: ctx.scope.projectId,
       kind: input.kind,
     });
+    const expiresAt = ctx.now() + input.expires_in_days * DAY_MS;
+    if (p.kind === "token") {
+      const parent = await findApiTokenById(ctx.db, p.id);
+      if (!parent || parent.revokedAt !== null || parent.orgId !== ctx.scope.orgId) {
+        throw new OpError("forbidden", "the calling token is no longer valid");
+      }
+      if (parent.expiresAt !== null && expiresAt > parent.expiresAt) {
+        throw new OpError(
+          "forbidden",
+          "a token cannot outlive the token that creates it; ask for a shorter expires_in_days",
+        );
+      }
+    }
     const org = await getOrgById(ctx.db, ctx.scope.orgId);
     if (!org) throw new OpError("not_found", "org not found");
     const secret = generateToken();
-    const expiresAt = ctx.now() + input.expires_in_days * DAY_MS;
     const row = await insertApiToken(ctx.db, ctx.scope, {
       name: input.name,
       role: input.role,
@@ -69,6 +104,22 @@ export const createApiToken = defineOp({
       createdBy: principalLabel(ctx.principal),
       expiresAt,
     });
+    await appendEvent(
+      ctx.db,
+      { orgId: ctx.scope.orgId },
+      {
+        type: "org.token_minted",
+        payload: {
+          token_id: row.id,
+          parent_id: p.kind === "token" ? p.id : null,
+          by: principalLabel(p),
+          role: input.role,
+          kind: input.kind,
+          project_id: row.projectId,
+          expires_at: new Date(expiresAt).toISOString(),
+        },
+      },
+    );
     return {
       id: row.id,
       name: row.name,

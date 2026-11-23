@@ -185,7 +185,9 @@ describe("tools", () => {
     const hidden = registry.ops.filter(
       (o) => o.auth.type === "token" && !registry.documentedOps().includes(o),
     );
-    expect(hidden.map((o) => o.name)).toContain("create_api_token");
+    // create_api_token is callable by a token now (#437) but is a REST act: it is not an MCP tool.
+    expect(registry.documentedOps().map((o) => o.name)).toContain("create_api_token");
+    expect(registry.mcpOps().map((o) => o.name)).not.toContain("create_api_token");
     const client = await httpClient();
     const names = (await client.listTools()).tools.map((t) => t.name);
     for (const o of hidden) expect(names).not.toContain(o.name);
@@ -197,6 +199,7 @@ describe("tools", () => {
     for (const o of hidden) {
       expect(tokenRoles.some((r) => roleSatisfies(r, o.auth.minRole))).toBe(false);
     }
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("create_api_token");
     await expect(client.callTool({ name: "create_api_token", arguments: {} })).rejects.toThrow();
     await client.close();
   });
