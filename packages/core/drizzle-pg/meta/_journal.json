@@ -15,6 +15,13 @@
       "when": 1795395479805,
       "tag": "0001_instance_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795396725646,
+      "tag": "0002_job_log_notices",
+      "breakpoints": true
     }
   ]
 }

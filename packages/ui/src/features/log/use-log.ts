@@ -76,12 +76,14 @@ export function useAttemptLog(attemptId: string | null, active: boolean): LogMod
       api.jobLog({ attemptId, offset: 0, limit: VIEW_CAP }),
       api.jobSteps({ attemptId }),
       api.jobCuts({ attemptId }),
+      api.jobNotices({ attemptId }),
     ]).then(
-      ([slice, steps, cuts]) => {
+      ([slice, steps, cuts, notices]) => {
         if (cancelled) return;
         fresh.push(slice.bytes, slice.offset);
         for (const st of steps) fresh.applyStep(st);
         for (const c of cuts) fresh.applyCut(c);
+        for (const n of notices) fresh.applyNotice(n);
         knownRef.current = slice.size;
         if (slice.done) setEof(true);
         setVersion(fresh.version);
@@ -127,6 +129,13 @@ export function useAttemptLog(attemptId: string | null, active: boolean): LogMod
           }
           return;
         }
+        if (msg.type === "notice") {
+          if (msg.attemptId === attemptId) {
+            p.applyNotice(msg);
+            bump();
+          }
+          return;
+        }
         if (msg.type !== "log" || msg.attemptId !== attemptId) return;
         knownRef.current = Math.max(knownRef.current, msg.offset + msg.data.length);
         if (p.nextOffset < capRef.current) p.push(msg.data, msg.offset);
@@ -152,12 +161,14 @@ export function useAttemptLog(attemptId: string | null, active: boolean): LogMod
       }),
       api.jobSteps({ attemptId }),
       api.jobCuts({ attemptId }),
+      api.jobNotices({ attemptId }),
     ]).then(
-      ([slice, steps, cuts]) => {
+      ([slice, steps, cuts, notices]) => {
         if (cancelled) return;
         if (slice.bytes.length > 0) p.push(slice.bytes, slice.offset);
         for (const st of steps) p.applyStep(st);
         for (const c of cuts) p.applyCut(c);
+        for (const n of notices) p.applyNotice(n);
         knownRef.current = slice.size;
         if (slice.done) setEof(true);
         bump();

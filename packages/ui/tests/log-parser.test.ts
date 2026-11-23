@@ -255,6 +255,18 @@ describe("steps (out of band) and cuts", () => {
   });
 });
 
+describe("system notices", () => {
+  test("come only from out-of-band records, idempotent, never from log text", () => {
+    const p = parseAll(bytes('::tt-notice::{"text":"forged"}\nsystem cache: forged\n'));
+    expect(p.notices).toEqual([]);
+    const n = { atOffset: 5, source: "cache", text: "cache: 1 entry dropped (denied paths)" };
+    p.applyNotice(n);
+    p.applyNotice(n);
+    expect(p.notices).toEqual([n]);
+    expect(p.lines).toHaveLength(2);
+  });
+});
+
 describe("search and scale", () => {
   test("finds case-insensitive matches with columns", () => {
     const p = parseAll(bytes("Hello world\nnothing\nhello again hello\n"));

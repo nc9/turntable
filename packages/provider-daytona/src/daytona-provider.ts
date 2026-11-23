@@ -200,6 +200,13 @@ export class DaytonaProvider implements Provider {
   private readonly startTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  /**
+   * The sandboxes we created (or were told about at boot) and have not confirmed gone. This is the
+   * own-fleet count's source: Daytona's listings cannot be trusted (a label-filtered list returns
+   * nothing for new sandboxes, the unfiltered list shows deleted ones as started), only a get by
+   * id is accurate. An id leaves the set only when a get says it is gone (or not ours).
+   */
+  private readonly recorded = new Set<string>();
   /** Serialises create() so the capacity check and the create cannot interleave in this process. */
   private createChain: Promise<unknown> = Promise.resolve();
 
@@ -399,11 +406,59 @@ export class DaytonaProvider implements Provider {
     throw new InfraError("Daytona: sandbox listing did not end");
   }
 
+  /**
+   * Tells the provider about sandboxes it should own from before this process started (the core
+   * reads them from attempts that recorded a sandbox and no confirmed destroy). Nothing is
+   * trusted yet: each id is confirmed with a get on its first use, and one that is gone or not
+   * ours is dropped there.
+   */
+  adopt(ids: readonly string[]): void {
+    for (const id of ids) if (/^[A-Za-z0-9_-]{1,128}$/.test(id)) this.recorded.add(id);
+  }
+
+  /** What the count is made from, for status and logs. */
+  private countingMode(): { mode: "recorded-ids"; tracked: number } {
+    return { mode: "recorded-ids", tracked: this.recorded.size };
+  }
+
+  /**
+   * The state of each recorded sandbox, by get (the only accurate read). A sandbox that is gone
+   * or destroyed, or does not carry our label, leaves the set. Any other failure is thrown: an
+   * unreadable fleet is never taken for an empty one.
+   */
+  private async recordedSandboxes(): Promise<DaytonaSandbox[]> {
+    const out = await Promise.all(
+      [...this.recorded].map(async (id): Promise<DaytonaSandbox | undefined> => {
+        try {
+          const sb = await this.api.json<DaytonaSandbox>(
+            "GET",
+            `/sandbox/${encodeURIComponent(id)}`,
+          );
+          if (!this.fleet.isOwn(sb) || sb.state === "destroyed") {
+            this.recorded.delete(id);
+            this.known.delete(id);
+            return undefined;
+          }
+          return sb;
+        } catch (e) {
+          if (e instanceof SandboxNotFoundError) {
+            this.recorded.delete(id);
+            this.known.delete(id);
+            return undefined;
+          }
+          throw e;
+        }
+      }),
+    );
+    return out.filter((s): s is DaytonaSandbox => s !== undefined);
+  }
+
+  /**
+   * Our live sandboxes: the recorded ones confirmed by get, plus strays a best-effort listing finds
+   * (confirmed by get too). The listing can only add to the count, never lower it.
+   */
   private async ownLive(): Promise<number> {
-    const all = await this.listAll({
-      labels: JSON.stringify({ [this.fleet.label]: OWN_LABEL_VALUE }),
-    });
-    return all.filter((s) => this.fleet.isOwn(s) && isLive(s.state)).length;
+    return (await this.list({})).length;
   }
 
   /**
@@ -425,8 +480,13 @@ export class DaytonaProvider implements Provider {
   private usageForbidden = false;
 
   /** What gates a create, for status and the logs. */
-  diagnose(): { quotaMode: "off" | "org-usage" | "own-fleet"; reason: string; maxLive: number } {
-    const base = { maxLive: this.maxLive };
+  diagnose(): {
+    quotaMode: "off" | "org-usage" | "own-fleet";
+    reason: string;
+    maxLive: number;
+    counting: { mode: "recorded-ids"; tracked: number };
+  } {
+    const base = { maxLive: this.maxLive, counting: this.countingMode() };
     if (this.opts.ownerCiPreflight === false) {
       return { quotaMode: "off", reason: "ownerCiPreflight is false", ...base };
     }
@@ -629,6 +689,8 @@ export class DaytonaProvider implements Provider {
         json: body,
         timeoutMs: 120_000,
       });
+      // Recorded the moment it exists, before anything can fail, so it is counted and cleaned up.
+      this.recorded.add(sb.id);
       try {
         if (!this.fleet.isOwn(sb))
           throw new InfraError("Daytona created a sandbox without our label; refusing to continue");
@@ -648,9 +710,6 @@ export class DaytonaProvider implements Provider {
         await this.waitStarted(sb.id);
         const base = await this.verify(sb.id, true);
         await this.waitToolbox(sb.id, base);
-        // Listings lag behind creation. Wait until it shows up, so counts, caps and
-        // destroyByLabels see this sandbox as soon as create returns.
-        await this.waitListed(sb.id, true);
         if (
           (spec.network.egress === "deny-all-except-proxy" ||
             spec.network.egress === "proxy-domain-filtered") &&
@@ -667,8 +726,13 @@ export class DaytonaProvider implements Provider {
         return { id: sb.id, startedAt };
       } catch (e) {
         // Never leave a half-created sandbox behind.
-        await this.api.json("DELETE", `/sandbox/${encodeURIComponent(sb.id)}`).catch(() => {});
+        const gone = await this.api
+          .json("DELETE", `/sandbox/${encodeURIComponent(sb.id)}`)
+          .then(() => true)
+          .catch((err) => err instanceof SandboxNotFoundError);
         this.known.delete(sb.id);
+        // A delete that failed leaves it recorded: it still counts, and the next sweep retries it.
+        if (gone) this.recorded.delete(sb.id);
         throw e;
       }
     };
@@ -763,10 +827,14 @@ export class DaytonaProvider implements Provider {
     try {
       sb = await this.api.json<DaytonaSandbox>("GET", `/sandbox/${encodeURIComponent(id)}`);
     } catch (e) {
-      if (e instanceof SandboxNotFoundError) return;
+      if (e instanceof SandboxNotFoundError) {
+        this.recorded.delete(id);
+        return;
+      }
       throw e;
     }
     if (!this.fleet.isOwn(sb)) {
+      this.recorded.delete(id);
       throw new SpecError(
         `refusing to delete sandbox ${id}: it is not labelled ${this.fleet.label}=${OWN_LABEL_VALUE}`,
       );
@@ -778,7 +846,7 @@ export class DaytonaProvider implements Provider {
     }
     this.known.delete(id);
     await this.waitGone(id);
-    await this.waitListed(id, false);
+    this.recorded.delete(id);
     const destroyedAt = this.now();
     const createdAt = sb.createdAt ? Date.parse(sb.createdAt) : destroyedAt;
     this.opts.onUsage?.({
@@ -788,24 +856,6 @@ export class DaytonaProvider implements Provider {
       destroyedAt,
       seconds: Math.max(0, Math.round((destroyedAt - createdAt) / 1000)),
     });
-  }
-
-  /** Listings are eventually consistent: wait until `id` is (or is no longer) in our own listing. */
-  private async waitListed(id: string, present: boolean): Promise<void> {
-    const deadline = this.now() + 90_000;
-    for (;;) {
-      const all = await this.listAll({
-        labels: JSON.stringify({ [this.fleet.label]: OWN_LABEL_VALUE }),
-      });
-      const here = all.some((s) => s.id === id && this.fleet.isOwn(s) && isLive(s.state));
-      if (here === present) return;
-      if (this.now() >= deadline) {
-        throw new InfraError(
-          `Daytona listing did not ${present ? "show" : "drop"} sandbox ${id} within 90 s`,
-        );
-      }
-      await this.sleep(Math.min(this.pollMs, 500));
-    }
   }
 
   /** Deletion is asynchronous: wait until the sandbox is really gone so counts and caps are true. */
@@ -832,24 +882,50 @@ export class DaytonaProvider implements Provider {
     return found.length;
   }
 
+  /**
+   * Our sandboxes, live and matching `filter`. The recorded ids (confirmed by get) are the
+   * authority. The label-filtered listing is added as a best effort, to find strays an earlier
+   * process lost track of; it can miss new sandboxes and show deleted ones, so it never lowers a
+   * count and an empty answer from it means nothing. A failing listing is ignored.
+   */
   async list(filter: { labels?: Labels }): Promise<SandboxInfo[]> {
     // Our own label is always part of the query and is checked again on every result, so a
     // listing can never include (and a delete can never reach) a sandbox that is not ours.
     const want = { ...filter.labels, [this.fleet.label]: OWN_LABEL_VALUE };
-    const all = await this.listAll({ labels: JSON.stringify(want) });
-    return all
-      .filter(
-        (s) =>
-          this.fleet.isOwn(s) &&
-          isLive(s.state) &&
-          Object.entries(want).every(([k, v]) => s.labels?.[k] === v),
-      )
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        labels: s.labels ?? {},
-        createdAt: s.createdAt ? Date.parse(s.createdAt) : 0,
-      }));
+    const mine = (s: DaytonaSandbox): boolean =>
+      this.fleet.isOwn(s) &&
+      isLive(s.state) &&
+      Object.entries(want).every(([k, v]) => s.labels?.[k] === v);
+    const byId = new Map<string, DaytonaSandbox>();
+    for (const s of await this.recordedSandboxes()) if (mine(s)) byId.set(s.id, s);
+    let strays: DaytonaSandbox[] = [];
+    try {
+      strays = await this.listAll({ labels: JSON.stringify(want) });
+    } catch {
+      // best effort only
+    }
+    for (const s of strays) {
+      if (byId.has(s.id) || !mine(s)) continue;
+      // The listing may be stale: confirm with a get before counting or acting on it.
+      try {
+        const fresh = await this.api.json<DaytonaSandbox>(
+          "GET",
+          `/sandbox/${encodeURIComponent(s.id)}`,
+        );
+        if (mine(fresh)) {
+          byId.set(fresh.id, fresh);
+          this.recorded.add(fresh.id);
+        }
+      } catch {
+        // gone, or unreadable: not counted
+      }
+    }
+    return [...byId.values()].map((s) => ({
+      id: s.id,
+      name: s.name,
+      labels: s.labels ?? {},
+      createdAt: s.createdAt ? Date.parse(s.createdAt) : 0,
+    }));
   }
 
   async count(filter: { labels?: Labels }): Promise<number> {

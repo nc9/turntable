@@ -1,4 +1,4 @@
-import type { CutRecord, Job, JobAttempt, Run, StepEvent } from "./types";
+import type { CutRecord, Job, JobAttempt, LogNotice, Run, StepEvent } from "./types";
 
 /** What a client may subscribe to. The server checks each topic against the caller's scope (#30). */
 export type Topic =
@@ -42,13 +42,17 @@ export type StepMessage = { type: "step" } & StepEvent;
 /** An output-cap cut for an attempt, out of band from the log bytes. */
 export type CutMessage = { type: "cut" } & CutRecord;
 
+/** A system notice for an attempt, out of band from the log bytes. */
+export type NoticeMessage = { type: "notice" } & LogNotice;
+
 export type RealtimeMessage =
   | ChangeEvent
   /** The server cannot replay from the cursor (or dropped a slow client); refetch, then resume. */
   | { type: "reset"; topic: string; cursor: string }
   | LogChunkEvent
   | StepMessage
-  | CutMessage;
+  | CutMessage
+  | NoticeMessage;
 
 /** "polling" means updates arrive on a timer (no push transport yet), not as they happen. */
 export type ConnectionStatus = "connecting" | "live" | "polling" | "reconnecting" | "offline";

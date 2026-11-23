@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
-import { type Db, ensureInstance, getAttempt, openDatabase } from "./db";
+import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
 import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
@@ -43,7 +43,9 @@ import {
   createActRunner,
   createProvider,
   gitRepoSource,
+  adoptRecordedSandboxes,
   reconcileExpired,
+  sweepUndestroyedSandboxes,
   type AttemptRunner,
   Scheduler,
   withEgressPolicy,
@@ -320,14 +322,25 @@ async function startBackground(
       log,
     });
     const sched = scheduler;
-    const reconcile = () =>
-      reconcileExpired(db, providers, {
+    const reconcile = async () => {
+      // A provider that cannot trust its listings (Daytona) counts its own fleet by recorded id:
+      // tell it which sandboxes the database says are still ours before anything else.
+      await adoptRecordedSandboxes(db, providers);
+      const done = await reconcileExpired(db, providers, {
         log,
         owner: sched.owner,
         leaseMs,
         // Re-attach to execs a dead worker left behind: the real result is recovered by replay.
         adopt: (claim, resume) => sched.adopt(claim, resume),
       });
+      const swept = await sweepUndestroyedSandboxes(db, providers, { log });
+      if (swept.destroyed + swept.failed > 0) {
+        log(
+          `sandbox sweep: ${swept.destroyed} destroyed, ${swept.failed} failed (retried next time)`,
+        );
+      }
+      return done;
+    };
     // Boot reconcile before claiming: abandoned attempts are re-attached or resolved first.
     const report = await reconcile();
     if (report.resolved.length + report.adopted.length > 0) {
@@ -548,7 +561,15 @@ async function serve(args: string[]): Promise<void> {
       orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
       baseUrl: cacheUrl,
-      onNotice: (g, m) => console.log(`[longshore] ${m} (attempt ${g.attemptId})`),
+      // Shown next to the job's own log as a system line (out of band: output cannot forge it).
+      onNotice: (g, m) => {
+        console.log(`[longshore] ${m} (attempt ${g.attemptId})`);
+        void addNotice(
+          db,
+          { orgId: g.own.orgId, projectId: g.own.projectId },
+          { attemptId: g.attemptId, source: "cache", text: m },
+        ).catch(() => {});
+      },
       // A grant works only while its attempt is running, whatever else the token says.
       isActive: async (g) =>
         (await getAttempt(db, { orgId: g.own.orgId, projectId: g.own.projectId }, g.attemptId))
