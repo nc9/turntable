@@ -135,5 +135,15 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"log_notices\" ADD CONSTRAINT \"log_notices_attempt_id_org_id_project_id_job_attempts_id_org_id_project_id_fk\" FOREIGN KEY (\"attempt_id\",\"org_id\",\"project_id\") REFERENCES \"job_attempts\"(\"id\",\"org_id\",\"project_id\") ON DELETE no action ON UPDATE no action;",
       "CREATE INDEX \"log_notices_attempt_idx\" ON \"log_notices\" USING btree (\"attempt_id\",\"at_offset\");"
     ]
+  },
+  {
+    "tag": "0003_quota_events",
+    "when": 1795399832930,
+    "statements": [
+      "ALTER TABLE \"events\" DROP CONSTRAINT \"events_type_check\";",
+      "ALTER TABLE \"events\" ADD CONSTRAINT \"events_type_check\" CHECK (type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached'));",
+      "-- Quota notices were `infra.error` events with an error_class (#182): they are quota.* now.\nUPDATE \"events\" SET \"type\" = 'quota.warning', \"payload\" = (\"payload\"::jsonb - 'error_class')::text WHERE \"type\" = 'infra.error' AND \"payload\"::jsonb ->> 'error_class' = 'quota_warning';",
+      "UPDATE \"events\" SET \"type\" = 'quota.reached', \"payload\" = (\"payload\"::jsonb - 'error_class')::text WHERE \"type\" = 'infra.error' AND \"payload\"::jsonb ->> 'error_class' = 'quota_reached';"
+    ]
   }
 ];

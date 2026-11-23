@@ -1646,7 +1646,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 8,
+              "maxItems": 10,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1658,7 +1658,9 @@
                   "attempt.step",
                   "attempt.cut",
                   "approval.required",
-                  "infra.error"
+                  "infra.error",
+                  "quota.warning",
+                  "quota.reached"
                 ]
               }
             }
@@ -1751,7 +1753,9 @@
                               "attempt.step",
                               "attempt.cut",
                               "approval.required",
-                              "infra.error"
+                              "infra.error",
+                              "quota.warning",
+                              "quota.reached"
                             ]
                           },
                           "project": {
@@ -3390,7 +3394,7 @@
       "get": {
         "operationId": "get_quotas",
         "summary": "The org's quotas, what is used against each, and why work is held.",
-        "description": "The limits of this org (null is no limit), the usage each is measured against (concurrent attempts now, runs started in the last hour, sandbox minutes in the last 24 hours, stored log bytes, stored artifact and cache bytes), the percent used, and for a limit that is reached the reason new work is held. A held limit stops new claims; running attempts finish. Events (`infra.error` with `error_class` `quota_warning` at 80% and `quota_reached` at 100%) fire once per window. Read-only. Needs an org-level token (a project-scoped one is refused). Limits are set by the instance operator, on the host (`longshore quotas set`) or with an instance token over REST (`set_quotas`), never by the org's own tokens: a tenant must not be able to raise its own.\n\nRequired role: reader. Read-only.",
+        "description": "The limits of this org (null is no limit), the usage each is measured against (concurrent attempts now, runs started in the last hour, sandbox minutes in the last 24 hours, stored log bytes, stored artifact and cache bytes), the percent used, and for a limit that is reached the reason new work is held. A held limit stops new claims; running attempts finish. Events (`quota.warning` at 80% and `quota.reached` at 100%) fire once per window. Read-only. Needs an org-level token (a project-scoped one is refused). Limits are set by the instance operator, on the host (`longshore quotas set`) or with an instance token over REST (`set_quotas`), never by the org's own tokens: a tenant must not be able to raise its own.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "org",
