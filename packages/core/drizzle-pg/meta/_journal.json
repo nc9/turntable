@@ -36,6 +36,13 @@
       "when": 1795400535852,
       "tag": "0004_outbound_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795401790162,
+      "tag": "0005_oidc_audiences",
+      "breakpoints": true
     }
   ]
 }
