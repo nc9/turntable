@@ -16,12 +16,36 @@ const ALLOWED = new Set([
 ]);
 
 /**
- * One line of the README may name the customer: the dogfooding statement that links the public
- * repository (the maintainer asked for it). Nothing else of theirs: no hosted URL, account or id.
+ * The README may name the customer on at most MAX_README_LINES lines, for the dogfooding statement
+ * that links the public repository (the maintainer asked for it): only the public repo URL, its
+ * `owner/name` link text and the bare name are taken out of such a line, and what is left must
+ * still pass the normal check (so a hosted URL, an account, an id or a private repo name fails).
+ * Built at runtime, like NAME.
  */
-const ALLOWED_LINES: Record<string, RegExp> = {
-  "README.md": new RegExp(["github.com/squir", "relscan/squir", "relscan"].join("")),
-};
+const BARE = ["squir", "relscan"].join("");
+const REPO_URL = new RegExp(`github\\.com/${BARE}/${BARE}`, "gi");
+const REPO_SLUG = new RegExp(`${BARE}/${BARE}`, "gi");
+const BARE_NAME = new RegExp(BARE, "gi");
+const MAX_README_LINES = 2;
+
+/** `file:line` of each place `text` (the content of `rel`) names the customer when it may not. */
+export function hygieneHits(rel: string, text: string): string[] {
+  if (ALLOWED.has(rel)) return [];
+  const hits: string[] = [];
+  let allowedLines = 0;
+  for (const [i, line] of text.split("\n").entries()) {
+    if (!NAME.test(line)) continue;
+    if (rel === "README.md") {
+      const rest = line.replace(REPO_URL, "").replace(REPO_SLUG, "").replace(BARE_NAME, "");
+      if (!NAME.test(rest)) {
+        allowedLines += 1;
+        if (allowedLines <= MAX_README_LINES) continue;
+      }
+    }
+    hits.push(`${rel}:${i + 1}`);
+  }
+  return hits;
+}
 
 const SKIP = new Set(["node_modules", "dist", ".git", "coverage", ".tsbuildinfo"]);
 const TEXT = /\.(ts|tsx|js|mjs|json|md|mdx|yml|yaml|toml|sh|css|html|txt|sql|dockerfile)$/i;
@@ -59,12 +83,35 @@ describe("public hygiene", () => {
     for (const f of files) {
       const rel = f.slice(root.length + 1);
       if (ALLOWED.has(rel)) continue;
-      const text = readFileSync(f, "utf8");
-      const only = ALLOWED_LINES[rel];
-      const line = text.split("\n").findIndex((l) => NAME.test(l) && !only?.test(l));
-      if (line >= 0) hits.push(`${rel}:${line + 1}`);
+      hits.push(...hygieneHits(rel, readFileSync(f, "utf8")));
     }
     expect(hits).toEqual([]);
+  });
+
+  describe("the README exception is exactly the public repo link", () => {
+    const readme = readFileSync(join(root, "README.md"), "utf8");
+    const urlLine = new RegExp(REPO_URL.source, "i");
+    const real = readme.split("\n").find((l) => urlLine.test(l))!;
+    const privateTerm = ["squir", "rel-ci"].join("");
+
+    test("the real README passes", () => {
+      expect(real).toBeDefined();
+      expect(hygieneHits("README.md", readme)).toEqual([]);
+    });
+    test("the same line with a private-looking customer term fails", () => {
+      expect(hygieneHits("README.md", `${real} Also see ${privateTerm}.`)).toEqual(["README.md:1"]);
+      expect(hygieneHits("README.md", `${real}\nOur ${privateTerm} fleet.`)).toEqual([
+        "README.md:2",
+      ]);
+    });
+    test("the repo URL in any other file fails", () => {
+      expect(hygieneHits("docs/x.mdx", real)).toEqual(["docs/x.mdx:1"]);
+      expect(hygieneHits("CHANGELOG.md", real)).toEqual(["CHANGELOG.md:1"]);
+    });
+    test("two such README lines pass and a third fails", () => {
+      expect(hygieneHits("README.md", [real, real].join("\n"))).toEqual([]);
+      expect(hygieneHits("README.md", [real, real, real].join("\n"))).toEqual(["README.md:3"]);
+    });
   });
 
   test("the allowed files exist, and are only vendored copies that cite their public source", () => {
