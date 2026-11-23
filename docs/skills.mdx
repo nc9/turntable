@@ -1,0 +1,33 @@
+---
+title: Setup skills
+description: Agent skills that take you, or your coding agent, through self-hosting Turntable, creating its GitHub App and connecting an agent.
+---
+
+Turntable ships three [Agent Skills](https://agentskills.io) in `skills/`. A coding agent drives what it can over the CLI, REST or MCP. You do only the steps that need a human: browser approvals and pasting secrets.
+
+| Skill | Use it to |
+| --- | --- |
+| `turntable-self-host` | Run the binary or image, set the data directory, master key, public URL and trusted proxies, bootstrap tokens, backups and upgrades. |
+| `turntable-github-app` | Create the instance's own GitHub App, install it, claim the installation, and fix the usual faults. |
+| `turntable-connect-agent` | Give Claude Code or another MCP client a scoped token, and set up the event channel. |
+
+Each skill opens with its secret rules: the agent never reads or prints a token, you never paste one into a chat, and only hashes are set on the server.
+
+## Install in Claude Code
+
+The repo is a Claude Code plugin marketplace with one plugin, `turntable`. Its manifest is `.claude-plugin/plugin.json` at the repo root, so the plugin picks up `skills/` by default and also carries the [event channel](/agent-interface#claude-code-channel).
+
+```sh
+/plugin marketplace add nc9/turntable
+/plugin install turntable@turntable
+```
+
+Then ask for the task, for example "set up Turntable on Railway" or "create the GitHub App for my instance".
+
+## Use with other agents
+
+Each skill is a plain `SKILL.md` with `name` and `description` frontmatter. Copy the directories from `skills/` into your agent's skills directory, or point the agent at the files and ask it to follow them. The skills link to these docs, which stay the source of truth.
+
+## Keeping them accurate
+
+A test (`scripts/skills.test.ts`) fails when a skill names an operation, a `TURNTABLE_*` variable or a `turntable` command that does not exist.
