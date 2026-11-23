@@ -71,6 +71,8 @@ export function expectedFor(dataDir: string, env: Env): Expected {
     files.add(basename(keyFile));
     stateDirs.add(`${basename(keyFile)}.audit-state`);
   }
+  // The audit anchor state of a key that comes from the environment lives here.
+  stateDirs.add("audit-state");
   return { files, stateDirs };
 }
 

@@ -10,6 +10,7 @@ import {
 import { AuditAnchor } from "../audit/anchor";
 import { getGithubApp } from "../db/repos";
 import { initMasterKey, loadMasterKey } from "../secrets/crypto";
+import { masterKeyForCommand } from "../secrets/master-key";
 import { SecretStore } from "../secrets/store";
 import { SecretVault } from "../secrets/vault";
 import { AppAuth } from "./app-auth";
@@ -103,7 +104,10 @@ export async function githubAppCommand(args: string[]): Promise<void> {
   const db = openDatabase(dbPath(values["data-dir"]));
   try {
     await ensureInstance(db);
-    const store = new SecretStore(db, loadMasterKey(keyFile(values["master-key-file"])));
+    const masterKey = process.env.TURNTABLE_MASTER_KEY?.trim()
+      ? masterKeyForCommand(values["master-key-file"])
+      : loadMasterKey(keyFile(values["master-key-file"]));
+    const store = new SecretStore(db, masterKey);
 
     if (sub === "status") {
       const app = await getGithubApp(db);

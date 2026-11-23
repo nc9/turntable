@@ -5,10 +5,11 @@ import { LocalSigner } from "@turntable/signer";
 import { createApprovalVerifier } from "../approvals/verifier";
 import { type Db, ensureInstance, openDatabase } from "../db";
 import { getRunArtifactsByName } from "../db/repos";
-import { loadMasterKey } from "../secrets/crypto";
 import { SecretVault } from "../secrets/vault";
 import { SigningService } from "../signing";
-import { releaseConfigFromEnv } from "../roles";
+import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
+import { systemOrgId } from "../audit/failures";
+import { rewrapReleaseKey } from "./rewrap";
 import { AttestationStore } from "./attest";
 import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
@@ -64,11 +65,25 @@ export async function serveRelease(
 ): Promise<{ stop(): void }> {
   const cfg = releaseConfigFromEnv(env);
   // The lane's own master key, in its own file: the main process neither has nor can read it.
-  const masterKey = loadMasterKey(cfg.masterKeyFile);
+  const masterKey = releaseMasterKey(cfg);
   const log = (m: string) => console.log(`[turntable release] ${m}`);
   // Requests come from the main database; everything the lane itself holds is in its own files.
   const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   await ensureInstance(db);
+  // A rotation: all or nothing, before anything reads what the lane's key seals.
+  if (cfg.previousMasterKey) {
+    await rewrapReleaseKey({
+      db,
+      next: masterKey,
+      previous: cfg.previousMasterKey,
+      keysDir: keysDir(resolve(cfg.dataDir)),
+      auditOrgId: await systemOrgId(db),
+      log,
+    });
+    log(
+      "the previous release key is set: once a clean boot is confirmed and a new backup is taken, remove it",
+    );
+  }
   const attest = new AttestationStore(join(resolve(cfg.dataDir), "attested.db"));
   const { signer, records } = await wiring({
     db,

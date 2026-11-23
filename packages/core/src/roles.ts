@@ -10,8 +10,13 @@
 // shares no process with the other roles, so a process that runs untrusted code paths (web,
 // worker) has no signer to call and no key to read, whatever its database access. Nothing outside
 // `releaseConfigFromEnv`, which only the release role calls, looks at those variables.
+import { loadMasterKey } from "./secrets/crypto";
+import { parseMasterKeyValue } from "./secrets/master-key";
 export const ROLES = ["web", "worker", "poller", "release"] as const;
 export type Role = (typeof ROLES)[number];
+/** The release lane's key variables: read once by the lane, never left in an environment. */
+export const RELEASE_KEY_ENV = "TURNTABLE_RELEASE_MASTER_KEY";
+export const RELEASE_KEY_PREVIOUS_ENV = "TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS";
 export const MAIN_ROLES: readonly Role[] = ["web", "worker", "poller"];
 
 /** Every environment variable that belongs to the release lane and to nothing else. */
@@ -61,8 +66,12 @@ export function resolveRoles(
 }
 
 export interface ReleaseConfig {
-  /** The release role's own master key file: unreadable by the other roles. */
-  masterKeyFile: string;
+  /** The release role's own master key file: unreadable by the other roles. Absent when the key is in `masterKey`. */
+  masterKeyFile?: string | undefined;
+  /** The release key from TURNTABLE_RELEASE_MASTER_KEY, already removed from the environment. */
+  masterKey?: Buffer | undefined;
+  /** The key the lane's sealed state is under before a rotation (TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS). */
+  previousMasterKey?: Buffer | undefined;
   /** Where the release role keeps its own state (its own SQLite file), apart from the main data dir. */
   dataDir: string;
   /** The release role's own forge credential, used only to re-check tags and shas. */
@@ -135,6 +144,25 @@ function channelConfig(
  * is chosen: a main process never calls it, so these variables do nothing there even when set.
  */
 export function releaseConfigFromEnv(env: Record<string, string | undefined>): ReleaseConfig {
+  // First, before anything can fail or start: the key variables are read and removed.
+  const keyValue = env[RELEASE_KEY_ENV]?.trim();
+  const prevValue = env[RELEASE_KEY_PREVIOUS_ENV]?.trim();
+  delete env[RELEASE_KEY_ENV];
+  delete env[RELEASE_KEY_PREVIOUS_ENV];
+  const keyFile = env.TURNTABLE_RELEASE_MASTER_KEY_FILE?.trim();
+  if (keyValue && keyFile) {
+    throw new Error(
+      `${RELEASE_KEY_ENV} and TURNTABLE_RELEASE_MASTER_KEY_FILE are both set: use one`,
+    );
+  }
+  if (prevValue && !keyValue && !keyFile) {
+    throw new Error(`${RELEASE_KEY_PREVIOUS_ENV} is set but there is no current release key`);
+  }
+  const masterKey = keyValue ? parseMasterKeyValue(RELEASE_KEY_ENV, keyValue) : undefined;
+  let previousMasterKey = prevValue
+    ? parseMasterKeyValue(RELEASE_KEY_PREVIOUS_ENV, prevValue)
+    : undefined;
+  if (previousMasterKey && masterKey?.equals(previousMasterKey)) previousMasterKey = undefined;
   const need = (name: string): string => {
     const v = env[name]?.trim();
     if (!v) throw new Error(`the release role needs ${name}`);
@@ -159,7 +187,10 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
       throw new Error("TURNTABLE_RELEASE_PROXY_PORT must be a port number (0 for any free port)");
   }
   return {
-    masterKeyFile: need("TURNTABLE_RELEASE_MASTER_KEY_FILE"),
+    ...(masterKey
+      ? { masterKey }
+      : { masterKeyFile: keyFile || need("TURNTABLE_RELEASE_MASTER_KEY_FILE") }),
+    ...(previousMasterKey ? { previousMasterKey } : {}),
     dataDir: need("TURNTABLE_RELEASE_DATA_DIR"),
     githubToken: need("TURNTABLE_RELEASE_GITHUB_TOKEN"),
     artifactDir: need("TURNTABLE_RELEASE_ARTIFACT_DIR"),
@@ -212,4 +243,51 @@ export function mainRuntime(
   if (roles.has("release"))
     throw new Error("mainRuntime is for processes that are not the release lane");
   return { roles, release: undefined, ignoredReleaseEnv: releaseEnvPresent(env) };
+}
+
+/** The release lane's master key, from the variable (already parsed) or its file. */
+export function releaseMasterKey(cfg: ReleaseConfig): Buffer {
+  return cfg.masterKey ?? loadMasterKey(cfg.masterKeyFile!);
+}
+
+/** Where the release lane's key file and own data directory are, for doctor. Reads, never changes, the environment. */
+export function releaseKeyLocation(
+  env: Record<string, string | undefined>,
+): { file: string; dataDir: string | undefined } | undefined {
+  const file = env.TURNTABLE_RELEASE_MASTER_KEY_FILE?.trim();
+  return file ? { file, dataDir: env.TURNTABLE_RELEASE_DATA_DIR?.trim() || undefined } : undefined;
+}
+
+/**
+ * The release keys a main process holds, for its boot re-wrap (alpha.1 runs the lane in-process, so
+ * both pairs can be present). Reads and removes both variables, like the lane's own config does.
+ */
+export function takeReleaseKeys(
+  env: Record<string, string | undefined>,
+): { next: Buffer; previous?: Buffer } | undefined {
+  const keyValue = env[RELEASE_KEY_ENV]?.trim();
+  const prevValue = env[RELEASE_KEY_PREVIOUS_ENV]?.trim();
+  delete env[RELEASE_KEY_ENV];
+  delete env[RELEASE_KEY_PREVIOUS_ENV];
+  if (!keyValue) {
+    if (prevValue)
+      throw new Error(`${RELEASE_KEY_PREVIOUS_ENV} is set but there is no current release key`);
+    return undefined;
+  }
+  const next = parseMasterKeyValue(RELEASE_KEY_ENV, keyValue);
+  const previous = prevValue ? parseMasterKeyValue(RELEASE_KEY_PREVIOUS_ENV, prevValue) : undefined;
+  return previous && !previous.equals(next) ? { next, previous } : { next };
+}
+
+/**
+ * Whether a release lane is configured for this instance while its keys are not in this process:
+ * the lane's key file, or the worker's publish channel to it, is set.
+ */
+export function releaseLaneConfigured(env: Record<string, string | undefined>): boolean {
+  return [
+    "TURNTABLE_RELEASE_MASTER_KEY_FILE",
+    "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",
+    "TURNTABLE_PUBLISH_CHANNEL_URL",
+    "TURNTABLE_PUBLISH_CHANNEL_SOCKET",
+  ].some((k) => Boolean(env[k]?.trim()));
 }
