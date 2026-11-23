@@ -18,7 +18,7 @@ function sources(dir: string, out: string[] = []): string[] {
 }
 
 describe("configuration reference", () => {
-  test("every LONGSHORE_* variable the source names is in the reference", () => {
+  test("every TURNTABLE_* variable the source names is in the reference", () => {
     const files = [
       ...readdirSync(join(root, "packages")).flatMap((p) => {
         try {
@@ -32,7 +32,7 @@ describe("configuration reference", () => {
     const known = new Set([...CONFIG_VARS.map((v) => v.name), ...NOT_CONFIGURATION]);
     const missing = new Set<string>();
     for (const f of files) {
-      for (const m of readFileSync(f, "utf8").matchAll(/LONGSHORE_[A-Z0-9_]*[A-Z0-9]/g)) {
+      for (const m of readFileSync(f, "utf8").matchAll(/TURNTABLE_[A-Z0-9_]*[A-Z0-9]/g)) {
         if (!known.has(m[0])) missing.add(`${m[0]} (${f.slice(root.length + 1)})`);
       }
     }
