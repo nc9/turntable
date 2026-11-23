@@ -764,7 +764,7 @@ async function serve(args: string[]): Promise<void> {
   // The readiness checks behind the `doctor` operation, with what this server has seen of
   // forwarded headers. Read-only: the handle it is given can only run queries.
   const forwarded = new ForwardedObserver();
-  const hostedMode = values.hosted === true || process.env.LONGSHORE_HOSTED === "1";
+  const hostedMode = values.hosted === true || process.env.TURNTABLE_HOSTED === "1";
   const doctorRun = cachedDoctor(async () => {
     const { inputs, close } = realInputs({
       env: process.env,
@@ -800,7 +800,7 @@ async function serve(args: string[]): Promise<void> {
           : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
-        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`longshore doctor` on the host).
+        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`turntable doctor` on the host).
         ...(hostedMode ? {} : { doctor: doctorRun }),
         forwarded,
       })

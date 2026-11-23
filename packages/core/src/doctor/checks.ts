@@ -42,12 +42,12 @@ const set = (v: string | undefined): string | undefined => (v?.trim() ? v.trim()
 /** The process and the data directory: root is dropped, and the directory is ours to write. */
 export function checkPrivileges(i: DoctorInputs): DoctorCheck[] {
   const out: DoctorCheck[] = [];
-  if (i.proc.uid === 0 && set(i.env.LONGSHORE_DROP_PRIVILEGES)) {
+  if (i.proc.uid === 0 && set(i.env.TURNTABLE_DROP_PRIVILEGES)) {
     out.push(
       warn(
         "privileges",
         "process",
-        `this check runs as root; the server drops to ${set(i.env.LONGSHORE_DROP_PRIVILEGES)} at start`,
+        `this check runs as root; the server drops to ${set(i.env.TURNTABLE_DROP_PRIVILEGES)} at start`,
         "Run doctor as that user (or through the API of the running server) for the true picture.",
       ),
     );
@@ -57,7 +57,7 @@ export function checkPrivileges(i: DoctorInputs): DoctorCheck[] {
         "privileges",
         "process",
         "running as root: privileges were not dropped",
-        "Set LONGSHORE_DROP_PRIVILEGES=<uid>:<gid> (the image sets 65532:65532 and drops after taking ownership of the data directory), or start the process as a non-root user.",
+        "Set TURNTABLE_DROP_PRIVILEGES=<uid>:<gid> (the image sets 65532:65532 and drops after taking ownership of the data directory), or start the process as a non-root user.",
       ),
     );
   } else {
@@ -88,7 +88,7 @@ export function checkPrivileges(i: DoctorInputs): DoctorCheck[] {
         "data_dir",
         "process",
         `the data directory is owned by uid ${dir.uid} and this process (uid ${i.proc.uid}) cannot write to it`,
-        `Make it writable by this user, for example: chown -R ${i.proc.uid}:${i.proc.gid} <data dir>. In the image, start as root with LONGSHORE_DROP_PRIVILEGES set and it does this itself.`,
+        `Make it writable by this user, for example: chown -R ${i.proc.uid}:${i.proc.gid} <data dir>. In the image, start as root with TURNTABLE_DROP_PRIVILEGES set and it does this itself.`,
       ),
     );
   } else if ((dir.mode & 0o002) !== 0) {
@@ -122,7 +122,7 @@ export function checkPrivileges(i: DoctorInputs): DoctorCheck[] {
 }
 
 export function checkMasterKey(i: DoctorInputs): DoctorCheck {
-  const path = set(i.env.LONGSHORE_MASTER_KEY_FILE);
+  const path = set(i.env.TURNTABLE_MASTER_KEY_FILE);
   const area = "keys";
   if (!path) {
     const what =
@@ -132,13 +132,13 @@ export function checkMasterKey(i: DoctorInputs): DoctorCheck {
           "master_key",
           area,
           `no master key is configured: ${what}`,
-          "Create one with `longshore keys init` and set LONGSHORE_MASTER_KEY_FILE.",
+          "Create one with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.",
         )
       : warn(
           "master_key",
           area,
           `no master key is configured: ${what}`,
-          "Create one with `longshore keys init` and set LONGSHORE_MASTER_KEY_FILE.",
+          "Create one with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.",
         );
   }
   const f = i.fs.stat(path);
@@ -146,8 +146,8 @@ export function checkMasterKey(i: DoctorInputs): DoctorCheck {
     return fail(
       "master_key",
       area,
-      "the master key file named by LONGSHORE_MASTER_KEY_FILE does not exist",
-      "Create it with `longshore keys init --file <path>`, or restore it from backup. Without it sealed values cannot be read.",
+      "the master key file named by TURNTABLE_MASTER_KEY_FILE does not exist",
+      "Create it with `turntable keys init --file <path>`, or restore it from backup. Without it sealed values cannot be read.",
     );
   }
   if (f.size !== 32) {
@@ -181,7 +181,7 @@ export async function checkDatabase(i: DoctorInputs): Promise<DoctorCheck[]> {
         "database",
         area,
         "the database does not exist yet",
-        "It is created at first start: run `longshore serve` once, from the data directory you mean to use.",
+        "It is created at first start: run `turntable serve` once, from the data directory you mean to use.",
       ),
     ];
   }
@@ -191,7 +191,7 @@ export async function checkDatabase(i: DoctorInputs): Promise<DoctorCheck[]> {
         "database",
         area,
         "the database cannot be opened",
-        "Check the data directory and that no other process holds a lock on longshore.db.",
+        "Check the data directory and that no other process holds a lock on turntable.db.",
         i.openError?.slice(0, 160),
       ),
     ];
@@ -213,7 +213,7 @@ export async function checkDatabase(i: DoctorInputs): Promise<DoctorCheck[]> {
   }
   let applied: string[];
   try {
-    applied = (await i.db.all(sql`SELECT tag FROM __longshore_migrations`)).map((r) =>
+    applied = (await i.db.all(sql`SELECT tag FROM __turntable_migrations`)).map((r) =>
       String(r.tag),
     );
   } catch {
@@ -222,7 +222,7 @@ export async function checkDatabase(i: DoctorInputs): Promise<DoctorCheck[]> {
         "migrations",
         area,
         "the database has no migration record yet",
-        "It is created at first start: run `longshore serve` once.",
+        "It is created at first start: run `turntable serve` once.",
       ),
     );
     return out;
@@ -263,13 +263,13 @@ export async function checkGithubApp(i: DoctorInputs): Promise<DoctorCheck> {
           "github_app",
           area,
           "no GitHub App is configured",
-          "Run `longshore github-app create --url <public url>`, or set up the App for hosted use.",
+          "Run `turntable github-app create --url <public url>`, or set up the App for hosted use.",
         )
       : warn(
           "github_app",
           area,
           "no GitHub App is configured: only polling and local runs are possible",
-          "Run `longshore github-app create --url <public url>` to receive webhooks and report checks.",
+          "Run `turntable github-app create --url <public url>` to receive webhooks and report checks.",
         );
   if (!i.db)
     return fail(
@@ -282,8 +282,7 @@ export async function checkGithubApp(i: DoctorInputs): Promise<DoctorCheck> {
   let app: { org_id: string } | undefined;
   try {
     app = (await i.db.all(sql`SELECT org_id FROM github_apps ORDER BY created_at LIMIT 1`))[0] as
-      | { org_id: string }
-      | undefined;
+      { org_id: string } | undefined;
   } catch {
     return none();
   }
@@ -294,7 +293,7 @@ export async function checkGithubApp(i: DoctorInputs): Promise<DoctorCheck> {
       "github_app",
       area,
       "the App exists but the master key is not available to check its credentials",
-      "Set LONGSHORE_MASTER_KEY_FILE to the key the App was created with.",
+      "Set TURNTABLE_MASTER_KEY_FILE to the key the App was created with.",
     );
   const opens = async (name: string): Promise<"ok" | "missing" | "unreadable"> => {
     const row = (
@@ -330,15 +329,15 @@ export async function checkGithubApp(i: DoctorInputs): Promise<DoctorCheck> {
     `GitHub App credentials not usable: ${bad.map(([n, v]) => `${n} ${v}`).join(", ")}`,
     bad.some(([, v]) => v === "unreadable")
       ? "A record does not open under this master key: use the key the App was created with, or restore from backup."
-      : "Re-create the App with `longshore github-app create`, or rotate the webhook secret with `longshore github-app rotate-webhook-secret`.",
+      : "Re-create the App with `turntable github-app create`, or rotate the webhook secret with `turntable github-app rotate-webhook-secret`.",
   );
 }
 
 /** The public TLS listener's certificate for the secrets proxy: valid now, not about to expire, for the right name. */
 export function checkProxyTls(i: DoctorInputs): DoctorCheck {
   const area = "proxy";
-  const certPath = set(i.env.LONGSHORE_PROXY_TLS_CERT_FILE);
-  const keyPath = set(i.env.LONGSHORE_PROXY_TLS_KEY_FILE);
+  const certPath = set(i.env.TURNTABLE_PROXY_TLS_CERT_FILE);
+  const keyPath = set(i.env.TURNTABLE_PROXY_TLS_KEY_FILE);
   if (!certPath && !keyPath)
     return pass("proxy_tls", area, "no public TLS listener is configured for the secrets proxy");
   if (!certPath || !keyPath)
@@ -346,7 +345,7 @@ export function checkProxyTls(i: DoctorInputs): DoctorCheck {
       "proxy_tls",
       area,
       "only one of the proxy's TLS certificate and key is set",
-      "Set both LONGSHORE_PROXY_TLS_CERT_FILE and LONGSHORE_PROXY_TLS_KEY_FILE.",
+      "Set both TURNTABLE_PROXY_TLS_CERT_FILE and TURNTABLE_PROXY_TLS_KEY_FILE.",
     );
   const certPem = i.fs.read(certPath, 64 * 1024);
   const keyPem = i.fs.read(keyPath, 64 * 1024);
@@ -401,13 +400,13 @@ export function checkProxyTls(i: DoctorInputs): DoctorCheck {
       `the proxy's TLS certificate expired ${Math.ceil((now - to) / DAY)} day(s) ago`,
       "Renew it and restart the server.",
     );
-  const host = set(i.env.LONGSHORE_PROXY_ADVERTISE_HOST);
+  const host = set(i.env.TURNTABLE_PROXY_ADVERTISE_HOST);
   if (host && !cert.checkHost(host))
     return warn(
       "proxy_tls",
       area,
       `the proxy's TLS certificate does not name its advertised host ${host}`,
-      "Issue a certificate for that host name, or fix LONGSHORE_PROXY_ADVERTISE_HOST.",
+      "Issue a certificate for that host name, or fix TURNTABLE_PROXY_ADVERTISE_HOST.",
     );
   const left = Math.floor((to - now) / DAY);
   return left < CERT_WARN_DAYS
@@ -423,8 +422,8 @@ export function checkProxyTls(i: DoctorInputs): DoctorCheck {
 /** Forwarded headers the server saw, against what it was told to trust. */
 export function checkForwarded(i: DoctorInputs): DoctorCheck {
   const area = "network";
-  const trustProto = i.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1";
-  const trustedProxies = set(i.env.LONGSHORE_TRUSTED_PROXIES) !== undefined;
+  const trustProto = i.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1";
+  const trustedProxies = set(i.env.TURNTABLE_TRUSTED_PROXIES) !== undefined;
   if (!i.observed) {
     return pass(
       "forwarded_headers",
@@ -442,18 +441,18 @@ export function checkForwarded(i: DoctorInputs): DoctorCheck {
   const problems: string[] = [];
   if (o.withForwardedProto > 0 && !trustProto)
     problems.push(
-      `${o.withForwardedProto} request(s) carried X-Forwarded-Proto but LONGSHORE_TRUST_FORWARDED_PROTO is not set, so http is not redirected to https and value-bearing requests behind the proxy are refused`,
+      `${o.withForwardedProto} request(s) carried X-Forwarded-Proto but TURNTABLE_TRUST_FORWARDED_PROTO is not set, so http is not redirected to https and value-bearing requests behind the proxy are refused`,
     );
   if (o.withForwardedFor > 0 && !trustedProxies)
     problems.push(
-      `${o.withForwardedFor} request(s) carried X-Forwarded-For but LONGSHORE_TRUSTED_PROXIES is empty, so rate limits key on the proxy's address, not the client's`,
+      `${o.withForwardedFor} request(s) carried X-Forwarded-For but TURNTABLE_TRUSTED_PROXIES is empty, so rate limits key on the proxy's address, not the client's`,
     );
   if (trustProto && o.withForwardedProto === 0)
     problems.push(
-      "LONGSHORE_TRUST_FORWARDED_PROTO is set but no request carried X-Forwarded-Proto: is the proxy in front of this server?",
+      "TURNTABLE_TRUST_FORWARDED_PROTO is set but no request carried X-Forwarded-Proto: is the proxy in front of this server?",
     );
   if (trustedProxies && o.withForwardedFor === 0)
-    problems.push("LONGSHORE_TRUSTED_PROXIES is set but no request carried X-Forwarded-For");
+    problems.push("TURNTABLE_TRUSTED_PROXIES is set but no request carried X-Forwarded-For");
   return problems.length === 0
     ? pass(
         "forwarded_headers",
@@ -464,21 +463,21 @@ export function checkForwarded(i: DoctorInputs): DoctorCheck {
         "forwarded_headers",
         area,
         problems.join("; "),
-        "Set LONGSHORE_TRUST_FORWARDED_PROTO=1 and name your proxies in LONGSHORE_TRUSTED_PROXIES when a proxy you control is in front; clear them when none is.",
+        "Set TURNTABLE_TRUST_FORWARDED_PROTO=1 and name your proxies in TURNTABLE_TRUSTED_PROXIES when a proxy you control is in front; clear them when none is.",
       );
 }
 
 /** Plain http is redirected to https, here or by the proxy in front. */
 export function checkHttpsRedirect(i: DoctorInputs): DoctorCheck {
   const area = "network";
-  const trustProto = i.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1";
-  const hsts = i.env.LONGSHORE_HSTS_MAX_AGE?.trim().toLowerCase();
+  const trustProto = i.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1";
+  const hsts = i.env.TURNTABLE_HSTS_MAX_AGE?.trim().toLowerCase();
   if (hsts === "off" || hsts === "0")
     return warn(
       "https_redirect",
       area,
       "HSTS is turned off",
-      "Unset LONGSHORE_HSTS_MAX_AGE (the default is one year) unless something in front sends it.",
+      "Unset TURNTABLE_HSTS_MAX_AGE (the default is one year) unless something in front sends it.",
     );
   if (trustProto)
     return pass(
@@ -491,19 +490,19 @@ export function checkHttpsRedirect(i: DoctorInputs): DoctorCheck {
         "https_redirect",
         area,
         "plain http is not redirected here: no trusted proxy is configured",
-        "Set LONGSHORE_TRUST_FORWARDED_PROTO=1 behind a proxy you control, and turn on the proxy's Always Use HTTPS as well.",
+        "Set TURNTABLE_TRUST_FORWARDED_PROTO=1 behind a proxy you control, and turn on the proxy's Always Use HTTPS as well.",
       )
     : warn(
         "https_redirect",
         area,
         "plain http is not redirected by this server (no trusted proxy is configured)",
-        "On a public site set LONGSHORE_TRUST_FORWARDED_PROTO=1 behind your proxy and enable its Always Use HTTPS. Loopback development needs neither.",
+        "On a public site set TURNTABLE_TRUST_FORWARDED_PROTO=1 behind your proxy and enable its Always Use HTTPS. Loopback development needs neither.",
       );
 }
 
 export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "release";
-  const configured = set(i.env.LONGSHORE_PUBLISH_CHANNEL_KEY_FILE);
+  const configured = set(i.env.TURNTABLE_PUBLISH_CHANNEL_KEY_FILE);
   if (!configured || !i.channel)
     return pass(
       "release_channel",

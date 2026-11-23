@@ -1,4 +1,4 @@
-// A read-only look at a database that already exists, for `longshore doctor`: it never creates a
+// A read-only look at a database that already exists, for `turntable doctor`: it never creates a
 // file or a schema and never applies a migration, so it can run next to a live server or against
 // an instance that has not started yet. The returned `orm` is only for queries.
 import { Database } from "bun:sqlite";

@@ -213,7 +213,7 @@ export interface ProviderFiles {
   get(sandboxId: string, path: string, maxBytes: number): Promise<Uint8Array>;
 }
 
-/** One readiness finding from a provider, for `longshore doctor`. Never carries a credential. */
+/** One readiness finding from a provider, for `turntable doctor`. Never carries a credential. */
 export interface ProviderCheck {
   id: string;
   status: "pass" | "warn" | "fail";

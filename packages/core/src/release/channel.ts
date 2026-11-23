@@ -133,7 +133,7 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
     const str = (k: string): string | undefined =>
       typeof b[k] === "string" && ID.test(b[k] as string) ? (b[k] as string) : undefined;
     const ts = typeof b.ts === "number" ? b.ts : Number.NaN;
-    // A side-effect-free liveness and key check, for `longshore doctor`: it reads and changes nothing.
+    // A side-effect-free liveness and key check, for `turntable doctor`: it reads and changes nothing.
     if (path === "/v1/health") {
       if (!authentic("health", [], ts, b.mac)) return json(401, { ok: false, reason: "bad_mac" });
       return json(200, { ok: true });

@@ -4,7 +4,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JobCa } from "@longshore/proxy";
+import { JobCa } from "@turntable/proxy";
 import { DIALECT } from "../src/db/dialect";
 import { createOrg, openDatabase, setGithubApp, type Db } from "../src/db";
 import { dispatch, registry } from "../src/ops";
@@ -35,12 +35,12 @@ import {
   type FileFacts,
   type ForwardedSnapshot,
 } from "../src/doctor/types";
-import { controlPost } from "@longshore/net";
+import { controlPost } from "@turntable/net";
 import { cachedDoctor } from "../src/doctor/cache";
 import { channelMac, startChannel } from "../src/release/channel";
 import { mintToken, seedWorld } from "./ops-helpers";
 
-const DIR = "/srv/longshore";
+const DIR = "/srv/turntable";
 const KEY = "/run/secrets/master.key";
 const NOW = Date.UTC(2026, 10, 23);
 const DAY = 86_400_000;
@@ -95,8 +95,8 @@ async function seedApp(): Promise<void> {
     { orgId },
     {
       appId: "42",
-      slug: "longshore-test",
-      name: "Longshore",
+      slug: "turntable-test",
+      name: "Turntable",
       ownerLogin: "acme",
       htmlUrl: "https://github.com/apps/x",
       clientId: "Iv1.abc",
@@ -112,7 +112,7 @@ async function seedApp(): Promise<void> {
 }
 
 const base = (over: Partial<DoctorInputs> = {}): DoctorInputs => ({
-  env: { LONGSHORE_MASTER_KEY_FILE: KEY, LONGSHORE_TRUST_FORWARDED_PROTO: "1" },
+  env: { TURNTABLE_MASTER_KEY_FILE: KEY, TURNTABLE_TRUST_FORWARDED_PROTO: "1" },
   dataDir: DIR,
   hosted: false,
   fs: fakeFs(goodFiles()),
@@ -185,7 +185,7 @@ describe("privileges and the data directory", () => {
     expect(one(checkPrivileges(root), "privileges")).toMatchObject({ status: "fail" });
     const dropping = base({
       proc: { uid: 0, gid: 0 },
-      env: { LONGSHORE_DROP_PRIVILEGES: "65532:65532" },
+      env: { TURNTABLE_DROP_PRIVILEGES: "65532:65532" },
     });
     expect(one(checkPrivileges(dropping), "privileges")).toMatchObject({ status: "warn" });
     expect(one(checkPrivileges(inputs), "privileges")).toMatchObject({ status: "pass" });
@@ -217,7 +217,7 @@ describe("the master key", () => {
     expect(at({}, {}, true)).toMatchObject({ status: "fail" });
   });
   test("missing, wrong size, loose mode and good", () => {
-    const env = { LONGSHORE_MASTER_KEY_FILE: KEY };
+    const env = { TURNTABLE_MASTER_KEY_FILE: KEY };
     expect(at({}, env)).toMatchObject({ status: "fail" });
     expect(at({ [KEY]: { size: 31 } }, env)).toMatchObject({ status: "fail" });
     const loose = at({ [KEY]: { size: 32, mode: 0o644 } }, env);
@@ -227,7 +227,7 @@ describe("the master key", () => {
   });
   test("the key's path is not in the output", () => {
     expect(
-      JSON.stringify(at({ [KEY]: { size: 31 } }, { LONGSHORE_MASTER_KEY_FILE: KEY })),
+      JSON.stringify(at({ [KEY]: { size: 31 } }, { TURNTABLE_MASTER_KEY_FILE: KEY })),
     ).not.toContain(KEY);
   });
 });
@@ -240,11 +240,11 @@ describe("the database", () => {
   });
   test("pending migrations warn, and a database from a newer version fails", async () => {
     const last = embeddedMigrationTags().at(-1)!;
-    await edit(sql`DELETE FROM __longshore_migrations WHERE tag = ${last}`);
+    await edit(sql`DELETE FROM __turntable_migrations WHERE tag = ${last}`);
     expect(one(await checkDatabase(inputs), "migrations")).toMatchObject({ status: "warn" });
-    await edit(sql`INSERT INTO __longshore_migrations (tag, applied_at) VALUES (${last}, 1)`);
+    await edit(sql`INSERT INTO __turntable_migrations (tag, applied_at) VALUES (${last}, 1)`);
     await edit(
-      sql`INSERT INTO __longshore_migrations (tag, applied_at) VALUES ('9999_from_the_future', 1)`,
+      sql`INSERT INTO __turntable_migrations (tag, applied_at) VALUES ('9999_from_the_future', 1)`,
     );
     const newer = one(await checkDatabase(inputs), "migrations");
     expect(newer).toMatchObject({ status: "fail" });
@@ -314,19 +314,19 @@ describe("the proxy's TLS certificate", () => {
   };
   const withCert = (c: { key: string; cert: string }, extra: Record<string, string> = {}) =>
     base({
-      env: { LONGSHORE_PROXY_TLS_CERT_FILE: "/c", LONGSHORE_PROXY_TLS_KEY_FILE: "/k", ...extra },
+      env: { TURNTABLE_PROXY_TLS_CERT_FILE: "/c", TURNTABLE_PROXY_TLS_KEY_FILE: "/k", ...extra },
       fs: fakeFs({ "/c": { bytes: Buffer.from(c.cert) }, "/k": { bytes: Buffer.from(c.key) } }),
     });
 
   test("not configured passes; only one of the two files fails", () => {
     expect(checkProxyTls(inputs)).toMatchObject({ status: "pass" });
-    expect(checkProxyTls(base({ env: { LONGSHORE_PROXY_TLS_CERT_FILE: "/c" } }))).toMatchObject({
+    expect(checkProxyTls(base({ env: { TURNTABLE_PROXY_TLS_CERT_FILE: "/c" } }))).toMatchObject({
       status: "fail",
     });
   });
   test("a good certificate passes and says how long it has", () => {
     const c = checkProxyTls(
-      withCert(cert(NOW, 90 * DAY), { LONGSHORE_PROXY_ADVERTISE_HOST: "proxy.example.test" }),
+      withCert(cert(NOW, 90 * DAY), { TURNTABLE_PROXY_ADVERTISE_HOST: "proxy.example.test" }),
     );
     expect(c.status).toBe("pass");
     expect(c.summary).toMatch(/valid for \d+ more days/);
@@ -347,12 +347,12 @@ describe("the proxy's TLS certificate", () => {
       status: "fail",
     });
     expect(
-      checkProxyTls(withCert(a, { LONGSHORE_PROXY_ADVERTISE_HOST: "elsewhere.example.test" })),
+      checkProxyTls(withCert(a, { TURNTABLE_PROXY_ADVERTISE_HOST: "elsewhere.example.test" })),
     ).toMatchObject({ status: "warn" });
   });
   test("unreadable or garbage files fail without echoing them", () => {
     const g = base({
-      env: { LONGSHORE_PROXY_TLS_CERT_FILE: "/c", LONGSHORE_PROXY_TLS_KEY_FILE: "/k" },
+      env: { TURNTABLE_PROXY_TLS_CERT_FILE: "/c", TURNTABLE_PROXY_TLS_KEY_FILE: "/k" },
       fs: fakeFs({
         "/c": { bytes: Buffer.from("not a cert") },
         "/k": { bytes: Buffer.from("not a key") },
@@ -364,7 +364,7 @@ describe("the proxy's TLS certificate", () => {
     expect(
       checkProxyTls(
         base({
-          env: { LONGSHORE_PROXY_TLS_CERT_FILE: "/c", LONGSHORE_PROXY_TLS_KEY_FILE: "/k" },
+          env: { TURNTABLE_PROXY_TLS_CERT_FILE: "/c", TURNTABLE_PROXY_TLS_KEY_FILE: "/k" },
           fs: fakeFs({}),
         }),
       ),
@@ -391,23 +391,23 @@ describe("forwarded headers against the settings", () => {
   test("a proxy sends X-Forwarded-Proto but it is not trusted: a warning", () => {
     const c = at(seen({ withForwardedProto: 10 }), {});
     expect(c.status).toBe("warn");
-    expect(c.summary).toContain("LONGSHORE_TRUST_FORWARDED_PROTO");
+    expect(c.summary).toContain("TURNTABLE_TRUST_FORWARDED_PROTO");
   });
   test("X-Forwarded-For with no trusted proxies: a warning", () => {
-    const c = at(seen({ withForwardedFor: 3 }), { LONGSHORE_TRUST_FORWARDED_PROTO: "1" });
+    const c = at(seen({ withForwardedFor: 3 }), { TURNTABLE_TRUST_FORWARDED_PROTO: "1" });
     expect(c.status).toBe("warn");
-    expect(c.summary).toContain("LONGSHORE_TRUSTED_PROXIES");
+    expect(c.summary).toContain("TURNTABLE_TRUSTED_PROXIES");
   });
   test("trust is set but no header ever arrives: a warning", () => {
-    expect(at(seen({}), { LONGSHORE_TRUST_FORWARDED_PROTO: "1" }).status).toBe("warn");
-    expect(at(seen({}), { LONGSHORE_TRUSTED_PROXIES: "10.0.0.0/8" }).status).toBe("warn");
+    expect(at(seen({}), { TURNTABLE_TRUST_FORWARDED_PROTO: "1" }).status).toBe("warn");
+    expect(at(seen({}), { TURNTABLE_TRUSTED_PROXIES: "10.0.0.0/8" }).status).toBe("warn");
   });
   test("settings and traffic that agree pass", () => {
     expect(
       at(seen({ withForwardedProto: 10, withForwardedFor: 10 }), {
-        LONGSHORE_TRUST_FORWARDED_PROTO: "1",
+        TURNTABLE_TRUST_FORWARDED_PROTO: "1",
         LONGSHORT: "x",
-        LONGSHORE_TRUSTED_PROXIES: "10.0.0.0/8",
+        TURNTABLE_TRUSTED_PROXIES: "10.0.0.0/8",
       }).status,
     ).toBe("pass");
     expect(at(seen({}), {}).status).toBe("pass");
@@ -428,7 +428,7 @@ describe("forwarded headers against the settings", () => {
 describe("the https redirect", () => {
   test("behind a trusted proxy it passes", () => {
     expect(
-      checkHttpsRedirect(base({ env: { LONGSHORE_TRUST_FORWARDED_PROTO: "1" } })),
+      checkHttpsRedirect(base({ env: { TURNTABLE_TRUST_FORWARDED_PROTO: "1" } })),
     ).toMatchObject({ status: "pass" });
   });
   test("with no trusted proxy it warns, and fails when hosted", () => {
@@ -440,7 +440,7 @@ describe("the https redirect", () => {
   test("HSTS turned off warns", () => {
     expect(
       checkHttpsRedirect(
-        base({ env: { LONGSHORE_TRUST_FORWARDED_PROTO: "1", LONGSHORE_HSTS_MAX_AGE: "off" } }),
+        base({ env: { TURNTABLE_TRUST_FORWARDED_PROTO: "1", TURNTABLE_HSTS_MAX_AGE: "off" } }),
       ),
     ).toMatchObject({ status: "warn" });
   });
@@ -466,7 +466,7 @@ describe("the release channel", () => {
     expect(await checkChannel(inputs)).toMatchObject({ status: "pass" });
   });
   test("a missing or loose key file, then the probe's answer", async () => {
-    const env = { LONGSHORE_PUBLISH_CHANNEL_KEY_FILE: "/ck" };
+    const env = { TURNTABLE_PUBLISH_CHANNEL_KEY_FILE: "/ck" };
     const probe = (ok: boolean) => async () =>
       ok ? ({ ok: true } as const) : ({ ok: false, reason: "not reachable" } as const);
     expect(await checkChannel(base({ env, channel: probe(true), fs: fakeFs({}) }))).toMatchObject({
@@ -518,8 +518,8 @@ describe("the release channel", () => {
       });
       stop = () => ch.stop();
       const env = (file: string, sock = socket) => ({
-        LONGSHORE_PUBLISH_CHANNEL_KEY_FILE: file,
-        LONGSHORE_PUBLISH_CHANNEL_SOCKET: sock,
+        TURNTABLE_PUBLISH_CHANNEL_KEY_FILE: file,
+        TURNTABLE_PUBLISH_CHANNEL_SOCKET: sock,
       });
       expect(await channelProbe(env(keyFile(key)))!()).toEqual({ ok: true });
       const wrong = await channelProbe(env(keyFile("w".repeat(32))))!();
@@ -548,8 +548,8 @@ describe("the release channel", () => {
       });
       stop = () => ch.stop();
       const env = {
-        LONGSHORE_PUBLISH_CHANNEL_KEY_FILE: keyFile(key),
-        LONGSHORE_PUBLISH_CHANNEL_SOCKET: socket,
+        TURNTABLE_PUBLISH_CHANNEL_KEY_FILE: keyFile(key),
+        TURNTABLE_PUBLISH_CHANNEL_SOCKET: socket,
       };
       expect(await channelProbe(env)!()).toEqual({ ok: true });
       expect(released).toEqual([]);
@@ -701,7 +701,7 @@ describe("the operation and the command", () => {
               "--provider-config",
               join(dir, "nope.json"),
             ],
-            { LONGSHORE_MASTER_KEY_FILE: join(dir, "absent.key") },
+            { TURNTABLE_MASTER_KEY_FILE: join(dir, "absent.key") },
           );
         } finally {
           console.log = log;

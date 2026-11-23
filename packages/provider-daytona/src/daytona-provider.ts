@@ -829,7 +829,7 @@ export class DaytonaProvider implements Provider {
               ? `snapshot ${snap} does not exist`
               : `snapshot ${snap} could not be read`,
           ...(e instanceof SandboxNotFoundError ? {} : { detail: reason(e) }),
-          fix: "Create the snapshot in the Daytona account, or fix the name in the provider config. Longshore never creates snapshots.",
+          fix: "Create the snapshot in the Daytona account, or fix the name in the provider config. Turntable never creates snapshots.",
         });
       }
     }

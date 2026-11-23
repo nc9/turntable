@@ -12,7 +12,7 @@ import {
   readFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { controlPost, type ControlTarget } from "@longshore/net";
+import { controlPost, type ControlTarget } from "@turntable/net";
 import { DIALECT } from "../db/dialect";
 import { embeddedMigrationTags, openReadOnly } from "../db/read-only";
 import { loadMasterKey } from "../secrets/crypto";
@@ -108,12 +108,12 @@ export function providerChecks(
   o: { provider?: string | undefined; providerConfig?: string | undefined; hosted: boolean },
 ): () => Promise<DoctorCheck[]> {
   return async () => {
-    const name = o.provider ?? env.LONGSHORE_PROVIDER?.trim() ?? "docker";
+    const name = o.provider ?? env.TURNTABLE_PROVIDER?.trim() ?? "docker";
     const area = "provider";
     let provider;
     try {
       const cfg = resolveProviderConfig(
-        o.providerConfig ?? env.LONGSHORE_PROVIDER_CONFIG?.trim() ?? undefined,
+        o.providerConfig ?? env.TURNTABLE_PROVIDER_CONFIG?.trim() ?? undefined,
         env,
       );
       provider = createProvider(name, cfg, { hosted: o.hosted });
@@ -125,7 +125,7 @@ export function providerChecks(
           status: "fail",
           summary: `the ${name} provider config is not usable`,
           detail: String(e instanceof Error ? e.message : e).slice(0, 200),
-          fix: "Fix the provider config (--provider-config, LONGSHORE_PROVIDER_CONFIG or LONGSHORE_PROVIDER_CONFIG_JSON).",
+          fix: "Fix the provider config (--provider-config, TURNTABLE_PROVIDER_CONFIG or TURNTABLE_PROVIDER_CONFIG_JSON).",
         },
       ];
     }
@@ -177,7 +177,7 @@ export function providerChecks(
 export function channelProbe(
   env: Record<string, string | undefined>,
 ): (() => Promise<ChannelProbe>) | undefined {
-  const keyFile = env.LONGSHORE_PUBLISH_CHANNEL_KEY_FILE?.trim();
+  const keyFile = env.TURNTABLE_PUBLISH_CHANNEL_KEY_FILE?.trim();
   if (!keyFile) return undefined;
   return async () => {
     let key: string;
@@ -187,7 +187,7 @@ export function channelProbe(
       return { ok: false, reason: "the key file cannot be read" };
     }
     let target: ControlTarget;
-    const url = env.LONGSHORE_PUBLISH_CHANNEL_URL?.trim();
+    const url = env.TURNTABLE_PUBLISH_CHANNEL_URL?.trim();
     try {
       if (url) {
         const need = (n: string): string => {
@@ -198,15 +198,15 @@ export function channelProbe(
         target = {
           url,
           tls: {
-            cert: need("LONGSHORE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
-            key: need("LONGSHORE_PUBLISH_CHANNEL_TLS_KEY_FILE"),
-            ca: need("LONGSHORE_PUBLISH_CHANNEL_TLS_CA_FILE"),
+            cert: need("TURNTABLE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
+            key: need("TURNTABLE_PUBLISH_CHANNEL_TLS_KEY_FILE"),
+            ca: need("TURNTABLE_PUBLISH_CHANNEL_TLS_CA_FILE"),
           },
         };
       } else {
-        const sock = env.LONGSHORE_PUBLISH_CHANNEL_SOCKET?.trim();
+        const sock = env.TURNTABLE_PUBLISH_CHANNEL_SOCKET?.trim();
         if (!sock)
-          return { ok: false, reason: "neither LONGSHORE_PUBLISH_CHANNEL_SOCKET nor _URL is set" };
+          return { ok: false, reason: "neither TURNTABLE_PUBLISH_CHANNEL_SOCKET nor _URL is set" };
         target = { unix: sock };
       }
     } catch (e) {
@@ -255,7 +255,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
   let openError: string | undefined;
   let close = (): void => {};
   if (!reader) {
-    const path = join(dir, "longshore.db");
+    const path = join(dir, "turntable.db");
     if (DIALECT !== "pg" && !existsSync(path)) {
       openError = MISSING_DATABASE;
     } else {
@@ -268,7 +268,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       }
     }
   }
-  const keyFile = o.env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  const keyFile = o.env.TURNTABLE_MASTER_KEY_FILE?.trim();
   return {
     inputs: {
       env: o.env,

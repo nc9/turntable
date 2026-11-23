@@ -1,4 +1,4 @@
-// `longshore doctor`: a read-only readiness check an operator runs before going live. Each check
+// `turntable doctor`: a read-only readiness check an operator runs before going live. Each check
 // says pass, warn or fail with a hint for fixing it. Nothing here creates, starts or changes
 // anything, and nothing carries a secret value: a check says a key is present and has the right
 // shape, never what it is.

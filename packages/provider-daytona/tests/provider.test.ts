@@ -1363,12 +1363,12 @@ describe("diagnose: read-only readiness checks", () => {
   test("a healthy account passes every check, and nothing but GETs is sent", async () => {
     mock.addForeign("someone-elses", { project: "other" }, "stopped");
     mock.usage.rows = [{ regionId: "us", sandboxClass: "container", currentCpuUsage: 10 }];
-    mock.snapshots.add("longshore-medium");
-    const cs = byId(await make({ snapshot: "longshore-medium" }).diagnose());
+    mock.snapshots.add("turntable-medium");
+    const cs = byId(await make({ snapshot: "turntable-medium" }).diagnose());
     expect(cs["daytona.api"]!.status).toBe("pass");
     expect(cs["daytona.usage"]!.status).toBe("pass");
     expect(cs["daytona.snapshot"]).toMatchObject({ status: "pass" });
-    expect(cs["daytona.snapshot"]!.summary).toContain("longshore-medium");
+    expect(cs["daytona.snapshot"]!.summary).toContain("turntable-medium");
     expect(mutating()).toBe(0);
     // no sandbox was created
     expect(

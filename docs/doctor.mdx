@@ -1,13 +1,13 @@
 ---
 title: Readiness check
-description: "longshore doctor": a read-only check an operator runs before going live, with a fix for everything it finds.
+description: "turntable doctor": a read-only check an operator runs before going live, with a fix for everything it finds.
 ---
 
-`longshore doctor` checks that an instance is ready to go live and says what to fix. It reads the same `LONGSHORE_*` environment as `longshore serve`, opens the database read-only, creates nothing, starts nothing, and never prints a secret: it says a key is present and well formed, never what it is.
+`turntable doctor` checks that an instance is ready to go live and says what to fix. It reads the same `TURNTABLE_*` environment as `turntable serve`, opens the database read-only, creates nothing, starts nothing, and never prints a secret: it says a key is present and well formed, never what it is.
 
 ```sh
-longshore doctor --data-dir /data          # human readable
-longshore doctor --data-dir /data --json   # for a deploy script
+turntable doctor --data-dir /data          # human readable
+turntable doctor --data-dir /data --json   # for a deploy script
 ```
 
 Exit status is 1 when a check fails, and with `--strict` when one warns. The report is instance-wide (master key, App credentials, provider, proxy TLS, release channel), so it is for the instance operator only: run it on the host. It is not an API or MCP operation for tokens, and a hosted instance does not serve it over its API at all. An in-process owner (the local CLI) can call the `doctor` operation, which returns the same checks with fixed sentences only: raw error text (a database or provider error) is shown by the command on your terminal and never returned by the operation. Runs triggered through a server are cached for 30 seconds. The release channel check calls a read-only `health` endpoint on the lane, authenticated with the request key; it changes nothing.
@@ -26,7 +26,7 @@ Each finding is `pass`, `warn` or `fail`, and each warning or failure carries a 
 | Release | If a release channel is configured, the lane answers over it and accepts this process's request key (the probe is an idempotent revoke of a made-up attempt). |
 | Limits | Whether quotas are set. None set is a warning on a hosted instance, and fine for one operator. |
 
-A hosted instance (`--hosted` or `LONGSHORE_HOSTED=1`) is held to a stricter standard: a missing master key, GitHub App or https redirect is a failure rather than a warning.
+A hosted instance (`--hosted` or `TURNTABLE_HOSTED=1`) is held to a stricter standard: a missing master key, GitHub App or https redirect is a failure rather than a warning.
 
 ## What it does not do
 

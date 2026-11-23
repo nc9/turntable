@@ -9,7 +9,7 @@ export const doctor = defineOp({
   name: "doctor",
   summary: "Read-only readiness check of this instance: pass, warn or fail, with a fix for each.",
   description:
-    "Checks whether this Longshore instance is ready to go live and says what to fix: the " +
+    "Checks whether this Turntable instance is ready to go live and says what to fix: the " +
     "privilege drop and data directory, the master key, the database and its migrations, the " +
     "GitHub App credentials, the sandbox provider (credentials, account and snapshot, without " +
     "creating a sandbox), the secrets proxy's TLS certificate, the forwarded-header settings " +
@@ -36,7 +36,7 @@ export const doctor = defineOp({
   // agent token and no org role below owner may read them. Tokens never hold owner, so this is
   // reachable only by a trusted in-process caller, and the op is left out of MCP and OpenAPI.
   auth: { type: "token", minRole: "owner" },
-  roleNote: "Instance operators only: run `longshore doctor` on the host.",
+  roleNote: "Instance operators only: run `turntable doctor` on the host.",
   // Findings carry fixed sentences only: raw error text stays in the local CLI.
   untrustedOutput: false,
   scope: "org",
@@ -55,7 +55,7 @@ export const doctor = defineOp({
             area: "doctor",
             status: "warn" as const,
             summary: "this server does not serve doctor over its API",
-            fix: "Run `longshore doctor` on the host.",
+            fix: "Run `turntable doctor` on the host.",
           },
         ],
       };

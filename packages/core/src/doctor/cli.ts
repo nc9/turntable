@@ -1,4 +1,4 @@
-// `longshore doctor`: read-only readiness check for an operator before going live. It opens the
+// `turntable doctor`: read-only readiness check for an operator before going live. It opens the
 // database read-only, creates nothing and starts nothing. Exits 1 when any check fails (and with
 // --strict when any warns), so a deploy script can gate on it.
 import { parseArgs } from "node:util";
@@ -6,12 +6,12 @@ import { runDoctor } from "./checks";
 import { realInputs } from "./real";
 import type { DoctorReport } from "./types";
 
-export const DOCTOR_USAGE = `Usage: longshore doctor [--data-dir ./data] [--provider docker|daytona] [--provider-config <file>] [--database-url postgres://...] [--hosted] [--json] [--strict]
+export const DOCTOR_USAGE = `Usage: turntable doctor [--data-dir ./data] [--provider docker|daytona] [--provider-config <file>] [--database-url postgres://...] [--hosted] [--json] [--strict]
 
 Checks that this instance is ready to go live, and says what to fix: privileges and the data
 directory, the master key, the database and its migrations, the GitHub App, the sandbox provider
 (without creating a sandbox), the secrets proxy's TLS certificate, the https redirect, the release
-channel and quotas. Reads the same LONGSHORE_* environment as \`longshore serve\`. Nothing is
+channel and quotas. Reads the same TURNTABLE_* environment as \`turntable serve\`. Nothing is
 changed and no secret value is printed. Exit status 1 when a check fails (--strict: or warns).`;
 
 const MARK = { pass: "PASS", warn: "WARN", fail: "FAIL" } as const;
@@ -50,8 +50,8 @@ export async function doctorCommand(
   }
   const { inputs, close } = realInputs({
     env,
-    dataDir: values["data-dir"] ?? env.LONGSHORE_DATA_DIR?.trim() ?? "./data",
-    hosted: values.hosted === true || env.LONGSHORE_HOSTED === "1",
+    dataDir: values["data-dir"] ?? env.TURNTABLE_DATA_DIR?.trim() ?? "./data",
+    hosted: values.hosted === true || env.TURNTABLE_HOSTED === "1",
     provider: values.provider,
     providerConfig: values["provider-config"],
   });
