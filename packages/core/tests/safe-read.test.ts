@@ -142,6 +142,8 @@ describe("a hostile repo through the real checkout path", () => {
     writeFileSync(join(repo, "ci.yml"), "name: ci\n");
     symlinkSync(tokenFile, join(repo, ".github/actions/evil/action.yml"));
     await sh(repo, "git", "init", "-q", "-b", "main");
+    await sh(repo, "git", "config", "gc.auto", "0");
+    await sh(repo, "git", "config", "maintenance.auto", "false");
     await sh(repo, "git", "add", "-A");
     await sh(repo, "git", "commit", "-q", "-m", "hostile");
     const sha = await (async () => {

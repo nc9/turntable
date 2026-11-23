@@ -250,3 +250,115 @@ describe("hardening", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe("a file that vanishes while the directory is being packed", () => {
+  /** A repo-like tree: `.git/objects/maintenance.lock` is what a background `git gc` makes and removes. */
+  function tree(name: string): string {
+    const d = join(tmp, name);
+    mkdirSync(join(d, ".git", "objects"), { recursive: true });
+    writeFileSync(join(d, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(d, ".git", "objects", "maintenance.lock"), "");
+    writeFileSync(join(d, "a.txt"), "a\n");
+    writeFileSync(join(d, "z.txt"), "z\n");
+    return d;
+  }
+  const names = (tgz: Uint8Array): string[] =>
+    readTarGz(tgz)
+      .map((e) => e.path)
+      .filter((p) => p !== "." && p !== "./");
+
+  test("is skipped, like GNU tar's 'file removed before we read it', and reported once", () => {
+    const d = tree("vanish-sync");
+    const gone: string[] = [];
+    const tgz = tarGzDirectory(d, ["."], {
+      // removed after it was listed, before it is read
+      beforeRead: (rel) => {
+        if (rel === ".git/objects/maintenance.lock") rmSync(join(d, rel), { force: true });
+      },
+      onVanished: (rel) => gone.push(rel),
+    });
+    expect(gone).toEqual([".git/objects/maintenance.lock"]);
+    const got = names(tgz);
+    expect(got).toContain("a.txt");
+    expect(got).toContain("z.txt");
+    expect(got).toContain(".git/HEAD");
+    expect(got).not.toContain(".git/objects/maintenance.lock");
+    // and what is left is a good archive
+    const out = join(tmp, "vanish-sync-out");
+    mkdirSync(out);
+    writeFileSync(join(tmp, "vanish-sync.tgz"), tgz);
+    execFileSync("tar", ["xzf", join(tmp, "vanish-sync.tgz"), "-C", out]);
+    expect(readFileSync(join(out, "z.txt"), "utf8")).toBe("z\n");
+  });
+
+  test("a directory that vanishes takes its children with it; the rest of the tree is kept", () => {
+    const d = tree("vanish-dir");
+    const gone: string[] = [];
+    const tgz = tarGzDirectory(d, ["."], {
+      beforeRead: (rel) => {
+        if (rel === ".git/objects") rmSync(join(d, rel), { recursive: true, force: true });
+      },
+      onVanished: (rel) => gone.push(rel),
+    });
+    expect(gone).toEqual([".git/objects"]);
+    expect(names(tgz)).toEqual(expect.arrayContaining(["a.txt", "z.txt", ".git/HEAD"]));
+    expect(names(tgz).some((n) => n.startsWith(".git/objects"))).toBe(false);
+  });
+
+  test("the streaming writer skips it too, and the archive on disk is valid", async () => {
+    const d = tree("vanish-stream");
+    const gone: string[] = [];
+    const out = join(tmp, "vanish-stream.tgz");
+    await tarGzDirectoryToFile(d, out, {
+      maxBytes: 1e7,
+      hooks: {
+        beforeRead: (rel) => {
+          if (rel === "a.txt") rmSync(join(d, rel), { force: true });
+        },
+        onVanished: (rel) => gone.push(rel),
+      },
+    });
+    expect(gone).toEqual(["a.txt"]);
+    const got = names(new Uint8Array(readFileSync(out)));
+    expect(got).not.toContain("a.txt");
+    expect(got).toContain("z.txt");
+  });
+
+  test("with no hook the first one is logged at debug, once per pack", () => {
+    const d = tree("vanish-log");
+    const seen: string[] = [];
+    const orig = console.debug;
+    console.debug = (...a: unknown[]) => void seen.push(a.join(" "));
+    try {
+      tarGzDirectory(d, ["."], {
+        beforeRead: (rel) => {
+          if (rel === "a.txt" || rel === "z.txt") rmSync(join(d, rel), { force: true });
+        },
+      });
+    } finally {
+      console.debug = orig;
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("vanished");
+  });
+
+  test("anything but ENOENT still fails, and so does an entry the caller named that is not there", () => {
+    const d = tree("vanish-other");
+    expect(() => tarGzDirectory(d, ["missing"])).toThrow(/ENOENT/);
+    expect(() =>
+      tarGzDirectory(d, ["."], {
+        beforeRead: (rel) => {
+          if (rel === "a.txt") throw Object.assign(new Error("boom"), { code: "EACCES" });
+        },
+      }),
+    ).toThrow(/boom/);
+  });
+
+  test("a tree where nothing vanishes is packed exactly as before", async () => {
+    const d = tree("vanish-none");
+    const a = names(tarGzDirectory(d));
+    const b = names(await tarDirectory(d));
+    expect(a).toEqual(b);
+    expect(a).toContain(".git/objects/maintenance.lock");
+  });
+});
