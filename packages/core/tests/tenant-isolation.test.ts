@@ -87,6 +87,8 @@ type World = {
     runId: string;
     jobId: string;
     attemptId: string;
+    /** A token of A, named for the marker; the target of revoke_api_token. */
+    tokenId: string;
   };
   /** Org A's special-state fixtures, for the ops that need them to succeed. */
   fx: Record<string, string>;
@@ -307,6 +309,8 @@ async function buildWorld(): Promise<World> {
     }),
   };
 
+  const aToken = await mintToken(db, { orgId: a.orgId }, "reader", { name: "a-only-token" });
+
   const who = async (t: Tenant, label: string): Promise<Who[]> => {
     const out: Who[] = [];
     for (const role of AGENT_ROLES) {
@@ -343,6 +347,7 @@ async function buildWorld(): Promise<World> {
       runId: run.id,
       jobId: job.id,
       attemptId: attempt.id,
+      tokenId: aToken.id,
     },
     fx,
     markers: [
@@ -362,6 +367,8 @@ async function buildWorld(): Promise<World> {
       run.id,
       job.id,
       attempt.id,
+      aToken.id,
+      "a-only-token",
       "a-only-commit-message",
       "a-only-actor",
       "a-only-step-name",
@@ -393,6 +400,7 @@ const FIELD: Record<string, (w: World) => unknown> = {
   consumer_run_id: (w) => w.aOnly.runId, // check_artifact_consumption
   job_id: (w) => w.aOnly.jobId,
   attempt_id: (w) => w.aOnly.attemptId,
+  token_id: (w) => w.aOnly.tokenId,
   name: () => A_RULE, // proxy rule name; also a valid secret name
   secret: () => A_SECRET,
   sha: () => A_SHA,
@@ -480,6 +488,8 @@ function sampleValue(s: Zod): unknown {
 /** Ops that need A's special-state fixtures to succeed at all. */
 const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => void> = {
   failure_digest: (_w, i) => void delete i.job_id,
+  // The sampler's name for a proxy rule would put the marker into B's own token list.
+  create_api_token: (_w, i) => Object.assign(i, { name: "b-minted" }),
   set_proxy_rule: (_w, i) =>
     Object.assign(i, {
       methods: ["GET"],

@@ -153,3 +153,19 @@ describe("create_api_token by a bearer token", () => {
     expect(no.ok).toBe(false);
   });
 });
+
+describe("per-org serialisation of revoke", () => {
+  test("two concurrent self-revokes of the last two tokens: one succeeds, the other conflicts", async () => {
+    const t1 = await mintToken(db, { orgId: a.orgId }, "operator");
+    const t2 = await mintToken(db, { orgId: a.orgId }, "operator");
+    const revoke = (t: { secret: string; id: string }) =>
+      dispatch(env, { kind: "bearer", token: t.secret }, "revoke_api_token", {
+        token_id: t.id,
+        reason: "race",
+      });
+    const results = await Promise.all([revoke(t1), revoke(t2)]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const failed = results.find((r) => !r.ok);
+    expect(failed && !failed.ok && failed.error.code).toBe("conflict");
+  });
+});

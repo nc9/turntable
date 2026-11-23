@@ -152,6 +152,19 @@ export function orgTokenHistory(
   });
 }
 
+type RevokedListener = (tokenId: string) => void;
+const revokedListeners = new Set<RevokedListener>();
+
+/**
+ * Subscribes to "a token was revoked by this process", fired after the revoking transaction
+ * commits. The realtime server closes that token's open sockets on it. In-process only: another
+ * process revoking in the same database is not seen, which the sockets' periodic re-check covers.
+ */
+export function onApiTokenRevoked(listener: RevokedListener): () => void {
+  revokedListeners.add(listener);
+  return () => revokedListeners.delete(listener);
+}
+
 /** Revokes a token. Returns false when it is not in scope or was already revoked. */
 export function revokeApiToken(db: Db, scope: Scope, id: string, at: number): Promise<boolean> {
   return db.run(async (h) => {
@@ -160,6 +173,11 @@ export function revokeApiToken(db: Db, scope: Scope, id: string, at: number): Pr
       .set({ revokedAt: at })
       .where(scoped(scope, TOKEN_COLS, eq(s.apiTokens.id, id), isNull(s.apiTokens.revokedAt)))
       .returning({ id: s.apiTokens.id });
+    if (rows.length > 0) {
+      h.afterCommit(() => {
+        for (const l of revokedListeners) l(id);
+      });
+    }
     return rows.length > 0;
   });
 }

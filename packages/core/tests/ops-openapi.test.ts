@@ -144,7 +144,11 @@ test("operations meet the agent-facing conventions", () => {
       expect(op.untrustedOutput).toBe(true);
     }
     // writes need at least the operator role; reads may be readers
-    if (op.effect !== "read") expect(op.auth.minRole).not.toBe("reader");
+    // revoke_api_token is the exception: any token may revoke itself, whatever its role, and the
+    // handler refuses a reader revoking anyone else's.
+    if (op.effect !== "read" && op.name !== "revoke_api_token") {
+      expect(op.auth.minRole).not.toBe("reader");
+    }
     // list ops page by cursor
     if (op.name.startsWith("list_")) {
       const props = Object.keys(
