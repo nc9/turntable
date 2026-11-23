@@ -290,6 +290,7 @@ describe("starting the flow", () => {
     expect(m.public).toBe(false);
     // Not set unless the claim flow is on.
     expect(m.setup_url).toBeUndefined();
+    expect(m.setup_on_update).toBeUndefined();
     await releaseFlow();
     handler = make({ claimFlow: true });
     const claim = JSON.parse(
@@ -297,6 +298,7 @@ describe("starting the flow", () => {
     ) as Record<string, any>;
     expect(claim.setup_url).toBe(`${BASE}/api/v1/github/setup`);
     expect(claim.request_oauth_on_install).toBe(true);
+    expect(claim.setup_on_update).toBe(true);
     expect(claim.public).toBe(true);
   });
 

@@ -17,6 +17,11 @@
 //     with the user's token); for a personal account, the account is the user. It then re-fetches
 //     the installation with the App's own credentials (it must be our App) and only then binds it
 //     to the org in the state, consuming the nonce, and audits who claimed it.
+//     An installation made without the claim link is claimed from its configure page: the claim
+//     names the installation, the link sends the user to its configure page, and the App's
+//     "Redirect on update" setting makes GitHub call the same setup URL with `setup_action=update`
+//     (and no `state`). The cookie nonce then finds the claim; all other proofs are unchanged and
+//     an installation held by another org is never moved.
 //  4. The link handed out by `start` points at Turntable, not GitHub. Opening it shows which
 //     Turntable org will receive the installation and asks for a confirmation; confirming sets a
 //     short-lived HttpOnly cookie holding the nonce and redirects to GitHub. The callback needs
@@ -31,6 +36,7 @@ import {
   consumeInstallationClaim,
   createInstallationClaim,
   getGithubApp,
+  getInstallation,
   getInstallationClaim,
   getOrgById,
 } from "../db/repos";
@@ -99,6 +105,8 @@ interface StatePayload {
   n: string;
   /** expiry, ms */
   e: number;
+  /** the installation to configure, when the claim was started for an existing one */
+  i?: string;
 }
 
 export class InstallationClaims {
@@ -129,14 +137,20 @@ export class InstallationClaims {
   async start(
     orgId: string,
     startedBy: string,
-    opts: { expectedLogin?: string } = {},
+    opts: { expectedLogin?: string; installationId?: string } = {},
   ): Promise<{ url: string; expiresAt: number }> {
     const app = await getGithubApp(this.#o.db);
     if (!app) throw new ClaimError(503, "no GitHub App is configured");
     const nonce = randomBytes(18).toString("base64url");
     const expiresAt = this.#now() + CLAIM_TTL_MS;
     const body = b64u(
-      JSON.stringify({ o: orgId, p: startedBy, n: nonce, e: expiresAt } satisfies StatePayload),
+      JSON.stringify({
+        o: orgId,
+        p: startedBy,
+        n: nonce,
+        e: expiresAt,
+        ...(opts.installationId ? { i: opts.installationId } : {}),
+      } satisfies StatePayload),
     );
     const sig = createHmac("sha256", await this.#key(app.orgId))
       .update(`v1.${body}`)
@@ -149,6 +163,7 @@ export class InstallationClaims {
         startedBy,
         expiresAt,
         ...(opts.expectedLogin ? { expectedLogin: opts.expectedLogin } : {}),
+        ...(opts.installationId ? { installationId: opts.installationId } : {}),
       },
     );
     const state = `v1.${body}.${b64u(sig)}`;
@@ -177,10 +192,25 @@ export class InstallationClaims {
     );
   }
 
-  /** GitHub's install page for a verified state. */
-  async githubUrl(state: string): Promise<string> {
+  /**
+   * GitHub's page for a verified state: the install page, or the configure page of an existing
+   * installation when the claim names one. GitHub sends no `state` back from the configure page;
+   * the callback then relies on the browser-binding cookie alone.
+   */
+  async githubUrl(state: string, facts?: GithubFacts): Promise<string> {
     const app = await getGithubApp(this.#o.db);
     if (!app) throw new ClaimError(503, "no GitHub App is configured");
+    const st = await this.verify(state);
+    if (st?.i !== undefined) {
+      const inst = await facts?.getInstallation(st.i).catch(() => undefined);
+      if (!inst || inst.appId !== app.appId) {
+        throw new ClaimError(404, "that installation does not exist for this App");
+      }
+      const login = encodeURIComponent(inst.account.login);
+      return inst.account.type === "Organization"
+        ? `https://github.com/organizations/${login}/settings/installations/${encodeURIComponent(inst.id)}`
+        : `https://github.com/settings/installations/${encodeURIComponent(inst.id)}`;
+    }
     return `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new?state=${encodeURIComponent(state)}`;
   }
 
@@ -211,6 +241,7 @@ export class InstallationClaims {
       if (typeof p.o !== "string" || typeof p.p !== "string" || typeof p.n !== "string")
         return undefined;
       if (typeof p.e !== "number" || p.e <= this.#now()) return undefined;
+      if (p.i !== undefined && typeof p.i !== "string") return undefined;
       return p;
     } catch {
       return undefined;
@@ -223,12 +254,38 @@ export class InstallationClaims {
    * audited in that org's chain. Throws ClaimError with the status to send.
    */
   async complete(
-    q: { installationId: string; state: string; code: string | undefined; cookieNonce?: string },
+    q: {
+      installationId: string;
+      state: string;
+      code: string | undefined;
+      cookieNonce?: string;
+      /** GitHub's `setup_action`: `install`, or `update` from the configure redirect. */
+      action?: string;
+    },
     facts: GithubFacts,
     user: UserVerifier,
   ): Promise<{ orgId: string; bound: string[] }> {
     if (!/^\d{1,20}$/.test(q.installationId)) throw new ClaimError(400, "bad installation id");
-    const st = await this.verify(q.state);
+    let st = await this.verify(q.state);
+    // The configure redirect (`update`) carries no `state`. The claim is then found by the nonce in
+    // the browser-binding cookie, which only the confirmation page sets. That cookie is Lax, so it
+    // also rides on a link an attacker sends: the claim is therefore pinned to the installation it
+    // was started for, and any other installation id is refused before an owner check or a token
+    // exchange. A claim started without an installation can only finish through the signed state.
+    if (!st && q.action === "update" && q.state === "" && q.cookieNonce) {
+      const c = await getInstallationClaim(this.#o.db, q.cookieNonce);
+      if (
+        c &&
+        c.usedAt === null &&
+        c.expiresAt > this.#now() &&
+        c.installationId !== null &&
+        c.installationId === q.installationId
+      ) {
+        st = { o: c.orgId, p: c.startedBy, n: c.nonce, e: c.expiresAt, i: c.installationId };
+      }
+    }
+    // A signed state that names an installation only claims that one.
+    if (st?.i !== undefined && st.i !== q.installationId) st = undefined;
     if (!st) throw new ClaimError(400, "this claim link is invalid or has expired; start again");
     const refuse = async (status: number, message: string, extra: object = {}): Promise<never> => {
       await this.#audit(st, "error:forbidden", {
@@ -281,6 +338,11 @@ export class InstallationClaims {
         account: inst.accountLogin,
         account_type: inst.accountType,
       });
+    }
+    // An installation held by another org is never moved.
+    const held = await getInstallation(this.#o.db, q.installationId);
+    if (held && held.orgId !== st.o) {
+      return refuse(409, "that installation is already connected to another org", who);
     }
     // Consumed only now, after the user proved ownership, so a bad attempt cannot burn the link.
     const claim = await consumeInstallationClaim(this.#o.db, st.n, q.installationId, this.#now(), {
@@ -450,7 +512,7 @@ export function createClaimHandler(o: {
   return {
     async handle(req) {
       const url = new URL(req.url);
-      if (url.pathname === CLAIM_START_PATH) return await startPage(o.claims, req, url);
+      if (url.pathname === CLAIM_START_PATH) return await startPage(o.claims, o.facts, req, url);
       if (url.pathname !== CLAIM_PATH) return undefined;
       if (req.method !== "GET")
         return page(405, "Method not allowed", "Use the link GitHub sent you to.");
@@ -469,6 +531,7 @@ export function createClaimHandler(o: {
           {
             installationId: id,
             state: url.searchParams.get("state") ?? "",
+            ...(action ? { action } : {}),
             code: url.searchParams.get("code") ?? undefined,
             ...(cookieNonce(req) ? { cookieNonce: cookieNonce(req) as string } : {}),
           },
@@ -508,7 +571,12 @@ const cookieNonce = (req: Request): string | undefined => cookieValue(req, CLAIM
  * asks for a click; POST (the click) sets the browser-binding cookie and sends the browser to
  * GitHub. Both need a valid, unused state.
  */
-async function startPage(claims: InstallationClaims, req: Request, url: URL): Promise<Response> {
+async function startPage(
+  claims: InstallationClaims,
+  facts: GithubFacts,
+  req: Request,
+  url: URL,
+): Promise<Response> {
   const gone = () =>
     page(
       400,
@@ -555,7 +623,13 @@ async function startPage(claims: InstallationClaims, req: Request, url: URL): Pr
       "The confirmation expired or did not come from this page. Open the link again.",
     );
   }
-  const target = await claims.githubUrl(state);
+  let target: string;
+  try {
+    target = await claims.githubUrl(state, facts);
+  } catch (e) {
+    if (e instanceof ClaimError) return page(e.status, "Claim link not valid", e.message);
+    throw e;
+  }
   const headers = new Headers({ location: target, "cache-control": "no-store" });
   // The binding cookie must reach the callback, a navigation that starts on github.com, so it is
   // Lax: Strict cookies are not sent on a cross-site-initiated navigation and the flow would never

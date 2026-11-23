@@ -55,6 +55,9 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
       ? {
           setup_url: `${base}/api/v1/github/setup`,
           request_oauth_on_install: true,
+          // Configuring an existing installation also redirects to the setup URL, so an install
+          // made without the claim link can still be claimed (docs/hosted.mdx).
+          setup_on_update: true,
           callback_urls: [`${base}/api/v1/github/setup`],
         }
       : {}),
