@@ -147,6 +147,18 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/project-settings" \
 
 The cap divides the instance's sandboxes between projects: with a global cap of 10 and `max_concurrent` 4 on this project, the other projects of the org always have 6. A project cap can only lower the per-org cap (`--org-cap`, `TURNTABLE_ORG_CAP`), so that must be at least as high as the largest cap you set. The snapshot only changes where this project's sandboxes start, and it is used for every trust class in the project, untrusted pull requests included, so never bake credentials or private code into it. `max_concurrent: 0` pauses the project. See [Providers](/providers#per-project-snapshot-and-concurrency-cap) for the order against size classes and the provider default.
 
+### A low-priority project
+
+When the instance runs its own CI next to a customer's, mark its project `yield` so its jobs wait for, and give way to, the customer's. With the instance token:
+
+```sh
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/settings" \
+  -H "authorization: Bearer $(cat "$TOKEN_FILE")" -H 'content-type: application/json' \
+  -d '{"key":"scheduling_class","value":"yield","target_org":"local","target_project":"dogfood"}'
+```
+
+A normal job that waits at the global or org cap preempts the newest running yield job, which is requeued under a new attempt and starts over. Under the global cap this is cross-org, because yield is instance-wide: a yield project in org A can be preempted by normal work in org B. See [Providers](/providers#scheduling-class-yield-to-other-projects).
+
 ## Sandbox sizes: set `untrustedClass` explicitly
 
 If you map `runs-on` labels to sandbox sizes (see [Sandbox size per job](/providers#sandbox-size-per-job)), set `untrustedClass` on any hosted or multi-tenant instance, and make it a small class. A run classified `untrusted_pr` (a fork or any other untrusted pull request) ignores the labels its workflow asks for and gets `untrustedClass`. When `untrustedClass` is unset it falls back to `default`, so on an instance whose `default` is large, a stranger's code gets large sandboxes.

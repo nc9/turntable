@@ -161,6 +161,7 @@ Only some settings are on the registry so far; the rest are still read straight 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `backup_keep` | instance | whole number, 1 to 10000 | `10` | instance_admin | no: instance settings are changed by the instance administrator, never by an agent | `TURNTABLE_BACKUP_KEEP` | `[backup] keep` | How many backups to keep under `<data-dir>/backups`, newest first. |
 | `untrusted_run_approval` | project | one of "human", "no_agents", "any" | `"no_agents"` | instance_admin (`instanceAdminOnly`) | no: it decides whether agents may approve runs, so only a person changes it | none | `orgs.<slug>.projects.<slug>.untrusted_run_approval` | Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`. |
+| `scheduling_class` | project | one of "normal", "yield" | `"normal"` | instance_admin (`instanceAdminOnly`) | no: it decides whose work the shared fleet serves first, so only the instance administrator changes it | none | `orgs.<slug>.projects.<slug>.scheduling_class` | How the project's jobs share the fleet: `normal`, or `yield` (a yield job is claimed only while no normal job is waiting, and is preempted and requeued when a normal job waits at a cap). |
 
 {/* settings:end */}
 

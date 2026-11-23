@@ -6697,7 +6697,7 @@
       "get": {
         "operationId": "sandbox_usage",
         "summary": "Exact sandbox time per UTC day: from the provider's create to its confirmed destroy.",
-        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out); each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
+        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart); each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "days",
@@ -6803,6 +6803,10 @@
                           "project_name": {
                             "type": "string"
                           },
+                          "scheduling_class": {
+                            "type": "string",
+                            "enum": ["normal", "yield"]
+                          },
                           "days": {
                             "type": "array",
                             "items": {
@@ -6850,10 +6854,32 @@
                           "project_id",
                           "project_slug",
                           "project_name",
+                          "scheduling_class",
                           "days",
                           "total_seconds",
                           "total_minutes"
                         ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "classes": {
+                      "description": "Present only with `group_by: project`: the totals per scheduling class, so yield usage is reported apart.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "scheduling_class": {
+                            "type": "string",
+                            "enum": ["normal", "yield"]
+                          },
+                          "total_seconds": {
+                            "type": "number"
+                          },
+                          "total_minutes": {
+                            "type": "number"
+                          }
+                        },
+                        "required": ["scheduling_class", "total_seconds", "total_minutes"],
                         "additionalProperties": false
                       }
                     },
