@@ -28,7 +28,12 @@ export function parseGroupCall(cmd: string): GroupCall | undefined {
 export function readGroup(group: string, repo: string = root): string[] {
   const file = join(repo, "scripts", "test-groups", `${group}.txt`);
   if (!existsSync(file)) throw new Error(`no test group file: scripts/test-groups/${group}.txt`);
-  const files = readFileSync(file, "utf8")
+  return parseGroupFile(group, readFileSync(file, "utf8"));
+}
+
+/** The test files listed in the text of a group file. Throws when it lists none. */
+export function parseGroupFile(group: string, text: string): string[] {
+  const files = text
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "" && !l.startsWith("#"));

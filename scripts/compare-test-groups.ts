@@ -3,17 +3,39 @@
 // and of the working tree, and compares env prefix, file list and order per script.
 //
 //   bun scripts/compare-test-groups.ts origin/main
-import { parseGroupCall, readGroup } from "./test-groups";
+import { parseGroupCall, parseGroupFile, readGroup } from "./test-groups";
 
 interface Resolved {
   env: string[];
   files: string[];
 }
 
-/** Resolves one script command, from group files at `repo` or from the inline `bun test` list. */
-export function resolveCommand(cmd: string, repo: string): Resolved {
+/** Returns the files of a group, or throws when the group file does not exist. */
+export type GroupReader = (group: string) => string[];
+
+/** Reads group files from the working tree at `repo`. */
+export function worktreeReader(repo: string): GroupReader {
+  return (group) => readGroup(group, repo);
+}
+
+/** Reads group files as committed at `ref`, so a changed working tree cannot leak into the ref side. */
+export function gitReader(ref: string, repo: string): GroupReader {
+  return (group) => {
+    const path = `scripts/test-groups/${group}.txt`;
+    const r = Bun.spawnSync(["git", "show", `${ref}:${path}`], { cwd: repo });
+    if (r.exitCode !== 0) throw new Error(`test group ${group}: no ${path} at ${ref}`);
+    return parseGroupFile(group, r.stdout.toString());
+  };
+}
+
+/** Resolves one script command, from group files via `read` or from the inline `bun test` list. */
+export function resolveCommand(
+  cmd: string,
+  repo: string,
+  read: GroupReader = worktreeReader(repo),
+): Resolved {
   const call = parseGroupCall(cmd);
-  if (call) return { env: call.env, files: readGroup(call.group, repo) };
+  if (call) return { env: call.env, files: read(call.group) };
   const words = cmd.trim().split(/\s+/);
   const at = words.indexOf("bun");
   if (at < 0 || words[at + 1] !== "test") throw new Error(`unrecognised test script: ${cmd}`);
@@ -36,24 +58,33 @@ export function diff(before: Map<string, Resolved>, after: Map<string, Resolved>
   return out;
 }
 
+const scriptsOf = (json: string): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries((JSON.parse(json) as { scripts: Record<string, string> }).scripts).filter(
+      ([k]) => k.startsWith("test:"),
+    ),
+  );
+
+const load = (json: string, repo: string, read: GroupReader): Map<string, Resolved> =>
+  new Map(Object.entries(scriptsOf(json)).map(([k, v]) => [k, resolveCommand(v, repo, read)]));
+
+/** Compares the scripts and group files at `ref` with the working tree. Empty means identical. */
+export async function compareToRef(
+  ref: string,
+  repo: string,
+): Promise<{ problems: string[]; after: Map<string, Resolved> }> {
+  const git = Bun.spawnSync(["git", "show", `${ref}:package.json`], { cwd: repo });
+  if (git.exitCode !== 0) throw new Error(`git show ${ref}:package.json failed`);
+  const before = load(git.stdout.toString(), repo, gitReader(ref, repo));
+  const after = load(await Bun.file(`${repo}/package.json`).text(), repo, worktreeReader(repo));
+  return { problems: diff(before, after), after };
+}
+
 if (import.meta.main) {
   const ref = process.argv[2];
   if (!ref) throw new Error("usage: compare-test-groups.ts <git-ref>");
   const repo = new URL("..", import.meta.url).pathname;
-  const git = Bun.spawnSync(["git", "show", `${ref}:package.json`], { cwd: repo });
-  if (git.exitCode !== 0) throw new Error(`git show ${ref}:package.json failed`);
-  const scriptsOf = (json: string): Record<string, string> =>
-    Object.fromEntries(
-      Object.entries((JSON.parse(json) as { scripts: Record<string, string> }).scripts).filter(
-        ([k]) => k.startsWith("test:"),
-      ),
-    );
-  const load = (json: string, at: string): Map<string, Resolved> =>
-    new Map(Object.entries(scriptsOf(json)).map(([k, v]) => [k, resolveCommand(v, at)]));
-  // The old lists are inline, so the ref's own tree is only needed for group files if it has them.
-  const before = load(git.stdout.toString(), repo);
-  const after = load(await Bun.file(`${repo}package.json`).text(), repo);
-  const problems = diff(before, after);
+  const { problems, after } = await compareToRef(ref, repo);
   const total = [...after.values()].reduce((n, g) => n + g.files.length, 0);
   if (problems.length > 0) {
     console.error(problems.join("\n"));
