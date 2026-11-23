@@ -735,7 +735,14 @@ describe("generated from the registry: every op, every B principal, A's ids and 
     expect(ops.length).toBeGreaterThan(0);
     for (const who of [...hostile.aWho, ...hostile.bWho]) {
       for (const op of ops) {
-        const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+        const input =
+          op.name === "set_quotas"
+            ? { target_org: "org-a", max_log_bytes: 1 }
+            : op.name === "set_project_settings"
+              ? { target_org: "org-a", target_project: "app", max_concurrent: 1 }
+              : op.name === "create_project"
+                ? { target_org: "org-a", slug: "sneaky", name: "x" }
+                : {};
         const out = await call(hostile, who, op, input);
         expect(out.ok, `${who.label} on ${op.name}`).toBe(false);
         expect(out.code, `${who.label} on ${op.name}`).toBe("forbidden");

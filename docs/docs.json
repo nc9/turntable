@@ -34,7 +34,13 @@
       },
       {
         "group": "Project",
-        "pages": ["releases", "contributing", "internals/bun-notes", "design/daytona-proxy"]
+        "pages": [
+          "releases",
+          "contributing",
+          "internals/bun-notes",
+          "design/daytona-proxy",
+          "design/publish-targets"
+        ]
       }
     ]
   }

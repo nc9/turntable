@@ -55,7 +55,7 @@ import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
-import { getActionPolicy, parseTrust } from "../db/repos";
+import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -339,10 +339,13 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
       : undefined;
+    // The project's own snapshot (set by the instance operator) beats the provider's default.
+    const { sandboxSnapshot } = await getProjectSandboxSettings(o.db, ctx.scope);
     const res = await executeJob(
       {
         provider: ctx.provider,
         store: workerStore(ctx),
+        ...(sandboxSnapshot ? { snapshot: sandboxSnapshot } : {}),
         out: sink ? sink.out : () => {},
         registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),

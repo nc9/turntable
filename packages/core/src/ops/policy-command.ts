@@ -10,7 +10,9 @@ import {
   setOidcAudiencesPolicy,
   showOidcAudiences,
   setIngestPolicy,
+  setSandboxPolicy,
   showIngest,
+  showSandbox,
   setSigningPolicy,
   showChecksMode,
   showSigning,
@@ -51,6 +53,8 @@ async function ownPolicy(args: string[]): Promise<void> {
       org: { type: "string", default: "local" },
       project: { type: "string" },
       egress: { type: "string" },
+      "sandbox-snapshot": { type: "string" },
+      "max-concurrent": { type: "string" },
       "checks-mode": { type: "string" },
       "oidc-audiences": { type: "string" },
       ingest: { type: "string" },
@@ -89,6 +93,10 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${x.project}: release refs ${x.releaseRefs.join(", ")}; key ${x.signingKey ?? "(none)"}; approval environment ${x.environment}`,
         );
       }
+      for (const x of await showSandbox(db, values.org))
+        console.log(
+          `sandbox ${x.project}: snapshot ${x.settings.sandboxSnapshot ?? "(default)"}; max concurrent ${x.settings.maxConcurrent ?? "(no project limit)"}`,
+        );
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
       for (const o of await showOidcAudiences(db, values.org))
@@ -121,6 +129,14 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}; approval environment ${r.environment}`,
         );
       }
+    } else if (values["sandbox-snapshot"] !== undefined || values["max-concurrent"] !== undefined) {
+      const r = await setSandboxPolicy(db, values.org, values.project, {
+        sandboxSnapshot: values["sandbox-snapshot"],
+        maxConcurrent: values["max-concurrent"],
+      });
+      console.error(
+        `sandbox ${r.project}: snapshot ${r.from.sandboxSnapshot ?? "(default)"} -> ${r.to.sandboxSnapshot ?? "(default)"}; max concurrent ${r.from.maxConcurrent ?? "none"} -> ${r.to.maxConcurrent ?? "none"}`,
+      );
     } else if (values.ingest !== undefined) {
       const r = await setIngestPolicy(db, values.org, values.project, values.ingest, {
         workflow: values.workflow,
@@ -199,7 +215,7 @@ export async function policyCommand(args: string[]): Promise<void> {
   const ours =
     rest.includes("approve-run-min-role") ||
     rest.some((a) =>
-      /^--(egress|checks-mode|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
+      /^--(egress|sandbox-snapshot|max-concurrent|checks-mode|oidc-audiences|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
         a,
       ),
     );
