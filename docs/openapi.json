@@ -7251,6 +7251,114 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/github/installations/{installation_id}/resync": {
+      "post": {
+        "operationId": "resync_installation",
+        "summary": "Re-sync one GitHub App installation of this org with GitHub.",
+        "description": "Re-fetches an installation and its repositories from GitHub and reconciles this org's repo bindings with them, as the installation webhooks do. Use it after installing the App on a repo that was already being polled: the existing binding is adopted (it keeps its project) so check runs can be posted. Idempotent. Only an installation this org owns: another org's installation id is refused as not_found. Limited to 6 calls a minute per org (rate_limited). Needs an org-level token with release_operator or admin.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [
+          {
+            "name": "installation_id",
+            "in": "path",
+            "required": true,
+            "description": "The GitHub installation id (numeric).",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{1,20}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "enum": ["synced", "suspended", "deleted", "unknown", "unclaimed"]
+                    },
+                    "bound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "adopted": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "unbound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "conflicts": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["outcome", "bound", "adopted", "unbound", "conflicts"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/project-settings": {
       "get": {
         "operationId": "get_project_settings",
@@ -9722,6 +9830,7 @@
                   "method_not_allowed",
                   "conflict",
                   "payload_too_large",
+                  "rate_limited",
                   "internal",
                   "unavailable"
                 ]

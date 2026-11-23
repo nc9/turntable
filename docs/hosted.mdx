@@ -127,6 +127,10 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/orgs/tokens" \
 
 Then add its projects as below. This is how a tenant is moved out of the bootstrap org before its GitHub App installation is claimed.
 
+## Moving a polled repo to the GitHub App
+
+A repo ingested by polling before the App is installed gets checks as soon as the App is installed on it: the installation sync adopts its existing binding (same org, no installation yet) and keeps its project. A binding in another org, from another installation, or with a different GitHub repo id is a conflict and is not touched. See [Moving a polled repo to the App](/github-app#moving-a-polled-repo-to-the-app).
+
 ## Adding a second repo to a running instance
 
 A repo is ingested into a project, and the poll config names that project, so the project must exist first. On an instance with no shell, the instance administrator makes it over REST (an instance token, see [Instance administrator](/instance-admin)):

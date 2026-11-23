@@ -34,6 +34,7 @@ import {
   getInstallationClaim,
   getOrgById,
 } from "../db/repos";
+import { esc, pageResponse } from "../pages/server-pages";
 import type { SecretStore } from "../secrets/store";
 import type { GithubFacts } from "./api";
 import { SECRET_CLIENT } from "./app-auth";
@@ -425,30 +426,8 @@ export function githubUserVerifier(o: {
   };
 }
 
-const HEADERS = {
-  "content-type": "text/html; charset=utf-8",
-  "cache-control": "no-store",
-  "content-security-policy":
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://github.com; frame-ancestors 'none'",
-  "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
-} as const;
-
-const esc = (v: string): string =>
-  v
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-const shell = (status: number, title: string, inner: string, cookies: string[] = []): Response => {
-  const headers = new Headers(HEADERS);
-  for (const c of cookies) headers.append("set-cookie", c);
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><body style="font-family:system-ui;max-width:32rem;margin:4rem auto"><h1>${esc(title)}</h1>${inner}</body>`,
-    { status, headers },
-  );
-};
+const shell = (status: number, title: string, body: string, cookies: string[] = []): Response =>
+  pageResponse({ status, title, body, cookies, formAction: "'self' https://github.com" });
 
 const page = (status: number, title: string, message: string, cookies: string[] = []): Response =>
   shell(status, title, `<p>${esc(message)}</p>`, cookies);
@@ -548,7 +527,7 @@ async function startPage(claims: InstallationClaims, req: Request, url: URL): Pr
       "Connect a GitHub installation",
       `<p>You are about to connect a GitHub installation to the Turntable org <strong>${esc(d.orgName)}</strong>.</p>` +
         `<p>Only continue if you started this from that org. You will sign in to GitHub next, and only an owner of the GitHub account can complete it.</p>` +
-        `<form method="post" action="${CLAIM_START_PATH}"><input type="hidden" name="state" value="${esc(state)}"><input type="hidden" name="csrf" value="${esc(mac)}"><button type="submit">Continue to GitHub</button></form>`,
+        `<form method="post" action="${CLAIM_START_PATH}"><input type="hidden" name="state" value="${esc(state)}"><input type="hidden" name="csrf" value="${esc(mac)}"><button class="tt-button" type="submit">Continue to GitHub</button></form>`,
       [
         `${CSRF_COOKIE}=${token}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`,
       ],
