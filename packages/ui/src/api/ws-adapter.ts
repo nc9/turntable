@@ -5,6 +5,7 @@ import {
   type ClientMessage,
   type ServerMessage,
   type WireCut,
+  type WireNotice,
 } from "@longshore/core/realtime-protocol";
 import type { LongshoreApi } from "./client";
 import { createSnapshotSource } from "./polling-realtime";
@@ -89,6 +90,19 @@ const cutEvents = (attemptId: string, cuts: readonly WireCut[]): RealtimeMessage
     atOffset: c.at_offset,
     omittedBytes: c.omitted_bytes,
     reason: c.reason,
+  }));
+
+const noticeEvents = (
+  attemptId: string,
+  notices: readonly WireNotice[] | undefined,
+): RealtimeMessage[] =>
+  (notices ?? []).map((n) => ({
+    type: "notice",
+    attemptId,
+    kind: "notice",
+    atOffset: n.at_offset,
+    source: n.source,
+    text: n.text,
   }));
 
 export function createWsRealtime(options: WsRealtimeOptions): Realtime {
@@ -249,11 +263,13 @@ export function createWsRealtime(options: WsRealtimeOptions): Realtime {
         const attemptId = sub.topic.kind === "attempt-log" ? sub.topic.attemptId : "";
         for (const e of stepEvents(attemptId, m.steps)) deliver(sub, e);
         for (const e of cutEvents(attemptId, m.cuts)) deliver(sub, e);
+        for (const e of noticeEvents(attemptId, m.notices)) deliver(sub, e);
         return;
       }
       case "cuts": {
         const attemptId = sub.topic.kind === "attempt-log" ? sub.topic.attemptId : "";
         for (const e of cutEvents(attemptId, m.cuts)) deliver(sub, e);
+        for (const e of noticeEvents(attemptId, m.notices)) deliver(sub, e);
         return;
       }
       case "error":

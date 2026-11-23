@@ -19,12 +19,14 @@ export const jobs = (DIALECT === "pg" ? pg.jobs : sqlite.jobs) as unknown as typ
 export const jobAttempts = (DIALECT === "pg" ? pg.jobAttempts : sqlite.jobAttempts) as unknown as typeof sqlite.jobAttempts;
 export const logChunks = (DIALECT === "pg" ? pg.logChunks : sqlite.logChunks) as unknown as typeof sqlite.logChunks;
 export const apiTokens = (DIALECT === "pg" ? pg.apiTokens : sqlite.apiTokens) as unknown as typeof sqlite.apiTokens;
+export const instanceTokens = (DIALECT === "pg" ? pg.instanceTokens : sqlite.instanceTokens) as unknown as typeof sqlite.instanceTokens;
 export const auditLog = (DIALECT === "pg" ? pg.auditLog : sqlite.auditLog) as unknown as typeof sqlite.auditLog;
 export const auditCheckpoints = (DIALECT === "pg" ? pg.auditCheckpoints : sqlite.auditCheckpoints) as unknown as typeof sqlite.auditCheckpoints;
 export const auditExportCursors = (DIALECT === "pg" ? pg.auditExportCursors : sqlite.auditExportCursors) as unknown as typeof sqlite.auditExportCursors;
 export const events = (DIALECT === "pg" ? pg.events : sqlite.events) as unknown as typeof sqlite.events;
 export const attemptSteps = (DIALECT === "pg" ? pg.attemptSteps : sqlite.attemptSteps) as unknown as typeof sqlite.attemptSteps;
 export const logCuts = (DIALECT === "pg" ? pg.logCuts : sqlite.logCuts) as unknown as typeof sqlite.logCuts;
+export const logNotices = (DIALECT === "pg" ? pg.logNotices : sqlite.logNotices) as unknown as typeof sqlite.logNotices;
 export const pollSeen = (DIALECT === "pg" ? pg.pollSeen : sqlite.pollSeen) as unknown as typeof sqlite.pollSeen;
 export const secrets = (DIALECT === "pg" ? pg.secrets : sqlite.secrets) as unknown as typeof sqlite.secrets;
 export const proxyRules = (DIALECT === "pg" ? pg.proxyRules : sqlite.proxyRules) as unknown as typeof sqlite.proxyRules;
@@ -49,3 +51,6 @@ export const installationClaims = (DIALECT === "pg" ? pg.installationClaims : sq
 export const cacheEntries = (DIALECT === "pg" ? pg.cacheEntries : sqlite.cacheEntries) as unknown as typeof sqlite.cacheEntries;
 export const orgQuotas = (DIALECT === "pg" ? pg.orgQuotas : sqlite.orgQuotas) as unknown as typeof sqlite.orgQuotas;
 export const quotaNotices = (DIALECT === "pg" ? pg.quotaNotices : sqlite.quotaNotices) as unknown as typeof sqlite.quotaNotices;
+export const outboundEndpoints = (DIALECT === "pg" ? pg.outboundEndpoints : sqlite.outboundEndpoints) as unknown as typeof sqlite.outboundEndpoints;
+export const outboundSecrets = (DIALECT === "pg" ? pg.outboundSecrets : sqlite.outboundSecrets) as unknown as typeof sqlite.outboundSecrets;
+export const outboundDeliveries = (DIALECT === "pg" ? pg.outboundDeliveries : sqlite.outboundDeliveries) as unknown as typeof sqlite.outboundDeliveries;

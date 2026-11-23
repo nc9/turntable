@@ -1,4 +1,9 @@
-export { reconcileExpired, type ReconcileReport } from "./reconcile";
+export {
+  adoptRecordedSandboxes,
+  reconcileExpired,
+  sweepUndestroyedSandboxes,
+  type ReconcileReport,
+} from "./reconcile";
 export { Scheduler, type SchedulerOptions } from "./scheduler";
 export type {
   AttemptContext,

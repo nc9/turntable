@@ -49,6 +49,7 @@ let forgeTags: Map<string, string>;
 let forgeCalls: string[];
 let blobs: Map<string, string>; // `${runId}/${name}` -> bytes
 let recorded: Map<string, string>; // `${runId}/${name}` -> sha256 (the main database's rows)
+let recordedSizes: Map<string, number>; // `${runId}/${name}` -> the recorded size, when the row has one
 let signed: Parameters<ReleaseSigner["signRelease"]>[1][];
 let signerAnswer: Awaited<ReturnType<ReleaseSigner["signRelease"]>>;
 let attest: AttestationStore;
@@ -67,7 +68,8 @@ const records: ArtifactRecords = {
   async recorded(_scope, runId, names) {
     return names.flatMap((n) => {
       const v = recorded.get(`${runId}/${n}`);
-      return v ? [{ name: n, sha256: v }] : [];
+      const size = recordedSizes.get(`${runId}/${n}`);
+      return v ? [{ name: n, sha256: v, ...(size === undefined ? {} : { size }) }] : [];
     });
   },
 };
@@ -104,6 +106,7 @@ beforeEach(async () => {
   forgeThrows = false;
   blobs = new Map([[`${a.runId}/longshore-linux-x64`, "binary-bytes"]]);
   recorded = new Map([[`${a.runId}/longshore-linux-x64`, digest("binary-bytes")]]);
+  recordedSizes = new Map();
   signed = [];
   signerAnswer = {
     ok: true,
@@ -208,6 +211,20 @@ describe("the lane signs only what it has checked itself", () => {
     const row = await process1();
     expect(row).toMatchObject({ status: "refused", reason: "attestation_mismatch" });
     expect(signed.length).toBe(1);
+  });
+
+  test("a recorded size that is not the stored file's length is refused, even with the right digest", async () => {
+    // an under-reported size (what would dodge the stored-bytes quota) and an over-reported one
+    for (const size of [1, 4096]) {
+      recordedSizes.set(`${a.runId}/longshore-linux-x64`, size);
+      const row = await process1();
+      expect(row).toMatchObject({ status: "refused", reason: "size_mismatch" });
+      expect(row.result ?? "").not.toContain("signed");
+    }
+    expect(signed).toEqual([]);
+    // the true size passes (a row with no size, as an older record, is not refused either)
+    recordedSizes.set(`${a.runId}/longshore-linux-x64`, "binary-bytes".length);
+    expect((await process1()).status).toBe("signed");
   });
 
   test("a recorded digest edited alone does not match the bytes", async () => {
@@ -768,7 +785,7 @@ describe("roles", () => {
       });
       expect(
         await wired.records.recorded(a.scope, a.runId, ["longshore-linux-x64", "missing"]),
-      ).toEqual([{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }]);
+      ).toEqual([{ name: "longshore-linux-x64", sha256: digest("binary-bytes"), size: 12 }]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

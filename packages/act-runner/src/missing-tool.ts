@@ -7,9 +7,15 @@ const NOT_FOUND = /(?:^|[\s:])([A-Za-z0-9][A-Za-z0-9._+-]{0,63}): (?:command )?n
 /** `env: 'foo': No such file or directory`, from a launcher that execs the tool directly. */
 const ENV_MISSING = /^env: '([A-Za-z0-9][A-Za-z0-9._+-]{0,63})': No such file or directory\s*$/m;
 
+/**
+ * act's own message when a step's `shell:` names an interpreter that is not on PATH (there is no
+ * shim for an absent interpreter, so the shell never gets to say it): `Cannot find: pwsh in PATH`.
+ */
+const ACT_MISSING = /^Cannot find: ([A-Za-z0-9][A-Za-z0-9._+-]{0,63}) in PATH\s*$/m;
+
 /** The name of the missing tool in a step's output, or undefined. */
 export function missingTool(output: string): string | undefined {
-  const m = NOT_FOUND.exec(output) ?? ENV_MISSING.exec(output);
+  const m = NOT_FOUND.exec(output) ?? ENV_MISSING.exec(output) ?? ACT_MISSING.exec(output);
   return m?.[1];
 }
 

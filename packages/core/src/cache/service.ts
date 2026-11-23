@@ -295,7 +295,7 @@ export function createCacheService(o: CacheOptions): CacheService {
         if (done.skipped > 0)
           o.onNotice?.(
             g,
-            `cache ${id}: dropped ${done.skipped} ${done.skipped === 1 ? "entry" : "entries"} at denied paths (git state, CI config, keys, startup files)`,
+            `cache: ${done.skipped} ${done.skipped === 1 ? "entry" : "entries"} dropped (denied paths)`,
           );
       } catch (err) {
         if (err instanceof ArchiveTooLargeError) return await bad(413, err.message);
