@@ -403,5 +403,12 @@ export const migrations: Migration[] = [
       "CREATE INDEX `events_org_project_idx` ON `events` (`org_id`,`project_id`,`id`);",
       "CREATE UNIQUE INDEX `events_public_id_unique` ON `events` (`public_id`);"
     ]
+  },
+  {
+    "tag": "0034_oidc_audiences",
+    "when": 1795401789505,
+    "statements": [
+      "ALTER TABLE `projects` ADD `oidc_audiences` text;"
+    ]
   }
 ];

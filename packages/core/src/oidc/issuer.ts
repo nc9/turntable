@@ -13,7 +13,15 @@
 //  - every mint, and every refusal, is audited.
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db";
-import { appendAudit, getAttempt, getJob, getOrgById, getProject, getRun } from "../db/repos";
+import {
+  appendAudit,
+  getAttempt,
+  getJob,
+  getOrgById,
+  getProject,
+  getProjectOidcAudiences,
+  getRun,
+} from "../db/repos";
 import { auditFailure } from "../audit/failures";
 import { OidcKeyStore, MAX_TOKEN_SECONDS, OIDC_ALG } from "./keys";
 
@@ -28,7 +36,8 @@ export type MintDenial =
   | "unknown_attempt"
   | "attempt_not_running"
   | "class_unrecorded"
-  | "class_not_allowed";
+  | "class_not_allowed"
+  | "audience_not_allowed";
 
 export type MintResult =
   | { ok: true; token: string; expiresAt: number; jti: string; kid: string }
@@ -167,6 +176,12 @@ export class OidcIssuer {
     const klass = attempt.trustClass;
     if (!klass) return deny("class_unrecorded", project.id);
     if (!this.#allow.includes(klass)) return deny("class_not_allowed", project.id);
+    // The project's own allow list, when it has one: any other audience is refused (and audited
+    // with the audience asked for, by `deny`). No list: any audience, as before.
+    const allowedAud = await getProjectOidcAudiences(db, scope);
+    if (allowedAud !== null && !allowedAud.includes(aud)) {
+      return deny("audience_not_allowed", project.id);
+    }
 
     const iat = Math.floor(now / 1000);
     const exp = iat + Math.min(TOKEN_SECONDS, MAX_TOKEN_SECONDS);
