@@ -14,7 +14,7 @@
 # - every legacy-*.ts file and legacy-*.test.ts file: they name the old strings on purpose;
 # - any line containing `rename-keep`, and every line between `rename-keep-begin` and
 #   `rename-keep-end`: hand-written compat text next to renamed text;
-# - the phrase "formerly Longshore";
+# - the phrase "formerly Longshore", and docs lines that end with the MDX comment {/* rename-keep */};
 # - FROZEN strings: brand text inside key derivation, MAC and AAD contexts, signed statement and
 #   provenance types, wire headers that receivers match, and fleet names (configuration). Changing
 #   one breaks data or peers that already exist. The list is the `frozen` rules below; the PR that

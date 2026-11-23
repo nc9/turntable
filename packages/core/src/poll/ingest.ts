@@ -886,7 +886,9 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       c.beforeSource = r.source;
     }
     let changedFiles: string[] | undefined;
-    if (hasPathFilter(yaml)) {
+    let changedSource: string | undefined;
+    const shardPaths = (cfg.splits ?? []).some((r) => r.shards.some((sh) => sh.paths));
+    if (hasPathFilter(yaml) || shardPaths) {
       if (c.event === "pull_request") {
         changedFiles = c.baseRef
           ? await deps.github.changedFiles(repo, c.baseRef, c.sha)
@@ -897,6 +899,16 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
             ? await deps.github.changedFiles(repo, c.before, c.sha)
             : undefined;
       }
+    }
+    // Shard selection also covers a merge group (against the group's base), which the workflow's
+    // own path filters never see: GitHub applies none to it.
+    let shardFiles = changedFiles;
+    if (shardPaths && c.event === "merge_group" && c.baseSha)
+      shardFiles = await deps.github.changedFiles(repo, c.baseSha, c.sha);
+    if (shardFiles) {
+      const from =
+        c.event === "push" ? c.before : c.event === "merge_group" ? c.baseSha : c.baseRef;
+      if (from) changedSource = `${c.event} ${from.slice(0, 12)}..${c.sha.slice(0, 12)}`;
     }
     const event: WorkflowEvent = {
       name: c.event,
@@ -932,6 +944,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         github: githubExtra,
         vars: cfg.vars ?? {},
         ...(cfg.splits ? { splits: cfg.splits } : {}),
+        ...(shardFiles ? { shardChangedFiles: shardFiles } : {}),
+        ...(changedSource ? { changedSource } : {}),
       });
     } catch (err) {
       const reason = `plan rejected: ${err instanceof Error ? err.message : String(err)}`;

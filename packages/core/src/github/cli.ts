@@ -88,7 +88,7 @@ export async function githubAppCommand(args: string[]): Promise<void> {
     options: {
       url: { type: "string" },
       org: { type: "string" },
-      name: { type: "string", default: "Turntable" },
+      name: { type: "string", default: "Turntable CI" },
       "turntable-org": { type: "string" },
       "longshore-org": { type: "string" }, // rename-keep: the pre-rename flag still works
       port: { type: "string", default: "0" },

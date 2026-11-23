@@ -23,3 +23,15 @@ export function wrapUntrusted(source: string, content: unknown): Envelope {
 export function resultText(source: string, output: unknown, untrusted: boolean): string {
   return JSON.stringify(untrusted ? wrapUntrusted(source, output) : output);
 }
+
+/**
+ * The machine-readable twin of the REST `x-turntable-untrusted-content` header. MCP results carry
+ * no headers, so it rides in `_meta` on a tool result, a resource content and a tool definition.
+ * Set from the same per-op flag (`untrustedOutput`) that sets the header, never from a second list.
+ */
+export const UNTRUSTED_META_KEY = "turntable/untrusted-content";
+
+/** `_meta` for an untrusted result, and nothing for a trusted one. */
+export function untrustedMeta(untrusted: boolean): { _meta?: Record<string, true> } {
+  return untrusted ? { _meta: { [UNTRUSTED_META_KEY]: true } } : {};
+}

@@ -56,6 +56,7 @@ import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
+import { type SandboxSizes, sizeFor, untrustedForSize } from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -247,6 +248,9 @@ export type ActRunnerOptions = {
    * a placeholder and the proxy attaches the real credential. Absent: jobs get no OIDC variables.
    */
   jobOidc?: JobOidc;
+
+  /** The operator's map from `runs-on` labels to a sandbox size (see sandbox-size.ts). Absent: the provider's default size. */
+  sizes?: SandboxSizes;
 };
 
 /** What GITHUB_TOKEN holds inside a job that is behind the secrets proxy. The proxy attaches the real one. */
@@ -328,6 +332,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     githubToken?: string,
     secrets: readonly string[] = [],
     oidc?: { requestUrl: string; requestToken: string },
+    /** The job's effective class (after demotion); on a re-attach, the one recorded for the attempt. */
+    effectiveClass?: string | null,
   ): Promise<AttemptOutcome> => {
     const registry = ctx.redact ?? new SecretRegistry();
     // A real token in the environment is something the log must never show.
@@ -336,6 +342,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
     // Values that must never reach the job log: act echoes env and URLs when it is verbose.
     for (const v of secrets) registry.register(v);
+    const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
+    const size = sizeFor(o.sizes, planned?.runsOn ?? [], {
+      untrusted: untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local),
+    });
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
       : undefined;
@@ -349,6 +359,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         out: sink ? sink.out : () => {},
         registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),
+        ...(size.resources || size.snapshot
+          ? {
+              sandbox: {
+                ...(size.resources ? { resources: size.resources } : {}),
+                ...(size.snapshot ? { snapshot: size.snapshot } : {}),
+              },
+            }
+          : {}),
         ...(githubToken !== undefined ? { githubToken } : {}),
         ...(oidc ? { oidc } : {}),
         // A job holding a minted token, in its environment or behind the proxy, is secret-bearing:
@@ -629,13 +647,11 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // proxy, which holds the credential; a job with no proxy gets nothing and the log says so.
       let oidcVars: { requestUrl: string; requestToken: string } | undefined;
       if (o.jobOidc && jobKlass) {
-        const plannedJob = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
         const r = await o.jobOidc.issue({
           orgId: ctx.scope.orgId,
           attemptId: ctx.attempt.id,
           klass: jobKlass,
-          workflowYaml,
-          jobId: plannedJob?.id ?? job.jobKey,
+          planned: job.planned,
         });
         if ("none" in r) {
           // Silent when the job never asked: most jobs do not.
@@ -690,6 +706,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           githubToken,
           jobCache ? [jobCache.secret] : [],
           oidcVars,
+          jobKlass,
         );
       } finally {
         jobCache?.release();

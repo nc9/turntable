@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { buildActEvent } from "../src/run/act-event";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "../src/db";
+import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
 import {
   setEgressPolicy,
@@ -36,6 +38,7 @@ import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
 import { GithubClient, pollConfigSchema, pollRepo, type PollRepoConfig } from "../src/poll";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
+import { parseSandboxSizes } from "../src/scheduler/sandbox-size";
 import { makeGithub, SHA } from "./github-stub";
 
 const tmp = mkdtempSync(join(tmpdir(), "tt-worker-wf-"));
@@ -401,6 +404,135 @@ jobs:
     const [att] = await listAttempts(db, scope, jobs[1]!.id);
     expect(att?.errorClass).toBe("matrix fail-fast");
     expect((await getRun(db, scope, run!.id))?.status).toBe("failure");
+  });
+});
+
+describe("sandbox size from runs-on labels", () => {
+  const SIZED = `name: sized
+on:
+  push:
+    branches: [main]
+jobs:
+  heavy:
+    runs-on: ubuntu-latest-4-cores
+    steps:
+      - run: echo heavy
+  light:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo light
+  odd:
+    runs-on: ubuntu-latest-96-cores
+    steps:
+      - run: echo odd
+`;
+  const sizes = parseSandboxSizes(
+    JSON.stringify({
+      classes: {
+        small: { cpus: 2, memoryMb: 4096 },
+        large: { cpus: 4, memoryMb: 8192, snapshot: "snap-large" },
+        huge: { cpus: 96 },
+      },
+      labels: { "ubuntu-latest-4-cores": "large", "ubuntu-latest-96-cores": "huge" },
+      default: "small",
+      maxCpus: 8,
+    }),
+    "test",
+  );
+  const run = async (opts: Parameters<typeof makeScheduler>[2]) => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SIZED);
+    await ingest(gh);
+    const real = world.provider();
+    const specs: { job: string; spec: Parameters<Provider["create"]>[0] }[] = [];
+    const provider: Provider = Object.assign(Object.create(real) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push({ job: spec.labels["turntable.job"] as string, spec });
+        return real.create(spec);
+      },
+    });
+    const sched = await makeScheduler(gh, provider, opts);
+    await drain(sched);
+    const jobs = await listJobs(db, scope, (await listRuns(db, scope))[0]!.id);
+    const byKey = (k: string) => specs.find((s) => s.job === jobs.find((j) => j.jobKey === k)?.id)!;
+    return { byKey, specs };
+  };
+
+  test("each job's sandbox gets the class its label maps to; an unknown label gets the default; the ceiling clamps", async () => {
+    const { byKey } = await run({ sizes });
+    expect(byKey("heavy").spec.resources).toEqual({ cpus: 4, memoryMb: 8192 });
+    expect(byKey("heavy").spec.snapshot).toBe("snap-large");
+    expect(byKey("light").spec.resources).toEqual({ cpus: 2, memoryMb: 4096 });
+    expect(byKey("light").spec.snapshot).toBeUndefined();
+    // a class past maxCpus is clamped to it
+    expect(byKey("odd").spec.resources).toEqual({ cpus: 8 });
+  });
+
+  test("a project's own snapshot beats the size class's, which beats the provider's; the class's size still applies", async () => {
+    await setSandboxPolicy(db, "local", "local", { sandboxSnapshot: "project-snap" });
+    const { byKey } = await run({ sizes });
+    // heavy maps to a class with its own snapshot, light to one with none: both start from the project's
+    expect(byKey("heavy").spec.snapshot).toBe("project-snap");
+    expect(byKey("light").spec.snapshot).toBe("project-snap");
+    // the class still chooses the size
+    expect(byKey("heavy").spec.resources).toEqual({ cpus: 4, memoryMb: 8192 });
+    expect(byKey("light").spec.resources).toEqual({ cpus: 2, memoryMb: 4096 });
+  });
+
+  test("the size follows the class the job runs as (recorded on its attempt): an approved untrusted run gets untrustedClass, a trusted one keeps its label's size", async () => {
+    const sizesCfg = parseSandboxSizes(
+      JSON.stringify({
+        classes: { small: { cpus: 1 }, large: { cpus: 4 } },
+        labels: { "ubuntu-latest-4-cores": "large" },
+        default: "small",
+        untrustedClass: "small",
+      }),
+      "t",
+    );
+    const runWith = async (klass: string) => {
+      db = openDatabase(":memory:");
+      scope = await ensureLocalTenant(db);
+      const gh = makeGithub();
+      gh.state.files.set(
+        "*",
+        "name: s\non:\n  push:\n    branches: [main]\njobs:\n  big:\n    runs-on: ubuntu-latest-4-cores\n    steps:\n      - run: echo hi\n",
+      );
+      await ingest(gh);
+      const [r0] = await listRuns(db, scope);
+      const trust = JSON.parse(r0!.trust!);
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.runs)
+          .set({
+            trust: JSON.stringify({ ...trust, class: klass }),
+            approval: JSON.stringify({ head_sha: r0!.sha, workflow_hash: trust.workflowHash }),
+          })
+          .where(eq(s.runs.id, r0!.id));
+      });
+      const real = world.provider();
+      const specs: Parameters<Provider["create"]>[0][] = [];
+      const provider: Provider = Object.assign(Object.create(real) as Provider, {
+        create: (spec: Parameters<Provider["create"]>[0]) => {
+          specs.push(spec);
+          return real.create(spec);
+        },
+      });
+      await drain(await makeScheduler(gh, provider, { sizes: sizesCfg }));
+      const [job] = await listJobs(db, scope, r0!.id);
+      const attempt = (await listAttempts(db, scope, job!.id)).at(-1);
+      return { cpus: specs[0]?.resources?.cpus, recorded: attempt?.trustClass };
+    };
+    expect(await runWith("trusted_pr")).toEqual({ cpus: 4, recorded: "trusted_pr" });
+    expect(await runWith("protected")).toEqual({ cpus: 4, recorded: "protected" });
+    expect(await runWith("untrusted_pr")).toEqual({ cpus: 1, recorded: "untrusted_pr" });
+  });
+
+  test("with no size map the spec carries no resources: the provider's own default", async () => {
+    const { specs } = await run({});
+    expect(specs.length).toBe(3);
+    expect(
+      specs.every((s) => s.spec.resources === undefined && s.spec.snapshot === undefined),
+    ).toBe(true);
   });
 });
 

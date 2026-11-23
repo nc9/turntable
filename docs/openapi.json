@@ -133,8 +133,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -297,9 +305,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/runs/{run_id}": {
@@ -345,8 +353,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -813,9 +829,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/jobs/{job_id}/log": {
@@ -973,8 +989,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -1087,9 +1111,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/jobs/{job_id}/steps": {
@@ -1146,8 +1170,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -1271,9 +1303,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/jobs/{job_id}/cuts": {
@@ -1330,8 +1362,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -1429,9 +1469,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/failure-digest": {
@@ -1487,8 +1527,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -1645,9 +1693,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/events": {
@@ -1752,8 +1800,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -1865,9 +1921,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/checks/{sha}": {
@@ -1923,8 +1979,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -2032,9 +2096,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/runs/{run_id}/cancel": {
@@ -2140,9 +2204,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "destructive",
-        "x-longshore-min-role": "operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "destructive",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/runs/{run_id}/rerun": {
@@ -2326,9 +2390,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/runs/{run_id}/approve": {
@@ -2453,9 +2517,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/whoami": {
@@ -2491,8 +2555,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -2563,9 +2635,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/orgs": {
@@ -2623,8 +2695,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -2684,9 +2764,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/projects": {
@@ -2744,8 +2824,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -2838,9 +2926,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/ingest/status": {
@@ -2876,8 +2964,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -3021,9 +3117,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/action-pins": {
@@ -3059,8 +3155,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -3137,9 +3241,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/runs/{run_id}/artifacts": {
@@ -3185,8 +3289,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -3269,9 +3381,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/artifacts/check-consumption": {
@@ -3363,8 +3475,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -3437,9 +3557,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/quotas": {
@@ -3635,9 +3755,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
       }
     },
     "/action-pins/accept-move": {
@@ -3733,9 +3853,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/secrets": {
@@ -3829,9 +3949,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "destructive",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "destructive",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       },
       "get": {
         "operationId": "list_secrets",
@@ -4036,9 +4156,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/proxy-rules": {
@@ -4265,9 +4385,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       },
       "get": {
         "operationId": "list_proxy_rules",
@@ -4443,9 +4563,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       },
       "delete": {
         "operationId": "delete_proxy_rule",
@@ -4518,9 +4638,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "destructive",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "destructive",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/proxy-passthrough-hosts": {
@@ -4620,9 +4740,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       },
       "get": {
         "operationId": "list_proxy_passthrough_hosts",
@@ -4732,9 +4852,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       },
       "delete": {
         "operationId": "delete_proxy_passthrough_host",
@@ -4809,9 +4929,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "destructive",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "destructive",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvals/status": {
@@ -4857,8 +4977,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -4961,9 +5089,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/approvers": {
@@ -4999,8 +5127,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -5196,9 +5332,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/approvals/challenge": {
@@ -5325,9 +5461,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvers/challenge": {
@@ -5441,9 +5577,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvers/register-challenge": {
@@ -5524,9 +5660,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvers/key-policy/challenge": {
@@ -5655,9 +5791,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvers/enrolments": {
@@ -5779,9 +5915,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvals/relay": {
@@ -5997,9 +6133,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/incident/freeze": {
@@ -6127,9 +6263,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "destructive",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "destructive",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/incident/unfreeze": {
@@ -6215,9 +6351,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/incident": {
@@ -6253,8 +6389,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -6364,9 +6508,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": true
       }
     },
     "/secrets/usage": {
@@ -6430,8 +6574,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -6536,9 +6688,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": true
       }
     },
     "/usage/sandbox": {
@@ -6736,9 +6888,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
       }
     },
     "/release-requests": {
@@ -6880,9 +7032,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/release-requests/{id}": {
@@ -7011,9 +7163,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/github/installation-claims": {
@@ -7094,9 +7246,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "release_operator",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
       }
     },
     "/project-settings": {
@@ -7181,9 +7333,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-min-role": "reader",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvers/key-policy": {
@@ -7438,9 +7590,9 @@
           }
         },
         "security": [],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "viewer",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "viewer",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvals": {
@@ -7652,9 +7804,9 @@
           }
         },
         "security": [],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "viewer",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "viewer",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvers/approve": {
@@ -7848,9 +8000,9 @@
           }
         },
         "security": [],
-        "x-longshore-effect": "write",
-        "x-longshore-min-role": "viewer",
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "viewer",
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/whoami": {
@@ -7901,9 +8053,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-instance-only": true,
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/orgs": {
@@ -7916,8 +8068,16 @@
           "200": {
             "description": "Success.",
             "headers": {
-              "X-Longshore-Untrusted-Content": {
+              "X-Turntable-Untrusted-Content": {
                 "description": "Always `true` on this operation: the body carries untrusted text.",
+                "schema": {
+                  "type": "string",
+                  "enum": ["true"]
+                }
+              },
+              "X-Longshore-Untrusted-Content": {
+                "description": "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                "deprecated": true,
                 "schema": {
                   "type": "string",
                   "enum": ["true"]
@@ -7970,9 +8130,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "read",
-        "x-longshore-instance-only": true,
-        "x-longshore-untrusted-output": true
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": true
       }
     },
     "/instance/quotas": {
@@ -8225,9 +8385,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-instance-only": true,
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/db-backup": {
@@ -8436,9 +8596,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-instance-only": true,
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/projects": {
@@ -8524,9 +8684,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-instance-only": true,
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     }
   },

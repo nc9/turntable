@@ -119,7 +119,10 @@ export class Scheduler {
         readiness: this.#o.readiness,
         ...(this.#o.onlyRun ? { onlyRun: this.#o.onlyRun } : {}),
       });
-      if (!claim) return started;
+      if (!claim) {
+        this.#notify((o) => o.tick?.());
+        return started;
+      }
       this.#launch(claim);
       started++;
     }

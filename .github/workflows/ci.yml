@@ -28,6 +28,19 @@ jobs:
         with:
           bun-version: 1.4.5
       - run: bun install --frozen-lockfile
+      # A shipped migration is immutable: its hash in migration-shas.json may only be appended to,
+      # or edited with the tag named in EDITED_IN_PLACE in the same PR. Compares with the base.
+      - name: Migration hashes are only appended to
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The base branch from git when it can be fetched; a checkout of only one commit that
+          # cannot reach it (Turntable's) has the script fetch the two files by the base sha.
+          git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
+          bun run scripts/check-migration-shas-diff.ts --base "origin/${BASE_REF}" --base-repo "${REPO}" --base-sha "${BASE_SHA}"
       - name: Everything fetched is pinned by digest, commit or checksum
         run: bun run scripts/check-pins.ts
       - run: bun fmt --check
@@ -72,6 +85,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
+          --shm-size 256m
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
