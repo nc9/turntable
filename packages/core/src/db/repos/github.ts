@@ -762,3 +762,47 @@ export function retireAppInstallations(
     return { installations: live.length, repos };
   });
 }
+
+// ---- App status (read-only views) ----
+
+/** Installation counts by status across the whole instance (unscoped: the instance view). */
+export function countInstallationsByStatus(db: Db): Promise<Record<InstallationStatus, number>> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ status: s.githubInstallations.status })
+      .from(s.githubInstallations);
+    const counts: Record<InstallationStatus, number> = { active: 0, suspended: 0, deleted: 0 };
+    for (const r of rows) counts[r.status as InstallationStatus] += 1;
+    return counts;
+  });
+}
+
+/**
+ * Installation ids a delivery named that no org has claimed: ignored as unclaimed and still
+ * without an installation row. Newest first, capped. Ids only, no payload.
+ */
+export function listUnclaimedInstallationIds(db: Db, limit: number): Promise<string[]> {
+  return db.run(async (h) => {
+    const claimed = new Set(
+      (
+        await h.orm.select({ id: s.githubInstallations.installationId }).from(s.githubInstallations)
+      ).map((r) => r.id),
+    );
+    const rows = await h.orm
+      .select({ id: s.webhookDeliveries.installationId, at: s.webhookDeliveries.receivedAt })
+      .from(s.webhookDeliveries)
+      .where(
+        and(
+          eq(s.webhookDeliveries.status, "ignored"),
+          eq(s.webhookDeliveries.error, "installation not claimed by any org"),
+        ),
+      )
+      .orderBy(desc(s.webhookDeliveries.receivedAt));
+    const out: string[] = [];
+    for (const r of rows) {
+      if (r.id && !claimed.has(r.id) && !out.includes(r.id)) out.push(r.id);
+      if (out.length >= limit) break;
+    }
+    return out;
+  });
+}

@@ -9,6 +9,7 @@ import {
   getOrgBySlug,
   listApiTokens,
   listAudit,
+  listEvents,
   revokeApiToken,
 } from "../src/db";
 import { AGENT_ROLES } from "../src/db/schema";
@@ -16,10 +17,15 @@ import { createMcpHttp } from "../src/mcp/http";
 import { createRestApi } from "../src/ops/rest";
 import { dispatch, type DispatchEnv, registry, type Credential, type Principal } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
+import { revokeTokenFromCli } from "../src/ops/token-cli";
+import { settingsRegistry } from "../src/settings/definitions";
+import { createSettingsRuntime } from "../src/settings/resolve";
 import { mcpTools } from "../src/ops/mcp";
 import { hashToken } from "../src/ops/tokens";
 import { handleRequest } from "../src/server";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+
+const HOUR = 3_600_000;
 
 let db: Db;
 let a: Tenant;
@@ -108,23 +114,114 @@ describe("create_org_token", () => {
     expect(me.ok).toBe(true);
   });
 
-  test("refused once the org has an active token, allowed again when all are revoked or expired", async () => {
+  test("refused while the org has an active token", async () => {
     const first = await asInstance("create_org_token", tokenInput());
     expect(first.ok).toBe(true);
     const again = await asInstance("create_org_token", tokenInput({ name: "second" }));
     expect(!again.ok && again.error.code).toBe("conflict");
     const org = (await getOrgBySlug(db, "fresh"))!;
     expect(await listApiTokens(db, { orgId: org.id })).toHaveLength(1);
-    // a project-scoped token counts as active too
+  });
+
+  test("an org that ever had a token waits the delay after its last token was revoked (#367)", async () => {
+    const first = await asInstance("create_org_token", tokenInput());
+    const org = (await getOrgBySlug(db, "fresh"))!;
     const id = (first.ok ? (first.output as { id: string }).id : "")!;
     expect(await revokeApiToken(db, { orgId: org.id }, id, clock)).toBe(true);
-    const expiring = await mintToken(db, { orgId: org.id }, "reader", { expiresAt: clock + 1000 });
-    expect(expiring.id).toBeTruthy();
-    const blocked = await asInstance("create_org_token", tokenInput({ name: "third" }));
-    expect(!blocked.ok && blocked.error.code).toBe("conflict");
-    clock += 2000; // the last token lapses
-    const ok = await asInstance("create_org_token", tokenInput({ name: "fourth" }));
+    const early = await asInstance("create_org_token", tokenInput({ name: "again" }));
+    expect(!early.ok && early.error.code).toBe("conflict");
+    expect(!early.ok && early.error.message).toContain(new Date(clock + 24 * HOUR).toISOString());
+    clock += 24 * HOUR - 1;
+    expect((await asInstance("create_org_token", tokenInput({ name: "again" }))).ok).toBe(false);
+    clock += 1;
+    const ok = await asInstance("create_org_token", tokenInput({ name: "again" }));
     expect(ok.ok).toBe(true);
+    expect(await listApiTokens(db, { orgId: org.id })).toHaveLength(2);
+  });
+
+  test("a token that only expired counts from its expiry, and the delay is the last end", async () => {
+    const org = (await getOrgBySlug(db, "fresh"))!;
+    await mintToken(db, { orgId: org.id }, "reader", { expiresAt: clock + 1000 });
+    const old = await mintToken(db, { orgId: org.id }, "reader", { expiresAt: clock + 5000 });
+    // revoked early: it ended at the revocation, not at its far-off expiry
+    await revokeApiToken(db, { orgId: org.id }, old.id, clock + 10);
+    clock += 2 * HOUR; // the expiring one lapsed at +1000
+    const r = await asInstance("create_org_token", tokenInput());
+    expect(!r.ok && r.error.code).toBe("conflict");
+    clock = 1_700_000_000_000 + 1000 + 24 * HOUR;
+    expect((await asInstance("create_org_token", tokenInput())).ok).toBe(true);
+  });
+
+  test("a re-mint emits an event and an audit row in both chains; a first mint emits no event", async () => {
+    const org = (await getOrgBySlug(db, "fresh"))!;
+    const first = await asInstance("create_org_token", tokenInput());
+    const feed = () =>
+      listEvents(db, { orgId: org.id }, { after: 0, limit: 20, types: ["org.token_reminted"] });
+    expect(await feed()).toHaveLength(0);
+    await revokeApiToken(
+      db,
+      { orgId: org.id },
+      (first.ok ? (first.output as { id: string }).id : "")!,
+      clock,
+    );
+    clock += 24 * HOUR;
+    const second = await asInstance("create_org_token", tokenInput({ name: "again" }));
+    expect(second.ok).toBe(true);
+    const events = await feed();
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]!.payload) as Record<string, unknown>;
+    expect(payload).toMatchObject({ role: "operator", kind: "person", delay_hours: 24 });
+    expect(JSON.stringify(events)).not.toContain(
+      second.ok ? (second.output as { token: string }).token : "x",
+    );
+    const own = await listAudit(db, { orgId: org.id }, { limit: 100 });
+    expect(own.some((x) => x.op === "create_org_token" && x.input.includes("remint"))).toBe(true);
+    const sys = await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 100 });
+    expect(sys.some((x) => x.op === "org_token_reminted")).toBe(true);
+  });
+
+  test("the delay setting is read: a stored hour value, the 1 h minimum and the env lock", async () => {
+    const org = (await getOrgBySlug(db, "fresh"))!;
+    await mintToken(db, { orgId: org.id }, "reader", { expiresAt: clock + 1 });
+    clock += 1;
+    const set = (value: unknown) =>
+      asInstance("instance_set_setting", { key: "org_remint_delay_hours", value });
+    expect((await set(0)).ok).toBe(false);
+    expect((await set(-3)).ok).toBe(false);
+    expect((await set(1)).ok).toBe(true);
+    clock += HOUR - 1;
+    expect((await asInstance("create_org_token", tokenInput())).ok).toBe(false);
+    clock += 1;
+    expect((await asInstance("create_org_token", tokenInput())).ok).toBe(true);
+    // an env value locks it
+    const locked = await dispatch(
+      {
+        ...env,
+        settings: createSettingsRuntime(settingsRegistry, {
+          TURNTABLE_ORG_REMINT_DELAY_HOURS: "48",
+        }),
+      },
+      { kind: "bearer", token: secret },
+      "instance_set_setting",
+      { key: "org_remint_delay_hours", value: 2 },
+    );
+    expect(!locked.ok && locked.error.code).toBe("conflict");
+  });
+
+  test("revoking the last active token emits org.tokens_exhausted in both chains", async () => {
+    const org = (await getOrgBySlug(db, "fresh"))!;
+    const a1 = await mintToken(db, { orgId: org.id }, "reader");
+    const a2 = await mintToken(db, { orgId: org.id }, "reader");
+    const feed = () =>
+      listEvents(db, { orgId: org.id }, { after: 0, limit: 20, types: ["org.tokens_exhausted"] });
+    await revokeTokenFromCli(db, a1.id, () => clock);
+    expect(await feed()).toHaveLength(0);
+    await revokeTokenFromCli(db, a2.id, () => clock);
+    expect(await feed()).toHaveLength(1);
+    for (const orgId of [org.id, await systemOrgId(db)]) {
+      const rows = await listAudit(db, { orgId }, { limit: 100 });
+      expect(rows.some((x) => x.op === "org_tokens_exhausted")).toBe(true);
+    }
   });
 
   test("an org that already has tokens (org-a) is refused, and nothing is minted", async () => {

@@ -47,6 +47,8 @@ export const EVENT_TYPES = [
   "quota.reached",
   "webhook.disabled",
   "approval.policy_loosened",
+  "org.token_reminted",
+  "org.tokens_exhausted",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
