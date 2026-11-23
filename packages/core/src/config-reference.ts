@@ -625,6 +625,26 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     description: "GiB of the largest single cache entry.",
   },
   {
+    name: "TURNTABLE_ARTIFACTS_URL",
+    area: "Job cache",
+    description:
+      "The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts).",
+  },
+  {
+    name: "TURNTABLE_ARTIFACT_MAX_GIB",
+    area: "Job cache",
+    default: "2",
+    description:
+      "GiB of the largest single artifact. The org's stored-bytes quota applies as well.",
+  },
+  {
+    name: "TURNTABLE_ARTIFACT_RETENTION_DAYS",
+    area: "Job cache",
+    default: "90",
+    description:
+      "Days a stored artifact is kept. Past it the bytes are removed and downloads fail; the recorded digest stays.",
+  },
+  {
     name: "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",
     area: "Release lane",
     description:

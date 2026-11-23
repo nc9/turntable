@@ -82,9 +82,30 @@ export const approvalPolicySetting = defineSetting({
   toml: "approval_policy",
 });
 
+/** The scheduling classes of a project: `yield` work gives way to `normal` work (see the scheduler). */
+export const SCHEDULING_CLASSES = ["normal", "yield"] as const;
+export type SchedulingClass = (typeof SCHEDULING_CLASSES)[number];
+
+export const schedulingClassSetting = defineSetting({
+  key: "scheduling_class",
+  scope: "project",
+  type: z.enum(SCHEDULING_CLASSES),
+  default: "normal",
+  // Instance operator only: a class is a decision about whose work the shared fleet serves first.
+  role: "owner",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides whose work the shared fleet serves first, so only the instance administrator changes it",
+  description:
+    "How the project's jobs share the fleet: `normal`, or `yield` (a yield job is claimed only while no normal job is waiting, and is preempted and requeued when a normal job waits at a cap).",
+  toml: "scheduling_class",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
   untrustedRunApprovalSetting,
   approvalPolicySetting,
+  schedulingClassSetting,
 ]);

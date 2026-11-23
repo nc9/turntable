@@ -20,6 +20,7 @@ import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
+import type { GithubFacts } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
@@ -38,6 +39,8 @@ export type DispatchEnv = {
   /** Set when the server has a master key; the vault ops need it. */
   vault?: SecretVault | undefined;
   claims?: InstallationClaims | undefined;
+  /** GitHub API facts (the App's credentials); `resync_installation` needs them. */
+  githubFacts?: GithubFacts | undefined;
   /**
    * Let a `tti_` instance token authenticate. Set only by the REST adapter: MCP and the realtime
    * socket leave it off, so an instance token is simply not a credential there.
@@ -342,6 +345,7 @@ export async function dispatch(
       now: env.now ?? Date.now,
       vault: env.vault,
       claims: env.claims,
+      githubFacts: env.githubFacts,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       transport: env.transport,

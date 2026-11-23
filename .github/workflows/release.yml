@@ -98,6 +98,12 @@ jobs:
   github-release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [binaries, reproducible]
+    # Publishing waits for the `release` environment's approval (on GitHub: its protection rules;
+    # through Turntable: a held environment approval). Unprotected, GitHub creates it on first use.
+    environment: release
+    # Every step that PUBLISHES (attestations, the GitHub release) is gated: GitHub publishes only when the
+    # repository variable PUBLISH_FROM_GITHUB is `true`, and never under Turntable (TURNTABLE_CI), which
+    # publishes through the release lane. The checks and the build still run.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -122,6 +128,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bun run scripts/release-notes.ts --to "${REF_NAME}" --out release-notes.md
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         with:
           subject-path: |
             dist/turntable-linux-*
@@ -133,12 +140,14 @@ jobs:
           REF_NAME: ${{ env.RELEASE_VERSION }}
         run: echo "path=dist/turntable-${REF_NAME#v}.cdx.json" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         with:
           subject-path: |
             dist/turntable-linux-*
             dist/turntable-darwin-*
           sbom-path: ${{ steps.sbom.outputs.path }}
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         with:
           files: dist/*
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -147,8 +156,12 @@ jobs:
 
   image:
     # After the release exists, so the image SBOM can be attached to it.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Not under Turntable: qemu, buildx and the smoke run need Docker, which its sandboxes lack
+    # (the image is deferred for the first alpha).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.TURNTABLE_CI != 'true'
     needs: [binaries, github-release]
+    # Publishes the image: gated by the same environment as the release it attaches to.
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -166,6 +179,7 @@ jobs:
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -197,6 +211,7 @@ jobs:
       - name: Smoke-run the image
         run: scripts/smoke-image.sh turntable:release-smoke
       - id: push
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -206,6 +221,7 @@ jobs:
           build-args: |
             TURNTABLE_VERSION=${{ steps.tags.outputs.version }}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         with:
           subject-name: ghcr.io/nc9/turntable
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -213,6 +229,7 @@ jobs:
       # Syft is pinned by version; the action by commit. The SBOM covers the OS packages of the
       # distroless base and the binary, as the registry holds them (by digest).
       - name: SBOM (CycloneDX) for the image
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ghcr.io/nc9/turntable@${{ steps.push.outputs.digest }}
@@ -222,14 +239,17 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
       - name: The image SBOM saw the image's packages
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         run: bun run scripts/release-checks.ts image-sbom turntable-image.cdx.json
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         with:
           subject-name: ghcr.io/nc9/turntable
           subject-digest: ${{ steps.push.outputs.digest }}
           sbom-path: turntable-image.cdx.json
           push-to-registry: true
       - name: Attach the image SBOM to the release
+        if: vars.TURNTABLE_CI != 'true' && vars.PUBLISH_FROM_GITHUB == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REF_NAME: ${{ env.RELEASE_VERSION }}
@@ -290,7 +310,8 @@ jobs:
           retention-days: 7
 
   image-dry-run:
-    if: github.event_name == 'workflow_dispatch'
+    # Not under Turntable, as for the image job: its sandboxes have no Docker.
+    if: github.event_name == 'workflow_dispatch' && vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:

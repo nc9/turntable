@@ -51,8 +51,22 @@ export interface SignRequest {
    * repository and the digests it computed from the bytes. The service signs only if its own
    * read of the stored run and artifacts is exactly this, so a row changed after the caller
    * looked is refused, never signed.
+   *
+   * An artifact that is a zip is only transport: the lane unpacks it and the statement names the
+   * files inside, so `subjects` are those files, and `archives` lists each zip the lane unpacked
+   * with the digest it computed. The service checks each of those digests against its own row
+   * (the zip really is the recorded artifact), and every recorded artifact NOT listed there must
+   * itself be a subject, name and digest. Subject names must be unique.
    */
-  verified?: { sha: string; repo: string; ref: string; subjects: readonly Artifact[] } | undefined;
+  verified?:
+    | {
+        sha: string;
+        repo: string;
+        ref: string;
+        subjects: readonly Artifact[];
+        archives?: readonly Artifact[] | undefined;
+      }
+    | undefined;
 }
 
 export type SignOutcome =
@@ -143,8 +157,19 @@ export class SigningService {
     if (req.verified) {
       const v = req.verified;
       const own = new Map(recorded.map((a) => [a.name, a.sha256]));
+      const archives = new Map((v.archives ?? []).map((a) => [a.name, a.sha256]));
+      const subjectNames = new Set(v.subjects.map((s) => s.name));
+      const subjectDigest = new Map(v.subjects.map((s) => [s.name, s.sha256]));
+      // Each archive is a recorded artifact with the digest the lane saw; each recorded artifact
+      // that is not an archive is a subject as it is; the names signed are all different.
       const sameSubjects =
-        own.size === v.subjects.length && v.subjects.every((s) => own.get(s.name) === s.sha256);
+        v.subjects.length > 0 &&
+        subjectNames.size === v.subjects.length &&
+        archives.size === (v.archives ?? []).length &&
+        // With no archive there is nothing to unpack: the subjects are the recorded artifacts.
+        (archives.size > 0 || subjectNames.size === own.size) &&
+        [...archives].every(([name, sha]) => own.get(name) === sha) &&
+        [...own].every(([name, sha]) => archives.has(name) || subjectDigest.get(name) === sha);
       const sameSha = run.sha !== null && run.sha.toLowerCase() === v.sha.toLowerCase();
       const sameRepo = run.repo !== null && run.repo.toLowerCase() === v.repo.toLowerCase();
       const sameRef = run.ref === v.ref;
@@ -175,7 +200,9 @@ export class SigningService {
     }
     const keyRef = key.backend === "builtin" ? builtinKeyRef(scope.orgId, key.keyRef) : key.keyRef;
 
-    const subjects: Artifact[] = recorded.map((a) => ({ name: a.name, sha256: a.sha256 }));
+    const subjects: Artifact[] = req.verified?.archives?.length
+      ? req.verified.subjects.map((a) => ({ name: a.name, sha256: a.sha256 }))
+      : recorded.map((a) => ({ name: a.name, sha256: a.sha256 }));
     const chosen = new Set(subjects.map((s) => s.name));
     // A statement signed for a caller that verified the facts itself (the release lane) carries
     // only what that caller verified. The other recorded artifacts and the pinned actions are
