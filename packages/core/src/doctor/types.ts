@@ -60,6 +60,8 @@ export interface DoctorFs {
   writable(path: string): boolean;
   /** At most `maxBytes` of a file, or undefined if it cannot be read. */
   read(path: string, maxBytes: number): Buffer | undefined;
+  /** File names directly in a directory; empty when it cannot be listed. */
+  list?(path: string): string[];
 }
 
 /** The part of the database the checks use: read-only queries, on either dialect. */
@@ -90,6 +92,15 @@ export interface DoctorInputs {
   expectedMigrations: readonly string[];
   /** The master key, for checking that sealed records open; never printed. */
   masterKey: () => Buffer | undefined;
+  /**
+   * The key came from TURNTABLE_MASTER_KEY. The server deletes that variable at boot, so it says
+   * so here rather than through `env`.
+   */
+  masterKeyEnv?: boolean;
+  /** The release lane's key file and data directory, when configured here. */
+  releaseKey?: { file: string; dataDir: string | undefined } | undefined;
+  /** Org ids whose sealed audit anchor does not open under the current master key. */
+  unreadableAnchors?: () => string[];
   /** The providers' own read-only checks (`Provider.diagnose`). */
   providerChecks: () => Promise<DoctorCheck[]>;
   /** Whether the release channel answers, when one is configured. */

@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureInstance, getOrgById, getOrgBySlug, openDatabase, type Db } from "../db";
 import { orgsWithAudit } from "../db/repos";
-import { loadMasterKey } from "../secrets/crypto";
+import { masterKeyForCommand } from "../secrets/master-key";
 import { SecretStore } from "../secrets/store";
 import { AuditAnchor } from "./anchor";
 import {
@@ -30,7 +30,7 @@ const USAGE = `usage:
 init-key is the only thing that ever creates an org's signing key (the checkpointer never does),
 and writes the public key file to keep off this server. adopt is for an org that signed
 checkpoints before the sealed anchor existed: it trusts the chain as it is, once, after it verifies.
-init-key, adopt, checkpoint and export-key need TURNTABLE_MASTER_KEY_FILE (or --master-key-file).
+init-key, adopt, checkpoint and export-key need TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY (or --master-key-file).
 Keep the export-key file and the exported checkpoints OFF this server. verify --pubkey rejects
 checkpoints signed by any other key; verify --anchor (an export file or a saved checkpoint)
 fails if the database lacks a checkpoint the anchor has. Without them, verify says
@@ -62,14 +62,22 @@ export async function auditCommand(args: string[]): Promise<number> {
   try {
     await ensureInstance(db);
     const keyFile = values["master-key-file"] ?? process.env.TURNTABLE_MASTER_KEY_FILE;
-    const masterKey = keyFile ? loadMasterKey(keyFile) : undefined;
-    const store = keyFile && masterKey ? new SecretStore(db, masterKey) : undefined;
-    const anchor =
-      keyFile && masterKey ? new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey) : undefined;
+    const haveKey = Boolean(keyFile || process.env.TURNTABLE_MASTER_KEY?.trim());
+    const masterKey = haveKey ? masterKeyForCommand(values["master-key-file"]) : undefined;
+    const store = masterKey ? new SecretStore(db, masterKey) : undefined;
+    const anchor = masterKey
+      ? new AuditAnchor(
+          keyFile ? AuditAnchor.dirFor(keyFile) : join(resolve(values["data-dir"]), "audit-state"),
+          masterKey,
+        )
+      : undefined;
     const orgs = await resolveOrgs(db, values.org, anchor);
 
     if (sub === "export-key") {
-      if (!store) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
+      if (!store)
+        throw new Error(
+          "set TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY, or pass --master-key-file",
+        );
       const org = orgs[0];
       if (!org || !values.org || !values.out)
         throw new Error("--org <slug> and --out <file> are required");
@@ -90,7 +98,9 @@ export async function auditCommand(args: string[]): Promise<number> {
 
     if (sub === "init-key" || sub === "adopt") {
       if (!store || !anchor)
-        throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
+        throw new Error(
+          "set TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY, or pass --master-key-file",
+        );
       const org = orgs[0];
       if (!org || !values.org) throw new Error("--org <slug> is required");
       try {
@@ -122,7 +132,9 @@ export async function auditCommand(args: string[]): Promise<number> {
 
     if (sub === "checkpoint") {
       if (!store || !anchor)
-        throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
+        throw new Error(
+          "set TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY, or pass --master-key-file",
+        );
       let refused = false;
       for (const o of orgs) {
         try {

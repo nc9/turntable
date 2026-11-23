@@ -31,7 +31,14 @@ import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
-import { loadMasterKey } from "./secrets/crypto";
+import {
+  anchorKeyMessage,
+  auditStateDir,
+  MasterKeyConfigError,
+  takeMasterKeys,
+  type MasterKeys,
+} from "./secrets/master-key";
+import { rewrapMasterKey } from "./secrets/rewrap";
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
 import { systemOrgId } from "./audit/failures";
@@ -76,7 +83,7 @@ import {
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
-import { mainRuntime, resolveRoles } from "./roles";
+import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
@@ -147,7 +154,10 @@ Environment:
   TURNTABLE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create TURNTABLE_MASTER_KEY_FILE on first boot when it is
                     absent (a host with no shell); never overwrites an existing file
   TURNTABLE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (turntable keys init);
-                    required for the GitHub App and its webhook endpoint
+                    required for the GitHub App and its webhook endpoint (or TURNTABLE_MASTER_KEY, not both)
+  TURNTABLE_MASTER_KEY  the master key itself, 32 bytes as base64 or hex, so it stays off the data volume; read once at
+                    boot and removed from the environment. TURNTABLE_MASTER_KEY_PREVIOUS (or _FILE) re-wraps every sealed row
+                    under the new key at that boot, in one transaction; remove it afterwards
   TURNTABLE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
   TURNTABLE_AUDIT_WEBHOOK_URL  POST audit batches here (HMAC with TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE)
   TURNTABLE_OIDC_BASE_URL  base of the per-org OIDC issuers (default <public url>/oidc); an org's issuer
@@ -258,7 +268,7 @@ async function startBackground(
     // runs with no route but the proxy; see docs/secrets-proxy.mdx.
     if (process.env.TURNTABLE_SECRETS_PROXY === "1") {
       if (!extras.vault) {
-        throw new Error("TURNTABLE_SECRETS_PROXY=1 needs the vault (TURNTABLE_MASTER_KEY_FILE)");
+        throw new Error("TURNTABLE_SECRETS_PROXY=1 needs the vault (a master key)");
       }
       const port = process.env.TURNTABLE_PROXY_PORT?.trim();
       secretsProxy = await SecretsProxy.start({
@@ -541,6 +551,9 @@ async function serve(args: string[]): Promise<void> {
     // (or refuses) like every other process that opens a data dir, before any file is touched. It
     // does not chown: its own directories belong to whoever provisions the lane.
     enforceRootPolicy(resolve(values["data-dir"]), process.env, undefined, { chown: false });
+    // The lane has its own key file; the main process's key is not its to hold.
+    delete process.env.TURNTABLE_MASTER_KEY;
+    delete process.env.TURNTABLE_MASTER_KEY_PREVIOUS;
     const lane = await serveRelease(values);
     const stopLane = () => {
       lane.stop();
@@ -552,6 +565,9 @@ async function serve(args: string[]): Promise<void> {
   }
   // A process that is not the release lane holds nothing of it: those variables do nothing here.
   const runtime = mainRuntime(roles, process.env);
+  // The lane's keys, if given, are used once for the boot re-wrap and removed: not for a child to inherit.
+  const releaseLaneElsewhere = releaseLaneConfigured(process.env);
+  const releaseKeys = takeReleaseKeys(process.env);
   if (runtime.ignoredReleaseEnv.length > 0) {
     console.warn(
       `warning: ${runtime.ignoredReleaseEnv.join(", ")} belong to the release lane and are ignored here; run it as its own process (serve --roles release)`,
@@ -568,6 +584,13 @@ async function serve(args: string[]): Promise<void> {
   // before anything reads it. Never overwrites; without the opt-in an absent file stays an error.
   let masterKeyCreated: string | undefined;
   const keyPath = process.env.TURNTABLE_MASTER_KEY_FILE?.trim();
+  if (keyPath && process.env.TURNTABLE_MASTER_KEY?.trim()) {
+    delete process.env.TURNTABLE_MASTER_KEY;
+    delete process.env.TURNTABLE_MASTER_KEY_PREVIOUS;
+    throw new MasterKeyConfigError(
+      "TURNTABLE_MASTER_KEY and TURNTABLE_MASTER_KEY_FILE are both set: use one. Remove the file setting once the key is in the variable.",
+    );
+  }
   if (keyPath && autoInitRequested(process.env, values["init-master-key"])) {
     if (
       autoInitMasterKey(resolve(keyPath), dataDir, (m) => console.log(`[turntable] ${m}`)) ===
@@ -577,9 +600,14 @@ async function serve(args: string[]): Promise<void> {
     }
   } else if (!keyPath && autoInitRequested(process.env, values["init-master-key"])) {
     throw new Error(
-      "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) needs TURNTABLE_MASTER_KEY_FILE",
+      process.env.TURNTABLE_MASTER_KEY?.trim()
+        ? "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) creates a key file and is not used with TURNTABLE_MASTER_KEY: remove it"
+        : "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) needs TURNTABLE_MASTER_KEY_FILE",
     );
   }
+  // The key is read once, here, and TURNTABLE_MASTER_KEY is deleted from the environment before
+  // any provider, plugin or child process starts. Both a variable and a file is refused.
+  const masterKeys: MasterKeys | undefined = takeMasterKeys(process.env);
   // Before the database is opened (and so migrated) by this binary. SQLite only: on Postgres the
   // operator takes the backup with pg_dump.
   if (
@@ -596,6 +624,33 @@ async function serve(args: string[]): Promise<void> {
   }
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
+  // A rotation: the previous key is given, so every sealed row moves to the new key before anything
+  // reads one. All or nothing; a failure stops the boot.
+  if (masterKeys && (masterKeys.previous || releaseKeys?.previous)) {
+    await rewrapMasterKey({
+      db,
+      next: masterKeys.key,
+      previous: masterKeys.previous,
+      release: releaseKeys,
+      releaseElsewhere: !releaseKeys && releaseLaneElsewhere,
+      anchorDir: auditStateDir(masterKeys, dataDir),
+      auditOrgId: await systemOrgId(db),
+      log: (m) => console.log(`[turntable] ${m}`),
+    });
+    console.warn(
+      "[turntable] a previous master key is set: once the re-wrap is done and a new backup is taken, remove it",
+    );
+  }
+  // A key changed without its previous one: say so now, with the fix, not as a bare AnchorCorrupt
+  // from the checkpointer later. Not fatal: the checkpointer alerts on every pass either way.
+  if (masterKeys && !masterKeys.previous) {
+    for (const orgId of new AuditAnchor(
+      auditStateDir(masterKeys, dataDir),
+      masterKeys.key,
+    ).unreadable()) {
+      console.error(`[turntable] ${anchorKeyMessage(orgId)}`);
+    }
+  }
   if (masterKeyCreated) {
     await appendAudit(
       db,
@@ -653,11 +708,7 @@ async function serve(args: string[]): Promise<void> {
     cache = createCacheService({
       db,
       // With a master key the blobs are encrypted at rest, per org (cache/blob-crypto.ts).
-      store: new FsCacheStore(join(dataDir, "cache"), {
-        masterKey: process.env.TURNTABLE_MASTER_KEY_FILE?.trim()
-          ? loadMasterKey(process.env.TURNTABLE_MASTER_KEY_FILE.trim())
-          : undefined,
-      }),
+      store: new FsCacheStore(join(dataDir, "cache"), { masterKey: masterKeys?.key }),
       grants: new CacheGrants(),
       orgQuotaBytes: gib("TURNTABLE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("TURNTABLE_CACHE_MAX_ENTRY_GIB", 2),
@@ -735,9 +786,8 @@ async function serve(args: string[]): Promise<void> {
   let oidc: OidcHandler | undefined;
   let jobOidc: JobOidc | undefined;
   let outboundWebhooks: WebhookService | undefined;
-  const keyFile = process.env.TURNTABLE_MASTER_KEY_FILE?.trim();
-  if (keyFile) {
-    const masterKey = loadMasterKey(keyFile);
+  if (masterKeys) {
+    const masterKey = masterKeys.key;
     const store = new SecretStore(db, masterKey);
     vault = new SecretVault({ db, masterKey });
     outboundWebhooks = new WebhookService({
@@ -844,7 +894,7 @@ async function serve(args: string[]): Promise<void> {
     void webhooks.retryUnfinished().catch(() => {});
     // Signed audit checkpoints need the store's key; export sinks are opt in.
     auditStops.push(
-      startCheckpointer(db, store, new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey)),
+      startCheckpointer(db, store, new AuditAnchor(auditStateDir(masterKeys, dataDir), masterKey)),
     );
   }
   const sinks: AuditSink[] = [];
@@ -882,6 +932,7 @@ async function serve(args: string[]): Promise<void> {
       providerConfig: values["provider-config"],
       observed: forwarded.snapshot(),
       db: readerOf(db),
+      masterKeys,
     });
     try {
       return await runDoctor(inputs);
@@ -920,8 +971,9 @@ async function serve(args: string[]): Promise<void> {
           : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
-        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`turntable doctor` on the host).
-        ...(hostedMode ? {} : { doctor: doctorRun }),
+        // The `doctor` op is owner-member only (in-process) and `instance_doctor` is a `tti_` token's:
+        // no org token reaches either, so a hosted instance serves it too.
+        doctor: doctorRun,
         forwarded,
       })
     : undefined;

@@ -59,7 +59,11 @@ describe("configuration reference", () => {
       expect(row, `no row for setting ${d.key}`).toBeDefined();
       expect(row).toContain(`| ${d.scope} |`);
       expect(row).toContain(
-        d.instanceAdminOnly ? "| instance_admin (`instanceAdminOnly`) |" : `| ${d.role} |`,
+        d.strictness
+          ? `| ${d.role} may tighten, instance_admin may loosen (strictness, least to most strict: ${d.strictness.map((v) => `\`${v}\``).join(" < ")}) |`
+          : d.instanceAdminOnly
+            ? "| instance_admin (`instanceAdminOnly`) |"
+            : `| ${d.role} |`,
       );
       expect(row).toContain(d.mcpEditable ? "| yes |" : "| no: ");
       for (const e of d.env) expect(row).toContain(`\`${e}\``);

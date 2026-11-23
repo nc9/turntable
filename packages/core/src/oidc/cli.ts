@@ -4,14 +4,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureInstance, getOrgBySlug, openDatabase } from "../db";
-import { loadMasterKey } from "../secrets/crypto";
+import { masterKeyForCommand } from "../secrets/master-key";
 import { OidcIssuer } from "./issuer";
 
 const USAGE = `usage:
   turntable oidc status --org <slug>
   turntable oidc rotate --org <slug>
   turntable oidc export --org <slug> --base-url <https://host/oidc> --out <dir>
-Needs TURNTABLE_MASTER_KEY_FILE (or --master-key-file). The issuer URL of an org is
+Needs TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY (or --master-key-file). The issuer URL of an org is
 <base url>/<org slug>. export writes <dir>/<org>/.well-known/openid-configuration and
 <dir>/<org>/jwks.json for static hosting: serve them at the issuer URL, and run the server with
 TURNTABLE_OIDC_BASE_URL set to the same base so the tokens' iss matches. Re-export after rotate.`;
@@ -33,8 +33,7 @@ export async function oidcCommand(args: string[]): Promise<number> {
     },
     strict: true,
   });
-  const keyFile = values["master-key-file"] ?? process.env.TURNTABLE_MASTER_KEY_FILE;
-  if (!keyFile) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
+  const masterKey = masterKeyForCommand(values["master-key-file"]);
   if (!values.org) throw new Error("--org <slug> is required");
   const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
@@ -43,7 +42,7 @@ export async function oidcCommand(args: string[]): Promise<number> {
     if (!org) throw new Error(`no org with slug ${values.org}`);
     const base =
       values["base-url"] ?? process.env.TURNTABLE_OIDC_BASE_URL ?? "https://example.invalid/oidc";
-    const issuer = new OidcIssuer({ db, masterKey: loadMasterKey(keyFile), baseUrl: base });
+    const issuer = new OidcIssuer({ db, masterKey, baseUrl: base });
     if (sub === "rotate") {
       const r = await issuer.keys.rotate(org.id);
       console.log(

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureInstance, getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
 import { appendAudit } from "../db/repos";
-import { loadMasterKey } from "./crypto";
+import { masterKeyForCommand } from "./master-key";
 import { SecretVault, VaultInputError, type SecretView } from "./vault";
 
 const USAGE = `usage:
@@ -16,7 +16,7 @@ const USAGE = `usage:
                           [--environment <env>] [--ref <pattern>] [--overlap-seconds 0]
   turntable secret delete --org <slug> [--project <slug>] --name <NAME> [--environment <env>] [--ref <pattern>]
   turntable secret list   --org <slug> [--project <slug>]
-Needs TURNTABLE_MASTER_KEY_FILE (or --master-key-file). The value is never taken from an argument,
+Needs TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY (or --master-key-file). The value is never taken from an argument,
 so it cannot land in shell history or the process list; the default classes are protected and
 release, and untrusted_pr can never be allowed.`;
 
@@ -82,8 +82,7 @@ export async function secretCommand(args: string[]): Promise<number> {
     console.error(`${String(e instanceof Error ? e.message : e)}\n${USAGE}`);
     return 2;
   }
-  const keyFile = values["master-key-file"] ?? process.env.TURNTABLE_MASTER_KEY_FILE;
-  if (!keyFile) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
+  const masterKey = masterKeyForCommand(values["master-key-file"]);
   if (!values.org) throw new Error("--org <slug> is required");
   const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
@@ -96,7 +95,7 @@ export async function secretCommand(args: string[]): Promise<number> {
       if (!p) throw new Error(`no project ${values.project} in org ${values.org}`);
       projectId = p.id;
     }
-    const vault = new SecretVault({ db, masterKey: loadMasterKey(keyFile) });
+    const vault = new SecretVault({ db, masterKey });
     const scope = {
       name: values.name ?? "",
       projectId,

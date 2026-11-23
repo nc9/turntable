@@ -6,7 +6,7 @@ import { createHttpApi, mapSetting } from "../src/api/http-adapter";
 import type { Setting } from "../src/api/types";
 import type { WireSetting } from "../src/api/wire";
 import { SettingsPanel, type SettingsPanelProps } from "../src/features/settings/settings-panel";
-import { editability, lockNote, saveSetting, valueOfDraft } from "../src/lib/settings";
+import { editability, lockNote, loosens, saveSetting, valueOfDraft } from "../src/lib/settings";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -22,6 +22,7 @@ const wire = (over: Partial<WireSetting> = {}): WireSetting => ({
   locked_by: null,
   role: "admin",
   mcp_editable: false,
+  strictness: null,
   warning: null,
   ...over,
 });
@@ -193,6 +194,58 @@ describe("rendering", () => {
     });
     expect(html).toContain("<select");
     expect(html).toContain("effective false");
+  });
+});
+
+describe("a setting that may only be tightened", () => {
+  const strict = (over: Partial<Setting> = {}) =>
+    setting({
+      key: "untrusted_run_approval",
+      scope: "project",
+      role: "owner",
+      value: "no_agents",
+      default: "any",
+      source: "db",
+      strictness: ["any", "no_agents", "human"],
+      ...over,
+    });
+
+  test("the adapter maps the order, and null stays absent", async () => {
+    const api = createHttpApi({
+      org: () => "acme",
+      token: () => "tt_secret",
+      fetch: (async () =>
+        json({
+          settings: [
+            wire({ key: "a", strictness: ["any", "no_agents", "human"] }),
+            wire({ key: "b" }),
+          ],
+          next_cursor: null,
+        })) as unknown as typeof fetch,
+    });
+    const [a, b] = await api.listSettings();
+    expect(a!.strictness).toEqual(["any", "no_agents", "human"]);
+    expect(b!.strictness).toBeUndefined();
+  });
+
+  test("a value looser than the effective one is a loosening", () => {
+    expect(loosens(strict(), "any")).toBe(true);
+    expect(loosens(strict(), "no_agents")).toBe(false);
+    expect(loosens(strict(), "human")).toBe(false);
+    expect(loosens(setting(), 1)).toBe(false);
+  });
+
+  test("looser options are disabled, and reset is disabled when the default is looser", () => {
+    const html = panel({ settings: [strict()] });
+    expect(html).toMatch(/<option value="any" disabled=""/);
+    expect(html).not.toMatch(/<option value="no_agents" disabled/);
+    expect(html).not.toMatch(/<option value="human" disabled/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Reset to default/);
+  });
+
+  test("nothing is disabled when the effective value is the loosest", () => {
+    const html = panel({ settings: [strict({ value: "any" })] });
+    expect(html).not.toMatch(/<option [^>]*disabled/);
   });
 });
 

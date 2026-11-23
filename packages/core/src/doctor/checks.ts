@@ -1,6 +1,9 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { open, secretAad } from "../secrets/crypto";
+import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
+import { anchorKeyMessage } from "../secrets/master-key";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../github/app-auth";
 import { type DoctorCheck, type DoctorInputs, report, type DoctorReport } from "./types";
 
@@ -121,25 +124,96 @@ export function checkPrivileges(i: DoctorInputs): DoctorCheck[] {
   return out;
 }
 
+/** True when `path` is `dir` or inside it. */
+const inside = (dir: string, path: string): boolean => {
+  const rel = relative(resolve(dir), resolve(path));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+const KEY_ON_VOLUME_FIX =
+  "Move the key off the volume: set it as TURNTABLE_MASTER_KEY (or mount the file from a separate secrets store), re-wrap with TURNTABLE_MASTER_KEY_PREVIOUS, then delete the file. See the key rotation runbook in docs/hosted.mdx.";
+
+/** The release key file must not sit in a directory that is backed up: the lane's own, or the main one. */
+export function checkReleaseKey(i: DoctorInputs): DoctorCheck[] {
+  const k = i.releaseKey;
+  if (!k) return [];
+  const where = [
+    inside(i.dataDir, k.file) ? "the data directory" : undefined,
+    k.dataDir && inside(k.dataDir, k.file) ? "the release data directory" : undefined,
+  ].filter((x): x is string => x !== undefined);
+  if (where.length === 0) {
+    return [
+      pass("release_key", "keys", "the release master key file is outside the data directories"),
+    ];
+  }
+  return [
+    warn(
+      "release_key",
+      "keys",
+      `the release master key file is inside ${where.join(" and ")}: every volume backup holds the signing keys' wrapper next to what it unseals`,
+      `Set ${RELEASE_KEY_ENV} instead (re-wrap with ${RELEASE_KEY_PREVIOUS_ENV}), then delete the file. See docs/hosted.mdx.`,
+    ),
+  ];
+}
+
+export function checkAuditAnchors(i: DoctorInputs): DoctorCheck {
+  const bad = i.unreadableAnchors?.() ?? [];
+  if (bad.length === 0) {
+    return pass(
+      "audit_anchor",
+      "keys",
+      "the audit anchor state opens under the current master key",
+    );
+  }
+  return fail(
+    "audit_anchor",
+    "keys",
+    `audit anchor for org ${bad.join(", ")} is sealed under another master key (most likely the previous one)`,
+    anchorKeyMessage(bad[0]!),
+  );
+}
+
 export function checkMasterKey(i: DoctorInputs): DoctorCheck {
   const path = set(i.env.TURNTABLE_MASTER_KEY_FILE);
   const area = "keys";
+  if (i.masterKeyEnv) {
+    if (path) {
+      return fail(
+        "master_key",
+        area,
+        "TURNTABLE_MASTER_KEY and TURNTABLE_MASTER_KEY_FILE are both set",
+        "Use one. Remove TURNTABLE_MASTER_KEY_FILE once the key is in the variable.",
+      );
+    }
+    // A key file left in the data directory is the thing the variable was meant to get rid of:
+    // every volume backup would still carry it. Any 32-byte `*.key` file counts.
+    const stray = (i.fs.list?.(i.dataDir) ?? []).filter((n) => {
+      if (!n.endsWith(".key")) return false;
+      const f = i.fs.stat(join(i.dataDir, n));
+      return f !== undefined && !f.isDirectory && f.size === 32;
+    });
+    if (stray.length > 0) {
+      return warn(
+        "master_key",
+        area,
+        `the master key comes from TURNTABLE_MASTER_KEY, but the data directory still holds a key file (${stray.join(", ")}): volume backups carry it`,
+        "Once a backup taken after the re-wrap exists, delete the file from the volume, then rotate the GitHub App private key, the webhook secret and the vault secrets so the copies in older backups are dead.",
+      );
+    }
+    return pass(
+      "master_key",
+      area,
+      "the master key comes from TURNTABLE_MASTER_KEY, off the data volume",
+    );
+  }
   if (!path) {
     const what =
       "without a master key there is no vault, secrets store, GitHub App, OIDC issuer or signed audit checkpoints";
+    const fix =
+      "Set TURNTABLE_MASTER_KEY (`openssl rand -base64 32`), or create a file with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.";
     return i.hosted
-      ? fail(
-          "master_key",
-          area,
-          `no master key is configured: ${what}`,
-          "Create one with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.",
-        )
-      : warn(
-          "master_key",
-          area,
-          `no master key is configured: ${what}`,
-          "Create one with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.",
-        );
+      ? fail("master_key", area, `no master key is configured: ${what}`, fix)
+      : warn("master_key", area, `no master key is configured: ${what}`, fix);
   }
   const f = i.fs.stat(path);
   if (!f) {
@@ -164,6 +238,14 @@ export function checkMasterKey(i: DoctorInputs): DoctorCheck {
       area,
       `the master key file is readable by group or others (mode ${f.mode.toString(8)})`,
       "chmod 600 the file, and keep it out of the data directory's backups unless they are encrypted.",
+    );
+  }
+  if (inside(i.dataDir, path)) {
+    return warn(
+      "master_key",
+      area,
+      "the master key file is inside the data directory: every volume backup holds the key next to what it unseals",
+      KEY_ON_VOLUME_FIX,
     );
   }
   return pass(
@@ -583,6 +665,8 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
   const all = [
     ...(await safe("privileges", "process", () => checkPrivileges(i))),
     ...(await safe("master_key", "keys", () => checkMasterKey(i))),
+    ...(await safe("release_key", "keys", () => checkReleaseKey(i))),
+    ...(await safe("audit_anchor", "keys", () => checkAuditAnchors(i))),
     ...(await safe("database", "database", () => checkDatabase(i))),
     ...(await safe("github_app", "github", () => checkGithubApp(i))),
     ...(await safe("provider", "provider", () => i.providerChecks())),

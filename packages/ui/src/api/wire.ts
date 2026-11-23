@@ -383,6 +383,7 @@ export type WireSetting = {
   locked_by: string | null;
   role: string;
   mcp_editable: boolean;
+  strictness: string[] | null;
   /** What is at risk in changing it; null for most settings. */
   warning: string | null;
 };

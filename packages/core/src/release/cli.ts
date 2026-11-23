@@ -5,8 +5,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { LocalSigner } from "@turntable/signer";
 import { getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
-import { loadMasterKey } from "../secrets/crypto";
-import { releaseConfigFromEnv } from "../roles";
+import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { builtinKeyRef } from "../signing/service";
 import { AttestationStore } from "./attest";
 import { parseTarget, TARGET_KEY } from "./publish/config";
@@ -40,9 +39,7 @@ export async function releaseCommand(args: string[]): Promise<number> {
   db.close();
   if (!org) throw new Error(`no org with slug ${values.org}`);
   const cfg = releaseConfigFromEnv(process.env);
-  const signer = new LocalSigner(
-    fileKeyVault(keysDir(cfg.dataDir), loadMasterKey(cfg.masterKeyFile)),
-  );
+  const signer = new LocalSigner(fileKeyVault(keysDir(cfg.dataDir), releaseMasterKey(cfg)));
   const pub = await signer.ensureKey(builtinKeyRef(org.id, values.name));
   console.error(
     `key ${values.org}/${values.name}: keyid ${pub.keyid}. Pin this public key; it is not stored anywhere else you control.`,

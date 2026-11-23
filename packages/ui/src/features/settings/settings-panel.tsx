@@ -2,7 +2,15 @@ import { Lock, TriangleAlert } from "lucide-react";
 import type { Setting } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { draftOf, editability, formatValue, kindOf, lockNote, SOURCE_LABEL } from "@/lib/settings";
+import {
+  draftOf,
+  editability,
+  formatValue,
+  kindOf,
+  lockNote,
+  loosens,
+  SOURCE_LABEL,
+} from "@/lib/settings";
 import type { Role } from "@/lib/roles";
 import { cn } from "@/lib/utils";
 
@@ -54,6 +62,23 @@ function Editor({
   onChange: (text: string) => void;
 }) {
   const id = `setting-${s.key}`;
+  if (s.strictness)
+    return (
+      <select
+        id={id}
+        aria-label={s.key}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-9 w-full rounded-md border border-line-strong bg-surface px-2 text-sm disabled:opacity-50"
+      >
+        {s.strictness.map((v) => (
+          <option key={v} value={v} disabled={loosens(s, v)}>
+            {v}
+          </option>
+        ))}
+      </select>
+    );
   if (kindOf(s) === "boolean")
     return (
       <select
@@ -128,7 +153,17 @@ function Row({ s, p }: { s: Setting; p: SettingsPanelProps }) {
           </Button>
         ) : null}
         {editable && s.source === "db" ? (
-          <Button size="sm" variant="ghost" disabled={saving} onClick={() => p.onReset(s)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={saving || loosens(s, s.default)}
+            title={
+              loosens(s, s.default)
+                ? "Only the instance administrator can loosen this setting."
+                : undefined
+            }
+            onClick={() => p.onReset(s)}
+          >
             Reset to default
           </Button>
         ) : null}

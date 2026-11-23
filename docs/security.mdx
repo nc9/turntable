@@ -9,6 +9,12 @@ The goal is one instance that safely runs PR CI, website publishing and signed r
 
 Scoped, versioned secrets with policy evaluated by the core: bound to an org (and optionally a project, environment and ref pattern), usable only by the trust classes named (never `untrusted_pr`) and only toward named destination hosts. Values are sealed under a per-org, per-domain key derived from the master key, are never returned by any operation, and every use and denial is audited with the run, job, attempt and destination. Child processes the server starts get an allowlisted environment only. Design and threat model: [Secrets vault](/secrets-vault).
 
+### The master key and the data volume
+
+A key file on the same volume as the sealed store puts the key into every volume backup. On a hosted instance set the key as `TURNTABLE_MASTER_KEY` instead: it is read once at boot, deleted from the process environment before anything else starts, and never passed to a child (children get an allowlist). Both the variable and a key file is an error. `doctor` warns when a key file sits inside the data directory, or is left there after the key moved to the variable.
+
+To rotate with no shell, set the new key and the old one as `TURNTABLE_MASTER_KEY_PREVIOUS` and deploy: every sealed row (secrets, vault versions, webhook secrets, audit anchor state) is re-encrypted in one transaction, verified by opening it under the new key, and audited with counts per table in the system chain, or nothing changes and the boot fails. It is idempotent. The runbook, including why the App private key, the webhook secret and the vault secrets must then be rotated (old backups still hold values the old key opens), is in [Hosted deployment](/hosted#the-master-key-from-a-variable-and-rotating-it). **Keep `TURNTABLE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed (doctor green, no `AnchorCorrupt`), and only then remove it.** The release lane has the same pair, `TURNTABLE_RELEASE_MASTER_KEY` and `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS`, for its publish credentials and signing key files.
+
 ## Secrets proxy
 
 Sandboxes never hold raw secrets. A proxy sits on the sandbox's only network path and injects credentials into outbound requests, per allowed host and rule. Job code and third-party actions see placeholders at most, and a proxied job is verified from inside its sandbox before it runs. Docker and Daytona sandboxes are both supported. See [Secrets proxy](/secrets-proxy).
@@ -44,7 +50,7 @@ Every run the server ingests gets a trust class, decided once at ingest from for
 
 `approve_run_min_role` still applies on top, and a release tag run always needs `release_operator`, whatever this says. A refusal is a 403 whose message starts with `agents_may_not_approve` or `approval_requires_human`, and the audit row records the reason, the policy, the caller kind (`agent` or `person`), the transport (`mcp`, `rest` or `local` for the host CLI) and the run. The MCP tool description tells an agent the policy and to ask a person.
 
-Set it per project with `turntable policy set --org <slug> --project <slug> --untrusted-run-approval <human|no_agents|any>` on the host, or `set_project_settings` over REST with an instance token (`get_project_settings` reads it). It is the instance operator's setting: no org token of any role or kind can change it, it is not an MCP tool, and every change (raising it to `any` included) is audited with the old and new value in the system chain and the org's. A project's setting affects only that project.
+Set it per project with `turntable policy set --org <slug> --project <slug> --untrusted-run-approval <human|no_agents|any>` on the host, or `set_project_settings` over REST with an instance token (`get_project_settings` reads it). It is the instance operator's setting to loosen: the order is `any` < `no_agents` < `human`, an org owner (a person; no token holds that role) may only tighten it through `set_setting` or the web UI, a reset to a looser default counts as loosening, and only the instance administrator can loosen it. It is not an MCP tool, and every change (raising it to `any` included) is audited with the old and new value in the system chain and the org's. A project's setting affects only that project.
 
 **Known gap.** `human` refuses every token, but the signed path that releases a held run is not built yet: a signed approval today covers environment gates only. Until it lands, a `human` project cannot release an untrusted run at all. That fails closed, and `no_agents` is the setting to use for a person-approved flow.
 
@@ -312,7 +318,7 @@ The reason is shown in the web UI to everyone on the org or project. Freezing a 
 1. **Freeze.** `turntable incident freeze --org acme --reason "deploy key printed in a build log"`. Read the counts it returns.
 2. **Scope it.** Run `secret_usage` for each affected secret from before the first suspect run. Note every destination: each is a place the secret may now be.
 3. **Rotate at the source.** Replace the credential where it is issued (the registry, the cloud account, the forge). Then store the new value (`turntable secret rotate`). Anything flagged in `incident_status` is on your list until rotated.
-4. **Rotate Turntable's own secrets** if they were in scope: the GitHub App private key and webhook secret (`turntable github-app rotate-webhook-secret`), the master key.
+4. **Rotate Turntable's own secrets** if they were in scope: the GitHub App private key and webhook secret (`turntable github-app rotate-webhook-secret`), the master key (see the [rotation runbook](/hosted#the-master-key-from-a-variable-and-rotating-it)).
 5. **Revoke agent tokens** you do not trust, and review the audit log for the window (`turntable audit verify`, `turntable audit export`).
 6. **Review the runs** that used the secret: logs, artifacts, and what the destinations received.
 7. **Unfreeze** with `turntable incident unfreeze --org acme`. Queued work resumes. Keep the rotation flags open until each secret is rotated.

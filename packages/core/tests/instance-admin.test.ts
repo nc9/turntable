@@ -24,6 +24,7 @@ import { createMcpHttp } from "../src/mcp/http";
 import { createRestApi } from "../src/ops/rest";
 import { handleRequest } from "../src/server";
 import { hashToken } from "../src/ops/tokens";
+import { report } from "../src/doctor/types";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
 let db: Db;
@@ -231,6 +232,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "create_org_token",
       "create_project",
       "db_backup",
+      "instance_doctor",
       "instance_get_setting",
       "instance_list_orgs",
       "instance_list_settings",
@@ -358,5 +360,82 @@ describe("REST only", () => {
     const sys = await systemOrgId(db);
     const rows = await listAudit(db, { orgId: sys }, { limit: 50 });
     expect(rows.some((x) => x.outcome === "error:unauthenticated")).toBe(true);
+  });
+});
+
+describe("instance_doctor", () => {
+  // The raw text and the "secret" are built at run time: no secret-like literal in the file.
+  const fakeSecret = () => `sk_${"Z9".repeat(12)}`;
+  const seeded = (raw: string) => async () =>
+    report([
+      { id: "master_key", area: "secrets", status: "pass", summary: "the master key is set" },
+      {
+        id: "database",
+        area: "database",
+        status: "fail",
+        summary: "the database cannot be read",
+        detail: raw,
+        fix: "Check the database connection.",
+      },
+    ]);
+
+  test("a tti_ token gets the report: names and states, no raw error text or secret", async () => {
+    const raw = `connect failed postgres://u:${fakeSecret()}@10.1.2.3/db /etc/secret/path`;
+    const e: DispatchEnv = { ...env, doctor: seeded(raw) };
+    const r = await asInstance("instance_doctor", {}, e);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.output as ReturnType<typeof report>;
+    expect(out.status).toBe("fail");
+    expect(out.counts).toEqual({ pass: 1, warn: 0, fail: 1 });
+    expect(out.checks.map((c) => c.id)).toEqual(["master_key", "database"]);
+    const text = JSON.stringify(r.output);
+    expect(text).not.toContain(fakeSecret());
+    expect(text).not.toContain("10.1.2.3");
+    expect(text).not.toContain("/etc/secret/path");
+    expect(text).not.toContain("detail");
+    expect(text).not.toContain(secret);
+    expect(r.untrusted).toBe(false);
+  });
+
+  test("is a read: the dispatcher writes no entry for it, and no entry holds the raw text", async () => {
+    const e: DispatchEnv = { ...env, doctor: seeded(`raw ${fakeSecret()}`) };
+    await asInstance("instance_doctor", {}, e);
+    const sys = await systemOrgId(db);
+    const rows = await listAudit(db, { orgId: sys }, { limit: 50 });
+    expect(rows.some((x) => x.op === "instance_doctor" && x.effect !== "read")).toBe(false);
+    expect(JSON.stringify(rows)).not.toContain(fakeSecret());
+  });
+
+  test("without a server runner it says so, in one warning", async () => {
+    const r = await asInstance("instance_doctor");
+    expect(r.ok && (r.output as ReturnType<typeof report>).counts).toEqual({
+      pass: 0,
+      warn: 1,
+      fail: 0,
+    });
+  });
+
+  test("org tokens of every role, project-scoped, members and MCP are refused", async () => {
+    const e: DispatchEnv = { ...env, doctor: seeded(`raw ${fakeSecret()}`) };
+    for (const t of [a, b]) {
+      for (const { label, cred } of await orgCreds(t)) {
+        const r = await dispatch(e, cred, "instance_doctor", {});
+        expect(r.ok, label).toBe(false);
+        if (!r.ok) expect(r.error.code, label).toBe("forbidden");
+      }
+    }
+    const op = registry.ops.find((o) => o.name === "instance_doctor")!;
+    expect(op.mcp).toBe(false);
+    expect(op.effect).toBe("read");
+    expect(mcpTools(registry).map((t) => t.name)).not.toContain("instance_doctor");
+    // a dispatcher that does not allow instance tokens treats one as unknown
+    const plain = await dispatch(
+      { registry, db, doctor: e.doctor },
+      { kind: "bearer", token: secret },
+      "instance_doctor",
+      {},
+    );
+    expect(!plain.ok && plain.error.code).toBe("unauthenticated");
   });
 });
