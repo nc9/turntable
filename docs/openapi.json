@@ -9382,7 +9382,7 @@
       "post": {
         "operationId": "instance_set_setting",
         "summary": "Set an instance setting (database layer, instance administrator only).",
-        "description": "Sets, or with `unset` removes, the stored value of one instance setting. Refused when the environment or turntable.toml sets it (the error says which): change it there. The old and new values are audited in the system org's chain. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's, and a value in an agent's context is not an operator's decision.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "description": "Sets, or with `unset` removes, the stored value of one instance setting. Refused when the environment or turntable.toml sets it (the error says which): change it there. The old and new values are audited in the system org's chain. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's, and a value in an agent's context is not an operator's decision. An org or project setting that only the instance administrator may change (`instance_admin` role in `list_settings`, such as `untrusted_run_approval`) is set here with `target_org` and, for a project setting, `target_project`; the change is audited in the system org's chain and the target's.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -9403,6 +9403,18 @@
                   "unset": {
                     "description": "True to remove the stored value, so the default applies again.",
                     "type": "boolean"
+                  },
+                  "target_org": {
+                    "description": "Slug of the org, for an org or project setting.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "target_project": {
+                    "description": "Slug of the project, for a project setting.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
                   }
                 },
                 "required": ["key"],

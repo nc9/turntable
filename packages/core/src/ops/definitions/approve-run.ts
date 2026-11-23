@@ -1,16 +1,10 @@
 import { z } from "zod";
-import {
-  ApproveError,
-  approveRun,
-  getApproveRunMinRole,
-  getProjectSandboxSettings,
-  getRun,
-  parseTrust,
-} from "../../db/repos";
+import { ApproveError, approveRun, getApproveRunMinRole, getRun, parseTrust } from "../../db/repos";
 import { JOB_STATES } from "../../db/schema";
 import { principalLabel, orgRole } from "../principal";
 import { approvalRefusal } from "../approval-policy";
 import { defineOp } from "../define";
+import { effectiveApproval } from "../setting-guard";
 import { OpError } from "../errors";
 import { type Role, roleSatisfies } from "../roles";
 
@@ -69,9 +63,7 @@ export const approveRunOp = defineOp({
     // The project's policy, read for the run's own project (never the caller's grant): project
     // A's setting cannot affect a run of project B. A run outside the scope is not_found below.
     if (held) {
-      const policy = (
-        await getProjectSandboxSettings(ctx.db, { orgId: held.orgId, projectId: held.projectId })
-      ).untrustedRunApproval;
+      const policy = await effectiveApproval(ctx.settings, ctx.db, held.orgId, held.projectId);
       const refusal = approvalRefusal(policy, {
         principal: ctx.principal,
         transport: ctx.transport,

@@ -1,6 +1,8 @@
 // The shipped settings. Migrating a setting onto the registry (#321) means adding it here and
 // reading it through the resolver; its environment variable keeps working as the env layer.
 import { z } from "zod";
+import { UNTRUSTED_RUN_APPROVALS } from "../db/schema";
+import { HUMAN_MODE_UNAVAILABLE } from "../ops/approval-policy";
 import { createSettingsRegistry, defineSetting } from "./define";
 
 /** How many backups `db_backup` keeps when nothing says otherwise. */
@@ -22,5 +24,27 @@ export const backupKeepSetting = defineSetting({
   toml: "backup.keep",
 });
 
+export const untrustedRunApprovalSetting = defineSetting({
+  key: "untrusted_run_approval",
+  scope: "project",
+  type: z.enum(UNTRUSTED_RUN_APPROVALS),
+  default: "no_agents",
+  // Today's rule: every change is the instance administrator's, so no org token may set it.
+  // `role` is the ladder's top; `instanceAdminOnly` is what enforces it.
+  role: "owner",
+  instanceAdminOnly: true,
+  // Raising it to `any` lets agents approve: a value in an agent's context is not a human decision.
+  mcpEditable: false,
+  mcpReason: "it decides whether agents may approve runs, so only a person changes it",
+  // `human` is in the type so a stored value still fails closed, but it cannot be chosen yet.
+  refuse: (v) => (v === "human" ? HUMAN_MODE_UNAVAILABLE : undefined),
+  description:
+    "Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`.",
+  toml: "untrusted_run_approval",
+});
+
 /** The shipped registry. */
-export const settingsRegistry = createSettingsRegistry([backupKeepSetting]);
+export const settingsRegistry = createSettingsRegistry([
+  backupKeepSetting,
+  untrustedRunApprovalSetting,
+]);

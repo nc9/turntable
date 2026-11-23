@@ -204,5 +204,12 @@ export const migrations: Migration[] = [
       "CREATE TABLE \"settings\" (\n\t\"scope_kind\" text NOT NULL,\n\t\"scope_id\" text DEFAULT '' NOT NULL,\n\t\"org_id\" text,\n\t\"key\" text NOT NULL,\n\t\"value\" text NOT NULL,\n\t\"updated_by\" text NOT NULL,\n\t\"updated_at\" bigint NOT NULL,\n\tCONSTRAINT \"settings_scope_kind_scope_id_key_pk\" PRIMARY KEY(\"scope_kind\",\"scope_id\",\"key\"),\n\tCONSTRAINT \"settings_scope_kind_check\" CHECK (scope_kind IN ('instance', 'org', 'project')),\n\tCONSTRAINT \"settings_org_id_check\" CHECK ((\"settings\".\"scope_kind\" = 'instance' AND \"settings\".\"org_id\" IS NULL) OR (\"settings\".\"scope_kind\" = 'org' AND \"settings\".\"org_id\" IS NOT NULL AND \"settings\".\"scope_id\" = \"settings\".\"org_id\") OR (\"settings\".\"scope_kind\" = 'project' AND \"settings\".\"org_id\" IS NOT NULL))\n);",
       "ALTER TABLE \"settings\" ADD CONSTRAINT \"settings_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;"
     ]
+  },
+  {
+    "tag": "0010_untrusted_run_approval_to_settings",
+    "when": 1795426897008,
+    "statements": [
+      "-- #321: untrusted_run_approval moves onto the settings registry. Every project's current value\n-- is copied into the settings table, so the resolver reads what the column held. The column\n-- stays (nothing reads or writes it any more), so rolling the binary back loses nothing but\n-- changes made after this ran.\nINSERT INTO \"settings\" (\"scope_kind\", \"scope_id\", \"org_id\", \"key\", \"value\", \"updated_by\", \"updated_at\")\nSELECT 'project', \"id\", \"org_id\", 'untrusted_run_approval', '\"' || \"untrusted_run_approval\" || '\"', 'migration', (extract(epoch from now()) * 1000)::bigint\nFROM \"projects\"\nWHERE NOT EXISTS (\n\tSELECT 1 FROM \"settings\"\n\tWHERE \"settings\".\"scope_kind\" = 'project' AND \"settings\".\"scope_id\" = \"projects\".\"id\" AND \"settings\".\"key\" = 'untrusted_run_approval'\n);"
+    ]
   }
 ];

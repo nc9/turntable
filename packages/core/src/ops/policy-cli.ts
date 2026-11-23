@@ -2,8 +2,10 @@
 // directory is the trust root (like `turntable token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { effectiveApproval, guardSettingChange } from "./setting-guard";
+import { settingsRegistry, untrustedRunApprovalSetting } from "../settings/definitions";
+import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
 import { UNTRUSTED_RUN_APPROVALS, type UntrustedRunApproval } from "../db/schema";
-import { HUMAN_MODE_UNAVAILABLE } from "./approval-policy";
 import { validAudience } from "../oidc/issuer";
 import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
@@ -44,7 +46,8 @@ export const POLICY_USAGE = `Usage:
   turntable policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
   turntable policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
   turntable policy set --org <slug> --project <slug> [--sandbox-snapshot <name|none>]
-      [--max-concurrent <n|none>] [--untrusted-run-approval <human|no_agents|any>] [--data-dir ./data]
+      [--max-concurrent <n|none>] [--untrusted-run-approval <human|no_agents|any>] [--config turntable.toml]
+      [--data-dir ./data]
   turntable policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
@@ -568,6 +571,8 @@ export async function setSandboxPolicy(
     maxConcurrent?: string | undefined;
     untrustedRunApproval?: string | undefined;
   },
+  /** The settings layers above the database: `turntable.toml` and the environment lock a value. */
+  settings?: SettingsRuntime,
 ): Promise<{ project: string; from: ProjectSandboxSettings; to: ProjectSandboxSettings }> {
   if (!projectSlug)
     throw new Error(
@@ -597,21 +602,42 @@ export async function setSandboxPolicy(
   const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
   if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
   const scope = { orgId: org.id, projectId: project.id };
+  const rt = settings ?? createSettingsRuntime(settingsRegistry);
   const from = await getProjectSandboxSettings(db, scope);
-  if (patch.untrustedRunApproval === "human") {
-    await appendAudit(db, scope, {
-      principalKind: "cli",
-      principalId: "local",
-      op: "policy_set",
-      effect: "write",
-      outcome: "error:invalid_input",
-      input: { key: "sandbox", project: project.slug, from, refused: HUMAN_MODE_UNAVAILABLE },
-    });
-    throw new Error(HUMAN_MODE_UNAVAILABLE);
+  from.untrustedRunApproval = await effectiveApproval(rt, db, org.id, project.id);
+  if (patch.untrustedRunApproval !== undefined) {
+    // A thin alias of set_setting: the same lock and value refusals. The person at the host is
+    // the operator, so no role applies, and the CLI is never MCP.
+    try {
+      await guardSettingChange(
+        rt,
+        db,
+        untrustedRunApprovalSetting,
+        { orgId: org.id, orgSlug: org.slug, projectId: project.id, projectSlug: project.slug },
+        {},
+        { value: patch.untrustedRunApproval },
+      );
+    } catch (err) {
+      await appendAudit(db, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "error:invalid_input",
+        input: {
+          key: "sandbox",
+          project: project.slug,
+          from,
+          refused: err instanceof Error ? err.message : String(err),
+        },
+      });
+      throw err;
+    }
   }
   const to = await db.transaction(async (tx) => {
     const after = await setProjectSandboxSettings(tx, scope, patch);
     if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+    after.untrustedRunApproval = await effectiveApproval(rt, tx, org.id, project.id);
     await appendAudit(tx, scope, {
       principalKind: "cli",
       principalId: "local",
@@ -629,14 +655,14 @@ export async function setSandboxPolicy(
 export async function showSandbox(
   db: Db,
   orgSlug: string,
+  settings?: SettingsRuntime,
 ): Promise<{ project: string; settings: ProjectSandboxSettings }[]> {
   const org = await orgOf(db, orgSlug);
   const out: { project: string; settings: ProjectSandboxSettings }[] = [];
   for (const p of await listProjects(db, { orgId: org.id })) {
-    out.push({
-      project: p.slug,
-      settings: await getProjectSandboxSettings(db, { orgId: org.id, projectId: p.id }),
-    });
+    const s = await getProjectSandboxSettings(db, { orgId: org.id, projectId: p.id });
+    s.untrustedRunApproval = await effectiveApproval(settings, db, org.id, p.id);
+    out.push({ project: p.slug, settings: s });
   }
   return out;
 }
