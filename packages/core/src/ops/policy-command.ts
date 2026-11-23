@@ -59,6 +59,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       "pr-mode": { type: "string" },
       authors: { type: "string" },
       "merge-queue": { type: "boolean", default: false },
+      "every-push": { type: "boolean", default: false },
       "cache-release-restore": { type: "string" },
       "tag-refs": { type: "string" },
       var: { type: "string", multiple: true },
@@ -136,6 +137,7 @@ async function ownPolicy(args: string[]): Promise<void> {
           ?.split(",")
           .map((x) => x.trim())
           .filter(Boolean),
+        everyPush: values["every-push"],
         // Asked once, now; the token (optional, for private repos) comes from the environment.
         resolveDefaultBranch: (repo) =>
           new GithubClient({

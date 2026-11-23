@@ -1,7 +1,7 @@
 // Display helpers for sandbox time. The server computes the exact figure
 // (`sandbox_seconds`); the only thing derived here is the estimate for an attempt whose destroy
 // was never confirmed, and it is always labelled as one.
-import type { JobAttempt } from "@/api/types";
+import type { JobAttempt, SandboxUsage, SandboxUsageDay } from "@/api/types";
 
 export type SandboxInfo = {
   createdAt: number;
@@ -40,4 +40,28 @@ export function dayLabel(day: string): string {
 export function formatMinutes(m: number): string {
   const v = m >= 10 ? Math.round(m) : Math.round(m * 10) / 10;
   return `${v.toLocaleString("en-US")} min`;
+}
+
+/**
+ * The days and total the Usage chart shows: the whole org (`slug` null), or one project's. A
+ * project that is not in the answer (no usage in the window) shows as empty days, never as the
+ * org's, so a stale filter cannot be mistaken for the whole.
+ */
+export function usageFor(
+  usage: SandboxUsage,
+  slug: string | null,
+): { days: SandboxUsageDay[]; totalMinutes: number } {
+  if (slug === null) return { days: usage.days, totalMinutes: usage.totalMinutes };
+  const p = usage.projects.find((x) => x.slug === slug);
+  if (p) return { days: p.days, totalMinutes: p.totalMinutes };
+  return {
+    days: usage.days.map((d) => ({
+      day: d.day,
+      seconds: 0,
+      minutes: 0,
+      attempts: 0,
+      estimatedAttempts: 0,
+    })),
+    totalMinutes: 0,
+  };
 }

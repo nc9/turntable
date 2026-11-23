@@ -62,6 +62,16 @@ gh attestation verify oci://ghcr.io/nc9/longshore@sha256:<digest> --repo nc9/tur
 
 Then run or deploy `ghcr.io/nc9/longshore@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
 
+## Reproducible builds
+
+The same commit built twice gives the same bytes. `bun run scripts/repro-check.ts` builds every target in the checkout, then again in a fresh copy of `HEAD` at a different path with a fresh `bun install --frozen-lockfile`, and fails if any binary differs. The darwin binary is compared before the ad-hoc signature, which is a separate step with its own verification. The release workflow runs it as a job the release depends on, so a build that is not reproducible is not published. It holds for one pinned toolchain: the bun version is named in the workflows and the Dockerfile, and CI fails if they disagree (`scripts/toolchain-versions.ts`).
+
+To check a release yourself, check out the tag, run `bun install --frozen-lockfile` and `LONGSHORE_VERSION=<version> bun run scripts/build.ts`, and compare `dist/SHA256SUMS` lines for the linux binaries with the release's.
+
+## What the release dry run checks
+
+A manual run of the release workflow (`workflow_dispatch`) builds everything and publishes nothing. It checks that `SHA256SUMS` lists every binary and the SBOM exactly once, that each hash is true and that nothing else is in the directory; that the SBOM is exactly the set of packages the lockfile ships, each with a hash; that the build is reproducible; that Syft runs on the image and sees its packages; and that Longshore's own provenance path verifies the binaries and refuses a changed copy. GitHub's attestations are written to a public log, so only a real tag produces them.
+
 ## The darwin binary and Gatekeeper
 
 `longshore-darwin-arm64` is signed ad hoc and is not notarized. Apple Silicon requires some signature to run a binary, and the release re-signs after the compile so the signature matches the file. An ad-hoc signature is not an identity: it proves nothing about who built the file. Use the checksum and attestation above for that.

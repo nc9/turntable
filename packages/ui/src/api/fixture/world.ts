@@ -1075,9 +1075,33 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
         estimatedAttempts: i === days - 1 ? 1 : 0,
       };
     });
+    // Two projects that add up to each day exactly: "api" takes the larger share.
+    const share = (r: (typeof rows)[number], part: "api" | "web") => {
+      const apiMin = Math.round(r.minutes * 0.65);
+      const apiAttempts = Math.ceil(r.attempts * 0.65);
+      const minutes = part === "api" ? apiMin : r.minutes - apiMin;
+      return {
+        day: r.day,
+        seconds: minutes * 60,
+        minutes,
+        attempts: part === "api" ? apiAttempts : r.attempts - apiAttempts,
+        estimatedAttempts: part === "api" ? r.estimatedAttempts : 0,
+      };
+    };
+    const project = (slug: "api" | "web", name: string) => {
+      const d = rows.map((r) => share(r, slug));
+      return {
+        id: `01FIXTURE0PROJECT0${slug.toUpperCase()}000`,
+        slug,
+        name,
+        days: d,
+        totalMinutes: d.reduce((n, r) => n + r.minutes, 0),
+      };
+    };
     return {
       days: rows,
       totalMinutes: rows.reduce((n, r) => n + r.minutes, 0),
+      projects: [project("api", "API"), project("web", "Web")],
       limitMinutesPerDay: 240,
     };
   }
