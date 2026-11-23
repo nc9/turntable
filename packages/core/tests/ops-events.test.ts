@@ -1,6 +1,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
   addCut,
+  addNotice,
   createAttempt,
   createJob,
   createProject,
@@ -181,6 +182,7 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
     job_id: a.jobId,
     attempt: 1,
     cuts: [],
+    notices: [],
   });
 
   await upsertStep(db, a.scope, {
@@ -218,10 +220,17 @@ test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async (
     log_offset: 120,
   });
   expect(steps.steps[0]).toMatchObject({ result: null, started_at: null, duration_ms: null });
+  // A system notice is recorded apart from the log and comes back next to the cuts.
+  await addNotice(db, a.scope, {
+    attemptId: a.attemptId,
+    source: "cache",
+    text: "cache: 2 entries dropped (denied paths)",
+  });
   expect(await run("job_cuts", { job_id: a.jobId })).toEqual({
     job_id: a.jobId,
     attempt: 1,
     cuts: [{ at_offset: 4096, omitted_bytes: 9000, reason: "head-cap" }],
+    notices: [{ at_offset: 0, source: "cache", text: "cache: 2 entries dropped (denied paths)" }],
   });
 
   // a second attempt starts empty; the first stays addressable

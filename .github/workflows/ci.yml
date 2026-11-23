@@ -1,4 +1,7 @@
-# Bootstrap CI on GitHub Actions. Longshore will run its own CI later.
+# Bootstrap CI on GitHub Actions, also run by Longshore itself (dogfood). The Longshore project sets
+# the variable LONGSHORE_CI=true (`longshore policy set --ingest on --var LONGSHORE_CI=true`); GitHub
+# has no such variable. Jobs that need a docker daemon or service containers are gated off under
+# Longshore (`vars.LONGSHORE_CI != 'true'`), and `postgres-pglite` runs only there.
 name: ci
 
 on:
@@ -30,13 +33,14 @@ jobs:
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
-      - name: Migrations match schema and embedded module is current
+      - name: Migrations match schema and embedded modules are current (SQLite and Postgres)
         timeout-minutes: 5
         run: |
           bun run --cwd packages/core db:generate
-          if [ -n "$(git status --porcelain packages/core/drizzle packages/core/src/db/migrations.generated.ts)" ]; then
-            echo "schema.ts changed without committed migrations; run: bun run --cwd packages/core db:generate"
-            git status --porcelain packages/core/drizzle packages/core/src/db/migrations.generated.ts
+          paths="packages/core/drizzle packages/core/drizzle-pg packages/core/src/db/migrations.generated.ts packages/core/src/db/migrations.pg.generated.ts packages/core/src/db/schema.pg.ts packages/core/src/db/schema.ts"
+          if [ -n "$(git status --porcelain $paths)" ]; then
+            echo "schema.sqlite.ts changed without committed migrations or generated schema; run: bun run --cwd packages/core db:generate"
+            git status --porcelain $paths
             exit 1
           fi
       - run: bun run test
@@ -50,6 +54,58 @@ jobs:
           (cd dist && sha256sum -c SHA256SUMS)
       - name: Smoke the linux-x64 binary
         run: scripts/smoke.sh dist/longshore-linux-x64
+
+  # The core and ops suites against a real Postgres (the same suites as `bun run test`, with every
+  # test given a fresh database). SQLite-only tests are listed in scripts/run-tests-pg.ts.
+  postgres:
+    if: vars.LONGSHORE_CI != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        # postgres 17 alpine multi-arch index digest
+        image: postgres:17-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+        env:
+          # No credential at all: the service is reachable only from this job's own runner.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - name: Core and ops suites on Postgres
+        env:
+          LONGSHORE_TEST_DB: postgres://postgres@localhost:5432/postgres
+        run: bun run pg:test
+
+  # Longshore only: no service containers in a sandbox, so the same suites run on in-process
+  # PGlite. GitHub CI runs the real-Postgres job above instead, so this one is not doubled there.
+  postgres-pglite:
+    if: vars.LONGSHORE_CI == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - name: Core and ops suites on PGlite
+        env:
+          LONGSHORE_TEST_DB: pglite
+        run: bun run pg:test
 
   # New dependency versions in bun.lock must be at least 14 days old (scripts/dep-age.ts).
   dep-age:
@@ -67,8 +123,18 @@ jobs:
       - name: Compare bun.lock with the base branch
         env:
           BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
         run: |
-          git show "origin/${BASE_REF}:bun.lock" > "${RUNNER_TEMP}/base.bun.lock"
+          # The base branch from git when it is there (GitHub's checkout with fetch-depth 0). A
+          # checkout of only the one commit (Longshore's) has no origin/<base>: the script then
+          # fetches the base lockfile by its sha.
+          if ! git show "origin/${BASE_REF}:bun.lock" > "${RUNNER_TEMP}/base.bun.lock" 2>/dev/null; then
+            echo "no origin/${BASE_REF} here: fetching the base lockfile at ${BASE_SHA}"
+            rm -f "${RUNNER_TEMP}/base.bun.lock"
+            bun run scripts/dep-age.ts --base "${RUNNER_TEMP}/base.bun.lock" --base-repo "${REPO}" --base-sha "${BASE_SHA}"
+            exit $?
+          fi
           bun run scripts/dep-age.ts --base "${RUNNER_TEMP}/base.bun.lock"
 
   # The release golden path, end to end in process: tag push, release-class run, artifacts, release
@@ -88,6 +154,7 @@ jobs:
       - run: bun run test:golden
 
   provider-docker:
+    if: vars.LONGSHORE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -105,6 +172,7 @@ jobs:
         run: bun run test:docker
 
   act-runner-e2e:
+    if: vars.LONGSHORE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -143,6 +211,7 @@ jobs:
         run: bun run test:run-e2e
 
   runner-image:
+    if: vars.LONGSHORE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -160,6 +229,7 @@ jobs:
         run: bun run scripts/runner-toolset.ts --image longshore-runner:ci --check
 
   docker:
+    if: vars.LONGSHORE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -182,5 +252,5 @@ jobs:
           load: true
           push: false
           tags: longshore:smoke
-      - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token)
+      - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token, a real worker checkout)
         run: scripts/smoke-image.sh longshore:smoke

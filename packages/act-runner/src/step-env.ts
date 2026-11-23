@@ -51,13 +51,37 @@ export function launcherArgv(shimDir: string, actArgv: readonly string[], envFil
   ];
 }
 
-/** Writes the shim and its symlinks. Args: shim dir, shim text, names. */
+/**
+ * Writes the shim and a symlink for each interpreter that EXISTS in the sandbox. Args: shim dir,
+ * shim text, names. Each name is looked up on the PATH the job will have (without the shim
+ * directory); one with no real interpreter gets no shim. A shim for an absent interpreter would
+ * make `command -v pwsh` succeed where GitHub's runner (and the image itself) says it is not
+ * installed, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit
+ * 0; fi`) would find the shim, run it, and fail the step with 127. Without a shim the probe
+ * behaves exactly as it does without Longshore, and a step that names the missing tool as its
+ * `shell:` fails in act with its own "Cannot find: <tool> in PATH", which the log annotates.
+ * One consequence: an interpreter installed after the job starts (a setup action that puts node on
+ * PATH) is not shimmed, so a step that uses it as its `shell:` runs with act's pty.
+ */
 export const INSTALL_SHIMS_SH = `set -eu
 d=$1; text=$2; shift 2
 mkdir -p "$d"
 printf '%s\\n' "$text" > "$d/step-shim"
 chmod 0755 "$d/step-shim"
-for n in "$@"; do ln -sf step-shim "$d/$n"; done
+real() {
+  oldifs=$IFS; IFS=:
+  for p in $PATH; do
+    [ -n "$p" ] || continue
+    [ "$p" = "$d" ] && continue
+    if [ -x "$p/$1" ] && [ ! -d "$p/$1" ]; then IFS=$oldifs; return 0; fi
+  done
+  IFS=$oldifs
+  return 1
+}
+for n in "$@"; do
+  rm -f "$d/$n"
+  if real "$n"; then ln -sf step-shim "$d/$n"; fi
+done
 `;
 
 /**

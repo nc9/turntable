@@ -29,11 +29,25 @@ const tmp = mkdtempSync(join(tmpdir(), "tt-proxy-e2e-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 async function git(dir: string, ...args: string[]): Promise<void> {
-  const p = Bun.spawn(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
-    cwd: dir,
-    stdout: "ignore",
-    stderr: "inherit",
-  });
+  const p = Bun.spawn(
+    [
+      "git",
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.com",
+      ...args,
+    ],
+    {
+      cwd: dir,
+      stdout: "ignore",
+      stderr: "inherit",
+    },
+  );
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 

@@ -273,7 +273,19 @@ export type ProjectWithRepos = {
   slug: string;
   name: string;
   repos: { forge: string; owner: string; repo: string }[];
+  /** The OIDC audiences the project's jobs may mint for, or null when any audience is allowed. */
+  oidcAudiences: string[] | null;
 };
+
+function parseAudiences(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Projects in scope (a project-narrowed scope lists only that project), by id, with bound repos. */
 export function queryProjects(
@@ -314,6 +326,7 @@ export function queryProjects(
       id: p.id,
       slug: p.slug,
       name: p.name,
+      oidcAudiences: parseAudiences(p.oidcAudiences),
       repos: repos
         .filter((r) => r.projectId === p.id)
         .map((r) => ({ forge: r.forge, owner: r.owner, repo: r.repo })),

@@ -2,7 +2,7 @@
 // and finding abandoned work. Claim and reconcile are instance-level (a worker has no tenant
 // until it has claimed something), so they are intentionally unscoped; everything they return
 // carries the tenant scope the caller then uses.
-import { and, asc, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -138,7 +138,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
   const scanLimit = o.scanLimit ?? 1000;
   return db.transaction(async (tx) => {
     const running = await tx.orm
-      .select({ orgId: s.jobAttempts.orgId, n: sql<number>`count(*)` })
+      .select({ orgId: s.jobAttempts.orgId, n: sql<number>`count(*)`.mapWith(Number) })
       .from(s.jobAttempts)
       .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
       .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
@@ -544,11 +544,26 @@ export function listExpiredLeases(db: Db, now: number): Promise<JobAttempt[]> {
   );
 }
 
+/**
+ * Attempts that recorded a sandbox and no confirmed destroy, across every org (system work, for
+ * the provider's own-fleet count and the sweep). Newest first, bounded.
+ */
+export function listUndestroyedSandboxes(db: Db, limit = 2000): Promise<JobAttempt[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(and(isNotNull(s.jobAttempts.sandboxId), isNull(s.jobAttempts.sandboxDestroyedAt)))
+      .orderBy(desc(s.jobAttempts.id))
+      .limit(limit),
+  );
+}
+
 /** Number of attempts currently running, overall or for one org. */
 export function countRunning(db: Db, orgId?: string): Promise<number> {
   return db.run(async (h) => {
     const [row] = await h.orm
-      .select({ n: sql<number>`count(*)` })
+      .select({ n: sql<number>`count(*)`.mapWith(Number) })
       .from(s.jobAttempts)
       .where(
         and(

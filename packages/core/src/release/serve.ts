@@ -51,7 +51,7 @@ export const signingWiring: WiringFactory = ({ db, masterKey, dataDir, builderId
     records: {
       async recorded(scope, runId, names) {
         const rows = await getRunArtifactsByName(db, scope, runId, names);
-        return rows.map((a) => ({ name: a.name, sha256: a.sha256 }));
+        return rows.map((a) => ({ name: a.name, sha256: a.sha256, size: a.size }));
       },
     },
   };

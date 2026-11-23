@@ -10,6 +10,31 @@ import {
 } from "@longshore/provider-sdk";
 import { type ApiKeySource, readApiKey } from "./key";
 
+/** The key was refused (401 or 403). The status is kept so a caller can tell a missing permission from a bad key. */
+export class DaytonaKeyRejectedError extends InfraError {
+  readonly status: number;
+  constructor(status: number) {
+    super(`Daytona rejected the API key (${status}); check the configured key`);
+    this.name = "DaytonaKeyRejectedError";
+    this.status = status;
+  }
+}
+
+/**
+ * Daytona answered 400 because the account is at a quota ("Total disk limit exceeded. Maximum
+ * allowed: 2000GiB"). That is capacity, not a bad request: the caller waits and tries again.
+ */
+export class DaytonaQuotaExceededError extends InfraError {
+  constructor(detail: string) {
+    super(`Daytona quota exceeded: ${detail}`);
+    this.name = "DaytonaQuotaExceededError";
+  }
+}
+
+/** The 400 messages that mean "full", not "wrong": only these are retried. */
+const QUOTA_400 =
+  /(total )?(cpu|disk|memory|ram|sandbox(es)?)[^.]*limit exceeded|quota (exceeded|reached)/i;
+
 export const DEFAULT_BASE_URL = "https://app.daytona.io/api";
 
 /** Most we will buffer from any one response: API JSON (a page of 200 sandboxes is far smaller). */
@@ -107,11 +132,10 @@ export class DaytonaApi {
     if (res.ok) return res;
     const detail = await errorDetail(res);
     const where = `${method} ${new URL(full).pathname}`;
+    if (res.status === 400 && QUOTA_400.test(detail)) throw new DaytonaQuotaExceededError(detail);
     if (res.status === 404) throw new SandboxNotFoundError(`Daytona: not found (${where})`);
     if (res.status === 401 || res.status === 403) {
-      throw new InfraError(
-        `Daytona rejected the API key (${res.status}); check the configured key`,
-      );
+      throw new DaytonaKeyRejectedError(res.status);
     }
     if (res.status === 429) {
       throw new TransientInfraError(`Daytona rate limit (${where}); retry later`);

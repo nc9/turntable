@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ApproveError, approveRun, getApproveRunMinRole, getRun, parseTrust } from "../../db/repos";
 import { JOB_STATES } from "../../db/schema";
-import { principalLabel } from "../principal";
+import { principalLabel, orgRole } from "../principal";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { type Role, roleSatisfies } from "../roles";
@@ -49,7 +49,7 @@ export const approveRunOp = defineOp({
     const held = await getRun(ctx.db, ctx.scope, input.run_id);
     if (held?.ref.startsWith("refs/tags/") && parseTrust(held)?.class === "release")
       needed = "release_operator";
-    if (!roleSatisfies(ctx.principal.role, needed)) {
+    if (!roleSatisfies(orgRole(ctx.principal), needed)) {
       throw new OpError("forbidden", `approve_run requires role ${needed} in this org`);
     }
     try {

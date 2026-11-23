@@ -56,6 +56,24 @@ export function registryPublishedAt(fetchFn: SafeFetch = safeFetch): PublishedAt
   };
 }
 
+/**
+ * The base branch's bun.lock by commit, from raw.githubusercontent.com. For a runner whose
+ * checkout holds only the one commit (no `origin/<base>`): the base sha comes from the pull
+ * request event. Strict about its inputs, and anything but a 200 is an error (never "no lockfile").
+ */
+export async function fetchBaseLock(
+  repo: string,
+  sha: string,
+  fetchFn: SafeFetch = safeFetch,
+): Promise<string> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.includes(".."))
+    throw new Error(`--base-repo must be owner/name, got ${JSON.stringify(repo)}`);
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("--base-sha must be a 40-character commit sha");
+  const res = await fetchFn(`https://raw.githubusercontent.com/${repo}/${sha}/bun.lock`);
+  if (!res.ok) throw new Error(`base bun.lock at ${repo}@${sha.slice(0, 7)}: HTTP ${res.status}`);
+  return await res.text();
+}
+
 export async function checkAges(o: {
   added: string[];
   allowlist: AllowEntry[];
@@ -102,11 +120,23 @@ if (import.meta.main) {
       base: { type: "string" },
       lock: { type: "string", default: join(root, "bun.lock") },
       allowlist: { type: "string", default: join(root, ".github", "dep-age-allowlist.json") },
+      // Used only when the --base file is missing or empty (a checkout without the base branch).
+      "base-repo": { type: "string" },
+      "base-sha": { type: "string" },
     },
   });
-  if (!values.base) throw new Error('usage: dep-age.ts --base <base bun.lock path | "none">');
-  const baseText =
-    values.base === "none" || !existsSync(values.base) ? null : readFileSync(values.base, "utf8");
+  if (!values.base)
+    throw new Error(
+      'usage: dep-age.ts --base <base bun.lock path | "none"> [--base-repo owner/name --base-sha <sha>]',
+    );
+  const haveBase =
+    values.base !== "none" && existsSync(values.base) && readFileSync(values.base).length > 0;
+  let baseText: string | null = null;
+  if (haveBase) baseText = readFileSync(values.base, "utf8");
+  else if (values.base !== "none" && values["base-repo"] !== undefined) {
+    if (values["base-sha"] === undefined) throw new Error("--base-repo needs --base-sha");
+    baseText = await fetchBaseLock(values["base-repo"], values["base-sha"]);
+  }
   const added = addedPackages(baseText, readFileSync(values.lock!, "utf8"));
   const allowlist = existsSync(values.allowlist!)
     ? parseAllowlist(readFileSync(values.allowlist!, "utf8"))
