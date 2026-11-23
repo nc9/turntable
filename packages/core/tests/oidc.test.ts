@@ -188,6 +188,16 @@ describe("discovery and JWKS", () => {
 });
 
 describe("minting", () => {
+  test("a run with no known actor (a tag run has none) gets a token with NO actor claim", async () => {
+    await db.orm.update(s.runs).set({ actor: null }).where(eq(s.runs.id, a.runId));
+    const { res, body } = await mint(a);
+    expect(res.status).toBe(200);
+    const rp = await relyingParty(body.value!, "org-a", "sts.amazonaws.com");
+    expect(rp).toMatchObject({ ok: true });
+    expect(Object.hasOwn(rp.claims, "actor")).toBe(false);
+    expect(rp.claims).toMatchObject({ event_name: "push", trust_class: "protected" });
+  });
+
   test("a protected attempt gets a verifiable token with the documented claims", async () => {
     const { res, body } = await mint(a);
     expect(res.status).toBe(200);
@@ -494,52 +504,57 @@ describe("static export", () => {
   const tmp = mkdtempSync(join(tmpdir(), "ls-oidc-"));
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-  test("longshore oidc export writes discovery and a JWKS with no private parameters", async () => {
-    const dir = join(tmp, "data");
-    const keyFile = join(tmp, "m.key");
-    initMasterKey(keyFile);
-    const { openDatabase, createOrg, ensureInstance } = await import("../src/db");
-    const d = openDatabase(join(dir, "longshore.db"));
-    await ensureInstance(d);
-    await createOrg(d, { slug: "acme", name: "acme" });
-    d.close();
-    const out = join(tmp, "site");
-    const code = await oidcCommand([
-      "export",
-      "--org",
-      "acme",
-      "--data-dir",
-      dir,
-      "--master-key-file",
-      keyFile,
-      "--base-url",
-      "https://static.example.com/oidc",
-      "--out",
-      out,
-    ]);
-    expect(code).toBe(0);
-    const disc = JSON.parse(
-      readFileSync(join(out, "acme/.well-known/openid-configuration"), "utf8"),
-    );
-    expect(disc.issuer).toBe("https://static.example.com/oidc/acme");
-    expect(disc.jwks_uri).toBe("https://static.example.com/oidc/acme/jwks.json");
-    const text = readFileSync(join(out, "acme/jwks.json"), "utf8");
-    const jwks = JSON.parse(text) as { keys: Record<string, unknown>[] };
-    expect(jwks.keys.length).toBe(1);
-    expect(Object.keys(jwks.keys[0]!).toSorted()).toEqual([...PUBLIC_JWK_MEMBERS].toSorted());
-    expect(text).not.toContain('"d"');
-    // status and rotate work on the same store
-    expect(
-      await oidcCommand([
-        "rotate",
+  // The CLI opens the database on its own, as a second handle. A PGlite database lives in the
+  // handle that made it, so it would see an empty one; a real server (or SQLite) shares it.
+  test.skipIf(process.env.LONGSHORE_TEST_DB === "pglite")(
+    "longshore oidc export writes discovery and a JWKS with no private parameters",
+    async () => {
+      const dir = join(tmp, "data");
+      const keyFile = join(tmp, "m.key");
+      initMasterKey(keyFile);
+      const { openDatabase, createOrg, ensureInstance } = await import("../src/db");
+      const d = openDatabase(join(dir, "longshore.db"));
+      await ensureInstance(d);
+      await createOrg(d, { slug: "acme", name: "acme" });
+      d.close();
+      const out = join(tmp, "site");
+      const code = await oidcCommand([
+        "export",
         "--org",
         "acme",
         "--data-dir",
         dir,
         "--master-key-file",
         keyFile,
-      ]),
-    ).toBe(0);
-    expect(loadMasterKey(keyFile).length).toBe(32);
-  });
+        "--base-url",
+        "https://static.example.com/oidc",
+        "--out",
+        out,
+      ]);
+      expect(code).toBe(0);
+      const disc = JSON.parse(
+        readFileSync(join(out, "acme/.well-known/openid-configuration"), "utf8"),
+      );
+      expect(disc.issuer).toBe("https://static.example.com/oidc/acme");
+      expect(disc.jwks_uri).toBe("https://static.example.com/oidc/acme/jwks.json");
+      const text = readFileSync(join(out, "acme/jwks.json"), "utf8");
+      const jwks = JSON.parse(text) as { keys: Record<string, unknown>[] };
+      expect(jwks.keys.length).toBe(1);
+      expect(Object.keys(jwks.keys[0]!).toSorted()).toEqual([...PUBLIC_JWK_MEMBERS].toSorted());
+      expect(text).not.toContain('"d"');
+      // status and rotate work on the same store
+      expect(
+        await oidcCommand([
+          "rotate",
+          "--org",
+          "acme",
+          "--data-dir",
+          dir,
+          "--master-key-file",
+          keyFile,
+        ]),
+      ).toBe(0);
+      expect(loadMasterKey(keyFile).length).toBe(32);
+    },
+  );
 });

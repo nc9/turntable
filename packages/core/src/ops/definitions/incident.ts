@@ -11,7 +11,7 @@ import {
 import { revokeMintedCredentials, secretNamesInScope } from "../../incident";
 import { defineOp } from "../define";
 import { roleSatisfies } from "../roles";
-import { principalLabel } from "../principal";
+import { principalLabel, orgRole } from "../principal";
 
 const LEVEL = z.enum(["org", "project"]);
 
@@ -156,14 +156,15 @@ export const incidentStatus = defineOp({
       frozen_at: f.frozenAt,
       frozen_by: f.frozenBy,
       rotation_required_count: new Set(flags.map((x) => x.name)).size,
-      rotation_required: (roleSatisfies(ctx.principal.role, "release_operator") ? flags : []).map(
-        (x) => ({
-          name: x.name,
-          reason: x.reason,
-          flagged_by: x.flaggedBy,
-          flagged_at: x.flaggedAt,
-        }),
-      ),
+      rotation_required: (roleSatisfies(orgRole(ctx.principal), "release_operator")
+        ? flags
+        : []
+      ).map((x) => ({
+        name: x.name,
+        reason: x.reason,
+        flagged_by: x.flaggedBy,
+        flagged_at: x.flaggedAt,
+      })),
     };
   },
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { InfraError, type Provider } from "@longshore/provider-sdk";
+import { SHIM_NAMES } from "../src/step-env";
 import {
   drain,
   planJob,
@@ -93,7 +94,14 @@ describe("the step environment", () => {
       expect(log).toContain("pager=cat");
       expect(log).toContain("prompt=0");
       expect(log).toMatch(/first=.*\/shims/);
-      for (const name of ["step-shim", "bash", "sh", "node", "python"]) expect(log).toContain(name);
+      // Only interpreters that exist in the sandbox are shimmed (a shim for an absent one would
+      // make `command -v` lie): bash and sh always, the rest only if there.
+      const listed = log
+        .split("\n")
+        .slice(log.split("\n").findIndex((l) => l.startsWith("first=")) + 1)
+        .filter(Boolean);
+      expect(listed).toEqual(expect.arrayContaining(["step-shim", "bash", "sh"]));
+      for (const name of listed) expect(["step-shim", ...SHIM_NAMES]).toContain(name);
     } finally {
       if (saved === undefined) delete process.env.TERM;
       else process.env.TERM = saved;

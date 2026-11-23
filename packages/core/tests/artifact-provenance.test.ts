@@ -75,7 +75,7 @@ const rec = (
     sha256: createHash("sha256")
       .update(bytes ?? name)
       .digest("hex"),
-    size: 1,
+    size: bytes ? bytes.length : 1,
     ...(bytes ? { bytes } : {}),
   });
 
@@ -118,7 +118,7 @@ describe("provenance", () => {
         attemptId: r.attemptId,
         name: "bad",
         sha256: "e".repeat(64),
-        size: 1,
+        size: bytes.length,
         bytes,
       }),
     ).rejects.toBeInstanceOf(ArtifactConflict);

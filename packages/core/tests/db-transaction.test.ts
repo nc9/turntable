@@ -8,6 +8,7 @@ import {
   openDatabase,
 } from "../src/db";
 import { Gate } from "../src/db/gate";
+import { onPostgres } from "./pg-mode";
 
 let db: Db;
 beforeEach(() => {
@@ -66,31 +67,36 @@ test("nested transaction is a savepoint: inner failure keeps outer work", async 
   expect(await getOrgBySlug(db, "kept")).toBeDefined();
 });
 
-test("concurrent repo calls cannot leak into, or be rolled back by, an open transaction", async () => {
-  const org = await createOrg(db, { slug: "o", name: "O" });
-  let outsideDone = false;
-  const outside = (async () => {
-    await tick();
-    await createProject(db, { orgId: org.id }, { slug: "outside", name: "outside" });
-    outsideDone = true;
-  })();
-  await expect(
-    db.transaction(async (tx) => {
-      await createProject(tx, { orgId: org.id }, { slug: "inside", name: "inside" });
+// On SQLite one connection makes transactions exclusive; Postgres is concurrent by design and
+// gets its guarantees from SERIALIZABLE (see pg-transactions.test.ts), so these two are SQLite's.
+test.skipIf(onPostgres)(
+  "concurrent repo calls cannot leak into, or be rolled back by, an open transaction",
+  async () => {
+    const org = await createOrg(db, { slug: "o", name: "O" });
+    let outsideDone = false;
+    const outside = (async () => {
       await tick();
-      await tick();
-      await tick();
-      // the outside write must be waiting at the gate, not running inside this transaction
-      expect(outsideDone).toBe(false);
-      throw new Error("rollback");
-    }),
-  ).rejects.toThrow("rollback");
-  await outside;
-  const slugs = (await listProjects(db, { orgId: org.id })).map((p) => p.slug);
-  expect(slugs).toEqual(["outside"]);
-});
+      await createProject(db, { orgId: org.id }, { slug: "outside", name: "outside" });
+      outsideDone = true;
+    })();
+    await expect(
+      db.transaction(async (tx) => {
+        await createProject(tx, { orgId: org.id }, { slug: "inside", name: "inside" });
+        await tick();
+        await tick();
+        await tick();
+        // the outside write must be waiting at the gate, not running inside this transaction
+        expect(outsideDone).toBe(false);
+        throw new Error("rollback");
+      }),
+    ).rejects.toThrow("rollback");
+    await outside;
+    const slugs = (await listProjects(db, { orgId: org.id })).map((p) => p.slug);
+    expect(slugs).toEqual(["outside"]);
+  },
+);
 
-test("transactions are serialized", async () => {
+test.skipIf(onPostgres)("transactions are serialized", async () => {
   const order: string[] = [];
   const run = (name: string) =>
     db.transaction(async () => {

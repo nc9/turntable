@@ -32,6 +32,7 @@ import {
 import { readLog } from "../src/db";
 import { reconcileExpired, Scheduler, type AttemptRunner } from "../src/scheduler";
 import type { Readiness } from "../src/db";
+import { onPostgres } from "./pg-mode";
 
 let db: Db;
 const T0 = 1_800_000_000_000;
@@ -570,57 +571,61 @@ test("local runs (running, no lease) are never reconciled", async () => {
   expect((await getJob(db, s, job.id))?.state).toBe("running");
 });
 
-test("kill -9 mid-run: the next boot resolves the abandoned attempt as infra_error", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "tt-kill9-"));
-  const path = join(dir, "longshore.db");
-  try {
-    db = openDatabase(path);
-    const s = await seedOrg("a");
-    const q = await queueRun(s);
+test.skipIf(onPostgres)(
+  "kill -9 mid-run: the next boot resolves the abandoned attempt as infra_error",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tt-kill9-"));
+    const path = join(dir, "longshore.db");
+    try {
+      db = openDatabase(path);
+      const s = await seedOrg("a");
+      const q = await queueRun(s);
 
-    const child = Bun.spawn(
-      ["bun", "run", join(import.meta.dir, "helpers/kill9-worker.ts"), path, "800"],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    // wait for the child to say it claimed the attempt
-    const reader = child.stdout.getReader();
-    let said = "";
-    const deadline = Date.now() + 15_000;
-    while (!said.includes("claimed") && Date.now() < deadline) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      said += new TextDecoder().decode(value);
+      const child = Bun.spawn(
+        ["bun", "run", join(import.meta.dir, "helpers/kill9-worker.ts"), path, "800"],
+        {
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      // wait for the child to say it claimed the attempt
+      const reader = child.stdout.getReader();
+      let said = "";
+      const deadline = Date.now() + 15_000;
+      while (!said.includes("claimed") && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        said += new TextDecoder().decode(value);
+      }
+      expect(said).toContain(`claimed ${q.build.attemptId}`);
+      expect((await getJob(db, s, q.build.jobId))?.state).toBe("running");
+
+      child.kill("SIGKILL");
+      await child.exited;
+
+      // before the lease expires nothing is resolved (the worker might only be slow)
+      expect((await reconcileExpired(db, () => undefined)).resolved).toEqual([]);
+      await Bun.sleep(900);
+
+      const report = await reconcileExpired(db, () => undefined);
+      expect(report.resolved.map((r) => r.attemptId)).toEqual([q.build.attemptId]);
+      const att = (await listAttempts(db, s, q.build.jobId))[0]!;
+      expect(att).toMatchObject({ state: "infra_error", leaseOwner: null });
+      expect(att.errorClass).toStartWith("controller_lost");
+      expect((await getJob(db, s, q.build.jobId))?.state).toBe("infra_error");
+      expect((await getRun(db, s, q.run.id))?.status).toBe("infra_error");
+      // and a rerun brings it back to the queue for the next worker
+      expect(
+        await rerunJobs(db, s, { runId: q.run.id, jobs: "failed", reason: "after crash" }),
+      ).toBeDefined();
+      expect((await getJob(db, s, q.build.jobId))?.state).toBe("queued");
+    } finally {
+      db?.close();
+      rmSync(dir, { recursive: true, force: true });
     }
-    expect(said).toContain(`claimed ${q.build.attemptId}`);
-    expect((await getJob(db, s, q.build.jobId))?.state).toBe("running");
-
-    child.kill("SIGKILL");
-    await child.exited;
-
-    // before the lease expires nothing is resolved (the worker might only be slow)
-    expect((await reconcileExpired(db, () => undefined)).resolved).toEqual([]);
-    await Bun.sleep(900);
-
-    const report = await reconcileExpired(db, () => undefined);
-    expect(report.resolved.map((r) => r.attemptId)).toEqual([q.build.attemptId]);
-    const att = (await listAttempts(db, s, q.build.jobId))[0]!;
-    expect(att).toMatchObject({ state: "infra_error", leaseOwner: null });
-    expect(att.errorClass).toStartWith("controller_lost");
-    expect((await getJob(db, s, q.build.jobId))?.state).toBe("infra_error");
-    expect((await getRun(db, s, q.run.id))?.status).toBe("infra_error");
-    // and a rerun brings it back to the queue for the next worker
-    expect(
-      await rerunJobs(db, s, { runId: q.run.id, jobs: "failed", reason: "after crash" }),
-    ).toBeDefined();
-    expect((await getJob(db, s, q.build.jobId))?.state).toBe("queued");
-  } finally {
-    db?.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 40_000);
+  },
+  40_000,
+);
 
 test("scoped lease operations cannot touch another org's attempt", async () => {
   const a = await seedOrg("a");

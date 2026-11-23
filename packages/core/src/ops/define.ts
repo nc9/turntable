@@ -3,6 +3,7 @@ import type { Db } from "../db";
 import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { WebhookService } from "../webhooks/service";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import type { Principal } from "./principal";
@@ -16,7 +17,7 @@ export type Effect = "read" | "write" | "destructive";
  * `minRole`. `signature`: a human-signed assertion (offline statement or WebAuthn). No bearer
  * token can ever satisfy `signature`, so those ops are never exposed over MCP or token REST.
  */
-export type OpAuth = { type: "token" | "signature"; minRole: Role };
+export type OpAuth = { type: "token" | "signature" | "instance"; minRole: Role };
 
 export type HttpBinding = {
   method: "GET" | "POST" | "DELETE";
@@ -34,6 +35,10 @@ export type OpContext = {
   vault?: SecretVault | undefined;
   /** Starts installation claims (hosted); absent without a master key. */
   claims?: InstallationClaims | undefined;
+  /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
+  instanceOrgCap?: number | undefined;
+  /** Outbound webhooks; absent without a master key. */
+  webhooks?: WebhookService | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent (tests inject their own). */
@@ -132,26 +137,31 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
       throw new Error(`${spec.name}: path parameter {${param}} is not an input field`);
     }
   }
-  const input = spec.input
-    .extend({
-      org: z
-        .string()
-        .min(1)
-        .max(64)
-        .optional()
-        .describe("Org slug. Defaults to the caller's org; a token can only name its own."),
-      project: z
-        .string()
-        .min(1)
-        .max(64)
-        .optional()
-        .describe(
-          spec.scope === "project"
-            ? "Project slug. Required unless the token is scoped to one project."
-            : "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
-        ),
-    })
-    .strict();
+  // An instance op has no org or project scope: it names its target in its own input. The org and
+  // project fields would only invite a caller to think an org grant matters.
+  const input =
+    spec.auth.type === "instance"
+      ? spec.input.strict()
+      : spec.input
+          .extend({
+            org: z
+              .string()
+              .min(1)
+              .max(64)
+              .optional()
+              .describe("Org slug. Defaults to the caller's org; a token can only name its own."),
+            project: z
+              .string()
+              .min(1)
+              .max(64)
+              .optional()
+              .describe(
+                spec.scope === "project"
+                  ? "Project slug. Required unless the token is scoped to one project."
+                  : "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+              ),
+          })
+          .strict();
   return {
     name: spec.name,
     summary: spec.summary,

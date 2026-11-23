@@ -20,6 +20,7 @@ import {
   getJob,
   getOrgById,
   getProject,
+  getProjectOidcAudiences,
   getRun,
 } from "../db/repos";
 import { auditFailure } from "../audit/failures";
@@ -39,7 +40,8 @@ export type MintDenial =
   | "attempt_not_running"
   | "class_unrecorded"
   | "class_not_allowed"
-  | "frozen";
+  | "frozen"
+  | "audience_not_allowed";
 
 export type MintResult =
   | { ok: true; token: string; expiresAt: number; jti: string; kid: string }
@@ -187,6 +189,12 @@ export class OidcIssuer {
     if (!this.#allow.includes(klass)) return deny("class_not_allowed", project.id);
     // An incident freeze stops identity tokens too: a stolen credential cannot mint through one.
     if ((await getFreeze(db, scope)).frozen) return deny("frozen", project.id);
+    // The project's own allow list, when it has one: any other audience is refused (and audited
+    // with the audience asked for, by `deny`). No list: any audience, as before.
+    const allowedAud = await getProjectOidcAudiences(db, scope);
+    if (allowedAud !== null && !allowedAud.includes(aud)) {
+      return deny("audience_not_allowed", project.id);
+    }
 
     const iat = Math.floor(now / 1000);
     const exp = iat + Math.min(TOKEN_SECONDS, MAX_TOKEN_SECONDS);
@@ -224,7 +232,8 @@ export class OidcIssuer {
       rerun: attempt.rerunReason !== null,
       trust_class: klass,
       event_name: run.event,
-      actor: run.actor ?? null,
+      // An unknown actor (a tag run has none) is left out, never claimed as null or a guess.
+      ...(run.actor ? { actor: run.actor } : {}),
       environment,
     };
     const { token, kid } = await this.keys.signJwt(org.id, claims, now);

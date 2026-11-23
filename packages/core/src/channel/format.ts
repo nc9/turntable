@@ -74,6 +74,7 @@ export function formatEvent(o: {
   org: string;
 }): Notification {
   const { event, run, steps } = o;
+  if (event.type === "quota.warning" || event.type === "quota.reached") return formatQuota(o);
   const project = event.project ?? run?.project ?? null;
   const runId = id(event.run_id);
   const link = runLink(o.baseUrl, o.org, project, runId);
@@ -126,6 +127,31 @@ export function formatEvent(o: {
       run_id: runId,
       job_id: id(event.job_id),
       conclusion,
+    }),
+  };
+}
+
+const count = (v: unknown): string =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? String(Math.round(v)) : "?";
+
+/** A quota notice: the metric and how much of the limit is used. Org-level, so no run or link. */
+function formatQuota(o: { event: FeedEvent; org: string }): Notification {
+  const { event } = o;
+  const reached = event.type === "quota.reached";
+  const metric = word(typeof event.payload.metric === "string" ? event.payload.metric : null);
+  const p = event.payload;
+  const lines = [
+    `Longshore: quota ${reached ? "reached" : "warning"}${metric ? ` for ${metric}` : ""}.`,
+    `used ${count(p.used)} of ${count(p.limit)}${typeof p.percent === "number" ? ` (${count(p.percent)}%)` : ""}${reached ? "; new work is held until the window moves or the limit is raised" : ""}`,
+    FOOTER,
+  ];
+  return {
+    content: lines.join("\n"),
+    meta: cleanMeta({
+      kind: reached ? "quota_reached" : "quota_warning",
+      trust: "untrusted",
+      org: id(o.org),
+      metric,
     }),
   };
 }

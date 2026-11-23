@@ -226,3 +226,29 @@ describe("the operation", () => {
     expect(registry.get("sandbox_usage")).toMatchObject({ effect: "read", mcp: true });
   });
 });
+
+describe("an attempt with no recorded create time", () => {
+  test("is counted from when it started, per day and for a limit, and marked estimated", async () => {
+    const id = await life(a, null, null, at(0, 10, 30));
+    await db.orm
+      .update(s.jobAttempts)
+      .set({ startedAt: at(0, 10, 0) })
+      .where(eq(s.jobAttempts.id, id));
+    const [d] = await sandboxUsage(db, a.scope, win(0, 1));
+    expect(d).toMatchObject({ seconds: 1800, attempts: 1, estimated: 1 });
+    // The same fallback for a limit, which also adds the provider TTL for the missing destroy.
+    const lim = await sandboxSeconds(db, a.scope, {
+      from: at(0, 0),
+      to: at(1, 0),
+      now: at(1, 0),
+      graceMs: 30 * 60_000,
+    });
+    expect(lim).toEqual({ seconds: 3600, estimated: 1 });
+  });
+
+  test("one that never started and has no sandbox is not counted", async () => {
+    await life(a, null, null);
+    const [d] = await sandboxUsage(db, a.scope, win(0, 1));
+    expect(d).toMatchObject({ seconds: 0, attempts: 0, estimated: 0 });
+  });
+});

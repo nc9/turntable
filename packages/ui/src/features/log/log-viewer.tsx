@@ -543,6 +543,18 @@ export function LogViewer({
         className,
       )}
     >
+      {parser.notices.length > 0 ? (
+        <ul
+          aria-label="System notices"
+          className="m-0 list-none border-b border-line bg-subtle px-3 py-1 text-xs text-dim"
+        >
+          {parser.notices.map((n, i) => (
+            <li key={`${n.atOffset}-${n.source}-${i}`} className="truncate" title={n.text}>
+              <span className="font-medium text-foreground">system</span> {n.text}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-subtle px-2 py-1.5">
         <Button
