@@ -3,7 +3,7 @@ title: Job cache
 description: The control-plane cache for jobs, how it keeps trust classes apart, and how a provider exposes it.
 ---
 
-A job that uses `actions/cache` normally gets act's own cache server inside its sandbox, so nothing carries over between jobs. Turntable can serve the cache from the control plane instead, so a job restores what an earlier job saved. A cache is also the classic route from an untrusted pull request to a privileged job, so the service is built around trust classes. Issue [#38](https://github.com/nc9/turntable/issues/38).
+A job that uses `actions/cache` normally gets act's own cache server inside its sandbox, so nothing carries over between jobs. Turntable can serve the cache from the control plane instead, so a job restores what an earlier job saved. A cache is also the classic route from an untrusted pull request to a privileged job, so the service is built around trust classes. Issue [#38](https://github.com/turntable-ci/turntable/issues/38).
 
 ## Turning it on
 

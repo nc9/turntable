@@ -5,7 +5,7 @@ description: Connect Claude Code or another MCP client to a Turntable instance w
 
 # Connect an agent to Turntable
 
-The docs are the source of truth: [Agent interface](https://github.com/nc9/turntable/blob/main/docs/agent-interface.mdx) and [Secrets and security](https://github.com/nc9/turntable/blob/main/docs/security.mdx).
+The docs are the source of truth: [Agent interface](https://github.com/turntable-ci/turntable/blob/main/docs/agent-interface.mdx) and [Secrets and security](https://github.com/turntable-ci/turntable/blob/main/docs/security.mdx).
 
 ## Secret rules (read first)
 
@@ -43,7 +43,7 @@ Every operation the token may call is an MCP tool. A good first read is `list_ru
 
 ## 3. Event channel (optional)
 
-The plugin manifest in `.claude-plugin/` runs `turntable channel`, which pushes failed runs and approval requests into a Claude Code session. It asks for the instance URL, the org and a **token file path**, never the token. Use a `reader` token. See [Claude Code channel](https://github.com/nc9/turntable/blob/main/docs/agent-interface.mdx#claude-code-channel). Channels are a research preview and need a development flag.
+The plugin manifest in `.claude-plugin/` runs `turntable channel`, which pushes failed runs and approval requests into a Claude Code session. It asks for the instance URL, the org and a **token file path**, never the token. Use a `reader` token. See [Claude Code channel](https://github.com/turntable-ci/turntable/blob/main/docs/agent-interface.mdx#claude-code-channel). Channels are a research preview and need a development flag.
 
 ## What an agent cannot do
 

@@ -5,7 +5,7 @@ description: Create, install and claim the GitHub App for a self-hosted Turntabl
 
 # Create the GitHub App
 
-Every instance has its own App. There is no shared App. The docs are the source of truth: [GitHub App](https://github.com/nc9/turntable/blob/main/docs/github-app.mdx) and [Hosted deployment](https://github.com/nc9/turntable/blob/main/docs/hosted.mdx).
+Every instance has its own App. There is no shared App. The docs are the source of truth: [GitHub App](https://github.com/turntable-ci/turntable/blob/main/docs/github-app.mdx) and [Hosted deployment](https://github.com/turntable-ci/turntable/blob/main/docs/hosted.mdx).
 
 ## Secret rules (read first)
 
@@ -58,7 +58,7 @@ After the App exists, remove `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` from the 
 
 - In the App's **Advanced** tab, recent deliveries are `2xx`.
 - `turntable github-app status` lists the App and installations with no secrets.
-- A test pull request shows a Turntable check. Checks post only when the project's checks mode is not `off`, see [Quickstart](https://github.com/nc9/turntable/blob/main/docs/quickstart.mdx#report-results-to-github-as-check-runs).
+- A test pull request shows a Turntable check. Checks post only when the project's checks mode is not `off`, see [Quickstart](https://github.com/turntable-ci/turntable/blob/main/docs/quickstart.mdx#report-results-to-github-as-check-runs).
 
 ## Troubleshooting
 

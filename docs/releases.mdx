@@ -4,7 +4,7 @@ description: How Turntable versions its releases, how to verify a download, and 
 ---
 
 <Note>
-  Pre-alpha. The first release has not been published yet. This page describes what each release will carry, and the commands below work once a tag exists. Replace `nc9/turntable` with the repository you downloaded from if it differs.
+  Pre-alpha. The first release has not been published yet. This page describes what each release will carry, and the commands below work once a tag exists. Replace `turntable-ci/turntable` with the repository you downloaded from if it differs.
 </Note>
 
 ## Versions
@@ -25,7 +25,7 @@ Migrations run on start and only go forward. Back up the data directory (SQLite)
 | `SHA256SUMS` | Checksums of the binaries and the SBOM. |
 | `turntable-<version>.cdx.json` | CycloneDX SBOM of the packages bundled in the binaries, with hashes from the lockfile. |
 | `turntable-image.cdx.json` | CycloneDX SBOM of the container image (base image packages and the binary), made with a pinned Syft. |
-| Image `ghcr.io/nc9/turntable:<version>` | Distroless image, linux/amd64 and linux/arm64. |
+| Image `ghcr.io/turntable-ci/turntable:<version>` | Distroless image, linux/amd64 and linux/arm64. |
 
 Binaries, `SHA256SUMS`, both SBOMs and the image carry GitHub artifact attestations signed through GitHub's Sigstore. The attestation names the repository, workflow and commit that built them.
 
@@ -40,7 +40,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 That proves the file matches the published list. The list itself comes from the same release, so also check the attestation, which is signed by the build and not by whoever can edit the release page:
 
 ```sh
-gh attestation verify turntable-linux-x64 --repo nc9/turntable
+gh attestation verify turntable-linux-x64 --repo turntable-ci/turntable
 ```
 
 A pass prints the workflow, the tag and the commit. A failure means the file was not built by this repository's release workflow. Do not run it.
@@ -48,7 +48,7 @@ A pass prints the workflow, the tag and the commit. A failure means the file was
 To check the SBOM is the one the build attested:
 
 ```sh
-gh attestation verify turntable-linux-x64 --repo nc9/turntable \
+gh attestation verify turntable-linux-x64 --repo turntable-ci/turntable \
   --predicate-type https://cyclonedx.org/bom
 ```
 
@@ -59,12 +59,12 @@ On macOS, use `shasum -a 256 -c SHA256SUMS --ignore-missing` if `sha256sum` is n
 Pin by digest, not by tag. Tags can move; a digest cannot.
 
 ```sh
-docker buildx imagetools inspect ghcr.io/nc9/turntable:0.1.0-alpha.1
+docker buildx imagetools inspect ghcr.io/turntable-ci/turntable:0.1.0-alpha.1
 # note the Digest: sha256:...
-gh attestation verify oci://ghcr.io/nc9/turntable@sha256:<digest> --repo nc9/turntable
+gh attestation verify oci://ghcr.io/turntable-ci/turntable@sha256:<digest> --repo turntable-ci/turntable
 ```
 
-Then run or deploy `ghcr.io/nc9/turntable@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
+Then run or deploy `ghcr.io/turntable-ci/turntable@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
 
 ## Reproducible builds
 

@@ -73,7 +73,7 @@ Set it per project with `turntable policy set --org <slug> --project <slug> --un
 
 **Manual runs.** A `workflow_dispatch` run is `protected` or `release` only when the person who started it is a maintainer (maintain or admin); a writer's is `trusted_pr`, and anyone else's, or an unknown actor's, is `untrusted_pr`, whatever the ref. Manual dispatch is not ingested yet; the rule is in the classifier.
 
-Issue [#17](https://github.com/nc9/turntable/issues/17).
+Issue [#17](https://github.com/turntable-ci/turntable/issues/17).
 
 ## Workflow source and workspace taint
 
@@ -150,7 +150,7 @@ Two optional project policies tighten this further. `require_sha_pins` refuses a
 
 ## Job cache
 
-Implemented. The control-plane cache assigns each job a namespace from its org, project, trust class and ref scope. A job writes only to its own namespace and never reads one written by a lower trust class, release jobs restore nothing unless a project opts in, each trust class has its own share of the org quota and evicts only within it, archives are validated before they can be restored, and the per-job credential dies with the job. See [Job cache](/cache). Issue [#38](https://github.com/nc9/turntable/issues/38).
+Implemented. The control-plane cache assigns each job a namespace from its org, project, trust class and ref scope. A job writes only to its own namespace and never reads one written by a lower trust class, release jobs restore nothing unless a project opts in, each trust class has its own share of the org quota and evicts only within it, archives are validated before they can be restored, and the per-job credential dies with the job. See [Job cache](/cache). Issue [#38](https://github.com/turntable-ci/turntable/issues/38).
 
 ## Outbound requests from the control plane
 
@@ -228,7 +228,7 @@ A signing service signs release artifacts and writes the provenance that says ho
 
 ## Human approvals
 
-Unlike the sections around it, this one is implemented. A job in a protected environment waits for people, and only people can release it: no bearer token, session, agent or MCP call can approve. Issue [#46](https://github.com/nc9/turntable/issues/46).
+Unlike the sections around it, this one is implemented. A job in a protected environment waits for people, and only people can release it: no bearer token, session, agent or MCP call can approve. Issue [#46](https://github.com/turntable-ci/turntable/issues/46).
 
 ### What is signed
 
