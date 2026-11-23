@@ -6,6 +6,7 @@ import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
   claimSkippedCheck,
+  dismissSkippedCheck,
   getAttemptCheckRunId,
   getOrgById,
   getProjectChecksMode,
@@ -84,8 +85,6 @@ export class CheckReporter {
   readonly #o: CheckReporterOptions;
   readonly #chains = new Map<string, Promise<void>>();
   #sweeping = false;
-  /** Skipped attempts this process found nothing to post for (checks off, no repo or App). */
-  readonly #dismissed = new Set<string>();
 
   constructor(o: CheckReporterOptions) {
     this.#o = o;
@@ -128,12 +127,14 @@ export class CheckReporter {
       limit: SKIP_BATCH,
     });
     for (const row of rows) {
-      if (this.#dismissed.has(row.attempt.id)) continue;
       const scope = { orgId: row.attempt.orgId, projectId: row.attempt.projectId };
       const claim: Claim = { attempt: row.attempt, job: row.job, run: row.run, scope };
       // The shards of a job share one chain and one check, as for a job that ran.
       await this.#enqueue(chainKey(claim), async () => {
-        if ((await this.#postSkipped(claim)) === "nothing") this.#dismissed.add(row.attempt.id);
+        // Nothing to post (checks off, no repo or App): persisted, so a restart does not re-sweep.
+        if ((await this.#postSkipped(claim)) === "nothing") {
+          await dismissSkippedCheck(this.#o.db, scope, row.attempt.id, now);
+        }
       });
     }
   }

@@ -490,5 +490,12 @@ export const migrations: Migration[] = [
       "CREATE UNIQUE INDEX `events_public_id_unique` ON `events` (`public_id`);",
       "-- Every org's approval policies are copied into one `approval_policy` setting, so the resolver\n-- reads what the table held. The table stays (nothing reads or writes it any more), so rolling\n-- the binary back loses nothing but changes made after this ran.\nINSERT INTO `settings` (`scope_kind`, `scope_id`, `org_id`, `key`, `value`, `updated_by`, `updated_at`)\nSELECT 'org', `org_id`, `org_id`, 'approval_policy',\n\tjson_group_object(`environment`, json_object('required', min(max(`required`, 1), 10), 'allow_author_approval', json(CASE WHEN `allow_author_approval` = 1 THEN 'true' ELSE 'false' END), 'key_policy', 'any')),\n\t'migration', CAST(strftime('%s', 'now') AS integer) * 1000\nFROM `approval_policies`\nWHERE NOT EXISTS (\n\tSELECT 1 FROM `settings`\n\tWHERE `settings`.`scope_kind` = 'org' AND `settings`.`scope_id` = `approval_policies`.`org_id` AND `settings`.`key` = 'approval_policy'\n)\nGROUP BY `org_id`;"
     ]
+  },
+  {
+    "tag": "0042_dismissed_skips",
+    "when": 1795445051444,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `check_dismissed_at` integer;"
+    ]
   }
 ];

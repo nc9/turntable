@@ -432,7 +432,7 @@ export function getAttemptCheckRunId(
 
 /**
  * Attempts that ended `skipped` without ever starting (the scheduler resolved the job: a false
- * `if:`, a failed need, every shard path-skipped) and have no forge check yet, newest first, across
+ * `if:`, a failed need, every shard path-skipped) and have no forge check yet and were not dismissed, newest first, across
  * every org (system work for the check reporter). An attempt that ran and was skipped by its
  * runner has `started_at` and is reported through the observer instead.
  */
@@ -451,6 +451,7 @@ export function listUnreportedSkips(
           eq(s.jobAttempts.state, "skipped"),
           isNull(s.jobAttempts.startedAt),
           isNull(s.jobAttempts.checkRunId),
+          isNull(s.jobAttempts.checkDismissedAt),
           eq(s.runs.local, false),
           gte(s.jobAttempts.createdAt, opts.since),
         ),
@@ -458,6 +459,27 @@ export function listUnreportedSkips(
       .orderBy(desc(s.jobAttempts.id))
       .limit(opts.limit),
   );
+}
+
+/** Marks a skipped attempt as having nothing to post, so the sweep stops selecting it. */
+export function dismissSkippedCheck(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  now: number,
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .update(s.jobAttempts)
+      .set({ checkDismissedAt: now })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, attemptId),
+        ),
+      );
+  });
 }
 
 /**

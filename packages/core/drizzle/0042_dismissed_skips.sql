@@ -1,0 +1,1 @@
+ALTER TABLE `job_attempts` ADD `check_dismissed_at` integer;

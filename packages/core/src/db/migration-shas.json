@@ -168,6 +168,10 @@
     {
       "tag": "0041_approval_policy_settings",
       "sha256": "4826635307b333eb84a4a5e8b37b9f022f795055fb9bc2e5e6a13c9a34e3eecf"
+    },
+    {
+      "tag": "0042_dismissed_skips",
+      "sha256": "0cc289008a36438078f434b94c7ee31b61d448e534cd1975cb62363048798f30"
     }
   ],
   "pg": [
@@ -222,6 +226,10 @@
     {
       "tag": "0012_approval_policy_settings",
       "sha256": "487d3cfc7d0e08b95b8da68c0a2cfc33c0b7439f0398fa5ba85e35aae6b17939"
+    },
+    {
+      "tag": "0013_dismissed_skips",
+      "sha256": "987a50a175304251fcfe54339cb48070829bf52f6e0c235406ad0baa871bdd4c"
     }
   ]
 }
