@@ -225,6 +225,13 @@
       "when": 1795396725281,
       "tag": "0031_job_log_notices",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1795399832552,
+      "tag": "0032_quota_events",
+      "breakpoints": true
     }
   ]
 }

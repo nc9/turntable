@@ -40,6 +40,8 @@ export const EVENT_TYPES = [
   "attempt.cut",
   "approval.required",
   "infra.error",
+  "quota.warning",
+  "quota.reached",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
