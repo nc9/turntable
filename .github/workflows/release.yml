@@ -98,6 +98,9 @@ jobs:
   github-release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [binaries, reproducible]
+    # Publishing waits for the `release` environment's approval (on GitHub: its protection rules;
+    # through Turntable: a held environment approval). Unprotected, GitHub creates it on first use.
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -149,6 +152,8 @@ jobs:
     # After the release exists, so the image SBOM can be attached to it.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [binaries, github-release]
+    # Publishes the image: gated by the same environment as the release it attaches to.
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
