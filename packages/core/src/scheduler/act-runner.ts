@@ -629,13 +629,11 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       // proxy, which holds the credential; a job with no proxy gets nothing and the log says so.
       let oidcVars: { requestUrl: string; requestToken: string } | undefined;
       if (o.jobOidc && jobKlass) {
-        const plannedJob = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
         const r = await o.jobOidc.issue({
           orgId: ctx.scope.orgId,
           attemptId: ctx.attempt.id,
           klass: jobKlass,
-          workflowYaml,
-          jobId: plannedJob?.id ?? job.jobKey,
+          planned: job.planned,
         });
         if ("none" in r) {
           // Silent when the job never asked: most jobs do not.

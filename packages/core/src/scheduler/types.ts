@@ -80,4 +80,6 @@ export type ProviderResolver = (name: string) => Provider | undefined;
 export interface AttemptObserver {
   started(claim: Claim): void;
   finished(claim: Claim, outcome: AttemptOutcome): void;
+  /** Called at the end of every claim pass, for work that has no attempt to hang off (not awaited). */
+  tick?(): void;
 }
