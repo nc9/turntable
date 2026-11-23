@@ -10,6 +10,8 @@ const DAY_MS = 86_400_000;
 
 export const createApiToken = defineOp({
   name: "create_api_token",
+  // Token minting: no agent role can call it, and a token must never be minted into an agent's context.
+  mcp: false,
   summary: "Create an agent token, scoped to the org or one project. Shown once.",
   description:
     "Creates a bearer token for an agent or script, with a role (reader, operator or " +

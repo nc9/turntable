@@ -1,4 +1,5 @@
-// A shipped migration is immutable: its recorded hash in migration-shas.json must never change, or
+// A shipped migration is immutable: its recorded hash in migration-shas.json (a list of { tag, sha256 }
+// records per dialect) must never change, or
 // every database that applied it refuses to boot. This compares the file between a pull request's
 // base and HEAD and fails when an EXISTING entry changes or is removed, unless the same tag is
 // also newly named in EDITED_IN_PLACE (migration-sha.ts) in the same diff, with its reason.
@@ -20,17 +21,31 @@ export const EDITED_PATH = "packages/core/src/db/migration-sha.ts";
 
 type Shas = Record<string, Record<string, string>>;
 
-/** The per-dialect `tag -> sha` maps of a golden file (the `//` note and any non-map key ignored). */
+/**
+ * The per-dialect `tag -> sha` maps of a golden file (the `//` note and any other key ignored).
+ * The file is a list of `{ tag, sha256 }` records per dialect (no tag in a key position, so secret
+ * scanners do not flag it); the OLD shape, a map from tag to sha, is still read so a base that
+ * predates the list format compares correctly.
+ */
 export function parseShas(text: string): Shas {
   const raw = JSON.parse(text) as Record<string, unknown>;
   const out: Shas = {};
   for (const [dialect, v] of Object.entries(raw)) {
-    if (typeof v !== "object" || v === null || Array.isArray(v)) continue;
-    out[dialect] = Object.fromEntries(
-      Object.entries(v as Record<string, unknown>).filter(
-        (e): e is [string, string] => typeof e[1] === "string",
-      ),
-    );
+    if (Array.isArray(v)) {
+      const entries: Record<string, string> = {};
+      for (const r of v) {
+        const rec = r as { tag?: unknown; sha256?: unknown } | null;
+        if (typeof rec?.tag === "string" && typeof rec.sha256 === "string")
+          entries[rec.tag] = rec.sha256;
+      }
+      out[dialect] = entries;
+    } else if (typeof v === "object" && v !== null) {
+      out[dialect] = Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).filter(
+          (e): e is [string, string] => typeof e[1] === "string",
+        ),
+      );
+    }
   }
   return out;
 }

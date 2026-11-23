@@ -1,0 +1,187 @@
+{
+  "//": "Golden sha256 of every shipped migration, per dialect (see migration-sha.ts). Embedded, never read from disk at runtime. A new migration appends its entry in its own PR (db:generate does it). An existing entry may change ONLY if its tag is also in EDITED_IN_PLACE (migration-sha.ts) with a reason: a changed hash refuses boot on every database that applied it.",
+  "sqlite": [
+    {
+      "tag": "0000_curvy_slayback",
+      "sha256": "d276e31370cfd2dac359afa054a46b644aadc993691110a2db86dc7482fb0b65"
+    },
+    {
+      "tag": "0001_steep_makkari",
+      "sha256": "13dfe515da20c77d567014a48c9e79f4a9c858e99303f3f32db4f7ad619b1a1a"
+    },
+    {
+      "tag": "0002_adorable_bulldozer",
+      "sha256": "9f0dda7cdf209f969253e3bd50f98396f94fe60d581caf984b68f49cd9a24182"
+    },
+    {
+      "tag": "0003_wide_marrow",
+      "sha256": "4eff8b8c4cfb2114ce3c18254d8b11482e08b27ee6ca348b85dbc7bb9e5331e1"
+    },
+    {
+      "tag": "0004_ordinary_mad_thinker",
+      "sha256": "a7d4dc4a2aa97feef8253584025d268e44b26af7248df14d166f141f1ec26a12"
+    },
+    {
+      "tag": "0005_pink_maximus",
+      "sha256": "83ab3d95bdfaa0c2369f20f266f2ec331dbffd25e653128fd3e181efb3b95e21"
+    },
+    {
+      "tag": "0006_fluffy_vance_astro",
+      "sha256": "30abc7d3ffbb74d0ffe7bc5e9bc31b9a0709ee9692c9e281a29d81958837be07"
+    },
+    {
+      "tag": "0007_violet_starbolt",
+      "sha256": "1a41f7ded1bb59716565564f04eac87c88fcb6c46b8f500cb9bb733e45504a81"
+    },
+    {
+      "tag": "0008_chief_ink",
+      "sha256": "a042fb2a8eeb24b0ff439e1a73d5bed44afd62ce27d40540397c365838937acd"
+    },
+    {
+      "tag": "0009_youthful_gladiator",
+      "sha256": "13400c40a4918d241d6969ab0dd0f1c797693e6f68e994e505533b57eb455f77"
+    },
+    {
+      "tag": "0010_loose_smasher",
+      "sha256": "23756c8c70910ea04b5c6218a57016cf53122a121a497042c1c065aafb646789"
+    },
+    {
+      "tag": "0011_low_praxagora",
+      "sha256": "b18446b1736e2c204c73c76e8351ff78294666229e16977cc8bf96ade74cfa8d"
+    },
+    {
+      "tag": "0012_redundant_newton_destine",
+      "sha256": "78bb65d5af0ab170627c325a74f3e0af17b58437c595ffff6b0e1290c2cd4abc"
+    },
+    {
+      "tag": "0013_clear_sugar_man",
+      "sha256": "9c258ddce1fac6993fbb5da228315fae655a55cd51839a5703aef742db1dfc02"
+    },
+    {
+      "tag": "0014_unique_living_mummy",
+      "sha256": "a331d7fbc3b5dee472e05ec0e820619828e15aa042146260dd6363933e0aec4e"
+    },
+    {
+      "tag": "0015_dizzy_ronan",
+      "sha256": "d453ad4e5b7d95d348c3ea5a841241960e5081dbfee8e4a3b1b254fa13511b44"
+    },
+    {
+      "tag": "0016_sharp_kabuki",
+      "sha256": "61675d7d48ca76f348e04dc8a39d69a22cf0d564d1d8f1c547886f4dc4b889d7"
+    },
+    {
+      "tag": "0017_lying_imperial_guard",
+      "sha256": "7fecd8ccbb6d9f77c369bcce944e1666f0f437d4e69cbc0453cbbb9aa7d6873c"
+    },
+    {
+      "tag": "0018_clever_valkyrie",
+      "sha256": "640b381f7b4a9ad41805b68baf61dae8d6ffa68d6f27b3cd1f3652c2466c6fdf"
+    },
+    {
+      "tag": "0019_solid_next_avengers",
+      "sha256": "dc580bb52d34c1511c3fccde9cbd469df4a04178dc2c0941c525bd221f04e039"
+    },
+    {
+      "tag": "0020_medical_shen",
+      "sha256": "130b5d6584d0174fa6db9cdff11c11007704d0952de5b07b8d04daa31cc9a43f"
+    },
+    {
+      "tag": "0021_minor_micromacro",
+      "sha256": "2567e4e974e400f7b6bf9db59eda61588fdd713a377fbc3df7a9450bfe6803ba"
+    },
+    {
+      "tag": "0022_complete_thor_girl",
+      "sha256": "dd15f9c8b3f2981144c2714d1dd5e3c1f0a04caa6b09918726160a5e318ee89f"
+    },
+    {
+      "tag": "0023_numerous_emma_frost",
+      "sha256": "73857ea0450ba8fa227a9c1c001a0f5ef22997967ea157d61a7a1e75d8d5df37"
+    },
+    {
+      "tag": "0024_minor_warstar",
+      "sha256": "82a4f15e64c9ff3d9c07a863b522bed446ad0b030df28734ce8ce15302220f20"
+    },
+    {
+      "tag": "0025_magenta_magdalene",
+      "sha256": "295e244c11113f15565bdc68743aa7e008d2355368bc230589f84a5988a2cdb3"
+    },
+    {
+      "tag": "0026_strong_famine",
+      "sha256": "f0588f59450af883c48f24e4c2d5c74c1b0ab7b5dcbe5d61166515b993ceef12"
+    },
+    {
+      "tag": "0027_damp_sir_ram",
+      "sha256": "6d13d899640e0e05001a0575642148a0ee5e6134259f344762a1d4d46456a0ee"
+    },
+    {
+      "tag": "0028_cooing_texas_twister",
+      "sha256": "09c04ae11e9fe1d372b301cf6d201224875cd08fd77d40a0e44a972fb0f53947"
+    },
+    {
+      "tag": "0029_lean_wendell_rand",
+      "sha256": "0f926c52ae7cbb0f72b7f945f541d58cda9fc1e08d0ac0772a73061053658ce4"
+    },
+    {
+      "tag": "0030_instance_tokens",
+      "sha256": "094e27eb1ae8798e83f81175bfc805f6ea260c2455e3ea565c939b02d380ea6a"
+    },
+    {
+      "tag": "0031_job_log_notices",
+      "sha256": "4bcb690cd91bf94ce90c409fa79238072a7a3822b0d4cbbe864ec3d888383839"
+    },
+    {
+      "tag": "0032_quota_events",
+      "sha256": "0836dc8b50d1f1156884552cf0df1905741d1ba2e170999ea5713dd8b0a87332"
+    },
+    {
+      "tag": "0033_outbound_webhooks",
+      "sha256": "ba5a96951aa292f7ffe1c4cdc6003b777bac97d945c561ea18c6297e84ef1b24"
+    },
+    {
+      "tag": "0034_oidc_audiences",
+      "sha256": "905392dd37560816cb673b653eb482dbf80fa1740c5193be20f6441d5a559230"
+    },
+    {
+      "tag": "0035_project_sandbox_settings",
+      "sha256": "b5461683da64deeee4dbe7831a76a73559625c6f9a00a18c9a5ede2abc0e17d2"
+    },
+    {
+      "tag": "0036_skip_check_claim",
+      "sha256": "2264b3d75c95951266a4386646b98624399fd351318df93d0e72c487cba8d782"
+    }
+  ],
+  "pg": [
+    {
+      "tag": "0000_bored_absorbing_man",
+      "sha256": "2d83b20f36e6830c79832172af77f35fd93f83b5238b5642b9068612eae24d18"
+    },
+    {
+      "tag": "0001_instance_tokens",
+      "sha256": "906f50b896d7e233c98ca8388498735c96ecba47bfe350943c59d560a72050cf"
+    },
+    {
+      "tag": "0002_job_log_notices",
+      "sha256": "903cc7adc4edab13011f185abf1833ef387243399df801856bf648c02a244c19"
+    },
+    {
+      "tag": "0003_quota_events",
+      "sha256": "d913d6840590408d06bdf7c9ce627608273b48ff5ec794a68afd228130eec1ec"
+    },
+    {
+      "tag": "0004_outbound_webhooks",
+      "sha256": "652354efcd50311defbf374d5d7ab41e61be27860f448b1baba22042c77a884e"
+    },
+    {
+      "tag": "0005_oidc_audiences",
+      "sha256": "1f5ec01a04d0a77bd3b74f22fc7130812bb446f00a709b33f4e5f6c76ec2aed6"
+    },
+    {
+      "tag": "0006_project_sandbox_settings",
+      "sha256": "362828bade3e3201f2db9b43f2997fae6e012c57553b445d7e702b2fcd9a287a"
+    },
+    {
+      "tag": "0007_skip_check_claim",
+      "sha256": "0696ab60f4c478429f3b665fe9244fc70b206652dddf97a5c800b8a570310ca8"
+    }
+  ]
+}

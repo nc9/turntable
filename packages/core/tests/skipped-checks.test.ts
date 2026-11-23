@@ -182,7 +182,9 @@ describe("a skipped job with no attempt", () => {
       world.scope,
       (await listJobs(db, world.scope, run.id))[0]!.id,
     );
-    await db.run((h) => h.orm.update(jobAttempts).set({ checkRunId: null }));
+    await db.run((h) =>
+      h.orm.update(jobAttempts).set({ checkRunId: null, skipCheckClaimedAt: null }),
+    );
     await rep(api).sweepSkipped();
     expect(runs.size).toBe(1);
     expect(await getAttemptCheckRunId(db, world.scope, a!.id)).not.toBeNull();

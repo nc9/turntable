@@ -10,6 +10,8 @@ export const approveRunOp = defineOp({
   name: "approve_run",
   summary: "Approve a run held for an untrusted author, bound to its head sha and workflow hash.",
   description:
+    "This is the human gate for untrusted-author pull requests: only a person who has read the " +
+    "diff and the workflow should approve, and an agent should do so only on a person's say-so. " +
     "A pull request from a fork, or from an author the forge does not show as a collaborator with " +
     "write access, is created but its jobs wait in awaiting_approval and never run. This " +
     "releases them. You must pass the run's head_sha and the workflow_hash from get_run's trust " +

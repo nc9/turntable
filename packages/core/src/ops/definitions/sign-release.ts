@@ -11,6 +11,8 @@ import { OpError } from "../errors";
  */
 export const signRelease = defineOp({
   name: "sign_release",
+  // Signature op: a human-signed assertion is the credential, never a token.
+  mcp: false,
   summary: "Sign the recorded artifacts of a release run (human-signed assertion required).",
   description:
     "Signs named, recorded artifacts of a finished release run and returns DSSE-signed SLSA " +

@@ -56,6 +56,8 @@ export const listActionPinsOp = defineOp({
 
 export const acceptActionMoveOp = defineOp({
   name: "accept_action_move",
+  // A trust decision (it blesses a moved action tag for protected and release runs).
+  mcp: false,
   summary: "Accept a moved action tag: re-pin it to the commit it now points at.",
   description:
     "A tag that used to resolve to one commit and now resolves to another is a moved tag. " +
@@ -63,7 +65,7 @@ export const acceptActionMoveOp = defineOp({
     "the new commit first (get_action_pins shows it as pending_sha), then pass that exact sha " +
     "here to accept the move: the pin changes to it. The sha must equal the pending one, so an " +
     "accept never blesses a commit nobody looked at. Needs one project. Writes and is audited; " +
-    "operator role.",
+    "operator role. Not available over MCP: accepting a moved tag is a trust decision a person makes.",
   input: z.object({ repo: repoField, ref: z.string().min(1).max(200), sha: shaField }),
   output: z.object({
     repo: z.string(),
