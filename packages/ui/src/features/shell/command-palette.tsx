@@ -8,6 +8,7 @@ import {
   Moon,
   PlayCircle,
   Settings,
+  Gauge,
   ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
@@ -126,6 +127,15 @@ export function CommandPalette({
                 >
                   <ShieldCheck />
                   Approvers
+                </CommandItem>
+                <CommandItem
+                  value="quotas"
+                  onSelect={go(
+                    () => void navigate({ to: "/$org/-/quotas", params: { org: orgSlug } }),
+                  )}
+                >
+                  <Gauge />
+                  Quotas
                 </CommandItem>
                 {projectSlug ? (
                   <CommandItem
