@@ -530,6 +530,116 @@ describe("eventually consistent listings", () => {
   });
 });
 
+describe("disk and memory quotas, and a quota 400 on create", () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    regionId: "us",
+    sandboxClass: "container",
+    currentCpuUsage: 10,
+    currentDiskUsage: 100,
+    totalDiskQuota: 2000,
+    currentMemoryUsage: 10,
+    totalMemoryQuota: 400,
+    ...over,
+  });
+  const primed = () => mock.addForeign("someone-elses", { project: "other" }, "stopped");
+  const posts = (): number =>
+    mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").length;
+
+  test("a full disk waits, reading the limit from the usage reply, and proceeds when freed", async () => {
+    primed();
+    mock.usage.rows = [row({ currentDiskUsage: 1999 })]; // 1999 + 3 (the default size) > 2000
+    const logs: string[] = [];
+    const p = make({ capacityWaitMs: 30_000, log: (m) => logs.push(m) });
+    const creating = p.create(spec());
+    await Bun.sleep(120);
+    expect(posts()).toBe(0);
+    expect(p.diagnose().limits).toMatchObject({ diskGiB: 2000, diskFrom: "usage reply" });
+    mock.usage.rows = [row({ currentDiskUsage: 1997 })]; // 1997 + 3 = 2000: fits exactly
+    const h = await creating;
+    expect(posts()).toBe(1);
+    await p.destroy(h.id);
+  });
+
+  test("the sandbox's own disk and memory count, and the give-up message names the resource", async () => {
+    primed();
+    mock.usage.rows = [row({ currentDiskUsage: 1990 })];
+    const p = make({ capacityWaitMs: 60 });
+    const err = (await p
+      .create(spec({ resources: { diskGb: 20 } }))
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(InfraError);
+    expect(err.message).toContain("1990 of 2000 GiB disk in use");
+    expect(err.message).toContain("needs 20");
+    mock.usage.rows = [row({ currentMemoryUsage: 399 })];
+    const mem = (await make({ capacityWaitMs: 60 })
+      .create(spec({ resources: { memoryMb: 4096 } }))
+      .catch((e: unknown) => e)) as Error;
+    expect(mem.message).toContain("399 of 400 GiB memory in use");
+    expect(posts()).toBe(0);
+  });
+
+  test("configured limits win over the reply's, and with neither a resource is not checked", async () => {
+    primed();
+    mock.usage.rows = [row({ currentDiskUsage: 1500 })];
+    const tight = make({ ownerCiPreflight: { diskLimitGiB: 1500 }, capacityWaitMs: 50 });
+    await expect(tight.create(spec())).rejects.toThrow(/1500 of 1500 GiB disk/);
+    expect(tight.diagnose().limits).toMatchObject({ diskGiB: 1500, diskFrom: "config" });
+    // A reply with no quota fields and no configured limit: disk is not judged at all.
+    mock.usage.rows = [
+      { regionId: "us", sandboxClass: "container", currentCpuUsage: 1, currentDiskUsage: 99999 },
+    ];
+    const open = make();
+    await open.destroy((await open.create(spec())).id);
+    expect(open.diagnose().limits).toMatchObject({ diskGiB: null, diskFrom: "none" });
+  });
+
+  test("diagnose reports the limits before any read, from the config", () => {
+    const p = make({ ownerCiPreflight: { cpuLimit: 150, diskLimitGiB: 1800, memLimitGiB: 300 } });
+    expect(p.diagnose().limits).toEqual({
+      cpu: 150,
+      diskGiB: 1800,
+      memGiB: 300,
+      diskFrom: "config",
+      memFrom: "config",
+    });
+    expect(make().diagnose().limits).toMatchObject({ cpu: 200, diskGiB: null, memGiB: null });
+  });
+
+  test("a quota 400 on create waits and retries, logging once, then succeeds", async () => {
+    primed();
+    mock.failNext.createReply = {
+      status: 400,
+      message: "Total disk limit exceeded. Maximum allowed: 2000GiB",
+      times: 3,
+    };
+    const logs: string[] = [];
+    const p = make({ capacityWaitMs: 30_000, log: (m) => logs.push(m) });
+    const h = await p.create(spec());
+    expect(posts()).toBe(4); // three refused, then the one that worked
+    expect(logs.filter((m) => m.includes("Total disk limit exceeded"))).toHaveLength(1);
+    await p.destroy(h.id);
+  });
+
+  test("a quota 400 that never clears gives up as an infra fault after the wait", async () => {
+    primed();
+    mock.failNext.createReply = { status: 400, message: "Total CPU limit exceeded", times: 9999 };
+    const p = make({ capacityWaitMs: 60 });
+    const err = (await p.create(spec()).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(InfraError);
+    expect(err.message).toContain("Total CPU limit exceeded");
+    expect(p.diagnose().counting.tracked).toBe(0);
+  });
+
+  test("any other 400 still fails at once, as a spec error, with no retry", async () => {
+    primed();
+    mock.failNext.createReply = { status: 400, message: "snapshot name is invalid", times: 5 };
+    const p = make({ capacityWaitMs: 30_000 });
+    const err = await p.create(spec()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SpecError);
+    expect(posts()).toBe(1);
+  });
+});
+
 describe("the own-fleet count comes from recorded ids, not from listings", () => {
   const broken = async () => {
     await mock.stop();

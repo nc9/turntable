@@ -174,6 +174,13 @@ export interface OwnerCiPreflight {
   region?: string;
   /** Default `container`. */
   sandboxClass?: string;
+  /**
+   * Wait while disk in use plus this sandbox's disk is above this, in GiB. Default: the quota the
+   * usage reply reports for the region and class; with neither, disk is not checked.
+   */
+  diskLimitGiB?: number;
+  /** The same for memory, in GiB. */
+  memLimitGiB?: number;
 }
 
 export const DEFAULT_ORG_CPU_LIMIT = 200;
@@ -185,6 +192,54 @@ export interface RegionUsageRow {
   regionId?: string;
   sandboxClass?: string;
   currentCpuUsage?: number;
+  currentMemoryUsage?: number;
+  currentDiskUsage?: number;
+  totalCpuQuota?: number;
+  totalMemoryQuota?: number;
+  totalDiskQuota?: number;
+}
+
+/** What a sandbox takes when its spec does not say: Daytona's default size (1 vCPU, 1 GiB, 3 GiB). */
+export const DEFAULT_SANDBOX_MEM_GIB = 1;
+export const DEFAULT_SANDBOX_DISK_GIB = 3;
+
+export interface OrgUsage {
+  cpu: number | undefined;
+  /** In GiB. */
+  mem: number | undefined;
+  disk: number | undefined;
+  /** The quotas the reply itself reports, when it does. */
+  quota: { cpu?: number; mem?: number; disk?: number };
+}
+
+const num = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+
+/**
+ * Every reading the usage reply has for the region and class. No row means nothing is running
+ * there (0 of each). A field without a number is not a reading: undefined, so it is skipped (cpu
+ * stays an error for the caller, as before) rather than taken for room.
+ */
+export function orgUsage(
+  rows: readonly RegionUsageRow[] | undefined,
+  region: string,
+  sandboxClass: string,
+): OrgUsage {
+  const row = rows?.find((r) => r.regionId === region && r.sandboxClass === sandboxClass);
+  if (row === undefined) return { cpu: 0, mem: 0, disk: 0, quota: {} };
+  const q = {
+    ...(num(row.totalCpuQuota) !== undefined ? { cpu: num(row.totalCpuQuota) as number } : {}),
+    ...(num(row.totalMemoryQuota) !== undefined
+      ? { mem: num(row.totalMemoryQuota) as number }
+      : {}),
+    ...(num(row.totalDiskQuota) !== undefined ? { disk: num(row.totalDiskQuota) as number } : {}),
+  };
+  return {
+    cpu: num(row.currentCpuUsage),
+    mem: num(row.currentMemoryUsage),
+    disk: num(row.currentDiskUsage),
+    quota: q,
+  };
 }
 
 /**
