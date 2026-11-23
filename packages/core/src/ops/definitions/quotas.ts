@@ -28,6 +28,11 @@ export const quotaViewSchema = z.object({
       limit: z.int().nullable(),
       percent: z.int().nullable().describe("Percent of the limit, rounded down; null with none."),
       held: z.string().nullable().describe("Why new work is held because of this limit."),
+      estimated: z
+        .boolean()
+        .describe(
+          "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count.",
+        ),
     }),
   ),
 });
