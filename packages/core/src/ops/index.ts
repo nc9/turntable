@@ -18,7 +18,12 @@ import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
-import { instanceListOrgs, instanceWhoami, setQuotas } from "./definitions/instance";
+import {
+  instanceListOrgs,
+  instanceWhoami,
+  rotateInstanceTokenOp,
+  setQuotas,
+} from "./definitions/instance";
 import { getQuotas } from "./definitions/quotas";
 import {
   createProjectOp,
@@ -105,6 +110,7 @@ export const registry = createRegistry([
   checkArtifactConsumption,
   getQuotas,
   instanceWhoami,
+  rotateInstanceTokenOp,
   instanceListOrgs,
   setQuotas,
   dbBackupOp,

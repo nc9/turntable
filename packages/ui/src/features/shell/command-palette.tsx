@@ -147,6 +147,15 @@ export function CommandPalette({
                   <ChartColumn />
                   Usage
                 </CommandItem>
+                <CommandItem
+                  value="org settings"
+                  onSelect={go(
+                    () => void navigate({ to: "/$org/-/settings", params: { org: orgSlug } }),
+                  )}
+                >
+                  <Settings />
+                  Org settings
+                </CommandItem>
                 {projectSlug ? (
                   <CommandItem
                     value="settings"

@@ -149,6 +149,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         >
           Usage
         </NavLink>
+        <NavLink
+          to="/$org/-/settings"
+          params={{ org: orgSlug }}
+          icon={<Settings />}
+          active={path === `${base}/-/settings`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Org settings
+        </NavLink>
       </div>
       <div className="flex flex-col gap-0.5">
         <p className="px-2 pb-1 text-xs text-faint">Projects</p>

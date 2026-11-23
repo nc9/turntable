@@ -8457,6 +8457,88 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/tokens/rotate": {
+      "post": {
+        "operationId": "rotate_instance_token",
+        "summary": "Replace the instance administrator token in use with a new one (instance administrator only).",
+        "description": "Mints a new instance token with the same name (or the one given) and revokes the token that made this call, in one step. The new secret is returned once; only its hash is stored, so it cannot be shown again. Use it once after a first boot with TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256, then remove that variable. The audit entry names the two token ids and never a secret or a hash. Only the instance administrator can call it. Not an MCP tool: instance tokens are not MCP credentials.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Label of the new token.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "expires_days": {
+                    "description": "Lifetime in days. Default 30.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 90
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "The new token. Shown once."
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    },
+                    "revoked_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "secret", "expires_at", "revoked_id"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/orgs": {
       "get": {
         "operationId": "instance_list_orgs",
