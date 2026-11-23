@@ -29,6 +29,7 @@ const PLACEHOLDER_HTML = `<!doctype html>
   <body>
     <h1>Longshore</h1>
     <p>Pre-alpha. The web UI is not built yet.</p>
+    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>LONGSHORE_UI_DIR</code> to a built bundle).</p>
   </body>
 </html>
 `;

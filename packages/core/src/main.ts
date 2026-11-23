@@ -53,6 +53,7 @@ import { mainRuntime, resolveRoles } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
+import { enableDevUi, hasUi } from "./ui-assets";
 import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
 
@@ -625,6 +626,15 @@ async function serve(args: string[]): Promise<void> {
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
   );
+  // Running from source with a built UI bundle on disk: serve it (never in the compiled binary).
+  if (roles.has("web")) {
+    const dev = enableDevUi();
+    if (dev) console.log(`serving the web UI from ${dev.dir} (dev mode, ${dev.source})`);
+    else if (process.env.LONGSHORE_UI_DIR?.trim() && !hasUi())
+      console.warn(
+        "LONGSHORE_UI_DIR is not used: it needs a run from source (the compiled binary serves only its embedded UI) and a directory with an index.html",
+      );
+  }
   const server = roles.has("web")
     ? startServer({
         port,
