@@ -9,23 +9,22 @@ export interface CapOptions {
   slack?: number;
 }
 
-export function cutMarker(omittedBytes: number): Uint8Array {
-  return new TextEncoder().encode(`\n[longshore: ${omittedBytes} bytes of output omitted]\n`);
-}
-
 /**
- * Re-caps accumulated output to head + marker + tail. Output at or under head + tail + slack is
- * returned unchanged. Use in the core reader, which may have read more than the sandbox kept.
+ * Re-caps accumulated output to head + tail with the dropped region reported as data. Output at
+ * or under head + tail + slack is returned unchanged. `cut.atOffset` is where, in the returned
+ * bytes, the omitted region belongs. Use in the core reader, which may have read more than the
+ * sandbox kept.
  */
-export function capOutput(bytes: Uint8Array, opts: CapOptions = {}): Uint8Array {
+export function capOutput(
+  bytes: Uint8Array,
+  opts: CapOptions = {},
+): { bytes: Uint8Array; cut?: { atOffset: number; omittedBytes: number } } {
   const head = opts.head ?? OUTPUT_HEAD_BYTES;
   const tail = opts.tail ?? OUTPUT_TAIL_BYTES;
   const slack = opts.slack ?? OUTPUT_SLACK_BYTES;
-  if (bytes.length <= head + tail + slack) return bytes;
-  const marker = cutMarker(bytes.length - head - tail);
-  const out = new Uint8Array(head + marker.length + tail);
+  if (bytes.length <= head + tail + slack) return { bytes };
+  const out = new Uint8Array(head + tail);
   out.set(bytes.subarray(0, head), 0);
-  out.set(marker, head);
-  out.set(bytes.subarray(bytes.length - tail), head + marker.length);
-  return out;
+  out.set(bytes.subarray(bytes.length - tail), head);
+  return { bytes: out, cut: { atOffset: head, omittedBytes: bytes.length - head - tail } };
 }
