@@ -628,6 +628,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "queueCommit",
     "rateLimit",
     "repoDefaultBranch",
+    "setToken",
     "tagRefs",
     "tagRulesets",
   ]);
@@ -787,7 +788,12 @@ test("ingest_status reports the caller's org repos and the budget over the ops r
     "ingest_status",
     {},
   );
-  expect(none.ok && none.output).toEqual({ running: false, rate_limit: null, repos: [] });
+  expect(none.ok && none.output).toEqual({
+    running: false,
+    rate_limit: null,
+    rate_limit_by_mode: { anonymous: null, poll_token: null, installation: null },
+    repos: [],
+  });
   void o;
 });
 
