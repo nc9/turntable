@@ -160,7 +160,7 @@ describe("no false positives on common log lines", () => {
     "id 3f2504e0-4f89-11d3-9a0c-0305e82c3301 started",
     "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
     "Using Bearer authentication for the API",
-    `https${SPLIT}://github.com/nc9/turntable/actions/runs/123`,
+    `https${SPLIT}://github.com/turntable-ci/turntable/actions/runs/123`,
     `https${SPLIT}://user@example.com/path and ssh://git@host:22/repo`,
     `AK${SPLIT}IA is a prefix, AK${SPLIT}IAshort`,
     `gh${SPLIT}p_tooshort`,

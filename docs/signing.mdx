@@ -45,7 +45,7 @@ A project's signing key is `<backend>:<reference>`:
 | `aws-kms` | A key id, ARN or alias | An `ECC_NIST_EDWARDS25519` key; `Sign` with `ED25519_SHA_512`, request signed with SigV4 under temporary credentials. |
 | `gcp-kms` | A full key version name | An `EC_SIGN_ED25519` key version; `asymmetricSign` with a short-lived OAuth token. |
 
-KMS requests go through the same guarded outbound client as everything else the control plane fetches. Exchanging the org's OIDC token for those temporary credentials is the issuer's job ([#43](https://github.com/nc9/turntable/issues/43)); the backends take a function that returns them.
+KMS requests go through the same guarded outbound client as everything else the control plane fetches. Exchanging the org's OIDC token for those temporary credentials is the issuer's job ([#43](https://github.com/turntable-ci/turntable/issues/43)); the backends take a function that returns them.
 
 ## Configuration
 

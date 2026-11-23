@@ -26,9 +26,9 @@ Rollback: stop, restore the backup, and start the previous version. Migrations a
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify turntable-linux-x64 --repo nc9/turntable
+gh attestation verify turntable-linux-x64 --repo turntable-ci/turntable
 ```
 
-The darwin binary is ad-hoc signed, not notarized. See the [release docs](https://github.com/nc9/turntable/blob/main/docs/releases.mdx) for the image digest, SBOMs and Gatekeeper notes.
+The darwin binary is ad-hoc signed, not notarized. See the [release docs](https://github.com/turntable-ci/turntable/blob/main/docs/releases.mdx) for the image digest, SBOMs and Gatekeeper notes.
 
 {{compare}}

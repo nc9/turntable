@@ -201,7 +201,7 @@ describe("release notes", () => {
       from: "v0.1.0-alpha.1",
       commits,
       migrations: ["0010_new.sql", "0011_more.sql"],
-      repo: "nc9/turntable",
+      repo: "turntable-ci/turntable",
     });
     expect(out).toContain("0.1.0-alpha.2|");
     expect(out).toContain("- **api:** drop v0 routes (2222222)\n  v0 routes are gone");

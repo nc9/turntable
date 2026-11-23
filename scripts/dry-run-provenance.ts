@@ -2,7 +2,7 @@
 // publishing anything and without GitHub's attestation (which writes to a public log).
 //
 //   bun run scripts/dry-run-provenance.ts --dist dist --version v0.1.0-alpha.1 \
-//     --repo nc9/turntable --sha <commit> --ref refs/tags/v0.1.0-alpha.1 --out dist-dry
+//     --repo turntable-ci/turntable --sha <commit> --ref refs/tags/v0.1.0-alpha.1 --out dist-dry
 //
 // It builds an SLSA v1 statement for every binary in SHA256SUMS, signs it with a key made for this
 // run and thrown away, then verifies every binary against it with the same code `turntable verify`

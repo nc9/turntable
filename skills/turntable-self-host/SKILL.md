@@ -16,12 +16,12 @@ The docs are the source of truth. This skill is the order of the steps and the p
 
 ## 1. Run it
 
-Pick one, see [Quickstart](https://github.com/nc9/turntable/blob/main/docs/quickstart.mdx):
+Pick one, see [Quickstart](https://github.com/turntable-ci/turntable/blob/main/docs/quickstart.mdx):
 
 - **Binary:** `turntable serve --port 8080 --data-dir ./data`. It works from an empty directory. It listens on `127.0.0.1` unless you pass `--host` or set `TURNTABLE_HOST`.
-- **Docker:** `docker run -p 8080:8080 -v turntable-data:/data ghcr.io/nc9/turntable`. The image is distroless, starts as root only to own `/data`, then drops to `65532`. Do not set `TURNTABLE_ALLOW_ROOT`.
+- **Docker:** `docker run -p 8080:8080 -v turntable-data:/data ghcr.io/turntable-ci/turntable`. The image is distroless, starts as root only to own `/data`, then drops to `65532`. Do not set `TURNTABLE_ALLOW_ROOT`.
 
-Check it with `curl <url>/healthz`. Run `turntable doctor` for a read-only readiness check before going live, see [Doctor](https://github.com/nc9/turntable/blob/main/docs/doctor.mdx).
+Check it with `curl <url>/healthz`. Run `turntable doctor` for a read-only readiness check before going live, see [Doctor](https://github.com/turntable-ci/turntable/blob/main/docs/doctor.mdx).
 
 ## 2. Data directory and master key
 
@@ -33,7 +33,7 @@ Check it with `curl <url>/healthz`. Run `turntable doctor` for a read-only readi
 
 - Set `TURNTABLE_PUBLIC_URL` to the https address people use. Check links, WebAuthn and the GitHub App use it.
 - Behind a TLS proxy, set `TURNTABLE_TRUST_FORWARDED_PROTO=1`.
-- Set `TURNTABLE_TRUSTED_PROXIES` only to the address ranges your platform documents for its edge. An entry that is too wide lets a caller spoof its address. Leave it unset if you do not know them. See [Hosted deployment](https://github.com/nc9/turntable/blob/main/docs/hosted.mdx).
+- Set `TURNTABLE_TRUSTED_PROXIES` only to the address ranges your platform documents for its edge. An entry that is too wide lets a caller spoof its address. Leave it unset if you do not know them. See [Hosted deployment](https://github.com/turntable-ci/turntable/blob/main/docs/hosted.mdx).
 
 ## 4. Bootstrap tokens (hashes only)
 
@@ -49,20 +49,20 @@ The human keeps the token and gives you only the sha256. Set it on the server:
 - `TURNTABLE_BOOTSTRAP_TOKEN_SHA256` creates one operator token in an org that has none (org `TURNTABLE_BOOTSTRAP_ORG`, default `local`).
 - `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256` registers an instance token if none is active. It expires in 30 days at most.
 
-**Rotate, then remove the variable.** The human calls `POST /api/v1/instance/tokens/rotate` once with the bootstrap token (operation `rotate_instance_token`, also `turntable token rotate <id> --instance`) and keeps the new secret. Then remove the hash variable from the server. See [Instance administrator](https://github.com/nc9/turntable/blob/main/docs/instance-admin.mdx#bootstrapping-with-no-shell).
+**Rotate, then remove the variable.** The human calls `POST /api/v1/instance/tokens/rotate` once with the bootstrap token (operation `rotate_instance_token`, also `turntable token rotate <id> --instance`) and keeps the new secret. Then remove the hash variable from the server. See [Instance administrator](https://github.com/turntable-ci/turntable/blob/main/docs/instance-admin.mdx#bootstrapping-with-no-shell).
 
 With a shell on the host, `turntable token create --org <slug> --role operator --name <name>` mints org tokens directly, and the human reads the secret from stdout into a file.
 
 ## 5. First org, project, provider and caps
 
-- The default org is `local`. Add a project to a running instance with `create_project` (instance token, REST only), see [Hosted deployment](https://github.com/nc9/turntable/blob/main/docs/hosted.mdx#adding-a-second-repo-to-a-running-instance).
-- Choose a provider with `TURNTABLE_PROVIDER` (`docker` or `daytona`) and run jobs with `TURNTABLE_WORKER=1`, see [Providers](https://github.com/nc9/turntable/blob/main/docs/providers.mdx). A provider config never holds a key: it names the environment variable that does.
+- The default org is `local`. Add a project to a running instance with `create_project` (instance token, REST only), see [Hosted deployment](https://github.com/turntable-ci/turntable/blob/main/docs/hosted.mdx#adding-a-second-repo-to-a-running-instance).
+- Choose a provider with `TURNTABLE_PROVIDER` (`docker` or `daytona`) and run jobs with `TURNTABLE_WORKER=1`, see [Providers](https://github.com/turntable-ci/turntable/blob/main/docs/providers.mdx). A provider config never holds a key: it names the environment variable that does.
 - Cap load with `TURNTABLE_GLOBAL_CAP` and `TURNTABLE_ORG_CAP`.
 - A shared multi-tenant instance sets `TURNTABLE_HOSTED=1`, which refuses container providers.
 
 ## 6. Settings
 
-Precedence is environment, then `turntable.toml` (`TURNTABLE_CONFIG`), then the database, then the default. Environment and TOML values lock a setting: the set operations refuse it. See [Configuration](https://github.com/nc9/turntable/blob/main/docs/configuration.mdx#settings-registry).
+Precedence is environment, then `turntable.toml` (`TURNTABLE_CONFIG`), then the database, then the default. Environment and TOML values lock a setting: the set operations refuse it. See [Configuration](https://github.com/turntable-ci/turntable/blob/main/docs/configuration.mdx#settings-registry).
 
 ## 7. Backups, upgrades and rollback
 
@@ -73,4 +73,4 @@ Precedence is environment, then `turntable.toml` (`TURNTABLE_CONFIG`), then the 
 
 ## Railway
 
-No shell, one volume per service. Follow [Deploy on Railway](https://github.com/nc9/turntable/blob/main/docs/deploy/railway.mdx): mount `/data`, use `TURNTABLE_MASTER_KEY_AUTOINIT=1`, set `TURNTABLE_TRUST_FORWARDED_PROTO=1`, health check `/healthz`, and do not set `RAILWAY_RUN_UID`. Set variables with `--skip-deploys` and redeploy once. The GitHub App comes next: use the `turntable-github-app` skill.
+No shell, one volume per service. Follow [Deploy on Railway](https://github.com/turntable-ci/turntable/blob/main/docs/deploy/railway.mdx): mount `/data`, use `TURNTABLE_MASTER_KEY_AUTOINIT=1`, set `TURNTABLE_TRUST_FORWARDED_PROTO=1`, health check `/healthz`, and do not set `RAILWAY_RUN_UID`. Set variables with `--skip-deploys` and redeploy once. The GitHub App comes next: use the `turntable-github-app` skill.

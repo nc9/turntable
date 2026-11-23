@@ -29,7 +29,7 @@ Point the health check at `/healthz`. The service has no public admin shell, so 
 
 | | Main service | Release service |
 | --- | --- | --- |
-| Image | `ghcr.io/nc9/turntable` | the same image |
+| Image | `ghcr.io/turntable-ci/turntable` | the same image |
 | Start command | `serve` (the image default), with `TURNTABLE_WORKER=1` to run jobs in it | `serve --roles release` |
 | Public networking | Yes: one domain | **No.** It listens on nothing and needs no domain |
 | Volume | Mounted at `/data` | Its own volume, for its keys and attestations |
