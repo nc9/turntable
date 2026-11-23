@@ -29,19 +29,12 @@ RUN case "${TARGETARCH}" in \
     && mv "dist/longshore-${target#bun-}" /longshore \
     && mkdir /data
 
-# debian 12 slim (multi-arch index digest) with git and tar. The control plane runs `git` to fetch a
-# run's commit and `tar` to pack it (scheduler/act-runner.ts, run/repo-archive.ts), so a shell-less
-# distroless image cannot run jobs: copying git and its ~30 shared libraries (curl with gnutls, krb5,
-# ldap and the rest, plus the certificate store) out of a build stage is more fragile than this
-# base. The compiled binary is a dynamically linked glibc executable; this image ships glibc,
-# libgcc and libstdc++. Packages come from Debian's repositories over the signed apt index; the
-# base image is pinned by digest. `scripts/smoke-image.sh` runs git over https as uid 65532.
-FROM debian:12-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 65532 nonroot \
-    && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin nonroot
+# distroless cc-debian12 nonroot (multi-arch index digest). The compiled binary is a
+# dynamically linked glibc executable; this image ships glibc, libgcc and libstdc++, and no shell.
+# The control plane runs no other program: a run's commit is fetched and packed in process (git's
+# smart-HTTP protocol and a tar writer inside the binary), so the image needs no git and no tar.
+# `scripts/smoke-image.sh` proves it with a real checkout (`longshore fetch-source`).
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 COPY --from=build --chmod=0755 /longshore /longshore
 COPY --from=build --chown=nonroot:nonroot /data /data
 ENV LONGSHORE_HOST=0.0.0.0
