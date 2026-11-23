@@ -23,6 +23,7 @@ import {
   instanceWhoami,
   rotateInstanceTokenOp,
   setQuotas,
+  bootstrapApprover,
 } from "./definitions/instance";
 import { getQuotas } from "./definitions/quotas";
 import {
@@ -114,6 +115,7 @@ export const registry = createRegistry([
   rotateInstanceTokenOp,
   instanceListOrgs,
   setQuotas,
+  bootstrapApprover,
   dbBackupOp,
   acceptActionMoveOp,
   setSecretOp,

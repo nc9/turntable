@@ -19,6 +19,7 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | `instance_whoami` | `GET /api/v1/instance/whoami` | Checks the token: its id, label and expiry. |
 | `instance_list_orgs` | `GET /api/v1/instance/orgs` | Lists the orgs' slugs and names (not the internal system org). |
 | `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
+| `bootstrap_approver` | `POST /api/v1/instance/approvers/bootstrap` | Enrols an org's first approver from an offline ed25519 public key, only while the org has none. Audited in both chains with the key's fingerprint. See [Hosted](/hosted#the-first-approver-on-a-host-with-no-shell). |
 | `set_project_settings` | `POST /api/v1/instance/project-settings` | Sets one project's `sandbox_snapshot` and `max_concurrent` (`target_org`, `target_project`; null removes one). See [Providers](/providers#per-project-snapshot-and-concurrency-cap). |
 | `create_project` | `POST /api/v1/instance/projects` | Creates an empty project in an existing org (`target_org`, `slug`, `name`); a slug already used there is a conflict. See [Hosted](/hosted#adding-a-second-repo-to-a-running-instance). |
 | `rotate_instance_token` | `POST /api/v1/instance/tokens/rotate` | Mints a new instance token (the secret is in the response once) and revokes the one that made the call. Also `turntable token rotate <id> --instance`. See [Bootstrapping with no shell](#bootstrapping-with-no-shell). |

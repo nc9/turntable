@@ -27,6 +27,7 @@ import {
   getEnvPolicy,
   getOrgById,
   getProject,
+  insertApprover,
   getRun,
   insertRecord,
   listEnrolmentRecords,
@@ -49,6 +50,7 @@ import {
   type EnvStatement,
   type PolicyStatement,
 } from "./statement";
+import { parseEd25519PublicKey } from "./keys";
 import { dbKeyStore } from "./store";
 import { verifySignature, VerifyError, type SignatureMaterial, type Verified } from "./verify";
 import type { RelyingParty } from "./webauthn";
@@ -435,6 +437,45 @@ export async function approvalWarnings(
       `Approvals need ${max} distinct people but only ${people} ${people === 1 ? "is" : "are"} enrolled. Until ${max} people are enrolled, a sole approver can enrol more keys alone, so the two-person rule is not yet a guarantee.`,
     );
   return out;
+}
+
+/**
+ * Enrols the FIRST approver of an org from an offline ed25519 public key (#341). The one
+ * implementation behind `turntable approvals bootstrap` (the host's CLI) and the instance
+ * administrator's `bootstrap_approver` op. Refused with an ApprovalConflict once the org has any
+ * active approver: it never adds to an existing set. Callers that need the check and the insert
+ * to be atomic run it in a transaction. A key that does not parse throws, and nothing is written.
+ */
+export async function bootstrapFirstApprover(
+  db: Db,
+  orgId: string,
+  a: { person: string; forgeLogin: string; publicKey: string; createdBy: string },
+  now: number,
+): Promise<{ id: string; person: string; fingerprint: string }> {
+  if ((await listApprovers(db, orgId)).length > 0) {
+    throw new ApprovalConflict(
+      "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
+    );
+  }
+  const publicKey = parseEd25519PublicKey(a.publicKey);
+  const row = await insertApprover(
+    db,
+    orgId,
+    {
+      person: a.person,
+      forgeLogin: a.forgeLogin,
+      kind: "ed25519",
+      publicKey,
+      alg: "EdDSA",
+      createdBy: a.createdBy,
+    },
+    now,
+  );
+  return {
+    id: row.id,
+    person: row.person,
+    fingerprint: keyFingerprint({ kind: "ed25519", credentialId: null, publicKey }),
+  };
 }
 
 // ---- key policy changes (#152) ----

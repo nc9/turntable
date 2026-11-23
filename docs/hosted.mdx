@@ -49,6 +49,18 @@ GITHUB_POLL_TOKEN=...
 
 To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is active, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
 
+## The first approver on a host with no shell
+
+`turntable approvals bootstrap` needs a shell on the server, which a hosted instance does not have. Instead, the instance administrator calls `POST /api/v1/instance/approvers/bootstrap` (the `bootstrap_approver` op) with a `tti_` token, once per org. Generate the key pair on the approver's own machine with `turntable approvals keygen --out alice.key`, which prints the public key, and send only that:
+
+```bash
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/approvers/bootstrap" \
+  -H "Authorization: Bearer $TURNTABLE_INSTANCE_TOKEN" -H "content-type: application/json" \
+  -d '{"target_org":"acme","person":"Alice","forge_login":"alice-gh","public_key":"<alice.pub text>"}'
+```
+
+It works only while the org has no active approver, and it never adds to an existing set. Enrol a passkey next as a second key, signed by the bootstrap key as usual. The op is REST only: an org token of any role is refused, and instance tokens are not MCP credentials. See [Human approvals](/security#human-approvals).
+
 ## Webhooks wake the poller
 
 A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.

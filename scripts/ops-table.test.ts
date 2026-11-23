@@ -45,6 +45,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: it writes a copy of the whole database, never an agent's act",
   rotate_instance_token:
     "instance administrator ops are REST only: instance tokens are never MCP credentials, and minting one must not land in an agent's context",
+  bootstrap_approver:
+    "instance administrator ops are REST only, and enrolling an org's first approver is a human act: the trust root, never an agent's",
   instance_get_setting:
     "instance administrator ops are REST only: instance settings (and where a locked one is set) are the operator's",
   instance_list_settings:

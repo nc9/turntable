@@ -3,7 +3,9 @@
 // org token of any role can, whatever its grant, and none of these is an MCP tool. Their audit
 // entries go to the system org's chain.
 import { z } from "zod";
+import { approvalWarnings, bootstrapFirstApprover } from "../../approvals/apply";
 import {
+  ApprovalConflict,
   appendAudit,
   getInstanceToken,
   getOrgBySlug,
@@ -186,5 +188,98 @@ export const rotateInstanceTokenOp = defineOp({
       if (err instanceof Error) throw new OpError("invalid_input", err.message);
       throw err;
     }
+  },
+});
+
+export const bootstrapApprover = defineOp({
+  name: "bootstrap_approver",
+  summary:
+    "Enrol an org's first approver from an offline ed25519 public key (instance administrator only).",
+  description:
+    "The hosted counterpart of `turntable approvals bootstrap`, for an instance with no shell. " +
+    "Takes the target org, the person's name and forge login, and an ed25519 public key generated " +
+    "offline (`turntable approvals keygen`); the private key never reaches the server. Works only " +
+    "while the org has no active approver and never adds to an existing set: after that, new keys " +
+    "need a quorum of existing approvers (request_enrolment and approve_enrolment), and the " +
+    "bootstrap key signs the passkey's enrolment as usual. Returns the approver id and the key's " +
+    "fingerprint. The change is audited in the system org's chain and in the target org's own, " +
+    "with the fingerprint and never the key. Only the instance administrator can call it: an " +
+    "org's own tokens, of any role, never can. Not an MCP tool.",
+  input: z.object({
+    target_org: z.string().min(1).max(64).describe("Slug of the org that gets its first approver."),
+    person: z.string().trim().min(1).max(200).describe("A name for the human who holds the key."),
+    forge_login: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .describe("Their forge login, which an approval is checked against the run's author with."),
+    public_key: z
+      .string()
+      .min(1)
+      .max(4096)
+      .describe("The ed25519 public key (SPKI PEM or base64)."),
+  }),
+  output: z.object({
+    approver_id: z.string(),
+    person: z.string(),
+    key_fingerprint: z.string(),
+    warnings: z.array(z.string()),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/approvers/bootstrap" },
+  mcp: false,
+  // Only the public key's fingerprint is audited, never the key text itself.
+  auditOmitFields: ["public_key"],
+  auditDetail: (o) => ({ approver_id: o.approver_id, key_fingerprint: o.key_fingerprint }),
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    let made: { id: string; person: string; fingerprint: string };
+    try {
+      made = await bootstrapFirstApprover(
+        ctx.db,
+        org.id,
+        {
+          person: i.person,
+          forgeLogin: i.forge_login,
+          publicKey: i.public_key,
+          createdBy: `instance:${ctx.principal.id}`,
+        },
+        ctx.now(),
+      );
+    } catch (e) {
+      if (e instanceof ApprovalConflict) throw new OpError("conflict", e.message);
+      if (e instanceof OpError) throw e;
+      throw new OpError("invalid_input", "public_key is not a valid ed25519 public key");
+    }
+    // The org's own chain says it too: its operators should see how their first approver came.
+    await appendAudit(
+      ctx.db,
+      { orgId: org.id },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "bootstrap_approver",
+        effect: "write",
+        outcome: "ok",
+        input: {
+          target_org: org.slug,
+          person: made.person,
+          forge_login: i.forge_login,
+          approver_id: made.id,
+          key_fingerprint: made.fingerprint,
+        },
+      },
+    );
+    return {
+      approver_id: made.id,
+      person: made.person,
+      key_fingerprint: made.fingerprint,
+      warnings: await approvalWarnings(ctx.db, org.id, ["production", "release"]),
+    };
   },
 });

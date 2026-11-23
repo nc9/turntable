@@ -6,18 +6,18 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
 import {
+  ApprovalConflict,
   getOrgBySlug,
-  insertApprover,
   getKeyPolicy,
   listApprovers,
   listEnvPolicies,
   revokeApprover,
   setEnvPolicy,
 } from "../db/repos";
-import { approvalWarnings, setKeyPolicyBootstrap } from "./apply";
+import { approvalWarnings, bootstrapFirstApprover, setKeyPolicyBootstrap } from "./apply";
 import { notCountingReason } from "./identity";
 import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
-import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "./keys";
+import { generateEd25519, signEd25519 } from "./keys";
 
 export const APPROVALS_USAGE = `Usage:
   turntable approvals keygen --out <private-key-file>
@@ -127,25 +127,24 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     const now = Date.now();
     if (sub === "bootstrap") {
       if (!values.person || !values["public-key"] || !values["forge-login"]) return usage();
-      if ((await listApprovers(db, org.id)).length > 0) {
-        console.error(
-          "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
+      let a: { id: string; person: string };
+      try {
+        a = await bootstrapFirstApprover(
+          db,
+          org.id,
+          {
+            person: values.person,
+            forgeLogin: values["forge-login"],
+            publicKey: read(values["public-key"]),
+            createdBy: "cli:bootstrap",
+          },
+          now,
         );
+      } catch (e) {
+        if (!(e instanceof ApprovalConflict)) throw e;
+        console.error(e.message);
         return 1;
       }
-      const a = await insertApprover(
-        db,
-        org.id,
-        {
-          person: values.person,
-          forgeLogin: values["forge-login"],
-          kind: "ed25519",
-          publicKey: parseEd25519PublicKey(read(values["public-key"])),
-          alg: "EdDSA",
-          createdBy: "cli:bootstrap",
-        },
-        now,
-      );
       for (const w of await approvalWarnings(db, org.id, ["production", "release"]))
         console.error(`warning: ${w}`);
       console.log(JSON.stringify({ approver_id: a.id, person: a.person }));
