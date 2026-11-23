@@ -27,6 +27,7 @@ import type {
   WireProjects,
   WireRerun,
   WireRun,
+  WireSetting,
   WireSteps,
   WireStep,
   WireTrust,
@@ -425,6 +426,35 @@ test("quotas: get and set return the shape the adapter reads", () => {
     ]);
     expectKeys(out.properties!.usage!.items!, ["metric", "used", "limit", "percent", "held"]);
   }
+});
+
+test("list_settings and set_setting: the setting fields and the request body", () => {
+  const list = op("/settings", "get");
+  expect(list.operationId).toBe("list_settings");
+  const names = (list.parameters ?? []).map((p) => p.name);
+  for (const n of ["org", "project", "limit", "cursor"]) expect(names).toContain(n);
+  expect((list.parameters ?? []).find((p) => p.name === "limit")?.schema.maximum).toBe(100);
+  const body = ok(list);
+  expectKeys(body, ["settings", "next_cursor"]);
+  const fields = keysOf<WireSetting>({
+    key: true,
+    scope: true,
+    description: true,
+    value: true,
+    default: true,
+    source: true,
+    locked: true,
+    locked_by: true,
+    role: true,
+    mcp_editable: true,
+  });
+  expectKeys(body.properties!.settings!.items!, fields);
+  const set = op("/settings", "post");
+  expect(set.operationId).toBe("set_setting");
+  const req = set.requestBody!.content["application/json"].schema;
+  for (const k of ["key", "value", "unset", "org", "project"])
+    expect(Object.keys(req.properties ?? {})).toContain(k);
+  expectKeys(ok(set), fields);
 });
 
 test("human approvals: status, approvers, challenges, enrolment and the signature routes", () => {
