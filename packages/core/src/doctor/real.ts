@@ -304,6 +304,10 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
         }
       },
       releaseKey: releaseKeyLocation(o.env),
+      auditStateDir:
+        o.masterKeys || keyFile || envKey
+          ? auditStateDir(o.masterKeys ?? (keyFile ? { file: keyFile } : undefined), dir, o.env)
+          : undefined,
       unreadableAnchors: () => {
         try {
           const key =
@@ -314,11 +318,11 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
                 ? loadMasterKey(keyFile)
                 : undefined);
           if (!key) return [];
-          const anchorDir = o.masterKeys
-            ? auditStateDir(o.masterKeys, dir)
-            : keyFile
-              ? AuditAnchor.dirFor(keyFile)
-              : join(dir, "audit-state");
+          const anchorDir = auditStateDir(
+            o.masterKeys ?? (keyFile ? { file: keyFile } : undefined),
+            dir,
+            o.env,
+          );
           return new AuditAnchor(anchorDir, key).unreadable();
         } catch {
           return [];

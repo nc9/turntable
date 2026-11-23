@@ -173,6 +173,23 @@ export function checkAuditAnchors(i: DoctorInputs): DoctorCheck {
   );
 }
 
+/** The sealed anchor state is only worth something off the volume that holds the database it anchors. */
+export function checkAuditStateDir(i: DoctorInputs): DoctorCheck[] {
+  const dir = i.auditStateDir;
+  if (!dir) return [];
+  if (inside(i.dataDir, dir)) {
+    return [
+      warn(
+        "audit_state_dir",
+        "keys",
+        "the audit anchor state is inside the data directory: whoever can restore or edit the volume restores matching anchors with it",
+        "Set TURNTABLE_AUDIT_STATE_DIR to a separate mount or secrets volume, and set audit_anchor_sink_url to export anchors off this instance. See docs/security.mdx (audit integrity).",
+      ),
+    ];
+  }
+  return [pass("audit_state_dir", "keys", "the audit anchor state is outside the data directory")];
+}
+
 export function checkMasterKey(i: DoctorInputs): DoctorCheck {
   const path = set(i.env.TURNTABLE_MASTER_KEY_FILE);
   const area = "keys";
@@ -667,6 +684,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("master_key", "keys", () => checkMasterKey(i))),
     ...(await safe("release_key", "keys", () => checkReleaseKey(i))),
     ...(await safe("audit_anchor", "keys", () => checkAuditAnchors(i))),
+    ...(await safe("audit_state_dir", "keys", () => checkAuditStateDir(i))),
     ...(await safe("database", "database", () => checkDatabase(i))),
     ...(await safe("github_app", "github", () => checkGithubApp(i))),
     ...(await safe("provider", "provider", () => i.providerChecks())),

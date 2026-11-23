@@ -99,6 +99,8 @@ export interface DoctorInputs {
   masterKeyEnv?: boolean;
   /** The release lane's key file and data directory, when configured here. */
   releaseKey?: { file: string; dataDir: string | undefined } | undefined;
+  /** Where the sealed audit anchor state lives; undefined without a master key (there is none). */
+  auditStateDir?: string | undefined;
   /** Org ids whose sealed audit anchor does not open under the current master key. */
   unreadableAnchors?: () => string[];
   /** The providers' own read-only checks (`Provider.diagnose`). */
