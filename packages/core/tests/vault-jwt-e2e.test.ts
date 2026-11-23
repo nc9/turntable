@@ -79,7 +79,7 @@ async function mint(
   if ("none" in issued) throw new Error(issued.none);
   const res = await (o.handlerFor ?? handler).handle(
     new Request(`${issuerUrl}/token?audience=${encodeURIComponent(audience)}`, {
-      headers: { authorization: `Bearer ${issued.credential}` },
+      headers: { authorization: `Bearer ${issued.credentialFor()}` },
     }),
   );
   if (res?.status !== 200) throw new Error(`mint failed: ${res?.status} ${await res?.text()}`);
@@ -111,11 +111,12 @@ beforeAll(async () => {
 
   // The issuer, served over TLS on loopback with a throwaway certificate.
   const port = await freePort();
-  issuerUrl = `https://127.0.0.1:${port}/oidc/${a.slug}`;
+  // A host name, not 127.0.0.1: a proxy rule names a host, and JobOidc issues nothing for an IP.
+  issuerUrl = `https://localhost:${port}/oidc/${a.slug}`;
   const issuer = new OidcIssuer({
     db,
     masterKey: master,
-    baseUrl: `https://127.0.0.1:${port}/oidc`,
+    baseUrl: `https://localhost:${port}/oidc`,
   });
   handler = createOidcHandler({ db, issuer, masterKey: master });
   jobOidc = new JobOidc({ db, issuer, masterKey: master });
@@ -133,9 +134,9 @@ beforeAll(async () => {
     "-days",
     "1",
     "-subj",
-    "/CN=127.0.0.1",
+    "/CN=localhost",
     "-addext",
-    "subjectAltName=IP:127.0.0.1",
+    "subjectAltName=DNS:localhost,IP:127.0.0.1",
     "-keyout",
     key,
     "-out",
