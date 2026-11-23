@@ -230,22 +230,33 @@ export class WebhookService {
     });
     const width = this.#o.concurrency ?? 8;
     const slugs = new Map<string, string>();
+    // One endpoint's deliveries go out one at a time, in ascending cursor order, so the
+    // receiver sees them in cursor order. Different endpoints still run side by side, `width` at once.
+    const queues = new Map<string, DueDelivery[]>();
+    for (const d of due) {
+      const q = queues.get(d.endpoint.id);
+      if (q) q.push(d);
+      else queues.set(d.endpoint.id, [d]);
+    }
+    const lanes = [...queues.values()].map((q) => q.sort((x, y) => x.event.id - y.event.id));
     let next = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
-        const d = due[next++];
-        if (!d) return;
-        try {
-          await this.#deliver(d, slugs);
-        } catch (err) {
-          // Never let one delivery stop the rest; the lease expires and it is tried again.
-          this.#o.log?.(
-            `webhook delivery ${d.delivery.id}: ${err instanceof Error ? err.message : "error"}`,
-          );
+        const lane = lanes[next++];
+        if (!lane) return;
+        for (const d of lane) {
+          try {
+            await this.#deliver(d, slugs);
+          } catch (err) {
+            // Never let one delivery stop the rest; the lease expires and it is tried again.
+            this.#o.log?.(
+              `webhook delivery ${d.delivery.id}: ${err instanceof Error ? err.message : "error"}`,
+            );
+          }
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(width, due.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(width, lanes.length) }, worker));
     return due.length;
   }
 
