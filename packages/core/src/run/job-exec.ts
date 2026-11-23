@@ -11,7 +11,7 @@ import {
   type ActionFetcher,
   type JobPlan,
 } from "@longshore/act-runner";
-import type { Provider } from "@longshore/provider-sdk";
+import type { Provider, ProxyEndpoint } from "@longshore/provider-sdk";
 import { Redactor, SecretRegistry, redactString } from "@longshore/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
@@ -68,7 +68,15 @@ export interface JobEnv {
    * before the job runs: the direct path must be closed and the proxy open, or the job is not
    * run. `listen` is the proxy as the provider's host reaches it.
    */
-  proxy?: { listen: { host: string; port: number }; credential: AttemptCredential };
+  proxy?: { listen: ProxyEndpoint; credential: AttemptCredential };
+  /**
+   * The value of GITHUB_TOKEN inside the job. The real token for a trusted class with no proxy
+   * (the caller has registered it with `registry`), or a placeholder behind the proxy, which
+   * attaches the real one.
+   */
+  githubToken?: string;
+  /** GitHub's OIDC request variables for the steps; the token is a placeholder (see oidc/job-delivery). */
+  oidc?: { requestUrl: string; requestToken: string };
 }
 
 export interface JobOutcome {
@@ -218,7 +226,10 @@ export async function executeJob(
         throw new Error("plan, image and repoTarball are required to start a job");
       }
       const proxied = env.proxy;
-      if (proxied && !env.provider.info.network.egressPolicy.includes("deny-all-except-proxy")) {
+      const pick = proxied
+        ? proxyEgress(env.provider.info.network.egressPolicy, proxied.listen)
+        : undefined;
+      if (proxied && pick === undefined) {
         return await settle(
           "infra_error",
           `provider ${env.provider.info.name} cannot confine a sandbox to the secrets proxy; the job was not run`,
@@ -229,12 +240,13 @@ export async function executeJob(
         labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
         image: env.image,
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
-        network: proxied
-          ? { egress: "deny-all-except-proxy", proxy: proxied.listen }
-          : { egress: env.egress ?? "none" },
+        network:
+          proxied && pick
+            ? { egress: pick, proxy: proxied.listen }
+            : { egress: env.egress ?? "none" },
       });
       sandboxId = sb.id;
-      await env.store.setSandbox(ids.attemptId, sb.id);
+      await env.store.setSandbox(ids.attemptId, sb.id, Date.now());
       let proxyUrl: string | undefined;
       if (proxied) {
         if (!sb.proxy) {
@@ -293,7 +305,9 @@ export async function executeJob(
           );
         }
       }
-      if (!proxied && env.canary && (env.egress ?? "none") === "none") {
+      // A job that holds a secret is always probed, whatever `canary` says, and an answer the probe
+      // cannot give refuses it (below).
+      if (!proxied && (env.canary || env.secretBearing) && (env.egress ?? "none") === "none") {
         const v = await probeEgress(env.provider, sb.id, {
           ...(env.pollMs ? { pollMs: env.pollMs } : {}),
           signal: env.signal,
@@ -325,6 +339,8 @@ export async function executeJob(
           ...(proxied && proxyUrl
             ? { proxy: { url: proxyUrl, caPem: proxied.credential.caPem } }
             : {}),
+          ...(env.githubToken !== undefined ? { githubToken: env.githubToken } : {}),
+          ...(env.oidc ? { oidc: env.oidc } : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },
@@ -347,6 +363,7 @@ export async function executeJob(
         return await settle(r.state, r.reason, r.exitCode, r.outputs);
       }
       if (next.value.kind === "act") onAct(next.value.event);
+      else if (next.value.kind === "cut") log.cut(next.value.omittedBytes);
     }
   } catch (e) {
     if (cancelled) return await settle("cancelled", "cancelled by user");
@@ -356,6 +373,9 @@ export async function executeJob(
     if (sandboxId) {
       try {
         await env.provider.destroy(sandboxId);
+        // Confirmed gone: the sandbox's billed life ends here. A destroy that failed records
+        // nothing, so the time is never guessed (the provider's TTL ended it).
+        await env.store.setSandboxDestroyed?.(ids.attemptId, Date.now());
       } catch (e) {
         env.out(`warning: could not destroy sandbox ${sandboxId}: ${String(e)}\n`);
       }
@@ -366,7 +386,7 @@ export async function executeJob(
 /** Redacts text, shows it, and stores it in order with byte offsets (offsets of what is stored). */
 export class LogPipe {
   stored = 0;
-  readonly #redactor: Redactor;
+  #redactor: Redactor;
   readonly #env: JobEnv;
   readonly #attemptId: string;
   #lastPush = Date.now();
@@ -391,6 +411,26 @@ export class LogPipe {
     this.#writes = this.#writes.then(fn);
   }
 
+  /**
+   * Records, as metadata at the current position of the stored log, that `omittedBytes` of output
+   * were dropped. Nothing is written into the log text. What was held for redaction is flushed
+   * first and redaction starts afresh after the cut, so text from either side of the gap is
+   * never joined.
+   */
+  cut(omittedBytes: number): void {
+    this.#emit(this.#redactor.end());
+    this.#redactor = new Redactor({ registry: this.#env.registry });
+    const atOffset = this.stored;
+    this.chain(
+      () =>
+        this.#env.store.addCut?.(this.#attemptId, {
+          atOffset,
+          omittedBytes,
+          reason: "output cap",
+        }) ?? Promise.resolve(),
+    );
+  }
+
   /** Flushes the held tail and waits for every pending write. */
   async close(): Promise<void> {
     this.#emit(this.#redactor.end());
@@ -405,4 +445,20 @@ export class LogPipe {
     this.stored += bytes.length;
     this.chain(() => this.#env.store.appendLog(this.#attemptId, at, bytes));
   }
+}
+
+/**
+ * The confinement a proxied job asks its provider for. The strict one, whenever the provider has
+ * it, unless the proxy endpoint has no stable address and the provider also offers the
+ * domain-filtered one (which its operator enabled on purpose): then that. A provider with neither
+ * cannot run a proxied job.
+ */
+export function proxyEgress(
+  offered: readonly string[],
+  listen: { addresses?: readonly string[] | undefined },
+): "deny-all-except-proxy" | "proxy-domain-filtered" | undefined {
+  const hasAddresses = (listen.addresses?.length ?? 0) > 0;
+  if (!hasAddresses && offered.includes("proxy-domain-filtered")) return "proxy-domain-filtered";
+  if (offered.includes("deny-all-except-proxy")) return "deny-all-except-proxy";
+  return undefined;
 }

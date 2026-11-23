@@ -6,7 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import type { Provider } from "@longshore/provider-sdk";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { CANARY_TARGETS, probeEgress } from "../src/run/egress-canary";
-import { executeJob } from "../src/run/job-exec";
+import { executeJob, proxyEgress } from "../src/run/job-exec";
 import { egressDecision, egressForRun, withEgressPolicy } from "../src/scheduler/egress";
 import type { AttemptContext } from "../src/scheduler/types";
 
@@ -312,3 +312,19 @@ for (const [label, mustNotReach] of [
     }
   });
 }
+
+// ---- which confinement a proxied job asks for ----
+
+test("a proxied job asks for the strict confinement, and the domain-filtered one only when it must and the provider offers it", () => {
+  const strict = ["none", "open", "deny-all-except-proxy"];
+  const both = [...strict, "proxy-domain-filtered"];
+  const addr = { addresses: ["203.0.113.5"] };
+  expect(proxyEgress(strict, addr)).toBe("deny-all-except-proxy");
+  expect(proxyEgress(both, addr)).toBe("deny-all-except-proxy");
+  // No stable address: Docker-like (strict only) still asks for strict; an opted-in provider gets
+  // the weaker one; one with neither cannot run the job.
+  expect(proxyEgress(strict, {})).toBe("deny-all-except-proxy");
+  expect(proxyEgress(both, {})).toBe("proxy-domain-filtered");
+  expect(proxyEgress(["none", "open"], addr)).toBeUndefined();
+  expect(proxyEgress(["proxy-domain-filtered"], addr)).toBeUndefined();
+});

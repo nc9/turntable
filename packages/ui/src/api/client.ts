@@ -4,6 +4,8 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
+  PolicyStatement,
   EnrolStatement,
   EnvironmentApprovalResult,
   WebAuthnSignature,
@@ -16,11 +18,15 @@ import type {
   RunFilter,
   StepEvent,
   CutRecord,
+  LogNotice,
   ApproveResult,
   GrepResult,
   IncidentStatus,
   IngestStatus,
+  Artifact,
+  ConsumeResult,
   JobDigest,
+  OrgQuotas,
   RerunResult,
   Whoami,
 } from "./types";
@@ -54,6 +60,8 @@ export interface LongshoreApi {
   jobSteps(args: { attemptId: string }): Promise<StepEvent[]>;
   /** Output-cap cuts for an attempt, as metadata (never text in the log). */
   jobCuts(args: { attemptId: string }): Promise<CutRecord[]>;
+  /** System notices for an attempt (never text in the log). */
+  jobNotices(args: { attemptId: string }): Promise<LogNotice[]>;
   checksForSha(args: { projectId: string; sha: string }): Promise<CheckSummary>;
   /** Reruns jobs of a run (by job key; omit for the failed ones) with a reason that is audited. */
   rerun(args: { runId: string; jobKeys?: string[]; reason: string }): Promise<RerunResult>;
@@ -85,6 +93,8 @@ export interface LongshoreApi {
   /** Environments of a run waiting on a human, the policy and who approved so far. */
   approvalStatus(args: { runId: string }): Promise<ApprovalStatus>;
   approversOverview(): Promise<ApproversOverview>;
+  /** Sandbox minutes per UTC day for the last `days` days, with the quota limit if one is set. */
+  sandboxUsage(args: { days: number; byProject?: boolean }): Promise<SandboxUsage>;
   /** The statement to sign for a run and environment, with its single-use challenge. */
   approvalChallenge(args: {
     runId: string;
@@ -97,7 +107,23 @@ export interface LongshoreApi {
     statement: ApprovalStatement;
     signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
   }): Promise<EnvironmentApprovalResult>;
-  registerChallenge(): Promise<{ challenge: string; rpId: string; expiresAt: number }>;
+  registerChallenge(): Promise<{
+    challenge: string;
+    rpId: string;
+    expiresAt: number;
+    attestation: "none" | "direct";
+  }>;
+  /** The statement an approver signs to change the key policy (a quorum applies it). */
+  keyPolicyChallenge(args: {
+    mode: "any" | "hardware";
+    presets: string[];
+    aaguids: string[];
+    approver: string;
+  }): Promise<ApprovalChallenge<PolicyStatement>>;
+  approveKeyPolicy(args: {
+    statement: PolicyStatement;
+    signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
+  }): Promise<{ approvals: number; required: number; applied: boolean }>;
   requestEnrolment(args: {
     person: string;
     forgeLogin: string;
@@ -111,6 +137,18 @@ export interface LongshoreApi {
     statement: EnrolStatement;
     signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
   }): Promise<{ enrolmentId: string; approvals: number; required: number; activated: boolean }>;
+  /** The artifacts a run recorded, with provenance (`get_artifacts`). */
+  getArtifacts(args: { runId: string; project: string }): Promise<Artifact[]>;
+  /** Whether a consumer run may take artifacts of other runs, and as what (`check_artifact_consumption`). */
+  checkArtifactConsumption(args: {
+    project: string;
+    /** A run (its stored class), or a class by name: "may a build of this class take it?". */
+    consumer: { runId: string } | { klass: string };
+    sources: { runId: string; name: string }[];
+    quarantine?: { runId: string; name: string }[];
+  }): Promise<ConsumeResult[]>;
+  /** The org's quotas, usage against each, and why work is held (`get_quotas`). */
+  getQuotas(): Promise<OrgQuotas>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

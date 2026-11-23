@@ -6,7 +6,7 @@
 // it off), and sets the step's stdin, stdout and stderr to it. So `[ -t 1 ]` and
 // `process.stdout.isTTY` are true in a step, where on a GitHub runner they are false: a program
 // that colours its output, sizes a table or handles escapes by TTY-ness behaves differently
-// (squirrelscan's `fmt` colours when `process.stdout.isTTY && TERM !== "dumb"`, which broke two
+// (a real project's `fmt` colours when `process.stdout.isTTY && TERM !== "dumb"`, which broke two
 // of its tests that assert no escape sequence in the output).
 //
 // act cannot be told not to, so the commands it launches are wrapped. act resolves a step's
@@ -51,13 +51,37 @@ export function launcherArgv(shimDir: string, actArgv: readonly string[], envFil
   ];
 }
 
-/** Writes the shim and its symlinks. Args: shim dir, shim text, names. */
+/**
+ * Writes the shim and a symlink for each interpreter that EXISTS in the sandbox. Args: shim dir,
+ * shim text, names. Each name is looked up on the PATH the job will have (without the shim
+ * directory); one with no real interpreter gets no shim. A shim for an absent interpreter would
+ * make `command -v pwsh` succeed where GitHub's runner (and the image itself) says it is not
+ * installed, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit
+ * 0; fi`) would find the shim, run it, and fail the step with 127. Without a shim the probe
+ * behaves exactly as it does without Longshore, and a step that names the missing tool as its
+ * `shell:` fails in act with its own "Cannot find: <tool> in PATH", which the log annotates.
+ * One consequence: an interpreter installed after the job starts (a setup action that puts node on
+ * PATH) is not shimmed, so a step that uses it as its `shell:` runs with act's pty.
+ */
 export const INSTALL_SHIMS_SH = `set -eu
 d=$1; text=$2; shift 2
 mkdir -p "$d"
 printf '%s\\n' "$text" > "$d/step-shim"
 chmod 0755 "$d/step-shim"
-for n in "$@"; do ln -sf step-shim "$d/$n"; done
+real() {
+  oldifs=$IFS; IFS=:
+  for p in $PATH; do
+    [ -n "$p" ] || continue
+    [ "$p" = "$d" ] && continue
+    if [ -x "$p/$1" ] && [ ! -d "$p/$1" ]; then IFS=$oldifs; return 0; fi
+  done
+  IFS=$oldifs
+  return 1
+}
+for n in "$@"; do
+  rm -f "$d/$n"
+  if real "$n"; then ln -sf step-shim "$d/$n"; fi
+done
 `;
 
 /**
@@ -123,14 +147,13 @@ if command -v perl >/dev/null 2>&1; then
   trap stop TERM INT HUP
   # The watcher: if this shim dies without a chance to clean up (SIGKILL), and the interpreter is
   # still running, take its group down. A normal end leaves the interpreter gone and this idle.
-  (
-    while kill -0 "$shim" 2>/dev/null; do sleep 1; done
-    if kill -0 "$rpid" 2>/dev/null; then
-      gkill TERM "$rpid"
-      sleep "$grace"
-      gkill KILL "$rpid"
-    fi
-  ) >/dev/null 2>&1 </dev/null &
+  # It must survive whatever killed the shim. act's step timeout kills the shim, and then the
+  # pty it ran on closes, which hangs up the shim's process group: a watcher left in that group
+  # (a subshell is) can die in the same instant, before its next poll, and the interpreter is
+  # never taken down. So it is a perl process in a process group of its own, ignoring HUP.
+  perl -e '$SIG{HUP}="IGNORE"; setpgrp(0,0); my($shim,$rpid,$grace)=@ARGV;
+    sleep 1 while kill(0,$shim);
+    if (kill(0,$rpid)) { kill("TERM",-$rpid) or kill("TERM",$rpid); sleep $grace; kill("KILL",-$rpid) or kill("KILL",$rpid); }' "$shim" "$rpid" "$grace" >/dev/null 2>&1 </dev/null &
   wait "$rpid"
   rc=$?
   # A trapped signal interrupts wait while the interpreter is still going: wait for the real end.
@@ -166,7 +189,7 @@ const q = (v: string): string => `'${v.replaceAll("'", "'\\''")}'`;
  * one against the CA. Both spellings of the proxy variables are set, because tools disagree.
  */
 export function proxyEnvFile(url: string, bundle: string): string {
-  const vars: [string, string][] = [
+  return envFileOf([
     ["HTTP_PROXY", url],
     ["HTTPS_PROXY", url],
     ["http_proxy", url],
@@ -178,7 +201,11 @@ export function proxyEnvFile(url: string, bundle: string): string {
     ["REQUESTS_CA_BUNDLE", bundle],
     ["NODE_EXTRA_CA_CERTS", bundle],
     ["GIT_SSL_CAINFO", bundle],
-  ];
+  ]);
+}
+
+/** `export` lines for a file the launcher sources (see launcherArgv). Values are quoted. */
+export function envFileOf(vars: readonly (readonly [string, string])[]): string {
   return `${vars.map(([k, v]) => `export ${k}=${q(v)}`).join("\n")}\n`;
 }
 

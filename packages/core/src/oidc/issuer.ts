@@ -13,12 +13,23 @@
 //  - every mint, and every refusal, is audited.
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db";
-import { appendAudit, getAttempt, getJob, getOrgById, getProject, getRun } from "../db/repos";
+import {
+  appendAudit,
+  getAttempt,
+  getFreeze,
+  getJob,
+  getOrgById,
+  getProject,
+  getProjectOidcAudiences,
+  getRun,
+} from "../db/repos";
 import { auditFailure } from "../audit/failures";
 import { OidcKeyStore, MAX_TOKEN_SECONDS, OIDC_ALG } from "./keys";
 
 /** Token lifetime. Short on purpose; never above MAX_TOKEN_SECONDS (10 minutes). */
 export const TOKEN_SECONDS = 300;
+/** How long before `iat` a token is already valid, for relying parties with a slow clock. */
+export const NBF_LEEWAY_SECONDS = 30;
 /** Classes that may get a token unless an operator widens it. */
 export const DEFAULT_OIDC_CLASSES: readonly string[] = ["protected", "release"];
 const KNOWN_CLASSES = ["protected", "release", "trusted_pr", "untrusted_pr"];
@@ -28,7 +39,9 @@ export type MintDenial =
   | "unknown_attempt"
   | "attempt_not_running"
   | "class_unrecorded"
-  | "class_not_allowed";
+  | "class_not_allowed"
+  | "frozen"
+  | "audience_not_allowed";
 
 export type MintResult =
   | { ok: true; token: string; expiresAt: number; jti: string; kid: string }
@@ -82,6 +95,11 @@ export class OidcIssuer {
     this.#now = o.now ?? Date.now;
   }
 
+  /** Whether a trust class may get a token at all (the operator's allow list). */
+  allowsClass(klass: string): boolean {
+    return this.#allow.includes(klass);
+  }
+
   issuerUrl(orgSlug: string): string {
     return `${this.#o.baseUrl.replace(/\/+$/, "")}/${orgSlug}`;
   }
@@ -116,6 +134,8 @@ export class OidcIssuer {
         "run_id",
         "job_id",
         "attempt_id",
+        "run_attempt",
+        "rerun",
         "trust_class",
         "event_name",
         "actor",
@@ -167,6 +187,14 @@ export class OidcIssuer {
     const klass = attempt.trustClass;
     if (!klass) return deny("class_unrecorded", project.id);
     if (!this.#allow.includes(klass)) return deny("class_not_allowed", project.id);
+    // An incident freeze stops identity tokens too: a stolen credential cannot mint through one.
+    if ((await getFreeze(db, scope)).frozen) return deny("frozen", project.id);
+    // The project's own allow list, when it has one: any other audience is refused (and audited
+    // with the audience asked for, by `deny`). No list: any audience, as before.
+    const allowedAud = await getProjectOidcAudiences(db, scope);
+    if (allowedAud !== null && !allowedAud.includes(aud)) {
+      return deny("audience_not_allowed", project.id);
+    }
 
     const iat = Math.floor(now / 1000);
     const exp = iat + Math.min(TOKEN_SECONDS, MAX_TOKEN_SECONDS);
@@ -180,7 +208,8 @@ export class OidcIssuer {
         `org:${seg(org.slug)}:project:${seg(project.slug)}:repo:${seg(repo)}` +
         `:ref:${seg(run.ref)}:class:${klass}:env:${seg(environment)}`,
       iat,
-      nbf: iat,
+      // A little before iat, so a relying party whose clock is slightly behind still accepts it.
+      nbf: iat - NBF_LEEWAY_SECONDS,
       exp,
       jti,
       org: org.slug,
@@ -197,9 +226,14 @@ export class OidcIssuer {
       run_id: run.id,
       job_id: job.id,
       attempt_id: attempt.id,
+      // The job's attempt number (1 for the first try), as GitHub's run_attempt; and whether this
+      // attempt was asked for by a person or agent (a rerun).
+      run_attempt: attempt.attempt,
+      rerun: attempt.rerunReason !== null,
       trust_class: klass,
       event_name: run.event,
-      actor: run.actor ?? null,
+      // An unknown actor (a tag run has none) is left out, never claimed as null or a guess.
+      ...(run.actor ? { actor: run.actor } : {}),
       environment,
     };
     const { token, kid } = await this.keys.signJwt(org.id, claims, now);

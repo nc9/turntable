@@ -4,7 +4,7 @@
 // read operation a REST caller would use (events, get_run, job_log, job_steps, job_cuts), as the
 // connection's token. A token that cannot read something over REST cannot subscribe to it either.
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
-import { getAttempt, latestEventId, onEventsAppended } from "../db/repos";
+import { getAttempt, latestEventId, onEventsAppended, onLogAppended } from "../db/repos";
 import { type DispatchEnv, authenticate, dispatch, resolveCallerScope } from "../ops/dispatch";
 import { OpError } from "../ops/errors";
 import {
@@ -17,6 +17,7 @@ import {
   type ServerMessage,
   type Topic,
   type WireCut,
+  type WireNotice,
   type WireEvent,
   type WireStep,
   parseClientMessage,
@@ -34,8 +35,8 @@ export type Limits = {
   /** How often connections are re-authenticated and idle-checked. */
   sweepMs: number;
   /**
-   * How often a live log is polled for new bytes.
-   * TODO(#77): wake log tails from a log-append notifier and drop this poll to a slow safety net.
+   * Safety-net interval for a live log tail. Appends wake a tail at once (onLogAppended); this
+   * only catches an append made by another process, which the in-process notifier cannot see.
    */
   logPollMs: number;
   /** Events per read while replaying. */
@@ -49,7 +50,7 @@ export const DEFAULT_LIMITS: Limits = {
   maxBufferedBytes: 1024 * 1024,
   idleNoSubscriptionMs: 2 * 60_000,
   sweepMs: 30_000,
-  logPollMs: 250,
+  logPollMs: 5_000,
   eventPage: 100,
 };
 
@@ -248,15 +249,29 @@ export function createRealtime(options: RealtimeOptions) {
         if (sub.done || ws.data.closed) return;
         const [steps, cuts] = await Promise.all([
           op<{ steps: WireStep[] }>(ws, "job_steps", { job_id: sub.jobId, attempt: sub.attemptNo }),
-          op<{ cuts: WireCut[] }>(ws, "job_cuts", { job_id: sub.jobId, attempt: sub.attemptNo }),
+          op<{ cuts: WireCut[]; notices: WireNotice[] }>(ws, "job_cuts", {
+            job_id: sub.jobId,
+            attempt: sub.attemptNo,
+          }),
         ]);
-        const sig = JSON.stringify([steps.steps, cuts.cuts]);
+        const sig = JSON.stringify([steps.steps, cuts.cuts, cuts.notices]);
         if (sig !== sub.sig) {
           sub.sig = sig;
           if (sub.topic.kind === "attempt-steps") {
-            if (!send(ws, { type: "steps", id: sub.id, steps: steps.steps, cuts: cuts.cuts }))
+            if (
+              !send(ws, {
+                type: "steps",
+                id: sub.id,
+                steps: steps.steps,
+                cuts: cuts.cuts,
+                notices: cuts.notices,
+              })
+            )
               return;
-          } else if (!send(ws, { type: "cuts", id: sub.id, cuts: cuts.cuts })) return;
+          } else if (
+            !send(ws, { type: "cuts", id: sub.id, cuts: cuts.cuts, notices: cuts.notices })
+          )
+            return;
         }
       } while (sub.stepsDirty);
     } catch (err) {
@@ -443,7 +458,6 @@ export function createRealtime(options: RealtimeOptions) {
     // Wake-ups were already routed to this subscription from the moment it was registered
     // above, so an event committed during setup marks it dirty and is read, not missed.
     if (topic.kind === "attempt-log") {
-      // TODO(#77): replace this poll with a log-append notifier (like onEventsAppended).
       sub.timer = setInterval(() => void pumpLog(ws, sub), limits.logPollMs);
     }
     pump(ws, sub);
@@ -455,6 +469,15 @@ export function createRealtime(options: RealtimeOptions) {
     const conns = byOrg.get(orgId);
     if (!conns) return;
     for (const ws of conns) for (const sub of ws.data.subs.values()) pump(ws, sub);
+  });
+
+  // A committed log chunk wakes only the tails of that attempt.
+  const stopLogListening = onLogAppended((orgId, attemptId) => {
+    const conns = byOrg.get(orgId);
+    if (!conns) return;
+    for (const ws of conns)
+      for (const sub of ws.data.subs.values())
+        if (sub.topic.kind === "attempt-log" && sub.attemptId === attemptId) pump(ws, sub);
   });
 
   const sweeper = setInterval(() => {
@@ -583,6 +606,7 @@ export function createRealtime(options: RealtimeOptions) {
     }),
     stop() {
       stopListening();
+      stopLogListening();
       clearInterval(sweeper);
       for (const conns of [...byOrg.values()])
         for (const ws of [...conns]) closeWith(ws, 1001, "server stopping");

@@ -22,6 +22,10 @@ export function ApproversPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [signer, setSigner] = useState<Record<string, string>>({});
+  const [kpMode, setKpMode] = useState<"any" | "hardware" | null>(null);
+  const [kpYubikey, setKpYubikey] = useState<boolean | null>(null);
+  const [kpAaguids, setKpAaguids] = useState<string | null>(null);
+  const [kpSigner, setKpSigner] = useState("");
   const simulated = api.capabilities.simulatedCeremony;
   const canCeremony = simulated || webauthnAvailable();
 
@@ -50,6 +54,43 @@ export function ApproversPage() {
     }
   };
 
+  const saveKeyPolicy = () =>
+    run(async () => {
+      const cur = d.keyPolicy;
+      const mode = kpMode ?? cur.mode;
+      const yubikey = kpYubikey ?? cur.presets.includes("yubikey");
+      const aaguids = (kpAaguids ?? cur.aaguids.join(", ")).split(/[\s,]+/).filter((x) => x !== "");
+      const who = passkeyPeople.find((a) => a.id === kpSigner);
+      if (!who || who.passkeyId === null)
+        throw new Error("Choose who is signing: a policy change needs a signature.");
+      const ch = await api.keyPolicyChallenge({
+        mode,
+        presets: yubikey ? ["yubikey"] : [],
+        aaguids,
+        approver: who.id,
+      });
+      const signature = simulated
+        ? ({
+            kind: "webauthn",
+            credential_id: "fixture",
+            client_data_json: "fixture",
+            authenticator_data: "fixture",
+            signature: "fixture",
+          } as const)
+        : await signWithPasskey({
+            challenge: ch.challenge,
+            rpId: ch.rpId ?? "",
+            passkeyId: ch.passkeyId ?? who.passkeyId,
+          });
+      const r = await api.approveKeyPolicy({ statement: ch.statement, signature });
+      setKpMode(null);
+      setKpYubikey(null);
+      setKpAaguids(null);
+      return r.applied
+        ? `Key policy changed to ${mode}.`
+        : `Signed. ${r.approvals} of ${r.required} signatures: the policy changes when enough counted approvers sign the same change.`;
+    });
+
   const register = () =>
     run(async () => {
       if (person.trim() === "") throw new Error("Enter the person's name first.");
@@ -58,7 +99,12 @@ export function ApproversPage() {
       const rc = await api.registerChallenge();
       const created = simulated
         ? { clientDataJson: "fixture", attestationObject: "fixture" }
-        : await createPasskey({ challenge: rc.challenge, rpId: rc.rpId, person: person.trim() });
+        : await createPasskey({
+            challenge: rc.challenge,
+            rpId: rc.rpId,
+            person: person.trim(),
+            attestation: rc.attestation,
+          });
       const r = await api.requestEnrolment({
         person: person.trim(),
         forgeLogin: forge.trim(),
@@ -143,6 +189,13 @@ export function ApproversPage() {
                   {a.forgeLogin ? `${sanitize(a.forgeLogin)}, ` : "no forge login, "}
                   enrolled {formatRelative(a.createdAt)}
                 </span>
+                {a.notCounting ? (
+                  <span className="basis-full text-xs text-st-approval">
+                    Not counting: {sanitize(a.notCounting)}.
+                  </span>
+                ) : a.attested ? (
+                  <span className="text-xs text-dim">Hardware attested</span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -169,6 +222,87 @@ export function ApproversPage() {
         </ul>
       </section>
 
+      <section aria-labelledby="kp-h" className="mt-6">
+        <h2 id="kp-h" className="mb-2 text-sm font-semibold">
+          Key policy
+        </h2>
+        <div className="space-y-3 rounded-xl border border-line p-4 text-sm">
+          <p className="text-dim">
+            <strong className="font-medium text-fg">any</strong> accepts any passkey with user
+            verification, and offline keys.{" "}
+            <strong className="font-medium text-fg">hardware</strong> accepts only passkeys whose
+            attestation chained to a pinned vendor root, from the allowlist. Touch ID and Face ID
+            passkeys give no attestation, so in practice that means security keys.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="text-sm font-medium" htmlFor="kp-mode">
+              Policy
+            </label>
+            <select
+              id="kp-mode"
+              value={kpMode ?? d.keyPolicy.mode}
+              onChange={(ev) => setKpMode(ev.target.value as "any" | "hardware")}
+              className="h-8 rounded-md border border-line-strong bg-surface px-2 text-[13px]"
+            >
+              <option value="any">any</option>
+              <option value="hardware">hardware</option>
+            </select>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={kpYubikey ?? d.keyPolicy.presets.includes("yubikey")}
+                onChange={(ev) => setKpYubikey(ev.target.checked)}
+              />
+              YubiKey 5 and Bio
+            </label>
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="kp-aaguids">
+              Extra AAGUIDs
+            </label>
+            <input
+              id="kp-aaguids"
+              value={kpAaguids ?? d.keyPolicy.aaguids.join(", ")}
+              onChange={(ev) => setKpAaguids(ev.target.value)}
+              spellCheck={false}
+              autoComplete="off"
+              className="mt-1 h-9 w-full rounded-md border border-line-strong bg-surface px-3 font-mono text-xs"
+              placeholder="comma separated UUIDs"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="sr-only" htmlFor="kp-signer">
+              Sign as
+            </label>
+            <select
+              id="kp-signer"
+              value={kpSigner}
+              onChange={(ev) => setKpSigner(ev.target.value)}
+              className="h-8 rounded-md border border-line-strong bg-surface px-2 text-[13px]"
+            >
+              <option value="">Sign as</option>
+              {passkeyPeople.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.person}
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy || !kpSigner || !canCeremony}
+              onClick={() => void saveKeyPolicy()}
+            >
+              <KeyRound />
+              Sign the change
+            </Button>
+          </div>
+          <p className="text-xs text-dim">
+            A policy change needs the same quorum of counted approvers as enrolling a key.
+          </p>
+        </div>
+      </section>
+
       {d.pendingEnrolments.length > 0 ? (
         <section aria-labelledby="pend-h" className="mt-6">
           <h2 id="pend-h" className="mb-2 text-sm font-semibold">
@@ -179,6 +313,9 @@ export function ApproversPage() {
               <li key={e.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                 <span className="min-w-0 flex-1 basis-48">
                   <span className="block font-medium">{sanitize(e.person)}</span>
+                  <span className="block text-xs text-dim">
+                    forge login {e.forgeLogin ? sanitize(e.forgeLogin) : "not set"}
+                  </span>
                   <span className="block font-mono text-xs text-dim">
                     key {e.keyFingerprint.slice(0, 16)}, {e.approvals} of {e.required} signatures
                   </span>
@@ -194,7 +331,11 @@ export function ApproversPage() {
                 >
                   <option value="">Sign as</option>
                   {passkeyPeople
-                    .filter((a) => a.person !== e.person)
+                    .filter(
+                      (a) =>
+                        (a.forgeLogin ?? a.person).toLowerCase() !==
+                        (e.forgeLogin ?? e.person).toLowerCase(),
+                    )
                     .map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.person}

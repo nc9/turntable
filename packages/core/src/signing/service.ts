@@ -15,6 +15,7 @@ import type { Db } from "../db";
 import {
   appendAudit,
   getProjectSigning,
+  signingKeyUsedByOtherOrg,
   getRun,
   getRunArtifactsByName,
   listRunArtifacts,
@@ -57,6 +58,14 @@ export interface SignRequest {
 export type SignOutcome =
   | { ok: true; envelope: DsseEnvelope; keyid: string; subjects: Artifact[] }
   | { ok: false; reason: SigningDenial; detail?: string };
+
+/**
+ * The name a project's `builtin:<name>` key has in the key vault: the ORG's id and the name. The
+ * org comes from the run's scope, never from the setting or the request, so a project cannot name
+ * another org's key: whatever it writes after `builtin:` is looked up inside its own org.
+ * Org ids are ULIDs (no dots), so `<org id>.<name>` decodes one way.
+ */
+export const builtinKeyRef = (orgId: string, name: string): string => `${orgId}.${name}`;
 
 const BACKENDS: readonly Backend[] = ["builtin", "aws-kms", "gcp-kms"];
 
@@ -127,6 +136,10 @@ export class SigningService {
       approvalOk: approval?.approved === true,
     });
     if (!decision.ok) return deny(decision.reason, decision.detail);
+    // A release signs only what a release-class run produced: nothing a lower class could write.
+    const lower = recorded.find((a) => a.klass !== "release");
+    if (lower) return deny("artifact_not_release_class", lower.name);
+
     if (req.verified) {
       const v = req.verified;
       const own = new Map(recorded.map((a) => [a.name, a.sha256]));
@@ -153,6 +166,14 @@ export class SigningService {
     const key = parseKeyRef(project.signingKey!);
     const signer = key ? this.#o.signers[key.backend] : undefined;
     if (!key || !signer) return deny("no_backend");
+    // A key named outside the org namespace (a KMS key) must belong to this org alone.
+    if (
+      key.backend !== "builtin" &&
+      (await signingKeyUsedByOtherOrg(db, scope.orgId, project.signingKey!))
+    ) {
+      return deny("key_shared", "another org names the same signing key");
+    }
+    const keyRef = key.backend === "builtin" ? builtinKeyRef(scope.orgId, key.keyRef) : key.keyRef;
 
     const subjects: Artifact[] = recorded.map((a) => ({ name: a.name, sha256: a.sha256 }));
     const chosen = new Set(subjects.map((s) => s.name));
@@ -162,7 +183,9 @@ export class SigningService {
     const byproducts = req.verified
       ? []
       : (await listRunArtifacts(db, scope, run.id))
-          .filter((a) => !chosen.has(a.name))
+          // A statement vouches only for what a release-class attempt wrote: a lower-class
+          // artifact of the same run is left out, not listed next to the signed ones.
+          .filter((a) => !chosen.has(a.name) && a.klass === "release")
           .map((a) => ({ name: a.name, sha256: a.sha256 }));
     const actions = req.verified ? [] : await this.#actions(scope, run.id);
 
@@ -182,12 +205,7 @@ export class SigningService {
       startedOn: run.startedAt === null ? undefined : new Date(run.startedAt).toISOString(),
       finishedOn: run.finishedAt === null ? undefined : new Date(run.finishedAt).toISOString(),
     });
-    const envelope = await signEnvelope(
-      PAYLOAD_TYPE,
-      statementBytes(statement),
-      signer,
-      key.keyRef,
-    );
+    const envelope = await signEnvelope(PAYLOAD_TYPE, statementBytes(statement), signer, keyRef);
     const keyid = envelope.signatures[0]!.keyid;
     // The signature is returned only after the record of it is written.
     await this.#audit(scope, "ok", {

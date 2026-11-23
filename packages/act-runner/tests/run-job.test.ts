@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorld } from "@longshore/provider-sdk/testing";
 import { InfraError, type Provider } from "@longshore/provider-sdk";
+import { SHIM_NAMES } from "../src/step-env";
 import {
   drain,
   planJob,
@@ -93,7 +94,14 @@ describe("the step environment", () => {
       expect(log).toContain("pager=cat");
       expect(log).toContain("prompt=0");
       expect(log).toMatch(/first=.*\/shims/);
-      for (const name of ["step-shim", "bash", "sh", "node", "python"]) expect(log).toContain(name);
+      // Only interpreters that exist in the sandbox are shimmed (a shim for an absent one would
+      // make `command -v` lie): bash and sh always, the rest only if there.
+      const listed = log
+        .split("\n")
+        .slice(log.split("\n").findIndex((l) => l.startsWith("first=")) + 1)
+        .filter(Boolean);
+      expect(listed).toEqual(expect.arrayContaining(["step-shim", "bash", "sh"]));
+      for (const name of listed) expect(["step-shim", ...SHIM_NAMES]).toContain(name);
     } finally {
       if (saved === undefined) delete process.env.TERM;
       else process.env.TERM = saved;
@@ -116,7 +124,7 @@ describe("the secrets-proxy environment", () => {
   const CRED = "cred-not-a-real-secret-4f9a";
   test("reaches act through a file the launcher sources and deletes, never through an argv", async () => {
     const { p, id, plan, repoTarball } = await setup();
-    const envFile = `${plan.layout.root}/proxy.env`;
+    const envFile = `${plan.layout.root}/job.env`;
     const act = await fakeAct(
       await fixture("success.jsonl"),
       0,
@@ -438,5 +446,48 @@ describe("onExec and resumeJob: a controller that restarts gets the real result"
       resumeJob(world.provider(), ids!.sandboxId, ids!.execId, { pollMs: 50 }),
     );
     expect(gone).toMatchObject({ state: "infra_error" });
+  });
+});
+
+describe("the OIDC request variables", () => {
+  test("reach every step through the env file, never an argv", async () => {
+    const { p, id, plan, repoTarball } = await setup();
+    const act = await fakeAct(
+      await fixture("success.jsonl"),
+      0,
+      `echo "url=$ACTIONS_ID_TOKEN_REQUEST_URL"; echo "tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN"`,
+    );
+    const argvs: string[] = [];
+    const start = p.exec.start.bind(p.exec);
+    p.exec.start = (sid, o) => {
+      argvs.push(o.argv.join("\u0000"));
+      return start(sid, o);
+    };
+    const events: RunEvent[] = [];
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        plan,
+        {
+          repoTarball,
+          act,
+          oidc: {
+            requestUrl: "https://ci.example.test/oidc/acme/token?api-version=2.0",
+            requestToken: "placeholder-value",
+          },
+        },
+        { pollMs: 50 },
+      ),
+      (e) => events.push(e),
+    );
+    const log = events
+      .filter((e) => e.kind === "log")
+      .map((e) => new TextDecoder().decode(e.bytes))
+      .join("");
+    expect(result.state).toBe("success");
+    expect(log).toContain("url=https://ci.example.test/oidc/acme/token?api-version=2.0");
+    expect(log).toContain("tok=placeholder-value");
+    expect(argvs.join("\n")).not.toContain("placeholder-value");
   });
 });

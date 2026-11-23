@@ -2,6 +2,10 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type {
   WireApprovalStatus,
+  WireArtifacts,
+  WireSandboxUsage,
+  WireConsumption,
+  WireQuotas,
   WireApprovers,
   WireChallenge,
   WireEnrolmentApproval,
@@ -134,6 +138,9 @@ test("get_run: run, job and attempt fields", () => {
       started_at: true,
       finished_at: true,
       duration_ms: true,
+      sandbox_created_at: true,
+      sandbox_destroyed_at: true,
+      sandbox_seconds: true,
     }),
   );
 });
@@ -243,8 +250,9 @@ test("job_steps and job_cuts", () => {
     }),
   );
   const cuts = ok(op("/jobs/{job_id}/cuts", "get"));
-  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true }));
+  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true, notices: true }));
   expectKeys(cuts.properties!.cuts!.items!, ["at_offset", "omitted_bytes", "reason"]);
+  expectKeys(cuts.properties!.notices!.items!, ["at_offset", "source", "text"]);
 });
 
 test("failure_digest", () => {
@@ -369,6 +377,55 @@ test("run and job metadata from #66 are in the spec", () => {
   for (const key of ["needs", "matrix", "approval_kind"]) expect(jobs).toHaveProperty(key);
 });
 
+test("artifacts: provenance and consumption shapes the adapter reads", () => {
+  const arts = ok(op("/runs/{run_id}/artifacts", "get"));
+  expectKeys(arts, keysOf<WireArtifacts>({ artifacts: true }));
+  expectKeys(arts.properties!.artifacts!.items!, [
+    "name",
+    "size",
+    "sha256",
+    "digest_source",
+    "trust_class",
+    "run_sha",
+    "attempt_id",
+    "created_at",
+  ]);
+  const chk = ok(op("/artifacts/check-consumption", "post"));
+  expectKeys(chk, keysOf<WireConsumption>({ results: true }));
+  // The request takes a consumer run or a class: the adapter sends one of the two.
+  expect(
+    Object.keys(
+      op("/artifacts/check-consumption", "post").requestBody!.content["application/json"].schema
+        .properties!,
+    ),
+  ).toEqual(expect.arrayContaining(["consumer_run_id", "consumer_class", "sources", "quarantine"]));
+  expectKeys(chk.properties!.results!.items!, [
+    "run_id",
+    "name",
+    "decision",
+    "reason",
+    "trust_class",
+    "sha256",
+  ]);
+});
+
+test("quotas: get and set return the shape the adapter reads", () => {
+  // Read only: there is no API operation that sets quotas.
+  expect(Object.keys(spec.paths["/quotas"] ?? {})).toEqual(["get"]);
+  for (const [path, method] of [["/quotas", "get"]] as const) {
+    const out = ok(op(path, method));
+    expectKeys(out, keysOf<WireQuotas>({ limits: true, usage: true }));
+    expectKeys(out.properties!.limits!, [
+      "max_concurrent",
+      "max_runs_per_hour",
+      "max_sandbox_minutes_per_day",
+      "max_log_bytes",
+      "max_stored_bytes",
+    ]);
+    expectKeys(out.properties!.usage!.items!, ["metric", "used", "limit", "percent", "held"]);
+  }
+});
+
 test("human approvals: status, approvers, challenges, enrolment and the signature routes", () => {
   const status = ok(op("/approvals/status", "get"));
   expectKeys(
@@ -393,6 +450,7 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
     approvers,
     keysOf<WireApprovers>({
       approvers: true,
+      key_policy: true,
       pending_enrolments: true,
       policies: true,
       warnings: true,
@@ -405,10 +463,14 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
     "kind",
     "passkey_id",
     "created_at",
+    "not_counting",
+    "attested",
+    "aaguid",
   ]);
   expectKeys(approvers.properties!.pending_enrolments!.items!, [
     "id",
     "person",
+    "forge_login",
     "kind",
     "key_fingerprint",
     "approvals",
@@ -437,7 +499,12 @@ test("human approvals: status, approvers, challenges, enrolment and the signatur
   ).toEqual(expect.arrayContaining(["run_id", "environment", "approver", "project", "org"]));
   expectKeys(
     ok(op("/approvers/register-challenge", "post")),
-    keysOf<WireRegisterChallenge>({ challenge: true, rp_id: true, expires_at: true }),
+    keysOf<WireRegisterChallenge>({
+      challenge: true,
+      rp_id: true,
+      expires_at: true,
+      attestation: true,
+    }),
   );
   expectKeys(
     ok(op("/approvers/enrolments", "post")),
@@ -520,5 +587,38 @@ test("incident_status", () => {
     "reason",
     "flagged_by",
     "flagged_at",
+  ]);
+});
+
+test("sandbox_usage: the days and totals the Usage page reads", () => {
+  const o = op("/usage/sandbox", "get");
+  expect((o.parameters ?? []).map((p) => p.name)).toEqual(
+    expect.arrayContaining(["days", "group_by"]),
+  );
+  const out = ok(o);
+  expectKeys(
+    out,
+    keysOf<Omit<WireSandboxUsage, "projects">>({
+      days: true,
+      total_seconds: true,
+      total_minutes: true,
+    }),
+  );
+  // `projects` is optional: only an answer to group_by=project has it.
+  expect(Object.keys(out.properties!)).toContain("projects");
+  expectKeys(out.properties!.projects!.items!, [
+    "project_id",
+    "project_slug",
+    "project_name",
+    "days",
+    "total_seconds",
+    "total_minutes",
+  ]);
+  expectKeys(out.properties!.days!.items!, [
+    "day",
+    "sandbox_seconds",
+    "sandbox_minutes",
+    "attempts",
+    "estimated_attempts",
   ]);
 });

@@ -1,3 +1,4 @@
+import { parse as parseYaml } from "yaml";
 import { buildActEvent } from "../src/run/act-event";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -40,7 +41,7 @@ afterAll(() => {
 
 /** A stand-in for act, as in run-workflow.test.ts: events for the job, outputs, exit per job id. */
 const FAKE_ACT = String.raw`#!/bin/sh
-J=""; W=""
+J=""; W=""; ARGS="$*"
 while [ $# -gt 0 ]; do
   case "$1" in -j) J=$2; shift;; -W) W=$2; shift;; esac
   shift
@@ -48,10 +49,29 @@ done
 R=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$R/seen" "$R/outputs"
 cp "$W" "$R/seen/$J.yml"
+cp "$W" "$R/seen/$J.$$.all.yml"
 ev() { printf '{"jobID":"%s","level":"info","msg":"%s","step":"%s","stepid":["--setup-job"],"time":"t"%s}\n' "$1" "$2" "$3" "$4"; }
 ev stubjob "stub" "Set up job" ',"stepResult":"success"'
 ev "$J" "Run" "Set up job" ""
+case "$ARGS" in *ACTIONS_CACHE_URL*)
+  printf '{"jobID":"%s","raw_output":true,"msg":"ARGV %s\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' "$J" "$ARGS" ;;
+esac
 ev "$J" "ok" "Set up job" ',"stepResult":"success"'
+case "$J" in
+  noisy)
+    # Built first and written in one go, after a pause, so the controller's first read sees the
+    # whole burst and the cap (not a lucky early poll) decides what survives.
+    out=""; i=0
+    while [ $i -lt 400 ]; do
+      out="$out$(printf '{"jobID":"noisy","raw_output":true,"msg":"line %s of noisy output padded to be long enough\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}' "$i")
+"
+      i=$((i+1))
+    done
+    sleep 1
+    printf '%s' "$out" ;;
+  forger)
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[longshore: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+esac
 case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
   slow) sleep 1 ;;
@@ -127,6 +147,7 @@ function sourceFor(gh: ReturnType<typeof makeGithub>, tarball: Uint8Array) {
 async function makeScheduler(
   gh: ReturnType<typeof makeGithub>,
   provider: Provider = world.provider(),
+  runnerOpts: Partial<Parameters<typeof createActRunner>[0]> = {},
 ) {
   const act = await actTarball();
   const tarball = await repoTarball();
@@ -140,6 +161,7 @@ async function makeScheduler(
       act,
       planRoot: root,
       pollMs: 30,
+      ...runnerOpts,
     }),
     // One at a time: the fake provider shares one host directory between sandboxes (planRoot).
     globalCap: 1,
@@ -234,6 +256,31 @@ describe("the server path: poll, plan, schedule, run", () => {
       expect(att).toMatchObject({ state: "success", leaseOwner: null });
       // the class the job ran as is recorded for the secrets vault: a push to main is protected
       expect(att?.trustClass).toBe("protected");
+      // the sandbox's own life is recorded: created after the attempt started, destroyed (and
+      // confirmed) before it finished, so sandbox-minutes do not include any waiting
+      expect(att!.sandboxCreatedAt).toBeNumber();
+      expect(att!.sandboxDestroyedAt).toBeNumber();
+      expect(att!.sandboxCreatedAt!).toBeGreaterThanOrEqual(att!.startedAt!);
+      expect(att!.sandboxDestroyedAt!).toBeGreaterThanOrEqual(att!.sandboxCreatedAt!);
+      expect(att!.sandboxDestroyedAt!).toBeLessThanOrEqual(att!.finishedAt!);
+    }
+    // and shown: in get_run and in the attempt's final event
+    const token = (await mintToken(db, scope, "reader")).secret;
+    const got = await dispatch({ registry, db }, { kind: "bearer", token }, "get_run", {
+      run_id: run!.id,
+    });
+    const att0 = (got.ok ? (got.output as any) : undefined).jobs[0].attempts[0];
+    expect(att0.sandbox_created_at).toBeString();
+    expect(att0.sandbox_destroyed_at).toBeString();
+    expect(att0.sandbox_seconds).toBeNumber();
+    const finalEvents = (await listEvents(db, scope, { after: 0, limit: 500 })).filter(
+      (e) => e.type === "job.state_changed" && JSON.parse(e.payload).level === "attempt",
+    );
+    const done = finalEvents.map((e) => JSON.parse(e.payload)).filter((p) => p.to === "success");
+    expect(done.length).toBeGreaterThan(0);
+    for (const p of done) {
+      expect(p.sandbox_created_at).toBeString();
+      expect(p.sandbox_destroyed_at).toBeString();
     }
   });
 
@@ -1495,5 +1542,246 @@ jobs:
     );
     await ingestAs(gh);
     expect(JSON.parse((await listRuns(db, scope))[0]!.plan!).headCheckouts).toEqual(["risky"]);
+  });
+});
+
+describe("the job cache credential", () => {
+  test("it is never in the log act writes (act echoes its arguments), never stored with the plan, and ends with the attempt", async () => {
+    const { CacheGrants } = await import("../src/cache/grants");
+    const { jobCacheProvider } = await import("../src/cache/job");
+    const { createCacheService } = await import("../src/cache/service");
+    const { FsCacheStore } = await import("../src/cache/store");
+    const service = createCacheService({
+      db,
+      store: new FsCacheStore(join(tmp, "cache-blobs")),
+      grants: new CacheGrants(),
+      orgQuotaBytes: 1024 * 1024,
+      maxEntryBytes: 1024 * 1024,
+      baseUrl: "http://host.docker.internal:8080",
+    });
+    const real = jobCacheProvider(db, service);
+    const issued: { url: string; secret: string }[] = [];
+    const cache: typeof real = async (req) => {
+      const g = await real(req);
+      if (g) issued.push({ url: g.url, secret: g.secret });
+      return g;
+    };
+    const gh = makeGithub();
+    gh.state.files.set("*", PIPELINE);
+    await ingest(gh);
+    const sched = await makeScheduler(gh, world.provider(), { cache, egress: "open" });
+    await drain(sched);
+    // Every job got a grant, and the argv really carried the URL (the fake act echoed it).
+    expect(issued.length).toBeGreaterThanOrEqual(3);
+    const [run] = await listRuns(db, scope);
+    let echoed = 0;
+    for (const j of await listJobs(db, scope, run!.id)) {
+      for (const a of await listAttempts(db, scope, j.id)) {
+        const log = Buffer.concat((await readLog(db, scope, a.id)).map((c) => c.bytes)).toString();
+        for (const g of issued) {
+          expect(log).not.toContain(g.secret);
+          // Nor the plan stored for re-attach.
+          expect(a.plan ?? "").not.toContain(g.secret);
+          expect(a.plan ?? "").not.toContain("_cache/");
+        }
+        if (log.includes("ARGV")) {
+          echoed++;
+          expect(log).toContain("ACTIONS_CACHE_URL=http://host.docker.internal:8080/_cache/");
+        }
+      }
+    }
+    expect(echoed).toBeGreaterThanOrEqual(1);
+    // The credentials died with their attempts.
+    for (const g of issued) expect(service.grants.verify(g.secret)).toBeUndefined();
+  });
+});
+
+describe("cut markers are metadata, never text in the log (#56)", () => {
+  const NOISE = `name: cuts
+on:
+  push:
+    branches: [main]
+jobs:
+  noisy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo noisy
+  forger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo forger
+`;
+  test("a noisy job gets no marker text in its log, and a job printing the marker text records no cut", async () => {
+    // Small head and tail so the cut is cheap to provoke.
+    const small = new FakeWorld({
+      hostPaths: [tmp],
+      exec: { tickSeconds: 1, head: 2000, tail: 3000, slack: 500 },
+    });
+    try {
+      const gh = makeGithub();
+      gh.state.files.set("*", NOISE);
+      await ingest(gh);
+      const sched = await makeScheduler(gh, small.provider());
+      await drain(sched);
+      const [run] = await listRuns(db, scope);
+      const jobs = await listJobs(db, scope, run!.id);
+      const text = async (key: string) => {
+        const job = jobs.find((j) => j.jobKey === key)!;
+        const [a] = await listAttempts(db, scope, job.id);
+        const log = Buffer.concat((await readLog(db, scope, a!.id)).map((c) => c.bytes)).toString();
+        return { job, attempt: a!, log };
+      };
+
+      const noisy = await text("noisy");
+      expect(noisy.job.state).toBe("success");
+      // Whatever the cap did, no marker text is injected into the log.
+      expect(noisy.log).not.toMatch(/bytes of output omitted/);
+      expect(noisy.log).toContain("line 0 of noisy output");
+      expect(noisy.log).toContain("line 399 of noisy output");
+      // Cuts, if the sandbox made any (it only drops output a reader had not yet fetched),
+      // are records delivered out of band by the API, placed inside the stored log.
+      const token = (await mintToken(db, { orgId: scope.orgId }, "reader")).secret;
+      const res = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: noisy.job.id,
+        attempt: 1,
+      });
+      expect(res.ok).toBe(true);
+      const cuts = (res.ok ? res.output : { cuts: [] }) as {
+        cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+      };
+      for (const c of cuts.cuts) {
+        expect(c.omitted_bytes).toBeGreaterThan(0);
+        expect(c.at_offset).toBeLessThanOrEqual(Buffer.byteLength(noisy.log));
+        expect(c.reason).toBe("output cap");
+      }
+
+      // A job that prints the old marker text gets ordinary text and no cut.
+      const forger = await text("forger");
+      expect(forger.job.state).toBe("success");
+      expect(forger.log).toContain("[longshore: 99999 bytes of output omitted]");
+      const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: forger.job.id,
+        attempt: 1,
+      });
+      expect(none.ok ? (none.output as { cuts: unknown[] }).cuts : [1]).toEqual([]);
+    } finally {
+      small.dispose();
+    }
+  });
+});
+
+describe("a job split across sandboxes", () => {
+  const SUITES = `name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - id: setup
+        name: Setup
+        run: echo setup
+      - name: Rules tests
+        run: echo rules
+      - name: Rest tests
+        run: echo rest
+      - name: Audit engine tests
+        run: echo audit
+  gate:
+    needs: [tests]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo gate
+`;
+  const SPLITS = [
+    {
+      job: "tests",
+      shards: [
+        { steps: ["Audit engine tests"] },
+        { steps: ["Rules tests"] },
+        { steps: ["Rest tests"] },
+      ],
+    },
+  ];
+
+  test("three shards run in three sandboxes, each with only its own suite, and the dependent waits for all of them", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(gh, CFG({ splits: SPLITS }));
+    const [run] = await listRuns(db, scope);
+    const jobs = await listJobs(db, scope, run!.id);
+    expect(jobs.map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests[0]",
+      "tests[1]",
+      "tests[2]",
+    ]);
+    expect(jobs.filter((j) => j.name === "Tests")).toHaveLength(3);
+    const specs: string[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec.name);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    const after = await listJobs(db, scope, run!.id);
+    expect(after.map((j) => [j.jobKey, j.state]).toSorted()).toEqual([
+      ["gate", "success"],
+      ["tests[0]", "success"],
+      ["tests[1]", "success"],
+      ["tests[2]", "success"],
+    ]);
+    expect(new Set(specs).size).toBe(4); // one sandbox per shard, and one for the dependent
+    // each shard's workflow runs exactly one suite
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(join(root, "seen")).filter(
+      (f) => f.startsWith("tests.") && f.endsWith(".all.yml"),
+    );
+    expect(files).toHaveLength(3);
+    const ran = files.map((f) => {
+      const wf = parseYaml(readFileSync(join(root, "seen", f), "utf8")) as {
+        jobs: { tests: { steps: { name: string; if?: unknown }[] } };
+      };
+      return wf.jobs.tests.steps
+        .filter((s) => s.name.endsWith(" tests") && s.if !== false)
+        .map((s) => s.name);
+    });
+    expect(ran.map((r) => r.length)).toEqual([1, 1, 1]);
+    expect(new Set(ran.flat()).size).toBe(3);
+    // the gate ran after every shard finished
+    const finished = Math.max(
+      ...after.filter((j) => j.jobKey.startsWith("tests[")).map((j) => j.finishedAt ?? 0),
+    );
+    expect(after.find((j) => j.jobKey === "gate")!.startedAt!).toBeGreaterThanOrEqual(finished);
+  });
+
+  test("with no rule the same workflow runs as one job, as before", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(gh, CFG());
+    const [run] = await listRuns(db, scope);
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests",
+    ]);
+  });
+
+  test("a rule that cannot apply is recorded on the run, and the job runs whole", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(
+      gh,
+      CFG({ splits: [{ job: "missing", shards: [{ steps: ["a"] }, { steps: ["b"] }] }] }),
+    );
+    const [run] = await listRuns(db, scope);
+    expect(JSON.parse(run!.plan!).splitNotices.join()).toContain("no such job");
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests",
+    ]);
   });
 });

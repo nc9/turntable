@@ -1,10 +1,16 @@
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
+import { GithubClient } from "../poll/github";
 import { policyCommand as actionPolicyCommand } from "../pins/cli";
 import {
   POLICY_USAGE,
+  setCacheReleaseRestorePolicy,
   setChecksModePolicy,
+  setOidcAudiencesPolicy,
+  showOidcAudiences,
+  setIngestPolicy,
+  showIngest,
   setSigningPolicy,
   showChecksMode,
   showSigning,
@@ -14,6 +20,30 @@ import {
   showPolicy,
 } from "./policy-cli";
 
+/** `--var NAME=value` (repeatable) into a record; a repeat of a name or a missing `=` is an error. */
+function parseVars(raw: string[] | undefined): Record<string, string> | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const item of raw) {
+    const eq = item.indexOf("=");
+    if (eq <= 0) throw new Error(`--var wants NAME=value, got ${JSON.stringify(item)}`);
+    const name = item.slice(0, eq);
+    if (Object.hasOwn(out, name)) throw new Error(`--var ${name} is given twice`);
+    out[name] = item.slice(eq + 1);
+  }
+  return out;
+}
+
+/** `--splits-json '<json>'` into the value the settings schema validates; bad JSON is an error. */
+function parseSplits(raw: string | undefined): unknown {
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("--splits-json is not valid JSON");
+  }
+}
+
 async function ownPolicy(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -22,6 +52,18 @@ async function ownPolicy(args: string[]): Promise<void> {
       project: { type: "string" },
       egress: { type: "string" },
       "checks-mode": { type: "string" },
+      "oidc-audiences": { type: "string" },
+      ingest: { type: "string" },
+      workflow: { type: "string" },
+      "default-branch": { type: "string" },
+      "pr-mode": { type: "string" },
+      authors: { type: "string" },
+      "merge-queue": { type: "boolean", default: false },
+      "every-push": { type: "boolean", default: false },
+      "cache-release-restore": { type: "string" },
+      "tag-refs": { type: "string" },
+      var: { type: "string", multiple: true },
+      "splits-json": { type: "string" },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -49,6 +91,15 @@ async function ownPolicy(args: string[]): Promise<void> {
       }
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
+      for (const o of await showOidcAudiences(db, values.org))
+        console.log(
+          `oidc-audiences ${o.project}: ${o.audiences ? o.audiences.join(", ") || "(none allowed)" : "any"}`,
+        );
+      for (const i of await showIngest(db, values.org)) {
+        console.log(
+          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"}, vars ${Object.keys(i.ingest.vars ?? {}).join(",") || "(none)"}, splits ${(i.ingest.splits ?? []).map((s) => `${s.job}x${s.shards.length}`).join(",") || "(none)"})` : "off"}`,
+        );
+      }
     } else if (
       values["release-refs"] !== undefined ||
       values["signing-key"] !== undefined ||
@@ -68,6 +119,51 @@ async function ownPolicy(args: string[]): Promise<void> {
       })) {
         console.error(
           `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}; approval environment ${r.environment}`,
+        );
+      }
+    } else if (values.ingest !== undefined) {
+      const r = await setIngestPolicy(db, values.org, values.project, values.ingest, {
+        workflow: values.workflow,
+        defaultBranch: values["default-branch"],
+        prMode: values["pr-mode"],
+        authors: values.authors
+          ?.split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+        mergeQueue: values["merge-queue"],
+        vars: parseVars(values.var),
+        splits: parseSplits(values["splits-json"]),
+        tagRefs: values["tag-refs"]
+          ?.split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+        everyPush: values["every-push"],
+        // Asked once, now; the token (optional, for private repos) comes from the environment.
+        resolveDefaultBranch: (repo) =>
+          new GithubClient({
+            baseUrl: "https://api.github.com",
+            token: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+          }).repoDefaultBranch(repo),
+      });
+      console.error(`ingest ${r.project}: ${r.from ? "on" : "off"} -> ${r.to ? "on" : "off"}`);
+    } else if (values["cache-release-restore"] !== undefined) {
+      for (const r of await setCacheReleaseRestorePolicy(
+        db,
+        values.org,
+        values.project,
+        values["cache-release-restore"],
+      )) {
+        console.error(`cache-release-restore ${r.project}: ${r.from} -> ${r.to}`);
+      }
+    } else if (values["oidc-audiences"] !== undefined) {
+      for (const r of await setOidcAudiencesPolicy(
+        db,
+        values.org,
+        values.project,
+        values["oidc-audiences"],
+      )) {
+        console.error(
+          `oidc-audiences ${r.project}: ${r.from ? r.from.join(",") : "any"} -> ${r.to ? r.to.join(",") : "any"}`,
         );
       }
     } else if (values["checks-mode"] !== undefined) {
@@ -103,7 +199,9 @@ export async function policyCommand(args: string[]): Promise<void> {
   const ours =
     rest.includes("approve-run-min-role") ||
     rest.some((a) =>
-      /^--(egress|checks-mode|release-refs|signing-key|signing-environment)(=|$)/.test(a),
+      /^--(egress|checks-mode|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
+        a,
+      ),
     );
   if (sub === "set" && ours) return ownPolicy(args);
   if (sub === "show") {

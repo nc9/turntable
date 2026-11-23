@@ -19,12 +19,14 @@ import {
   type RunningProxy,
 } from "@longshore/proxy";
 import { dockerBridgeGateway } from "@longshore/provider-docker";
+import type { ProxyEndpoint } from "@longshore/provider-sdk";
 import { SecretRegistry } from "@longshore/redact";
 import type { SafeFetch } from "@longshore/net";
 import type { Db } from "../db";
 import {
   appendAudit,
   listPassthroughHosts,
+  listRepos,
   type PassthroughEntry,
   listProxyRules,
   type ProxyRuleRow,
@@ -38,8 +40,111 @@ import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../scheduler
 /** What a runner needs to put a job behind the proxy. */
 export interface ProxyAccess {
   /** The proxy as the provider's host reaches it (the provider gives the sandbox its own route). */
-  listen: { host: string; port: number };
+  listen: ProxyEndpoint;
   credential: AttemptCredential;
+  /**
+   * The attempt has vault rules, so it must run behind the proxy. Without them the proxy is only
+   * there to hold a GitHub token, and a job that gets none runs as if it were not here.
+   */
+  vaultRules: boolean;
+  /**
+   * Hands the proxy this attempt's GitHub installation token, minted once the job is planned. The
+   * proxy attaches it to requests to the run's own repository; the job never holds it.
+   */
+  setGithubToken(token: string | undefined): void;
+  /**
+   * Hands the proxy a way to mint this attempt's OIDC credential (see oidc/job-delivery). The
+   * proxy calls it per request, attaches the result to requests for the org's mint URL and keeps
+   * nothing; the job holds a placeholder.
+   */
+  setOidcMinter(mint: (() => string) | undefined): void;
+}
+
+/** The rule `secret` that means "this attempt's OIDC mint credential" (not a vault secret). */
+export const OIDC_CREDENTIAL_SECRET = "@oidc-credential";
+
+/** Where an org's OIDC issuer mints tokens. */
+export interface OidcTarget {
+  host: string;
+  port: number;
+  pathPrefix: string;
+}
+
+/** Whether the job's stored plan says it asked for an ID token. Unreadable means no. */
+export function plannedIdToken(planned: string | null | undefined): boolean {
+  if (!planned) return false;
+  try {
+    return (JSON.parse(planned) as { idToken?: unknown }).idToken === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The one rule that lets a job ask its own org's issuer for a token. Nothing else on that host. */
+export function oidcRules(t: OidcTarget): Rule[] {
+  return [
+    {
+      id: "oidc-mint",
+      host: t.host,
+      port: t.port,
+      methods: ["GET", "POST"],
+      pathPrefix: t.pathPrefix,
+      pathExact: true,
+      inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+      secret: OIDC_CREDENTIAL_SECRET,
+    },
+  ];
+}
+
+/** The rule `secret` that means "this attempt's GitHub token" (not a vault secret). */
+export const GITHUB_TOKEN_SECRET = "@github-token";
+
+/** A GitHub repository the run belongs to, with the installation its token comes from. */
+export interface GithubTarget {
+  owner: string;
+  repo: string;
+  installationId: string;
+}
+
+const SAFE_GH = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/**
+ * The rules that let a job use its own GitHub token without holding it: the API for this one
+ * repository (and GraphQL), and git over HTTPS for this one repository. Nothing else on GitHub.
+ */
+export function githubRules(t: GithubTarget): Rule[] {
+  if (!SAFE_GH.test(t.owner) || !SAFE_GH.test(t.repo)) return [];
+  const api = (id: string, pathPrefix: string, methods: string[]): Rule => ({
+    id,
+    host: "api.github.com",
+    methods,
+    pathPrefix,
+    inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+    secret: GITHUB_TOKEN_SECRET,
+    forwardHeaders: ["x-github-api-version"],
+  });
+  const git = (id: string, pathPrefix: string): Rule => ({
+    id,
+    host: "github.com",
+    methods: ["GET", "POST"],
+    pathPrefix,
+    inject: { type: "basic", username: "x-access-token" },
+    secret: GITHUB_TOKEN_SECRET,
+    forwardHeaders: ["git-protocol"],
+  });
+  const base = `/${t.owner}/${t.repo}`;
+  return [
+    api("github-api-repo", `/repos/${t.owner}/${t.repo}`, [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+    ]),
+    api("github-api-graphql", "/graphql", ["POST"]),
+    git("github-git", base),
+    git("github-git-dotgit", `${base}.git`),
+  ];
 }
 
 export interface SecretsProxyOptions {
@@ -57,6 +162,17 @@ export interface SecretsProxyOptions {
   port?: number;
   /** How the provider's host names this machine. Default `host.docker.internal`. */
   advertiseHost?: string;
+  /**
+   * Serve over TLS on a public name (for sandboxes in another provider's network, such as
+   * Daytona). The certificate is for `advertiseHost`.
+   */
+  tls?: { key: string; cert: string };
+  /** The port sandboxes are told to use, when it differs from the one bound (a platform that forwards). */
+  advertisePort?: number;
+  /** The endpoint's stable IPv4 addresses, for a provider that filters by address. */
+  advertiseAddresses?: readonly string[];
+  /** Limits on the listener (see the proxy's limits). */
+  limits?: Parameters<typeof startProxy>[0]["limits"];
   /** Test seams: where requests and passthrough tunnels really go. */
   upstream?: SafeFetch;
   tunnel?: (host: string, port: number) => Promise<net.Socket>;
@@ -67,6 +183,8 @@ export interface SecretsProxyOptions {
 interface Live {
   scope: Required<Scope>;
   redact: SecretRegistry;
+  githubToken?: string | undefined;
+  oidcMint?: (() => string) | undefined;
 }
 
 const toRule = (r: ProxyRuleRow): Rule => ({
@@ -122,6 +240,8 @@ export class SecretsProxy {
       audit,
       host: bind,
       port: o.port ?? 0,
+      ...(o.tls ? { tls: o.tls } : {}),
+      ...(o.limits ? { limits: o.limits } : {}),
       ...(o.upstream ? { upstream: o.upstream } : {}),
       ...(o.tunnel ? { tunnel: o.tunnel } : {}),
       ...(o.now ? { now: o.now } : {}),
@@ -145,6 +265,20 @@ export class SecretsProxy {
   async #resolve(scope: SecretScope, rule: Rule): Promise<ResolvedSecret> {
     const live = this.#live.get(scope.attemptId);
     if (!live || !rule.secret) return { ok: false, reason: "no_attempt" };
+    if (rule.secret === GITHUB_TOKEN_SECRET) {
+      // This attempt's own token, never a vault secret. Only the rules githubRules builds name it.
+      if (!live.githubToken) return { ok: false, reason: "no_github_token" };
+      live.redact.register(live.githubToken);
+      return { ok: true, value: live.githubToken };
+    }
+    if (rule.secret === OIDC_CREDENTIAL_SECRET) {
+      // This attempt's own mint credential, never a vault secret. Only oidcRules names it.
+      if (!live.oidcMint) return { ok: false, reason: "no_oidc_credential" };
+      // Minted now, for this request, and short-lived. Registered with the redactor all the same.
+      const credential = live.oidcMint();
+      live.redact.register(credential);
+      return { ok: true, value: credential };
+    }
     // Through the vault's one policy path, per request: class, scope, destination, rotation,
     // freeze and audit all apply. Nothing is read ahead of time.
     const r = await this.#o.vault.use({
@@ -180,6 +314,7 @@ export class SecretsProxy {
         port: e.port ?? null,
         method: e.method ?? null,
         rule: e.ruleId ?? null,
+        ...(e.detail ? { detail: e.detail } : {}),
       },
     });
   }
@@ -217,10 +352,11 @@ export class SecretsProxy {
   register(
     ctx: AttemptContext,
     rules: readonly Rule[],
-    o: { passthroughHosts: readonly PassthroughEntry[]; ttlMs: number },
+    o: { passthroughHosts: readonly PassthroughEntry[]; ttlMs: number; vaultRules?: boolean },
   ): { access: ProxyAccess; redact: SecretRegistry } {
     const redact = new SecretRegistry();
     this.#live.set(ctx.attempt.id, { scope: ctx.scope, redact });
+    const live = this.#live.get(ctx.attempt.id);
     const credential = this.#registry.register({
       attemptId: ctx.attempt.id,
       orgId: ctx.scope.orgId,
@@ -233,8 +369,21 @@ export class SecretsProxy {
     });
     return {
       access: {
-        listen: { host: this.#o.advertiseHost ?? "host.docker.internal", port: this.port },
+        listen: {
+          host: this.#o.advertiseHost ?? "host.docker.internal",
+          port: this.#o.advertisePort ?? this.port,
+          // The name the certificate is for, when this is a public TLS listener.
+          ...(this.#o.tls ? { tlsName: this.#o.advertiseHost ?? "host.docker.internal" } : {}),
+          ...(this.#o.advertiseAddresses ? { addresses: this.#o.advertiseAddresses } : {}),
+        },
         credential,
+        vaultRules: o.vaultRules ?? true,
+        setGithubToken: (token) => {
+          if (live) live.githubToken = token;
+        },
+        setOidcMinter: (mint) => {
+          if (live) live.oidcMint = mint;
+        },
       },
       redact,
     };
@@ -257,15 +406,28 @@ export interface SecretsProxyRunnerOptions {
   proxy: SecretsProxy;
   /** How long an attempt's credential lives. Default: the longest job plus a margin. */
   ttlMs?: number;
+  /**
+   * Where a run's GitHub token would come from: its bound repository and installation. Absent or
+   * returning nothing: no GitHub rules.
+   */
+  github?: (ctx: AttemptContext) => Promise<GithubTarget | undefined>;
+  /**
+   * The org's OIDC mint endpoint, for a class that may mint. Absent or returning nothing: no
+   * OIDC rule, so a job cannot reach the issuer through the proxy.
+   */
+  oidc?: (ctx: AttemptContext, klass: TrustClass) => Promise<OidcTarget | undefined>;
 }
 
 /**
  * Wraps a runner: registers the attempt's rules before it starts and revokes them after, in a
  * finally and at once when the attempt is aborted (cancel, timeout, lease loss).
- * - `untrusted_pr`, or any class that may not hold secrets: no proxy, no rules, egress unchanged.
- * - A project with no rules: no proxy.
- * - A re-attached attempt (its credential died with the old process): refused, fail closed, when
- *   the project has rules.
+ * - Vault rules (the project's `proxy_rules`) only for a class that may hold secrets; never for
+ *   `untrusted_pr`.
+ * - GitHub rules (the job's own token, for its own repository) for every class when the run is
+ *   bound to an installation. For `untrusted_pr` they are the ONLY rules.
+ * - No rules at all: no proxy, egress unchanged.
+ * - A re-attached attempt (its credential died with the old process) is refused, fail closed,
+ *   when it would have had rules.
  */
 export function withSecretsProxy(
   runner: AttemptRunner,
@@ -273,21 +435,33 @@ export function withSecretsProxy(
 ): AttemptRunner {
   return async (ctx): Promise<AttemptOutcome> => {
     const klass = parseTrust(ctx.run)?.class as TrustClass | undefined;
-    if (klass === undefined || klass === "untrusted_pr" || !credentialsFor(klass).secrets) {
-      return runner(ctx);
-    }
-    const rules = await o.proxy.rulesFor(ctx.scope);
+    if (klass === undefined) return runner(ctx);
+    const mayHoldSecrets = klass !== "untrusted_pr" && credentialsFor(klass).secrets;
+    const vaultRules = mayHoldSecrets ? await o.proxy.rulesFor(ctx.scope) : [];
+    const target = o.github ? await o.github(ctx) : undefined;
+    const ghRules = target ? githubRules(target) : [];
+    // The rule exists only for a job whose plan asked for an ID token, not for every job of a
+    // class that may mint.
+    const oidcTarget =
+      o.oidc && plannedIdToken(ctx.job.planned) ? await o.oidc(ctx, klass) : undefined;
+    const rules = [...vaultRules, ...ghRules, ...(oidcTarget ? oidcRules(oidcTarget) : [])];
     if (rules.length === 0) return runner(ctx);
     if (ctx.resume) {
+      // Vault rules: the credential died with the old process, so the job cannot be resumed. With
+      // GitHub rules only, the job may or may not have had a token; it carries on without the
+      // proxy (a token it held is unusable: its credential is gone), which can only fail closed.
+      if (vaultRules.length === 0) return runner(ctx);
       return {
         state: "infra_error",
         reason: "re-attached attempt lost its secrets-proxy credential; not resumed",
       };
     }
     const { access, redact } = o.proxy.register(ctx, rules, {
-      // Hosts with no rule are tunnelled only if the project listed them. No list, rule hosts only.
-      passthroughHosts: await o.proxy.passthroughFor(ctx.scope),
+      // Hosts with no rule are tunnelled only if the project listed them, and only for a class
+      // that may hold secrets. No list, rule hosts only.
+      passthroughHosts: mayHoldSecrets ? await o.proxy.passthroughFor(ctx.scope) : [],
       ttlMs: o.ttlMs ?? 5 * 3600 * 1000,
+      vaultRules: vaultRules.length > 0,
     });
     const revoke = (): void => o.proxy.release(ctx.attempt.id);
     ctx.signal.addEventListener("abort", revoke, { once: true });
@@ -297,5 +471,20 @@ export function withSecretsProxy(
       ctx.signal.removeEventListener("abort", revoke);
       revoke();
     }
+  };
+}
+
+/**
+ * The run's GitHub repository and installation, from the project's binding: what a job token is
+ * minted for. Nothing for a local run, a project with no binding, or a binding with no installation.
+ */
+export function githubTargetOf(
+  db: Db,
+): (ctx: Pick<AttemptContext, "run" | "scope">) => Promise<GithubTarget | undefined> {
+  return async ({ run, scope }) => {
+    if (run.local) return undefined;
+    const bound = (await listRepos(db, scope))[0];
+    if (!bound || bound.forge !== "github" || !bound.installationId) return undefined;
+    return { owner: bound.owner, repo: bound.repo, installationId: bound.installationId };
   };
 }

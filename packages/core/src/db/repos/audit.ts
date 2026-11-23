@@ -27,35 +27,41 @@ export interface AuditEntryInput {
  * and each entry's hash covers the entry before it.
  */
 export function appendAudit(db: Db, scope: Scope, entry: AuditEntryInput): Promise<void> {
-  return db.transaction(async (tx) => {
-    let input = JSON.stringify(entry.input ?? null);
-    if (input.length > AUDIT_INPUT_MAX) input = `${input.slice(0, AUDIT_INPUT_MAX)}...(truncated)`;
-    const [head] = await tx.orm
-      .select({ seq: s.auditLog.seq, hash: s.auditLog.hash })
-      .from(s.auditLog)
-      .where(and(eq(s.auditLog.orgId, scope.orgId), isNotNull(s.auditLog.seq)))
-      .orderBy(desc(s.auditLog.seq))
-      .limit(1);
-    const fields: ChainFields = {
-      id: ulid(),
-      orgId: scope.orgId,
-      projectId: scope.projectId ?? null,
-      seq: (head?.seq ?? 0) + 1,
-      principalKind: entry.principalKind,
-      principalId: entry.principalId,
-      op: entry.op,
-      effect: entry.effect,
-      outcome: entry.outcome,
-      input,
-      createdAt: Date.now(),
-    };
-    const prevHash = head?.hash ?? GENESIS_HASH;
-    await tx.orm.insert(s.auditLog).values({
-      ...fields,
-      prevHash,
-      hash: entryHash(prevHash, fields),
-    });
-  });
+  // Named by org: on Postgres, appends to one org's chain from this process queue instead of
+  // colliding under SERIALIZABLE (see Db.transaction).
+  return db.transaction(
+    async (tx) => {
+      let input = JSON.stringify(entry.input ?? null);
+      if (input.length > AUDIT_INPUT_MAX)
+        input = `${input.slice(0, AUDIT_INPUT_MAX)}...(truncated)`;
+      const [head] = await tx.orm
+        .select({ seq: s.auditLog.seq, hash: s.auditLog.hash })
+        .from(s.auditLog)
+        .where(and(eq(s.auditLog.orgId, scope.orgId), isNotNull(s.auditLog.seq)))
+        .orderBy(desc(s.auditLog.seq))
+        .limit(1);
+      const fields: ChainFields = {
+        id: ulid(),
+        orgId: scope.orgId,
+        projectId: scope.projectId ?? null,
+        seq: (head?.seq ?? 0) + 1,
+        principalKind: entry.principalKind,
+        principalId: entry.principalId,
+        op: entry.op,
+        effect: entry.effect,
+        outcome: entry.outcome,
+        input,
+        createdAt: Date.now(),
+      };
+      const prevHash = head?.hash ?? GENESIS_HASH;
+      await tx.orm.insert(s.auditLog).values({
+        ...fields,
+        prevHash,
+        hash: entryHash(prevHash, fields),
+      });
+    },
+    { lock: `audit:${scope.orgId}` },
+  );
 }
 
 export function listAudit(db: Db, scope: Scope, opts: { limit?: number } = {}) {

@@ -1,6 +1,7 @@
 import {
   githubContext,
   localActionDir,
+  matchesPatterns,
   planWorkflow,
   workflowHeadCheckouts,
   type Value,
@@ -10,13 +11,16 @@ import { createHash } from "node:crypto";
 import { parse } from "yaml";
 import type { Db } from "../db";
 import {
+  appendAudit,
   bindRepo,
   countPolledSince,
   countWaitingRuns,
   getProjectEgress,
   createPolledRun,
   lastPolledSha,
+  clearPollMarker,
   markPollSkipped,
+  pollMarkedAt,
   pollSeen,
   type Superseded,
   ensureLocalTenant,
@@ -30,7 +34,8 @@ import {
 import { assertRepoRelative, MAX_REPO_FILE_BYTES } from "../run/safe-read";
 import type { PollConfig, PollRepoConfig } from "./config";
 import { decideRun, type ForgePermission, needsApproval } from "../trust";
-import type { GithubClient } from "./github";
+import type { GithubClient, TagRuleset } from "./github";
+import { patternProtected, protectingRulesets, type TagProtection } from "./tag-protection";
 
 export type Candidate = {
   /** For a pull request: the base branch it targets. */
@@ -49,7 +54,48 @@ export type Candidate = {
   permission?: ForgePermission | "unknown";
   allowlisted?: boolean;
   forgeProtected?: boolean;
+  /** The tag name, for a run made from a tag ref. */
+  tag?: string;
+  /** Whether a ruleset restricts creating this tag; a tag that is not protected waits for approval. */
+  tagProtection?: TagProtection;
+  /** The annotated tag's tagger name: display only (see `facts.taggerLabel`), never the actor. */
+  taggerLabel?: string;
+  /** A push's `before` and where it came from (see `resolveBefore`). */
+  before?: string | undefined;
+  beforeSource?: BeforeSource;
 };
+
+/** Most missed default-branch pushes one poll turns into runs when `everyPush` is on. */
+const MAX_GAP_PUSHES = 5;
+
+/** Where a push run's `before` came from, recorded in the run's trust facts. */
+export type BeforeSource = "events" | "first_parent" | "last_polled" | "none";
+
+/**
+ * GitHub's `before` for a default-branch push to `sha`, as close as the API lets us get, in order:
+ * (a) the events API's PushEvent for that head (GitHub's own value, but delayed and bounded);
+ * (b) the commit's first parent when it has exactly one (right for a one-commit push, the squash
+ *     merge case; a multi-commit fast-forward would have an older `before`);
+ * (c) the last sha the poller handled for the repo, which spans every push it missed.
+ * The source is recorded so a divergence from GitHub can be told apart.
+ */
+async function resolveBefore(
+  deps: IngestDeps,
+  cfg: PollRepoConfig,
+  scope: Required<Scope>,
+  events: () => Promise<{ ref: string; head: string; before: string }[]>,
+  sha: string,
+): Promise<{ before: string | undefined; source: BeforeSource }> {
+  const ref = `refs/heads/${cfg.defaultBranch}`;
+  const ev = (await events()).find((e) => e.ref === ref && e.head === sha.toLowerCase());
+  if (ev) return { before: ev.before, source: "events" };
+  const info = await deps.github.commitInfo(cfg.repo, sha);
+  if (info.parents.length === 1) return { before: info.parents[0], source: "first_parent" };
+  const last = await lastPolledSha(deps.db, scope, cfg.repo, cfg.workflow, "push");
+  return last && last !== sha
+    ? { before: last, source: "last_polled" }
+    : { before: undefined, source: "none" };
+}
 
 export type GateVerdict = { ok: true } | { ok: false; reason: string };
 
@@ -163,6 +209,8 @@ export type IngestDeps = {
    * full queue is not re-examined (and re-reported) every poll. Cleared once room opens up.
    */
   overCap?: Set<string>;
+  /** Tag facts kept between polls by the long-lived poller. A poll with none keeps its own. */
+  tagCaches?: TagCaches;
 };
 
 async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
@@ -359,6 +407,266 @@ async function queueCandidates(
   }
 }
 
+/** Most UNSEEN tags one poll turns into candidates. Seen ones cost nothing and are not counted. */
+const MAX_UNSEEN_TAGS_PER_POLL = 10;
+/** Most forge requests (tag objects, history pages, rulesets) one poll spends on tags. */
+const MAX_TAG_REQUESTS_PER_POLL = 100;
+/** How far down the default branch's first-parent history a tagged commit may be. */
+const FIRST_PARENT_DEPTH = 1000;
+/** How long a repo's rulesets are believed. */
+const RULESET_TTL_MS = 60_000;
+
+/** What the poller remembers about tags between polls. All of it is about immutable things or short-lived. */
+export type TagCaches = {
+  /** Annotated tag objects, peeled: they never change. */
+  peeled: Map<string, { sha: string; tagger: string | null } | null>;
+  /** Only a reading that protects none of the repo's patterns is kept (see `tagCandidates`). */
+  rulesets: Map<string, { at: number; value: TagRuleset[] | "unknown" }>;
+  /** When each tag name was first listed, by `repo\ntag`: what the persisted marker says. */
+  listed: Map<string, number>;
+  /** First-parent history by default head sha (a head's history never changes). */
+  chains: Map<string, Set<string> | "unknown">;
+};
+export const newTagCaches = (): TagCaches => ({
+  peeled: new Map(),
+  rulesets: new Map(),
+  listed: new Map(),
+  chains: new Map(),
+});
+
+/** The literal start of one pattern after `refs/tags/`, to narrow the listing to that pattern. */
+function patternPrefix(pattern: string): string {
+  const rest = pattern.slice("refs/tags/".length);
+  const cut = rest.search(/[*?]/);
+  return cut < 0 ? rest : rest.slice(0, cut);
+}
+
+/**
+ * Tag candidates, when the project opted in with `tagRefs`. A tag is a name anyone with write
+ * access can create or move, so a run is made for one only when all of this holds, each fact
+ * fetched now:
+ *  - it matches a pattern (listed per pattern, filtered before any tag object is read);
+ *  - it is new: (name, commit) not seen. Seen tags are skipped before anything is counted, and a
+ *    poll stops after a few UNSEEN ones, so old tags never starve new ones;
+ *  - its name was not seen at another commit (a moved tag creates nothing and is audited);
+ *  - its commit is on the default branch's FIRST-PARENT history (or was itself ingested as a
+ *    default branch push), so a commit that only came in with a merged branch, and a commit on an
+ *    unmerged branch, never become a release run;
+ *  - the run's actor is the tag's creator (an annotated tag's tagger, else unknown), never the
+ *    commit's author.
+ * Whether the run starts at once or waits for approval depends on whether a ruleset protects the
+ * pattern (see tag-protection.ts); the class itself is decided later by the trust decision.
+ */
+async function tagCandidates(
+  deps: IngestDeps,
+  cfg: PollRepoConfig,
+  scope: Required<Scope>,
+  defaultHead: string,
+  out: Candidate[],
+  result: IngestResult,
+): Promise<void> {
+  const repo = cfg.repo;
+  const now = (deps.now ?? Date.now)();
+  const caches = (deps.tagCaches ??= newTagCaches());
+  let requests = 0;
+  const spent = (n = 1): boolean => (requests += n) > MAX_TAG_REQUESTS_PER_POLL;
+
+  // The rulesets are read FIRST, then the tags are listed: a tag that is in a listing taken after
+  // protection was seen either existed before it or was created under it, and the marker below
+  // says which. A reading that shows protection is never kept for a later poll (a ruleset can be
+  // loosened or deleted at any moment); one that shows none may be, for a minute.
+  let rulesets = caches.rulesets.get(repo);
+  if (!rulesets || now - rulesets.at > RULESET_TTL_MS) {
+    const value = await deps.github.tagRulesets(repo);
+    spent(2);
+    rulesets = { at: now, value };
+    const protectsSomething = cfg.tagRefs.some((p) => patternProtected(value, p));
+    if (protectsSomething) caches.rulesets.delete(repo);
+    else caches.rulesets.set(repo, rulesets);
+  }
+  const rulesetValue = rulesets.value;
+  // Since when each pattern has been protected, persisted per (repo, pattern); cleared at the first
+  // poll that does not see protection, so a ruleset that lapsed and came back starts again.
+  const since = new Map<string, number>();
+  for (const pattern of cfg.tagRefs) {
+    const marker = {
+      repo,
+      workflowPath: cfg.workflow,
+      event: `tag-protected:${pattern}`,
+      sha: "since",
+    };
+    const covering = protectingRulesets(rulesetValue, pattern);
+    if (covering.length === 0) {
+      await clearPollMarker(deps.db, scope, marker);
+      continue;
+    }
+    await markPollSkipped(deps.db, scope, { ...marker, now });
+    let from = (await pollMarkedAt(deps.db, scope, marker)) ?? now;
+    // A ruleset edited after we first saw it protecting may not have protected before the edit
+    // (it was loosened, tightened or replaced): start the clock again, so every tag listed up to
+    // this poll counts as predating. Only times this server observed are evidence: a tag's own
+    // dates (the tagger's, the commit's) are chosen by whoever creates it.
+    const changed = Math.max(0, ...covering.map((r) => r.updatedAt ?? 0));
+    if (changed > from) {
+      await clearPollMarker(deps.db, scope, marker);
+      await markPollSkipped(deps.db, scope, { ...marker, now });
+      from = (await pollMarkedAt(deps.db, scope, marker)) ?? now;
+    }
+    since.set(pattern, from);
+  }
+
+  // Listed per pattern (a narrow listing each), filtered by pattern before any dereferencing.
+  const found = new Map<
+    string,
+    { ref: string; type: "commit" | "tag"; sha: string; patterns: string[] }
+  >();
+  for (const pattern of cfg.tagRefs) {
+    if (spent()) break;
+    for (const r of await deps.github.tagRefs(repo, patternPrefix(pattern))) {
+      if (!matchesPatterns([pattern], r.ref)) continue;
+      const hit = found.get(r.ref);
+      if (hit) hit.patterns.push(pattern);
+      else found.set(r.ref, { ...r, patterns: [pattern] });
+    }
+  }
+
+  // When each tag was first listed (a persisted marker; the first poll to list it writes it).
+  const firstListed = new Map<string, number>();
+  for (const ref of found.keys()) {
+    const name = ref.slice("refs/tags/".length);
+    const memo = `${repo}\n${name}`;
+    let at = caches.listed.get(memo);
+    if (at === undefined) {
+      const marker = {
+        repo,
+        workflowPath: cfg.workflow,
+        event: `tag-listed:${name}`,
+        sha: "first",
+      };
+      await markPollSkipped(deps.db, scope, { ...marker, now });
+      at = (await pollMarkedAt(deps.db, scope, marker)) ?? now;
+      caches.listed.set(memo, at);
+    }
+    firstListed.set(ref, at);
+  }
+
+  let unseen = 0;
+  for (const [ref, raw] of [...found].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
+    if (unseen >= MAX_UNSEEN_TAGS_PER_POLL || requests >= MAX_TAG_REQUESTS_PER_POLL) break;
+    const name = ref.slice("refs/tags/".length);
+    const what = `tag ${name}`;
+    // The commit: known from the listing for a lightweight tag; an annotated tag is peeled once
+    // (the object never changes, so it is remembered).
+    let sha = raw.sha;
+    let tagger: string | null = null;
+    if (raw.type === "tag") {
+      let peeled = caches.peeled.get(raw.sha);
+      if (peeled === undefined) {
+        if (spent()) break;
+        peeled = (await deps.github.peelTag(repo, raw.sha)) ?? null;
+        caches.peeled.set(raw.sha, peeled);
+      }
+      if (peeled === null) continue;
+      sha = peeled.sha;
+      tagger = peeled.tagger;
+    }
+    const seenEvent = `tag:${name}`;
+    const key = { repo, workflowPath: cfg.workflow, event: seenEvent, sha };
+    if (await pollSeen(deps.db, scope, key)) continue; // seen: free
+    const prior = await lastPolledSha(deps.db, scope, repo, cfg.workflow, seenEvent);
+    if (prior !== undefined && prior !== sha) {
+      // Said once per (tag, new commit): the marker is the memory.
+      const fresh = await markPollSkipped(deps.db, scope, {
+        repo,
+        workflowPath: cfg.workflow,
+        event: `tag-moved:${name}`,
+        sha,
+        now,
+      });
+      if (fresh) {
+        result.refused.push({
+          what,
+          reason: `tag_moved: was ${prior.slice(0, 7)}, now ${sha.slice(0, 7)}`,
+        });
+        await appendAudit(deps.db, scope, {
+          principalKind: "system",
+          principalId: "poller",
+          op: "poll_tag_moved",
+          effect: "read",
+          outcome: "tag_moved",
+          input: { repo, tag: name, was: prior, now: sha },
+        }).catch(() => {});
+      }
+      continue;
+    }
+    unseen += 1;
+
+    // On the default branch's first-parent history: the head itself, a commit we already ingested
+    // as a default-branch push, or a commit on the chain walked from the head.
+    let onMainline = sha === defaultHead;
+    if (!onMainline) {
+      onMainline = await pollSeen(deps.db, scope, {
+        repo,
+        workflowPath: cfg.workflow,
+        event: "push",
+        sha,
+      });
+    }
+    if (!onMainline) {
+      let chain = caches.chains.get(defaultHead);
+      if (chain === undefined) {
+        if (spent(Math.ceil(FIRST_PARENT_DEPTH / 100))) break;
+        chain =
+          (await deps.github.firstParentChain(repo, defaultHead, FIRST_PARENT_DEPTH)) ?? "unknown";
+        caches.chains.set(defaultHead, chain);
+      }
+      onMainline = chain !== "unknown" && chain.has(sha);
+    }
+    if (!onMainline) {
+      // Not remembered: it may be merged (or the history walked further) later.
+      result.refused.push({
+        what,
+        reason: `its commit is not on the first-parent history of ${cfg.defaultBranch} (within ${FIRST_PARENT_DEPTH} commits)`,
+      });
+      continue;
+    }
+
+    const info = await deps.github.commitInfo(repo, sha);
+    // Is the creation of this tag restricted to admins by a ruleset, and did that hold when the tag
+    // was made? Every pattern the tag matches must be protected now, and the tag must first have
+    // been listed strictly after protection was first seen (or last changed) for that pattern,
+    // else it may predate it. Unknown counts as no.
+    const protectedNow = raw.patterns.every((p) => since.has(p));
+    const afterProtection = raw.patterns.every((p) => {
+      const from = since.get(p);
+      return from !== undefined && (firstListed.get(ref) ?? 0) > from;
+    });
+    const protection: TagProtection =
+      protectedNow && afterProtection
+        ? "ruleset"
+        : protectedNow
+          ? "predates"
+          : rulesetValue === "unknown"
+            ? "unknown"
+            : "none";
+
+    out.push({
+      event: "push",
+      ref,
+      sha,
+      // A tag run has NO actor: the API names a tagger as free text, not a verified identity, and
+      // the actor feeds the author check and the OIDC claims. The label is kept for display only.
+      actor: null,
+      ...(tagger ? { taggerLabel: tagger } : {}),
+      message: info.message,
+      headBranch: name,
+      sameRepo: true,
+      tag: name,
+      tagProtection: protection,
+    });
+  }
+}
+
 /**
  * One poll of one repo: finds the default branch head and (when allowed) open same-repo PRs by
  * allowlisted authors, and for each (repo, workflow, event, sha) not seen before plans the whole
@@ -396,6 +704,31 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     sameRepo: true,
     ...(forgeProtected === undefined ? {} : { forgeProtected }),
   });
+  // Pushes the poller missed between two polls: GitHub ran CI for each. Opt-in, the newest few,
+  // oldest first so each is its own run in push order; a force push (the last handled sha is not
+  // on the head's first-parent history) has no such gap to fill.
+  if (cfg.everyPush) {
+    const last = await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push");
+    if (last !== undefined && last !== head.sha) {
+      const gap = await deps.github.firstParentsSince(repo, head.sha, last, MAX_GAP_PUSHES + 1);
+      if (gap?.reached) {
+        const missed = gap.shas.filter((s) => s !== head.sha).slice(0, MAX_GAP_PUSHES);
+        for (const sha of missed.toReversed()) {
+          const info = await deps.github.commitInfo(repo, sha);
+          candidates.splice(candidates.length - 1, 0, {
+            event: "push",
+            ref: `refs/heads/${cfg.defaultBranch}`,
+            sha,
+            actor: info.author,
+            message: info.message,
+            headBranch: cfg.defaultBranch,
+            sameRepo: true,
+            ...(forgeProtected === undefined ? {} : { forgeProtected }),
+          });
+        }
+      }
+    }
+  }
 
   if (cfg.prMode === "approval") {
     // Stranger-controlled work is bounded before any forge call is spent on it: a waiting cap
@@ -515,11 +848,18 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
   }
 
+  if (cfg.tagRefs.length > 0) await tagCandidates(deps, cfg, scope, head.sha, candidates, result);
   if (cfg.mergeQueue) await queueCandidates(deps, cfg, scope, candidates, result);
+
+  // The events API is read at most once a poll, and only when a push run is about to be planned.
+  let eventsMemo: Promise<{ ref: string; head: string; before: string }[]> | undefined;
+  const pushEvents = () => (eventsMemo ??= deps.github.pushEvents(repo));
 
   for (const c of candidates) {
     const what = `${c.event} ${c.sha.slice(0, 7)}`;
-    const key = { repo, workflowPath: cfg.workflow, event: c.event, sha: c.sha };
+    // A tag run is its own thing even at the default branch's head: it is keyed by the tag.
+    const seenEvent = c.tag === undefined ? c.event : `tag:${c.tag}`;
+    const key = { repo, workflowPath: cfg.workflow, event: seenEvent, sha: c.sha };
     if (await pollSeen(deps.db, scope, key)) continue;
     const used = await countPolledSince(deps.db, scope, repo, now - 3_600_000);
     // `used` already includes what this poll created (the marker commits with the run).
@@ -540,17 +880,21 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
 
     // Changed files, for path filters: base..head for a PR, before..after for a push. Unknown
     // (no base, a force push, too many files) means the filters are not applied.
+    if (c.event === "push" && c.tag === undefined) {
+      const r = await resolveBefore(deps, cfg, scope, pushEvents, c.sha);
+      c.before = r.before;
+      c.beforeSource = r.source;
+    }
     let changedFiles: string[] | undefined;
     if (hasPathFilter(yaml)) {
       if (c.event === "pull_request") {
         changedFiles = c.baseRef
           ? await deps.github.changedFiles(repo, c.baseRef, c.sha)
           : undefined;
-      } else if (c.event === "push") {
-        const before = await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push");
+      } else if (c.event === "push" && c.tag === undefined) {
         changedFiles =
-          before && before !== c.sha
-            ? await deps.github.changedFiles(repo, before, c.sha)
+          c.before && c.before !== c.sha && !/^0+$/.test(c.before)
+            ? await deps.github.changedFiles(repo, c.before, c.sha)
             : undefined;
       }
     }
@@ -569,9 +913,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       event: eventPayload(
         c,
         repo,
-        c.event === "push"
-          ? ((await lastPolledSha(deps.db, scope, repo, cfg.workflow, "push")) ?? undefined)
-          : undefined,
+        c.event === "push" && c.tag === undefined ? c.before : undefined,
       ),
     };
 
@@ -588,6 +930,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           return localFiles.get(p);
         },
         github: githubExtra,
+        vars: cfg.vars ?? {},
+        ...(cfg.splits ? { splits: cfg.splits } : {}),
       });
     } catch (err) {
       const reason = `plan rejected: ${err instanceof Error ? err.message : String(err)}`;
@@ -620,7 +964,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       continue;
     }
     // The class is decided here, once, from the facts above; the worker never raises it.
-    const decision = decideRun({
+    const tagHeld = c.tag !== undefined && c.tagProtection !== "ruleset";
+    const base = decideRun({
       event: c.event,
       ref: c.ref,
       baseRef: c.baseRef,
@@ -629,11 +974,40 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       permission: c.permission,
       allowlisted: c.allowlisted,
       protectedRefs: [`refs/heads/${cfg.defaultBranch}`, ...cfg.protectedRefs],
+      // The tag patterns the project opted in with are its release refs.
+      ...(c.tag === undefined ? {} : { releaseRefs: cfg.tagRefs }),
       forgeProtected: c.forgeProtected,
       workflowHash: createHash("sha256").update(yaml).digest("hex"),
       now,
     });
-    const hold = needsApproval(decision.class);
+    // A tag run records how its creation is governed. One a ruleset does not protect is created
+    // HELD: it waits for approval by a release operator (sha and workflow bound) like any held run.
+    const tagged =
+      c.tag === undefined
+        ? base
+        : {
+            ...base,
+            reasons: [
+              ...base.reasons,
+              tagHeld
+                ? c.tagProtection === "predates"
+                  ? "a ruleset restricts creating this tag now, but the tag may have been created before it did: held for approval by a release operator"
+                  : `no ruleset restricts creating this tag (${c.tagProtection ?? "none"}): held for approval by a release operator`
+                : "a ruleset restricts creating this tag to admins",
+            ],
+            facts: {
+              ...base.facts,
+              tag: c.tag,
+              tagProtection: c.tagProtection ?? "none",
+              ...(c.taggerLabel ? { taggerLabel: c.taggerLabel } : {}),
+            },
+          };
+    const decision =
+      c.beforeSource === undefined
+        ? tagged
+        : { ...tagged, facts: { ...tagged.facts, beforeSource: c.beforeSource } };
+    const untrusted = needsApproval(decision.class);
+    const hold = untrusted || tagHeld;
     if (!hold && capReached()) {
       result.refused.push({ what, reason: "hourly run cap reached" });
       log(`poll ${repo}: hourly cap of ${cfg.maxRunsPerHour} reached`);
@@ -645,13 +1019,18 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
     // An untrusted workflow file picks its own concurrency group: never let it name one that
     // another run uses (it could cancel or block the default branch). Its group is its PR's.
+    // A run held for any other reason (a tag no ruleset protects) is isolated the same way until a
+    // release operator approves it: a run that may never start must not cancel or queue behind
+    // the default branch's runs. Approval moves it into the real group (see approveRun).
     const group = wp.concurrency
-      ? hold
+      ? untrusted
         ? `untrusted:pr-${c.prNumber ?? "x"}:${wp.concurrency.group}`
-        : wp.concurrency.group
+        : hold
+          ? `held:${c.tag ?? c.sha}:${wp.concurrency.group}`
+          : wp.concurrency.group
       : undefined;
     // Untrusted code never gets open egress, whatever the repo or project allows.
-    const egress = hold
+    const egress = untrusted
       ? cfg.untrustedEgress
       : (cfg.egress ?? (await getProjectEgress(deps.db, scope)));
     const headCheckoutJobs = Object.entries(workflowHeadCheckouts(yaml))
@@ -663,6 +1042,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       now,
       jobs,
       hold,
+      seenEvent,
       cancelInProgress: wp.concurrency?.cancelInProgress ?? false,
       run: {
         workflowPath: cfg.workflow,
@@ -677,7 +1057,9 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         plan: JSON.stringify({
           env: wp.env,
           github: githubContext(event, githubExtra),
-          vars: {},
+          vars: cfg.vars ?? {},
+          // What the operator's split rules did or could not do for this run.
+          ...(wp.splitNotices.length > 0 ? { splitNotices: wp.splitNotices } : {}),
           // What isolation and egress policy read: the decided class, and the sandbox egress.
           trust: decision.class,
           egress,
@@ -689,6 +1071,23 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         trust: JSON.stringify(decision),
       },
     });
+    if (created && c.tag !== undefined) {
+      await appendAudit(deps.db, scope, {
+        principalKind: "system",
+        principalId: "poller",
+        op: "poll_tag_run",
+        effect: "write",
+        outcome: tagHeld ? "held" : "release",
+        input: {
+          repo,
+          tag: c.tag,
+          sha: c.sha,
+          protection: c.tagProtection ?? "none",
+          held: tagHeld,
+          run: created.run.id,
+        },
+      }).catch(() => {});
+    }
     if (created) {
       result.created.push(created.run.id);
       result.superseded.push(...created.superseded.running);

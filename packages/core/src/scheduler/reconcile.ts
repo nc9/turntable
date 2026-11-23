@@ -2,8 +2,10 @@ import {
   type Claim,
   finishAttempt,
   listExpiredLeases,
+  listUndestroyedSandboxes,
   type Readiness,
   takeExpiredLease,
+  updateAttempt,
 } from "../db/repos";
 import type { Db } from "../db";
 import type { ProviderResolver } from "./types";
@@ -101,11 +103,25 @@ export async function reconcileExpired(
           // destroying the sandbox below ends it anyway
         }
       }
+      let destroyed = false;
       try {
         await provider.destroy(attempt.sandboxId);
+        destroyed = true;
       } catch (err) {
         // The sandbox's own ttl is the backstop for one we could not destroy.
         log(`could not destroy sandbox ${attempt.sandboxId}: ${String(err)}`);
+      }
+      // Recorded without the lease (it expired): the confirmed destroy ends the billed life. A
+      // destroy that failed records nothing: the time is never guessed.
+      if (destroyed) {
+        await updateAttempt(
+          db,
+          { orgId: attempt.orgId, projectId: attempt.projectId },
+          attempt.id,
+          { sandboxDestroyedAt: (opts.now ?? Date.now)() },
+        ).catch((err) =>
+          log(`could not record the destroy of ${attempt.sandboxId}: ${String(err)}`),
+        );
       }
     }
     const scope = { orgId: attempt.orgId, projectId: attempt.projectId };
@@ -121,4 +137,65 @@ export async function reconcileExpired(
     else report.skipped++;
   }
   return report;
+}
+
+/**
+ * Hands every provider the sandboxes this controller recorded and never confirmed destroyed, so a
+ * provider whose listings cannot be trusted (Daytona's) counts and cleans up its own fleet by id.
+ * Idempotent; run it on boot and with every reconcile. Returns how many ids were handed over.
+ */
+export async function adoptRecordedSandboxes(db: Db, providers: ProviderResolver): Promise<number> {
+  const byProvider = new Map<string, string[]>();
+  for (const a of await listUndestroyedSandboxes(db)) {
+    if (!a.sandboxId) continue;
+    byProvider.set(a.provider, [...(byProvider.get(a.provider) ?? []), a.sandboxId]);
+  }
+  let n = 0;
+  for (const [name, ids] of byProvider) {
+    const provider = providers(name);
+    if (!provider?.adopt) continue;
+    provider.adopt(ids);
+    n += ids.length;
+  }
+  return n;
+}
+
+/** A finished attempt is left this long to record its own destroy before the sweep does. */
+export const SWEEP_GRACE_MS = 60_000;
+const SETTLED = new Set(["success", "failure", "infra_error", "cancelled", "skipped"]);
+
+/**
+ * For finished attempts whose sandbox was never confirmed destroyed (a failed delete, a crash
+ * between the delete and its record): destroy it by id and record the confirmed destroy. The
+ * provider's destroy is a get first (a sandbox that is gone is success) and a delete only if it
+ * still exists, so this never relies on a listing. A destroy that fails records nothing and is
+ * retried next time. (Attempts that are still running, and whose lease is alive, are a live
+ * worker's; expired ones are reconcileExpired's.)
+ */
+export async function sweepUndestroyedSandboxes(
+  db: Db,
+  providers: ProviderResolver,
+  opts: { now?: () => number; log?: (message: string) => void } = {},
+): Promise<{ destroyed: number; failed: number }> {
+  const now = (opts.now ?? Date.now)();
+  const log = opts.log ?? (() => {});
+  const out = { destroyed: 0, failed: 0 };
+  for (const a of await listUndestroyedSandboxes(db)) {
+    if (!a.sandboxId || !SETTLED.has(a.state)) continue;
+    if (a.finishedAt !== null && now - a.finishedAt < SWEEP_GRACE_MS) continue;
+    const provider = providers(a.provider);
+    if (!provider) continue;
+    try {
+      await provider.destroy(a.sandboxId);
+    } catch (err) {
+      out.failed++;
+      log(`could not destroy sandbox ${a.sandboxId}: ${String(err)}`);
+      continue;
+    }
+    await updateAttempt(db, { orgId: a.orgId, projectId: a.projectId }, a.id, {
+      sandboxDestroyedAt: (opts.now ?? Date.now)(),
+    }).catch((err) => log(`could not record the destroy of ${a.sandboxId}: ${String(err)}`));
+    out.destroyed++;
+  }
+  return out;
 }

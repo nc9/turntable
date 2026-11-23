@@ -102,6 +102,40 @@ export type JobAttempt = {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  /** When the provider's create returned (billing starts). Null if no sandbox was made. */
+  sandboxCreatedAt: number | null;
+  /** When the provider confirmed the destroy. Null if never confirmed: the time is an estimate. */
+  sandboxDestroyedAt: number | null;
+  /** Exact sandbox time, create to confirmed destroy. Null until both are known. */
+  sandboxSeconds: number | null;
+};
+
+/** Sandbox time for one UTC day, from the `sandbox_usage` op. */
+export type SandboxUsageDay = {
+  day: string;
+  seconds: number;
+  minutes: number;
+  attempts: number;
+  /** Attempts of the day with no confirmed destroy, whose time is an estimate. */
+  estimatedAttempts: number;
+};
+
+/** One project's sandbox time, from `sandbox_usage` with `group_by=project`. */
+export type SandboxUsageProject = {
+  id: string;
+  slug: string;
+  name: string;
+  days: SandboxUsageDay[];
+  totalMinutes: number;
+};
+
+export type SandboxUsage = {
+  days: SandboxUsageDay[];
+  totalMinutes: number;
+  /** Per project, for the projects with usage in the window. Empty when the server gives none. */
+  projects: SandboxUsageProject[];
+  /** The org's sandbox-minutes-per-day quota, or null when none is set (or unreadable). */
+  limitMinutesPerDay: number | null;
 };
 
 /**
@@ -129,6 +163,19 @@ export type CutRecord = {
   atOffset: number;
   omittedBytes: number;
   reason: string;
+};
+
+/**
+ * A system notice the control plane put on an attempt's log (the cache dropped entries, a hold
+ * reason). Recorded apart from the log text, so a job's output cannot forge one. `atOffset` is
+ * where the stored log ended when it was added.
+ */
+export type LogNotice = {
+  attemptId: string;
+  kind: "notice";
+  atOffset: number;
+  source: string;
+  text: string;
 };
 
 /** The caller, from `whoami`. */
@@ -234,6 +281,8 @@ export type EnrolStatement = {
   org: string;
   enrolment_id: string;
   person: string;
+  /** The forge login the key is enrolled under, lower-cased. */
+  forge_login: string;
   key_fingerprint: string;
   approver: string;
   expires_at: number;
@@ -286,13 +335,34 @@ export type Approver = {
   kind: "webauthn" | "ed25519";
   passkeyId: string | null;
   createdAt: number;
+  /** Why the key counts toward no approval or quorum; null when it does. */
+  notCounting: string | null;
+  /** A pinned vendor attestation chain verified when the key was enrolled. */
+  attested: boolean;
+  aaguid: string | null;
 };
+
+/** A key policy change, signed by a quorum of the counted approvers. */
+export type PolicyStatement = {
+  type: string;
+  org: string;
+  old: KeyPolicy;
+  new: KeyPolicy;
+  allowlist_hash: string;
+  approver: string;
+  expires_at: number;
+  nonce: string;
+};
+
+export type KeyPolicy = { mode: "any" | "hardware"; presets: string[]; aaguids: string[] };
 
 export type ApproversOverview = {
   approvers: Approver[];
+  keyPolicy: KeyPolicy;
   pendingEnrolments: {
     id: string;
     person: string;
+    forgeLogin: string | null;
     kind: "webauthn" | "ed25519";
     keyFingerprint: string;
     approvals: number;
@@ -357,3 +427,56 @@ export type LogSlice = {
   /** True when the attempt is finished and `offset + bytes.length === size`. */
   done: boolean;
 };
+
+/** One recorded artifact with its provenance, set by the control plane when it was recorded. */
+export type Artifact = {
+  name: string;
+  size: number;
+  /** Lower-case hex sha256. */
+  sha256: string;
+  /** `computed` when the control plane hashed the bytes itself, `reported` when the recorder gave it. */
+  digestSource: "reported" | "computed";
+  /** Trust class of the attempt that produced it (capped by its run's class). */
+  trustClass: TrustClass | string;
+  runSha: string | null;
+  attemptId: string;
+  createdAt: number;
+};
+
+export type ConsumeDecision = "allow" | "quarantine" | "deny";
+
+export type ConsumeResult = {
+  runId: string;
+  name: string;
+  decision: ConsumeDecision;
+  reason: string | null;
+  trustClass: string | null;
+  sha256: string | null;
+};
+/** The limits of an org (null is no limit). */
+export type QuotaLimits = {
+  maxConcurrent: number | null;
+  maxRunsPerHour: number | null;
+  maxSandboxMinutesPerDay: number | null;
+  maxLogBytes: number | null;
+  maxStoredBytes: number | null;
+};
+
+export type QuotaMetric =
+  | "concurrent"
+  | "runs_per_hour"
+  | "sandbox_minutes"
+  | "log_bytes"
+  | "stored_bytes";
+
+export type QuotaUsage = {
+  metric: QuotaMetric;
+  used: number;
+  limit: number | null;
+  /** Percent of the limit, rounded down; null with no limit. */
+  percent: number | null;
+  /** Why new work is held because of this limit, when it is. */
+  held: string | null;
+};
+
+export type OrgQuotas = { limits: QuotaLimits; usage: QuotaUsage[] };

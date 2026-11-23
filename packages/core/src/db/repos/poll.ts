@@ -166,6 +166,11 @@ export function createPolledRun(
     cancelInProgress?: boolean | undefined;
     /** Hold every job for approval (an untrusted class): nothing can start until approved. */
     hold?: boolean | undefined;
+    /**
+     * What the dedupe marker is keyed on instead of the run's event: a tag run is keyed
+     * `tag:<name>` so a tag at the same commit as the default branch head is still its own run.
+     */
+    seenEvent?: string | undefined;
   },
 ): Promise<{ run: Run; superseded: Superseded } | undefined> {
   const invalid = validateJobGraph(input.jobs);
@@ -176,7 +181,7 @@ export function createPolledRun(
       projectId,
       repo: input.repo.toLowerCase(),
       workflowPath: input.run.workflowPath,
-      event: input.run.event,
+      event: input.seenEvent ?? input.run.event,
       sha: input.run.sha,
     };
     const [seen] = await tx.orm
@@ -363,6 +368,44 @@ export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Pr
   });
 }
 
+/** The audiences the project's jobs may mint OIDC tokens for, or null when any audience is allowed. */
+export function getProjectOidcAudiences(db: Db, scope: Scope): Promise<string[] | null> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ a: s.projects.oidcAudiences })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    if (!row?.a) return null;
+    try {
+      const v: unknown = JSON.parse(row.a);
+      // A stored value that is not a list of strings is treated as a list that allows nothing,
+      // never as "any audience": a damaged restriction must not widen access.
+      return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Sets the allowed audiences, or clears the restriction with null. Returns false for no such project. */
+export function setProjectOidcAudiences(
+  db: Db,
+  scope: Scope,
+  audiences: readonly string[] | null,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const rows = await h.orm
+      .update(s.projects)
+      .set({ oidcAudiences: audiences === null ? null : JSON.stringify([...audiences]) })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .returning({ id: s.projects.id });
+    return rows.length > 0;
+  });
+}
+
 /** The forge check run stored on an attempt, if one was created. */
 export function getAttemptCheckRunId(
   db: Db,
@@ -496,6 +539,54 @@ export function markPollSkipped(
   });
 }
 
+/** When a marker was first written (epoch ms), or undefined when there is none. */
+export function pollMarkedAt(
+  db: Db,
+  scope: Scope,
+  input: { repo: string; workflowPath: string; event: string; sha: string },
+): Promise<number | undefined> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ at: s.pollSeen.createdAt })
+      .from(s.pollSeen)
+      .where(
+        and(
+          eq(s.pollSeen.projectId, projectId),
+          eq(s.pollSeen.repo, input.repo.toLowerCase()),
+          eq(s.pollSeen.workflowPath, input.workflowPath),
+          eq(s.pollSeen.event, input.event),
+          eq(s.pollSeen.sha, input.sha),
+        ),
+      )
+      .limit(1);
+    return row?.at;
+  });
+}
+
+/** Removes a marker written by `markPollSkipped` (only ones that are state, never ones that made a run). */
+export function clearPollMarker(
+  db: Db,
+  scope: Scope,
+  input: { repo: string; workflowPath: string; event: string; sha: string },
+): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .delete(s.pollSeen)
+      .where(
+        and(
+          eq(s.pollSeen.projectId, projectId),
+          eq(s.pollSeen.repo, input.repo.toLowerCase()),
+          eq(s.pollSeen.workflowPath, input.workflowPath),
+          eq(s.pollSeen.event, input.event),
+          eq(s.pollSeen.sha, input.sha),
+          eq(s.pollSeen.runId, "skipped"),
+        ),
+      );
+  });
+}
+
 /** Whether the key was already handled (run created or deliberately skipped). */
 export function pollSeen(
   db: Db,
@@ -544,5 +635,85 @@ export function lastPolledSha(
       .orderBy(desc(s.pollSeen.createdAt), desc(s.pollSeen.sha))
       .limit(1);
     return row?.sha;
+  });
+}
+
+// ---- ingest from installation bindings ----
+
+/** The project's ingest settings as stored (JSON text), or null when it is not ingested. */
+export function getProjectIngest(db: Db, scope: Scope): Promise<string | null> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ v: s.projects.ingestConfig })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    return row?.v ?? null;
+  });
+}
+
+export function setProjectIngest(db: Db, scope: Scope, json: string | null): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .update(s.projects)
+      .set({ ingestConfig: json })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+  });
+}
+
+/**
+ * Every GitHub repo bound to a project that has ingest settings, with the org and project slugs
+ * the poller targets. Intentionally unscoped (the poller serves every tenant); a project without
+ * settings contributes nothing, so binding a repo never makes it ingested by itself.
+ */
+export function listIngestBindings(db: Db): Promise<
+  {
+    orgId: string;
+    projectId: string;
+    orgSlug: string;
+    projectSlug: string;
+    owner: string;
+    repo: string;
+    config: string;
+  }[]
+> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        orgId: s.orgs.id,
+        projectId: s.projects.id,
+        orgSlug: s.orgs.slug,
+        projectSlug: s.projects.slug,
+        owner: s.projectRepos.owner,
+        repo: s.projectRepos.repo,
+        config: s.projects.ingestConfig,
+        forge: s.projectRepos.forge,
+      })
+      .from(s.projectRepos)
+      .innerJoin(
+        s.projects,
+        and(
+          eq(s.projects.id, s.projectRepos.projectId),
+          eq(s.projects.orgId, s.projectRepos.orgId),
+        ),
+      )
+      .innerJoin(s.orgs, eq(s.orgs.id, s.projects.orgId));
+    return rows.flatMap((r) =>
+      r.forge === "github" && r.config !== null
+        ? [
+            {
+              orgId: r.orgId,
+              projectId: r.projectId,
+              orgSlug: r.orgSlug,
+              projectSlug: r.projectSlug,
+              owner: r.owner,
+              repo: r.repo,
+              config: r.config,
+            },
+          ]
+        : [],
+    );
   });
 }

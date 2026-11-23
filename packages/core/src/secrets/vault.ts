@@ -12,6 +12,8 @@
 import { matchesPatterns } from "@longshore/act-runner";
 import type { Db } from "../db";
 import {
+  listVaultCiphertexts,
+  setVaultCiphertext,
   addVaultVersion,
   deleteVaultSecret,
   findVaultSecret,
@@ -32,7 +34,7 @@ import {
 } from "../db/repos";
 import { credentialsFor, normalizeRef, type TrustClass } from "../trust";
 import { auditFailure } from "../audit/failures";
-import { open, seal, vaultAad } from "./crypto";
+import { assertResealAllowed, open, recordVersion, seal, vaultAad } from "./crypto";
 
 /** Classes a secret may name. `untrusted_pr` is deliberately absent and can never be added. */
 export const ALLOWED_SECRET_CLASSES = ["protected", "release", "trusted_pr"] as const;
@@ -246,7 +248,8 @@ export class SecretVault {
         this.#db,
         orgId,
         { ...sc, ...pol, createdBy: actor },
-        (id, version) => seal(this.#key, value, vaultAad(orgId, id, version, sc.name), "job"),
+        (id, version) =>
+          seal(this.#key, value, vaultAad(orgId, id, version, sc.name), "job", orgId),
       );
       return { secret: view(row, await listVaultVersions(this.#db, orgId, row.id)), created: true };
     }
@@ -255,7 +258,8 @@ export class SecretVault {
       orgId,
       existing.id,
       { createdBy: actor, previousValidUntil: this.#now(), policy: pol },
-      (version) => seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job"),
+      (version) =>
+        seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job", orgId),
     );
     return { secret: (await this.#viewById(orgId, existing.id))!, created: false };
   }
@@ -285,9 +289,33 @@ export class SecretVault {
       orgId,
       existing.id,
       { createdBy: actor, previousValidUntil: this.#now() + overlapMs },
-      (version) => seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job"),
+      (version) =>
+        seal(this.#key, value, vaultAad(orgId, existing.id, version, sc.name), "job", orgId),
     );
     return this.#viewById(orgId, existing.id);
+  }
+
+  /**
+   * Re-seals every version of an org under the org's own key (format v3), in place; the values
+   * and versions are unchanged. Versions already v3 are skipped. Returns how many changed.
+   */
+  async reseal(orgId: string): Promise<number> {
+    assertResealAllowed();
+    let n = 0;
+    for (const v of await listVaultCiphertexts(this.#db, orgId)) {
+      if (recordVersion(v.ciphertext) === "v3") continue;
+      const aad = vaultAad(orgId, v.secretId, v.version, v.name);
+      const value = open(this.#key, v.ciphertext, aad, "job", orgId, { allowLegacy: true });
+      await setVaultCiphertext(
+        this.#db,
+        orgId,
+        v.secretId,
+        v.version,
+        seal(this.#key, value, aad, "job", orgId),
+      );
+      n++;
+    }
+    return n;
   }
 
   async delete(orgId: string, scope: SecretScopeInput): Promise<SecretView | undefined> {
@@ -427,6 +455,7 @@ export class SecretVault {
         rec.ciphertext,
         vaultAad(req.orgId, secret.id, version, secret.name),
         "job",
+        req.orgId,
       );
     } catch {
       return deny("decrypt_failed", secret.id);
@@ -451,7 +480,112 @@ export class SecretVault {
     await touchVaultSecret(this.#db, req.orgId, secret.id, now);
     return { ok: true, value, version, secretId: secret.id };
   }
+
+  /**
+   * A publish credential for the release lane, with no job behind it: the lane itself is the
+   * caller, so there is no run or attempt to take a class from. The same rules otherwise: only
+   * the release lane (any other lane is refused before anything is decrypted), only a secret
+   * whose allowed classes include `release`, scoped to the project and matching the tag's ref,
+   * only for a destination it lists. Every use and every refusal is audited, never the value.
+   */
+  async usePublishCredential(req: PublishUseRequest): Promise<PublishUseResult> {
+    const scope = { orgId: req.orgId, projectId: req.projectId };
+    const deny = async (reason: UseDenial, secretId?: string): Promise<PublishUseResult> => {
+      await auditFailure(
+        this.#db,
+        {
+          orgId: req.orgId,
+          principalKind: "system",
+          principalId: "release-lane",
+          source: req.requestId,
+          kind: `secret_denied:${reason}`,
+          op: "secret_use",
+          outcome: `error:${reason}`,
+          detail: {
+            secret: req.name,
+            ...(secretId ? { secret_id: secretId } : {}),
+            request: req.requestId,
+            tag: req.tag,
+            destination: req.destination,
+          },
+        },
+        this.#now,
+      );
+      return { ok: false, reason };
+    };
+    if (this.#lane !== "release") return deny("release_lane_only");
+    const ref = normalizeRef(`refs/tags/${req.tag}`);
+    const matching = (await vaultCandidates(this.#db, req.orgId, req.name)).filter(
+      (c) =>
+        (c.projectId === null || c.projectId === req.projectId) &&
+        (c.refPattern === null || matchesPatterns([c.refPattern], ref)) &&
+        // A publish credential has no job environment: one that names an environment is not for this.
+        c.environment === null,
+    );
+    if (matching.length === 0) return deny("no_match");
+    const score = (c: VaultSecretRow): number => (c.projectId ? 4 : 0) + (c.refPattern ? 1 : 0);
+    const best = Math.max(...matching.map(score));
+    const top = matching.filter((c) => score(c) === best);
+    if (top.length > 1) return deny("ambiguous");
+    const secret = top[0]!;
+    const classes = JSON.parse(secret.trustClasses) as string[];
+    if (classes.includes("untrusted_pr") || !classes.includes("release")) {
+      return deny("class_not_allowed", secret.id);
+    }
+    const hosts = JSON.parse(secret.destinations) as string[];
+    if (!hostAllowed(hosts, req.destination)) return deny("destination_not_allowed", secret.id);
+    const version = secret.currentVersion;
+    const rec = await getVersionCiphertext(this.#db, req.orgId, secret.id, version);
+    if (!rec) return deny("version_unavailable", secret.id);
+    let value: string;
+    try {
+      value = open(
+        this.#key,
+        rec.ciphertext,
+        vaultAad(req.orgId, secret.id, version, secret.name),
+        "job",
+        req.orgId,
+      );
+    } catch {
+      return deny("decrypt_failed", secret.id);
+    }
+    await appendAudit(this.#db, scope, {
+      principalKind: "system",
+      principalId: "release-lane",
+      op: "secret_use",
+      effect: "use",
+      outcome: "ok",
+      input: {
+        secret: secret.name,
+        secret_id: secret.id,
+        version,
+        request: req.requestId,
+        tag: req.tag,
+        destination: req.destination,
+        class: "release",
+      },
+    });
+    await touchVaultSecret(this.#db, req.orgId, secret.id, this.#now());
+    return { ok: true, value, version, secretId: secret.id };
+  }
 }
+
+export interface PublishUseRequest {
+  orgId: string;
+  projectId: string;
+  /** The secret's name, as the project's publish target declares it. */
+  name: string;
+  /** The registry host the value goes to. Required: a use without a destination is refused. */
+  destination: string;
+  /** The tag being released: ref-scoped secrets are matched against `refs/tags/<tag>`. */
+  tag: string;
+  /** The lane's request id, for the audit trail. */
+  requestId: string;
+}
+
+export type PublishUseResult =
+  | { ok: true; value: string; version: number; secretId: string }
+  | { ok: false; reason: UseDenial };
 
 /** The environment a job runs in, if its plan records one. Today none does. */
 function jobEnvironment(planned: string | null): string | null {

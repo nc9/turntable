@@ -3,9 +3,9 @@ title: Agent interface (MCP and API)
 description: How agents and scripts drive Longshore through MCP, REST, events and webhooks.
 ---
 
-<Warning>
-  Partly implemented. The operations registry, agent tokens, the REST API, the OpenAPI document and the MCP server exist. The CLI does not yet. Tracking issues: [#22](https://github.com/nc9/turntable/issues/22), [#24](https://github.com/nc9/turntable/issues/24) and [#25](https://github.com/nc9/turntable/issues/25).
-</Warning>
+<Note>
+  The operations registry, agent tokens, the REST API, the OpenAPI document, the MCP server and the realtime feed are built. Server-sent events and signed outbound webhooks are built (issue [#25](https://github.com/nc9/turntable/issues/25)). The CLI covers the host and setup commands; most day-to-day operations are reached through REST and MCP.
+</Note>
 
 Longshore is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
 
@@ -61,7 +61,7 @@ No token role reaches `admin`, so a token can never create tokens.
 | `failure_digest` | read | reader | Why a job (or a run's failed jobs) failed: the failing step and the first error, about 2 KiB, extracted and redacted. |
 | `checks_for_sha` | read | reader | `GREEN`, `PENDING`, `RED` or `NONE` for a commit. A queued run is `PENDING`, never `NONE`. |
 | `job_steps` | read | reader | The steps of a job attempt with results, timing and the log offset where each starts. |
-| `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap. |
+| `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap, plus system notices (for example cache entries dropped). |
 | `events` | read | reader | The event feed from a cursor, with optional long-poll (`wait_ms`, up to 30 s). |
 | `ingest_status` | read | reader | What the GitHub poller is doing: per repo last poll, outcome, next poll, failures and runs created, plus the API rate-limit budget. |
 | `whoami` | read | reader | Who the credential is: kind, token name, role, org and project slugs, expiry. Call it first. |
@@ -78,6 +78,7 @@ No token role reaches `admin`, so a token can never create tokens.
 | `incident_freeze` | destructive | release_operator | Incident response: stop scheduling for the org or a project, kill running jobs, drop cached tokens, flag secret names for rotation. Audited. See [Incident response](/security#incident-response). |
 | `incident_unfreeze` | write | release_operator | Resume scheduling. Clears the pause only; rotation flags stay. Audited. |
 | `incident_status` | read | reader | Whether the scope is frozen, why, and how many secrets still need rotation. Their names are listed only for release_operator and above. |
+| `sandbox_usage` | read | reader | Exact sandbox time per UTC day, from the provider's create to its confirmed destroy (waiting for capacity is not counted), with how many attempts have no confirmed destroy. The number quotas limit. `group_by: project` adds each project's own days and total; a project-scoped token sees only its project. `longshore usage` reads it. |
 | `secret_usage` | read | release_operator | Where a secret name was used in a time range: runs, jobs, attempts and destinations, from the audit log. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
@@ -157,14 +158,39 @@ Local access to the data directory is the trust root. The command writes through
 Agents learn what happened through an event feed, the `events` operation (`GET /api/v1/events`):
 
 - **Cursor.** Every event has a monotonic `cursor`. Pass the last one back as `after` (the response's `next_after`) and you resume exactly where you stopped. Start from `after=0` for everything, or `after=now` for the tip: no events, and `next_after` is the newest cursor.
-- **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required` and `infra.error`. Filter with `types` (a comma-separated list in a query string).
+- **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required`, `infra.error`, `quota.warning`, `quota.reached` and `webhook.disabled` (an outbound webhook was switched off after repeated failures; org-level, with the `webhook_id` and `reason`). `infra.error` is for real infrastructure faults (a sandbox that failed); the two `quota.*` types are an org's quota notices, at 80% and at 100% of a limit, once per window, with the `metric`, `used`, `limit` and `percent` in the payload. They belong to the org (no project, no run), so a token sees only its own org's, and a project-scoped token sees only events of its project, which never includes them. Filter with `types` (a comma-separated list in a query string).
 - **Long-poll.** With `wait_ms` (up to 30000) and nothing new, the call waits for an event instead of returning empty. Waiters are capped per org (20) and across the instance (100); beyond either cap a call returns at once, so fall back to polling. The per-org cap keeps one tenant from using every slot.
 - **Transactional.** An event is written in the same transaction as the change it describes, and waiters are woken only after commit. A rolled-back change leaves no event.
 - **Scope.** A token sees events for its org, or only its project when it is project-scoped.
 
 Event payloads carry forge text (refs, workflow paths, step names). Treat them as untrusted data.
 
-Planned: delivery by SSE, and signed outbound webhooks that push events to a URL you choose, with a signature receivers verify. Issue [#25](https://github.com/nc9/turntable/issues/25).
+### Server-sent events
+
+`GET /api/v1/events/stream` sends the same feed as server-sent events, with the same scoping as `events` (it runs that operation as your token).
+
+```sh
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "https://ci.example.com/api/v1/events/stream?after=now&types=run.finished"
+```
+
+- **Frames.** `id: <cursor>`, `event: <type>`, `data: <the event as JSON>`. Query: `after` (a cursor or `now`, the default), `types` (comma-separated), `project` (a slug).
+- **Resume.** Reconnect with `Last-Event-ID` (a browser's `EventSource` does it for you; it wins over `after`) and you get the events after that one, none lost and none repeated. The token goes in the `Authorization` header, never the URL.
+- **Heartbeat.** A comment line (`: hb`) every 15 seconds keeps proxies from closing an idle stream.
+- **Slow readers.** A connection that falls more than 1 MiB behind gets a final `event: error` with `slow_client` and is closed. Reconnect from the last id. Streams are capped per org, and the token is checked again every 30 seconds, so a revoked token ends its stream.
+
+### Outbound webhooks
+
+An org admin can have events pushed to a URL. Operations: `create_webhook`, `webhook_endpoints`, `rotate_webhook_secret`, `disable_webhook`, `enable_webhook`, `webhook_deliveries` (REST and MCP, org admins only, all audited).
+
+- **Request.** `POST` of one event as JSON (`cursor`, `id`, `type`, `org`, `project`, `run_id`, `job_id`, `attempt_id`, `payload`, `created_at`), with `Longshore-Event`, `Longshore-Cursor` and `Longshore-Delivery` (the same on every retry, for deduplication). Delivery is at least once.
+- **Signature.** `Longshore-Signature: t=<unix seconds>,v1=<hex>`, where `v1` is HMAC-SHA256 over `<t>.<raw body>` with the org's signing secret. The timestamp is part of what is signed, so check it (reject a `t` older than five minutes) as well as the digest. Compare in constant time.
+- **Secret.** One per org, shown once when the first endpoint is created and again by `rotate_webhook_secret`, sealed with the org's key. After a rotation the previous secret keeps signing for 24 hours, so the header carries two `v1` values during that time; accept either.
+- **Where it can go.** `https` URLs with no credentials, on public addresses only. Private, loopback, link-local and metadata addresses are refused when the endpoint is created and again at connect time (the connection is pinned to the checked address). Redirects are never followed and count as a failure.
+- **Retries.** Any answer other than 2xx, a timeout (10 seconds) or a refused connection is retried with backoff (30 seconds growing to 6 hours, eight attempts in all), then abandoned. `webhook_deliveries` is the log: state, attempts, last status or error, and the start of the receiver's answer.
+- **Auto-disable.** After 20 failed attempts in a row the endpoint is disabled and a `webhook.disabled` event is appended (org-level, or the endpoint's project). `enable_webhook` resumes it where it left off.
+- **Replicas.** Delivery runs in every web process. Rows are claimed with a lease, so several replicas never send the same delivery at once, but each replica runs its own loop: more replicas mean more polling, not more throughput per endpoint. On Postgres, event ids come from a sequence and can commit out of order, so both webhooks and SSE hold back events younger than 2 seconds (a gap below the cursor could still be filling); a new event reaches a consumer about two seconds after it commits.
+- **Resume.** Each endpoint keeps its own cursor over the feed. A new endpoint starts at the tip (`from_start` replays everything), and a restart neither skips nor repeats an event.
 
 ## Realtime WebSocket
 
@@ -180,11 +206,11 @@ Planned: delivery by SSE, and signed outbound webhooks that push events to a URL
 | `project:<slug>` | Events of one project. |
 | `run:<id>` | Events of one run, job and attempt changes included. |
 | `attempt:<id>:log` | Redacted log text from `from_offset`, plus the attempt's cuts. |
-| `attempt:<id>:steps` | The attempt's steps and cuts, re-sent in full when they change. |
+| `attempt:<id>:steps` | The attempt's steps, cuts and notices, re-sent in full when they change. |
 
 Omit `after` to start from now. With a cursor the server replays from the feed, then goes live, with no gap and no duplicate. Each subscribe is authorized by running the matching read operation (`events`, `get_run`, `job_log`, `job_steps`, `job_cuts`) as the token, so a socket can never read what REST would refuse.
 
-**Server messages.** `subscribed`, `event`, `log` (with `offset` and `bytes`, and `eof` on the last chunk of a finished attempt), `steps`, `cuts` and `error`. Steps and cuts are metadata delivered apart from the log text.
+**Server messages.** `subscribed`, `event`, `log` (with `offset` and `bytes`, and `eof` on the last chunk of a finished attempt), `steps`, `cuts` and `error`. Steps, cuts and notices are metadata delivered apart from the log text.
 
 **Limits and drops.** A client whose unsent data passes the buffer limit is closed with code 4408 and should resume from its last cursor and offset. Other close codes: 4401 token no longer valid, 4429 too many connections or subscriptions, 4400 protocol error, 4000 idle. Messages are text frames of at most 4 KiB. The web UI reconnects with backoff, resumes each topic, and falls back to polling when no socket can be opened.
 
@@ -250,7 +276,7 @@ A plugin manifest is in `claude-plugin/` for publishing the channel through a ma
 | `--token-file` | `LONGSHORE_TOKEN_FILE` | required, mode 0600 |
 | `--project a,b` | `LONGSHORE_CHANNEL_PROJECTS` | all projects the token sees |
 | `--branch main,release/*` | `LONGSHORE_CHANNEL_BRANCHES` | all branches. `*` is a glob. A run with no known branch never matches a branch filter. |
-| `--types` | `LONGSHORE_CHANNEL_TYPES` | `run.finished,approval.required` |
+| `--types` | `LONGSHORE_CHANNEL_TYPES` | `run.finished,approval.required` (add `quota.warning,quota.reached` for quota notices) |
 | `--conclusions` | `LONGSHORE_CHANNEL_CONCLUSIONS` | `failure,infra_error` (for `run.finished`) |
 | `--state-file` | `LONGSHORE_CHANNEL_STATE_FILE` | a file under `$XDG_STATE_HOME/longshore` |
 

@@ -6,6 +6,8 @@ import {
   enrolmentChallenge,
   approversOverview,
   registerChallenge,
+  keyPolicyChallenge,
+  approveKeyPolicy,
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
@@ -13,6 +15,9 @@ import { approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
+import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
+import { instanceListOrgs, instanceWhoami, setQuotas } from "./definitions/instance";
+import { getQuotas } from "./definitions/quotas";
 import { createApiToken } from "./definitions/create-api-token";
 import { events } from "./definitions/events";
 import { failureDigest } from "./definitions/failure-digest";
@@ -34,12 +39,22 @@ import {
 import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
+import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
 import { listRuns } from "./definitions/list-runs";
+import {
+  createWebhookOp,
+  disableWebhookOp,
+  enableWebhookOp,
+  webhookEndpointsOp,
+  rotateWebhookSecretOp,
+  webhookDeliveriesOp,
+} from "./definitions/webhooks";
+import { setOidcAudiencesOp } from "./definitions/oidc-audiences";
 import { createRegistry } from "./registry";
 
 export { authenticate, dispatch, type DispatchEnv, type DispatchResult } from "./dispatch";
@@ -70,6 +85,12 @@ export const registry = createRegistry([
   ingestStatusOp,
   createApiToken,
   listActionPinsOp,
+  listArtifacts,
+  checkArtifactConsumption,
+  getQuotas,
+  instanceWhoami,
+  instanceListOrgs,
+  setQuotas,
   acceptActionMoveOp,
   setSecretOp,
   rotateSecretOp,
@@ -86,6 +107,8 @@ export const registry = createRegistry([
   approvalChallenge,
   enrolmentChallenge,
   registerChallenge,
+  keyPolicyChallenge,
+  approveKeyPolicy,
   requestEnrolment,
   submitApproval,
   approveEnvironment,
@@ -94,7 +117,15 @@ export const registry = createRegistry([
   incidentUnfreeze,
   incidentStatus,
   secretUsage,
+  sandboxUsageOp,
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  setOidcAudiencesOp,
+  createWebhookOp,
+  webhookEndpointsOp,
+  rotateWebhookSecretOp,
+  disableWebhookOp,
+  enableWebhookOp,
+  webhookDeliveriesOp,
 ]);

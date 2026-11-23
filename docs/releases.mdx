@@ -62,6 +62,16 @@ gh attestation verify oci://ghcr.io/nc9/longshore@sha256:<digest> --repo nc9/tur
 
 Then run or deploy `ghcr.io/nc9/longshore@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
 
+## Reproducible builds
+
+The same commit built twice gives the same bytes. `bun run scripts/repro-check.ts` builds every target in the checkout, then again in a fresh copy of `HEAD` at a different path with a fresh `bun install --frozen-lockfile`, and fails if any binary differs. The darwin binary is compared before the ad-hoc signature, which is a separate step with its own verification. The release workflow runs it as a job the release depends on, so a build that is not reproducible is not published. It holds for one pinned toolchain: the bun version is named in the workflows and the Dockerfile, and CI fails if they disagree (`scripts/toolchain-versions.ts`).
+
+To check a release yourself, check out the tag, run `bun install --frozen-lockfile` and `LONGSHORE_VERSION=<version> bun run scripts/build.ts`, and compare `dist/SHA256SUMS` lines for the linux binaries with the release's.
+
+## What the release dry run checks
+
+A manual run of the release workflow (`workflow_dispatch`) builds everything and publishes nothing. It checks that `SHA256SUMS` lists every binary and the SBOM exactly once, that each hash is true and that nothing else is in the directory; that the SBOM is exactly the set of packages the lockfile ships, each with a hash; that the build is reproducible; that Syft runs on the image and sees its packages; and that Longshore's own provenance path verifies the binaries and refuses a changed copy. GitHub's attestations are written to a public log, so only a real tag produces them.
+
 ## The darwin binary and Gatekeeper
 
 `longshore-darwin-arm64` is signed ad hoc and is not notarized. Apple Silicon requires some signature to run a binary, and the release re-signs after the compile so the signature matches the file. An ad-hoc signature is not an identity: it proves nothing about who built the file. Use the checksum and attestation above for that.
@@ -75,11 +85,35 @@ chmod +x longshore-darwin-arm64
 
 You can also allow it once under System Settings, Privacy and Security, "Open Anyway". A binary fetched with `curl` or `gh release download` is not quarantined and runs directly. Notarization needs a paid Apple Developer identity and is not planned for the alphas.
 
+## Verify provenance with `longshore verify`
+
+Releases are attested by GitHub (above): that is the provenance to check for a download. `longshore verify` is the other half of the same idea, for provenance that a Longshore server signs about an artifact its own release lane built:
+
+```sh
+longshore verify <artifact> --provenance <file> --pubkey <file>
+```
+
+It checks that the artifact's digest is a subject of the DSSE-signed SLSA provenance and that the signature verifies under the Ed25519 public key you give it. It trusts only that key. Exit code 0 means verified, 1 not verified, 2 a usage error. See [Signing](/signing).
+
+## The release process
+
+1. **Dry run.** In the Actions tab, run the `release` workflow by hand ("Run workflow", version label such as `v0.1.0-alpha.1`). It builds all targets, re-signs the darwin binary and hashes it afterwards, writes `SHA256SUMS` and the SBOM, builds both image architectures without pushing, runs the amd64 image (healthz, the UI and its CSP, `PORT`, a bootstrap token), drafts the release notes, and checks Longshore's own provenance path on the binaries with a negative control: a changed binary must fail to verify. It publishes nothing: no release, no image push, no attestation, and its jobs have read-only permissions. The bundle (binaries, `SHA256SUMS`, SBOM, drafted notes, the dry-run provenance and its throwaway public key) is a workflow artifact kept for 7 days. The dry-run provenance is signed with a key made for that run and proves the format and the digests, not an identity.
+2. **Customer notes first.** Before a tag that a customer will run, send them the version, the changelog, the migration notes (every migration file in the release, which only go forward) and the rollback steps (below). They decide when to adopt it.
+3. **Tag a prerelease.** `v0.x.y-alpha.N`. Only the maintainer creates tags: pushing the tag starts the real run, which does everything the dry run does, then creates the release (a prerelease because of the hyphen), attaches the SBOMs and attests the binaries, the checksums and the image. The image is started and checked before it is pushed.
+4. **Verify what was published.** Run the commands above against the release: checksums, `gh attestation verify` for a binary and for the image digest.
+5. **Tell the customer.** The release link, the image digest, and anything that changed since the notes.
+
+## Rolling back
+
+For an operator: stop the new version, restore the data directory (SQLite) or the database snapshot (Postgres) taken before the upgrade, and start the previous version by its digest. Migrations only go forward, so a restore is the rollback; nothing downgrades a database in place.
+
+For a bad release: never move or delete a tag that anyone may have used. Mark the release as a prerelease or edit its notes to say not to use it, publish a fixed version under a new tag, and tell customers which digest to run instead. A published image tag is not overwritten.
+
 ## What the pipeline guarantees
 
-- Third-party actions are pinned by commit SHA, and base images by digest. Downloaded tools (the darwin signer, `act`) are pinned by SHA-256.
-- A new dependency version in `bun.lock` must have been published at least 14 days ago. CI fails a pull request that adds a younger one, using the npm registry's publish time. Exceptions go in `.github/dep-age-allowlist.json` with a reason and an optional expiry.
-- An OpenSSF Scorecard run reports weekly and on every push to `main`, to the repository's code scanning.
+- Everything fetched at build or run time is pinned by something immutable, and CI fails on anything that is not (`scripts/check-pins.ts`, in the `check` job). A GitHub Action (and a reusable workflow) is pinned by full commit SHA. A container image, in a workflow, a Dockerfile or a test, is pinned by sha256 digest. A binary downloaded in a Dockerfile (PowerShell in the runner image) or in code (`act`) is pinned by version and checked against a committed sha256 before it is used. The toolchain version (`bun-version`) is exact. A line that names something this same job just built can say `pin-ok: <reason>` to be excused.
+- A new dependency version in `bun.lock` must have been published at least 14 days ago. CI fails a pull request that adds a younger one, using the npm registry's publish time, and only for versions that are new against the base branch's lockfile, so existing pins are not re-judged. A package with no registry publish time (a git or tarball dependency) needs an entry too. Exceptions go in `.github/dep-age-allowlist.json` with a reason and an optional expiry. Dependabot has the same 14-day cooldown, so it does not propose a version CI would refuse.
+- An OpenSSF Scorecard run reports weekly and on every push to `main`, to the repository's code scanning (SARIF). It runs with read access plus `security-events: write` (to upload) and `id-token: write` (to publish the public result), and every action in it is pinned by SHA.
 - Release notes are drafted from conventional commits, grouped by type, with breaking changes and migration files listed apart. `scripts/release-notes.ts` makes them from the git history, and `.github/release-notes-template.md` is the frame to edit before publishing.
 
 Report a vulnerability through the repository's private security advisories, not a public issue.

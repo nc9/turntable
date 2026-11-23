@@ -10,13 +10,14 @@ import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
 import * as s from "../schema";
 import type { JobState } from "../schema";
 import { ulid } from "../ulid";
-import { appendEvent } from "./events";
+import { appendEvent, notifyLogAppended } from "./events";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
 export * from "./api";
 export * from "./approve";
 export * from "./artifacts";
+export * from "./quotas";
 export * from "./approvals";
 export * from "./proxy-rules";
 export * from "./github";
@@ -24,13 +25,16 @@ export * from "./incident";
 export * from "./audit";
 export * from "./vault";
 export * from "./release";
+export * from "./cache";
 export * from "./cancel";
 export * from "./pins";
 export * from "./verdicts";
 export * from "./events";
 export * from "./lease";
+export * from "./instance-tokens";
 export * from "./poll";
 export * from "./readiness";
+export * from "./usage";
 export * from "./rerun";
 
 export type Project = typeof s.projects.$inferSelect;
@@ -607,6 +611,9 @@ export function listAttempts(db: Db, scope: Scope, jobId: string): Promise<JobAt
   );
 }
 
+const isoOrNull = (ms: number | null | undefined): string | null =>
+  ms === null || ms === undefined ? null : new Date(ms).toISOString();
+
 export function updateAttempt(
   db: Db,
   scope: Scope,
@@ -617,6 +624,8 @@ export function updateAttempt(
     execId?: string | null;
     exitCode?: number | null;
     errorClass?: string | null;
+    sandboxCreatedAt?: number | null;
+    sandboxDestroyedAt?: number | null;
   },
 ): Promise<JobAttempt | undefined> {
   return db.transaction(async (h) => {
@@ -663,6 +672,10 @@ export function updateAttempt(
           to: patch.state,
           exit_code: patch.exitCode ?? null,
           error_class: patch.errorClass ?? null,
+          // When the sandbox existed, from the provider's create to its confirmed destroy: what
+          // sandbox-minutes are counted from (null when not known, or not confirmed destroyed).
+          sandbox_created_at: isoOrNull(patch.sandboxCreatedAt ?? cur.sandboxCreatedAt),
+          sandbox_destroyed_at: isoOrNull(patch.sandboxDestroyedAt ?? cur.sandboxDestroyedAt),
         },
       });
       if (patch.state === "infra_error") {
@@ -700,6 +713,7 @@ export function appendLog(
         bytes: Buffer.from(bytes),
       })
       .onConflictDoNothing();
+    notifyLogAppended(h, scope.orgId, attemptId);
     return true;
   });
 }
@@ -726,3 +740,4 @@ export function readLog(
       .orderBy(asc(s.logChunks.offset)),
   );
 }
+export * from "./webhooks";

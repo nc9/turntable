@@ -120,7 +120,14 @@ export function createRestApi(
 ): (req: Request, peer?: string) => Promise<Response | undefined> {
   // Signature ops are routed too, but never with a bearer token: the signed statement in the
   // body is their credential, and the dispatcher refuses a token for them.
-  const routes = [...env.registry.tokenOps(), ...env.registry.signatureOps()].map(compile);
+  // Instance ops are routed too. Only this adapter lets an instance token authenticate (MCP and
+  // the realtime socket do not), and the dispatcher refuses an org token for them.
+  const routes = [
+    ...env.registry.tokenOps(),
+    ...env.registry.signatureOps(),
+    ...env.registry.instanceOps(),
+  ].map(compile);
+  const restEnv: DispatchEnv = { ...env, allowInstance: true };
   return async (req, peer) => {
     const url = new URL(req.url);
     if (url.pathname !== API_PREFIX && !url.pathname.startsWith(`${API_PREFIX}/`)) return undefined;
@@ -179,7 +186,7 @@ export function createRestApi(
         );
       }
       const result = await dispatch(
-        env,
+        restEnv,
         { kind: "bearer", token: bearer[1]! },
         route.op.name,
         input,

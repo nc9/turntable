@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { dispatch, hashToken, registry } from "../src/ops";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "../src/ops/token-cli";
 import { assertMintable } from "../src/ops/tokens";
 import { seedWorld, type Tenant } from "./ops-helpers";
+import { onPostgres } from "./pg-mode";
 
 let db: Db;
 let a: Tenant;
@@ -79,7 +80,7 @@ test("bad input is refused before anything is written", async () => {
   expect(await db.orm.select().from(schema.apiTokens)).toHaveLength(0);
 });
 
-test("the CLI binary prints only the secret on stdout", async () => {
+test.skipIf(onPostgres)("the CLI binary prints only the secret on stdout", async () => {
   const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
   try {
     const { openDatabase, createOrg } = await import("../src/db");
@@ -227,43 +228,149 @@ test("token revoke cuts access at once, is audited, and refuses unknown or repea
   await expect(revokeTokenFromCli(db, "01HZZZZZZZZZZZZZZZZZZZZZZZ")).rejects.toThrow(/no token/);
 });
 
-test("token list and revoke run through the binary", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
-  try {
-    const { openDatabase, createOrg } = await import("../src/db");
-    const cliDb = openDatabase(join(dir, "longshore.db"));
-    await createOrg(cliDb, { slug: "acme", name: "Acme" });
-    cliDb.close();
-    const main = join(import.meta.dir, "../src/main.ts");
-    const run = async (...args: string[]) => {
-      const p = Bun.spawn(["bun", "run", main, "token", ...args, "--data-dir", dir], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [out, err, code] = await Promise.all([
-        new Response(p.stdout).text(),
-        new Response(p.stderr).text(),
-        p.exited,
-      ]);
-      return { out, err, code };
-    };
-    const created = await run("create", "--org", "acme", "--role", "reader", "--name", "bot");
-    expect(created.code).toBe(0);
-    const secret = created.out.trim();
-    const id = /token (\w{26}) for/.exec(created.err)![1]!;
-    const listed = await run("list", "--org", "acme");
-    expect(listed.code).toBe(0);
-    expect(listed.out).toContain("bot");
-    expect(listed.out).toContain("active");
-    expect(listed.out).not.toContain(secret);
-    const revoked = await run("revoke", id);
-    expect(revoked.code).toBe(0);
-    expect((await run("list", "--org", "acme")).out).toContain("revoked");
-    expect((await run("revoke", id)).code).toBe(1);
-    expect((await run("revoke")).code).toBe(1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+// Six child processes in a row: each boots bun, so the default 5 s is too tight on a busy runner.
+test.skipIf(onPostgres)(
+  "token list and revoke run through the binary",
+  { timeout: 60_000 },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
+    try {
+      const { openDatabase, createOrg } = await import("../src/db");
+      const cliDb = openDatabase(join(dir, "longshore.db"));
+      await createOrg(cliDb, { slug: "acme", name: "Acme" });
+      cliDb.close();
+      const main = join(import.meta.dir, "../src/main.ts");
+      const run = async (...args: string[]) => {
+        const p = Bun.spawn(["bun", "run", main, "token", ...args, "--data-dir", dir], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [out, err, code] = await Promise.all([
+          new Response(p.stdout).text(),
+          new Response(p.stderr).text(),
+          p.exited,
+        ]);
+        return { out, err, code };
+      };
+      const created = await run("create", "--org", "acme", "--role", "reader", "--name", "bot");
+      expect(created.code).toBe(0);
+      const secret = created.out.trim();
+      const id = /token (\w{26}) for/.exec(created.err)![1]!;
+      const listed = await run("list", "--org", "acme");
+      expect(listed.code).toBe(0);
+      expect(listed.out).toContain("bot");
+      expect(listed.out).toContain("active");
+      expect(listed.out).not.toContain(secret);
+      const revoked = await run("revoke", id);
+      expect(revoked.code).toBe(0);
+      expect((await run("list", "--org", "acme")).out).toContain("revoked");
+      expect((await run("revoke", id)).code).toBe(1);
+      expect((await run("revoke")).code).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+/**
+ * The CLI runs next to a server or another process that is writing. A write lock held by another
+ * connection must make it wait, not fail with "database is locked": that includes the first thing
+ * it does, switching a fresh file to WAL, which needs a lock of its own.
+ */
+describe.skipIf(onPostgres)("the CLI waits for another connection's write lock", () => {
+  // Longer than the CLI takes to start on a slow runner, so it meets the lock while it is held.
+  const HOLD_MS = 3500;
+  const mint = async (dir: string, holdMs: number, hold: () => void, release: () => void) => {
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "run",
+        join(import.meta.dir, "../src/main.ts"),
+        "token",
+        "create",
+        "--org",
+        "local",
+        "--role",
+        "reader",
+        "--name",
+        "bot",
+        "--data-dir",
+        dir,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    hold();
+    const timer = setTimeout(release, holdMs);
+    const started = Date.now();
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timer);
+    return { out, err, code, ms: Date.now() - started };
+  };
+
+  test(
+    "a fresh file another connection holds a write lock on (WAL switch): the CLI waits and succeeds",
+    { timeout: 30_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "longshore-cli-lock-"));
+      const { Database } = await import("bun:sqlite");
+      const holder = new Database(join(dir, "longshore.db"), { create: true });
+      try {
+        holder.run("CREATE TABLE held (x)"); // an ordinary rollback-journal database
+        // The spawned CLI starts opening while the lock is held; it is released a moment later.
+        const r = await mint(
+          dir,
+          HOLD_MS,
+          () => {
+            holder.run("BEGIN IMMEDIATE");
+            holder.run("INSERT INTO held VALUES (1)");
+          },
+          () => holder.run("COMMIT"),
+        );
+        if (r.code !== 0) throw new Error(`token create exited ${r.code}\nstderr: ${r.err}`);
+        expect(r.out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
+        // It really waited for the lock: the child cannot have finished before it was released.
+        expect(r.ms).toBeGreaterThanOrEqual(HOLD_MS - 200);
+      } finally {
+        holder.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test(
+    "a WAL database with a write transaction open: the CLI waits for it and succeeds",
+    { timeout: 30_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "longshore-cli-lock-"));
+      const { openDatabase } = await import("../src/db");
+      const { Database } = await import("bun:sqlite");
+      const first = openDatabase(join(dir, "longshore.db"));
+      first.close();
+      const holder = new Database(join(dir, "longshore.db"));
+      holder.run("PRAGMA busy_timeout = 5000");
+      try {
+        const r = await mint(
+          dir,
+          HOLD_MS,
+          () => {
+            holder.run("BEGIN IMMEDIATE");
+            holder.run("CREATE TABLE IF NOT EXISTS held (x)");
+          },
+          () => holder.run("COMMIT"),
+        );
+        if (r.code !== 0) throw new Error(`token create exited ${r.code}\nstderr: ${r.err}`);
+        expect(r.out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
+        expect(r.ms).toBeGreaterThanOrEqual(HOLD_MS - 200);
+      } finally {
+        holder.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 test("a fresh data directory can mint a token for the built-in local org", async () => {

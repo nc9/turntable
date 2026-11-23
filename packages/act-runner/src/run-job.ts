@@ -22,6 +22,7 @@ import {
   INSTALL_SHIMS_SH,
   launcherArgv,
   PROXY_BUNDLE_SH,
+  envFileOf,
   proxyEnvFile,
   SHIM_NAMES,
   STEP_ENV,
@@ -43,6 +44,11 @@ export interface JobResult {
 export type RunEvent =
   | { kind: "phase"; phase: "preparing" | "running" | "draining" }
   | { kind: "log"; offset: number; bytes: Uint8Array }
+  /**
+   * The sandbox dropped `omittedBytes` of output at logical `offset` (its head and tail caps).
+   * A record, never text: it is not in any log bytes, so job output cannot forge it.
+   */
+  | { kind: "cut"; offset: number; omittedBytes: number }
   | { kind: "act"; event: ActEvent };
 
 export interface RunInput {
@@ -58,6 +64,18 @@ export interface RunInput {
    * act and so for every step; never a provider env field.
    */
   proxy?: { url: string; caPem: string };
+  /**
+   * The value of GITHUB_TOKEN for act and the steps (`secrets.GITHUB_TOKEN`, `github.token`). Put
+   * in the environment file, never in an argv. Behind the secrets proxy this is a placeholder
+   * and the proxy attaches the real token.
+   */
+  githubToken?: string;
+  /**
+   * GitHub's OIDC request variables for the steps (`ACTIONS_ID_TOKEN_REQUEST_URL` and
+   * `ACTIONS_ID_TOKEN_REQUEST_TOKEN`). The token is a placeholder: the secrets proxy attaches the
+   * real credential to requests for that URL, so the sandbox never holds a usable one.
+   */
+  oidc?: { requestUrl: string; requestToken: string };
 }
 
 export interface RunOptions {
@@ -268,7 +286,10 @@ export async function* runJob(
         pollMs,
       );
     }
-    let envFile = "";
+    // Anything the job needs in its environment that must not appear in an argv (the proxy URL
+    // carries the attempt's credential, GITHUB_TOKEN is a token) goes in one 0600 file the launcher
+    // sources and deletes before act starts.
+    let envText = "";
     if (input.proxy) {
       const caPath = `${L.root}/proxy-ca.pem`;
       const bundle = `${L.root}/proxy-bundle.pem`;
@@ -279,21 +300,26 @@ export async function* runJob(
       );
       const b = await execShort(provider, sandboxId, PROXY_BUNDLE_SH, [caPath, bundle], retry);
       if (b.exitCode !== 0) return fail(`cannot build the proxy trust bundle: ${b.output.trim()}`);
-      // The proxy URL carries the attempt's credential: it goes in a 0600 file the launcher
-      // sources and deletes, never into an argv.
-      envFile = `${L.root}/proxy.env`;
+      envText += proxyEnvFile(input.proxy.url, bundle);
+    }
+    if (input.githubToken !== undefined)
+      envText += envFileOf([["GITHUB_TOKEN", input.githubToken]]);
+    if (input.oidc) {
+      envText += envFileOf([
+        ["ACTIONS_ID_TOKEN_REQUEST_URL", input.oidc.requestUrl],
+        ["ACTIONS_ID_TOKEN_REQUEST_TOKEN", input.oidc.requestToken],
+      ]);
+    }
+    let envFile = "";
+    if (envText !== "") {
+      envFile = `${L.root}/job.env`;
       await withRetry(
-        () =>
-          provider.files.put(
-            sandboxId,
-            envFile,
-            enc.encode(proxyEnvFile(input.proxy?.url ?? "", bundle)),
-          ),
+        () => provider.files.put(sandboxId, envFile, enc.encode(envText)),
         maxErr,
         pollMs,
       );
       const m = await execShort(provider, sandboxId, 'chmod 600 "$1"', [envFile], retry);
-      if (m.exitCode !== 0) return fail("cannot protect the proxy environment file");
+      if (m.exitCode !== 0) return fail("cannot protect the job environment file");
     }
 
     // Pin every `uses:` to its sha in the files act will read.
@@ -318,7 +344,12 @@ export async function* runJob(
     const { execId } = await withRetry(
       () =>
         provider.exec.start(sandboxId, {
-          argv: launcherArgv(L.shims, plan.argv, envFile),
+          argv: launcherArgv(
+            L.shims,
+            // `-s GITHUB_TOKEN` takes the value from the environment: it is never in the argv.
+            input.githubToken === undefined ? plan.argv : [...plan.argv, "-s", "GITHUB_TOKEN"],
+            envFile,
+          ),
           cwd: plan.cwd,
           timeoutSeconds: opts.timeoutSeconds ?? 3600,
         }),
@@ -373,6 +404,15 @@ export async function* watchExec(
         maxErr,
         pollMs,
       );
+      if (r.cut) {
+        yield { kind: "cut", offset, omittedBytes: r.cut.omittedBytes };
+        // Whatever line was in flight is cut off: finish it, so the tail starts a fresh line.
+        for (const ev of parser.end()) {
+          if (!mine(ev)) continue;
+          events.push(ev);
+          yield { kind: "act", event: ev };
+        }
+      }
       if (r.bytes.length > 0) {
         yield { kind: "log", offset, bytes: r.bytes };
         for (const ev of parser.push(dec.decode(r.bytes, { stream: true }))) {

@@ -1,13 +1,17 @@
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { allowHostsFromEnv } from "@longshore/net";
 import type { Provider } from "@longshore/provider-sdk";
-import { type Db, ensureInstance, openDatabase } from "./db";
+import { checkoutConfigFromEnv } from "./run/checkout-child";
+import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
 import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
 import { registerCredentialRevoker } from "./incident";
 import { createForgeToken } from "./pins/forge-token";
+import { createHostedManifestHandler, type HostedManifestHandler } from "./github/hosted-manifest";
 import { parseTrustedProxies } from "./github/trusted-proxies";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import {
@@ -17,15 +21,26 @@ import {
   type ClaimHandler,
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
+import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
+import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
+import { appendAudit } from "./db/repos";
+import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
+import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
-import { SecretsProxy, withSecretsProxy } from "./proxy";
+import { JobOidc } from "./oidc/job-delivery";
+import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
+import { JobTokens, publicRepoCheck } from "./github/job-token";
+import { CacheGrants } from "./cache/grants";
+import { jobCacheProvider } from "./cache/job";
+import { createCacheService, type CacheService } from "./cache/service";
+import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
@@ -34,7 +49,9 @@ import {
   createActRunner,
   createProvider,
   gitRepoSource,
+  adoptRecordedSandboxes,
   reconcileExpired,
+  sweepUndestroyedSandboxes,
   type AttemptRunner,
   Scheduler,
   withEgressPolicy,
@@ -44,8 +61,10 @@ import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, resolveRoles } from "./roles";
+import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
+import { enableDevUi, hasUi } from "./ui-assets";
 import { transportOptionsFromEnv } from "./transport";
 import { VERSION } from "./version";
 
@@ -53,6 +72,7 @@ const USAGE = `longshore ${VERSION}
 
 Usage:
   longshore serve [--roles web,worker,poller|all|release] [--port 8080] [--host 127.0.0.1] [--data-dir ./data]
+                  [--database-url postgres://...]
                   [--allowed-origin <origin>]
                   [--public-url <base url>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
@@ -68,6 +88,8 @@ Usage:
   longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
                               [--longshore-org local] [--master-key-file <path>]
   longshore github-app rotate-webhook-secret | status [--master-key-file <path>] [--data-dir ./data]
+  longshore token create --instance --name <name> [--expires-days 30] [--data-dir ./data]
+                         (an instance-administrator token: REST only, for quotas; list and revoke take --instance too)
   longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
   longshore token generate
@@ -80,8 +102,14 @@ Usage:
   longshore mcp [--token-file <path>] [--data-dir ./data]
   longshore approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   longshore incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
+  longshore quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
+  longshore artifacts list|check --url <https://host> --org <slug> --project <slug> [--run <id>] [--token-file <path>]
+  longshore quotas get --url <https://host> --org <slug> [--token-file <path>]  (remote read)
+  longshore usage --url <https://host> [--days <n>] [--by-project] [--token-file <path>]  (sandbox minutes per day, remote read)
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
+  longshore fetch-source <owner/name> <sha> [--file <path>]   check that a commit can be fetched, as a worker does
+  longshore parity --run <id> --repo <owner/name> --app-id <n> [--json]   compare a run with another CI's checks
   longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
   longshore version
 
@@ -90,6 +118,8 @@ Environment:
   LONGSHORE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "longshore token generate"; on boot, an
                     org with no tokens gets one operator token with this hash
   LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
+  LONGSHORE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create LONGSHORE_MASTER_KEY_FILE on first boot when it is
+                    absent (a host with no shell); never overwrites an existing file
   LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
                     required for the GitHub App and its webhook endpoint
   LONGSHORE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
@@ -101,6 +131,8 @@ Environment:
   LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control: plain-http requests it
                     forwards get a 301 to https (GET and HEAD; 400 otherwise), and secret values
                     sent over x-forwarded-proto: https are accepted
+  LONGSHORE_DATABASE_URL  Postgres connection URL (default for --database-url); every subcommand that opens
+                    the database uses it. Without it the database is SQLite in the data dir
   LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   LONGSHORE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
@@ -110,9 +142,13 @@ Environment:
                     token, artifact dir): the release lane runs as its own process and no other role reads them
   LONGSHORE_TOKEN_FILE  token file for "longshore mcp" (mode 0600; never pass a token on the command line)
   LONGSHORE_WEBAUTHN_RP_ID, LONGSHORE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
+  LONGSHORE_CACHE_URL  base URL jobs reach the control-plane cache at (enables it; see docs/cache.mdx)
+  LONGSHORE_CACHE_QUOTA_GIB, LONGSHORE_CACHE_MAX_ENTRY_GIB  per-org cache quota (default 10) and largest entry (default 2)
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
                     the webhook failure limiter keys on the client the forwarded chain reports through them
+  LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256  sha256 of a setup token (longshore token generate): enables creating the
+                    GitHub App from this instance at /api/v1/instance/github-app/manifest; needs LONGSHORE_PUBLIC_URL
   LONGSHORE_CLAIM_INSTALLATIONS  set to 1 on a hosted instance: an org claims its own App installation
                     (start_installation_claim, then GitHub redirects to /api/v1/github/setup)
   LONGSHORE_WORKER, LONGSHORE_PROVIDER, LONGSHORE_PROVIDER_CONFIG, LONGSHORE_POLL, LONGSHORE_IMAGE,
@@ -139,7 +175,12 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
-  extras: { auth?: AppAuth; vault?: SecretVault } = {},
+  extras: {
+    auth?: AppAuth;
+    vault?: SecretVault;
+    cache?: CacheService;
+    jobOidc?: JobOidc;
+  } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -152,7 +193,9 @@ async function startBackground(
 
   if (v.worker) {
     const providerName = v.provider ?? "docker";
-    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]));
+    const provider = createProvider(providerName, resolveProviderConfig(v["provider-config"]), {
+      hosted: v.hosted === true || process.env.LONGSHORE_HOSTED === "1",
+    });
     workerProvider = provider;
     // Fail at startup, with the provider named, instead of at the first job.
     try {
@@ -195,12 +238,61 @@ async function startBackground(
         ...(process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()
           ? { advertiseHost: process.env.LONGSHORE_PROXY_ADVERTISE_HOST.trim() }
           : {}),
+        // A public TLS listener, for sandboxes in another provider's network (Daytona).
+        ...(process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim() ||
+        process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim()
+          ? { tls: readProxyTls() }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_PORT?.trim()
+          ? { advertisePort: Number(process.env.LONGSHORE_PROXY_ADVERTISE_PORT.trim()) }
+          : {}),
+        ...(process.env.LONGSHORE_PROXY_ADVERTISE_ADDRESSES?.trim()
+          ? {
+              advertiseAddresses: process.env.LONGSHORE_PROXY_ADVERTISE_ADDRESSES.split(",")
+                .map((a) => a.trim())
+                .filter(Boolean),
+            }
+          : {}),
         log,
       });
       log(`secrets proxy listening on port ${secretsProxy.port}`);
     }
+    // A GitHub token per job (see github/job-token), when the App is configured.
+    const jobTokens =
+      extras.auth && process.env.LONGSHORE_JOB_TOKENS !== "off"
+        ? new JobTokens(extras.auth, { isPublic: publicRepoCheck({ auth: extras.auth }) })
+        : undefined;
+    // Compat publishing: a release-class job may ask the release lane for a release-proxy
+    // credential. This process holds only the request key, never a publish credential.
+    const channelKey = process.env.LONGSHORE_PUBLISH_CHANNEL_KEY_FILE?.trim();
+    const publishChannel = channelKey
+      ? createChannelClient({
+          key: readFileSync(channelKey, "utf8").trim(),
+          target: process.env.LONGSHORE_PUBLISH_CHANNEL_URL?.trim()
+            ? {
+                url: process.env.LONGSHORE_PUBLISH_CHANNEL_URL.trim(),
+                tls: {
+                  cert: readFileSync(
+                    requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_CERT_FILE"),
+                    "utf8",
+                  ),
+                  key: readFileSync(requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_KEY_FILE"), "utf8"),
+                  ca: readFileSync(requiredEnv("LONGSHORE_PUBLISH_CHANNEL_TLS_CA_FILE"), "utf8"),
+                },
+              }
+            : { unix: requiredEnv("LONGSHORE_PUBLISH_CHANNEL_SOCKET") },
+        })
+      : undefined;
+    const released = (r: AttemptRunner): AttemptRunner =>
+      publishChannel ? withReleaseChannel(r, { client: publishChannel }) : r;
     const proxied = (r: AttemptRunner): AttemptRunner =>
-      secretsProxy ? withSecretsProxy(r, { proxy: secretsProxy }) : r;
+      secretsProxy
+        ? withSecretsProxy(r, {
+            proxy: secretsProxy,
+            ...(jobTokens ? { github: githubTargetOf(db) } : {}),
+            ...(extras.jobOidc ? { oidc: (c, k) => extras.jobOidc!.proxyTarget(c, k) } : {}),
+          })
+        : r;
     scheduler = new Scheduler({
       db,
       providers,
@@ -209,24 +301,32 @@ async function startBackground(
         // Egress is none by default and refused where it cannot be enforced; each `none`
         // sandbox is probed for a real way out before the job starts.
         proxied(
-          withEgressPolicy(
-            createActRunner({
-              db,
-              source: gitRepoSource(),
-              // Actions are resolved and verified with the run's own GitHub credential: the poll
-              // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
-              forgeToken: createForgeToken({
+          released(
+            withEgressPolicy(
+              createActRunner({
                 db,
-                poll: pollConfig,
-                auth: extras.auth,
-                envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
-                log: (m) => console.warn(`[longshore] ${m}`),
+                source: gitRepoSource({
+                  allowHosts: allowHostsFromEnv(),
+                  config: checkoutConfigFromEnv(),
+                }),
+                // Actions are resolved and verified with the run's own GitHub credential: the poll
+                // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
+                forgeToken: createForgeToken({
+                  db,
+                  poll: pollConfig,
+                  auth: extras.auth,
+                  envToken: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+                  log: (m) => console.warn(`[longshore] ${m}`),
+                }),
+                canary: true,
+                ...(jobTokens ? { jobTokens } : {}),
+                ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
+                ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
+                ...(v.image ? { image: v.image } : {}),
               }),
-              canary: true,
-              ...(v.image ? { image: v.image } : {}),
-            }),
-            // A job behind the proxy holds secrets: it never runs with open egress.
-            { secretBearing: (ctx) => ctx.proxy !== undefined },
+              // A job behind the proxy holds secrets: it never runs with open egress.
+              { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
+            ),
           ),
         ),
         {
@@ -242,14 +342,25 @@ async function startBackground(
       log,
     });
     const sched = scheduler;
-    const reconcile = () =>
-      reconcileExpired(db, providers, {
+    const reconcile = async () => {
+      // A provider that cannot trust its listings (Daytona) counts its own fleet by recorded id:
+      // tell it which sandboxes the database says are still ours before anything else.
+      await adoptRecordedSandboxes(db, providers);
+      const done = await reconcileExpired(db, providers, {
         log,
         owner: sched.owner,
         leaseMs,
         // Re-attach to execs a dead worker left behind: the real result is recovered by replay.
         adopt: (claim, resume) => sched.adopt(claim, resume),
       });
+      const swept = await sweepUndestroyedSandboxes(db, providers, { log });
+      if (swept.destroyed + swept.failed > 0) {
+        log(
+          `sandbox sweep: ${swept.destroyed} destroyed, ${swept.failed} failed (retried next time)`,
+        );
+      }
+      return done;
+    };
     // Boot reconcile before claiming: abandoned attempts are re-attached or resolved first.
     const report = await reconcile();
     if (report.resolved.length + report.adopted.length > 0) {
@@ -276,6 +387,8 @@ async function startBackground(
     poller = new Poller({
       db,
       config: pollConfig,
+      // Repos bound by an installation are ingested once their project has ingest settings.
+      bindings: true,
       log,
       onQueued: () => scheduler?.nudge(),
       // A newer cancel-in-progress run took over running attempts: stop their workers now and
@@ -311,6 +424,27 @@ async function startBackground(
   };
 }
 
+/** The proxy's TLS certificate and key, from their files: both or neither. */
+function requiredEnv(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) throw new Error(`${name} is required`);
+  return v;
+}
+
+function readProxyTls(): { key: string; cert: string } {
+  const certFile = process.env.LONGSHORE_PROXY_TLS_CERT_FILE?.trim();
+  const keyFile = process.env.LONGSHORE_PROXY_TLS_KEY_FILE?.trim();
+  if (!certFile || !keyFile) {
+    throw new Error(
+      "LONGSHORE_PROXY_TLS_CERT_FILE and LONGSHORE_PROXY_TLS_KEY_FILE must be set together",
+    );
+  }
+  if (!process.env.LONGSHORE_PROXY_ADVERTISE_HOST?.trim()) {
+    throw new Error("a TLS proxy listener needs LONGSHORE_PROXY_ADVERTISE_HOST (its public name)");
+  }
+  return { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile, "utf8") };
+}
+
 async function serve(args: string[]): Promise<void> {
   // Every option has an environment variable (serve-config.ts), so a platform with no shell
   // configures the whole server from variables. A flag wins over its variable.
@@ -321,8 +455,11 @@ async function serve(args: string[]): Promise<void> {
       port: { type: "string", default: d.port },
       host: { type: "string", default: d.host },
       "data-dir": { type: "string", default: d.dataDir },
+      // Read before anything else loads (db/dialect.ts); declared so strict parsing accepts it.
+      "database-url": { type: "string" },
       "allowed-origin": { type: "string", multiple: true },
       "public-url": { type: "string" },
+      "init-master-key": { type: "boolean", default: false },
       roles: { type: "string" },
       worker: { type: "boolean", default: d.worker },
       "global-cap": { type: "string", default: d.globalCap },
@@ -376,8 +513,38 @@ async function serve(args: string[]): Promise<void> {
     console.log(`dropped privileges to ${process.env.LONGSHORE_DROP_PRIVILEGES}`);
   if (privilege === "root_allowed")
     console.warn("warning: running as root (LONGSHORE_ALLOW_ROOT=1)");
+  // A platform with no shell cannot run `keys init`: when asked to, create the key file once, here,
+  // before anything reads it. Never overwrites; without the opt-in an absent file stays an error.
+  let masterKeyCreated: string | undefined;
+  const keyPath = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  if (keyPath && autoInitRequested(process.env, values["init-master-key"])) {
+    if (
+      autoInitMasterKey(resolve(keyPath), dataDir, (m) => console.log(`[longshore] ${m}`)) ===
+      "created"
+    ) {
+      masterKeyCreated = resolve(keyPath);
+    }
+  } else if (!keyPath && autoInitRequested(process.env, values["init-master-key"])) {
+    throw new Error(
+      "--init-master-key (LONGSHORE_MASTER_KEY_AUTOINIT) needs LONGSHORE_MASTER_KEY_FILE",
+    );
+  }
   const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
+  if (masterKeyCreated) {
+    await appendAudit(
+      db,
+      { orgId: await systemOrgId(db) },
+      {
+        principalKind: "system",
+        principalId: "first-boot",
+        op: "master_key_created",
+        effect: "write",
+        outcome: "ok",
+        input: { file: basename(masterKeyCreated) },
+      },
+    );
+  }
 
   // First-boot access without a shell: see ops/bootstrap.ts.
   const bootstrapHash = process.env.LONGSHORE_BOOTSTRAP_TOKEN_SHA256?.trim();
@@ -393,6 +560,46 @@ async function serve(args: string[]): Promise<void> {
     );
   }
 
+  // The control-plane cache for jobs (#38). Off unless a URL the sandboxes can reach is given.
+  let cache: CacheService | undefined;
+  const cacheUrl = process.env.LONGSHORE_CACHE_URL?.trim();
+  if (cacheUrl) {
+    const gib = (name: string, dflt: number): number => {
+      const n = Number(process.env[name] ?? dflt);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid ${name}`);
+      return Math.floor(n * 1024 ** 3);
+    };
+    cache = createCacheService({
+      db,
+      // With a master key the blobs are encrypted at rest, per org (cache/blob-crypto.ts).
+      store: new FsCacheStore(join(dataDir, "cache"), {
+        masterKey: process.env.LONGSHORE_MASTER_KEY_FILE?.trim()
+          ? loadMasterKey(process.env.LONGSHORE_MASTER_KEY_FILE.trim())
+          : undefined,
+      }),
+      grants: new CacheGrants(),
+      orgQuotaBytes: gib("LONGSHORE_CACHE_QUOTA_GIB", 10),
+      maxEntryBytes: gib("LONGSHORE_CACHE_MAX_ENTRY_GIB", 2),
+      baseUrl: cacheUrl,
+      // Shown next to the job's own log as a system line (out of band: output cannot forge it).
+      onNotice: (g, m) => {
+        console.log(`[longshore] ${m} (attempt ${g.attemptId})`);
+        void addNotice(
+          db,
+          { orgId: g.own.orgId, projectId: g.own.projectId },
+          { attemptId: g.attemptId, source: "cache", text: m },
+        ).catch(() => {});
+      },
+      // A grant works only while its attempt is running, whatever else the token says.
+      isActive: async (g) =>
+        (await getAttempt(db, { orgId: g.own.orgId, projectId: g.own.projectId }, g.attemptId))
+          ?.state === "running",
+    });
+    const sweep = setInterval(() => void cache?.sweep().catch(() => {}), 5 * 60_000);
+    sweep.unref();
+    console.log(`[longshore] job cache on, sandboxes reach it at ${cacheUrl}`);
+  }
+
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
     ...(process.env.LONGSHORE_ALLOWED_ORIGINS?.split(",") ?? []),
@@ -402,6 +609,8 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
+  let appManifest: HostedManifestHandler | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
   let wake: ((repo: string) => void) | undefined;
   // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
@@ -411,11 +620,21 @@ async function serve(args: string[]): Promise<void> {
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;
+  let jobOidc: JobOidc | undefined;
+  let outboundWebhooks: WebhookService | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
     const masterKey = loadMasterKey(keyFile);
     const store = new SecretStore(db, masterKey);
     vault = new SecretVault({ db, masterKey });
+    outboundWebhooks = new WebhookService({
+      db,
+      masterKey,
+      log: (m) => console.warn(`[longshore] ${m}`),
+    });
+    // Delivery runs in the process that serves the API: one loop per web process, and rows are
+    // claimed with a lease, so two processes never send the same delivery at once.
+    if (roles.has("web")) auditStops.push(outboundWebhooks.start());
     // Per-org OIDC issuer: needs a public https base, which is what an issuer URL is.
     const publicUrl = (values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL)?.trim();
     const oidcBase =
@@ -436,6 +655,8 @@ async function serve(args: string[]): Promise<void> {
         allowClasses: parseAllowClasses(process.env.LONGSHORE_OIDC_ALLOW_CLASSES),
       });
       oidc = createOidcHandler({ db, issuer, masterKey });
+      // Jobs that ask for an ID token get GitHub's variables, behind the secrets proxy.
+      jobOidc = new JobOidc({ db, issuer, masterKey });
     }
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
@@ -479,6 +700,28 @@ async function serve(args: string[]): Promise<void> {
         }),
       };
     }
+    const setupHash = process.env.LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256?.trim();
+    if (setupHash) {
+      const publicBase = (values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL)?.trim();
+      if (!publicBase) {
+        console.warn(
+          "LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256 is set but there is no public URL (LONGSHORE_PUBLIC_URL): the GitHub App cannot be created from this instance",
+        );
+      } else {
+        appManifest = createHostedManifestHandler({
+          db,
+          store,
+          publicUrl: publicBase,
+          setupTokenSha256: setupHash,
+          ...(claimMode ? { claimFlow: true } : {}),
+          // The App owns every installation of it: only the bootstrap or system org may.
+          ownerOrgSlugs: [process.env.LONGSHORE_BOOTSTRAP_ORG?.trim() || "local", SYSTEM_ORG_SLUG],
+          trustedProxies: parseTrustedProxies(process.env.LONGSHORE_TRUSTED_PROXIES),
+          onReplaced: () => auth.dropCached(),
+          log: (m) => console.log(`[longshore] ${m}`),
+        });
+      }
+    }
     if (process.env.LONGSHORE_TRUST_FORWARDED_FOR !== undefined) {
       console.warn(
         "warning: LONGSHORE_TRUST_FORWARDED_FOR is no longer read; name your proxies in LONGSHORE_TRUSTED_PROXIES",
@@ -503,6 +746,15 @@ async function serve(args: string[]): Promise<void> {
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL?.trim(),
   );
+  // Running from source with a built UI bundle on disk: serve it (never in the compiled binary).
+  if (roles.has("web")) {
+    const dev = enableDevUi();
+    if (dev) console.log(`serving the web UI from ${dev.dir} (dev mode, ${dev.source})`);
+    else if (process.env.LONGSHORE_UI_DIR?.trim() && !hasUi())
+      console.warn(
+        "LONGSHORE_UI_DIR is not used: it needs a run from source (the compiled binary serves only its embedded UI) and a directory with an index.html",
+      );
+  }
   const server = roles.has("web")
     ? startServer({
         port,
@@ -513,7 +765,13 @@ async function serve(args: string[]): Promise<void> {
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
         ...(oidc ? { oidc } : {}),
+        ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(appManifest ? { appManifest } : {}),
+        ...(cache ? { cache } : {}),
+        instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
+          ? Number(values["org-cap"])
+          : undefined,
         trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
       })
@@ -532,6 +790,8 @@ async function serve(args: string[]): Promise<void> {
     {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
+      ...(cache ? { cache } : {}),
+      ...(jobOidc ? { jobOidc } : {}),
     },
   );
 
@@ -561,6 +821,7 @@ async function token(args: string[]): Promise<void> {
     role: { type: "string" },
     name: { type: "string" },
     "expires-days": { type: "string" },
+    instance: { type: "boolean", default: false },
     "data-dir": { type: "string", default: "./data" },
   } as const;
   const { values, positionals } = parseArgs({
@@ -578,6 +839,45 @@ async function token(args: string[]): Promise<void> {
       `sha256: ${hashToken(secret)}\nSet LONGSHORE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
     );
     console.log(secret);
+    return;
+  }
+  if (values.instance) {
+    // An instance-administrator token (lsi_): not tied to an org, minted only here.
+    if (values.org || values.project || values.role) {
+      throw new Error("--instance takes no --org, --project or --role: it holds no org grant");
+    }
+    const { createInstanceTokenFromCli, listInstanceTokensFromCli, revokeInstanceTokenFromCli } =
+      await import("./ops/instance-token-cli");
+    const db = open();
+    try {
+      if (sub === "create") {
+        if (!values.name) throw new Error("--name is required");
+        const created = await createInstanceTokenFromCli(db, {
+          name: values.name,
+          expiresInDays:
+            values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
+        });
+        console.error(
+          `created instance token ${created.id}, expires ${iso(created.expiresAt)}. It is shown once. It can call the instance operations over REST and nothing else.`,
+        );
+        console.log(created.secret);
+      } else if (sub === "list") {
+        console.log(["ID", "NAME", "STATUS", "LAST USED", "EXPIRES"].join("\t"));
+        for (const r of await listInstanceTokensFromCli(db)) {
+          console.log([r.id, r.name, r.status, iso(r.lastUsedAt), iso(r.expiresAt)].join("\t"));
+        }
+      } else if (sub === "revoke") {
+        const [id] = positionals;
+        if (!id)
+          throw new Error("usage: longshore token revoke <id> --instance [--data-dir ./data]");
+        const done = await revokeInstanceTokenFromCli(db, id);
+        console.error(`revoked instance token ${done.id} (${done.name})`);
+      } else {
+        throw new Error("--instance works with create, list and revoke");
+      }
+    } finally {
+      db.close();
+    }
     return;
   }
   if (sub === "create") {
@@ -692,9 +992,29 @@ async function main(argv: string[]): Promise<void> {
       const { incidentCommand } = await import("./incident/cli");
       process.exit(await incidentCommand(rest));
     }
+    case "quotas": {
+      const { quotasCommand } = await import("./quotas/cli");
+      process.exit(await quotasCommand(rest));
+    }
+    case "usage": {
+      const { usageCommand } = await import("./usage/cli");
+      process.exit(await usageCommand(rest));
+    }
+    case "artifacts": {
+      const { artifactsCommand } = await import("./artifacts/cli");
+      process.exit(await artifactsCommand(rest));
+    }
     case "channel": {
       const { channelCommand } = await import("./channel/cli");
       return await channelCommand(rest);
+    }
+    case "fetch-source": {
+      const { fetchSourceCommand } = await import("./run/fetch-source-cli");
+      process.exit(await fetchSourceCommand(rest));
+    }
+    case "parity": {
+      const { parityCommand } = await import("./parity/cli");
+      process.exit(await parityCommand(rest));
     }
     case "verify": {
       const { verifyCommand } = await import("./verify/cli");

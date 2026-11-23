@@ -543,13 +543,15 @@ test("the gate also needs the HEAD COMMIT's author on the allowlist", async () =
   expect(why["pr #2"]).toBe("head commit has no linked GitHub account");
   expect(why["pr #3"]).toBe("head commit author is not on the allowlist");
   expect(why["pr #4"]).toBe("author is not on the allowlist");
-  // the head commit is only fetched for PRs that passed the cheap checks, and cached by ETag
+  // the head commit is only fetched for PRs that passed the cheap checks, and cached by ETag (and
+  // the default branch's head, once, for its push's `before`)
   const commitCalls = gh.state.calls.filter((c) => /\/commits\/[0-9a-f]{40}$/.test(c.path));
   expect(commitCalls.map((c) => c.path.slice(-40)).toSorted()).toEqual([
     SHA("1"),
     SHA("2"),
     SHA("3"),
     SHA("5"),
+    SHA("a"),
   ]);
   // the workflow of a refused PR is never fetched
   for (const sha of ["1", "2", "3", "4"]) {
@@ -617,10 +619,17 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "collaboratorPermission",
     "commitInfo",
     "fileAt",
+    "firstParentChain",
+    "firstParentsSince",
     "openPulls",
+    "peelTag",
+    "pushEvents",
     "queueBranches",
     "queueCommit",
     "rateLimit",
+    "repoDefaultBranch",
+    "tagRefs",
+    "tagRulesets",
   ]);
   for (const m of methods)
     expect(m).not.toMatch(/post|put|patch|delete|create|update|merge|comment|dispatch/i);

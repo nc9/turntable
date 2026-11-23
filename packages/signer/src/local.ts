@@ -5,9 +5,9 @@ import crypto from "node:crypto";
 import { publicKeyFromPem, publicKeyFromSpki } from "./keys";
 import { type KeyVault, type PublicKey, type Signer, SignerError } from "./types";
 
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const vaultName = (keyRef: string): string => {
-  if (!NAME.test(keyRef)) throw new SignerError("a key name is 1 to 64 plain characters");
+  if (!NAME.test(keyRef)) throw new SignerError("a key name is 1 to 100 plain characters");
   return `signing/${keyRef}`;
 };
 

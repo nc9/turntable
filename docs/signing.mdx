@@ -3,9 +3,9 @@ title: Signing and provenance
 description: How Longshore signs release artifacts, what the service guarantees, and how to verify what it signed.
 ---
 
-<Warning>
-  The signing service, the key backends, the provenance and `longshore verify` are built and tested (issue [#44](https://github.com/nc9/turntable/issues/44)). Two things they depend on are not: the **release lane** that records artifacts and calls the service, and **two-person signed approvals** ([#46](https://github.com/nc9/turntable/issues/46)). Until approvals exist, the approval check denies by default, so the service signs nothing.
-</Warning>
+<Note>
+  The signing service, the key backends, the provenance and `longshore verify` are built. The [release lane](/release-lane) records artifacts and calls the service, and it checks [human approvals](/security#human-approvals) before it signs, so the service signs nothing without them.
+</Note>
 
 Longshore's control plane signs release artifacts and writes the provenance that says how they were built. The job never holds a signing key, and the job does not write the provenance.
 
@@ -57,6 +57,8 @@ longshore policy show --org <slug>
 
 The approval environment defaults to `release` and is set with `--signing-environment <name>`. It is the project's own setting: `sign_release` takes no environment from the caller, refuses a request that names a different one, asks for approval in the project's environment, and records it in the provenance (`internalParameters.environment`) and the audit row.
 
+A `builtin:<name>` key is looked up inside the org that owns the run (the org id is part of the stored name), so a project cannot name another org's key, and the same name in two orgs is two keys. A key outside Longshore (`aws-kms:`, `gcp-kms:`) may belong to one org only: `policy set` refuses a reference another org already uses, and signing is refused with `key_shared` if two orgs come to name the same one. Keys made before this change were stored under the bare name; create them again with `release init-key --org` and pin the new public key.
+
 Release refs default to `refs/tags/v*`. An empty `--signing-key ''` unsets the key, and a project with no key cannot sign. Both are changed from the CLI only.
 
 ## Verifying
@@ -71,6 +73,6 @@ The public key of a built-in key is available from the service; a KMS key's publ
 
 ## Limits
 
-- The artifact store and the release lane that fills it are separate work; the service reads from the store through the repos and has no upload path of its own.
+- The service has no upload path of its own: it reads artifacts from the store through the repos, which the [release lane](/release-lane) fills.
 - Only Ed25519 is supported.
 - Vault Transit is not a backend yet; the interface is the same.

@@ -18,9 +18,9 @@
  *              other file is final.
  *
  * Why the command gets its own process group: a group SIGKILL must not kill the wrapper, or the
- * exit code would never be written. `setsid` is used when present; otherwise `set -m` (job
- * control makes a background job a group leader). If neither isolates, kill falls back to the
- * bare pid.
+ * exit code would never be written. `setsid` is used when present, else perl's `setpgrp`, else
+ * `set -m` (job control makes a background job a group leader, but dash refuses it without a
+ * terminal). If none isolates, kill falls back to the bare pid.
  *
  * Disk bound: the at-exit cap bounds retained output to head+tail+slack. While running, a
  * watchdog in the wrapper kills the command (SIGKILL, marker `outlimit`) once `out` exceeds the
@@ -39,13 +39,23 @@ RP=$$
 wr() { printf '%s\n' "$2" > "$D/$1.tmp" && mv -f "$D/$1.tmp" "$D/$1"; }
 sigall() { kill -s "$1" -- "-$CP" 2>/dev/null || kill -s "$1" "$CP" 2>/dev/null; }
 wr pid "$RP"
-if command -v setsid >/dev/null 2>&1; then
-  setsid sh "$D/cmd.sh" >"$D/out" 2>&1 </dev/null &
-else
-  set -m 2>/dev/null
-  sh "$D/cmd.sh" >"$D/out" 2>&1 </dev/null &
-  set +m 2>/dev/null
-fi
+# Where a process gets a group of its own, by what the sandbox has: setsid, else perl (setpgrp, as
+# the step shim does), else job control (set -m), which needs a terminal under some shells (dash
+# refuses without one), so it is the last resort. With none of them the group kill below falls back
+# to the bare pid.
+if command -v setsid >/dev/null 2>&1; then G=setsid
+elif command -v perl >/dev/null 2>&1; then G=perl
+else G=jobs; fi
+own() {
+  case $G in
+    setsid) exec setsid "$@" ;;
+    perl) exec perl -e 'setpgrp(0,0); exec @ARGV or exit 127' "$@" ;;
+    *) exec "$@" ;;
+  esac
+}
+[ "$G" = jobs ] && set -m 2>/dev/null
+own sh "$D/cmd.sh" >"$D/out" 2>&1 </dev/null &
+[ "$G" = jobs ] && set +m 2>/dev/null
 CP=$!
 wr cpid "$CP"
 (
@@ -64,25 +74,25 @@ wr cpid "$CP"
 HB=$!
 TW=
 if [ "$T" -gt 0 ] 2>/dev/null; then
-  (
-    # Killing this subshell must also end its sleep, or every finished exec leaves a
-    # sleep behind.
-    trap 'kill "$SP" 2>/dev/null; exit 0' TERM
-    sleep "$T" &
-    SP=$!
-    wait "$SP"
-    : > "$D/timedout"
-    sigall TERM
-    sleep 5 &
-    SP=$!
-    wait "$SP"
-    sigall KILL
-  ) </dev/null >/dev/null 2>&1 &
+  # The timeout watcher is its own process (group), started the way the command is, so that the
+  # end of the exec can take it AND its sleep down with one group KILL. A subshell with a TERM trap
+  # raced: a TERM landing between starting the sleep and recording its pid left the sleep behind
+  # for the whole timeout, on every exec that finished fast.
+  WATCH='D=$1; T=$2; CP=$3
+sigall() { kill -s "$1" -- "-$CP" 2>/dev/null || kill -s "$1" "$CP" 2>/dev/null; }
+sleep "$T"
+: > "$D/timedout"
+sigall TERM
+sleep 5
+sigall KILL'
+  [ "$G" = jobs ] && set -m 2>/dev/null
+  own sh -c "$WATCH" tw "$D" "$T" "$CP" </dev/null >/dev/null 2>&1 &
+  [ "$G" = jobs ] && set +m 2>/dev/null
   TW=$!
 fi
 wait "$CP"
 rc=$?
-[ -n "$TW" ] && kill "$TW" 2>/dev/null
+[ -n "$TW" ] && { kill -s KILL -- "-$TW" 2>/dev/null || kill -s KILL "$TW" 2>/dev/null; }
 kill "$HB" 2>/dev/null
 kill -s KILL -- "-$CP" 2>/dev/null
 sz=$(( $(wc -c < "$D/out") ))

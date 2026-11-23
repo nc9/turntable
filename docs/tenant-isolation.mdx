@@ -1,0 +1,38 @@
+---
+title: Tenant isolation
+description: How the cross-tenant tests work, and which keys are per org.
+---
+
+On a hosted instance several orgs share one process and one database. The rule is that org B's token can never read or change org A's data, including by guessing ids. This page says how that is tested and which keys are per org today. [How the pieces fit](/overview) shows where the org boundary sits in the whole system.
+
+## The hostile suite
+
+`packages/core/tests/tenant-isolation.test.ts` runs in CI with the rest of the tests. It builds two orgs with projects, runs, logs, steps, cuts, events, artifacts, secrets, proxy rules, approvers, an enrolment, a release request and installations, then attacks org A as org B.
+
+- **Generated from the ops registry.** For every token op, every B principal (reader, operator, release_operator, a project-scoped token and a member admin) and two input shapes (A's org and project slugs, or B's own scope with A's ids and names), the call is made and checked. A new op is covered the day it is added.
+- **A new id-like input fails the suite until it is mapped.** `FIELD` in the test says what A's value for a field is. An op with an input the sampler cannot place fails with its name, rather than going unprobed.
+- **Every op must be reached.** The positive control calls each op as A and requires at least one success; an op that cannot succeed needs an entry in `UNREACHABLE` with a reason. Without this, a bad sample would make the hostile calls trivially pass.
+- **Leaks are found two ways.** Markers (A's ids, slugs, names, log text, secret value) in anything B receives, ignoring what B itself sent, and a fingerprint of every row of every table owned by A before and after, so a write is caught even when it returned an error.
+- **Existence is not revealed.** A call with A's id must look the same as a call with an id that does not exist.
+- **Transports.** The same inputs go through REST and MCP, and through the realtime WebSocket (A's topics by guessed id, replay from cursor zero, live activity in A after subscribing).
+- **Stores the registry does not reach.** The vault (use by name, by A's ids, by A's org id), proxy rules and passthrough hosts, approvals (a challenge for A's run, a statement edited to name A, A's valid statement replayed by B) and installations (claiming one A holds).
+- **The detector is proven able to see.** The same calls as A must show A's data and change A's state. The suite was also checked by removing the org check from scope resolution: it fails with the leaked markers.
+
+Adding a store: seed it in `buildWorld`, add a marker, and the registry-driven checks pick up any op that reaches it. A store with no op needs a test in the last block.
+
+## Keys
+
+| Key or secret | Per org? | Notes |
+| --- | --- | --- |
+| Master key, `LONGSHORE_MASTER_KEY_FILE` | No. One per instance | The root. Every key below is derived from it by HKDF, so a leaked master key exposes every org. |
+| Wrapping keys for sealed values (`system`, `job`, `oidc` domains) | Yes. Derived per domain and org (format `v3`) | A value opens only under its own org's key, and also binds the org id in the AAD. `longshore keys reseal` converts older records, see [Secrets vault](/secrets-vault#per-org-keys). |
+| Vault secrets | Yes. Sealed under the org's `job` key, with org, secret id, version and name in the AAD | A per-version data key wraps each value. |
+| Secret store (App credentials, webhook secret, claim key) | Yes. Sealed under the org's `system` key, name in the AAD | The App is an instance-level object held by its owning org. |
+| OIDC signing keys | Yes. A key pair per org, a per-org issuer URL | Sealed under the org's `oidc` key. |
+| Attempt credentials | No. HMAC under the `attempt` domain key | The org id is inside the signed body. |
+| Audit chain and checkpoint signing key | Yes. A chain per org and a signing key and anchor state per org | The anchor file is sealed with the master key, org id in the AAD. |
+| Release signing keys (`builtin:<name>`) | Yes. Stored under the org's id and name | The org comes from the run's scope, never from the setting, so a project cannot name another org's key. A KMS key reference may belong to one org only. |
+| Cache blobs | Namespaced per org, project and class in the database; one flat blob directory by numeric id | Not encrypted at rest. |
+| Artifacts | Rows are per org and project; bytes live in the lane's artifact directory | Not encrypted at rest. |
+
+Per-org quotas are in place and set by the instance operator, see [Configuration](/configuration#per-org-quotas). Not built: encryption at rest for cache and artifacts, per-org keys held in a KMS, Postgres row-level security.

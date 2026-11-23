@@ -67,6 +67,7 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
     [
       ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
       ...registry.signatureOps(),
+      ...registry.instanceOps(),
     ]
       .map((o) => o.name)
       .toSorted(),
@@ -99,6 +100,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
   expect(hiddenFromMcp.map((o) => o.name).toSorted()).toEqual([
     "approval_challenge",
     "enrolment_challenge",
+    "key_policy_challenge",
     "register_challenge",
     "request_enrolment",
     "request_release",
@@ -199,8 +201,10 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
   for (const op of registry.ops.filter((o) => o.auth.type !== "signature")) {
     const documented = registry.mcpOps().includes(op);
     // OpenAPI lists every REST route that carries no secret value, MCP only the agent-safe ones.
+    // Instance ops are listed in OpenAPI (REST, instance token) and never as MCP tools.
     const inOpenApi =
-      registry.documentedOps().includes(op) && (op.mcp || op.secretInputFields.length === 0);
+      op.auth.type === "instance" ||
+      (registry.documentedOps().includes(op) && (op.mcp || op.secretInputFields.length === 0));
     expect(tools.has(op.name)).toBe(documented);
     expect(operationIds.has(op.name)).toBe(inOpenApi);
     if (inOpenApi) {
@@ -222,6 +226,7 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
     [
       ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
       ...registry.signatureOps(),
+      ...registry.instanceOps(),
     ]
       .map((o) => o.name)
       .toSorted(),

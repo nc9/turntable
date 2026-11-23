@@ -7,6 +7,6 @@
 - File names are kebab-case, for example `run-queue.ts`.
 - Commits use conventional commits: `type(scope): message`, with a required scope. Add no attribution or co-author lines.
 - Tests live in `packages/<name>/tests/` and run with `bun test <file>`.
-- Database schema lives in `packages/core/src/db/schema.ts`. After changing it, run `bun run --cwd packages/core db:generate`, which runs drizzle-kit and re-embeds the migrations into `migrations.generated.ts`. Commit both. CI fails if the embedded module is stale.
+- Database schema lives in `packages/core/src/db/schema.ts`. After changing it, run `bun run --cwd packages/core db:generate --name <what_it_does>` (lower snake_case, for example `--name instance_tokens`). It generates both dialects with that name and re-embeds the migrations into the generated modules. Always pass `--name`: drizzle-kit's random names have put customer-like words in public files and the hygiene test fails on them. Commit the SQL, the snapshots, the journals and both generated modules. CI fails if the embedded module is stale.
 - The compiled binary must work from an empty directory, so never read runtime assets from disk. Embed them.
 - Prose uses sentence-case headings and no em-dashes.

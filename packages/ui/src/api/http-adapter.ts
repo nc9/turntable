@@ -5,11 +5,14 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
+  PolicyStatement,
   ApproveResult,
   EnrolStatement,
   EnvironmentApprovalResult,
   CheckSummary,
   CutRecord,
+  LogNotice,
   GrepHit,
   GrepResult,
   IncidentStatus,
@@ -26,8 +29,12 @@ import type {
   Run,
   RunDetail,
   StepEvent,
+  Artifact,
+  ConsumeResult,
+  OrgQuotas,
 } from "./types";
 import type {
+  WireSandboxUsage,
   WireApprovalStatus,
   WireApprovers,
   WireChallenge,
@@ -35,6 +42,9 @@ import type {
   WireEnrolmentRequest,
   WireEnvironmentApproval,
   WireRegisterChallenge,
+  WireArtifacts,
+  WireConsumption,
+  WireQuotas,
   WireAttempt,
   WireChecks,
   WireApprove,
@@ -168,6 +178,9 @@ function mapAttempt(a: WireAttempt, job: WireJob, run: WireRun, org: string): Jo
     createdAt: ms(a.started_at) ?? ms(run.created_at) ?? 0,
     startedAt: ms(a.started_at),
     finishedAt: ms(a.finished_at),
+    sandboxCreatedAt: ms(a.sandbox_created_at),
+    sandboxDestroyedAt: ms(a.sandbox_destroyed_at),
+    sandboxSeconds: a.sandbox_seconds,
   };
 }
 
@@ -195,6 +208,19 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
 }
 
 const FINISHED: readonly JobState[] = ["success", "failure", "infra_error", "cancelled", "skipped"];
+
+function quotasOf(w: WireQuotas): OrgQuotas {
+  return {
+    limits: {
+      maxConcurrent: w.limits.max_concurrent,
+      maxRunsPerHour: w.limits.max_runs_per_hour,
+      maxSandboxMinutesPerDay: w.limits.max_sandbox_minutes_per_day,
+      maxLogBytes: w.limits.max_log_bytes,
+      maxStoredBytes: w.limits.max_stored_bytes,
+    },
+    usage: w.usage,
+  };
+}
 
 export function createHttpApi(options: HttpApiOptions): LongshoreApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -375,6 +401,21 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
       }));
     },
 
+    async jobNotices({ attemptId }): Promise<LogNotice[]> {
+      const k = known(attemptId);
+      const w = await call<WireCuts>("GET", `/jobs/${encodeURIComponent(k.jobId)}/cuts`, {
+        org: org(),
+        attempt: k.attempt,
+      });
+      return w.notices.map((n) => ({
+        attemptId,
+        kind: "notice" as const,
+        atOffset: n.at_offset,
+        source: n.source,
+        text: n.text,
+      }));
+    },
+
     async checksForSha({ projectId, sha }): Promise<CheckSummary> {
       const w = await call<WireChecks>("GET", `/checks/${encodeURIComponent(sha)}`, {
         org: org(),
@@ -532,6 +573,97 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
       };
     },
 
+    async getArtifacts({ runId, project }): Promise<Artifact[]> {
+      const w = await call<WireArtifacts>("GET", `/runs/${encodeURIComponent(runId)}/artifacts`, {
+        org: org(),
+        project,
+      });
+      return w.artifacts.map((a) => ({
+        name: a.name,
+        size: a.size,
+        sha256: a.sha256,
+        digestSource: a.digest_source,
+        trustClass: a.trust_class,
+        runSha: a.run_sha,
+        attemptId: a.attempt_id,
+        createdAt: ms(a.created_at) ?? 0,
+      }));
+    },
+
+    async checkArtifactConsumption({
+      project,
+      consumer,
+      sources,
+      quarantine,
+    }): Promise<ConsumeResult[]> {
+      const pair = (x: { runId: string; name: string }) => ({ run_id: x.runId, name: x.name });
+      const w = await call<WireConsumption>(
+        "POST",
+        "/artifacts/check-consumption",
+        {},
+        {
+          org: org(),
+          project,
+          ...("klass" in consumer
+            ? { consumer_class: consumer.klass }
+            : { consumer_run_id: consumer.runId }),
+          sources: sources.map(pair),
+          ...(quarantine ? { quarantine: quarantine.map(pair) } : {}),
+        },
+      );
+      return w.results.map((r) => ({
+        runId: r.run_id,
+        name: r.name,
+        decision: r.decision,
+        reason: r.reason,
+        trustClass: r.trust_class,
+        sha256: r.sha256,
+      }));
+    },
+
+    async getQuotas(): Promise<OrgQuotas> {
+      return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
+    },
+
+    async sandboxUsage({ days, byProject }): Promise<SandboxUsage> {
+      const w = await call<WireSandboxUsage>("GET", "/usage/sandbox", {
+        org: org(),
+        days,
+        ...(byProject ? { group_by: "project" } : {}),
+      });
+      const mapDay = (d: WireSandboxUsage["days"][number]) => ({
+        day: d.day,
+        seconds: d.sandbox_seconds,
+        minutes: d.sandbox_minutes,
+        attempts: d.attempts,
+        estimatedAttempts: d.estimated_attempts,
+      });
+      let limit: number | null = null;
+      try {
+        // The quota limit is optional context: a token that cannot read quotas still gets the chart.
+        const q = await call<{ limits: { max_sandbox_minutes_per_day: number | null } }>(
+          "GET",
+          "/quotas",
+          { org: org() },
+        );
+        limit = q.limits.max_sandbox_minutes_per_day;
+      } catch {
+        limit = null;
+      }
+      return {
+        days: w.days.map(mapDay),
+        totalMinutes: w.total_minutes,
+        projects: (w.projects ?? []).map((p) => ({
+          id: p.project_id,
+          slug: p.project_slug,
+          name: p.project_name,
+          days: p.days.map(mapDay),
+          totalMinutes: p.total_minutes,
+        })),
+        limitMinutesPerDay: limit,
+      };
+    },
+
     async approversOverview(): Promise<ApproversOverview> {
       const w = await call<WireApprovers>("GET", "/approvers", { org: org() });
       return {
@@ -542,10 +674,15 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
           kind: a.kind,
           passkeyId: a.passkey_id,
           createdAt: ms(a.created_at) ?? 0,
+          notCounting: a.not_counting,
+          attested: a.attested,
+          aaguid: a.aaguid,
         })),
+        keyPolicy: w.key_policy,
         pendingEnrolments: w.pending_enrolments.map((e) => ({
           id: e.id,
           person: e.person,
+          forgeLogin: e.forge_login,
           kind: e.kind,
           keyFingerprint: e.key_fingerprint,
           approvals: e.approvals,
@@ -597,7 +734,31 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         {},
         { org: org() },
       );
-      return { challenge: w.challenge, rpId: w.rp_id, expiresAt: ms(w.expires_at) ?? 0 };
+      return {
+        challenge: w.challenge,
+        rpId: w.rp_id,
+        expiresAt: ms(w.expires_at) ?? 0,
+        attestation: w.attestation,
+      };
+    },
+
+    async keyPolicyChallenge({ mode, presets, aaguids, approver }) {
+      const w = await call<WireChallenge>(
+        "POST",
+        "/approvers/key-policy/challenge",
+        {},
+        { mode, presets, aaguids, approver, org: org() },
+      );
+      return challengeOf<PolicyStatement>(w);
+    },
+
+    async approveKeyPolicy({ statement, signature }) {
+      return call<{ approvals: number; required: number; applied: boolean }>(
+        "POST",
+        "/approvers/key-policy",
+        {},
+        { statement, signature },
+      );
     },
 
     async requestEnrolment({ person, forgeLogin, webauthn }) {

@@ -11,10 +11,12 @@ export type SigningDenial =
   | "no_repo"
   | "no_artifacts"
   | "artifact_not_recorded"
+  | "artifact_not_release_class"
   | "environment_mismatch"
   | "verification_mismatch"
   | "no_approval"
-  | "no_backend";
+  | "no_backend"
+  | "key_shared";
 
 export interface SigningFacts {
   /** The run's stored class (`runs.trust`), undefined when it has none. */

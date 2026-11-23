@@ -9,6 +9,7 @@ import {
   type Value,
 } from "./expr";
 import { lintError, localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
+import { wantsIdTokenIn } from "./permissions";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers";
 
@@ -42,6 +43,63 @@ export interface PlannedJob {
   maxParallel?: number;
   /** The job's `environment:` (a name, or `name` of the mapping), when it is a literal. */
   environment?: string;
+  /**
+   * The job asked for an OIDC token (`permissions: id-token: write`, a job's own block replacing
+   * the workflow's, `write-all` counting). The control plane registers its proxy rule for the
+   * mint endpoint only for such a job.
+   */
+  idToken?: boolean;
+  /**
+   * Set on a leg made by an operator's `splits` rule (not by `strategy.matrix`): this leg runs
+   * shard `index` of `total`. `partition[i]` is shard i's named steps (names, or `#<n>` for the
+   * nth step, counted from 1). Steps named for another shard are turned off in this leg.
+   */
+  shard?: { index: number; total: number; partition: string[][] };
+}
+
+/**
+ * An operator's rule to run one job as several shards, each in its own sandbox, without editing
+ * the workflow: `job` is the job id; `shards[i].steps` are the steps (by `name`, or `#<n>`) that
+ * run only in shard i. A step no shard names runs in every shard.
+ */
+export interface SplitRule {
+  job: string;
+  shards: { steps: string[] }[];
+}
+
+/** The most shards one job may be split into. */
+export const MAX_SHARDS = 8;
+
+/** Why a rule is not valid, or undefined. Names and counts only; the workflow is not looked at. */
+export function splitRuleProblem(rule: SplitRule): string | undefined {
+  if (typeof rule.job !== "string" || rule.job === "") return "a split rule needs a job id";
+  if (rule.shards.length < 2 || rule.shards.length > MAX_SHARDS)
+    return `split ${rule.job}: 2 to ${MAX_SHARDS} shards`;
+  const seen = new Set<string>();
+  for (const [i, s] of rule.shards.entries()) {
+    if (s.steps.length === 0) return `split ${rule.job}: shard ${i + 1} names no step`;
+    for (const name of s.steps) {
+      if (name === "" || name.length > 200)
+        return `split ${rule.job}: a step name is empty or too long`;
+      if (name.startsWith("#") && !/^#[1-9][0-9]{0,3}$/.test(name))
+        return `split ${rule.job}: ${JSON.stringify(name)} is not a step name or #<number>`;
+      if (seen.has(name)) return `split ${rule.job}: step ${JSON.stringify(name)} is in two shards`;
+      seen.add(name);
+    }
+  }
+  return undefined;
+}
+
+/** The result of one job across its shards: what its single check and its dependents see. */
+export function foldShardStates(states: readonly string[]): string {
+  const terminal = ["success", "failure", "infra_error", "cancelled", "skipped"];
+  if (states.some((s) => !terminal.includes(s)))
+    return states.includes("running") ? "running" : "queued";
+  if (states.includes("failure")) return "failure";
+  if (states.includes("infra_error")) return "infra_error";
+  if (states.includes("cancelled")) return "cancelled";
+  if (states.every((s) => s === "skipped")) return "skipped";
+  return "success";
 }
 
 export interface WorkflowPlan {
@@ -54,6 +112,8 @@ export interface WorkflowPlan {
   /** Jobs in dependency order. */
   jobs: PlannedJob[];
   warnings: PlanWarning[];
+  /** What the operator's split rules did or could not do, one line each (not lint findings). */
+  splitNotices: string[];
 }
 
 export interface PlanWorkflowOptions {
@@ -65,6 +125,8 @@ export interface PlanWorkflowOptions {
   readFile: (path: string) => string | undefined;
   /** Fail the plan on lint findings (outside text in a script, a privileged job taking the PR head). */
   failOnLint?: boolean;
+  /** Operator rules that split a job into shards (see SplitRule). Never read from the repository. */
+  splits?: readonly SplitRule[];
 }
 
 export function githubContext(
@@ -279,6 +341,18 @@ export function planWorkflow(
     concurrency = { group: interpolate(groupRaw, wfCtx), cancelInProgress: cancel };
   }
 
+  const splitNotices: string[] = [];
+  const rules = new Map<string, SplitRule>();
+  for (const r of opts.splits ?? []) {
+    const problem = splitRuleProblem(r);
+    if (problem) splitNotices.push(`split rule ignored: ${problem}`);
+    else if (rules.has(r.job)) splitNotices.push(`split rule ignored: job ${r.job} has two rules`);
+    else rules.set(r.job, r);
+  }
+  for (const id of rules.keys())
+    if (!Object.keys(doc.jobs).includes(id))
+      splitNotices.push(`split rule for job ${id}: the workflow has no such job`);
+
   const rawJobs = doc.jobs;
   const ids = Object.keys(rawJobs);
   const legsOf = new Map<string, string[]>();
@@ -308,10 +382,25 @@ export function planWorkflow(
       ? Object.fromEntries(Object.entries(job.outputs).map(([k, v]) => [k, String(v)]))
       : {};
 
-    const legs: (Combo | undefined)[] = combos ?? [undefined];
+    let rule = rules.get(id);
+    if (rule) {
+      const why = splitUnusable(job, rule, strategy.matrix !== undefined);
+      if (why) {
+        splitNotices.push(`job ${id} is not split: ${why}`);
+        rule = undefined;
+      } else {
+        for (const n of unmatchedStepNames(job, rule))
+          splitNotices.push(
+            `job ${id}: split step ${JSON.stringify(n)} matches no step, so no shard owns it`,
+          );
+      }
+    }
+    const legs: (Combo | undefined)[] = rule
+      ? rule.shards.map(() => undefined)
+      : (combos ?? [undefined]);
     const keys: string[] = [];
     for (const [i, leg] of legs.entries()) {
-      const key = leg === undefined ? id : `${id}[${i}]`;
+      const key = leg === undefined && !rule ? id : `${id}[${i}]`;
       keys.push(key);
       const ctx: ExprContext = {
         contexts: {
@@ -367,9 +456,21 @@ export function planWorkflow(
         ...(unsupported ? { unsupported } : {}),
         continueOnError: coe,
         outputs,
-        failFast,
+        // Shards of one job always all run: the workflow's own steps run every suite even when
+        // one is red, and the job's result is the fold of the shards.
+        failFast: rule ? false : failFast,
+        ...(rule
+          ? {
+              shard: {
+                index: i,
+                total: legs.length,
+                partition: rule.shards.map((s) => [...s.steps]),
+              },
+            }
+          : {}),
         ...(maxParallel !== undefined ? { maxParallel } : {}),
         ...(environment !== undefined ? { environment } : {}),
+        ...(wantsIdTokenIn(doc, id) ? { idToken: true } : {}),
       };
       // Static `if:` is decided now; one that reads needs waits for schedule time.
       if (job.if !== undefined && !unsupported) {
@@ -400,7 +501,45 @@ export function planWorkflow(
     ...(concurrency ? { concurrency } : {}),
     jobs: topoSort(nodes),
     warnings,
+    splitNotices,
   };
+}
+
+/** The steps of a job that are objects, in order. */
+const stepsOf = (job: Obj): Obj[] =>
+  (Array.isArray(job.steps) ? job.steps : []).map((s) => (isObj(s) ? s : {}));
+
+/** Whether a step is named by `name` (its literal `name:`) or `#<n>` (its place, from 1). */
+export function stepMatches(step: Obj, index: number, name: string): boolean {
+  return name.startsWith("#") ? name === `#${index + 1}` : step.name === name;
+}
+
+/** Step names in the rule that no step of the job answers to. */
+function unmatchedStepNames(job: Obj, rule: SplitRule): string[] {
+  const steps = stepsOf(job);
+  return rule.shards
+    .flatMap((s) => s.steps)
+    .filter((n) => !steps.some((s, i) => stepMatches(s, i, n)));
+}
+
+/**
+ * Why a rule cannot be applied to this job (it then runs whole), or undefined: a job that has a
+ * matrix or calls a reusable workflow, or whose declared outputs read a step that a shard owns
+ * (another shard would not have it).
+ */
+function splitUnusable(job: Obj, rule: SplitRule, hasMatrix: boolean): string | undefined {
+  if (hasMatrix) return "it has strategy.matrix";
+  if (job.uses !== undefined) return "it calls a reusable workflow";
+  const owned = stepsOf(job).flatMap((s, i) =>
+    typeof s.id === "string" && rule.shards.some((sh) => sh.steps.some((n) => stepMatches(s, i, n)))
+      ? [s.id]
+      : [],
+  );
+  const outs = isObj(job.outputs) ? Object.values(job.outputs).map(String) : [];
+  for (const id of owned)
+    if (outs.some((o) => new RegExp(`steps\\.${id.replace(/[^A-Za-z0-9_-]/g, "\\$&")}\\.`).test(o)))
+      return `its outputs read the output of step ${id}, which only one shard runs`;
+  return undefined;
 }
 
 function untrustedStepWarnings(job: Obj, id: string, event: string): PlanWarning[] {

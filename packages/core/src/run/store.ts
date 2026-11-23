@@ -1,4 +1,5 @@
 import {
+  addCut,
   type Db,
   type Scope,
   appendAudit,
@@ -64,12 +65,24 @@ export interface RunStore {
   ): Promise<{ jobId: string }>;
   /** Creates an attempt and marks job, attempt and run running. */
   startAttempt(runId: string, jobId: string, provider: string): Promise<JobIds>;
-  setSandbox(attemptId: string, sandboxId: string): Promise<void>;
+  /** `createdAt`: epoch ms the provider's create returned (the sandbox is billed from here). */
+  setSandbox(attemptId: string, sandboxId: string, createdAt?: number): Promise<void>;
+  /** The provider confirmed the sandbox is destroyed, at `at` (epoch ms). */
+  setSandboxDestroyed?(attemptId: string, at: number): Promise<void>;
   /** Records act's exec id as soon as it starts, so a controller restarted mid-run can re-attach. */
   setExec?(attemptId: string, execId: string): Promise<void>;
   /** Clears stored log, steps and cuts before a re-attached run replays the whole exec log. */
   resetOutput?(attemptId: string): Promise<void>;
   appendLog(attemptId: string, offset: number, bytes: Uint8Array): Promise<void>;
+  /**
+   * Records where output was dropped (the sandbox's head and tail caps) as metadata beside the
+   * log. `atOffset` is a position in the stored log. Never text inside the log: a job can print
+   * any text, so a marker in the stream could be forged.
+   */
+  addCut?(
+    attemptId: string,
+    cut: { atOffset: number; omittedBytes: number; reason: string },
+  ): Promise<void>;
   recordStep(attemptId: string, step: StepRecord): Promise<void>;
   /** A job that never ran (skipped, unsupported): state skipped, the reason kept as its log. */
   skipJob(runId: string, jobId: string, provider: string, reason: string): Promise<void>;
@@ -122,14 +135,23 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
       await setRunStatus(db, scope, runId, "running");
       return ids;
     },
-    async setSandbox(attemptId, sandboxId) {
-      await updateAttempt(db, scope, attemptId, { sandboxId });
+    async setSandbox(attemptId, sandboxId, createdAt) {
+      await updateAttempt(db, scope, attemptId, {
+        sandboxId,
+        ...(createdAt === undefined ? {} : { sandboxCreatedAt: createdAt }),
+      });
+    },
+    async setSandboxDestroyed(attemptId, at) {
+      await updateAttempt(db, scope, attemptId, { sandboxDestroyedAt: at });
     },
     async setExec(attemptId, execId) {
       await updateAttempt(db, scope, attemptId, { execId });
     },
     async appendLog(attemptId, offset, bytes) {
       await appendLog(db, scope, attemptId, offset, bytes);
+    },
+    async addCut(attemptId, cut) {
+      await addCut(db, scope, { attemptId, ...cut });
     },
     async recordStep(attemptId, step) {
       await upsertStep(db, scope, stepInputOf(attemptId, step));

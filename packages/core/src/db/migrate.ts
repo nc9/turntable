@@ -33,19 +33,24 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
     // the result before committing, and always turn it back on.
     sqlite.run("PRAGMA foreign_keys = OFF");
     try {
-      sqlite.transaction(() => {
-        for (const statement of migration.statements) sqlite.run(statement);
-        const broken = sqlite.query("PRAGMA foreign_key_check").all();
-        if (broken.length > 0) {
-          throw new Error(
-            `migration ${migration.tag} left ${broken.length} foreign key violation(s); rolled back`,
-          );
-        }
-        sqlite.run("INSERT INTO __longshore_migrations (tag, applied_at) VALUES (?, ?)", [
-          migration.tag,
-          Date.now(),
-        ]);
-      })();
+      // IMMEDIATE: the write lock is taken at the start, where the busy timeout applies. A deferred
+      // transaction that reads first and writes later can be refused at once when another
+      // connection wrote in between.
+      sqlite
+        .transaction(() => {
+          for (const statement of migration.statements) sqlite.run(statement);
+          const broken = sqlite.query("PRAGMA foreign_key_check").all();
+          if (broken.length > 0) {
+            throw new Error(
+              `migration ${migration.tag} left ${broken.length} foreign key violation(s); rolled back`,
+            );
+          }
+          sqlite.run("INSERT INTO __longshore_migrations (tag, applied_at) VALUES (?, ?)", [
+            migration.tag,
+            Date.now(),
+          ]);
+        })
+        .immediate();
     } finally {
       sqlite.run("PRAGMA foreign_keys = ON");
     }

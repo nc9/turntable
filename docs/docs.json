@@ -6,14 +6,19 @@
   "colors": { "primary": "#D97706", "light": "#F59E0B", "dark": "#B45309" },
   "navigation": {
     "groups": [
-      { "group": "Get started", "pages": ["introduction", "quickstart", "configuration"] },
+      {
+        "group": "Get started",
+        "pages": ["introduction", "overview", "quickstart", "configuration"]
+      },
       {
         "group": "Concepts",
         "pages": [
           "architecture",
           "agent-interface",
           "compatibility",
+          "parity",
           "providers",
+          "cache",
           "security",
           "secrets-vault",
           "oidc",
@@ -21,7 +26,10 @@
           "signing",
           "release-lane",
           "github-app",
-          "hosted"
+          "hosted",
+          "tenant-isolation",
+          "postgres",
+          "instance-admin"
         ]
       },
       {

@@ -13,11 +13,16 @@ import {
   finishReleaseRequest,
   getFreeze,
   getRun,
+  listReleaseRequests,
   type ReleaseRequest,
 } from "../db/repos";
 import type { AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
 import type { ForgeFacts } from "./forge";
+import { publishGithubRelease } from "./publish/github-release";
+import { verifyOciImage } from "./publish/oci";
+import { publishNpm } from "./publish/npm";
+import type { PublishWiring, TargetResult } from "./publish/types";
 
 /** The part of the signing service the lane uses (SigningService.signRelease). */
 export interface ReleaseSigner {
@@ -47,7 +52,7 @@ export interface ArtifactRecords {
     scope: { orgId: string; projectId: string },
     runId: string,
     names: readonly string[],
-  ): Promise<{ name: string; sha256: string }[]>;
+  ): Promise<{ name: string; sha256: string; size?: number }[]>;
 }
 
 export type LaneDenial =
@@ -65,6 +70,7 @@ export type LaneDenial =
   | "artifact_not_recorded"
   | "artifact_bytes_missing"
   | "digest_mismatch"
+  | "size_mismatch"
   | "attestation_mismatch"
   | `signer:${string}`;
 
@@ -75,6 +81,8 @@ export interface LaneOptions {
   records: ArtifactRecords;
   attest: AttestationStore;
   signer: ReleaseSigner;
+  /** Publishes the signed release to the project's declared targets, when given. */
+  publish?: PublishWiring;
   /** This lane's identity in claimed_by. */
   owner: string;
   now?: () => number;
@@ -85,7 +93,18 @@ const TAG = /^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/;
 const sha256 = (b: Uint8Array): string => createHash("sha256").update(b).digest("hex");
 
 type Decision =
-  | { status: "signed"; result: unknown; facts: Record<string, unknown> }
+  | {
+      status: "signed";
+      result: unknown;
+      facts: Record<string, unknown>;
+      /** What was verified and signed, for the publish step. */
+      verified: {
+        repo: string;
+        sha: string;
+        digests: Record<string, string>;
+        envelope: unknown;
+      };
+    }
   | { status: "refused"; reason: LaneDenial; detail?: string; facts: Record<string, unknown> };
 
 export class ReleaseLane {
@@ -119,12 +138,45 @@ export class ReleaseLane {
       await this.#audit(scope, req, "error:lane_error", { detail: msg.slice(0, 300) });
       return true;
     }
+    // Signed: now publish what was verified. A failure here never un-signs the release; each
+    // target says how it went, and a re-run of the same request resumes where it stopped.
+    let published: TargetResult[] = [];
+    if (decision.status === "signed") {
+      // Remembered in the lane's own file: what the release proxy may hand rules out for.
+      this.#o.attest.approveRelease(
+        { ...scope, runId: req.runId },
+        {
+          repo: decision.verified.repo,
+          tag: req.tag,
+          sha: decision.verified.sha,
+          artifacts: Object.keys(decision.verified.digests),
+          envelope: JSON.stringify(decision.verified.envelope),
+        },
+        now(),
+      );
+      try {
+        published = await this.#publish(req, scope, decision.verified);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        published = [
+          { target: "*", state: "failed", reason: "publish_error", detail: msg.slice(0, 200) },
+        ];
+        await this.#audit(scope, req, "error:publish_error", { detail: msg.slice(0, 200) });
+      }
+    }
     await finishReleaseRequest(
       this.#o.db,
       req.id,
       this.#o.owner,
       decision.status === "signed"
-        ? { status: "signed", result: decision.result, facts: decision.facts }
+        ? {
+            status: "signed",
+            result: {
+              ...(decision.result as Record<string, unknown>),
+              ...(published.length > 0 ? { published } : {}),
+            },
+            facts: decision.facts,
+          }
         : {
             status: "refused",
             reason: decision.reason,
@@ -186,6 +238,7 @@ export class ReleaseLane {
     if (names.length === 0) return refuse("no_artifacts");
     const recorded = await this.#o.records.recorded(scope, req.runId, names);
     const byName = new Map(recorded.map((r) => [r.name, r.sha256]));
+    const sizeOf = new Map(recorded.map((r) => [r.name, r.size]));
     const missing = names.filter((n) => !byName.has(n));
     if (missing.length > 0) return refuse("artifact_not_recorded", missing.join(", "));
 
@@ -198,6 +251,12 @@ export class ReleaseLane {
       facts.digests = digests;
       // The bytes must be what the build recorded...
       if (actual !== byName.get(name)) return refuse("digest_mismatch", name);
+      // ...and be as long as the build said: the recorded size is what the org's stored-bytes
+      // quota charged, and the stored file is where the true size is. Same digest, other length
+      // can only mean the recorded size is wrong.
+      const recordedSize = sizeOf.get(name);
+      if (recordedSize !== undefined && recordedSize !== bytes.length)
+        return refuse("size_mismatch", `${name}: recorded ${recordedSize}, stored ${bytes.length}`);
     }
     // ...and what this lane attested for this TAG before, in a store the main process cannot
     // write. Keyed by the release identity, not the run: a new run for an attested tag gets no
@@ -232,7 +291,197 @@ export class ReleaseLane {
       status: "signed",
       result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
       facts,
+      verified: { repo: pinned, sha: tag.sha, digests, envelope: out.envelope },
     };
+  }
+
+  /**
+   * Publishes to each declared target, in key order. Before each: an incident freeze stops it. A
+   * target already done is not repeated. Whatever happens is recorded and audited, never a credential.
+   */
+  /**
+   * After a publish job ran through the release proxy: makes sure every compat npm and GitHub
+   * target is really published, from the lane's own record of what it signed. A GitHub draft the
+   * job filled is checked asset by asset against the attested digests and then published (any
+   * asset that is missing or differs is replaced from the verified bytes first); an npm version
+   * that is already there is accepted only if its integrity is the approved one, and published
+   * by the lane if the job did not. An image has no lane-side step: the proxy pinned its manifest.
+   */
+  async finalize(a: { orgId: string; projectId: string; runId: string }): Promise<TargetResult[]> {
+    const scope = { orgId: a.orgId, projectId: a.projectId };
+    const approved = this.#o.attest.approvedRelease(a);
+    if (!approved) return [{ target: "*", state: "refused", reason: "not_approved" }];
+    const req = (await listReleaseRequests(this.#o.db, scope, 200))
+      .filter((r) => r.runId === a.runId && r.status === "signed")
+      .at(-1);
+    if (!req) return [{ target: "*", state: "refused", reason: "no_signed_request" }];
+    const tag = await this.#o.forge.tagCommit(approved.repo, approved.tag);
+    if (!tag.found || tag.sha !== approved.sha)
+      return [{ target: "*", state: "refused", reason: "tag_moved" }];
+    const digests = this.#o.attest.attestedDigests({
+      ...scope,
+      repo: approved.repo,
+      tag: approved.tag,
+    });
+    const results = await this.#publish(
+      req,
+      scope,
+      { repo: approved.repo, sha: approved.sha, digests, envelope: approved.envelope },
+      true,
+    );
+    // Done: every target is published or was already. From here the release cannot be registered
+    // with the proxy again (a re-run of finalize still resumes a failed target, since a failed
+    // one leaves it open).
+    if (results.every((r) => r.state === "published" || r.state === "already")) {
+      this.#o.attest.markFinalized(a, (this.#o.now ?? Date.now)());
+    }
+    return results;
+  }
+
+  async #publish(
+    req: ReleaseRequest,
+    scope: { orgId: string; projectId: string },
+    v: {
+      repo: string;
+      sha: string;
+      digests: Record<string, string>;
+      envelope: unknown;
+    },
+    ensureCompat = false,
+  ): Promise<TargetResult[]> {
+    const w = this.#o.publish;
+    const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
+    // Images last: whether their provenance could go on a release asset depends on what happened
+    // to the release targets in this same pass.
+    const keys = Object.keys(targets).toSorted(
+      (a, b) => Number(targets[a]!.kind === "oci-image") - Number(targets[b]!.kind === "oci-image"),
+    );
+    if (!w || keys.length === 0) return [];
+    const now = this.#o.now ?? Date.now;
+    const id = { orgId: scope.orgId, projectId: scope.projectId, repo: v.repo, tag: req.tag };
+    const ctx = {
+      scope,
+      requestId: req.id,
+      repo: v.repo,
+      tag: req.tag,
+      digests: v.digests,
+      readBytes: (name: string) => this.#o.bytes.read(req.runId, name),
+      provenance: typeof v.envelope === "string" ? v.envelope : JSON.stringify(v.envelope),
+    };
+    const out: TargetResult[] = [];
+    for (const key of keys) {
+      const t = targets[key]!;
+      const record = async (r: TargetResult): Promise<void> => {
+        this.#o.attest.setPublishState(id, key, r.state, r.reason ?? null, now());
+        await this.#audit(
+          scope,
+          req,
+          `publish:${key}:${r.state}${r.reason ? `:${r.reason}` : ""}`,
+          {
+            target: key,
+            kind: t.kind,
+            ...(r.detail ? { detail: r.detail } : {}),
+            ...r.facts,
+          },
+        );
+        out.push(r);
+      };
+      if ((await getFreeze(this.#o.db, scope)).frozen) {
+        await record({ target: key, state: "refused", reason: "frozen" });
+        continue;
+      }
+      const prior = this.#o.attest.publishState(id, key);
+      if (prior && (prior.state === "published" || prior.state === "already")) {
+        out.push({ target: key, state: "already", reason: "recorded" });
+        continue;
+      }
+      // A target may name only artifacts this request asked for and the lane verified.
+      const named =
+        t.kind === "npm" ? [t.artifact] : t.kind === "oci-image" ? [t.manifest] : t.assets;
+      const stray = named.filter((n) => !(n in v.digests));
+      if (stray.length > 0) {
+        await record({
+          target: key,
+          state: "refused",
+          reason: "artifact_not_requested",
+          detail: stray.join(", "),
+        });
+        continue;
+      }
+      // A target the job publishes itself: the lane signed and approved it, and the release proxy
+      // will hand the job the rules. An image has no strict path at all.
+      if (t.mode === "compat" && !ensureCompat) {
+        await record({ target: key, state: "pending", reason: "awaiting_job" });
+        continue;
+      }
+      try {
+        if (t.kind === "npm") {
+          const registry = w.npmRegistry ?? "https://registry.npmjs.org";
+          const token = await w.credentials.secret(
+            scope,
+            t.secret,
+            new URL(registry).hostname,
+            req.tag,
+            req.id,
+          );
+          if (!token) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await publishNpm(key, t, ctx, token, {
+              ...(w.npmRegistry ? { registry: w.npmRegistry } : {}),
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+            }),
+          );
+        } else if (t.kind === "oci-image") {
+          // After a compat push: what the registry holds must be the attested image, and our
+          // provenance goes on it as a referrer.
+          const cred = await w.credentials.secret(scope, t.secret, t.registry, req.tag, req.id);
+          if (!cred) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await verifyOciImage(key, t, ctx, cred, {
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+              // Only if a release target that carries the provenance really did, in this pass or
+              // on record: published (assets read back and checked) or already there.
+              releaseAssetFallback: out.some((r) => {
+                const x = targets[r.target];
+                return (
+                  x?.kind === "github-release" &&
+                  x.provenanceAsset !== null &&
+                  (r.state === "published" || r.state === "already")
+                );
+              }),
+            }),
+          );
+        } else {
+          const token = await w.credentials.githubToken();
+          if (!token) {
+            await record({ target: key, state: "failed", reason: "credential_unavailable" });
+            continue;
+          }
+          await record(
+            await publishGithubRelease(key, t, ctx, token, {
+              ...(w.githubApi ? { api: w.githubApi } : {}),
+              ...(w.githubUploads ? { uploads: w.githubUploads } : {}),
+              ...(w.fetch ? { fetch: w.fetch } : {}),
+            }),
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await record({
+          target: key,
+          state: "failed",
+          reason: "exception",
+          detail: msg.slice(0, 200),
+        });
+      }
+    }
+    return out;
   }
 
   #audit(

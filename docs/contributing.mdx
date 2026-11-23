@@ -30,6 +30,10 @@ This runs drizzle-kit and re-embeds the migrations into `migrations.generated.ts
 
 The compiled binary must work from an empty directory, so never read runtime assets from disk. Embed them. See [Bun notes](/internals/bun-notes).
 
+## Web UI in the dev loop
+
+Run from source (`bun run packages/core/src/main.ts serve`), the server serves the built bundle in `packages/ui/dist` when it has an `index.html`: build it with `bun run --cwd packages/ui build` and reload the page (files are read per request, so a rebuild shows without a restart). To serve a bundle from elsewhere set `LONGSHORE_UI_DIR`. Without a build the server shows a placeholder that says how to build one. This is dev mode only: the compiled binary serves its embedded UI and never reads UI files from disk, and ignores `LONGSHORE_UI_DIR`. Only regular files inside the directory are served; a path that leaves it, or a symlink that does, is a 404.
+
 ## Docs
 
 Docs ship with each feature. This site lives in `docs/` and is built with Tangly. Run `bun run dev` in `docs/` to preview, and `bun run check` before you push. Do not run `oxfmt` on `.mdx` files.

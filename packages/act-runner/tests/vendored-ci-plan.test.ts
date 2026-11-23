@@ -14,8 +14,8 @@ import {
 // source and pinned sha). It uses push/pull_request/merge_group with branch filters, workflow
 // env and concurrency, job if/needs/outputs, continue-on-error, a local composite action with
 // actions/setup-node, oven-sh/setup-bun and actions/cache, fromJSON, contains and !cancelled().
-const ci = await Bun.file(`${import.meta.dir}/fixtures/squirrelscan-ci.yml`).text();
-const setupBun = await Bun.file(`${import.meta.dir}/fixtures/squirrelscan-setup-bun.yml`).text();
+const ci = await Bun.file(`${import.meta.dir}/fixtures/vendored-ci.yml`).text();
+const setupBun = await Bun.file(`${import.meta.dir}/fixtures/vendored-setup-bun.yml`).text();
 const files: Record<string, string> = { ".github/actions/setup-bun/action.yml": setupBun };
 const readFile = (p: string): string | undefined => files[p];
 

@@ -1,11 +1,13 @@
 // The proxy's guarantees, one test per property (see docs/secrets-proxy.mdx). Clients dial the
 // proxy on 127.0.0.1; the upstream is a recording stand-in unless a test says otherwise.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import net from "node:net";
 import tls from "node:tls";
 import { createHttpClient, type SafeFetch } from "@longshore/net";
-import { type RunningProxy, startProxy } from "../src/proxy";
+import { JobCa } from "../src/ca";
+import { type RunningProxy, sourceKey, startProxy } from "../src/proxy";
 import { AttemptRegistry } from "../src/registry";
 import type { AuditEvent, AuditSink, Rule, SecretScope, SecretSource } from "../src/types";
 
@@ -981,5 +983,452 @@ describe("passthrough tunnels", () => {
       await p2.close();
       echo.close();
     }
+  });
+});
+
+describe("a public TLS listener and its limits", () => {
+  const LISTEN_NAME = "proxy.example.test";
+  // The listener's certificate: a leaf for its public name from a throwaway CA (a test stand-in
+  // for the platform's public certificate).
+  const listenerCa = new JobCa({ label: "listener", now: Date.now(), ttlMs: 3_600_000 });
+  const leaf = listenerCa.leafFor(LISTEN_NAME);
+  const started: RunningProxy[] = [];
+  afterAll(async () => {
+    for (const p of started) await p.close();
+  });
+  const start = async (
+    over: Partial<Parameters<typeof startProxy>[0]> = {},
+  ): Promise<RunningProxy> => {
+    const p = await startProxy({
+      registry,
+      source,
+      audit,
+      upstream,
+      now: () => clock,
+      ...over,
+    });
+    started.push(p);
+    return p;
+  };
+
+  /** Dials the listener over TLS, verifying its name, and sends one CONNECT. */
+  async function overTls(p: RunningProxy, auth: string | undefined): Promise<string> {
+    const sock = tls.connect({
+      host: "127.0.0.1",
+      port: p.port,
+      servername: LISTEN_NAME,
+      ca: listenerCa.certPem,
+    });
+    await new Promise<void>((r, j) => {
+      sock.once("secureConnect", () => r());
+      sock.once("error", j);
+    });
+    sock.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\n${auth ? `Proxy-Authorization: ${auth}\r\n` : ""}\r\n`,
+    );
+    const head = await new Promise<string>((r) => {
+      sock.once("data", (d) => r(d.toString("latin1")));
+      sock.once("close", () => r(""));
+    });
+    sock.destroy();
+    return head;
+  }
+
+  test("CONNECT and the credential travel inside TLS: a good credential gets a tunnel, a bad one a 407", async () => {
+    const p = await start({ tls: { key: leaf.key, cert: leaf.cert } });
+    const { cred } = newAttempt();
+    expect((await overTls(p, basic(cred.username, cred.password))).startsWith("HTTP/1.1 200")).toBe(
+      true,
+    );
+    expect((await overTls(p, basic(cred.username, "wrong"))).startsWith("HTTP/1.1 407")).toBe(true);
+    expect((await overTls(p, undefined)).startsWith("HTTP/1.1 407")).toBe(true);
+  });
+
+  test("a plain-text client gets nothing from the TLS listener, and its credential is not read", async () => {
+    const p = await start({ tls: { key: leaf.key, cert: leaf.cert } });
+    const { cred } = newAttempt();
+    const raw = net.connect(p.port, "127.0.0.1");
+    await new Promise<void>((r) => raw.once("connect", () => r()));
+    raw.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+    );
+    const got = await new Promise<string>((r) => {
+      raw.on("data", (d) => r(d.toString("latin1")));
+      raw.once("close", () => r(""));
+      setTimeout(() => r(""), 1500);
+    });
+    expect(got.startsWith("HTTP/1.1 200")).toBe(false);
+    expect(got).not.toContain("Connection Established");
+    raw.destroy();
+  });
+
+  test("a client that does not trust the listener's name does not get as far as sending anything", async () => {
+    const p = await start({ tls: { key: leaf.key, cert: leaf.cert } });
+    const bad = tls.connect({
+      host: "127.0.0.1",
+      port: p.port,
+      servername: "other.example.test",
+      ca: listenerCa.certPem,
+    });
+    const failed = await new Promise<boolean>((r) => {
+      bad.once("secureConnect", () => r(false));
+      bad.once("error", () => r(true));
+    });
+    expect(failed).toBe(true);
+  });
+
+  /** Opens a TCP connection and resolves when it is up. */
+  const dial = async (p: RunningProxy): Promise<net.Socket> => {
+    const s = net.connect(p.port, "127.0.0.1");
+    await new Promise<void>((r, j) => {
+      s.once("connect", () => r());
+      s.once("error", j);
+    });
+    return s;
+  };
+  const closedWithin = (s: net.Socket, ms: number): Promise<boolean> =>
+    new Promise((r) => {
+      s.once("close", () => r(true));
+      setTimeout(() => r(false), ms);
+    });
+  /** One CONNECT with the given Authorization on a fresh connection; returns the head and the time taken. */
+  const connectOnce = async (
+    p: RunningProxy,
+    auth: string,
+  ): Promise<{ head: string; ms: number }> => {
+    const t0 = Date.now();
+    const s = await dial(p);
+    s.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${auth}\r\n\r\n`,
+    );
+    const head = await new Promise<string>((r) => {
+      s.once("data", (d) => r(d.toString("latin1")));
+      s.once("close", () => r(""));
+    });
+    s.destroy();
+    return { head, ms: Date.now() - t0 };
+  };
+
+  test("connections that have not authenticated are capped per source, and a slot comes back when one closes", async () => {
+    const p = await start({ limits: { maxUnauthenticatedPerSource: 3 } });
+    const socks = [await dial(p), await dial(p), await dial(p)];
+    expect(await closedWithin(await dial(p), 1500)).toBe(true);
+    socks[0]!.destroy();
+    await Bun.sleep(100);
+    const again = await dial(p);
+    expect(await closedWithin(again, 300)).toBe(false);
+    for (const s of [...socks, again]) s.destroy();
+  });
+
+  test("the unauthenticated cap holds over all sources; authenticated tunnels do not count against it, nor it against them", async () => {
+    const p = await start({ limits: { maxUnauthenticated: 2, maxUnauthenticatedPerSource: 50 } });
+    const { cred } = newAttempt();
+    // An authenticated tunnel, held open.
+    const tunnelSock = await dial(p);
+    tunnelSock.write(
+      `CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\nProxy-Authorization: ${basic(cred.username, cred.password)}\r\n\r\n`,
+    );
+    await new Promise<void>((r) => tunnelSock.once("data", () => r()));
+    expect(p.stats().authenticated).toBe(1);
+    expect(p.stats().unauthenticated).toBe(0);
+    // Two idle unauthenticated connections fill the cap; the third is refused.
+    const idle = [await dial(p), await dial(p)];
+    expect(await closedWithin(await dial(p), 1500)).toBe(true);
+    expect(p.stats().unauthenticated).toBe(2);
+    // A client with a valid credential is refused only because the unauthenticated cap is full,
+    // and goes through again as soon as a slot is free: the tunnel above is untouched.
+    idle[0]!.destroy();
+    await Bun.sleep(100);
+    const ok = await connectOnce(p, basic(cred.username, cred.password));
+    expect(ok.head.startsWith("HTTP/1.1 200")).toBe(true);
+    expect(tunnelSock.destroyed).toBe(false);
+    for (const s of [...idle, tunnelSock]) s.destroy();
+  });
+
+  test("the total of open connections is capped", async () => {
+    const p = await start({ limits: { maxConnections: 2, maxUnauthenticatedPerSource: 50 } });
+    const socks = [await dial(p), await dial(p)];
+    expect(await closedWithin(await dial(p), 1500)).toBe(true);
+    for (const s of socks) s.destroy();
+  });
+
+  test("a failed authentication is answered later each time, for that source and username only", async () => {
+    const p = await start({
+      limits: { authFailureBaseDelayMs: 120, authFailureMaxDelayMs: 1000 },
+    });
+    const bad = (user: string): string => basic(user, "wrong");
+    const times: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await connectOnce(p, bad("alice"));
+      expect(r.head.startsWith("HTTP/1.1 407")).toBe(true);
+      times.push(r.ms);
+    }
+    // 120, 240, 480 ms: each later than the one before.
+    expect(times[0]!).toBeGreaterThanOrEqual(100);
+    expect(times[1]!).toBeGreaterThan(times[0]!);
+    expect(times[2]!).toBeGreaterThan(times[1]!);
+    // Another username from the same source starts again from the base delay.
+    const other = await connectOnce(p, bad("bob"));
+    expect(other.ms).toBeLessThan(times[2]!);
+  });
+
+  test("a valid credential is never delayed or refused because its source has failed many times", async () => {
+    const p = await start({
+      limits: { authFailureBaseDelayMs: 200, authFailureMaxDelayMs: 2000 },
+    });
+    const { cred } = newAttempt();
+    // The same address (a shared egress address) fails a lot, as another tenant's job would.
+    await Promise.all(
+      Array.from({ length: 6 }, () => connectOnce(p, basic("someone-else", "guess"))),
+    );
+    const t0 = Date.now();
+    const ok = await connectOnce(p, basic(cred.username, cred.password));
+    expect(ok.head.startsWith("HTTP/1.1 200")).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(150);
+  });
+
+  test("the CONNECT head has an absolute deadline: a client that drips one byte at a time runs out", async () => {
+    const p = await start({ limits: { headDeadlineMs: 700 } });
+    const s = await dial(p);
+    const t0 = Date.now();
+    const dripper = setInterval(() => s.write("C"), 150);
+    const closed = await closedWithin(s, 3000);
+    clearInterval(dripper);
+    expect(closed).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(2500);
+    // An idle client gets no longer than that either.
+    const quiet = await dial(p);
+    expect(await closedWithin(quiet, 2000)).toBe(true);
+  });
+
+  test("source keys: IPv6 by /64, IPv4-mapped as IPv4, IPv4 as is", () => {
+    expect(sourceKey("203.0.113.9")).toBe("203.0.113.9");
+    expect(sourceKey("::ffff:203.0.113.9")).toBe("203.0.113.9");
+    expect(sourceKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe(sourceKey("2001:db8:1:2::1"));
+    expect(sourceKey("2001:db8:1:2::1")).toBe("2001:db8:1:2::/64");
+    expect(sourceKey("2001:db8:1:3::1")).not.toBe(sourceKey("2001:db8:1:2::1"));
+    expect(sourceKey("2001:DB8::5")).toBe(sourceKey("2001:db8:0:0:1::5"));
+    expect(sourceKey(undefined)).toBe("unknown");
+  });
+
+  test("the per-source books are pruned: nothing is kept for a source that went away", async () => {
+    const p = await start({
+      limits: { authFailureWindowMs: 60, pruneMs: 40, authFailureBaseDelayMs: 1 },
+    });
+    await connectOnce(p, basic("alice", "wrong"));
+    await connectOnce(p, basic("bob", "wrong"));
+    expect(p.stats().tracked).toBeGreaterThan(0);
+    // (the proxy reads time from the test clock)
+    clock += 1000;
+    await Bun.sleep(300);
+    expect(p.stats().tracked).toBe(0);
+  });
+});
+
+describe("publish rules through the proxy", () => {
+  const sha = (b: string | Buffer): string => createHash("sha256").update(b).digest("hex");
+  const put = (path: string, body: string, host = HOST): string =>
+    `PUT ${path} HTTP/1.1\r\nHost: ${host}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+  const tgz = Buffer.from("approved tarball");
+  const doc = (bytes: Buffer): string =>
+    JSON.stringify({
+      name: "@acme/web",
+      versions: {
+        "1.0.0": {
+          dist: { integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` },
+        },
+      },
+      _attachments: { "a.tgz": { data: bytes.toString("base64") } },
+    });
+  const npmRules = (): Rule[] => [
+    {
+      id: "npm-pkg",
+      host: HOST,
+      methods: ["GET", "PUT"],
+      pathPrefix: "/@acme%2Fweb",
+      npmPackage: "@acme/web",
+      inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+      secret: "NPM_TOKEN",
+      bodyCheck: { type: "npm-publish", digests: [sha(tgz)] },
+    },
+  ];
+
+  test("the approved tarball is published under the approved package, with the token", async () => {
+    const { cred } = newAttempt(npmRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    const r = await t.request(put("/@acme%2Fweb", doc(tgz)));
+    expect(r.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`https://${HOST}/@acme%2Fweb`);
+    expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${SECRET}`);
+    t.close();
+  });
+
+  test("other bytes, another package path, or a sub-path are refused and never sent", async () => {
+    const { cred } = newAttempt(npmRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t.request(put("/@acme%2Fweb", doc(Buffer.from("evil"))))).status).toBe(403);
+    const t2 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t2.request(put("/@acme%2Fother", doc(tgz)))).status).toBe(403);
+    const t3 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t3.request(put("/@acme%2Fweb/-rev/1", doc(tgz)))).status).toBe(403);
+    expect(seen).toHaveLength(0);
+    const e = events.find((x) => x.reason === "body_digest_not_approved");
+    expect(e).toBeDefined();
+    expect(e!.detail).toContain(sha(Buffer.from("evil")));
+    expect(events.some((x) => x.kind === "inject")).toBe(false);
+  });
+
+  test("a GET of the package needs no body check", async () => {
+    const { cred } = newAttempt(npmRules());
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t.request(get("/@acme%2Fweb"))).status).toBe(200);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a rule without npmPackage still refuses an encoded slash", async () => {
+    const { cred } = newAttempt(rules({ pathPrefix: "/v1/" }));
+    const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await t.request(get("/v1/@acme%2Fweb"))).status).toBe(403);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a release may be created only as a draft", async () => {
+    const r: Rule[] = [
+      {
+        id: "gh-create",
+        host: HOST,
+        methods: ["POST"],
+        pathPrefix: "/repos/acme/web/releases",
+        pathExact: true,
+        inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+        secret: "GH",
+        bodyCheck: { type: "json", field: "draft", equals: true },
+      },
+    ];
+    const { cred } = newAttempt(r);
+    const post = (body: string): string =>
+      `POST /repos/acme/web/releases HTTP/1.1\r\nHost: ${HOST}\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+    const a = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await a.request(post('{"tag_name":"v1","draft":true}'))).status).toBe(200);
+    const b = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+    expect((await b.request(post('{"tag_name":"v1","draft":false}'))).status).toBe(403);
+    expect(seen).toHaveLength(1);
+  });
+
+  describe("an OCI registry's token exchange", () => {
+    const BEARER = "bearer_token_abcdef0123456789";
+    const ociRules = (over: Partial<Rule> = {}): Rule[] => [
+      {
+        id: "oci",
+        host: HOST,
+        methods: ["GET", "HEAD", "PUT", "POST", "PATCH"],
+        pathPrefix: "/v2/acme/web",
+        inject: { type: "oci-bearer", username: "bot", scope: "repository:acme/web:push,pull" },
+        secret: "REGISTRY_TOKEN",
+        ...over,
+      },
+    ];
+    let realm = `https://${HOST}/token`;
+    beforeEach(() => {
+      realm = `https://${HOST}/token`;
+      handler = (s) => {
+        const u = new URL(s.url);
+        if (u.pathname === "/v2/")
+          return new Response("", {
+            status: 401,
+            headers: { "www-authenticate": `Bearer realm="${realm}",service="reg"` },
+          });
+        if (u.pathname === "/token") return Response.json({ token: BEARER, expires_in: 300 });
+        return new Response("ok");
+      };
+    });
+
+    test("the proxy answers the challenge and the job's request carries only the bearer", async () => {
+      const { cred } = newAttempt(ociRules());
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      const r = await t.request(get("/v2/acme/web/blobs/sha256:abc"));
+      expect(r.status).toBe(200);
+      const exchange = seen.find((s) => new URL(s.url).pathname === "/token")!;
+      const q = new URL(exchange.url).searchParams;
+      expect(q.get("scope")).toBe("repository:acme/web:push,pull");
+      expect(q.get("service")).toBe("reg");
+      expect(exchange.headers.get("authorization")).toBe(basic("bot", SECRET));
+      const real = seen.find((s) => new URL(s.url).pathname.startsWith("/v2/acme"))!;
+      expect(real.headers.get("authorization")).toBe(`Bearer ${BEARER}`);
+      // the token is reused for the next request
+      await t.request(get("/v2/acme/web/blobs/sha256:def"));
+      expect(seen.filter((s) => new URL(s.url).pathname === "/token")).toHaveLength(1);
+      t.close();
+    });
+
+    test("a realm on another host or over http is refused, and the credential goes nowhere", async () => {
+      for (const bad of ["https://evil.example.test/token", `http://${HOST}/token`]) {
+        realm = bad;
+        const { cred } = newAttempt(ociRules());
+        const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+        seen = [];
+        expect((await t.request(get("/v2/acme/web/blobs/sha256:abc"))).status).toBe(502);
+        expect(seen.every((s) => !s.headers.get("authorization"))).toBe(true);
+        expect(reasons()).toContain("oci_token_failed");
+      }
+    });
+
+    test("a realm host the rule names is allowed", async () => {
+      realm = "https://auth.example.test/token";
+      const { cred } = newAttempt(
+        ociRules({
+          inject: {
+            type: "oci-bearer",
+            username: "bot",
+            scope: "repository:acme/web:pull",
+            realmHost: "auth.example.test",
+          },
+        }),
+      );
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t.request(get("/v2/acme/web/blobs/sha256:abc"))).status).toBe(200);
+    });
+
+    test("another repository is out of the rule, and a manifest is pinned by digest", async () => {
+      const manifest = '{"schemaVersion":2}';
+      const { cred } = newAttempt([
+        ...ociRules({ methods: ["GET", "HEAD"] }),
+        ...ociRules({
+          id: "oci-manifest",
+          methods: ["PUT"],
+          pathPrefix: "/v2/acme/web/manifests/v1.0.0",
+          pathExact: true,
+          bodyCheck: { type: "sha256", digests: [sha(manifest)] },
+        }),
+      ]);
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t.request(get("/v2/other/repo/blobs/sha256:abc"))).status).toBe(403);
+      const t2 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t2.request(put("/v2/acme/web/manifests/v1.0.0", manifest))).status).toBe(200);
+      const t3 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect(
+        (await t3.request(put("/v2/acme/web/manifests/v1.0.0", '{"schemaVersion":3}'))).status,
+      ).toBe(403);
+      const t4 = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      expect((await t4.request(put("/v2/acme/web/manifests/latest", manifest))).status).toBe(403);
+    });
+
+    test("neither the credential nor the bearer comes back in a response", async () => {
+      handler = (s) =>
+        new URL(s.url).pathname === "/v2/"
+          ? new Response("", {
+              status: 401,
+              headers: { "www-authenticate": `Bearer realm="${realm}"` },
+            })
+          : new URL(s.url).pathname === "/token"
+            ? Response.json({ token: BEARER })
+            : new Response(`echo ${s.headers.get("authorization")}`);
+      const { cred } = newAttempt(ociRules());
+      const t = await tunnel({ auth: basic(cred.username, cred.password), ca: cred.caPem });
+      const r = await t.request(get("/v2/acme/web/blobs/sha256:abc"));
+      expect(r.body).not.toContain(BEARER);
+      expect(r.body).not.toContain(SECRET);
+    });
   });
 });

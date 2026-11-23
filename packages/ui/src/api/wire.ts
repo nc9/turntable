@@ -43,6 +43,36 @@ export type WireAttempt = {
   started_at: string | null;
   finished_at: string | null;
   duration_ms: number | null;
+  sandbox_created_at: string | null;
+  sandbox_destroyed_at: string | null;
+  sandbox_seconds: number | null;
+};
+
+export type WireSandboxUsage = {
+  days: {
+    day: string;
+    sandbox_seconds: number;
+    sandbox_minutes: number;
+    attempts: number;
+    estimated_attempts: number;
+  }[];
+  total_seconds: number;
+  total_minutes: number;
+  /** Present with `group_by=project`: each project that had a sandbox alive in the window. */
+  projects?: {
+    project_id: string;
+    project_slug: string;
+    project_name: string;
+    days: {
+      day: string;
+      sandbox_seconds: number;
+      sandbox_minutes: number;
+      attempts: number;
+      estimated_attempts: number;
+    }[];
+    total_seconds: number;
+    total_minutes: number;
+  }[];
 };
 
 export type WireJob = {
@@ -134,6 +164,7 @@ export type WireCuts = {
   job_id: string;
   attempt: number | null;
   cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+  notices: { at_offset: number; source: string; text: string }[];
 };
 
 export type WireDigest = {
@@ -224,10 +255,15 @@ export type WireApprovers = {
     kind: "webauthn" | "ed25519";
     passkey_id: string | null;
     created_at: string;
+    not_counting: string | null;
+    attested: boolean;
+    aaguid: string | null;
   }[];
+  key_policy: { mode: "any" | "hardware"; presets: string[]; aaguids: string[] };
   pending_enrolments: {
     id: string;
     person: string;
+    forge_login: string | null;
     kind: "webauthn" | "ed25519";
     key_fingerprint: string;
     approvals: number;
@@ -262,7 +298,12 @@ export type WireEnvironmentApproval = {
   state: string;
 };
 
-export type WireRegisterChallenge = { challenge: string; rp_id: string; expires_at: string };
+export type WireRegisterChallenge = {
+  challenge: string;
+  rp_id: string;
+  expires_at: string;
+  attestation: "none" | "direct";
+};
 export type WireEnrolmentRequest = {
   enrolment_id: string;
   kind: "webauthn" | "ed25519";
@@ -286,4 +327,45 @@ export type WireIncident = {
   frozen_by: string | null;
   rotation_required_count: number;
   rotation_required: { name: string; reason: string; flagged_by: string; flagged_at: number }[];
+};
+
+export type WireArtifacts = {
+  artifacts: {
+    name: string;
+    size: number;
+    sha256: string;
+    digest_source: "reported" | "computed";
+    trust_class: string;
+    run_sha: string | null;
+    attempt_id: string;
+    created_at: string;
+  }[];
+};
+
+export type WireConsumption = {
+  results: {
+    run_id: string;
+    name: string;
+    decision: "allow" | "quarantine" | "deny";
+    reason: string | null;
+    trust_class: string | null;
+    sha256: string | null;
+  }[];
+};
+
+export type WireQuotas = {
+  limits: {
+    max_concurrent: number | null;
+    max_runs_per_hour: number | null;
+    max_sandbox_minutes_per_day: number | null;
+    max_log_bytes: number | null;
+    max_stored_bytes: number | null;
+  };
+  usage: {
+    metric: "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
+    used: number;
+    limit: number | null;
+    percent: number | null;
+    held: string | null;
+  }[];
 };

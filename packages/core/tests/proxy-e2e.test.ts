@@ -29,11 +29,25 @@ const tmp = mkdtempSync(join(tmpdir(), "tt-proxy-e2e-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 async function git(dir: string, ...args: string[]): Promise<void> {
-  const p = Bun.spawn(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
-    cwd: dir,
-    stdout: "ignore",
-    stderr: "inherit",
-  });
+  const p = Bun.spawn(
+    [
+      "git",
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.com",
+      ...args,
+    ],
+    {
+      cwd: dir,
+      stdout: "ignore",
+      stderr: "inherit",
+    },
+  );
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
@@ -184,5 +198,96 @@ describe.skipIf(!enabled)("a job behind the secrets proxy (docker, Linux)", () =
     raw.destroy();
     // And nothing of the sandbox is left: no container, relay or network for this attempt.
     expect(await provider.list({ labels: { "longshore.run": a.runId } })).toHaveLength(0);
+  }, 600_000);
+
+  test("GITHUB_TOKEN in a job is a placeholder, the proxy attaches the real token to the repository's API only", async () => {
+    // Built at run time: a literal in this shape trips secret scanners.
+    const TOKEN = ["ghs", "e2e", "job", "token", "7d41c0"].join("_");
+    await db.orm
+      .update(s.runs)
+      .set({ trust: JSON.stringify({ class: "protected", workflowHash: "h" }), plan: null })
+      .where(eq(s.runs.id, a.runId));
+    await db.orm
+      .update(s.jobAttempts)
+      .set({ state: "running", trustClass: "protected" })
+      .where(eq(s.jobAttempts.id, a.attemptId));
+    upstreamSaw.length = 0;
+
+    const repo = join(tmp, "repo-token");
+    cpSync(join(import.meta.dir, "../../../examples/hello"), repo, { recursive: true });
+    await git(repo, "init", "-q", "-b", "main");
+    await git(repo, "add", "-A");
+    await git(repo, "commit", "-q", "-m", "initial example commit");
+    const repoTarball = await tarDirectory(repo);
+    const yaml = readFileSync(join(repo, ".github/workflows/github-token.yml"), "utf8");
+    const planned = planJob(yaml, "token", {
+      workflowPath: ".github/workflows/github-token.yml",
+      readFile: (f) =>
+        existsSync(join(repo, f)) ? readFileSync(join(repo, f), "utf8") : undefined,
+    });
+    const plan = await resolveActions(planned, staticResolver({}));
+    const provider = new DockerProvider();
+    let logText = "";
+    const store = {
+      setSandbox: async () => {},
+      setExec: async () => {},
+      resetOutput: async () => {},
+      appendLog: async () => {},
+      recordStep: async () => {},
+      finishJob: async () => {},
+    } as unknown as RunStore;
+    const PLACEHOLDER = "longshore-token-is-added-by-the-proxy";
+
+    const runner = withSecretsProxy(
+      async (ctx) => {
+        // What createActRunner does once the job is planned and its token minted.
+        ctx.proxy?.setGithubToken(TOKEN);
+        const out = await executeJob(
+          {
+            provider,
+            store,
+            image: IMAGE,
+            repoTarball,
+            out: (t) => {
+              logText += t;
+            },
+            registry: ctx.redact ?? new SecretRegistry(),
+            signal: ctx.signal,
+            timeoutSeconds: 300,
+            ...(ctx.proxy ? { proxy: ctx.proxy, githubToken: PLACEHOLDER } : {}),
+          },
+          { runId: a.runId, jobId: a.jobId, attemptId: a.attemptId },
+          plan,
+        );
+        return { state: out.state === "success" ? "success" : "failure", reason: out.reason };
+      },
+      {
+        proxy,
+        github: async () => ({ owner: "acme", repo: "app", installationId: "1" }),
+      },
+    );
+    const outcome = await runner({
+      run: (await getRun(db, a.scope, a.runId))!,
+      job: (await getJob(db, a.scope, a.jobId))!,
+      attempt: (await getAttempt(db, a.scope, a.attemptId))!,
+      scope: a.scope,
+      provider,
+      signal: new AbortController().signal,
+      store: {} as AttemptContext["store"],
+    });
+    if (outcome.state !== "success") console.log(outcome, "\n" + logText);
+    expect(outcome.state).toBe("success");
+    // The job, and act's `secrets.GITHUB_TOKEN` (the -s GITHUB_TOKEN path), hold only the placeholder.
+    // (act masks a secret value in the log, so the value shows as ***; the length tells them apart.)
+    expect(logText).toContain(`env-token-length=${PLACEHOLDER.length}`);
+    expect(logText).toContain(`secrets-token-length=${PLACEHOLDER.length}`);
+    expect(logText).not.toContain(`env-token-length=${TOKEN.length}`);
+    expect(logText).not.toContain(TOKEN);
+    // The repository's own API got the real token from the proxy; another repository got nothing.
+    expect(logText).toContain("own-repo-status=200");
+    expect(upstreamSaw).toHaveLength(1);
+    expect(upstreamSaw[0]?.get("authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(logText).toContain("other-repo-status=403");
+    expect(proxy.active).toBe(0);
   }, 600_000);
 });

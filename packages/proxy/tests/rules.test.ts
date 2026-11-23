@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
+  checkBody,
   checkPath,
   compileRule,
   compileRules,
   hostAllowed,
   matchRule,
+  npmExactRule,
+  npmPath,
   underPrefix,
   wireValue,
 } from "../src/rules";
@@ -147,5 +151,180 @@ describe("what goes on the wire", () => {
     expect(w.header).toBe("authorization");
     expect(w.value).toBe(`Basic ${Buffer.from("ci:s3cr3t-value").toString("base64")}`);
     expect(w.scrub).toEqual(["s3cr3t-value", "ci:s3cr3t-value", w.value]);
+  });
+});
+
+describe("publish rules: npm package paths, exact paths, body checks", () => {
+  const sha = (b: string | Buffer): string => createHash("sha256").update(b).digest("hex");
+  const npmRule: Rule = {
+    ...base,
+    id: "npm-pkg",
+    methods: ["GET", "PUT"],
+    pathPrefix: "/@acme%2Fweb",
+    npmPackage: "@acme/web",
+  };
+
+  test("npmPackage accepts exactly its own encoded path, and implies exact match", () => {
+    const [r] = compileRules([npmRule]);
+    expect(r!.pathExact).toBe(true);
+    expect(matchRule([r!], base.host, 443, "PUT", "/@acme%2Fweb").ok).toBe(true);
+    for (const p of [
+      "/@acme%2Fweb/x",
+      "/@acme%2Fweb/",
+      "/@acme%2Fother",
+      "/@acme/web",
+      "/@acme%2fweb",
+    ]) {
+      expect(matchRule([r!], base.host, 443, "PUT", p).ok).toBe(false);
+    }
+    expect(npmExactRule([r!], base.host, 443, "/@acme%2Fweb")).toBe(true);
+    expect(npmExactRule([r!], base.host, 443, "/@acme%2Fother")).toBe(false);
+    expect(npmPath("web")).toBe("/web");
+  });
+
+  test("npmPackage is validated: a name, and the matching path", () => {
+    expect(() => compileRule({ ...npmRule, npmPackage: "../x" })).toThrow(RuleError);
+    expect(() => compileRule({ ...npmRule, npmPackage: "@acme/web/extra" })).toThrow(RuleError);
+    expect(() => compileRule({ ...npmRule, pathPrefix: "/@acme%2Fother" })).toThrow(RuleError);
+    // without npmPackage an encoded slash is still not a canonical path
+    expect(() => compileRule({ ...npmRule, npmPackage: undefined })).toThrow(RuleError);
+  });
+
+  test("pathExact matches only that path", () => {
+    const [r] = compileRules([{ ...base, pathPrefix: "/v2/", pathExact: true }]);
+    expect(matchRule([r!], base.host, 443, "GET", "/v2/").ok).toBe(true);
+    expect(matchRule([r!], base.host, 443, "GET", "/v2/other/").ok).toBe(false);
+  });
+
+  test("pathShape matches segment by segment: * is one segment, {sha256} one digest", () => {
+    const shape = (pathShape: string, pathPrefix: string) =>
+      compileRules([{ ...base, pathPrefix, pathShape }]);
+    const blob = shape("/v2/acme/blobs/{sha256}", "/v2/acme/blobs");
+    const D = `sha256:${"a".repeat(64)}`;
+    const ok = (rs: ReturnType<typeof compileRules>, path: string) =>
+      matchRule(rs, base.host, 443, "GET", path).ok;
+    expect(ok(blob, `/v2/acme/blobs/${D}`)).toBe(true);
+    expect(ok(blob, `/v2/acme/blobs/${D}/x`)).toBe(false); // not a longer path
+    expect(ok(blob, "/v2/acme/blobs/x")).toBe(false);
+    expect(ok(blob, `/v2/acme/blobs/sha256:${"a".repeat(65)}`)).toBe(false);
+    expect(ok(blob, `/v2/acme/blobs/x/blobs/${D}`)).toBe(false);
+    const one = shape("/v2/acme/manifests/*", "/v2/acme/manifests");
+    expect(ok(one, "/v2/acme/manifests/latest")).toBe(true);
+    expect(ok(one, "/v2/acme/manifests/a/b")).toBe(false);
+    expect(ok(one, "/v2/acme/manifests/")).toBe(false); // empty segment
+    expect(ok(one, "/v2/acme/manifests")).toBe(false);
+    // a shape beats nothing: a rule with a shape never matches by prefix alone
+    expect(ok(one, "/v2/acme/manifests/latest/extra")).toBe(false);
+  });
+
+  test("pathShape is validated: whole-segment wildcards, a wildcard at all, a matching prefix", () => {
+    const mk = (pathShape: string, pathPrefix: string) => () =>
+      compileRule({ ...base, pathPrefix, pathShape });
+    expect(mk("/v2/a/*", "/v2/a")).not.toThrow();
+    expect(mk("/v2/a/*", "/v2/a/")).not.toThrow();
+    expect(mk("/v2/a/pre*", "/v2/a")).toThrow(RuleError); // partial wildcard
+    expect(mk("/v2/a/{sha256}x", "/v2/a")).toThrow(RuleError);
+    expect(mk("/v2/a/b", "/v2/a/b")).toThrow(RuleError); // no wildcard: use pathExact
+    expect(mk("/v2/a/*", "/v2/other")).toThrow(RuleError); // prefix is not the literal part
+    expect(mk("v2/a/*", "/v2/a")).toThrow(RuleError);
+    expect(mk("/v2/../a/*", "/v2/../a")).toThrow(RuleError);
+    expect(() =>
+      compileRule({ ...npmRule, pathShape: "/@acme%2Fweb/*", pathPrefix: "/@acme%2Fweb" }),
+    ).toThrow(RuleError);
+  });
+
+  test("bodyCheck digests must be sha256 hex", () => {
+    for (const digests of [[], ["abc"], ["A".repeat(64)]]) {
+      expect(() => compileRule({ ...base, bodyCheck: { type: "sha256", digests } })).toThrow(
+        RuleError,
+      );
+    }
+    expect(() =>
+      compileRule({ ...base, bodyCheck: { type: "json", field: "a b", equals: true } }),
+    ).toThrow(RuleError);
+  });
+
+  const publishDoc = (tgz: Buffer, over: Record<string, unknown> = {}): Buffer =>
+    Buffer.from(
+      JSON.stringify({
+        name: "@acme/web",
+        versions: {
+          "1.0.0": {
+            dist: { integrity: `sha512-${createHash("sha512").update(tgz).digest("base64")}` },
+          },
+        },
+        _attachments: { "@acme/web-1.0.0.tgz": { data: tgz.toString("base64") } },
+        ...over,
+      }),
+    );
+
+  test("npm-publish: the one attachment must be an approved tarball and the metadata honest", () => {
+    const tgz = Buffer.from("tarball bytes");
+    const check = { type: "npm-publish" as const, digests: [sha(tgz)] };
+    expect(checkBody(check, publishDoc(tgz))).toEqual({ ok: true });
+    const other = publishDoc(Buffer.from("other bytes"));
+    expect(checkBody(check, other)).toMatchObject({ ok: false, reason: "digest_not_approved" });
+    expect(checkBody(check, publishDoc(tgz, { _attachments: {} }))).toMatchObject({
+      reason: "attachment_count",
+    });
+    expect(
+      checkBody(
+        check,
+        publishDoc(tgz, {
+          _attachments: {
+            a: { data: tgz.toString("base64") },
+            b: { data: tgz.toString("base64") },
+          },
+        }),
+      ),
+    ).toMatchObject({ reason: "attachment_count" });
+    expect(
+      checkBody(
+        check,
+        publishDoc(tgz, { versions: { "1.0.0": { dist: { integrity: "sha512-x" } } } }),
+      ),
+    ).toMatchObject({ reason: "integrity_mismatch" });
+    expect(
+      checkBody(check, publishDoc(tgz, { versions: { "1.0.0": {}, "1.0.1": {} } })),
+    ).toMatchObject({ reason: "version_count" });
+    expect(checkBody(check, Buffer.from("not json"))).toMatchObject({ reason: "not_json" });
+    expect(checkBody(check, Buffer.from("[]"))).toMatchObject({ reason: "not_an_object" });
+  });
+
+  test("sha256 and json checks", () => {
+    const body = Buffer.from('{"draft":true,"tag_name":"v1"}');
+    expect(checkBody({ type: "sha256", digests: [sha(body)] }, body)).toEqual({ ok: true });
+    expect(checkBody({ type: "sha256", digests: [sha("x")] }, body)).toMatchObject({
+      reason: "digest_not_approved",
+    });
+    expect(checkBody({ type: "json", field: "draft", equals: true }, body)).toEqual({ ok: true });
+    for (const b of ['{"draft":false}', '{"draft":"true"}', "{}", '{"x":{"draft":true}}']) {
+      expect(
+        checkBody({ type: "json", field: "draft", equals: true }, Buffer.from(b)),
+      ).toMatchObject({
+        ok: false,
+      });
+    }
+  });
+
+  test("an oci-bearer rule: scope and username are validated, and the wire value is the exchange credential", () => {
+    const oci: Rule = {
+      ...base,
+      host: "ghcr.io",
+      inject: { type: "oci-bearer", username: "bot", scope: "repository:acme/web:push,pull" },
+    };
+    expect(() => compileRule(oci)).not.toThrow();
+    for (const scope of ["repository:acme/web:*", "catalog:*", "repository:ACME/web:pull"]) {
+      expect(() =>
+        compileRule({ ...oci, inject: { type: "oci-bearer", username: "bot", scope } }),
+      ).toThrow(RuleError);
+    }
+    expect(() =>
+      compileRule({
+        ...oci,
+        inject: { type: "oci-bearer", username: "a:b", scope: "repository:a/b:pull" },
+      }),
+    ).toThrow(RuleError);
+    expect(wireValue(oci.inject, "s3cretvalue-xyz").value.startsWith("Basic ")).toBe(true);
   });
 });

@@ -1,7 +1,10 @@
 // Human approvals (#46): enrolled approver keys, per-environment policy, single-use challenges,
 // pending enrolments and the signed records. Part of the only code allowed to name tenant tables.
-import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
+import { DEFAULT_KEY_POLICY, keyPolicyViolation, type KeyPolicy } from "../../approvals/key-policy";
+import { approverIdentity } from "../../approvals/identity";
+import { and, asc, desc, eq, gt, isNull, lte } from "drizzle-orm";
 import type { Db } from "..";
+import { isUniqueViolation } from "../errors";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
 import { ulid } from "../ulid";
@@ -103,6 +106,54 @@ export function listEnvPolicies(db: Db, orgId: string) {
   );
 }
 
+// ---- key policy (#152) ----
+
+export async function getKeyPolicy(db: Db, orgId: string): Promise<KeyPolicy> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.approvalKeyPolicies)
+      .where(eq(s.approvalKeyPolicies.orgId, orgId))
+      .limit(1);
+    if (!row) return DEFAULT_KEY_POLICY;
+    return {
+      generation: row.generation,
+      mode: row.policy === "hardware" ? "hardware" : "any",
+      presets: JSON.parse(row.presets) as string[],
+      aaguids: JSON.parse(row.aaguids) as string[],
+    };
+  });
+}
+
+export function setKeyPolicy(
+  db: Db,
+  orgId: string,
+  p: KeyPolicy,
+  by: string,
+  now: number,
+): Promise<void> {
+  return db.run(async (h) => {
+    const [cur] = await h.orm
+      .select({ g: s.approvalKeyPolicies.generation })
+      .from(s.approvalKeyPolicies)
+      .where(eq(s.approvalKeyPolicies.orgId, orgId))
+      .limit(1);
+    const row = {
+      orgId,
+      generation: (cur?.g ?? 0) + 1,
+      policy: p.mode,
+      presets: JSON.stringify(p.presets),
+      aaguids: JSON.stringify(p.aaguids),
+      updatedBy: by,
+      updatedAt: now,
+    };
+    await h.orm
+      .insert(s.approvalKeyPolicies)
+      .values(row)
+      .onConflictDoUpdate({ target: s.approvalKeyPolicies.orgId, set: row });
+  });
+}
+
 // ---- approvers ----
 
 export function listApprovers(db: Db, orgId: string, o: { includeRevoked?: boolean } = {}) {
@@ -131,7 +182,50 @@ export function getApprover(db: Db, orgId: string, id: string): Promise<Approver
   });
 }
 
+/**
+ * One forge login is one identity. Refuse a login an active approver already holds under a
+ * different person label: a second key for the same human is fine (same label, counts once), a
+ * second "person" for one login is the two-person rule being gamed.
+ */
+type Handle = Parameters<Parameters<Db["run"]>[0]>[0];
+
+async function assertIdentityFree(
+  h: Handle,
+  orgId: string,
+  a: { person: string; forgeLogin?: string | null | undefined },
+): Promise<void> {
+  const id = approverIdentity(a);
+  if (id === null) return;
+  const rows = await h.orm
+    .select()
+    .from(s.approvers)
+    .where(and(eq(s.approvers.orgId, orgId), isNull(s.approvers.revokedAt)));
+  const held = rows.find(
+    (r) =>
+      approverIdentity(r) === id && r.person.trim().toLowerCase() !== a.person.trim().toLowerCase(),
+  );
+  if (held)
+    throw new ApprovalConflict(
+      "that forge login already belongs to an enrolled approver under a different person",
+    );
+  // And the other way round: a person label an active approver holds under another login. Taking
+  // a new login under the same name would make the enrolee look like someone else to the check
+  // that a person cannot approve their own key.
+  const same = rows.find(
+    (r) =>
+      r.person.trim().toLowerCase() === a.person.trim().toLowerCase() &&
+      approverIdentity(r) !== null &&
+      approverIdentity(r) !== id,
+  );
+  if (same)
+    throw new ApprovalConflict(
+      "an enrolled approver already has that name under a different forge login",
+    );
+}
+
 export type NewApprover = {
+  aaguid?: string | null | undefined;
+  attested?: boolean | undefined;
   person: string;
   forgeLogin?: string | null | undefined;
   kind: s.ApproverKind;
@@ -149,6 +243,7 @@ export function insertApprover(
   now: number,
 ): Promise<Approver> {
   return db.run(async (h) => {
+    await assertIdentityFree(h, orgId, a);
     const row = {
       id: ulid(),
       orgId,
@@ -159,6 +254,8 @@ export function insertApprover(
       publicKey: a.publicKey,
       alg: a.alg,
       signCount: a.signCount ?? 0,
+      aaguid: a.aaguid ?? null,
+      attested: a.attested ?? false,
       createdBy: a.createdBy,
       createdAt: now,
       revokedAt: null,
@@ -166,7 +263,7 @@ export function insertApprover(
     try {
       await h.orm.insert(s.approvers).values(row);
     } catch (e) {
-      if (String(e).includes("UNIQUE")) throw new ApprovalConflict("that key is already enrolled");
+      if (isUniqueViolation(e)) throw new ApprovalConflict("that key is already enrolled");
       throw e;
     }
     return row;
@@ -195,10 +292,53 @@ export function setSignCount(db: Db, orgId: string, id: string, count: number): 
   });
 }
 
-/** Distinct people holding at least one active key. */
-export async function activePeople(db: Db, orgId: string): Promise<string[]> {
+/**
+ * Distinct identities (verified forge logins) holding at least one active key. A key without a
+ * forge login has no identity and is left out. With a key policy, only keys that satisfy it
+ * count: a person whose keys all fail it cannot sign.
+ */
+export async function activeIdentities(
+  db: Db,
+  orgId: string,
+  policy?: KeyPolicy,
+): Promise<string[]> {
   const rows = await listApprovers(db, orgId);
-  return [...new Set(rows.map((r) => r.person))];
+  return [
+    ...new Set(
+      rows
+        .filter((r) => !policy || keyPolicyViolation(policy, r) === null)
+        .flatMap((r) => approverIdentity(r) ?? []),
+    ),
+  ];
+}
+
+/**
+ * The identities behind a set of records, by the approver key that signed. A record whose key is
+ * revoked, has no forge login, no longer satisfies the key policy, or is gone, counts for nothing.
+ */
+export async function recordIdentities(
+  db: Db,
+  orgId: string,
+  records: { approverId: string }[],
+  policy?: KeyPolicy,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const cache = new Map<string, string | null>();
+  for (const r of records) {
+    let id = cache.get(r.approverId);
+    if (id === undefined) {
+      const a = await getApprover(db, orgId, r.approverId);
+      // A revoked key stops counting, as it stops verifying (`verifySignature`) and stops being
+      // active (`activeIdentities`); so does a key that no longer satisfies the key policy.
+      id =
+        a && a.revokedAt === null && !(policy && keyPolicyViolation(policy, a) !== null)
+          ? approverIdentity(a)
+          : null;
+      cache.set(r.approverId, id);
+    }
+    if (id !== null) out.add(id);
+  }
+  return out;
 }
 
 // ---- challenges ----
@@ -208,8 +348,9 @@ export function insertChallenge(
   orgId: string,
   c: {
     id: string;
-    kind: "approve" | "enrol" | "register";
+    kind: "approve" | "enrol" | "register" | "policy";
     statementHash: string;
+    principal: string;
     expiresAt: number;
   },
 ): Promise<void> {
@@ -243,7 +384,22 @@ export function consumeChallenge(
   });
 }
 
-export function countOpenChallenges(db: Db, orgId: string, now: number): Promise<number> {
+/** Drops challenge rows that have expired, so the table cannot grow without bound. */
+export function purgeExpiredChallenges(db: Db, orgId: string, now: number): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .delete(s.approvalChallenges)
+      .where(and(eq(s.approvalChallenges.orgId, orgId), lte(s.approvalChallenges.expiresAt, now)));
+  });
+}
+
+/** Open (unused, unexpired) challenges one principal holds. */
+export function countOpenChallenges(
+  db: Db,
+  orgId: string,
+  principal: string,
+  now: number,
+): Promise<number> {
   return db.run(async (h) => {
     const rows = await h.orm
       .select({ id: s.approvalChallenges.id })
@@ -251,6 +407,7 @@ export function countOpenChallenges(db: Db, orgId: string, now: number): Promise
       .where(
         and(
           eq(s.approvalChallenges.orgId, orgId),
+          eq(s.approvalChallenges.principal, principal),
           isNull(s.approvalChallenges.usedAt),
           gt(s.approvalChallenges.expiresAt, now),
         ),
@@ -269,6 +426,7 @@ export function insertEnrolment(
   now: number,
 ): Promise<Enrolment> {
   return db.run(async (h) => {
+    await assertIdentityFree(h, orgId, e);
     const row = {
       id: ulid(),
       orgId,
@@ -279,6 +437,8 @@ export function insertEnrolment(
       publicKey: e.publicKey,
       alg: e.alg,
       signCount: e.signCount ?? 0,
+      aaguid: e.aaguid ?? null,
+      attested: e.attested ?? false,
       requestedBy: e.requestedBy,
       createdAt: now,
       expiresAt: e.expiresAt,
@@ -338,6 +498,8 @@ export function activateEnrolment(
         publicKey: e.publicKey,
         alg: e.alg,
         signCount: e.signCount,
+        aaguid: e.aaguid,
+        attested: e.attested,
         createdBy: by,
       },
       now,
@@ -356,7 +518,7 @@ export function activateEnrolment(
 
 export type NewRecord = {
   projectId?: string | undefined;
-  kind: "environment" | "enrol";
+  kind: "environment" | "enrol" | "policy";
   runId?: string | undefined;
   environment?: string | undefined;
   enrolmentId?: string | undefined;
@@ -390,8 +552,7 @@ export function insertRecord(db: Db, orgId: string, r: NewRecord, now: number): 
         expiresAt: r.expiresAt,
       });
     } catch (e) {
-      if (String(e).includes("UNIQUE"))
-        throw new ApprovalConflict("this statement was already submitted");
+      if (isUniqueViolation(e)) throw new ApprovalConflict("this statement was already submitted");
       throw e;
     }
   });
@@ -413,6 +574,27 @@ export function listEnvironmentRecords(
           eq(s.approvalRecords.kind, "environment"),
           eq(s.approvalRecords.runId, runId),
           environment === undefined ? undefined : eq(s.approvalRecords.environment, environment),
+        ),
+      )
+      .orderBy(asc(s.approvalRecords.createdAt)),
+  );
+}
+
+/** The signed records for one key policy proposal (they share its digest in `enrolment_id`). */
+export function listPolicyRecords(
+  db: Db,
+  orgId: string,
+  digest: string,
+): Promise<ApprovalRecord[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.approvalRecords)
+      .where(
+        and(
+          eq(s.approvalRecords.orgId, orgId),
+          eq(s.approvalRecords.kind, "policy"),
+          eq(s.approvalRecords.enrolmentId, digest),
         ),
       )
       .orderBy(asc(s.approvalRecords.createdAt)),

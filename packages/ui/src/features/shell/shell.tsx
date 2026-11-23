@@ -9,10 +9,12 @@ import {
   PlayCircle,
   Search,
   Settings,
+  Gauge,
   ShieldCheck,
   Sun,
   Wifi,
   WifiOff,
+  ChartColumn,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -128,6 +130,24 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           {...(onNavigate ? { onNavigate } : {})}
         >
           Approvers
+        </NavLink>
+        <NavLink
+          to="/$org/-/quotas"
+          params={{ org: orgSlug }}
+          icon={<Gauge />}
+          active={path === `${base}/-/quotas`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Quotas
+        </NavLink>
+        <NavLink
+          to="/$org/-/usage"
+          params={{ org: orgSlug }}
+          icon={<ChartColumn />}
+          active={path === `${base}/-/usage`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Usage
         </NavLink>
       </div>
       <div className="flex flex-col gap-0.5">

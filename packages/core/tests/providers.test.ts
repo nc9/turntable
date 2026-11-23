@@ -24,15 +24,46 @@ afterEach(async () => {
 test("daytona is selectable and its options are validated strictly", () => {
   expect(createProvider("daytona", { apiKeyEnv: "X" }).info.name).toBe("daytona");
   expect(() => createProvider("daytona", { nope: 1 })).toThrow(/unknown daytona provider option/);
-  expect(() => createProvider("daytona", { maxLive: 4 })).toThrow(
-    /maxLive must be an integer from 1 to 3/,
+  expect(() => createProvider("daytona", { maxLive: 11 })).toThrow(
+    /maxLive must be an integer from 1 to 10/,
   );
+  expect(() => createProvider("daytona", { maxLive: 10 })).not.toThrow();
   expect(() => createProvider("daytona", { maxLive: 0 })).toThrow();
   expect(() => createProvider("daytona", { maxLive: "2" })).toThrow();
   expect(() => createProvider("daytona", { ttlSeconds: 3600 })).toThrow(/ttlSeconds/);
-  expect(() => createProvider("daytona", { ownerCiPreflight: false })).toThrow(
-    /cannot be turned off/,
-  );
+  // The org CPU check: true is the defaults, an object sets its parts, false turns that check off.
+  for (const ok of [
+    true,
+    false,
+    {},
+    { cpuLimit: 150, region: "eu", sandboxClass: "container" },
+    { diskLimitGiB: 1500, memLimitGiB: 400 },
+  ]) {
+    expect(() => createProvider("daytona", { ownerCiPreflight: ok })).not.toThrow();
+  }
+  for (const ok of ["org-usage", "own-fleet"]) {
+    expect(() => createProvider("daytona", { quotaMode: ok })).not.toThrow();
+  }
+  for (const bad of ["own", "", 1, true]) {
+    expect(() => createProvider("daytona", { quotaMode: bad })).toThrow(/quotaMode/);
+  }
+  for (const bad of [
+    "yes",
+    1,
+    [],
+    { cpuLimit: 0 },
+    { cpuLimit: 1.5 },
+    { cpuLimit: "200" },
+    { region: "" },
+    { region: "US East" },
+    { sandboxClass: 3 },
+    { limit: 5 },
+    { diskLimitGiB: 0 },
+    { memLimitGiB: 1.5 },
+    { diskLimitGiB: "2000" },
+  ]) {
+    expect(() => createProvider("daytona", { ownerCiPreflight: bad })).toThrow();
+  }
   expect(() => createProvider("daytona", { apiKeyFile: "/k", apiKeyEnv: "K" })).toThrow(
     /only one of/,
   );
@@ -121,4 +152,93 @@ test("isolation is declared from what the provider really is: docker is a contai
   expect(createProvider("docker", { runtime: "runc" }).info.isolation).toBe("container");
   expect(createProvider("docker", { runtime: "runsc" }).info.isolation).toBe("gvisor");
   expect(createProvider("daytona", {}).info.isolation).toBe("container");
+});
+
+test(
+  "the org CPU check's settings from the config reach the provider: a low limit holds a create back, false lets it through",
+  { timeout: 30_000 },
+  async () => {
+    const keyFile = join(dir, "key-usage");
+    writeFileSync(keyFile, `${MOCK_KEY}\n`);
+    // Somebody else's sandbox in the account, so the org id is known, and 40 vCPU in use.
+    mock.addForeign("their-sandbox", { project: "other" }, "stopped");
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container", currentCpuUsage: 40 }];
+    const spec = {
+      name: "tt-run-x",
+      labels: { "longshore.run": "r1" },
+      ttlSeconds: 600,
+      network: { egress: "none" as const },
+    };
+    const base = { baseUrl: mock.url, apiKeyFile: keyFile, capacityWaitSeconds: 1 };
+    // A limit of 30 is below what is in use: the create waits out its second and fails.
+    const tight = createProvider("daytona", { ...base, ownerCiPreflight: { cpuLimit: 30 } });
+    await expect(tight.create(spec)).rejects.toThrow(/vCPU in use/);
+    // Defaults (200) leave room; `false` skips the check, and then no usage is read for it.
+    const roomy = createProvider("daytona", { ...base, ownerCiPreflight: true });
+    await roomy.destroy((await roomy.create(spec)).id);
+    const before = mock.usage.calls;
+    const off = createProvider("daytona", { ...base, ownerCiPreflight: false });
+    await off.destroy((await off.create({ ...spec, name: "tt-run-y" })).id);
+    expect(mock.usage.calls).toBe(before);
+  },
+);
+
+test("the daytona fleet is config: validated when the provider is built, the default is longshore-dev", () => {
+  const key = { apiKeyEnv: "X" };
+  const fleetOf = (cfg: Record<string, unknown>) =>
+    (createProvider("daytona", { ...key, ...cfg }) as unknown as { fleet: { name: string } }).fleet
+      .name;
+  expect(fleetOf({})).toBe("longshore-dev");
+  expect(fleetOf({ fleet: "longshore-shadow" })).toBe("longshore-shadow");
+  for (const bad of [
+    "shadow",
+    "Longshore-shadow",
+    "longshore-",
+    "longshore-".padEnd(31, "a"),
+    "",
+  ]) {
+    expect(() => createProvider("daytona", { ...key, fleet: bad }), bad).toThrow();
+  }
+  expect(() => createProvider("daytona", { ...key, fleet: 5 })).toThrow(/fleet/);
+});
+
+test("daytona owner-CI labels are config, none by default, and the label wait needs them", () => {
+  const key = { apiKeyEnv: "X" };
+  // Nothing is assumed: no labels, no wait.
+  expect(createProvider("daytona", key).info.name).toBe("daytona");
+  // Configured, with or without a threshold.
+  expect(
+    createProvider("daytona", { ...key, ownerCiLabels: { key: "project", values: ["acme-ci"] } })
+      .info.name,
+  ).toBe("daytona");
+  expect(
+    createProvider("daytona", {
+      ...key,
+      ownerCiLabels: { key: "project", values: ["acme-ci", "acme-release"] },
+      ownerCiLabelWaitAt: 12,
+    }).info.name,
+  ).toBe("daytona");
+  // A threshold alone has nothing to count.
+  expect(() => createProvider("daytona", { ...key, ownerCiLabelWaitAt: 8 })).toThrow(
+    /needs ownerCiLabels/,
+  );
+  for (const bad of [
+    "acme-ci",
+    { key: "project" },
+    { key: "project", values: [] },
+    { key: "project", values: [1] },
+    { key: "bad key!", values: ["a"] },
+    { key: "project", values: ["a"], extra: 1 },
+  ])
+    expect(
+      () => createProvider("daytona", { ...key, ownerCiLabels: bad }),
+      JSON.stringify(bad),
+    ).toThrow();
+  expect(() =>
+    createProvider("daytona", {
+      ...key,
+      ownerCiLabels: { key: "project", values: ["a"] },
+      ownerCiLabelWaitAt: 0,
+    }),
+  ).toThrow();
 });

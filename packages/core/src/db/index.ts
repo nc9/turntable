@@ -5,9 +5,12 @@ import { dirname } from "node:path";
 import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Gate } from "./gate";
+import { BUSY_TIMEOUT_MS, enableWal } from "./sqlite-wal";
 import { migrateLegacyDbFiles } from "./legacy-names";
 import { applyMigrations } from "./migrate";
 import { migrations } from "./migrations.generated";
+import { databaseUrl, DIALECT, testDb } from "./dialect";
+import { openPostgres } from "./pg";
 import * as schema from "./schema";
 
 /** The drizzle handle for the active dialect. Postgres will widen or replace this alias. */
@@ -38,7 +41,13 @@ export type Orm = BunSQLiteDatabase<typeof schema>;
 export type Db = {
   orm: Orm;
   run<T>(fn: (db: Db) => Promise<T>): Promise<T>;
-  transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
+  /**
+   * `opts.lock` names a hot key (an org's audit chain, say). On Postgres, root transactions that
+   * name the same key in this process run one after another instead of colliding and retrying,
+   * which only costs a wait; other keys are unaffected, and across processes the SERIALIZABLE
+   * retry still decides. SQLite's transactions are already exclusive, so it ignores the key.
+   */
+  transaction<T>(fn: (tx: Db) => Promise<T>, opts?: { lock?: string }): Promise<T>;
   /**
    * Runs `fn` once the outermost transaction commits, and never if it rolls back (a rolled-back
    * savepoint drops the hooks queued inside it). Outside a transaction it runs at once. Use it
@@ -50,13 +59,88 @@ export type Db = {
 
 const ended = () => new Error("transaction handle used after it ended");
 
+/**
+ * Opens the database. A `postgres://` URL (or, when set, the process's `--database-url` /
+ * LONGSHORE_DATABASE_URL) selects Postgres; anything else is a SQLite file path or `:memory:`.
+ * The test harness can send `:memory:` to Postgres too (LONGSHORE_TEST_DB), so the same suites
+ * run on both. The dialect of the schema modules was fixed at import (dialect.ts), so a URL is
+ * only valid in a process that started as Postgres.
+ */
+const testPaths = new Map<string, string>();
+let testSchemas = 0;
+const schemasToDrop = new Map<string, string[]>();
+
+/** Best effort: drop the test schemas when the process is done, so a dev server is not littered. */
+function scheduleSchemaCleanup(url: string, schema: string): void {
+  if (schemasToDrop.size === 0) {
+    process.on("beforeExit", async () => {
+      for (const [u, list] of schemasToDrop) {
+        schemasToDrop.delete(u);
+        try {
+          const { SQL } = await import("bun");
+          const c = new SQL(u);
+          for (const s of list) await c.unsafe(`drop schema if exists "${s}" cascade`);
+          await c.close();
+        } catch {
+          // the server may be gone already
+        }
+      }
+    });
+  }
+  const list = schemasToDrop.get(url) ?? [];
+  list.push(schema);
+  schemasToDrop.set(url, list);
+}
+
 export function openDatabase(path: string): Db {
+  if (/^postgres(ql)?:\/\//i.test(path)) {
+    if (DIALECT !== "pg") {
+      throw new Error(
+        "this process started on SQLite; start it with --database-url to use Postgres",
+      );
+    }
+    return openPostgres({ url: path });
+  }
+  if (DIALECT === "pg") {
+    const t = testDb();
+    // In the test harness `:memory:` is a fresh Postgres database, and so is the first open of a
+    // file path; opening the same path again is the same database, as it is for a file (CLI
+    // tests open one beside the test's own handle). On a real server each is its own schema, so
+    // several can be open at once; PGlite is one connection, so there it is one database that
+    // each fresh open empties.
+    if (t) {
+      const fresh = path === ":memory:" || !testPaths.has(path);
+      let schema = path === ":memory:" ? undefined : testPaths.get(path);
+      if (schema === undefined) {
+        schema = `lstest_${process.pid}_${++testSchemas}`;
+        if (path !== ":memory:") testPaths.set(path, schema);
+        if (t !== "pglite") scheduleSchemaCleanup(t, schema);
+      }
+      return openPostgres(
+        t === "pglite"
+          ? {
+              pglite: true,
+              ...(process.env.LONGSHORE_TEST_PGLITE_ISOLATED === "1"
+                ? { isolated: true as const }
+                : {}),
+            }
+          : { url: t, schema },
+        { fresh },
+      );
+    }
+    const url = databaseUrl();
+    if (url) return openPostgres({ url });
+    throw new Error("the process runs on Postgres but no database was configured");
+  }
   migrateLegacyDbFiles(path);
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new Database(path, { create: true, strict: true });
-  sqlite.run("PRAGMA journal_mode = WAL");
+  // First, before anything that takes a lock, so every later statement waits for another
+  // connection's lock instead of failing at once (the CLI runs next to a server, or next to a
+  // test's own handle).
+  sqlite.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  enableWal(sqlite);
   sqlite.run("PRAGMA foreign_keys = ON");
-  sqlite.run("PRAGMA busy_timeout = 5000");
   applyMigrations(sqlite, migrations);
   const orm = drizzle(sqlite, { schema });
   const gate = new Gate();
@@ -158,7 +242,8 @@ export function openDatabase(path: string): Db {
 
 /** Creates the single instance row on first boot; returns its id. */
 export function ensureInstance(db: Db): Promise<string> {
-  return db.run(async ({ orm }) => {
+  // A transaction: two processes booting together must not both insert (serializable on Postgres).
+  return db.transaction(async ({ orm }) => {
     const [existing] = await orm.select().from(schema.instance).limit(1);
     if (existing) return existing.id;
     const id = randomUUID();

@@ -1,6 +1,10 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
   addCut,
+  addNotice,
+  appendLog,
+  listNotices,
+  MAX_NOTICES_PER_ATTEMPT,
   appendEvent,
   createAttempt,
   createJob,
@@ -323,4 +327,27 @@ test("a skipped job is neutral in the run aggregate", () => {
   expect(aggregateRunStatus(["running", "skipped"])).toBe("running");
   expect(aggregateRunStatus(["cancelled", "skipped"])).toBe("cancelled");
   expect(aggregateRunStatus([])).toBe("queued");
+});
+
+test("notices: out-of-band, offset-anchored, sanitised, capped, tenant-isolated", async () => {
+  const n = (text: string) => ({ attemptId: a.attemptId, source: "cache", text });
+  expect(await addNotice(db, a.scope, n("cache: 2 entries dropped (denied paths)"))).toBe(true);
+  await appendLog(db, a.scope, a.attemptId, 0, new TextEncoder().encode("hello\n"));
+  expect(await addNotice(db, a.scope, n("later\u001b[31m\nforged"))).toBe(true);
+  const rows = await listNotices(db, a.scope, a.attemptId);
+  expect(rows.map((r) => [r.atOffset, r.source])).toEqual([
+    [0, "cache"],
+    [6, "cache"],
+  ]);
+  expect([...rows[1]!.text].every((c) => c.charCodeAt(0) >= 32)).toBe(true);
+  expect(await addNotice(db, a.scope, n("x".repeat(1000)))).toBe(true);
+  expect(
+    Math.max(...(await listNotices(db, a.scope, a.attemptId)).map((r) => r.text.length)),
+  ).toBeLessThanOrEqual(300);
+  expect(await addNotice(db, b.scope, n("cross"))).toBe(false);
+  expect(await addNotice(db, a2.scope, n("cross"))).toBe(false);
+  expect(await listNotices(db, b.scope, a.attemptId)).toEqual([]);
+  for (let i = 0; i < MAX_NOTICES_PER_ATTEMPT + 5; i++) await addNotice(db, a.scope, n(`n${i}`));
+  expect((await listNotices(db, a.scope, a.attemptId)).length).toBe(MAX_NOTICES_PER_ATTEMPT);
+  expect(await addNotice(db, a.scope, n("over"))).toBe(false);
 });

@@ -1,13 +1,29 @@
 // Applying a verified, signed statement: checks that it binds this run, records it, and releases
 // the run's gated jobs once enough distinct people have approved. Runs inside the op's
 // transaction, so a refusal leaves nothing behind.
+import { approverIdentity, NO_FORGE_LOGIN, normalizeLogin } from "./identity";
+import {
+  allowlistHash,
+  KeyPolicyError,
+  keyPolicyViolation,
+  parseKeyPolicy,
+  samePolicy,
+  sortedPolicy,
+  type KeyPolicy,
+} from "./key-policy";
 import type { Db } from "../db";
 import {
   activateEnrolment,
-  activePeople,
+  activeIdentities,
+  getKeyPolicy,
+  listApprovers,
+  listPolicyRecords,
+  setKeyPolicy,
+  recordIdentities,
   ApprovalConflict,
   consumeChallenge,
   getEnrolment,
+  appendAudit,
   getEnvPolicy,
   getOrgById,
   getProject,
@@ -27,8 +43,11 @@ import {
   canonicalStatement,
   keyFingerprint,
   MAX_STATEMENT_TTL_MS,
+  POLICY_STATEMENT_TYPE,
+  policyDigest,
   type EnrolStatement,
   type EnvStatement,
+  type PolicyStatement,
 } from "./statement";
 import { dbKeyStore } from "./store";
 import { verifySignature, VerifyError, type SignatureMaterial, type Verified } from "./verify";
@@ -38,7 +57,7 @@ type Ctx = { db: Db; scope: Scope; now: number; rp?: RelyingParty | undefined };
 
 async function verified(
   c: Ctx,
-  statement: EnvStatement | EnrolStatement,
+  statement: EnvStatement | EnrolStatement | PolicyStatement,
   signature: SignatureMaterial,
 ): Promise<Verified> {
   const key = await dbKeyStore(c.db, c.scope.orgId).lookup(statement.approver);
@@ -69,26 +88,68 @@ async function checkTenant(c: Ctx, statement: { org: string; project?: string })
   }
 }
 
+const unknown = (s: string | null | undefined): boolean =>
+  s === null || s === undefined || s === "";
+
+/** What authorBlocked reads of a run: its author, its ref and the stored trust decision. */
+export type AuthorRun = { actor: string | null; ref: string; trust: string | null };
+
+/**
+ * The tag a run was made from, when the poller's tag ingest made it: the stored trust facts name a
+ * tag (set by ingest, never by input) AND the ref is that tag's ref. Only such a run has an
+ * unknown author by construction; any other run with no author is simply unknown. (The tagger's
+ * name is free text the tag's creator chose, so it is not read anywhere as a signal.)
+ */
+export function ingestedTag(run: AuthorRun): { tag: string } | null {
+  if (run.trust === null) return null;
+  try {
+    const facts = (JSON.parse(run.trust) as { facts?: { tag?: unknown } }).facts;
+    const tag = facts?.tag;
+    if (typeof tag !== "string" || tag === "" || run.ref !== `refs/tags/${tag}`) return null;
+    return { tag };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The run's author may not approve it. This fails closed: when the approver's forge login or the
  * run's author is unknown, it cannot be established that they are different people, so the
  * approval is refused (unless the environment's policy allows author approval).
+ *
+ * One exception, for a run whose author is unknown BY CONSTRUCTION (one the poller made from a
+ * tag): no approver is excluded, whoever tagged, and the environment instead needs one more
+ * distinct identity than it normally does (`requiredApprovals`), so at least `required` of them
+ * are not the author. Any other run with no author stays unknown.
  */
 export function authorBlocked(
-  policy: { allowAuthorApproval: boolean },
+  policy: { allowAuthorApproval: boolean; required: number },
   approverForgeLogin: string | null,
-  runActor: string | null,
+  run: AuthorRun,
 ): "author" | "unknown" | null {
   if (policy.allowAuthorApproval) return null;
-  if (
-    approverForgeLogin === null ||
-    approverForgeLogin === "" ||
-    runActor === null ||
-    runActor === ""
-  )
-    return "unknown";
-  return approverForgeLogin.toLowerCase() === runActor.toLowerCase() ? "author" : null;
+  if (unknown(approverForgeLogin)) return "unknown";
+  const login = (approverForgeLogin as string).toLowerCase();
+  if (!unknown(run.actor)) return login === (run.actor as string).toLowerCase() ? "author" : null;
+  return ingestedTag(run) === null ? "unknown" : null;
 }
+
+/** True for an ingested tag run with no known author, under a policy that has the author rule on. */
+export const authorUnknownByConstruction = (
+  policy: { allowAuthorApproval: boolean },
+  run: AuthorRun,
+): boolean => !policy.allowAuthorApproval && unknown(run.actor) && ingestedTag(run) !== null;
+
+/**
+ * How many distinct identities an environment needs for this run: its `required`, plus one when
+ * the author is unknown by construction (the author may be one of the approvers and cannot be
+ * told apart, so `required` of them must be someone else). The solo policy (`allowAuthorApproval`)
+ * keeps `required`.
+ */
+export const requiredApprovals = (
+  policy: { allowAuthorApproval: boolean; required: number },
+  run: AuthorRun,
+): number => policy.required + (authorUnknownByConstruction(policy, run) ? 1 : 0);
 
 function checkExpiry(expiresAt: number, now: number): void {
   if (expiresAt <= now) throw new OpError("invalid_input", "the statement has expired");
@@ -100,7 +161,7 @@ function checkExpiry(expiresAt: number, now: number): void {
 async function consumeProof(
   c: Ctx,
   v: Verified,
-  kind: "approve" | "enrol",
+  kind: "approve" | "enrol" | "policy",
   nonce: string,
 ): Promise<void> {
   if (v.method !== "webauthn") return; // an offline statement is single-use by its hash alone
@@ -119,7 +180,7 @@ async function record(
   v: Verified,
   signature: SignatureMaterial,
   r: {
-    kind: "environment" | "enrol";
+    kind: "environment" | "enrol" | "policy";
     runId?: string;
     environment?: string;
     enrolmentId?: string;
@@ -197,7 +258,12 @@ export async function applyEnvironmentApproval(
   if (!(await waitingEnvironments(c.db, c.scope, run.id)).includes(statement.environment))
     throw new OpError("conflict", "no job of this run waits for approval in that environment");
   const policy = await getEnvPolicy(c.db, c.scope.orgId, statement.environment);
-  const blocked = authorBlocked(policy, v.key.forgeLogin, run.actor);
+  if (approverIdentity(v.key) === null)
+    throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  const keyPolicy = await getKeyPolicy(c.db, c.scope.orgId);
+  const violation = keyPolicyViolation(keyPolicy, v.key);
+  if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
+  const blocked = authorBlocked(policy, v.key.forgeLogin, run);
   if (blocked === "author") throw new OpError("forbidden", "the author of a run cannot approve it");
   if (blocked === "unknown")
     throw new OpError(
@@ -221,10 +287,28 @@ export async function applyEnvironmentApproval(
     },
     c.now,
   );
-  const people = new Set(live.map((r) => r.person));
+  const people = await recordIdentities(c.db, c.scope.orgId, live, keyPolicy);
   let released = 0;
   let state = run.status as string;
-  if (people.size >= policy.required) {
+  const needed = requiredApprovals(policy, run);
+  if (people.size >= needed && authorUnknownByConstruction(policy, run)) {
+    // Said in the audit trail: this release of the jobs did not rest on telling the approvers from
+    // the author, but on one more approver than the environment normally needs.
+    await appendAudit(c.db, c.scope, {
+      principalKind: "approver",
+      principalId: v.key.id,
+      op: "approval_author_unknown",
+      effect: "write",
+      outcome: "ok",
+      input: {
+        run: run.id,
+        environment: statement.environment,
+        approvers: [...people].toSorted(),
+        note: `author unknown; required ${needed} distinct approvers (${policy.required}+1)`,
+      },
+    });
+  }
+  if (people.size >= needed) {
     const r = await releaseEnvironmentJobs(c.db, c.scope, run.id, statement.environment);
     released = r.released;
     state = r.state;
@@ -233,16 +317,23 @@ export async function applyEnvironmentApproval(
     run_id: run.id,
     environment: statement.environment,
     approvals: people.size,
-    required: policy.required,
+    required: needed,
     released_jobs: released,
     state,
   };
 }
 
 /** Quorum for adding an approver: the production policy's count, capped by who could sign. */
-export async function enrolmentQuorum(db: Db, orgId: string, enrolPerson: string): Promise<number> {
+export async function enrolmentQuorum(
+  db: Db,
+  orgId: string,
+  enrolIdentity: string | null,
+): Promise<number> {
   const prod = await getEnvPolicy(db, orgId, "production");
-  const others = (await activePeople(db, orgId)).filter((p) => p !== enrolPerson).length;
+  const keyPolicy = await getKeyPolicy(db, orgId);
+  const others = (await activeIdentities(db, orgId, keyPolicy)).filter(
+    (p) => p !== enrolIdentity,
+  ).length;
   return Math.max(1, Math.min(prod.required, others));
 }
 
@@ -267,25 +358,36 @@ export async function applyEnrolmentApproval(
     throw new OpError("not_found", "no pending enrolment with that id");
   if (
     statement.person !== e.person ||
+    normalizeLogin(statement.forge_login) !== normalizeLogin(e.forgeLogin ?? "") ||
     statement.key_fingerprint !==
       keyFingerprint({ kind: e.kind, credentialId: e.credentialId, publicKey: e.publicKey })
   ) {
     throw new OpError("conflict", "the statement is not for this enrolment");
   }
-  if (v.key.person === e.person)
+  const signer = approverIdentity(v.key);
+  if (signer === null) throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  // The same person by login OR by name: an enrolee must not slip past by naming a new login.
+  if (
+    signer === approverIdentity(e) ||
+    v.key.person.trim().toLowerCase() === e.person.trim().toLowerCase()
+  )
     throw new OpError("forbidden", "a person cannot approve enrolling their own key");
+  const keyPolicy = await getKeyPolicy(c.db, c.scope.orgId);
+  const violation = keyPolicyViolation(keyPolicy, v.key);
+  if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
   await consumeProof(c, v, "enrol", statement.nonce);
   await record(c, v, signature, {
     kind: "enrol",
     enrolmentId: e.id,
     expiresAt: statement.expires_at,
   });
-  const people = new Set(
-    (await listEnrolmentRecords(c.db, c.scope.orgId, e.id))
-      .filter((r) => r.expiresAt > c.now)
-      .map((r) => r.person),
+  const people = await recordIdentities(
+    c.db,
+    c.scope.orgId,
+    (await listEnrolmentRecords(c.db, c.scope.orgId, e.id)).filter((r) => r.expiresAt > c.now),
+    keyPolicy,
   );
-  const required = await enrolmentQuorum(c.db, c.scope.orgId, e.person);
+  const required = await enrolmentQuorum(c.db, c.scope.orgId, approverIdentity(e));
   let approverId: string | null = null;
   if (people.size >= required) {
     const a = await activateEnrolment(
@@ -317,7 +419,8 @@ export async function approvalWarnings(
   orgId: string,
   environments: string[],
 ): Promise<string[]> {
-  const people = (await activePeople(db, orgId)).length;
+  const keyPolicy = await getKeyPolicy(db, orgId);
+  const people = (await activeIdentities(db, orgId, keyPolicy)).length;
   const out: string[] = [];
   let max = 0;
   for (const environment of environments) {
@@ -332,4 +435,135 @@ export async function approvalWarnings(
       `Approvals need ${max} distinct people but only ${people} ${people === 1 ? "is" : "are"} enrolled. Until ${max} people are enrolled, a sole approver can enrol more keys alone, so the two-person rule is not yet a guarantee.`,
     );
   return out;
+}
+
+// ---- key policy changes (#152) ----
+
+/**
+ * How many counted identities a policy change must leave. The enrolment quorum is the production
+ * count capped by who could sign, so a change that shrinks the counted set would quietly lower it.
+ * The change is refused when it would leave fewer counted identities than that pre-change quorum.
+ */
+export async function policyQuorum(db: Db, orgId: string): Promise<number> {
+  const current = await getKeyPolicy(db, orgId);
+  const prod = await getEnvPolicy(db, orgId, "production");
+  const counted = (await activeIdentities(db, orgId, current)).length;
+  return Math.max(1, Math.min(prod.required, counted));
+}
+
+async function guardPolicyChange(db: Db, orgId: string, next: KeyPolicy): Promise<void> {
+  const need = await policyQuorum(db, orgId);
+  const after = (await activeIdentities(db, orgId, next)).length;
+  if (after < need)
+    throw new KeyPolicyError(
+      "conflict",
+      `this policy would leave ${after} counted ${after === 1 ? "person" : "people"}, fewer than the ${need} the current quorum needs: enrol keys that satisfy it first, while the current policy is in force`,
+    );
+}
+
+/** Builds the statement a quorum of approvers signs to change the key policy. */
+export async function buildKeyPolicyStatement(
+  db: Db,
+  orgId: string,
+  orgSlug: string,
+  input: Parameters<typeof parseKeyPolicy>[0],
+  o: { approver: string; expiresAt: number; nonce: string },
+): Promise<PolicyStatement> {
+  const next = sortedPolicy(parseKeyPolicy(input));
+  const cur = await getKeyPolicy(db, orgId);
+  const old = sortedPolicy(cur);
+  if (samePolicy(old, next))
+    throw new KeyPolicyError("invalid_input", "that is already the policy");
+  await guardPolicyChange(db, orgId, next);
+  return {
+    type: POLICY_STATEMENT_TYPE,
+    org: orgSlug,
+    generation: cur.generation ?? 0,
+    old,
+    new: next,
+    allowlist_hash: allowlistHash(next),
+    approver: o.approver,
+    expires_at: o.expiresAt,
+    nonce: o.nonce,
+  };
+}
+
+export type KeyPolicyApprovalResult = {
+  approvals: number;
+  required: number;
+  applied: boolean;
+  policy: KeyPolicy;
+};
+
+/**
+ * One approver's signature on a policy change. The change applies when a quorum of the CURRENTLY
+ * counted identities has signed the same statement, with the quorum computed before the change.
+ */
+export async function applyKeyPolicyApproval(
+  c: Ctx,
+  statement: PolicyStatement,
+  signature: SignatureMaterial,
+): Promise<KeyPolicyApprovalResult> {
+  const v = await verified(c, statement, signature);
+  await checkTenant(c, statement);
+  checkExpiry(statement.expires_at, c.now);
+  const current = await getKeyPolicy(c.db, c.scope.orgId);
+  if (approverIdentity(v.key) === null)
+    throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  const violation = keyPolicyViolation(current, v.key);
+  if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
+  if ((current.generation ?? 0) !== statement.generation || !samePolicy(current, statement.old))
+    throw new OpError("conflict", "the policy changed since this statement was issued");
+  let next: KeyPolicy;
+  try {
+    next = sortedPolicy(parseKeyPolicy(statement.new));
+  } catch (e) {
+    if (e instanceof KeyPolicyError) throw new OpError(e.code, e.message);
+    throw e;
+  }
+  if (!samePolicy(next, statement.new) || allowlistHash(next) !== statement.allowlist_hash)
+    throw new OpError("conflict", "the statement's policy or allowlist hash is not consistent");
+  const digest = policyDigest(statement);
+  await consumeProof(c, v, "policy", statement.nonce);
+  await record(c, v, signature, {
+    kind: "policy",
+    enrolmentId: digest,
+    expiresAt: statement.expires_at,
+  });
+  const recs = (await listPolicyRecords(c.db, c.scope.orgId, digest)).filter(
+    (r) => r.expiresAt > c.now,
+  );
+  const people = await recordIdentities(c.db, c.scope.orgId, recs, current);
+  const required = await policyQuorum(c.db, c.scope.orgId);
+  if (people.size < required)
+    return { approvals: people.size, required, applied: false, policy: current };
+  try {
+    await guardPolicyChange(c.db, c.scope.orgId, next);
+  } catch (e) {
+    if (e instanceof KeyPolicyError) throw new OpError(e.code, e.message);
+    throw e;
+  }
+  await setKeyPolicy(c.db, c.scope.orgId, next, `quorum:${[...people].join(",")}`, c.now);
+  return { approvals: people.size, required, applied: true, policy: next };
+}
+
+/**
+ * The one direct way to set the policy: from the server's CLI, and only while the org has no
+ * approver at all (the bootstrap, the local trust root). Once anyone is enrolled, a change needs a
+ * quorum-signed statement.
+ */
+export async function setKeyPolicyBootstrap(
+  db: Db,
+  orgId: string,
+  input: Parameters<typeof parseKeyPolicy>[0],
+  now: number,
+): Promise<KeyPolicy> {
+  if ((await listApprovers(db, orgId)).length > 0)
+    throw new KeyPolicyError(
+      "conflict",
+      "this org has approvers: change the key policy with a statement signed by a quorum of them",
+    );
+  const next = sortedPolicy(parseKeyPolicy(input));
+  await setKeyPolicy(db, orgId, next, "cli:bootstrap", now);
+  return next;
 }

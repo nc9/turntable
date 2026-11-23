@@ -7,3 +7,4 @@ export {
   RateLimitedError,
   rateLimitDelayMs,
 } from "./rate-limit";
+export { controlPost, type ControlReply, type ControlTarget } from "./ipc";

@@ -1,6 +1,6 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { ChevronRight, Info, OctagonX, RotateCw } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Job, JobAttempt, JobState, Run } from "@/api/types";
 import { EmptyState, ErrorState } from "@/components/empty-state";
 import { Duration } from "@/components/live-clock";
@@ -16,6 +16,8 @@ import { formatDateTime, formatRelative } from "@/lib/format";
 import { isActive, STATE_META } from "@/lib/states";
 import { toast } from "@/lib/toast";
 import { ApprovalNotice, approvalLabel } from "./approval";
+import { ArtifactsPanel } from "./artifacts-panel";
+import { SandboxTimes } from "./sandbox-time";
 import { RerunButton } from "./rerun-dialog";
 import { EgressBadge, TrustBadge } from "./trust";
 import { JobGraph } from "./job-graph";
@@ -86,6 +88,7 @@ export function RunPage() {
   const scope = useScope();
   const runId = (useParams({ strict: false }) as { runId?: string }).runId ?? "";
   const sync = useRunSync(runId || null);
+  const [tab, setTab] = useState<"jobs" | "artifacts">("jobs");
   const run = useRunRow(runId);
   const jobs = useRunJobs(runId);
   const attempts = useRunAttempts(useMemo(() => jobs.map((j) => j.id), [jobs]));
@@ -173,86 +176,119 @@ export function RunPage() {
         </div>
       ) : null}
 
-      <section className="mt-6" aria-labelledby="graph-h">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 id="graph-h" className="text-sm font-semibold">
-            Jobs
-          </h2>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-dim">
-            {jobSummary(jobs).map((s) => (
-              <span key={s.state} className="inline-flex items-center gap-1">
-                <StateIcon state={s.state} className="size-3.5" />
-                {s.count} {STATE_META[s.state].label.toLowerCase()}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="rounded-xl border border-line bg-subtle p-5">
-          {jobs.length === 0 ? (
-            sync.loading ? (
-              <Skeleton className="h-40 w-full" />
-            ) : (
-              <EmptyState title="No jobs yet">Jobs appear once the workflow is parsed.</EmptyState>
-            )
-          ) : (
-            <JobGraph
-              jobs={jobs}
-              attempts={attempts}
-              orgSlug={orgSlug}
-              projectSlug={projectSlug}
-              runId={run.id}
-            />
-          )}
-        </div>
-      </section>
+      <div role="tablist" aria-label="Run" className="mt-6 flex gap-1 border-b border-line">
+        {(["jobs", "artifacts"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            id={`tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls={`panel-${t}`}
+            onClick={() => setTab(t)}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors duration-150 ${tab === t ? "border-foreground font-medium text-foreground" : "border-transparent text-dim hover:text-foreground"}`}
+          >
+            {t === "jobs" ? "Jobs" : "Artifacts"}
+          </button>
+        ))}
+      </div>
 
-      {jobs.length > 0 ? (
-        <section className="mt-8" aria-labelledby="attempts-h">
-          <h2 id="attempts-h" className="mb-3 text-sm font-semibold">
-            Attempts
-          </h2>
-          <ul className="overflow-hidden rounded-xl border border-line">
-            {jobs.map((job) => {
-              const jobAttempts = attempts.filter((a) => a.jobId === job.id);
-              const last = jobAttempts.at(-1);
-              return (
-                <li key={job.id} className="border-b border-line last:border-b-0">
-                  <Link
-                    to="/$org/$project/runs/$runId/jobs/$jobId"
-                    params={{ org: orgSlug, project: projectSlug, runId: run.id, jobId: job.id }}
-                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors duration-150 hover:bg-subtle focus-visible:-outline-offset-2"
-                  >
-                    <StateIcon state={job.state} className="size-[18px]" />
-                    <span className="min-w-0 flex-1 basis-40">
-                      <span className="block truncate text-sm font-medium">{job.name}</span>
-                      {job.state === "infra_error" ||
-                      (last?.state === "infra_error" && job.state !== "success") ? (
-                        <span className="text-xs text-st-infra">
-                          Infra error, not a code failure
+      {tab === "artifacts" ? (
+        <div role="tabpanel" id="panel-artifacts" aria-labelledby="tab-artifacts">
+          <ArtifactsPanel runId={run.id} project={projectSlug} />
+        </div>
+      ) : (
+        <div role="tabpanel" id="panel-jobs" aria-labelledby="tab-jobs">
+          <section className="mt-6" aria-labelledby="graph-h">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 id="graph-h" className="text-sm font-semibold">
+                Jobs
+              </h2>
+              <div className="flex flex-wrap items-center gap-3 text-xs text-dim">
+                {jobSummary(jobs).map((s) => (
+                  <span key={s.state} className="inline-flex items-center gap-1">
+                    <StateIcon state={s.state} className="size-3.5" />
+                    {s.count} {STATE_META[s.state].label.toLowerCase()}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-line bg-subtle p-5">
+              {jobs.length === 0 ? (
+                sync.loading ? (
+                  <Skeleton className="h-40 w-full" />
+                ) : (
+                  <EmptyState title="No jobs yet">
+                    Jobs appear once the workflow is parsed.
+                  </EmptyState>
+                )
+              ) : (
+                <JobGraph
+                  jobs={jobs}
+                  attempts={attempts}
+                  orgSlug={orgSlug}
+                  projectSlug={projectSlug}
+                  runId={run.id}
+                />
+              )}
+            </div>
+          </section>
+
+          {jobs.length > 0 ? (
+            <section className="mt-8" aria-labelledby="attempts-h">
+              <h2 id="attempts-h" className="mb-3 text-sm font-semibold">
+                Attempts
+              </h2>
+              <ul className="overflow-hidden rounded-xl border border-line">
+                {jobs.map((job) => {
+                  const jobAttempts = attempts.filter((a) => a.jobId === job.id);
+                  const last = jobAttempts.at(-1);
+                  return (
+                    <li key={job.id} className="border-b border-line last:border-b-0">
+                      <Link
+                        to="/$org/$project/runs/$runId/jobs/$jobId"
+                        params={{
+                          org: orgSlug,
+                          project: projectSlug,
+                          runId: run.id,
+                          jobId: job.id,
+                        }}
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors duration-150 hover:bg-subtle focus-visible:-outline-offset-2"
+                      >
+                        <StateIcon state={job.state} className="size-[18px]" />
+                        <span className="min-w-0 flex-1 basis-40">
+                          <span className="block truncate text-sm font-medium">{job.name}</span>
+                          {job.state === "infra_error" ||
+                          (last?.state === "infra_error" && job.state !== "success") ? (
+                            <span className="text-xs text-st-infra">
+                              Infra error, not a code failure
+                            </span>
+                          ) : job.state === "failure" ? (
+                            <span className="text-xs text-st-failure">
+                              Exited with code {job.exitCode}
+                            </span>
+                          ) : job.state === "awaiting_approval" ? (
+                            <span className="text-xs text-st-approval">{approvalLabel(job)}</span>
+                          ) : null}
                         </span>
-                      ) : job.state === "failure" ? (
-                        <span className="text-xs text-st-failure">
-                          Exited with code {job.exitCode}
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          {jobAttempts.map((a) => (
+                            <AttemptChip key={a.id} attempt={a} job={job} />
+                          ))}
                         </span>
-                      ) : job.state === "awaiting_approval" ? (
-                        <span className="text-xs text-st-approval">{approvalLabel(job)}</span>
-                      ) : null}
-                    </span>
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      {jobAttempts.map((a) => (
-                        <AttemptChip key={a.id} attempt={a} job={job} />
-                      ))}
-                    </span>
-                    <span className="w-16 text-right text-xs text-dim">
-                      <Duration startedAt={job.startedAt} finishedAt={job.finishedAt} />
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ) : null}
+                        <span className="w-16 text-right text-xs text-dim">
+                          <Duration startedAt={job.startedAt} finishedAt={job.finishedAt} />
+                        </span>
+                        <SandboxTimes attempts={jobAttempts} now={Date.now()} />
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
