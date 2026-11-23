@@ -6,6 +6,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { BUSY_TIMEOUT_MS, enableWal } from "../db/sqlite-wal";
 import { parseTarget } from "./publish/config";
 import type { PublishTarget } from "./publish/types";
 
@@ -20,7 +21,9 @@ export class AttestationStore {
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.#db = new Database(path, { create: true, strict: true });
-    this.#db.run("PRAGMA journal_mode = WAL");
+    // Before the WAL switch, which takes a lock: wait for another connection instead of failing.
+    this.#db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    enableWal(this.#db);
     // Keyed by the release identity, not by the run: a second run for the same tag does not get a
     // fresh first sight of its artifacts.
     this.#db.run(

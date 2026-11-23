@@ -6,13 +6,17 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertSafeDist } from "./release-checks";
 import { prepareCompileEntry } from "../packages/ui/scripts/compile-entry";
 import { signAdhoc, verifySignature } from "./rcodesign";
 
 const TARGETS = ["bun-linux-x64", "bun-linux-arm64", "bun-darwin-arm64"] as const;
 
 const root = join(import.meta.dir, "..");
-const dist = join(root, "dist");
+// LONGSHORE_DIST names another output directory (the reproducibility check builds twice).
+const dist = process.env.LONGSHORE_DIST
+  ? assertSafeDist(process.env.LONGSHORE_DIST, root, process.env.HOME)
+  : join(root, "dist");
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
 const version = (process.env.LONGSHORE_VERSION ?? pkg.version).replace(/^v/, "");

@@ -2,7 +2,7 @@
 // confirmed (`job_attempts.sandbox_created_at` and `sandbox_destroyed_at`). An attempt's own
 // duration also covers waiting for provider capacity, so it is not used. Quotas read the same
 // numbers, so what is shown and what is limited cannot differ.
-import { and, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { type Scope, scoped } from "./scope";
@@ -46,6 +46,7 @@ const dayName = (start: number): string => new Date(start).toISOString().slice(0
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 interface Span {
+  projectId: string;
   start: number;
   end: number;
   confirmed: boolean;
@@ -65,6 +66,7 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
         started: s.jobAttempts.startedAt,
         destroyed: s.jobAttempts.sandboxDestroyedAt,
         finished: s.jobAttempts.finishedAt,
+        projectId: s.jobAttempts.projectId,
       })
       .from(s.jobAttempts)
       .where(
@@ -95,20 +97,22 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
       r.finished === null ? w.now : grace > 0 ? Math.min(w.now, r.finished + grace) : r.finished;
     const end = Math.max(begin, r.destroyed ?? unconfirmedEnd);
     // Estimated: no confirmed destroy, or no recorded create time.
-    return [{ start: begin, end, confirmed: r.destroyed !== null && r.created !== null }];
+    return [
+      {
+        projectId: r.projectId,
+        start: begin,
+        end,
+        confirmed: r.destroyed !== null && r.created !== null,
+      },
+    ];
   });
 }
 
 const overlap = (a: Span, from: number, to: number): number =>
   Math.max(0, Math.min(a.end, to) - Math.max(a.start, from));
 
-/** Sandbox time, per UTC day, for the days the window covers. Days with no usage are still listed. */
-export async function sandboxUsage(
-  db: Db,
-  scope: Scope,
-  w: SandboxUsageWindow,
-): Promise<SandboxDay[]> {
-  const all = await spans(db, scope, w);
+/** Per-day figures for a set of spans. Days with no usage are still listed. */
+function dayRows(all: Span[], w: SandboxUsageWindow): SandboxDay[] {
   const out: SandboxDay[] = [];
   for (let d = utcDayStart(w.from); d < w.to; d += DAY_MS) {
     const from = Math.max(d, w.from);
@@ -127,6 +131,57 @@ export async function sandboxUsage(
     out.push({ day: dayName(d), seconds, minutes: round3(seconds / 60), attempts, estimated });
   }
   return out;
+}
+
+/** Sandbox time, per UTC day, for the days the window covers. Days with no usage are still listed. */
+export async function sandboxUsage(
+  db: Db,
+  scope: Scope,
+  w: SandboxUsageWindow,
+): Promise<SandboxDay[]> {
+  return dayRows(await spans(db, scope, w), w);
+}
+
+export interface ProjectSandboxUsage {
+  projectId: string;
+  slug: string;
+  name: string;
+  days: SandboxDay[];
+}
+
+/**
+ * The same figures per project, for the projects that had a sandbox alive in the window (a project
+ * with no usage is left out). The scope narrows it exactly as it does `sandboxUsage`, so a project
+ * token sees only its own project, and each day's rows across projects add up to the org's day.
+ */
+export async function sandboxUsageByProject(
+  db: Db,
+  scope: Scope,
+  w: SandboxUsageWindow,
+): Promise<ProjectSandboxUsage[]> {
+  const all = await spans(db, scope, w);
+  const byProject = new Map<string, Span[]>();
+  for (const sp of all) {
+    const list = byProject.get(sp.projectId);
+    if (list) list.push(sp);
+    else byProject.set(sp.projectId, [sp]);
+  }
+  if (byProject.size === 0) return [];
+  const projects = await db.run((h) =>
+    h.orm
+      .select({ id: s.projects.id, slug: s.projects.slug, name: s.projects.name })
+      .from(s.projects)
+      .where(eq(s.projects.orgId, scope.orgId)),
+  );
+  const meta = new Map(projects.map((p) => [p.id, p]));
+  return [...byProject.entries()]
+    .map(([projectId, list]) => ({
+      projectId,
+      slug: meta.get(projectId)?.slug ?? projectId,
+      name: meta.get(projectId)?.name ?? projectId,
+      days: dayRows(list, w),
+    }))
+    .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
 /** Total sandbox seconds in a window, for a quota that limits a rolling period. */

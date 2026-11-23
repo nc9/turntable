@@ -52,6 +52,48 @@ export interface ProxyAccess {
    * proxy attaches it to requests to the run's own repository; the job never holds it.
    */
   setGithubToken(token: string | undefined): void;
+  /**
+   * Hands the proxy a way to mint this attempt's OIDC credential (see oidc/job-delivery). The
+   * proxy calls it per request, attaches the result to requests for the org's mint URL and keeps
+   * nothing; the job holds a placeholder.
+   */
+  setOidcMinter(mint: (() => string) | undefined): void;
+}
+
+/** The rule `secret` that means "this attempt's OIDC mint credential" (not a vault secret). */
+export const OIDC_CREDENTIAL_SECRET = "@oidc-credential";
+
+/** Where an org's OIDC issuer mints tokens. */
+export interface OidcTarget {
+  host: string;
+  port: number;
+  pathPrefix: string;
+}
+
+/** Whether the job's stored plan says it asked for an ID token. Unreadable means no. */
+export function plannedIdToken(planned: string | null | undefined): boolean {
+  if (!planned) return false;
+  try {
+    return (JSON.parse(planned) as { idToken?: unknown }).idToken === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The one rule that lets a job ask its own org's issuer for a token. Nothing else on that host. */
+export function oidcRules(t: OidcTarget): Rule[] {
+  return [
+    {
+      id: "oidc-mint",
+      host: t.host,
+      port: t.port,
+      methods: ["GET", "POST"],
+      pathPrefix: t.pathPrefix,
+      pathExact: true,
+      inject: { type: "header", name: "Authorization", format: "Bearer {secret}" },
+      secret: OIDC_CREDENTIAL_SECRET,
+    },
+  ];
 }
 
 /** The rule `secret` that means "this attempt's GitHub token" (not a vault secret). */
@@ -142,6 +184,7 @@ interface Live {
   scope: Required<Scope>;
   redact: SecretRegistry;
   githubToken?: string | undefined;
+  oidcMint?: (() => string) | undefined;
 }
 
 const toRule = (r: ProxyRuleRow): Rule => ({
@@ -227,6 +270,14 @@ export class SecretsProxy {
       if (!live.githubToken) return { ok: false, reason: "no_github_token" };
       live.redact.register(live.githubToken);
       return { ok: true, value: live.githubToken };
+    }
+    if (rule.secret === OIDC_CREDENTIAL_SECRET) {
+      // This attempt's own mint credential, never a vault secret. Only oidcRules names it.
+      if (!live.oidcMint) return { ok: false, reason: "no_oidc_credential" };
+      // Minted now, for this request, and short-lived. Registered with the redactor all the same.
+      const credential = live.oidcMint();
+      live.redact.register(credential);
+      return { ok: true, value: credential };
     }
     // Through the vault's one policy path, per request: class, scope, destination, rotation,
     // freeze and audit all apply. Nothing is read ahead of time.
@@ -330,6 +381,9 @@ export class SecretsProxy {
         setGithubToken: (token) => {
           if (live) live.githubToken = token;
         },
+        setOidcMinter: (mint) => {
+          if (live) live.oidcMint = mint;
+        },
       },
       redact,
     };
@@ -357,6 +411,11 @@ export interface SecretsProxyRunnerOptions {
    * returning nothing: no GitHub rules.
    */
   github?: (ctx: AttemptContext) => Promise<GithubTarget | undefined>;
+  /**
+   * The org's OIDC mint endpoint, for a class that may mint. Absent or returning nothing: no
+   * OIDC rule, so a job cannot reach the issuer through the proxy.
+   */
+  oidc?: (ctx: AttemptContext, klass: TrustClass) => Promise<OidcTarget | undefined>;
 }
 
 /**
@@ -381,7 +440,11 @@ export function withSecretsProxy(
     const vaultRules = mayHoldSecrets ? await o.proxy.rulesFor(ctx.scope) : [];
     const target = o.github ? await o.github(ctx) : undefined;
     const ghRules = target ? githubRules(target) : [];
-    const rules = [...vaultRules, ...ghRules];
+    // The rule exists only for a job whose plan asked for an ID token, not for every job of a
+    // class that may mint.
+    const oidcTarget =
+      o.oidc && plannedIdToken(ctx.job.planned) ? await o.oidc(ctx, klass) : undefined;
+    const rules = [...vaultRules, ...ghRules, ...(oidcTarget ? oidcRules(oidcTarget) : [])];
     if (rules.length === 0) return runner(ctx);
     if (ctx.resume) {
       // Vault rules: the credential died with the old process, so the job cannot be resumed. With

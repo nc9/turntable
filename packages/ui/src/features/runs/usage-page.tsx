@@ -5,14 +5,18 @@ import { ErrorState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useScope } from "@/features/shell/scope";
-import { dayLabel, formatMinutes } from "@/lib/sandbox";
+import { dayLabel, formatMinutes, usageFor } from "@/lib/sandbox";
 import { useAsync } from "@/lib/use-async";
 
 const RANGES = [7, 30] as const;
 const CHART_H = 160;
 
 /** Bars of sandbox minutes per UTC day, with the org's per-day quota as a dashed line. */
-export function UsageChart({ usage }: { usage: SandboxUsage }) {
+export function UsageChart({
+  usage,
+}: {
+  usage: Pick<SandboxUsage, "days" | "totalMinutes" | "limitMinutesPerDay">;
+}) {
   const { days, limitMinutesPerDay: limit } = usage;
   const peak = Math.max(1, limit ?? 0, ...days.map((d) => d.minutes));
   const top = Math.ceil(peak / 10) * 10;
@@ -76,7 +80,8 @@ export function UsagePage() {
   const scope = useScope();
   const { api } = getBackend();
   const [days, setDays] = useState<number>(7);
-  const q = useAsync(() => api.sandboxUsage({ days }), [scope.orgSlug, days]);
+  const [project, setProject] = useState<string | null>(null);
+  const q = useAsync(() => api.sandboxUsage({ days, byProject: true }), [scope.orgSlug, days]);
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-5 p-5">
@@ -106,11 +111,49 @@ export function UsagePage() {
       ) : (
         <section className="rounded-xl border border-line bg-surface p-4">
           <h2 className="mb-1 text-sm font-medium">Sandbox minutes per day</h2>
-          <p className="mb-6 text-sm text-dim">
-            {formatMinutes(q.data.totalMinutes)} in the last {days} days, counted from the
-            provider's create to its confirmed destroy.
-          </p>
-          <UsageChart usage={q.data} />
+          {q.data.projects.length > 0 ? (
+            <div role="group" aria-label="Project" className="mb-3 flex flex-wrap gap-1">
+              <Button
+                size="sm"
+                variant={project === null ? "default" : "ghost"}
+                aria-pressed={project === null}
+                onClick={() => setProject(null)}
+              >
+                All projects
+              </Button>
+              {q.data.projects.map((p) => (
+                <Button
+                  key={p.id}
+                  size="sm"
+                  variant={project === p.slug ? "default" : "ghost"}
+                  aria-pressed={project === p.slug}
+                  onClick={() => setProject(p.slug)}
+                >
+                  {p.name} ({formatMinutes(p.totalMinutes)})
+                </Button>
+              ))}
+            </div>
+          ) : null}
+          {(() => {
+            const shown = usageFor(q.data, project);
+            const name = q.data.projects.find((p) => p.slug === project)?.name;
+            return (
+              <>
+                <p className="mb-6 text-sm text-dim">
+                  {formatMinutes(shown.totalMinutes)} in the last {days} days
+                  {name ? ` in ${name}` : ""}, counted from the provider's create to its confirmed
+                  destroy.
+                </p>
+                <UsageChart
+                  usage={{
+                    ...shown,
+                    // The quota is the org's: a project's bars are not measured against it.
+                    limitMinutesPerDay: project === null ? q.data.limitMinutesPerDay : null,
+                  }}
+                />
+              </>
+            );
+          })()}
         </section>
       )}
     </div>

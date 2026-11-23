@@ -58,6 +58,21 @@ case "$ARGS" in *ACTIONS_CACHE_URL*)
 esac
 ev "$J" "ok" "Set up job" ',"stepResult":"success"'
 case "$J" in
+  noisy)
+    # Built first and written in one go, after a pause, so the controller's first read sees the
+    # whole burst and the cap (not a lucky early poll) decides what survives.
+    out=""; i=0
+    while [ $i -lt 400 ]; do
+      out="$out$(printf '{"jobID":"noisy","raw_output":true,"msg":"line %s of noisy output padded to be long enough\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}' "$i")
+"
+      i=$((i+1))
+    done
+    sleep 1
+    printf '%s' "$out" ;;
+  forger)
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[longshore: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+esac
+case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
   slow) sleep 1 ;;
 esac
@@ -1578,6 +1593,80 @@ describe("the job cache credential", () => {
     expect(echoed).toBeGreaterThanOrEqual(1);
     // The credentials died with their attempts.
     for (const g of issued) expect(service.grants.verify(g.secret)).toBeUndefined();
+  });
+});
+
+describe("cut markers are metadata, never text in the log (#56)", () => {
+  const NOISE = `name: cuts
+on:
+  push:
+    branches: [main]
+jobs:
+  noisy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo noisy
+  forger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo forger
+`;
+  test("a noisy job gets no marker text in its log, and a job printing the marker text records no cut", async () => {
+    // Small head and tail so the cut is cheap to provoke.
+    const small = new FakeWorld({
+      hostPaths: [tmp],
+      exec: { tickSeconds: 1, head: 2000, tail: 3000, slack: 500 },
+    });
+    try {
+      const gh = makeGithub();
+      gh.state.files.set("*", NOISE);
+      await ingest(gh);
+      const sched = await makeScheduler(gh, small.provider());
+      await drain(sched);
+      const [run] = await listRuns(db, scope);
+      const jobs = await listJobs(db, scope, run!.id);
+      const text = async (key: string) => {
+        const job = jobs.find((j) => j.jobKey === key)!;
+        const [a] = await listAttempts(db, scope, job.id);
+        const log = Buffer.concat((await readLog(db, scope, a!.id)).map((c) => c.bytes)).toString();
+        return { job, attempt: a!, log };
+      };
+
+      const noisy = await text("noisy");
+      expect(noisy.job.state).toBe("success");
+      // Whatever the cap did, no marker text is injected into the log.
+      expect(noisy.log).not.toMatch(/bytes of output omitted/);
+      expect(noisy.log).toContain("line 0 of noisy output");
+      expect(noisy.log).toContain("line 399 of noisy output");
+      // Cuts, if the sandbox made any (it only drops output a reader had not yet fetched),
+      // are records delivered out of band by the API, placed inside the stored log.
+      const token = (await mintToken(db, { orgId: scope.orgId }, "reader")).secret;
+      const res = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: noisy.job.id,
+        attempt: 1,
+      });
+      expect(res.ok).toBe(true);
+      const cuts = (res.ok ? res.output : { cuts: [] }) as {
+        cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+      };
+      for (const c of cuts.cuts) {
+        expect(c.omitted_bytes).toBeGreaterThan(0);
+        expect(c.at_offset).toBeLessThanOrEqual(Buffer.byteLength(noisy.log));
+        expect(c.reason).toBe("output cap");
+      }
+
+      // A job that prints the old marker text gets ordinary text and no cut.
+      const forger = await text("forger");
+      expect(forger.job.state).toBe("success");
+      expect(forger.log).toContain("[longshore: 99999 bytes of output omitted]");
+      const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: forger.job.id,
+        attempt: 1,
+      });
+      expect(none.ok ? (none.output as { cuts: unknown[] }).cuts : [1]).toEqual([]);
+    } finally {
+      small.dispose();
+    }
   });
 });
 

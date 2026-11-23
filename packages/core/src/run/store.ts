@@ -1,4 +1,5 @@
 import {
+  addCut,
   type Db,
   type Scope,
   appendAudit,
@@ -73,6 +74,15 @@ export interface RunStore {
   /** Clears stored log, steps and cuts before a re-attached run replays the whole exec log. */
   resetOutput?(attemptId: string): Promise<void>;
   appendLog(attemptId: string, offset: number, bytes: Uint8Array): Promise<void>;
+  /**
+   * Records where output was dropped (the sandbox's head and tail caps) as metadata beside the
+   * log. `atOffset` is a position in the stored log. Never text inside the log: a job can print
+   * any text, so a marker in the stream could be forged.
+   */
+  addCut?(
+    attemptId: string,
+    cut: { atOffset: number; omittedBytes: number; reason: string },
+  ): Promise<void>;
   recordStep(attemptId: string, step: StepRecord): Promise<void>;
   /** A job that never ran (skipped, unsupported): state skipped, the reason kept as its log. */
   skipJob(runId: string, jobId: string, provider: string, reason: string): Promise<void>;
@@ -139,6 +149,9 @@ export function dbRunStore(db: Db, scope: Required<Scope>): RunStore {
     },
     async appendLog(attemptId, offset, bytes) {
       await appendLog(db, scope, attemptId, offset, bytes);
+    },
+    async addCut(attemptId, cut) {
+      await addCut(db, scope, { attemptId, ...cut });
     },
     async recordStep(attemptId, step) {
       await upsertStep(db, scope, stepInputOf(attemptId, step));

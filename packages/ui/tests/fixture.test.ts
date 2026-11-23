@@ -212,6 +212,13 @@ test("fixture sandbox usage and finished attempts carry consistent sandbox times
     expect(u.limitMinutesPerDay).not.toBeNull();
     expect(u.totalMinutes).toBe(u.days.reduce((n, d) => n + d.minutes, 0));
     expect(new Set(u.days.map((d) => d.day)).size).toBe(7);
+    // the projects add up to the org, day by day
+    expect(u.projects.length).toBeGreaterThan(1);
+    u.days.forEach((d, i) => {
+      expect(u.projects.reduce((n, p) => n + p.days[i]!.minutes, 0)).toBe(d.minutes);
+      expect(u.projects.reduce((n, p) => n + p.days[i]!.attempts, 0)).toBe(d.attempts);
+    });
+    expect(u.projects.reduce((n, p) => n + p.totalMinutes, 0)).toBe(u.totalMinutes);
     const done = [...fx.world.attempts.values()].filter((a) => a.finishedAt !== null);
     expect(done.length).toBeGreaterThan(0);
     for (const a of done) {
