@@ -104,7 +104,12 @@ function autoincrementTables(db: Db): string[] {
     .toSorted();
 }
 
-test("after every migration, no id of an AUTOINCREMENT table can be issued twice", () => {
+/**
+ * `newest`: after each migration the newest rows are pruned (a gap at the top). `all`: every row is
+ * deleted, so the next migration rebuilds an EMPTY table, which has no sqlite_sequence row to
+ * update after the rebuild.
+ */
+function walk(prune: "newest" | "all"): void {
   const sqlite = new Database(":memory:");
   sqlite.run("PRAGMA foreign_keys = ON");
   /** The highest id ever issued, per table. */
@@ -119,7 +124,11 @@ test("after every migration, no id of an AUTOINCREMENT table can be issued twice
       if (!issued.has(table)) {
         // First seen: hand out six ids and prune the newest two. The high-water mark is 6.
         for (let i = 0; i < 6; i++) issued.set(table, seed(sqlite));
-        sqlite.run(`DELETE FROM ${table} WHERE id >= ${issued.get(table)! - 1}`);
+        sqlite.run(
+          prune === "all"
+            ? `DELETE FROM ${table}`
+            : `DELETE FROM ${table} WHERE id >= ${issued.get(table)! - 1}`,
+        );
       }
       // What SQLite itself says is the high-water mark must not have fallen below what we issued.
       const seq = (
@@ -136,13 +145,23 @@ test("after every migration, no id of an AUTOINCREMENT table can be issued twice
       }
       issued.set(table, id);
       // Prune the newest again, so the next migration is tested against a table with a gap at the top.
-      sqlite.run(`DELETE FROM ${table} WHERE id >= ${id - 1}`);
+      sqlite.run(
+        prune === "all" ? `DELETE FROM ${table}` : `DELETE FROM ${table} WHERE id >= ${id - 1}`,
+      );
     }
   }
   // The tables that exist now are the ones that were guarded the whole way.
   expect([...checked].toSorted()).toEqual(autoincrementTables(sqlite));
   expect(checked.has("events")).toBe(true);
   expect(sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
+}
+
+test("after every migration, no id of an AUTOINCREMENT table can be issued twice (newest rows pruned)", () => {
+  walk("newest");
+});
+
+test("the same when EVERY row is pruned, so a rebuild meets an empty table", () => {
+  walk("all");
 });
 
 test("the guard catches a rebuild that forgets the sequence", () => {
@@ -171,6 +190,7 @@ test("the guard catches a rebuild that forgets the sequence", () => {
 // The static half: a rebuild (`__new_<t>` created with AUTOINCREMENT) saves sqlite_sequence before
 // the drop and restores it after the rename. Cheap, and it names the pattern; the walk above is
 // the one that cannot be fooled by a different pattern.
+const PRE_UPSERT = new Set(["0032_quota_events"]);
 function rebuiltAutoincrement(statements: string[]): string[] {
   return statements.flatMap((s) => {
     const m = /^\s*CREATE TABLE `__new_([A-Za-z0-9_]+)`/.exec(s);
@@ -192,6 +212,11 @@ test("every rebuild of an AUTOINCREMENT table saves and restores sqlite_sequence
     );
     const drop = text.search(new RegExp(`DROP TABLE \`${table}\``));
     const rename = text.search(new RegExp(`RENAME TO \`${table}\``));
+    const upsert = text.search(
+      new RegExp(
+        `INSERT INTO sqlite_sequence \\(name, seq\\) SELECT '${table}', coalesce\\(\\(SELECT max\\(seq\\) FROM \`__${table}_seq\`\\), 0\\) WHERE NOT EXISTS \\(SELECT 1 FROM sqlite_sequence WHERE name = '${table}'\\)`,
+      ),
+    );
     const restore = text.search(
       new RegExp(
         `UPDATE sqlite_sequence SET seq = max\\(seq, coalesce\\(\\(SELECT max\\(seq\\) FROM \`__${table}_seq\`\\), 0\\)\\) WHERE name = '${table}'`,
@@ -200,5 +225,11 @@ test("every rebuild of an AUTOINCREMENT table saves and restores sqlite_sequence
     const where = `${m.tag}: ${table}`;
     expect([where, save >= 0 && save < drop]).toEqual([where, true]);
     expect([where, restore > rename && rename > drop]).toEqual([where, true]);
+    // The restore is preceded by an upsert, so it cannot match nothing. 0032 predates it and is
+    // already applied, so it is not edited: SQLite writes a sequence row even for an INSERT ... SELECT
+    // of zero rows, and the empty-table walk above passes over it, which is the proof it is safe.
+    if (!PRE_UPSERT.has(m.tag)) {
+      expect([where, upsert > rename && upsert < restore]).toEqual([where, true]);
+    }
   }
 });

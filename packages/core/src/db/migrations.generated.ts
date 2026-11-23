@@ -399,6 +399,7 @@ export const migrations: Migration[] = [
       "INSERT INTO `__new_events`(\"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\") SELECT \"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\" FROM `events`;",
       "DROP TABLE `events`;",
       "ALTER TABLE `__new_events` RENAME TO `events`;",
+      "-- An empty events table leaves no sqlite_sequence row after the rebuild: create it, then raise it.\nINSERT INTO sqlite_sequence (name, seq) SELECT 'events', coalesce((SELECT max(seq) FROM `__events_seq`), 0) WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events');",
       "UPDATE sqlite_sequence SET seq = max(seq, coalesce((SELECT max(seq) FROM `__events_seq`), 0)) WHERE name = 'events';",
       "DROP TABLE `__events_seq`;",
       "PRAGMA foreign_keys=ON;",
