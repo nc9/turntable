@@ -36,6 +36,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: that token is never given to an agent",
   instance_list_orgs:
     "instance administrator ops are REST only: that token is never given to an agent",
+  instance_github_app_status:
+    "instance administrator ops are REST only: the App's id, owner and unclaimed installations are the operator's",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
   set_project_settings:
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",

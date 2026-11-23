@@ -230,6 +230,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "create_project",
       "db_backup",
       "instance_get_setting",
+      "instance_github_app_status",
       "instance_list_orgs",
       "instance_list_settings",
       "instance_set_setting",
