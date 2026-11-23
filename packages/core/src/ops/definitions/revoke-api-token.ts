@@ -61,15 +61,6 @@ export const revokeApiTokenOp = defineOp({
     if (!self && !admin) {
       throw new OpError("forbidden", "only an org admin may revoke another token");
     }
-    if (row.revokedAt !== null) {
-      return {
-        token_id: row.id,
-        name: row.name,
-        revoked: true,
-        already_revoked: true,
-        org_locked_out: false,
-      };
-    }
     const now = ctx.now();
     const org = { orgId: ctx.scope.orgId };
     const cascade = self ? input.cascade : true;
@@ -84,7 +75,7 @@ export const revokeApiTokenOp = defineOp({
           : "this would leave the org with no usable token: revoking it and the tokens it minted would lock the org out",
       );
     }
-    const { rootChanged: changed } = await revokeTokenCascade(
+    const { rootChanged: changed, children } = await revokeTokenCascade(
       ctx.db,
       org.orgId,
       row.id,
@@ -92,7 +83,7 @@ export const revokeApiTokenOp = defineOp({
       { kind: ctx.principal.kind, id: ctx.principal.id },
       cascade,
     );
-    if (changed && last) {
+    if ((changed || children.length > 0) && last) {
       await recordOrgTokensExhausted(ctx.db, ctx.scope.orgId, row.id, {
         kind: ctx.principal.kind,
         id: ctx.principal.id,
@@ -103,7 +94,7 @@ export const revokeApiTokenOp = defineOp({
       name: row.name,
       revoked: true,
       already_revoked: !changed,
-      org_locked_out: changed && last,
+      org_locked_out: (changed || children.length > 0) && last,
     };
   },
 });

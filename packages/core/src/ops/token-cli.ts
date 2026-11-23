@@ -182,11 +182,12 @@ export async function revokeTokenFromCli(
   const scope: Scope = { orgId: row.orgId, ...(row.projectId ? { projectId: row.projectId } : {}) };
   await db.transaction(async (tx) => {
     await lockOrgTokens(tx, row.orgId);
-    const { rootChanged } = await revokeTokenCascade(tx, row.orgId, row.id, now(), {
+    const { rootChanged, children } = await revokeTokenCascade(tx, row.orgId, row.id, now(), {
       kind: "cli",
       id: "local",
     });
-    if (!rootChanged) {
+    // An already revoked root whose descendants were still live is not an error (a rotation).
+    if (!rootChanged && children.length === 0) {
       throw new Error(`token ${id} is already revoked`);
     }
     await appendAudit(tx, scope, {

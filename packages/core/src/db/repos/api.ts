@@ -175,6 +175,33 @@ export function parentTokenId(row: { createdBy: string }): string | null {
   return row.createdBy.startsWith("token:") ? row.createdBy.slice("token:".length) : null;
 }
 
+/**
+ * The LIVE lineage of a token (#437): how many live token-minted ancestors it has (`depth`, 0 for
+ * a token whose creator is not a token, or is revoked or expired) and the topmost live token of
+ * the chain. The walk stops at the first revoked or expired ancestor, so a rotation (mint the
+ * successor, self-revoke) starts a fresh lineage and repeated rotation never hits the depth
+ * limit. The stored `createdBy` link is unchanged: an admin's revoke still walks the full subtree.
+ * Bounded by 8 lookups.
+ */
+export async function tokenLineage(
+  db: Db,
+  row: ApiToken,
+  now: number,
+): Promise<{ depth: number; rootId: string }> {
+  let cur = row;
+  let depth = 0;
+  while (depth < 8) {
+    const parentId = parentTokenId(cur);
+    if (parentId === null) break;
+    const parent = await findApiTokenById(db, parentId);
+    if (!parent || parent.orgId !== row.orgId) break;
+    if (parent.revokedAt !== null || (parent.expiresAt !== null && parent.expiresAt <= now)) break;
+    cur = parent;
+    depth += 1;
+  }
+  return { depth, rootId: cur.id };
+}
+
 /** Tokens minted by `parentId` that are neither revoked nor expired. */
 export function countActiveChildTokens(
   db: Db,

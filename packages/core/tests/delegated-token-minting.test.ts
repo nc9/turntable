@@ -246,4 +246,76 @@ describe("rotation and cascade", () => {
     expect(rows.tokens.find((t) => t.id === child.id)?.created_by_token_id).toBe(parent.id);
     expect(rows.tokens.find((t) => t.id === parent.id)?.created_by_token_id).toBeNull();
   });
+
+  test("an admin revoking an already revoked root still revokes and audits its live descendants", async () => {
+    const root = await orgWide("operator");
+    await orgWide("reader");
+    const successor = await mint(root.secret, { role: "operator" });
+    const grand = await mint(successor.token);
+    expect((await revoke(root.secret, { token_id: root.id })).ok).toBe(true);
+    expect(await alive(successor.token)).toBe(true);
+    const r = await dispatch(env, { kind: "principal", principal: a.admin }, "revoke_api_token", {
+      token_id: root.id,
+      reason: "t",
+    });
+    expect(r.ok && r.output).toMatchObject({ already_revoked: true });
+    expect(await alive(successor.token)).toBe(false);
+    expect(await alive(grand.token)).toBe(false);
+    const text = JSON.stringify(
+      (await listAudit(db, { orgId: a.orgId }, { limit: 50 })).filter(
+        (x) => x.op === "revoke_api_token",
+      ),
+    );
+    expect(text).toContain(grand.id);
+    expect(text).toContain("parent revoked");
+  });
+
+  test("delegation depth: a token minted by a delegated token cannot mint", async () => {
+    const root = await orgWide("operator");
+    const c = await mint(root.secret, { role: "operator" });
+    const g = await mint(c.token, { role: "operator" });
+    expect(code(await as(g.token, { name: "x", role: "reader" }))).toBe("conflict");
+  });
+
+  test("one lineage holds at most 50 active delegated tokens, across siblings", async () => {
+    const root = await orgWide("operator");
+    const kids: { token: string }[] = [];
+    for (let i = 0; i < 3; i++) kids.push(await mint(root.secret, { role: "operator" }));
+    for (let i = 0; i < 20; i++) await mint(kids[0]!.token);
+    for (let i = 0; i < 20; i++) await mint(kids[1]!.token);
+    // 3 + 40 so far; the 8th more is the 51st.
+    for (let i = 0; i < 7; i++) await mint(kids[2]!.token);
+    expect(code(await as(kids[2]!.token, { name: "x", role: "reader" }))).toBe("conflict");
+  });
+
+  test("three successive rotations: S3 can still mint a project operator token; a purge takes S1..S3", async () => {
+    const root = await orgWide("operator");
+    await orgWide("reader");
+    const s1 = await mint(root.secret, { role: "operator" });
+    const k1 = await mint(s1.token);
+    expect((await revoke(root.secret, { token_id: root.id })).ok).toBe(true);
+    const s2 = await mint(s1.token, { role: "operator" });
+    expect((await revoke(s1.token, { token_id: s1.id })).ok).toBe(true);
+    const s3 = await mint(s2.token, { role: "operator" });
+    expect((await revoke(s2.token, { token_id: s2.id })).ok).toBe(true);
+    const project = await as(s3.token, { name: "p", role: "operator", project: a.projectSlug });
+    expect(project.ok).toBe(true);
+    const pt = project.ok ? (project.output as { id: string; token: string }) : undefined;
+    expect(await alive(s3.token)).toBe(true);
+    expect(await alive(k1.token)).toBe(true);
+    const r = await dispatch(env, { kind: "principal", principal: a.admin }, "revoke_api_token", {
+      token_id: root.id,
+      reason: "purge",
+    });
+    expect(r.ok).toBe(true);
+    for (const t of [s3.token, k1.token, pt!.token]) expect(await alive(t)).toBe(false);
+    const text = JSON.stringify(
+      (await listAudit(db, { orgId: a.orgId }, { limit: 100 })).filter(
+        (x) => x.op === "revoke_api_token",
+      ),
+    );
+    expect(text).toContain(s3.id);
+    expect(text).toContain(pt!.id);
+    expect(text).toContain(k1.id);
+  });
 });

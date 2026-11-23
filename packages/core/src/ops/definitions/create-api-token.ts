@@ -6,6 +6,8 @@ import {
   getOrgById,
   insertApiToken,
   lockOrgTokens,
+  tokenLineage,
+  tokenSubtree,
 } from "../../db/repos";
 import { AGENT_ROLES, TOKEN_KINDS } from "../../db/schema";
 import { defineOp } from "../define";
@@ -18,6 +20,14 @@ const DAY_MS = 86_400_000;
 
 /** A token may have at most this many active children (a leaked token cannot fan out without bound). */
 export const MAX_ACTIVE_CHILD_TOKENS = 20;
+/**
+ * A delegated token may itself mint, but its children may not: at most 2 token-minted levels.
+ * Counted over LIVE ancestors only (a revoked or expired creator ends the lineage), so a chain of
+ * rotations never runs out of depth.
+ */
+export const MAX_MINTER_DEPTH = 1;
+/** Active descendants allowed under one lineage root, so fan-out across levels stays bounded. */
+export const MAX_ACTIVE_LINEAGE_TOKENS = 50;
 
 export const createApiToken = defineOp({
   name: "create_api_token",
@@ -33,7 +43,7 @@ export const createApiToken = defineOp({
     "its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, " +
     "never the reverse or another project), and it expires no later than the caller does. " +
     "`kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); " +
-    "an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children (conflict beyond that). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint " +
+    "an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children, a delegated token's own children may not mint (depth limit), and one live lineage may hold at most 50 active delegated tokens (each a conflict; a revoked or expired creator starts a fresh lineage, so rotation is unaffected). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint " +
     "time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent " +
     "tokens as run approvers, so mint a person token only for a human. Writes and is audited " +
     "(the audit entry names the minting token), and emits an `org.token_minted` event. Not an " +
@@ -89,6 +99,26 @@ export const createApiToken = defineOp({
       const parent = await findApiTokenById(ctx.db, p.id);
       if (!parent || parent.revokedAt !== null || parent.orgId !== ctx.scope.orgId) {
         throw new OpError("forbidden", "the calling token is no longer valid");
+      }
+      const lineage = await tokenLineage(ctx.db, parent, ctx.now());
+      if (lineage.depth > MAX_MINTER_DEPTH) {
+        throw new OpError(
+          "conflict",
+          "a token minted by a delegated token cannot mint tokens (delegation depth limit)",
+        );
+      }
+      const now = ctx.now();
+      const live = (await tokenSubtree(ctx.db, ctx.scope.orgId, lineage.rootId)).filter(
+        (t) =>
+          t.id !== lineage.rootId &&
+          t.revokedAt === null &&
+          (t.expiresAt === null || t.expiresAt > now),
+      );
+      if (live.length >= MAX_ACTIVE_LINEAGE_TOKENS) {
+        throw new OpError(
+          "conflict",
+          `a token lineage may have at most ${MAX_ACTIVE_LINEAGE_TOKENS} active delegated tokens: revoke some first`,
+        );
       }
       if (
         (await countActiveChildTokens(ctx.db, { orgId: ctx.scope.orgId }, p.id, ctx.now())) >=
