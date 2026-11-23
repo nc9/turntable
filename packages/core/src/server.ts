@@ -14,8 +14,11 @@ import {
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
+import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
+import { createEventStream } from "./realtime/sse";
+import type { WebhookService } from "./webhooks/service";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 
@@ -24,12 +27,12 @@ const PLACEHOLDER_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Longshore</title>
+    <title>Turntable</title>
   </head>
   <body>
-    <h1>Longshore</h1>
+    <h1>Turntable</h1>
     <p>Pre-alpha. The web UI is not built yet.</p>
-    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>LONGSHORE_UI_DIR</code> to a built bundle).</p>
+    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>TURNTABLE_UI_DIR</code> to a built bundle).</p>
   </body>
 </html>
 `;
@@ -91,12 +94,16 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
+  appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
+  /** Outbound webhook management ops, when a master key is configured. */
+  outboundWebhooks?: WebhookService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
   trustForwardedProto?: boolean;
 };
@@ -107,6 +114,7 @@ export function startServer(options: ServeOptions) {
     db: options.db,
     vault: options.vault,
     claims: options.claims?.starter,
+    webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
   };
@@ -116,6 +124,10 @@ export function startServer(options: ServeOptions) {
   });
   const mcp = createMcpHttp(env);
   const realtime = createRealtime({
+    env,
+    ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
+  });
+  const sse = createEventStream({
     env,
     ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
   });
@@ -135,6 +147,8 @@ export function startServer(options: ServeOptions) {
   async function route(req: Request, srv: Bun.Server<WsData>): Promise<Response | undefined> {
     const hook = await options.webhooks?.handle(req, srv.requestIP(req)?.address);
     if (hook) return hook;
+    const manifest = await options.appManifest?.handle(req, srv.requestIP(req)?.address);
+    if (manifest) return manifest;
     const claimed = await options.claims?.handler.handle(req);
     if (claimed) return claimed;
     const idp = await options.oidc?.handle(req);
@@ -144,6 +158,8 @@ export function startServer(options: ServeOptions) {
     const upgraded = await realtime.handle(req, srv);
     if (upgraded === "upgraded") return undefined;
     if (upgraded) return upgraded;
+    const stream = await sse.handle(req, srv);
+    if (stream) return stream;
     const mcpResponse = await mcp(req);
     if (mcpResponse) return mcpResponse;
     return handleRequest(req, api, srv.requestIP(req)?.address);

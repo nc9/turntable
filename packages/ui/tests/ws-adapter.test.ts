@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { LongshoreApi } from "../src/api/client";
+import type { TurntableApi } from "../src/api/client";
 import type { Realtime, RealtimeMessage, Topic } from "../src/api/realtime";
 import type { Run } from "../src/api/types";
 import { createWsRealtime, type WsRealtimeOptions } from "../src/api/ws-adapter";
@@ -65,7 +65,7 @@ function setup(over: Partial<WsRealtimeOptions> = {}) {
       return { runs, nextCursor: null };
     },
     getRun: async () => ({ run: runs[0]!, jobs: [], attempts: [] }),
-  } as unknown as LongshoreApi;
+  } as unknown as TurntableApi;
   const fallbackSubs: { topic: Topic; off: boolean }[] = [];
   const fallback: Realtime = {
     subscribe(topic) {
@@ -98,7 +98,7 @@ describe("connection", () => {
     const { rt } = setup();
     rt.subscribe({ kind: "org", orgId: "acme" }, {}, () => {});
     const s = last();
-    expect(s.protocols).toEqual(["longshore.v1", "bearer.tt_secret"]);
+    expect(s.protocols).toEqual(["turntable.v1", "bearer.tt_secret"]);
     expect(s.url).toBe("ws://localhost/api/v1/realtime");
     expect(s.url).not.toContain("tt_secret");
     expect(rt.status()).toBe("connecting");

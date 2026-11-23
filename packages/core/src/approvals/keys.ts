@@ -1,6 +1,6 @@
 // ed25519 approver keys: offline signing keys held off the machine. The public half is stored as
 // SPKI DER (base64), the same form as WebAuthn keys. The private half never reaches the server;
-// these helpers also back the `longshore approvals` CLI that creates and uses a key.
+// these helpers also back the `turntable approvals` CLI that creates and uses a key.
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");

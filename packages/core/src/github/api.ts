@@ -1,6 +1,6 @@
 // The slice of the GitHub API the ingest path reads. Trust decisions use what this returns, never
 // what a webhook payload claims. Reads only: no GitHub writes yet.
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import type { AppAuth } from "./app-auth";
 
 export interface GithubInstallationFacts {
@@ -31,7 +31,7 @@ export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): Gi
     authorization: `Bearer ${token}`,
     accept: "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
-    "user-agent": "longshore",
+    "user-agent": "turntable",
   });
   return {
     async getInstallation(installationId) {

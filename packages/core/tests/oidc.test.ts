@@ -5,12 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { resetFailureThrottle } from "../src/audit/failures";
-import { chainedAudit, getSecretRecord, type Db } from "../src/db";
+import {
+  chainedAudit,
+  clearFreeze,
+  createAttempt,
+  getSecretRecord,
+  setFreeze,
+  type Db,
+} from "../src/db";
 import * as s from "../src/db/schema";
 import { mintAttemptCredential, verifyAttemptCredential } from "../src/oidc/attempt-credential";
 import { oidcCommand } from "../src/oidc/cli";
 import { createOidcHandler, type OidcHandler } from "../src/oidc/http";
-import { OidcIssuer, parseAllowClasses, validAudience } from "../src/oidc/issuer";
+import {
+  NBF_LEEWAY_SECONDS,
+  OidcIssuer,
+  parseAllowClasses,
+  validAudience,
+} from "../src/oidc/issuer";
 import { PUBLIC_JWK_MEMBERS, RETIRED_GRACE_MS, MAX_TOKEN_SECONDS } from "../src/oidc/keys";
 import {
   initMasterKey,
@@ -199,7 +211,7 @@ describe("minting", () => {
       aud: "sts.amazonaws.com",
       sub: "org:org-a:project:app:repo:acme/web:ref:refs/heads/main:class:protected:env:none",
       iat,
-      nbf: iat,
+      nbf: iat - NBF_LEEWAY_SECONDS,
       org: "org-a",
       org_id: a.orgId,
       project: "app",
@@ -213,6 +225,8 @@ describe("minting", () => {
       run_id: a.runId,
       job_id: a.jobId,
       attempt_id: a.attemptId,
+      run_attempt: 1,
+      rerun: false,
       trust_class: "protected",
       event_name: "push",
       actor: "octo",
@@ -428,56 +442,119 @@ describe("audit", () => {
   });
 });
 
+describe("incident freeze, reruns and clock skew", () => {
+  const freezeNow = () => ({ reason: "key leaked", by: "tester", now });
+
+  test("an org freeze stops minting, and the refusal is audited", async () => {
+    expect((await mint(a)).res.status).toBe(200);
+    await setFreeze(db, { orgId: a.orgId }, freezeNow());
+    const r = await mint(a);
+    expect(r.res.status).toBe(403);
+    expect(r.body.error).toBe("frozen");
+    const rows = await chainedAudit(db, a.orgId, 0, 100);
+    expect(rows.filter((x) => x.op === "oidc_mint").at(-1)!.outcome).toBe("error:frozen");
+    // Unfreezing lets the same credential mint again.
+    await clearFreeze(db, { orgId: a.orgId });
+    expect((await mint(a)).res.status).toBe(200);
+  });
+
+  test("a project freeze stops its attempts only", async () => {
+    await setFreeze(db, { orgId: a.orgId, projectId: a.projectId }, freezeNow());
+    expect((await mint(a)).body.error).toBe("frozen");
+    await clearFreeze(db, { orgId: a.orgId, projectId: a.projectId });
+    expect((await mint(a)).res.status).toBe(200);
+  });
+
+  test("a rerun is its own attempt: a distinct attempt_id, a higher run_attempt, rerun true", async () => {
+    const first = (await mint(a)).body as { value: string };
+    const again = (await createAttempt(db, a.scope, {
+      jobId: a.jobId,
+      provider: "test",
+      rerunReason: "flaky",
+    }))!;
+    await db.orm
+      .update(s.jobAttempts)
+      .set({ state: "running", trustClass: "protected" })
+      .where(eq(s.jobAttempts.id, again.id));
+    const res = (await get(
+      `/oidc/${a.slug}/token?audience=sts`,
+      mintAttemptCredential(master, { orgId: a.orgId, attemptId: again.id }, now),
+    ))!;
+    const second = (await res.json()) as { value: string };
+    const c1 = JSON.parse(Buffer.from(first.value.split(".")[1]!, "base64url").toString());
+    const c2 = JSON.parse(Buffer.from(second.value.split(".")[1]!, "base64url").toString());
+    expect([c1.run_attempt, c1.rerun]).toEqual([1, false]);
+    expect(c2.attempt_id).toBe(again.id);
+    expect(c2.attempt_id).not.toBe(c1.attempt_id);
+    expect(c2.run_attempt).toBe(2);
+    expect(c2.rerun).toBe(true);
+    expect(c2.jti).not.toBe(c1.jti);
+  });
+
+  test("a token is valid a little before its iat, and a relying party with a slow clock accepts it", async () => {
+    const c = (await relyingParty((await mint(a)).body.value!, a.slug, "sts")).claims;
+    expect(c.iat - c.nbf).toBe(NBF_LEEWAY_SECONDS);
+    expect(NBF_LEEWAY_SECONDS).toBeLessThanOrEqual(60);
+    // The window still ends at exp: leeway on the front never lengthens the lifetime.
+    expect(c.exp - c.iat).toBeLessThanOrEqual(MAX_TOKEN_SECONDS);
+  });
+});
+
 describe("static export", () => {
   const tmp = mkdtempSync(join(tmpdir(), "ls-oidc-"));
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-  test("longshore oidc export writes discovery and a JWKS with no private parameters", async () => {
-    const dir = join(tmp, "data");
-    const keyFile = join(tmp, "m.key");
-    initMasterKey(keyFile);
-    const { openDatabase, createOrg, ensureInstance } = await import("../src/db");
-    const d = openDatabase(join(dir, "longshore.db"));
-    await ensureInstance(d);
-    await createOrg(d, { slug: "acme", name: "acme" });
-    d.close();
-    const out = join(tmp, "site");
-    const code = await oidcCommand([
-      "export",
-      "--org",
-      "acme",
-      "--data-dir",
-      dir,
-      "--master-key-file",
-      keyFile,
-      "--base-url",
-      "https://static.example.com/oidc",
-      "--out",
-      out,
-    ]);
-    expect(code).toBe(0);
-    const disc = JSON.parse(
-      readFileSync(join(out, "acme/.well-known/openid-configuration"), "utf8"),
-    );
-    expect(disc.issuer).toBe("https://static.example.com/oidc/acme");
-    expect(disc.jwks_uri).toBe("https://static.example.com/oidc/acme/jwks.json");
-    const text = readFileSync(join(out, "acme/jwks.json"), "utf8");
-    const jwks = JSON.parse(text) as { keys: Record<string, unknown>[] };
-    expect(jwks.keys.length).toBe(1);
-    expect(Object.keys(jwks.keys[0]!).toSorted()).toEqual([...PUBLIC_JWK_MEMBERS].toSorted());
-    expect(text).not.toContain('"d"');
-    // status and rotate work on the same store
-    expect(
-      await oidcCommand([
-        "rotate",
+  // The CLI opens the database on its own, as a second handle. A PGlite database lives in the
+  // handle that made it, so it would see an empty one; a real server (or SQLite) shares it.
+  test.skipIf(process.env.TURNTABLE_TEST_DB === "pglite")(
+    "turntable oidc export writes discovery and a JWKS with no private parameters",
+    async () => {
+      const dir = join(tmp, "data");
+      const keyFile = join(tmp, "m.key");
+      initMasterKey(keyFile);
+      const { openDatabase, createOrg, ensureInstance } = await import("../src/db");
+      const d = openDatabase(join(dir, "turntable.db"));
+      await ensureInstance(d);
+      await createOrg(d, { slug: "acme", name: "acme" });
+      d.close();
+      const out = join(tmp, "site");
+      const code = await oidcCommand([
+        "export",
         "--org",
         "acme",
         "--data-dir",
         dir,
         "--master-key-file",
         keyFile,
-      ]),
-    ).toBe(0);
-    expect(loadMasterKey(keyFile).length).toBe(32);
-  });
+        "--base-url",
+        "https://static.example.com/oidc",
+        "--out",
+        out,
+      ]);
+      expect(code).toBe(0);
+      const disc = JSON.parse(
+        readFileSync(join(out, "acme/.well-known/openid-configuration"), "utf8"),
+      );
+      expect(disc.issuer).toBe("https://static.example.com/oidc/acme");
+      expect(disc.jwks_uri).toBe("https://static.example.com/oidc/acme/jwks.json");
+      const text = readFileSync(join(out, "acme/jwks.json"), "utf8");
+      const jwks = JSON.parse(text) as { keys: Record<string, unknown>[] };
+      expect(jwks.keys.length).toBe(1);
+      expect(Object.keys(jwks.keys[0]!).toSorted()).toEqual([...PUBLIC_JWK_MEMBERS].toSorted());
+      expect(text).not.toContain('"d"');
+      // status and rotate work on the same store
+      expect(
+        await oidcCommand([
+          "rotate",
+          "--org",
+          "acme",
+          "--data-dir",
+          dir,
+          "--master-key-file",
+          keyFile,
+        ]),
+      ).toBe(0);
+      expect(loadMasterKey(keyFile).length).toBe(32);
+    },
+  );
 });

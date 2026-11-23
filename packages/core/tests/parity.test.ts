@@ -11,6 +11,7 @@ import {
   type OurJob,
   type TheirCheck,
 } from "../src/parity/compare";
+import { fetchOurRun } from "../src/parity/api";
 import { parityCommand } from "../src/parity/cli";
 
 const SHA = "1e179448b7b7f4976726df1abdb50178ae46f67e";
@@ -160,7 +161,7 @@ describe("the command", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "ls-parity-"));
     tokenFile = join(dir, "token");
-    writeFileSync(tokenFile, "ls_reader_example_token_value\n", { mode: 0o600 });
+    writeFileSync(tokenFile, "tt_reader_example_token_value\n", { mode: 0o600 });
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -239,7 +240,7 @@ describe("the command", () => {
     expect(
       seen
         .filter((s) => s.auth !== null)
-        .every((s) => s.auth === "Bearer ls_reader_example_token_value"),
+        .every((s) => s.auth === "Bearer tt_reader_example_token_value"),
     ).toBe(true);
     expect(seen.some((s) => s.url.startsWith("api.github.com") && s.auth !== null)).toBe(false);
   });
@@ -279,5 +280,219 @@ describe("the command", () => {
       ...quiet,
     });
     expect(code).toBe(2);
+  });
+
+  describe("--last: one line per sha", () => {
+    const S = (c: string) => c.repeat(40);
+    // newest first: S(a) twice (a rerun), S(b), S(c), S(d)
+    const listed = [
+      { id: "ra2", sha: S("a"), state: "success" },
+      { id: "ra1", sha: S("a"), state: "failure" },
+      { id: "rb", sha: S("b"), state: "success" },
+      { id: "rc", sha: S("c"), state: "running" },
+      { id: "rd", sha: S("d"), state: "success" },
+    ];
+    const jobsOf: Record<string, { state: string }> = {
+      ra2: { state: "success" },
+      rb: { state: "success" },
+      rc: { state: "running" },
+      rd: { state: "success" },
+    };
+    // theirs: a ok, b failed (diverges with our success), c ok (ours is still running), d none
+    const theirsBySha: Record<string, string | undefined> = {
+      [S("a")]: "success",
+      [S("b")]: "failure",
+      [S("c")]: "success",
+    };
+    const calls: string[] = [];
+    const lastOurs = async (input: string | URL | Request) => {
+      const u = new URL(String(input));
+      calls.push(u.pathname + u.search);
+      if (u.pathname === "/api/v1/runs") return json({ runs: listed });
+      const m = /^\/api\/v1\/runs\/(\w+)$/.exec(u.pathname);
+      if (m) {
+        const id = m[1] as string;
+        const r = listed.find((x) => x.id === id)!;
+        return json({
+          id,
+          sha: r.sha,
+          jobs: [
+            { id: `${id}-j`, name: "build", state: jobsOf[id]?.state ?? "success", duration_ms: 5 },
+          ],
+        });
+      }
+      return new Response("{}", { status: 404 });
+    };
+    const lastGithub = async (input: string | URL | Request) => {
+      const u = new URL(String(input));
+      const sha = /commits\/(\w{40})\/check-runs/.exec(u.pathname)?.[1] ?? "";
+      const conclusion = theirsBySha[sha];
+      return json({
+        check_runs: conclusion
+          ? [{ name: "build", status: "completed", conclusion, app: { id: 4242 } }]
+          : [],
+      });
+    };
+    const lastArgs = (n: string, ...more: string[]) => [
+      "--last",
+      n,
+      "--branch",
+      "main",
+      "--event",
+      "push",
+      "--repo",
+      "acme/web",
+      "--app-id",
+      "4242",
+      "--url",
+      "http://127.0.0.1:1",
+      "--org",
+      "acme",
+      "--token-file",
+      tokenFile,
+      ...more,
+    ];
+
+    test("lists the newest runs with the branch and event, dedupes by sha, and prints a verdict per sha", async () => {
+      calls.length = 0;
+      let text = "";
+      const code = await parityCommand(lastArgs("4"), {
+        ours: lastOurs,
+        github: lastGithub,
+        out: (s) => (text = s),
+      });
+      const lines = text.split("\n");
+      expect(lines).toHaveLength(4);
+      // newest first, the newest run of a sha only (ra2, not its rerun ra1)
+      expect(lines[0]).toStartWith(`${S("a").slice(0, 12)}  match  `);
+      expect(lines[0]).toContain("run ra2");
+      expect(lines[1]).toStartWith(`${S("b").slice(0, 12)}  1 diverge  `);
+      expect(lines[2]).toStartWith(`${S("c").slice(0, 12)}  pending  `);
+      // no check from them at all for d: nothing paired yet, so pending, not a divergence
+      expect(lines[3]).toStartWith(`${S("d").slice(0, 12)}  pending  `);
+      expect(code).toBe(1);
+      const list = calls.find((c) => c.startsWith("/api/v1/runs?"))!;
+      expect(list).toContain("branch=main");
+      expect(list).toContain("event=push");
+      expect(list).toContain("limit=12");
+      // each sha's run is read once; the rerun ra1 was never fetched
+      expect(calls.some((c) => c.endsWith("/runs/ra1"))).toBe(false);
+    });
+
+    test("N cuts the list, --json is an array, and no divergence exits 0", async () => {
+      let text = "";
+      const code = await parityCommand(lastArgs("1", "--json"), {
+        ours: lastOurs,
+        github: lastGithub,
+        out: (s) => (text = s),
+      });
+      const arr = JSON.parse(text);
+      expect(Array.isArray(arr)).toBe(true);
+      expect(arr).toHaveLength(1);
+      expect(arr[0]).toMatchObject({ run: "ra2", sha: S("a"), verdict: "match", summary: "match" });
+      expect(arr[0].totals).toMatchObject({ match: 1, diverge: 0 });
+      expect(code).toBe(0);
+    });
+
+    test("usage errors: both --run and --last, neither, a bad N, filters without --last", async () => {
+      const quiet = { out: () => {}, ours: lastOurs, github: lastGithub };
+      expect(await parityCommand([...lastArgs("2"), "--run", "r"], quiet)).toBe(2);
+      expect(await parityCommand(lastArgs("0"), quiet)).toBe(2);
+      expect(await parityCommand(lastArgs("51"), quiet)).toBe(2);
+      expect(await parityCommand(lastArgs("x"), quiet)).toBe(2);
+      expect(await parityCommand([...base(), "--branch", "main"], quiet)).toBe(2);
+    });
+
+    test("no runs matching prints that, and is not a failure", async () => {
+      let text = "";
+      const code = await parityCommand(lastArgs("3"), {
+        ours: async () => json({ runs: [] }),
+        github: lastGithub,
+        out: (s) => (text = s),
+      });
+      expect(text).toBe("no runs");
+      expect(code).toBe(0);
+    });
+  });
+});
+
+describe("the shards of a split job are one job", () => {
+  const shard = (i: number, state: string, start: string | null, end: string | null) => ({
+    id: `s${i}`,
+    name: "CLI tests (rules, engine and the rest)",
+    state,
+    duration_ms: start && end ? Date.parse(end) - Date.parse(start) : null,
+    started_at: start,
+    finished_at: end,
+    shard: { job: "tests", index: i, total: 3 },
+  });
+  const runWith = (jobs: unknown[]) => async (input: string | URL | Request) => {
+    const u = new URL(String(input));
+    if (u.pathname === "/api/v1/runs/r1") {
+      return new Response(JSON.stringify({ id: "r1", sha: SHA, jobs }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.pathname.endsWith("/log"))
+      return new Response(JSON.stringify({ text: "skipped: if: false is false\n" }), {
+        headers: { "content-type": "application/json" },
+      });
+    return new Response("{}", { status: 404 });
+  };
+  const get = (jobs: unknown[]) =>
+    fetchOurRun({
+      baseUrl: new URL("http://127.0.0.1:1"),
+      org: "acme",
+      token: "tt_reader_example_token_value",
+      runId: "r1",
+      fetch: runWith(jobs) as never,
+    });
+
+  test("three shards report as one job: the fold of their states and the wall time, not the sum", async () => {
+    const r = await get([
+      { id: "j0", name: "Format", state: "success", duration_ms: 1000, shard: null },
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "success", "2026-11-23T10:00:10Z", "2026-11-23T10:03:00Z"),
+      shard(2, "success", "2026-11-23T10:00:05Z", "2026-11-23T10:02:00Z"),
+    ]);
+    expect(r.jobs.map((j) => j.name)).toEqual(["Format", "CLI tests (rules, engine and the rest)"]);
+    expect(r.jobs[1]).toMatchObject({ state: "success", durationMs: 6 * 60_000 });
+  });
+
+  test("any failed shard fails the job; a shard still running leaves it running with no duration", async () => {
+    const failed = await get([
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "failure", "2026-11-23T10:00:00Z", "2026-11-23T10:01:00Z"),
+      shard(2, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:02:00Z"),
+    ]);
+    expect(failed.jobs).toHaveLength(1);
+    expect(failed.jobs[0]!.state).toBe("failure");
+    const running = await get([
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "running", "2026-11-23T10:00:00Z", null),
+    ]);
+    expect(running.jobs[0]).toMatchObject({ state: "running", durationMs: null });
+  });
+
+  test("a split job compares against the one check of that name", async () => {
+    const r = await get([
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:03:00Z"),
+    ]);
+    const rep = compareParity(r.jobs, [
+      done("CLI tests (rules, engine and the rest)", "success", 400_000),
+    ]);
+    expect(rep.rows).toHaveLength(1);
+    expect(rep.rows[0]).toMatchObject({ verdict: "MATCH", oursDurationMs: 360_000 });
+    expect(rep.notReported).toEqual([]);
+  });
+
+  test("all shards skipped by an if: is one skipped job with that reason", async () => {
+    const r = await get([
+      { ...shard(0, "skipped", null, null) },
+      { ...shard(1, "skipped", null, null) },
+    ]);
+    expect(r.jobs).toHaveLength(1);
+    expect(r.jobs[0]).toMatchObject({ state: "skipped", skipReason: "if: false is false" });
   });
 });

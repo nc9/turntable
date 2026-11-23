@@ -10,7 +10,7 @@ import {
   type ActionRefResolver,
   type JobPlan,
   type PlannedAction,
-} from "@longshore/act-runner";
+} from "@turntable/act-runner";
 import type { Db } from "../db";
 import { getActionPolicy, observePin, type ActionPolicy, type Scope } from "../db/repos";
 import { githubReachability, impostorError, type ReachabilityChecker } from "./reachability";
@@ -121,7 +121,7 @@ export interface ResolvePlanOptions {
  *    (impostor commits from forks are refused);
  *  - each remote action is read at its sha, and the actions inside a composite go through the
  *    same resolution, allowlist and reachability, recursively, so act never fetches by tag.
- * Nested actions are not subject to `require_sha_pins`: the project does not write them, Longshore
+ * Nested actions are not subject to `require_sha_pins`: the project does not write them, Turntable
  * pins them.
  */
 export async function resolvePlanActions(plan: JobPlan, o: ResolvePlanOptions): Promise<JobPlan> {
@@ -134,8 +134,8 @@ export async function resolvePlanActions(plan: JobPlan, o: ResolvePlanOptions): 
     klass: o.klass,
     ...(o.warn ? { warn: o.warn } : {}),
   });
-  // LONGSHORE_GITHUB_TOKEN (read-only is enough) lifts the unauthenticated API rate limit.
-  const token = process.env.LONGSHORE_GITHUB_TOKEN?.trim();
+  // TURNTABLE_GITHUB_TOKEN (read-only is enough) lifts the unauthenticated API rate limit.
+  const token = process.env.TURNTABLE_GITHUB_TOKEN?.trim();
   const reachable = o.reachable ?? githubReachability(token ? { token } : {});
   const verify = async (a: PlannedAction): Promise<void> => {
     if (a.kind !== "remote" || !a.sha) return;

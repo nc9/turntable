@@ -1,0 +1,114 @@
+---
+title: "Design: publish targets"
+description: How a release is published to npm, a container registry and GitHub Releases without a job holding a long-lived credential, and what each path can and cannot do.
+---
+
+This is a design, not an implementation. It builds on the [release lane](/release-lane), the [signing service](/signing), the [secrets proxy](/secrets-proxy) and the [per-job GitHub token](/security). Issue [#47](https://github.com/nc9/turntable/issues/47).
+
+## The problem
+
+Publishing is the most dangerous thing a pipeline does. A leaked registry token publishes malware under the project's name, and nobody can recall a published npm version. The workflow that builds a release also runs untrusted dependencies, so the credential that publishes must not be in its reach, and what is published must be exactly what was built, signed and approved.
+
+Three targets, each with a different kind of credential:
+
+| Target | What authorizes a publish | Can the credential be short-lived? |
+| --- | --- | --- |
+| npm | A token for the package. npm's own "trusted publishing" accepts only specific hosted CI providers, not a self-hosted issuer, so there is no tokenless path. | No: a long-lived granular token, which npm can restrict to one package, to publish only, and to a list of source addresses. |
+| Container registry (ghcr.io) | A registry token with push on one repository. The registry hands out short-lived bearer tokens in exchange for a long-lived credential. | The bearer token yes, the credential behind it no. |
+| GitHub Releases | A GitHub token with `contents: write` on one repository. | Yes: the per-job installation token. |
+
+## Two ways to publish
+
+**Strict (declarative).** The workflow only builds and records artifacts. The release lane, after it has verified and signed them, performs the publish itself from the bytes it verified. No job ever sees a credential or runs a publish command. The project declares *what* to publish in its Turntable configuration (target, package or image name, which recorded artifacts), never in the workflow file, which untrusted pull requests can edit.
+
+**Compat.** An existing workflow already runs `npm publish` or `docker push` or `gh release upload`. The publish step runs in a job, and the secrets proxy attaches the credential to its requests, only to the registry, only for the one package, only while the release lane has approved this run. The job never holds the credential, but it does choose the bytes, so the proxy and the lane check them.
+
+Recommendation: build strict first for GitHub Releases and npm, where the lane already holds the bytes; give compat mode proxy rules for all three for workflows that cannot move yet; treat container images in strict mode as later work (see below). One credential store serves both: release-class vault secrets.
+
+## Where the credential lives
+
+Publish credentials are vault secrets of class `release`, sealed with the release master key. The main process cannot open them (`release_lane_only`). So:
+
+- In strict mode the lane opens the secret, makes the request, and writes the audit row. Nothing else is involved.
+- In compat mode the proxy that injects the credential must also be a process that can open it. The release lane therefore hosts a **release proxy**: a second listener of the same proxy code, with the release vault as its secret source, whose attempts are registered only by the lane. A publish job's sandbox is pointed at that listener instead of the worker's. The lane registers the attempt's rules only when it holds an approved release request for that run (tag verified at the forge, digests attested, approvals present, no freeze). The worker, which schedules the job, never sees the credential or the rules.
+
+Either way: if the request is not approved, there are no rules, the proxy refuses the host, and the job reaches nothing.
+
+## npm
+
+**Credential.** A granular access token for the one package (or scope), with publish permission only, an expiry, and, if the registry offers it, an allowed source address list set to the release proxy's or lane's egress address. Stored as `NPM_TOKEN` of class `release`, destination `registry.npmjs.org`. It is rotated on a schedule and on any incident (the vault's rotation flags and overlap window apply). It is never a user's login token.
+
+**Strict.** The lane reads the recorded tarball, recomputes its digest, and checks it against what it attested for the release. It builds the publish request itself (`PUT /<package>` with the version metadata, `dist.integrity` computed from the bytes, the dist-tag from the declared configuration) and sends it through the guarded outbound client with the token. A version that already exists is a success only if its published integrity equals the digest, otherwise a refusal (`republish_mismatch`).
+
+**Compat.** A proxy rule: host `registry.npmjs.org`, methods `GET` and `PUT`, path exactly the package's path, header injection `Authorization: Bearer`. Two things are new:
+
+- A scoped package's path is `/@scope%2Fname`, which the proxy's canonical-path rule refuses today because it never accepts an encoded slash. The rule form gains `npmPackage: "@scope/name"`, which allows exactly that one encoded slash in that one position and nothing else.
+- A **body check**: the rule can require that the tarball inside the `PUT` has a digest in a set the lane attested (`expectDigests`, filled by the lane when it registers the attempt). The proxy buffers the body (bounded), decodes the attachment, hashes it, and refuses a `PUT` whose bytes are not the approved ones. Without this check the job could publish any tarball under the approved name.
+
+**What the job can and cannot do.** It can publish the approved tarball under the approved package, once per version (npm refuses a repeat). It cannot publish another package, unpublish, change owners or tokens, read other packages' metadata, or reach any other host. It cannot read the token.
+
+**Provenance.** npm's own provenance needs a trusted publisher, which a self-hosted issuer cannot be. Turntable instead attaches its own SLSA provenance, signed by the release lane's key, as a release asset next to the tarball (`<name>-<version>.intoto.json`), and `turntable verify` checks a download against it. This is stated in the package's documentation, not claimed as npm provenance.
+
+## Container images (ghcr.io)
+
+**Credential.** A registry credential with push on one repository (for ghcr.io, a token with `packages: write` for that package), as `REGISTRY_TOKEN`, class `release`, destination `ghcr.io`. Registries exchange it for a short-lived bearer token through a challenge: `GET /v2/` answers `401` with a `www-authenticate` realm, the client calls the realm with Basic credentials and gets a bearer token scoped to the repository and actions.
+
+**Compat: proxy-side token exchange.** If the job did the exchange, it would hold a bearer token that can push anything to the repository until it expires. Instead a new rule type, `oci-registry`, makes the proxy answer the challenge itself: it calls the realm with the real credential for exactly the scope `repository:<name>:push,pull`, keeps the bearer token in memory for its short life, and attaches it to the job's `/v2/<name>/...` requests, so the job's client never sees a challenge or a token. The rule allows only that repository's `/v2/` paths, and the methods an image push uses.
+
+**Digest pinning.** Blob uploads are content-addressed and harmless. What matters is the manifest. The rule requires that `PUT /v2/<name>/manifests/<reference>` carries a reference in the approved set (the version tag, and the digest itself) and that the manifest body's sha256 equals the digest the lane attested for the release (`expectDigests`). A job cannot move the tag to another image.
+
+**Provenance as a referrer.** After the push, the lane checks the manifest at the registry by digest and attaches its own SLSA provenance as an OCI 1.1 referrer artifact (`subject` = the image digest) with a lane-held credential, where the registry supports referrers. Where it does not, the provenance is a release asset, as for npm. This is the part most dependent on the registry, and is allowed to degrade to the release asset.
+
+**Strict.** The lane would have to push layers and manifest from an image archive it verified: its own registry client, with uploads, retries and the manifest list for several architectures. That is substantial and is later work; until it exists, images go through compat mode.
+
+## GitHub Release assets
+
+**Credential.** The per-job installation token (see the security page): `contents: write` for the one repository, minted at job start for a `release`-class run on a verified tag only, never cached or shared, revoked when the job ends. Tokens for other classes are capped to read.
+
+**Compat.** Besides the API for the repository, the upload host is different (`uploads.github.com`), so the proxy gets the same repository-only rules for it. Two limits keep the job from publishing a release by itself:
+
+- Creating a release is allowed only as a **draft**: the rule checks `"draft": true` in the JSON body.
+- Changing or deleting a release, and any tag or ref write, are not allowed to the job.
+
+The release lane then **publishes** the draft: it lists the assets, downloads or hashes them against the digests it attested, refuses on any difference, and only then un-drafts with its own token. A job can upload assets to a draft and nothing more.
+
+**Strict.** The lane creates the draft, uploads the verified bytes with a write token it mints for the repository, and publishes. No job is involved.
+
+## What is audited
+
+| Event | Recorded |
+| --- | --- |
+| A publish was requested | Target, package or image, version or tag, the artifacts and their digests, the approvers. |
+| A credential was used | The proxy's `proxy_inject` entry (host, method, rule id; never a value, header or body) and the vault's `secret_use` entry (secret name and version, destination, run, attempt). |
+| A body check refused a request | The rule id and the reason (`digest_not_approved`), with the digests seen and expected. |
+| A target succeeded or failed | The target's result, the registry's own identifiers (version, digest, release id), per target. |
+| A refusal by policy | Not approved, frozen, tag moved, digest mismatch, republish mismatch: each with its reason. |
+
+All of it goes into the per-org hash-chained audit log, written before the credential is used.
+
+## Failure modes
+
+| Failure | Outcome |
+| --- | --- |
+| The release is not approved, the tag moved, or a digest differs | No rules are registered (compat) or no request is made (strict); the request is refused and audited. |
+| An incident freeze during a publish | Compat: the attempt's rules are revoked and its tunnels closed at once. Strict: the lane re-checks the freeze before each request and stops. Nothing is retried while frozen. |
+| The registry is down or rate limits | A bounded retry with backoff; then the target is `failed`, the others carry on or wait per the declared order. Re-running the request resumes: steps that already happened are recognised, never repeated blindly. |
+| A partial publish (npm done, image failed) | Per-target state is stored. Retrying publishes only what is missing. A mismatch with what exists at a target is a refusal, not an overwrite. |
+| A version already exists | Success only if its digest is the approved one. |
+| A credential is expired or revoked | The publish fails with the registry's status (no credential in the message); the operator rotates and re-runs. |
+| The worker dies during a compat job | The job's credential is on the lane's side and ends with the attempt; a re-attached attempt is refused a proxy it no longer has. |
+| A job tries another host, package, method or digest | The proxy refuses it (`403`), and the attempt's audit shows the refused request. |
+
+## Order of work
+
+1. This document.
+2. Strict GitHub Releases and strict npm in the lane, with per-target state, retries and the audit rows. The lane gets a write credential for GitHub minted per publish.
+3. The release proxy in the lane, and the compat rules: npm (`npmPackage`, `expectDigests`), GitHub (`uploads.github.com`, the draft body check), then `oci-registry` with token exchange and manifest pinning.
+4. A reference workflow for a hosted hop: a workflow on a platform that supports trusted publishing downloads the release, verifies the signature with `turntable verify`, and publishes by trusted publishing, for projects that want npm's own provenance.
+5. A spike on PyPI through a cloud identity chain, written up whatever the result.
+
+## Open questions
+
+- Is a project allowed to publish to npm through the long-lived token at all, or must it use the hosted hop? The design allows both and defaults to neither: a project opts in.
+- Should the lane's GitHub write credential be its own App (separate from the worker's), so a compromise of one does not reach the other? Recommended yes.
+- For images, is degrading provenance to a release asset acceptable when the registry has no referrers API?

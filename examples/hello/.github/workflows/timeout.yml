@@ -24,5 +24,15 @@ jobs:
           }
           i=0
           while [ "$(count)" -ne 0 ] && [ "$i" -lt 15 ]; do sleep 1; i=$((i + 1)); done
+          # If something survived, say what (command line, parent, process group) before failing.
+          if [ "$(count)" -ne 0 ]; then
+            for p in /proc/[0-9]*; do
+              c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null || true)
+              case "$c" in
+                "sleep 600"*|*step-shim*|*"perl -e"*|"sleep "*)
+                  echo "survivor pid=${p#/proc/} stat=$(cut -d' ' -f3-5 "$p/stat" 2>/dev/null) cmd=$c" ;;
+              esac
+            done
+          fi
           echo "left=$(count)"
           test "$(count)" -eq 0

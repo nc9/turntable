@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { splitRuleProblem } from "@turntable/act-runner";
 import { z } from "zod";
 
 /**
@@ -23,6 +24,50 @@ export const tagRefsSchema = z
   })
   .max(10)
   .default([]);
+
+/**
+ * Non-secret variables for `${{ vars.NAME }}` in a workflow's `if:` and expressions (what GitHub
+ * calls repository variables). Values are stored in the clear and shown in `policy show`: never
+ * put a secret here. Names follow GitHub's rule (no `GITHUB_` prefix).
+ */
+export const varsSchema = z
+  .record(
+    z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/, "a variable name")
+      .refine((n) => !/^github_/i.test(n), {
+        message: "a variable name cannot start with GITHUB_",
+      })
+      .refine((n) => n !== "__proto__", { message: "a variable name is reserved" }),
+    z.string().max(1024),
+  )
+  .refine((v) => Object.keys(v).length <= 50, { message: "at most 50 variables" });
+
+/**
+ * Operator rules that run one job as several shards, each in its own sandbox, without changing
+ * the workflow: `[{ "job": "tests", "shards": [{ "steps": ["Rules tests"] }, { "steps": ["Audit
+ * engine tests"] }] }]`. Steps are named by their `name:` or `#<n>` (counted from 1); a step no
+ * shard names runs in every shard. Never read from the repository.
+ */
+export const splitsSchema = z
+  .array(
+    z
+      .object({
+        job: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/, "a job id"),
+        shards: z
+          .array(z.object({ steps: z.array(z.string().min(1).max(200)).min(1).max(20) }).strict())
+          .min(2)
+          .max(8),
+      })
+      .strict()
+      .refine((r) => splitRuleProblem(r) === undefined, {
+        message: "a step is in two shards, or a step name is not a name or #<number>",
+      }),
+  )
+  .max(10)
+  .refine((all) => new Set(all.map((r) => r.job)).size === all.length, {
+    message: "a job has two split rules",
+  });
 
 const repoName = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "owner/name");
 
@@ -82,6 +127,11 @@ export const pollConfigSchema = z
              * GitHub-made commit for an open same-repo PR by a listed author. Off by default.
              */
             mergeQueue: z.boolean().default(false),
+            /**
+             * Make a run for each default-branch push the poller missed between two polls (at most
+             * 5 a poll, the newest), as GitHub would have run CI for each. Off: only the head.
+             */
+            everyPush: z.boolean().default(false),
             /** GitHub logins trusted without asking the forge. Compared case-insensitively. */
             authors: z.array(z.string().min(1)).default([]),
             /** Extra protected ref patterns (refs/heads/release/**). The default branch always is. */
@@ -106,6 +156,10 @@ export const pollConfigSchema = z
             /** Most runs of this repo that may wait for approval at once. */
             maxWaitingRuns: z.int().min(1).max(500).default(20),
             maxRunsPerHour: z.int().min(1).max(1000).default(30),
+            /** Non-secret `vars.*` for this repo's workflows. */
+            vars: varsSchema.optional(),
+            /** Jobs to run as several shards (see splitsSchema). */
+            splits: splitsSchema.optional(),
           })
           .strict(),
       )
@@ -139,8 +193,14 @@ export const ingestSettingsSchema = z
     /** Tag ref patterns to ingest as release runs (refs/tags/v*). Default none. */
     tagRefs: tagRefsSchema,
     mergeQueue: z.boolean().default(false),
+    /** A run for each default-branch push missed between polls (at most 5 a poll). Default off. */
+    everyPush: z.boolean().default(false),
     intervalSeconds: z.int().min(30).max(3600).default(60),
     egress: z.enum(["none", "open", "allowlist"]).optional(),
+    /** Non-secret `vars.*` for the workflows (set with `policy set --ingest on --var NAME=value`). */
+    vars: varsSchema.optional(),
+    /** Jobs to run as several shards (set with `policy set --ingest on --splits-json`). */
+    splits: splitsSchema.optional(),
   })
   .strict();
 export type IngestSettings = z.infer<typeof ingestSettingsSchema>;

@@ -25,11 +25,30 @@ function realBash(body: string) {
   chmodSync(join(bin, "bash"), 0o755);
 }
 
+/** Runs the install script with `path` as PATH, as the sandbox's exec would. */
+async function install(dir: string, path: string, names: readonly string[] = SHIM_NAMES) {
+  const p = Bun.spawn(["/bin/sh", "-c", INSTALL_SHIMS_SH, "tt", dir, STEP_SHIM, ...names], {
+    env: { PATH: path },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(),
+    new Response(p.stderr).text(),
+    p.exited,
+  ]);
+  return { out, err, code };
+}
+
 beforeAll(async () => {
   mkdirSync(bin, { recursive: true });
   mkdirSync(scratchTmp, { recursive: true });
-  const p = Bun.spawn(["sh", "-c", INSTALL_SHIMS_SH, "tt", shims, STEP_SHIM, ...SHIM_NAMES]);
-  expect(await p.exited).toBe(0);
+  // Every interpreter exists in this sandbox, so every one is shimmed.
+  for (const n of SHIM_NAMES) {
+    writeFileSync(join(bin, n), "#!/bin/sh\n");
+    chmodSync(join(bin, n), 0o755);
+  }
+  expect((await install(shims, `${bin}:/usr/bin:/bin`)).code).toBe(0);
 });
 
 /** Runs `shims/bash args` with the shim directory first on PATH. */
@@ -56,7 +75,7 @@ async function viaShim(
 }
 
 describe("the install script", () => {
-  test("one shim, with a symlink per interpreter act launches", () => {
+  test("one shim, with a symlink per interpreter act launches that exists", () => {
     expect(readdirSync(shims).toSorted()).toEqual(["step-shim", ...SHIM_NAMES].toSorted());
     for (const n of SHIM_NAMES) expect(existsSync(join(shims, n))).toBe(true);
     expect(SHIM_NAMES).toEqual(expect.arrayContaining(["bash", "sh", "node", "python"]));
@@ -129,7 +148,7 @@ describe("the shim", () => {
     // The outer step runs `bash` again through PATH (the shim), as `#!/usr/bin/env bash` scripts do.
     writeFileSync(
       join(bin, "bash"),
-      `#!/bin/sh\nif [ "$1" = inner ]; then echo "inner io=$LONGSHORE_STEP_IO"; [ -t 1 ] && echo tty || echo notty; else echo outer; bash inner; fi\n`,
+      `#!/bin/sh\nif [ "$1" = inner ]; then echo "inner io=$TURNTABLE_STEP_IO"; [ -t 1 ] && echo tty || echo notty; else echo outer; bash inner; fi\n`,
     );
     chmodSync(join(bin, "bash"), 0o755);
     const r = await viaShim([]);
@@ -187,13 +206,41 @@ function startShim(env: Record<string, string> = {}) {
 describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
   test("SIGKILL of the shim takes the interpreter and what it started down with it", async () => {
     realBash("sleep 31337 & sleep 31337; echo not-reached");
-    const { p } = startShim({ LONGSHORE_STEP_GRACE: "1" });
+    const { p } = startShim({ TURNTABLE_STEP_GRACE: "1" });
     expect(await waitUntil(async () => (await running("sleep 31337")).length > 0, 5000)).toBe(true);
     p.kill("SIGKILL");
     await p.exited;
     // The watcher polls once a second, then TERM, then KILL after the grace period.
     const gone = await waitUntil(async () => (await running("sleep 31337")).length === 0, 10_000);
     if (!gone) await Bun.spawn(["pkill", "-f", "sleep 31337"]).exited; // do not leak from a failing test
+    expect(gone).toBe(true);
+  }, 30_000);
+
+  test("the watcher survives what kills the shim's whole process group (act's pty teardown), and still takes the interpreter down", async () => {
+    realBash("sleep 31341 & sleep 31341; echo not-reached");
+    // The shim leads a process group of its own, as a step does on act's pty: killing the group
+    // kills the shim and anything left in it, which a subshell watcher would be.
+    const p = Bun.spawn(["perl", "-e", "setpgrp(0,0); exec @ARGV", join(shims, "bash")], {
+      env: { PATH: `${shims}:${bin}:/usr/bin:/bin`, TMPDIR: scratchTmp, TURNTABLE_STEP_GRACE: "1" },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await waitUntil(async () => (await running("sleep 31341")).length > 0, 5000)).toBe(true);
+    // Let the shim set up its watcher before the group goes.
+    expect(
+      await waitUntil(async () => (await running("my($shim,$rpid,$grace)")).length > 0, 5000),
+    ).toBe(true);
+    process.kill(-p.pid, "SIGKILL");
+    await p.exited;
+    // A hangup to the same group right after, as the closing pty sends.
+    try {
+      process.kill(-p.pid, "SIGHUP");
+    } catch {
+      // the group may already be empty
+    }
+    const gone = await waitUntil(async () => (await running("sleep 31341")).length === 0, 10_000);
+    if (!gone) await Bun.spawn(["pkill", "-f", "sleep 31341"]).exited;
     expect(gone).toBe(true);
   }, 30_000);
 
@@ -222,7 +269,7 @@ describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
 
   test("an interpreter that ignores TERM is killed after the grace period", async () => {
     realBash("trap '' TERM; while :; do sleep 31340; done");
-    const { p } = startShim({ LONGSHORE_STEP_GRACE: "1" });
+    const { p } = startShim({ TURNTABLE_STEP_GRACE: "1" });
     expect(await waitUntil(async () => (await running("sleep 31340")).length > 0, 5000)).toBe(true);
     const t0 = Date.now();
     p.kill("SIGTERM");
@@ -321,5 +368,112 @@ describe("the step environment", () => {
     expect(out).toContain("lang=C.UTF-8");
     expect(out).toContain("lcall=C.UTF-8");
     expect(out).toContain("pager=cat");
+  });
+});
+
+// A shim for an interpreter that is not installed would make `command -v` lie. These tests use a
+// PATH made only of what they put in it, so they do not depend on what the machine has (GitHub's
+// own runners have pwsh; a dev machine may not).
+describe("only interpreters that exist are shimmed", () => {
+  const TOOLS = [
+    "sh",
+    "mkdir",
+    "chmod",
+    "ln",
+    "dirname",
+    "readlink",
+    "mktemp",
+    "mkfifo",
+    "cat",
+    "rm",
+    "kill",
+    "sleep",
+    "perl",
+    "env",
+  ];
+  /** A PATH directory holding only the commands the shim itself needs, plus `extra` fakes. */
+  function hermetic(name: string, extra: Record<string, string> = {}): string {
+    const d = join(tmp, name);
+    mkdirSync(d, { recursive: true });
+    for (const t of TOOLS) {
+      const real = Bun.which(t);
+      if (real) symlinkSync(real, join(d, t));
+    }
+    for (const [n, body] of Object.entries(extra)) {
+      writeFileSync(join(d, n), `#!/bin/sh\n${body}\n`);
+      chmodSync(join(d, n), 0o755);
+    }
+    return d;
+  }
+  async function step(dir: string, pathAfter: string, script: string, shell = "sh") {
+    const p = Bun.spawn([join(dir, shell), "-c", script], {
+      env: { PATH: `${dir}:${pathAfter}`, TMPDIR: scratchTmp },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    return { out: out + err, code };
+  }
+
+  test("pwsh absent: no shim for it, so a workflow's own probe skips and succeeds, with its notice", async () => {
+    const bin2 = hermetic("bin-nopwsh", { bash: 'exec sh "$@"' });
+    const d = join(tmp, "shims-nopwsh");
+    expect((await install(d, bin2)).code).toBe(0);
+    expect(existsSync(join(d, "pwsh"))).toBe(false);
+    expect(existsSync(join(d, "bash"))).toBe(true);
+    const r = await step(
+      d,
+      bin2,
+      'if ! command -v pwsh >/dev/null; then echo "::notice::pwsh is not installed, skipping"; exit 0; fi; echo ran-pwsh; pwsh -v',
+    );
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("::notice::pwsh is not installed, skipping");
+    expect(r.out).not.toContain("ran-pwsh");
+    expect(r.out).not.toContain("command not found");
+  });
+
+  test("`command -v` behaves as it does without Turntable: node absent is non-zero and prints nothing", async () => {
+    const bin2 = hermetic("bin-nonode");
+    const d = join(tmp, "shims-nonode");
+    await install(d, bin2);
+    const r = await step(d, bin2, "command -v node");
+    expect(r.code).not.toBe(0);
+    expect(r.out.trim()).toBe("");
+    // and the same for every interpreter that is not there
+    for (const n of ["node", "python", "python3", "pwsh"])
+      expect(existsSync(join(d, n))).toBe(false);
+  });
+
+  test("pwsh present: the shim is used, and it runs the real one", async () => {
+    const bin2 = hermetic("bin-pwsh", { pwsh: 'echo "real-pwsh $*"' });
+    const d = join(tmp, "shims-pwsh");
+    await install(d, bin2);
+    expect(existsSync(join(d, "pwsh"))).toBe(true);
+    const r = await step(d, bin2, "command -v pwsh; pwsh -NoProfile hi");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(join(d, "pwsh")); // `command -v` finds the shim first
+    expect(r.out).toContain("real-pwsh -NoProfile hi");
+  });
+
+  test("only python3 installed: there is no `python` shim to pretend python exists", async () => {
+    const bin2 = hermetic("bin-py3", { python3: "echo py3" });
+    const d = join(tmp, "shims-py3");
+    await install(d, bin2);
+    expect(existsSync(join(d, "python3"))).toBe(true);
+    expect(existsSync(join(d, "python"))).toBe(false);
+    expect((await step(d, bin2, "command -v python")).code).not.toBe(0);
+  });
+
+  test("the shim directory itself on PATH does not count as the real interpreter", async () => {
+    const bin2 = hermetic("bin-self");
+    const d = join(tmp, "shims-self");
+    // a first run makes shims for nothing; a second, with the shim dir on PATH, still finds no node
+    await install(d, bin2);
+    await install(d, `${d}:${bin2}`);
+    expect(existsSync(join(d, "node"))).toBe(false);
   });
 });

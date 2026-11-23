@@ -9,18 +9,18 @@ export type Migration = {
 
 /**
  * Applies pending migrations in order, each inside a transaction, and records them in
- * `__longshore_migrations`. Migrations are data (see migrations.generated.ts), so this works
+ * `__turntable_migrations`. Migrations are data (see migrations.generated.ts), so this works
  * from a compiled binary. Rebuild migrations (new CHECK constraints) are supported: see below. A Postgres dialect would reuse the `Migration` shape with its own
  * runner.
  */
 export function applyMigrations(sqlite: Database, migrations: Migration[]): string[] {
   migrateLegacyMigrationsTable(sqlite);
   sqlite.run(
-    "CREATE TABLE IF NOT EXISTS __longshore_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS __turntable_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
   );
   const done = new Set(
     sqlite
-      .query<{ tag: string }, []>("SELECT tag FROM __longshore_migrations")
+      .query<{ tag: string }, []>("SELECT tag FROM __turntable_migrations")
       .all()
       .map((row) => row.tag),
   );
@@ -33,19 +33,24 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
     // the result before committing, and always turn it back on.
     sqlite.run("PRAGMA foreign_keys = OFF");
     try {
-      sqlite.transaction(() => {
-        for (const statement of migration.statements) sqlite.run(statement);
-        const broken = sqlite.query("PRAGMA foreign_key_check").all();
-        if (broken.length > 0) {
-          throw new Error(
-            `migration ${migration.tag} left ${broken.length} foreign key violation(s); rolled back`,
-          );
-        }
-        sqlite.run("INSERT INTO __longshore_migrations (tag, applied_at) VALUES (?, ?)", [
-          migration.tag,
-          Date.now(),
-        ]);
-      })();
+      // IMMEDIATE: the write lock is taken at the start, where the busy timeout applies. A deferred
+      // transaction that reads first and writes later can be refused at once when another
+      // connection wrote in between.
+      sqlite
+        .transaction(() => {
+          for (const statement of migration.statements) sqlite.run(statement);
+          const broken = sqlite.query("PRAGMA foreign_key_check").all();
+          if (broken.length > 0) {
+            throw new Error(
+              `migration ${migration.tag} left ${broken.length} foreign key violation(s); rolled back`,
+            );
+          }
+          sqlite.run("INSERT INTO __turntable_migrations (tag, applied_at) VALUES (?, ?)", [
+            migration.tag,
+            Date.now(),
+          ]);
+        })
+        .immediate();
     } finally {
       sqlite.run("PRAGMA foreign_keys = ON");
     }

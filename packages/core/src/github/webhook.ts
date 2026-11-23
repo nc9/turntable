@@ -9,7 +9,7 @@
 //  4. Handlers re-fetch facts from the API (see installations.ts) and are idempotent.
 //  5. Events nobody handles are stored as ignored and acknowledged.
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { readCapped } from "@longshore/net";
+import { readCapped } from "@turntable/net";
 import { auditAggregate, auditFailure } from "../audit/failures";
 import type { Db } from "../db";
 import {
@@ -45,7 +45,7 @@ export interface WebhookOptions {
   maxFailures?: number;
   failureWindowMs?: number;
   /**
-   * The proxies in front of the server that you control (LONGSHORE_TRUSTED_PROXIES). The forwarded
+   * The proxies in front of the server that you control (TURNTABLE_TRUSTED_PROXIES). The forwarded
    * chain is believed only through them; otherwise the limiter keys on the socket peer, so a
    * spoofed header gains nothing. A valid signature is never rate limited either way.
    */

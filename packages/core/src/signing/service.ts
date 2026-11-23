@@ -10,7 +10,7 @@ import {
   buildStatement,
   signEnvelope,
   statementBytes,
-} from "@longshore/signer";
+} from "@turntable/signer";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -33,7 +33,7 @@ export interface SigningServiceOptions {
   /** The backends this instance has. A project's key names one of them. */
   signers: Partial<Record<Backend, Signer>>;
   approvals: ApprovalVerifier;
-  /** The Longshore instance, as a URL: the provenance's builder id. */
+  /** The Turntable instance, as a URL: the provenance's builder id. */
   builderId: string;
 }
 

@@ -7,6 +7,8 @@ import {
   createAttempt,
   createJob,
   createRun,
+  type Job,
+  type JobAttempt,
   type Run,
   type RunInput,
   setRunStatus,
@@ -82,7 +84,7 @@ export type Superseded = {
   running: { attemptId: string; sandboxId: string | null; provider: string }[];
 };
 
-/** The run, its jobs and a queued attempt per job. Shared by the poller and `longshore run`. */
+/** The run, its jobs and a queued attempt per job. Shared by the poller and `turntable run`. */
 async function insertPlannedRun(
   tx: Db,
   scope: Scope,
@@ -127,7 +129,7 @@ async function insertPlannedRun(
 }
 
 /**
- * Creates a run started by `longshore run`: the planned jobs with queued attempts, marked
+ * Creates a run started by `turntable run`: the planned jobs with queued attempts, marked
  * `local` so only the starting process runs them. No poll marker, no concurrency group (a local
  * run never waits for, or cancels, another).
  */
@@ -368,6 +370,44 @@ export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Pr
   });
 }
 
+/** The audiences the project's jobs may mint OIDC tokens for, or null when any audience is allowed. */
+export function getProjectOidcAudiences(db: Db, scope: Scope): Promise<string[] | null> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ a: s.projects.oidcAudiences })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    if (!row?.a) return null;
+    try {
+      const v: unknown = JSON.parse(row.a);
+      // A stored value that is not a list of strings is treated as a list that allows nothing,
+      // never as "any audience": a damaged restriction must not widen access.
+      return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Sets the allowed audiences, or clears the restriction with null. Returns false for no such project. */
+export function setProjectOidcAudiences(
+  db: Db,
+  scope: Scope,
+  audiences: readonly string[] | null,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const rows = await h.orm
+      .update(s.projects)
+      .set({ oidcAudiences: audiences === null ? null : JSON.stringify([...audiences]) })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .returning({ id: s.projects.id });
+    return rows.length > 0;
+  });
+}
+
 /** The forge check run stored on an attempt, if one was created. */
 export function getAttemptCheckRunId(
   db: Db,
@@ -388,6 +428,36 @@ export function getAttemptCheckRunId(
       .limit(1);
     return row?.id ?? null;
   });
+}
+
+/**
+ * Attempts that ended `skipped` without ever starting (the scheduler resolved the job: a false
+ * `if:`, a failed need, every shard path-skipped) and have no forge check yet, newest first, across
+ * every org (system work for the check reporter). An attempt that ran and was skipped by its
+ * runner has `started_at` and is reported through the observer instead.
+ */
+export function listUnreportedSkips(
+  db: Db,
+  opts: { since: number; limit: number },
+): Promise<{ attempt: JobAttempt; job: Job; run: Run }[]> {
+  return db.run((h) =>
+    h.orm
+      .select({ attempt: s.jobAttempts, job: s.jobs, run: s.runs })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+      .where(
+        and(
+          eq(s.jobAttempts.state, "skipped"),
+          isNull(s.jobAttempts.startedAt),
+          isNull(s.jobAttempts.checkRunId),
+          eq(s.runs.local, false),
+          gte(s.jobAttempts.createdAt, opts.since),
+        ),
+      )
+      .orderBy(desc(s.jobAttempts.id))
+      .limit(opts.limit),
+  );
 }
 
 export function setAttemptCheckRunId(

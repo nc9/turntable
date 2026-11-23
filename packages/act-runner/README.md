@@ -1,4 +1,4 @@
-# @longshore/act-runner
+# @turntable/act-runner
 
 Runs one GitHub Actions job inside a sandbox using [nektos/act](https://github.com/nektos/act)
 (MIT) in host mode. It talks to the sandbox only through the provider SDK: detached exec, status
@@ -40,33 +40,38 @@ ends as `infra_error`.
 
 ## Parity assumptions
 
-Each is a claim about GitHub's hosted runner that Longshore makes true for steps. A workflow that
+Each is a claim about GitHub's hosted runner that Turntable makes true for steps. A workflow that
 passes on GitHub must not fail here because of the environment. Numbers are stable: tests and
 issues cite them.
 
 1. **P1: no terminal on a step's stdin, stdout or stderr.** act v0.2.97 allocates a pty for every
    host-mode command, unconditionally (`if true /* allocate Terminal */` in
    `pkg/container/host_environment.go`; no flag or env disables it), so `[ -t 1 ]` and
-   `process.stdout.isTTY` are true. GitHub's runner captures steps through pipes. Longshore puts
+   `process.stdout.isTTY` are true. GitHub's runner captures steps through pipes. Turntable puts
    shims for `bash`, `sh`, `python`, `python3`, `node` and `pwsh` first on `PATH` (act resolves a
    step's interpreter through the PATH it inherits). A shim runs the real interpreter with stdin
    from `/dev/null` and stdout and stderr (merged, as the runner captures them) on a pipe, and
    forwards the pipe to act's pty; everything the step starts inherits it. Found by a parity
    run of a real project's CLI tests: its `fmt` colours when `process.stdout.isTTY &&
-   TERM !== "dumb"`, and two tests that assert the output has no escape sequence failed.
+TERM !== "dumb"`, and two tests that assert the output has no escape sequence failed.
    The shim stays as the step's parent so output is fully flushed before act moves on, which
    would make act's step-timeout SIGKILL (sent to the direct child only) hit the shim and leave
    the interpreter running. So the shim guards it: the interpreter runs in its own process group
    (perl `setpgrp` then `exec`; perl is in Debian's base set), a TERM, INT or HUP sent to the shim
-   goes to that group with KILL after a grace period (`LONGSHORE_STEP_GRACE`, default 5 s), and
+   goes to that group with KILL after a grace period (`TURNTABLE_STEP_GRACE`, default 5 s), and
    a small watcher takes the group down (TERM, then KILL) if the shim disappears while the
    interpreter still runs. When the interpreter ended normally, a daemon it left behind on
    purpose is left alone, as on GitHub. Without perl the interpreter runs in the shim's own
    group with no watchdog. Known limits: the interpreter still has a controlling terminal
    (`/dev/tty` opens), since dropping it would need a new session; git prompts are off
    (`GIT_TERMINAL_PROMPT=0`). An interpreter that a step puts ahead of the shims (a `node` from
-   `setup-node`) is not wrapped; it still inherits the wrapped step's pipes when started from a
-   shimmed shell.
+   `setup-node`, a `python` from `setup-python`) is not wrapped; it still inherits the wrapped
+   step's pipes when started from a shimmed shell. Each shim run re-checks at start and at exit and
+   links a shim for an interpreter that now exists on PATH behind the shim directory and has none
+   yet (for example a `pwsh` installed with apt in a step). That resync is add-only (it never
+   removes a link, never links before the tool exists, and skips a tool whose directory is ahead of
+   the shims), and it makes each link under a temp name and renames it into place, so concurrent
+   shims never leave a partial link. A tool installed mid-job is wrapped from the next shimmed step.
 2. **P2: `CI=true` and `GITHUB_ACTIONS=true`.** act sets both for every step (`env["CI"] = "true"`
    and `env["GITHUB_ACTIONS"] = "true"` in `pkg/runner/run_context.go`, v0.2.97). Pinned by the
    end-to-end parity job.

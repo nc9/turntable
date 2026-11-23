@@ -5,11 +5,13 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
   Artifact,
   ConsumeResult,
   OrgQuotas,
   QuotaLimits,
   QuotaMetric,
+  LogNotice,
   KeyPolicy,
   PolicyStatement,
   EnrolStatement,
@@ -41,6 +43,8 @@ type JobTemplate = {
   kind: LogKind;
   matrix?: Record<string, string>;
   matrixGroup?: string;
+  /** One shard of a job the operator splits across sandboxes. */
+  shard?: { job: string; index: number; total: number; steps: string[] };
   /** Baseline duration in ms before jitter. */
   base: number;
   /** Release/environment gate: approved by a human with a security key. */
@@ -72,6 +76,21 @@ const matrixLegs = (): JobTemplate[] => {
   return legs;
 };
 
+/** A job split into three shards, one suite each, as an operator's split rule makes them. */
+const shardedTests = (): JobTemplate[] =>
+  [
+    ["Audit engine tests", 120_000],
+    ["Rules tests", 60_000],
+    ["Remaining package and script tests", 50_000],
+  ].map(([step, base], index) => ({
+    key: `cli-tests[${index}]`,
+    name: "CLI tests",
+    needs: [],
+    kind: "test" as LogKind,
+    shard: { job: "cli-tests", index, total: 3, steps: [step as string] },
+    base: base as number,
+  }));
+
 const WORKFLOWS: WorkflowTemplate[] = [
   {
     path: ".github/workflows/ci.yml",
@@ -81,12 +100,16 @@ const WORKFLOWS: WorkflowTemplate[] = [
       { key: "lint", name: "lint", needs: [], kind: "lint", base: 25_000 },
       { key: "typecheck", name: "typecheck", needs: [], kind: "typecheck", base: 40_000 },
       ...matrixLegs(),
+      ...shardedTests(),
       {
         key: "build",
         name: "build",
         needs: [
           "lint",
           "typecheck",
+          "cli-tests[0]",
+          "cli-tests[1]",
+          "cli-tests[2]",
           "test-ubuntu-22.04-20",
           "test-ubuntu-22.04-22",
           "test-ubuntu-24.04-20",
@@ -165,7 +188,7 @@ export type World = ReturnType<typeof createWorld>;
 
 export function createWorld(options: { now?: () => number; seed?: string } = {}) {
   const now = options.now ?? Date.now;
-  const rng = createRng(options.seed ?? "longshore-fixture");
+  const rng = createRng(options.seed ?? "turntable-fixture");
 
   const orgs: Org[] = [
     { id: "01FIXTURE0ORG0NORTHWIND0000", slug: "northwind", name: "Northwind" },
@@ -289,6 +312,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       needs: t.needs,
       matrix: t.matrix ?? null,
       matrixGroup: t.matrixGroup ?? null,
+      shard: t.shard ?? null,
       approval: null,
       exitCode: null,
       createdAt: run.createdAt,
@@ -335,6 +359,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       }
       const attempt = makeAttempt(row, 1, start);
       attempt.finishedAt = start + plan.durationMs;
+      closeSandbox(attempt);
       attempt.state = plan.outcome;
       if (plan.outcome === "infra_error") {
         attempt.errorClass = rng.pick([
@@ -345,6 +370,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
         attempts.set(attempt.id, attempt);
         const a2 = makeAttempt(row, 2, attempt.finishedAt + 4000);
         a2.finishedAt = a2.startedAt! + plan.durationMs;
+        closeSandbox(a2);
         a2.state = "success";
         a2.exitCode = 0;
         attempts.set(a2.id, a2);
@@ -370,6 +396,13 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     runs.set(run.id, run);
   }
 
+  /** A finished attempt's sandbox is destroyed half a second after it ends. */
+  function closeSandbox(a: JobAttempt): void {
+    if (a.sandboxCreatedAt === null || a.finishedAt === null) return;
+    a.sandboxDestroyedAt = a.finishedAt + 500;
+    a.sandboxSeconds = (a.sandboxDestroyedAt - a.sandboxCreatedAt) / 1000;
+  }
+
   function makeAttempt(job: Job, n: number, start: number): JobAttempt {
     return {
       id: id(start),
@@ -385,6 +418,9 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       createdAt: start,
       startedAt: start,
       finishedAt: null,
+      sandboxCreatedAt: start,
+      sandboxDestroyedAt: null,
+      sandboxSeconds: null,
     };
   }
 
@@ -486,6 +522,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
           const plan = plans.get(`${row.id}:${a.attempt}`)!;
           if (a.startedAt != null && t >= a.startedAt + plan.durationMs) {
             a.finishedAt = a.startedAt + plan.durationMs;
+            closeSandbox(a);
             a.state = plan.outcome;
             if (plan.outcome === "infra_error") {
               a.errorClass = rng.pick([
@@ -627,6 +664,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     done: boolean;
     steps: GeneratedLog["steps"];
     cuts: GeneratedLog["cuts"];
+    notices: Omit<LogNotice, "attemptId">[];
   } | null {
     const a = attempts.get(attemptId);
     if (!a || a.startedAt == null) return null;
@@ -640,8 +678,28 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       durationMs,
     });
     const finished = a.finishedAt != null;
+    // A system notice, out of band from the log text: attempts whose log was cut also had a cache
+    // archive with entries at denied paths dropped.
+    const notices: Omit<LogNotice, "attemptId">[] =
+      log.cuts.length > 0
+        ? [
+            {
+              kind: "notice",
+              atOffset: 0,
+              source: "cache",
+              text: "cache: 3 entries dropped (denied paths)",
+            },
+          ]
+        : [];
     if (finished)
-      return { log, available: log.bytes.length, done: true, steps: log.steps, cuts: log.cuts };
+      return {
+        log,
+        available: log.bytes.length,
+        done: true,
+        steps: log.steps,
+        cuts: log.cuts,
+        notices,
+      };
     const p = Math.min(1, Math.max(0, (now() - a.startedAt) / durationMs));
     const lines = Math.floor(log.lineCount * p);
     const available = lines === 0 ? 0 : (log.lineEnds[lines - 1] ?? 0);
@@ -651,6 +709,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       done: false,
       steps: log.steps.filter((st) => st.logOffset <= available),
       cuts: log.cuts.filter((c) => c.atOffset <= available),
+      notices,
     };
   }
 
@@ -721,9 +780,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
   }
 
-  const stripAnsi = (t: string): string =>
-    // oxlint-disable-next-line no-control-regex
-    t.replace(/\u001b\[[0-9;]*m/g, "");
+  const stripAnsi = (t: string): string => t.replace(/\u001b\[[0-9;]*m/g, "");
   const textOf = (attemptId: string): string[] => {
     const l = logOf(attemptId);
     if (!l) return [];
@@ -1022,6 +1079,53 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
   }
 
+  /** Deterministic sandbox minutes per UTC day, with the last day an estimate. */
+  function sandboxUsage(days: number): SandboxUsage {
+    const day = 86_400_000;
+    const today = Math.floor(now() / day) * day;
+    const rows = Array.from({ length: days }, (_, i) => {
+      const start = today - (days - 1 - i) * day;
+      const minutes = 40 + ((i * 53) % 260);
+      const attempts = 6 + ((i * 7) % 19);
+      return {
+        day: new Date(start).toISOString().slice(0, 10),
+        seconds: minutes * 60,
+        minutes,
+        attempts,
+        estimatedAttempts: i === days - 1 ? 1 : 0,
+      };
+    });
+    // Two projects that add up to each day exactly: "api" takes the larger share.
+    const share = (r: (typeof rows)[number], part: "api" | "web") => {
+      const apiMin = Math.round(r.minutes * 0.65);
+      const apiAttempts = Math.ceil(r.attempts * 0.65);
+      const minutes = part === "api" ? apiMin : r.minutes - apiMin;
+      return {
+        day: r.day,
+        seconds: minutes * 60,
+        minutes,
+        attempts: part === "api" ? apiAttempts : r.attempts - apiAttempts,
+        estimatedAttempts: part === "api" ? r.estimatedAttempts : 0,
+      };
+    };
+    const project = (slug: "api" | "web", name: string) => {
+      const d = rows.map((r) => share(r, slug));
+      return {
+        id: `01FIXTURE0PROJECT0${slug.toUpperCase()}000`,
+        slug,
+        name,
+        days: d,
+        totalMinutes: d.reduce((n, r) => n + r.minutes, 0),
+      };
+    };
+    return {
+      days: rows,
+      totalMinutes: rows.reduce((n, r) => n + r.minutes, 0),
+      projects: [project("api", "API"), project("web", "Web")],
+      limitMinutesPerDay: 240,
+    };
+  }
+
   function approversOverview(): ApproversOverview {
     return {
       keyPolicy: {
@@ -1278,6 +1382,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     ingestStatus,
     approvalStatus,
     approversOverview,
+    sandboxUsage,
     getArtifacts,
     checkArtifactConsumption,
     getQuotas,

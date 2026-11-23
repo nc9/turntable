@@ -49,11 +49,12 @@ import { createRealtime, type WsData } from "../src/realtime/server";
 import type { ServerMessage } from "../src/realtime/protocol";
 import { handleRequest } from "../src/server";
 import { SecretVault } from "../src/secrets/vault";
+import { WebhookService } from "../src/webhooks/service";
 import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
 
 // Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
 // connection, each needs its own instance.
-process.env.LONGSHORE_TEST_PGLITE_ISOLATED = "1";
+process.env.TURNTABLE_TEST_PGLITE_ISOLATED = "1";
 
 // ---- the world ----
 
@@ -71,6 +72,7 @@ type World = {
     registry: typeof registry;
     db: Db;
     vault: SecretVault;
+    webhooks: WebhookService;
     webauthn: { rpId: string; origins: string[] };
   };
   a: Tenant;
@@ -93,10 +95,13 @@ type World = {
 async function buildWorld(): Promise<World> {
   const db = openDatabase(":memory:");
   const vault = new SecretVault({ db, masterKey: randomBytes(32) });
+  const masterKey = randomBytes(32);
+  const webhooks = new WebhookService({ db, masterKey });
   const env = {
     registry,
     db,
     vault,
+    webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
   };
   const a = await seedTenant(db, "org-a");
@@ -270,7 +275,18 @@ async function buildWorld(): Promise<World> {
     artifacts: ["a-only-artifact.tgz"],
   });
   const releaseId = rel.ok ? (rel.output as { id: string }).id : "";
+  const hook = await webhooks.createEndpoint(
+    { orgId: a.orgId },
+    {
+      url: "https://a-only-hook.example.test/x",
+      description: "a-only-webhook",
+      eventTypes: null,
+      createdBy: "test:setup",
+      fromStart: false,
+    },
+  );
   const fx: Record<string, string> = {
+    webhookId: hook.id,
     heldRunId,
     heldSha,
     envRunId,
@@ -357,6 +373,8 @@ async function buildWorld(): Promise<World> {
       A_SECRET,
       A_RULE,
       "a-only-artifact",
+      "a-only-hook.example.test",
+      "a-only-webhook",
     ],
     aWho: await who(a, "A"),
     bWho: await who(b, "B"),
@@ -388,6 +406,7 @@ const FIELD: Record<string, (w: World) => unknown> = {
   pattern: () => "a-only",
   artifacts: () => ["a-only-artifact.tgz"],
   id: (w) => w.aOnly.runId,
+  webhook_id: (w) => w.fx.webhookId!,
   enrolment_id: (w) => w.aOnly.runId,
 };
 /** Fields handled by the variant, not here. */
@@ -484,6 +503,7 @@ const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => voi
       forge_login: "mallory-gh",
       ed25519_public_key: generateEd25519().publicSpki,
     }),
+  create_webhook: (_w, i) => void (i.url = "https://hooks.example.test/x"),
   get_release_request: (w, i) => Object.assign(i, { id: w.fx.releaseId }),
   submit_approval: (w, i) =>
     Object.assign(i, {
@@ -715,7 +735,14 @@ describe("generated from the registry: every op, every B principal, A's ids and 
     expect(ops.length).toBeGreaterThan(0);
     for (const who of [...hostile.aWho, ...hostile.bWho]) {
       for (const op of ops) {
-        const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+        const input =
+          op.name === "set_quotas"
+            ? { target_org: "org-a", max_log_bytes: 1 }
+            : op.name === "set_project_settings"
+              ? { target_org: "org-a", target_project: "app", max_concurrent: 1 }
+              : op.name === "create_project"
+                ? { target_org: "org-a", slug: "sneaky", name: "x" }
+                : {};
         const out = await call(hostile, who, op, input);
         expect(out.ok, `${who.label} on ${op.name}`).toBe(false);
         expect(out.code, `${who.label} on ${op.name}`).toBe("forbidden");
@@ -890,7 +917,7 @@ describe("realtime WebSocket", () => {
   async function connect(
     token: string,
   ): Promise<{ msgs: ServerMessage[]; send(m: object): void; close(): void }> {
-    const ws = new WebSocket(`ws://${base}/api/v1/realtime`, ["longshore.v1", `bearer.${token}`]);
+    const ws = new WebSocket(`ws://${base}/api/v1/realtime`, ["turntable.v1", `bearer.${token}`]);
     const msgs: ServerMessage[] = [];
     ws.onmessage = (e) => void msgs.push(JSON.parse(String(e.data)) as ServerMessage);
     await new Promise<void>((resolve, reject) => {

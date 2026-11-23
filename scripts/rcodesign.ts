@@ -34,7 +34,7 @@ export async function ensureRcodesign(): Promise<string> {
   const key = `${process.platform}-${process.arch}`;
   const rel = RCODESIGN_ASSETS[key];
   if (!rel) throw new Error(`no pinned rcodesign for ${key}; set RCODESIGN to a binary`);
-  const dir = join(tmpdir(), `longshore-rcodesign-${RCODESIGN_VERSION}-${key}`);
+  const dir = join(tmpdir(), `turntable-rcodesign-${RCODESIGN_VERSION}-${key}`);
   const bin = join(dir, "rcodesign");
   if (existsSync(bin)) return bin;
   mkdirSync(dir, { recursive: true });
@@ -120,7 +120,7 @@ if (import.meta.main) {
     console.error("usage: rcodesign.ts <sign|verify> <binary> [identifier]");
     process.exit(2);
   }
-  const identifier = id ?? file.split("/").pop() ?? "longshore";
+  const identifier = id ?? file.split("/").pop() ?? "turntable";
   if (cmd === "sign") await signAdhoc(file, identifier);
   const facts = await verifySignature(file, identifier);
   console.log(

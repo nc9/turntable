@@ -1,4 +1,4 @@
-import type { Provider } from "@longshore/provider-sdk";
+import type { Provider } from "@turntable/provider-sdk";
 
 /**
  * Egress canary. When a job's policy is `none`, the sandbox must really have no way out. Before
@@ -41,9 +41,7 @@ exit 0
 `.replace(/\\\$/g, "$");
 
 export type CanaryVerdict =
-  | { kind: "blocked" }
-  | { kind: "reachable"; target: string }
-  | { kind: "unknown"; why: string };
+  { kind: "blocked" } | { kind: "reachable"; target: string } | { kind: "unknown"; why: string };
 
 export type CanaryOptions = {
   targets?: readonly string[];

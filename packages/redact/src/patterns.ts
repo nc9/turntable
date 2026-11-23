@@ -67,6 +67,18 @@ export const PATTERNS: readonly Pattern[] = [
     maxLength: 11 + 255 + 1,
     run: "A-Za-z0-9_",
   },
+  {
+    // Turntable's own tokens (core/src/ops/tokens.ts): a prefix and 32 random bytes as base64url,
+    // exactly 43 characters. `tti_` is the instance administrator's and `tt_` an org's. The same two
+    // minted before the rename (`lsi_`, `ls_`) are still accepted, so they are still redacted. No boundary on either side: the
+    // 43 characters are distinctive enough that `ls_colors` and other words are safe without one,
+    // and a token glued to other text (`xls_<token>`, `<token>abc`, `id=ls_<token>X`) still holds
+    // a usable credential, so it fails closed: whatever token characters follow are redacted too.
+    name: "turntable-token",
+    re: /(?:tti|tt|lsi|ls)_[A-Za-z0-9_-]{43}/g, // rename-keep
+    maxLength: 4 + 43 + 1,
+    run: "A-Za-z0-9_-",
+  },
   { name: "npm-token", re: /\bnpm_[A-Za-z0-9]{36,255}/g, maxLength: 4 + 255 + 1, run: "A-Za-z0-9" },
   { name: "aws-access-key-id", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, maxLength: 21 },
   {

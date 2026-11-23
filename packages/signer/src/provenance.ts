@@ -6,7 +6,7 @@ import type { Artifact } from "./types";
 export const STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
 export const PREDICATE_TYPE = "https://slsa.dev/provenance/v1";
 export const PAYLOAD_TYPE = "application/vnd.in-toto+json";
-export const LONGSHORE_BUILD_TYPE = "https://longshore.dev/buildtype/workflow/v1";
+export const TURNTABLE_BUILD_TYPE = "https://longshore.dev/buildtype/workflow/v1";
 
 export interface ResolvedAction {
   /** `uses:` as written, for example `actions/checkout@v4`. */
@@ -19,7 +19,7 @@ export interface ResolvedAction {
 }
 
 export interface ProvenanceInput {
-  /** The Longshore instance, a URL. */
+  /** The Turntable instance, a URL. */
   builderId: string;
   /** Run id. */
   invocationId: string;
@@ -82,7 +82,7 @@ export function buildStatement(i: ProvenanceInput): Statement {
     predicateType: PREDICATE_TYPE,
     predicate: {
       buildDefinition: {
-        buildType: LONGSHORE_BUILD_TYPE,
+        buildType: TURNTABLE_BUILD_TYPE,
         externalParameters: {
           workflow: i.workflowPath,
           ref: i.ref,

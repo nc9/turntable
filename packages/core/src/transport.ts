@@ -3,12 +3,12 @@
 // control; this keeps a proxy misconfiguration from serving plain http).
 //
 // The scheme is only believed from a proxy the operator says is theirs: with
-// LONGSHORE_TRUST_FORWARDED_PROTO=1 the last x-forwarded-proto hop counts. Without that, a
+// TURNTABLE_TRUST_FORWARDED_PROTO=1 the last x-forwarded-proto hop counts. Without that, a
 // request is https only if the server itself terminated TLS. Loopback dev, with no proxy
 // headers, is never touched.
 
 export interface TransportOptions {
-  /** Believe `x-forwarded-proto` (LONGSHORE_TRUST_FORWARDED_PROTO=1). */
+  /** Believe `x-forwarded-proto` (TURNTABLE_TRUST_FORWARDED_PROTO=1). */
   trustForwardedProto: boolean;
   /** Strict-Transport-Security max-age in seconds; 0 turns the header off. */
   hstsMaxAge: number;
@@ -18,16 +18,16 @@ export interface TransportOptions {
 export const DEFAULT_HSTS_MAX_AGE = 31_536_000;
 
 export function transportOptionsFromEnv(env: Record<string, string | undefined>): TransportOptions {
-  const raw = env.LONGSHORE_HSTS_MAX_AGE?.trim().toLowerCase();
+  const raw = env.TURNTABLE_HSTS_MAX_AGE?.trim().toLowerCase();
   const maxAge =
     raw === undefined || raw === "" ? DEFAULT_HSTS_MAX_AGE : raw === "off" ? 0 : Number(raw);
   if (!Number.isInteger(maxAge) || maxAge < 0) {
-    throw new Error("LONGSHORE_HSTS_MAX_AGE must be a whole number of seconds, or off");
+    throw new Error("TURNTABLE_HSTS_MAX_AGE must be a whole number of seconds, or off");
   }
   return {
-    trustForwardedProto: env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
+    trustForwardedProto: env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
     hstsMaxAge: maxAge,
-    hstsIncludeSubDomains: env.LONGSHORE_HSTS_INCLUDE_SUBDOMAINS !== "0",
+    hstsIncludeSubDomains: env.TURNTABLE_HSTS_INCLUDE_SUBDOMAINS !== "0",
   };
 }
 

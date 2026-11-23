@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DockerProvider } from "@longshore/provider-docker";
+import { DockerProvider } from "@turntable/provider-docker";
 import {
   drain,
   planJob,
@@ -23,11 +23,25 @@ const tmp = mkdtempSync(join(tmpdir(), "tt-act-e2e-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 async function git(dir: string, ...args: string[]): Promise<void> {
-  const p = Bun.spawn(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
-    cwd: dir,
-    stdout: "ignore",
-    stderr: "inherit",
-  });
+  const p = Bun.spawn(
+    [
+      "git",
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.com",
+      ...args,
+    ],
+    {
+      cwd: dir,
+      stdout: "ignore",
+      stderr: "inherit",
+    },
+  );
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
@@ -93,7 +107,7 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(act.at(-1)).toMatchObject({ type: "job-end", result: "success" });
     expect(log).toContain("output-check=hello-output");
     expect(log).toContain("env-check=propagated-env");
-    expect(log).toContain("composite-check=hello longshore");
+    expect(log).toContain("composite-check=hello turntable");
     expect(log).toContain("initial example commit");
   }, 600_000);
 

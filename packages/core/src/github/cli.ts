@@ -16,23 +16,23 @@ import { AppAuth } from "./app-auth";
 import { startManifestFlow } from "./manifest";
 import { rotateWebhookSecret } from "./rotation";
 
-const dbPath = (dataDir: string): string => join(resolve(dataDir), "longshore.db");
+const dbPath = (dataDir: string): string => join(resolve(dataDir), "turntable.db");
 
 function keyFile(explicit: string | undefined, dataDir?: string): string {
   const f =
     explicit ??
-    process.env.LONGSHORE_MASTER_KEY_FILE ??
+    process.env.TURNTABLE_MASTER_KEY_FILE ??
     (dataDir ? join(resolve(dataDir), "master.key") : undefined);
-  if (!f) throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+  if (!f) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
   return f;
 }
 
-/** `longshore keys init [--file <path>] [--data-dir ./data]` */
+/** `turntable keys init [--file <path>] [--data-dir ./data]` */
 export async function keysCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   if (sub !== "init" && sub !== "reseal") {
     throw new Error(
-      "usage: longshore keys init [--file <path>] [--data-dir ./data]\n       longshore keys reseal --org <slug> [--file <path>] [--data-dir ./data]",
+      "usage: turntable keys init [--file <path>] [--data-dir ./data]\n       turntable keys reseal --org <slug> [--file <path>] [--data-dir ./data]",
     );
   }
   const { values } = parseArgs({
@@ -49,14 +49,14 @@ export async function keysCommand(args: string[]): Promise<void> {
   const path = resolve(keyFile(values.file, values["data-dir"]));
   initMasterKey(path);
   console.error(
-    `created master key file ${path} (mode 0600). Point LONGSHORE_MASTER_KEY_FILE at it. Back it up: without it stored secrets cannot be decrypted. It is never printed.`,
+    `created master key file ${path} (mode 0600). Point TURNTABLE_MASTER_KEY_FILE at it. Back it up: without it stored secrets cannot be decrypted. It is never printed.`,
   );
 }
 
 /**
- * `longshore keys reseal --org <slug>`: re-seals everything an org has sealed (secret store,
+ * `turntable keys reseal --org <slug>`: re-seals everything an org has sealed (secret store,
  * OIDC keys, vault secrets, the audit anchor state) under the org's own key-encryption key. The
- * values do not change. Run it once per org after upgrading, then set LONGSHORE_REQUIRE_ORG_KEYS=1.
+ * values do not change. Run it once per org after upgrading, then set TURNTABLE_REQUIRE_ORG_KEYS=1.
  */
 async function resealOrg(
   slug: string | undefined,
@@ -80,7 +80,7 @@ async function resealOrg(
   }
 }
 
-/** `longshore github-app <create|rotate-webhook-secret|status> ...` */
+/** `turntable github-app <create|rotate-webhook-secret|status> ...` */
 export async function githubAppCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const { values } = parseArgs({
@@ -88,8 +88,9 @@ export async function githubAppCommand(args: string[]): Promise<void> {
     options: {
       url: { type: "string" },
       org: { type: "string" },
-      name: { type: "string", default: "Longshore" },
-      "longshore-org": { type: "string", default: "local" },
+      name: { type: "string", default: "Turntable CI" },
+      "turntable-org": { type: "string" },
+      "longshore-org": { type: "string" }, // rename-keep: the pre-rename flag still works
       port: { type: "string", default: "0" },
       "master-key-file": { type: "string" },
       "data-dir": { type: "string", default: "./data" },
@@ -97,7 +98,7 @@ export async function githubAppCommand(args: string[]): Promise<void> {
     strict: true,
   });
   if (sub !== "create" && sub !== "rotate-webhook-secret" && sub !== "status") {
-    throw new Error("usage: longshore github-app <create|rotate-webhook-secret|status> [flags]");
+    throw new Error("usage: turntable github-app <create|rotate-webhook-secret|status> [flags]");
   }
   const db = openDatabase(dbPath(values["data-dir"]));
   try {
@@ -131,7 +132,7 @@ export async function githubAppCommand(args: string[]): Promise<void> {
     const url = new URL(values.url);
     if (url.protocol !== "https:" && url.protocol !== "http:")
       throw new Error("--url must be http(s)");
-    const slug = values["longshore-org"];
+    const slug = values["turntable-org"] ?? values["longshore-org"] ?? "local"; // rename-keep
     if (slug === "local" && !(await getOrgBySlug(db, "local"))) await ensureLocalTenant(db);
     const org = await getOrgBySlug(db, slug);
     if (!org) throw new Error(`no org with slug ${slug}`);

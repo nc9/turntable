@@ -5,7 +5,6 @@ import {
   assertExecId,
   buildCmdScript,
   capOutput,
-  cutMarker,
   newExecId,
   shellQuote,
   type SandboxSpec,
@@ -47,17 +46,20 @@ describe("execId", () => {
 
 describe("capOutput", () => {
   const opts = { head: 10, tail: 20, slack: 5 };
-  test("under head+tail+slack is untouched", () => {
+  test("under head+tail+slack is untouched, with no cut", () => {
     const b = new Uint8Array(35);
-    expect(capOutput(b, opts)).toBe(b);
+    const out = capOutput(b, opts);
+    expect(out.bytes).toBe(b);
+    expect(out.cut).toBeUndefined();
   });
-  test("over the limit keeps head, marker and tail", () => {
+  test("over the limit keeps head and tail and reports the cut as data, with no marker bytes", () => {
     const b = Uint8Array.from({ length: 100 }, (_, i) => i);
     const out = capOutput(b, opts);
-    const m = cutMarker(70);
-    expect(out.length).toBe(10 + m.length + 20);
-    expect(Array.from(out.subarray(0, 10))).toEqual(Array.from(b.subarray(0, 10)));
-    expect(Array.from(out.subarray(10 + m.length))).toEqual(Array.from(b.subarray(80)));
+    expect(out.bytes.length).toBe(10 + 20);
+    expect(Array.from(out.bytes.subarray(0, 10))).toEqual(Array.from(b.subarray(0, 10)));
+    expect(Array.from(out.bytes.subarray(10))).toEqual(Array.from(b.subarray(80)));
+    expect(out.cut).toEqual({ atOffset: 10, omittedBytes: 70 });
+    expect(new TextDecoder().decode(out.bytes)).not.toContain("turntable");
   });
 });
 

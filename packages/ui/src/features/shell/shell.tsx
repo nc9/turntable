@@ -14,6 +14,7 @@ import {
   Sun,
   Wifi,
   WifiOff,
+  ChartColumn,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -56,7 +57,7 @@ function Logo() {
         <circle cx="16" cy="16" r="9" fill="none" className="stroke-background" strokeWidth="2.5" />
         <circle cx="16" cy="16" r="2.5" className="fill-background" />
       </svg>
-      <span className="hidden sm:inline">Longshore</span>
+      <span className="hidden sm:inline">Turntable</span>
     </span>
   );
 }
@@ -138,6 +139,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           {...(onNavigate ? { onNavigate } : {})}
         >
           Quotas
+        </NavLink>
+        <NavLink
+          to="/$org/-/usage"
+          params={{ org: orgSlug }}
+          icon={<ChartColumn />}
+          active={path === `${base}/-/usage`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Usage
         </NavLink>
       </div>
       <div className="flex flex-col gap-0.5">
@@ -447,7 +457,7 @@ function ShellInner() {
         <Link
           to="/"
           className="mr-1 flex items-center rounded-md px-1 py-1"
-          aria-label="Longshore home"
+          aria-label="Turntable home"
         >
           <Logo />
         </Link>

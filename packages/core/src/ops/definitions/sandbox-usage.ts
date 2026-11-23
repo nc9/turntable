@@ -1,8 +1,31 @@
 import { z } from "zod";
-import { sandboxUsage, utcDayStart } from "../../db/repos";
+import { sandboxUsage, sandboxUsageByProject, utcDayStart } from "../../db/repos";
 import { defineOp } from "../define";
 
 const DAY_MS = 86_400_000;
+
+const dayShape = z.object({
+  day: z.string().describe("UTC day, YYYY-MM-DD."),
+  sandbox_seconds: z.number(),
+  sandbox_minutes: z.number(),
+  attempts: z.int(),
+  estimated_attempts: z.int(),
+});
+
+const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+const mapDay = (r: {
+  day: string;
+  seconds: number;
+  minutes: number;
+  attempts: number;
+  estimated: number;
+}) => ({
+  day: r.day,
+  sandbox_seconds: r.seconds,
+  sandbox_minutes: r.minutes,
+  attempts: r.attempts,
+  estimated_attempts: r.estimated,
+});
 
 export const sandboxUsageOp = defineOp({
   name: "sandbox_usage",
@@ -14,20 +37,32 @@ export const sandboxUsageOp = defineOp({
     "while it runs, so the figure is an estimate for them). Counted from the provider's create to " +
     "its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an " +
     "attempt's duration. Scoped to the org, or to one project when a project is given. This is " +
-    "the number quotas limit. Read-only.",
+    'the number quotas limit. With `group_by: "project"` the answer also carries `projects`: the same ' +
+    "per-day figures for each project that had a sandbox alive in the window (a project with no " +
+    "usage is left out); each day's project rows add up to that day's org row. A project-scoped " +
+    "token sees only its own project. Read-only.",
   input: z.object({
     days: z.int().min(1).max(92).default(7).describe("How many UTC days, ending today."),
+    group_by: z
+      .enum(["project"])
+      .optional()
+      .describe("`project` adds a per-project breakdown under `projects`."),
   }),
   output: z.object({
-    days: z.array(
-      z.object({
-        day: z.string().describe("UTC day, YYYY-MM-DD."),
-        sandbox_seconds: z.number(),
-        sandbox_minutes: z.number(),
-        attempts: z.int(),
-        estimated_attempts: z.int(),
-      }),
-    ),
+    days: z.array(dayShape),
+    projects: z
+      .array(
+        z.object({
+          project_id: z.string(),
+          project_slug: z.string(),
+          project_name: z.string(),
+          days: z.array(dayShape),
+          total_seconds: z.number(),
+          total_minutes: z.number(),
+        }),
+      )
+      .optional()
+      .describe("Present only with `group_by: project`."),
     total_seconds: z.number(),
     total_minutes: z.number(),
   }),
@@ -41,17 +76,27 @@ export const sandboxUsageOp = defineOp({
     const to = utcDayStart(now) + DAY_MS;
     const from = to - input.days * DAY_MS;
     const rows = await sandboxUsage(ctx.db, ctx.scope, { from, to, now });
-    const seconds = Math.round(rows.reduce((n, r) => n + r.seconds, 0) * 1000) / 1000;
-    return {
-      days: rows.map((r) => ({
-        day: r.day,
-        sandbox_seconds: r.seconds,
-        sandbox_minutes: r.minutes,
-        attempts: r.attempts,
-        estimated_attempts: r.estimated,
-      })),
+    const seconds = round3(rows.reduce((n, r) => n + r.seconds, 0));
+    const base = {
+      days: rows.map(mapDay),
       total_seconds: seconds,
-      total_minutes: Math.round((seconds / 60) * 1000) / 1000,
+      total_minutes: round3(seconds / 60),
+    };
+    if (input.group_by !== "project") return base;
+    const byProject = await sandboxUsageByProject(ctx.db, ctx.scope, { from, to, now });
+    return {
+      ...base,
+      projects: byProject.map((p) => {
+        const secs = round3(p.days.reduce((n, r) => n + r.seconds, 0));
+        return {
+          project_id: p.projectId,
+          project_slug: p.slug,
+          project_name: p.name,
+          days: p.days.map(mapDay),
+          total_seconds: secs,
+          total_minutes: round3(secs / 60),
+        };
+      }),
     };
   },
 });

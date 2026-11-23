@@ -1,6 +1,6 @@
 // What the release lane asks the forge itself, with its own credential, before it acts: which
 // commit does this tag point at. It never takes the answer from the main process's rows.
-import { safeFetch, type SafeFetch } from "@longshore/net";
+import { safeFetch, type SafeFetch } from "@turntable/net";
 
 export type TagFacts = { found: false } | { found: true; sha: string };
 

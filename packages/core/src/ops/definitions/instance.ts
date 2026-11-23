@@ -1,5 +1,5 @@
 // Instance-level operations (#205). They belong to the instance administrator, not to any org: the
-// caller is an `lsi_` token minted on the host, and only such a token can call them over REST. No
+// caller is a `tti_` token minted on the host, and only such a token can call them over REST. No
 // org token of any role can, whatever its grant, and none of these is an MCP tool. Their audit
 // entries go to the system org's chain.
 import { z } from "zod";
@@ -23,7 +23,7 @@ export const instanceWhoami = defineOp({
   summary: "Who the instance administrator token is.",
   description:
     "Returns the id and label of the instance token in use and when it expires. Use it to check " +
-    "that an `lsi_` token works. Only the instance administrator can call it. Read-only.",
+    "that a `tti_` token works. Only the instance administrator can call it. Read-only.",
   input: z.object({}),
   output: z.object({
     id: z.string(),

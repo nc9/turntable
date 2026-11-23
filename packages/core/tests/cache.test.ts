@@ -17,8 +17,8 @@ import { CLASS_SHARE, readableNamespaces, refScopeFor } from "../src/cache/names
 import { createCacheService, type CacheService } from "../src/cache/service";
 import { FsCacheStore } from "../src/cache/store";
 
-// `LONGSHORE_TEST_CACHE_ENCRYPT=1` runs this whole suite on an encrypting store (test:cache-encrypted).
-const ENCRYPT = process.env.LONGSHORE_TEST_CACHE_ENCRYPT === "1";
+// `TURNTABLE_TEST_CACHE_ENCRYPT=1` runs this whole suite on an encrypting store (test:cache-encrypted).
+const ENCRYPT = process.env.TURNTABLE_TEST_CACHE_ENCRYPT === "1";
 const MASTER = Buffer.alloc(32, 7);
 import {
   ArchiveError,
@@ -142,7 +142,7 @@ describe("path-validated archives", () => {
       [".github/workflows/ci.yml", /not allowed/],
       ["/home/runner/.bashrc", /not allowed/],
       ["home/runner/.ssh/authorized_keys", /not allowed/],
-      [".longshore/jobs/x.yml", /not allowed/],
+      [".turntable/jobs/x.yml", /not allowed/],
     ] as const) {
       const err = await check(tar(tarEntry(name, { data: "x" })));
       expect(err?.message, name).toMatch(why);
@@ -253,7 +253,17 @@ describe("path-validated archives", () => {
         )
       )?.message,
     ).toMatch(/runs through a link/);
-    for (const link of [".git", "../.git", ".github", "x/.ssh", ".gnupg", ".longshore"]) {
+    for (const link of [
+      ".git",
+      "../.git",
+      ".github",
+      "x/.ssh",
+      ".gnupg",
+      ".turntable",
+      // rename-keep-begin
+      ".longshore",
+      // rename-keep-end
+    ]) {
       expect(
         (await check(tar(tarEntry(`d/${link.replace(/[./]/g, "")}l`, { type: "2", link }))))
           ?.message,
@@ -1392,7 +1402,7 @@ describe("entries at denied paths are dropped, not the whole archive", () => {
         data: () => {},
       });
       expect(names).toEqual(["pkg/index.js", "pkg/lib.js"]);
-      expect(notices).toEqual([expect.stringContaining("dropped 2 entries")]);
+      expect(notices).toEqual(["cache: 2 entries dropped (denied paths)"]);
       expect(notices.join(" ")).not.toContain("ssh");
     } finally {
       await w.server.stop(true);

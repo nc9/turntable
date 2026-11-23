@@ -1,6 +1,6 @@
 // The single place that turns the App's private key into credentials: an App JWT, and from it
 // installation access tokens scoped down per call. Nothing else in the codebase signs or mints.
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { createHash, createSign } from "node:crypto";
 import { getGithubApp } from "../db/repos";
 import type { Db } from "../db";
@@ -73,7 +73,7 @@ export class AppAuth {
 
   async #credentials(): Promise<{ appId: string; pem: string }> {
     const app = await getGithubApp(this.#o.db);
-    if (!app) throw new Error("no GitHub App is configured (run: longshore github-app create)");
+    if (!app) throw new Error("no GitHub App is configured (run: turntable github-app create)");
     const pem = await this.#o.store.get(app.orgId, SECRET_PRIVATE_KEY);
     if (!pem) throw new Error("the GitHub App private key is missing from the secret store");
     return { appId: app.appId, pem };
@@ -90,7 +90,7 @@ export class AppAuth {
       authorization: `Bearer ${bearer}`,
       accept: "application/vnd.github+json",
       "x-github-api-version": "2022-11-28",
-      "user-agent": "longshore",
+      "user-agent": "turntable",
     };
   }
 
@@ -167,7 +167,7 @@ export class AppAuth {
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
           "content-type": "application/json",
-          "user-agent": "longshore",
+          "user-agent": "turntable",
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(30_000),

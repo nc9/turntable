@@ -1,22 +1,22 @@
 {
-  "name": "longshore",
+  "name": "turntable",
   "version": "0.0.0",
-  "description": "Pushes Longshore CI events (failed runs, approvals needed) into a running Claude Code session.",
+  "description": "Pushes Turntable CI events (failed runs, approvals needed) into a running Claude Code session.",
   "channels": [
     {
-      "server": "longshore",
-      "displayName": "Longshore",
+      "server": "turntable",
+      "displayName": "Turntable",
       "userConfig": {
         "url": {
           "type": "string",
-          "title": "Longshore URL",
-          "description": "Base URL of your Longshore server, for example https://ci.example.com",
+          "title": "Turntable URL",
+          "description": "Base URL of your Turntable server, for example https://ci.example.com",
           "sensitive": false
         },
         "org": {
           "type": "string",
           "title": "Org slug",
-          "description": "The Longshore org to watch.",
+          "description": "The Turntable org to watch.",
           "sensitive": false
         },
         "token_file": {
@@ -29,13 +29,13 @@
     }
   ],
   "mcpServers": {
-    "longshore": {
-      "command": "longshore",
+    "turntable": {
+      "command": "turntable",
       "args": ["channel"],
       "env": {
-        "LONGSHORE_URL": "${user_config.url}",
-        "LONGSHORE_ORG": "${user_config.org}",
-        "LONGSHORE_TOKEN_FILE": "${user_config.token_file}"
+        "TURNTABLE_URL": "${user_config.url}",
+        "TURNTABLE_ORG": "${user_config.org}",
+        "TURNTABLE_TOKEN_FILE": "${user_config.token_file}"
       }
     }
   }

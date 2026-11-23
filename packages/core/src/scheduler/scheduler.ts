@@ -43,7 +43,7 @@ export type SchedulerOptions = {
   readiness?: Readiness;
   /** Told when attempts start and finish (check runs). Never awaited; its errors are logged. */
   observer?: AttemptObserver;
-  /** Run only this run's attempts (see ClaimOptions.onlyRun): `longshore run`'s own scheduler. */
+  /** Run only this run's attempts (see ClaimOptions.onlyRun): `turntable run`'s own scheduler. */
   onlyRun?: string;
   now?: () => number;
   log?: (message: string) => void;
@@ -119,7 +119,10 @@ export class Scheduler {
         readiness: this.#o.readiness,
         ...(this.#o.onlyRun ? { onlyRun: this.#o.onlyRun } : {}),
       });
-      if (!claim) return started;
+      if (!claim) {
+        this.#notify((o) => o.tick?.());
+        return started;
+      }
       this.#launch(claim);
       started++;
     }

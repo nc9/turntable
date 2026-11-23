@@ -9,7 +9,7 @@ const info = (flags: string): string => `- path: x
         code_directory:
           version: '0x20400'
           flags: ${flags}
-          identifier: longshore-darwin-arm64
+          identifier: turntable-darwin-arm64
           digest_type: sha256
 `;
 
@@ -17,7 +17,7 @@ describe("parseSignatureInfo", () => {
   test("reads flags, identifier, digest type and file hash", () => {
     expect(parseSignatureInfo(info("CodeSignatureFlags(ADHOC)"))).toEqual({
       flags: "CodeSignatureFlags(ADHOC)",
-      identifier: "longshore-darwin-arm64",
+      identifier: "turntable-darwin-arm64",
       digestType: "sha256",
       fileSha256: "abc",
     });

@@ -13,7 +13,7 @@ const VERSION_DOMAIN = "v2";
 const VERSION_ORG = "v3";
 
 /** Key domains: a record sealed for one domain cannot be opened as another. */
-export type KeyDomain = "system" | "job" | "oidc" | "attempt" | "cache";
+export type KeyDomain = "system" | "job" | "oidc" | "attempt" | "cache" | "webhook";
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -76,17 +76,17 @@ export function recordVersion(record: string): "v1" | "v2" | "v3" | undefined {
 }
 
 /**
- * When `LONGSHORE_REQUIRE_ORG_KEYS=1`, a record that is not per-org (v1, v2) is refused wherever
+ * When `TURNTABLE_REQUIRE_ORG_KEYS=1`, a record that is not per-org (v1, v2) is refused wherever
  * an org is known. Set it once `keys reseal` has run for every org: it stops a stale copy of an
  * old record from being accepted.
  */
-export const requireOrgKeys = (): boolean => process.env.LONGSHORE_REQUIRE_ORG_KEYS === "1";
+export const requireOrgKeys = (): boolean => process.env.TURNTABLE_REQUIRE_ORG_KEYS === "1";
 
-/** `keys reseal` was asked to run while LONGSHORE_REQUIRE_ORG_KEYS=1, which forbids old records. */
+/** `keys reseal` was asked to run while TURNTABLE_REQUIRE_ORG_KEYS=1, which forbids old records. */
 export class ResealRefused extends Error {
   constructor() {
     super(
-      "reseal is refused while LONGSHORE_REQUIRE_ORG_KEYS=1: in strict mode an old record is not accepted, so it cannot be re-sealed. Unset it, run `keys reseal`, then set it again.",
+      "reseal is refused while TURNTABLE_REQUIRE_ORG_KEYS=1: in strict mode an old record is not accepted, so it cannot be re-sealed. Unset it, run `keys reseal`, then set it again.",
     );
     this.name = "ResealRefused";
   }
@@ -227,7 +227,7 @@ function assertKey(key: Buffer): void {
 /** Reads the master key: a file of exactly 32 raw bytes. */
 export function loadMasterKey(path: string): Buffer {
   if (!existsSync(path))
-    throw new Error(`master key file not found: ${path} (run: longshore keys init)`);
+    throw new Error(`master key file not found: ${path} (run: turntable keys init)`);
   const key = readFileSync(path);
   if (key.length !== KEY_BYTES) {
     throw new Error(

@@ -51,13 +51,37 @@ export function launcherArgv(shimDir: string, actArgv: readonly string[], envFil
   ];
 }
 
-/** Writes the shim and its symlinks. Args: shim dir, shim text, names. */
+/**
+ * Writes the shim and a symlink for each interpreter that EXISTS in the sandbox. Args: shim dir,
+ * shim text, names. Each name is looked up on the PATH the job will have (without the shim
+ * directory); one with no real interpreter gets no shim. A shim for an absent interpreter would
+ * make `command -v pwsh` succeed where GitHub's runner (and the image itself) says it is not
+ * installed, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit
+ * 0; fi`) would find the shim, run it, and fail the step with 127. Without a shim the probe
+ * behaves exactly as it does without Turntable, and a step that names the missing tool as its
+ * `shell:` fails in act with its own "Cannot find: <tool> in PATH", which the log annotates.
+ * An interpreter installed after the job starts is picked up later by the shim's own resync (see
+ * STEP_SHIM), but only when it lands behind the shim directory on PATH.
+ */
 export const INSTALL_SHIMS_SH = `set -eu
 d=$1; text=$2; shift 2
 mkdir -p "$d"
 printf '%s\\n' "$text" > "$d/step-shim"
 chmod 0755 "$d/step-shim"
-for n in "$@"; do ln -sf step-shim "$d/$n"; done
+real() {
+  oldifs=$IFS; IFS=:
+  for p in $PATH; do
+    [ -n "$p" ] || continue
+    [ "$p" = "$d" ] && continue
+    if [ -x "$p/$1" ] && [ ! -d "$p/$1" ]; then IFS=$oldifs; return 0; fi
+  done
+  IFS=$oldifs
+  return 1
+}
+for n in "$@"; do
+  rm -f "$d/$n"
+  if real "$n"; then ln -sf step-shim "$d/$n"; fi
+done
 `;
 
 /**
@@ -68,18 +92,43 @@ for n in "$@"; do ln -sf step-shim "$d/$n"; done
  *  - the interpreter runs in its OWN process group (perl setpgrp, then exec: perl is in Debian's
  *    base set), with the signal dispositions the shell's `&` would have ignored put back;
  *  - TERM, INT and HUP sent to the shim go to that group, and KILL follows after a grace period
- *    (LONGSHORE_STEP_GRACE seconds, default 5);
+ *    (TURNTABLE_STEP_GRACE seconds, default 5);
  *  - SIGKILL of the shim cannot be trapped, so a tiny watcher polls the shim: when the shim is gone
  *    while the interpreter still runs, the group gets TERM and then KILL. When the interpreter
  *    ended normally (and left a daemon behind on purpose) the watcher does nothing.
  * Without perl the interpreter simply runs in the shim's own group, with no watchdog.
  */
 export const STEP_SHIM = `#!/bin/sh
-# Longshore step shim: runs the real interpreter with no terminal on stdin, stdout or stderr, as
+# Turntable step shim: runs the real interpreter with no terminal on stdin, stdout or stderr, as
 # on a GitHub hosted runner, and keeps it from outliving a killed step. See
 # packages/act-runner/src/step-env.ts.
 self=\${0##*/}
 dir=$(cd "$(dirname "$0")" && pwd)
+# Resync: link a shim for each interpreter that now exists on PATH and has none yet, so a tool
+# installed mid-job behind the shim directory is wrapped from the next shimmed step on. Add-only:
+# it never removes or replaces a link, never links before the tool exists, and skips a tool whose
+# directory is AHEAD of the shim directory (it would not be reached through the shim anyway, and
+# a shim must never stand in front of what GITHUB_PATH put first). The link is made under a temp
+# name and renamed into place, so a concurrent run never sees a partial link.
+resync() {
+  for n in ${SHIM_NAMES.join(" ")}; do
+    [ -e "$dir/$n" ] || [ -L "$dir/$n" ] && continue
+    seen=
+    found=
+    oldifs=$IFS
+    IFS=:
+    for p in $PATH; do
+      [ -n "$p" ] || continue
+      if [ "$p" = "$dir" ]; then seen=1; continue; fi
+      if [ -x "$p/$n" ] && [ ! -d "$p/$n" ]; then found=1; break; fi
+    done
+    IFS=$oldifs
+    [ -n "$found" ] && [ -n "$seen" ] || continue
+    t="$dir/.$n.$$"
+    if ln -s step-shim "$t" 2>/dev/null; then mv -f "$t" "$dir/$n" 2>/dev/null || rm -f "$t"; fi
+  done
+}
+resync
 real=
 oldifs=$IFS
 IFS=:
@@ -94,20 +143,20 @@ for d in $PATH; do
 done
 IFS=$oldifs
 if [ -z "$real" ]; then
-  echo "longshore: $self: command not found" >&2
+  echo "turntable: $self: command not found" >&2
   exit 127
 fi
 # Already inside a wrapped step: what it started inherits non-tty stdio, so just run it.
-if [ -n "\${LONGSHORE_STEP_IO:-}" ]; then exec "$real" "$@"; fi
+if [ -n "\${TURNTABLE_STEP_IO:-}" ]; then exec "$real" "$@"; fi
 fifo=$(mktemp -u "\${TMPDIR:-/tmp}/ls-step.XXXXXX" 2>/dev/null) && mkfifo -m 600 "$fifo" 2>/dev/null || exec "$real" "$@"
 cat <"$fifo" &
 cpid=$!
 trap 'rm -f "$fifo"' EXIT
 shim=$$
-grace=\${LONGSHORE_STEP_GRACE:-5}
+grace=\${TURNTABLE_STEP_GRACE:-5}
 if command -v perl >/dev/null 2>&1; then
   # Own process group; and undo what the shell does to an async command (ignore INT and QUIT).
-  LONGSHORE_STEP_IO=1 perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or exit 127' "$real" "$@" >"$fifo" 2>&1 </dev/null &
+  TURNTABLE_STEP_IO=1 perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or exit 127' "$real" "$@" >"$fifo" 2>&1 </dev/null &
   rpid=$!
   # Signal the interpreter's whole group through perl: the shell kill builtin with a negative pid is not portable across the
   # shells that stand in for sh (dash, the Linux default, failed it). Bare pid if the group is not
@@ -123,14 +172,13 @@ if command -v perl >/dev/null 2>&1; then
   trap stop TERM INT HUP
   # The watcher: if this shim dies without a chance to clean up (SIGKILL), and the interpreter is
   # still running, take its group down. A normal end leaves the interpreter gone and this idle.
-  (
-    while kill -0 "$shim" 2>/dev/null; do sleep 1; done
-    if kill -0 "$rpid" 2>/dev/null; then
-      gkill TERM "$rpid"
-      sleep "$grace"
-      gkill KILL "$rpid"
-    fi
-  ) >/dev/null 2>&1 </dev/null &
+  # It must survive whatever killed the shim. act's step timeout kills the shim, and then the
+  # pty it ran on closes, which hangs up the shim's process group: a watcher left in that group
+  # (a subshell is) can die in the same instant, before its next poll, and the interpreter is
+  # never taken down. So it is a perl process in a process group of its own, ignoring HUP.
+  perl -e '$SIG{HUP}="IGNORE"; setpgrp(0,0); my($shim,$rpid,$grace)=@ARGV;
+    sleep 1 while kill(0,$shim);
+    if (kill(0,$rpid)) { kill("TERM",-$rpid) or kill("TERM",$rpid); sleep $grace; kill("KILL",-$rpid) or kill("KILL",$rpid); }' "$shim" "$rpid" "$grace" >/dev/null 2>&1 </dev/null &
   wait "$rpid"
   rc=$?
   # A trapped signal interrupts wait while the interpreter is still going: wait for the real end.
@@ -142,16 +190,19 @@ if command -v perl >/dev/null 2>&1; then
     if [ "$r" -ne 127 ]; then rc=$r; fi
   done
 else
-  LONGSHORE_STEP_IO=1 "$real" "$@" >"$fifo" 2>&1 </dev/null
+  TURNTABLE_STEP_IO=1 "$real" "$@" >"$fifo" 2>&1 </dev/null
   rc=$?
 fi
 # The forwarder ends at EOF. A step that leaves a background process holding the pipe must not
 # hold the step: give the forwarder two seconds, then stop it.
-( sleep 2; kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
-killer=$!
+# The killer is never signalled or waited for. A TERM sent right after its fork can run the TERM
+# trap the shim has inherited instead of stopping it, and a subshell blocked on a foreground sleep
+# does not act on TERM until the sleep ends: waiting on it made every step cost the full two
+# seconds. It only sleeps and holds no pipe, so it is left to run out. The shim's exit removes the
+# fifo, which tells the killer there is nothing left to stop (the forwarder's pid may be reused).
+( sleep 2; [ -e "$fifo" ] && kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
 wait "$cpid" 2>/dev/null
-kill "$killer" 2>/dev/null
-wait "$killer" 2>/dev/null
+resync
 exit "$rc"
 `;
 

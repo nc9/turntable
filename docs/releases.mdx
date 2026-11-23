@@ -1,6 +1,6 @@
 ---
 title: Releases
-description: How Longshore versions its releases, how to verify a download, and what the release pipeline guarantees.
+description: How Turntable versions its releases, how to verify a download, and what the release pipeline guarantees.
 ---
 
 <Note>
@@ -17,11 +17,11 @@ Migrations run on start and only go forward. Back up the data directory (SQLite)
 
 | Asset | What it is |
 | --- | --- |
-| `longshore-linux-x64`, `longshore-linux-arm64`, `longshore-darwin-arm64` | The single-file binaries. The web UI is embedded. |
+| `turntable-linux-x64`, `turntable-linux-arm64`, `turntable-darwin-arm64` | The single-file binaries. The web UI is embedded. |
 | `SHA256SUMS` | Checksums of the binaries and the SBOM. |
-| `longshore-<version>.cdx.json` | CycloneDX SBOM of the packages bundled in the binaries, with hashes from the lockfile. |
-| `longshore-image.cdx.json` | CycloneDX SBOM of the container image (base image packages and the binary), made with a pinned Syft. |
-| Image `ghcr.io/nc9/longshore:<version>` | Distroless image, linux/amd64 and linux/arm64. |
+| `turntable-<version>.cdx.json` | CycloneDX SBOM of the packages bundled in the binaries, with hashes from the lockfile. |
+| `turntable-image.cdx.json` | CycloneDX SBOM of the container image (base image packages and the binary), made with a pinned Syft. |
+| Image `ghcr.io/nc9/turntable:<version>` | Distroless image, linux/amd64 and linux/arm64. |
 
 Binaries, `SHA256SUMS`, both SBOMs and the image carry GitHub artifact attestations signed through GitHub's Sigstore. The attestation names the repository, workflow and commit that built them.
 
@@ -36,7 +36,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 That proves the file matches the published list. The list itself comes from the same release, so also check the attestation, which is signed by the build and not by whoever can edit the release page:
 
 ```sh
-gh attestation verify longshore-linux-x64 --repo nc9/turntable
+gh attestation verify turntable-linux-x64 --repo nc9/turntable
 ```
 
 A pass prints the workflow, the tag and the commit. A failure means the file was not built by this repository's release workflow. Do not run it.
@@ -44,7 +44,7 @@ A pass prints the workflow, the tag and the commit. A failure means the file was
 To check the SBOM is the one the build attested:
 
 ```sh
-gh attestation verify longshore-linux-x64 --repo nc9/turntable \
+gh attestation verify turntable-linux-x64 --repo nc9/turntable \
   --predicate-type https://cyclonedx.org/bom
 ```
 
@@ -55,39 +55,49 @@ On macOS, use `shasum -a 256 -c SHA256SUMS --ignore-missing` if `sha256sum` is n
 Pin by digest, not by tag. Tags can move; a digest cannot.
 
 ```sh
-docker buildx imagetools inspect ghcr.io/nc9/longshore:0.1.0-alpha.1
+docker buildx imagetools inspect ghcr.io/nc9/turntable:0.1.0-alpha.1
 # note the Digest: sha256:...
-gh attestation verify oci://ghcr.io/nc9/longshore@sha256:<digest> --repo nc9/turntable
+gh attestation verify oci://ghcr.io/nc9/turntable@sha256:<digest> --repo nc9/turntable
 ```
 
-Then run or deploy `ghcr.io/nc9/longshore@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
+Then run or deploy `ghcr.io/nc9/turntable@sha256:<digest>`. The image SBOM is attested to the same digest, and you can verify it with `--predicate-type https://cyclonedx.org/bom`.
+
+## Reproducible builds
+
+The same commit built twice gives the same bytes. `bun run scripts/repro-check.ts` builds every target in the checkout, then again in a fresh copy of `HEAD` at a different path with a fresh `bun install --frozen-lockfile`, and fails if any binary differs. The darwin binary is compared before the ad-hoc signature, which is a separate step with its own verification. The release workflow runs it as a job the release depends on, so a build that is not reproducible is not published. It holds for one pinned toolchain: the bun version is named in the workflows and the Dockerfile, and CI fails if they disagree (`scripts/toolchain-versions.ts`).
+
+To check a release yourself, check out the tag, run `bun install --frozen-lockfile` and `TURNTABLE_VERSION=<version> bun run scripts/build.ts`, and compare `dist/SHA256SUMS` lines for the linux binaries with the release's.
+
+## What the release dry run checks
+
+A manual run of the release workflow (`workflow_dispatch`) builds everything and publishes nothing. It checks that `SHA256SUMS` lists every binary and the SBOM exactly once, that each hash is true and that nothing else is in the directory; that the SBOM is exactly the set of packages the lockfile ships, each with a hash; that the build is reproducible; that Syft runs on the image and sees its packages; and that Turntable's own provenance path verifies the binaries and refuses a changed copy. GitHub's attestations are written to a public log, so only a real tag produces them.
 
 ## The darwin binary and Gatekeeper
 
-`longshore-darwin-arm64` is signed ad hoc and is not notarized. Apple Silicon requires some signature to run a binary, and the release re-signs after the compile so the signature matches the file. An ad-hoc signature is not an identity: it proves nothing about who built the file. Use the checksum and attestation above for that.
+`turntable-darwin-arm64` is signed ad hoc and is not notarized. Apple Silicon requires some signature to run a binary, and the release re-signs after the compile so the signature matches the file. An ad-hoc signature is not an identity: it proves nothing about who built the file. Use the checksum and attestation above for that.
 
 What to expect: a binary downloaded in a browser carries a quarantine flag, and Gatekeeper refuses to open it because it is not notarized ("cannot be verified" or "cannot be opened"). Verify it first, then clear the flag:
 
 ```sh
-xattr -d com.apple.quarantine longshore-darwin-arm64
-chmod +x longshore-darwin-arm64
+xattr -d com.apple.quarantine turntable-darwin-arm64
+chmod +x turntable-darwin-arm64
 ```
 
 You can also allow it once under System Settings, Privacy and Security, "Open Anyway". A binary fetched with `curl` or `gh release download` is not quarantined and runs directly. Notarization needs a paid Apple Developer identity and is not planned for the alphas.
 
-## Verify provenance with `longshore verify`
+## Verify provenance with `turntable verify`
 
-Releases are attested by GitHub (above): that is the provenance to check for a download. `longshore verify` is the other half of the same idea, for provenance that a Longshore server signs about an artifact its own release lane built:
+Releases are attested by GitHub (above): that is the provenance to check for a download. `turntable verify` is the other half of the same idea, for provenance that a Turntable server signs about an artifact its own release lane built:
 
 ```sh
-longshore verify <artifact> --provenance <file> --pubkey <file>
+turntable verify <artifact> --provenance <file> --pubkey <file>
 ```
 
 It checks that the artifact's digest is a subject of the DSSE-signed SLSA provenance and that the signature verifies under the Ed25519 public key you give it. It trusts only that key. Exit code 0 means verified, 1 not verified, 2 a usage error. See [Signing](/signing).
 
 ## The release process
 
-1. **Dry run.** In the Actions tab, run the `release` workflow by hand ("Run workflow", version label such as `v0.1.0-alpha.1`). It builds all targets, re-signs the darwin binary and hashes it afterwards, writes `SHA256SUMS` and the SBOM, builds both image architectures without pushing, runs the amd64 image (healthz, the UI and its CSP, `PORT`, a bootstrap token), drafts the release notes, and checks Longshore's own provenance path on the binaries with a negative control: a changed binary must fail to verify. It publishes nothing: no release, no image push, no attestation, and its jobs have read-only permissions. The bundle (binaries, `SHA256SUMS`, SBOM, drafted notes, the dry-run provenance and its throwaway public key) is a workflow artifact kept for 7 days. The dry-run provenance is signed with a key made for that run and proves the format and the digests, not an identity.
+1. **Dry run.** In the Actions tab, run the `release` workflow by hand ("Run workflow", version label such as `v0.1.0-alpha.1`). It builds all targets, re-signs the darwin binary and hashes it afterwards, writes `SHA256SUMS` and the SBOM, builds both image architectures without pushing, runs the amd64 image (healthz, the UI and its CSP, `PORT`, a bootstrap token), drafts the release notes, and checks Turntable's own provenance path on the binaries with a negative control: a changed binary must fail to verify. It publishes nothing: no release, no image push, no attestation, and its jobs have read-only permissions. The bundle (binaries, `SHA256SUMS`, SBOM, drafted notes, the dry-run provenance and its throwaway public key) is a workflow artifact kept for 7 days. The dry-run provenance is signed with a key made for that run and proves the format and the digests, not an identity.
 2. **Customer notes first.** Before a tag that a customer will run, send them the version, the changelog, the migration notes (every migration file in the release, which only go forward) and the rollback steps (below). They decide when to adopt it.
 3. **Tag a prerelease.** `v0.x.y-alpha.N`. Only the maintainer creates tags: pushing the tag starts the real run, which does everything the dry run does, then creates the release (a prerelease because of the hyphen), attaches the SBOMs and attests the binaries, the checksums and the image. The image is started and checked before it is pushed.
 4. **Verify what was published.** Run the commands above against the release: checksums, `gh attestation verify` for a binary and for the image digest.
@@ -107,3 +117,7 @@ For a bad release: never move or delete a tag that anyone may have used. Mark th
 - Release notes are drafted from conventional commits, grouped by type, with breaking changes and migration files listed apart. `scripts/release-notes.ts` makes them from the git history, and `.github/release-notes-template.md` is the frame to edit before publishing.
 
 Report a vulnerability through the repository's private security advisories, not a public issue.
+
+## Changes
+
+- The project is called Turntable again (formerly Longshore). Binary, image, packages, environment variables and token prefixes use the Turntable name; the old names still work. See [Configuration](/configuration#formerly-longshore) for the list and for what is deliberately unchanged.

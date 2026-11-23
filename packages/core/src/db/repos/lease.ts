@@ -2,7 +2,7 @@
 // and finding abandoned work. Claim and reconcile are instance-level (a worker has no tenant
 // until it has claimed something), so they are intentionally unscoped; everything they return
 // carries the tenant scope the caller then uses.
-import { and, asc, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "..";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -29,6 +29,7 @@ import {
   type QuotaUsage,
 } from "./quotas";
 import { groupBlocked } from "./poll";
+import { projectsWithCaps } from "./project-settings";
 import {
   defaultReadiness,
   depStates,
@@ -67,8 +68,8 @@ export type ClaimOptions = {
   /** Most queued rows examined in one claim, across all orgs. Default 1000. */
   scanLimit?: number;
   /**
-   * Claim only this run's attempts (a `longshore run` process running its own run), and count
-   * only its attempts against the caps. Without it, runs started by `longshore run` (`local`)
+   * Claim only this run's attempts (a `turntable run` process running its own run), and count
+   * only its attempts against the caps. Without it, runs started by `turntable run` (`local`)
    * are never claimed.
    */
   onlyRun?: string;
@@ -138,7 +139,11 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
   const scanLimit = o.scanLimit ?? 1000;
   return db.transaction(async (tx) => {
     const running = await tx.orm
-      .select({ orgId: s.jobAttempts.orgId, n: sql<number>`count(*)`.mapWith(Number) })
+      .select({
+        orgId: s.jobAttempts.orgId,
+        projectId: s.jobAttempts.projectId,
+        n: sql<number>`count(*)`.mapWith(Number),
+      })
       .from(s.jobAttempts)
       .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
       .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
@@ -149,11 +154,26 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
         ),
       )
-      .groupBy(s.jobAttempts.orgId);
-    const perOrg = new Map(running.map((r) => [r.orgId, Number(r.n)]));
+      .groupBy(s.jobAttempts.orgId, s.jobAttempts.projectId);
+    const perOrg = new Map<string, number>();
+    for (const r of running) perOrg.set(r.orgId, (perOrg.get(r.orgId) ?? 0) + Number(r.n));
     let total = 0;
     for (const n of perOrg.values()) total += n;
     if (total >= o.globalCap) return undefined;
+    // Per-project caps: a project with `max_concurrent` set holds new work once that many of its
+    // attempts run. Like the org quota it can only lower the instance's per-org cap. Projects at
+    // their cap are left out of both queries below, so their queued attempts neither use up the
+    // scan nor hide another project's ready one.
+    const caps = await projectsWithCaps(tx);
+    const projectFull: string[] = [];
+    for (const [projectId, cap] of caps) {
+      const used = running
+        .filter((r) => r.projectId === projectId)
+        .reduce((n, r) => n + Number(r.n), 0);
+      if (used >= Math.min(cap, o.perOrgCap)) projectFull.push(projectId);
+    }
+    const notProjectFull =
+      projectFull.length > 0 ? [notInArray(s.jobAttempts.projectId, projectFull)] : [];
 
     const waiting = await tx.orm
       .select({ orgId: s.jobAttempts.orgId, oldest: sql<string>`min(${s.jobAttempts.id})` })
@@ -167,6 +187,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           isNull(s.jobAttempts.leaseOwner),
           o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
           notFrozen(s.runs.orgId, s.runs.projectId),
+          ...notProjectFull,
         ),
       )
       .groupBy(s.jobAttempts.orgId);
@@ -226,6 +247,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
               isNull(s.jobAttempts.leaseOwner),
               o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
               notFrozen(s.runs.orgId, s.runs.projectId),
+              ...notProjectFull,
               gt(s.jobAttempts.id, cursor.get(orgId)!),
             ),
           )
@@ -541,6 +563,21 @@ export function listExpiredLeases(db: Db, now: number): Promise<JobAttempt[]> {
       .from(s.jobAttempts)
       .where(and(eq(s.jobAttempts.state, "running"), lt(s.jobAttempts.leaseExpiresAt, now)))
       .orderBy(asc(s.jobAttempts.id)),
+  );
+}
+
+/**
+ * Attempts that recorded a sandbox and no confirmed destroy, across every org (system work, for
+ * the provider's own-fleet count and the sweep). Newest first, bounded.
+ */
+export function listUndestroyedSandboxes(db: Db, limit = 2000): Promise<JobAttempt[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(and(isNotNull(s.jobAttempts.sandboxId), isNull(s.jobAttempts.sandboxDestroyedAt)))
+      .orderBy(desc(s.jobAttempts.id))
+      .limit(limit),
   );
 }
 

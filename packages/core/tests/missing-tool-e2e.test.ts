@@ -2,9 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { planJob, resolveActions, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { DockerProvider } from "@longshore/provider-docker";
-import { SecretRegistry } from "@longshore/redact";
+import { planJob, resolveActions, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { DockerProvider } from "@turntable/provider-docker";
+import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_IMAGE, executeJob } from "../src/run/job-exec";
 import type { RunStore } from "../src/run/store";
 
@@ -16,11 +16,25 @@ const tmp = mkdtempSync(join(tmpdir(), "tt-missing-tool-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 async function git(dir: string, ...args: string[]): Promise<void> {
-  const p = Bun.spawn(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
-    cwd: dir,
-    stdout: "ignore",
-    stderr: "inherit",
-  });
+  const p = Bun.spawn(
+    [
+      "git",
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.com",
+      ...args,
+    ],
+    {
+      cwd: dir,
+      stdout: "ignore",
+      stderr: "inherit",
+    },
+  );
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
@@ -66,6 +80,6 @@ describe.skipIf(!enabled)("a step that needs a tool the image lacks (docker)", (
     if (out.state !== "failure") console.log(out, "\n" + logText);
     expect(out.state).toBe("failure");
     expect(logText).toContain("about to call a missing tool");
-    expect(logText).toContain("longshore-missing-tool is not available on this image");
+    expect(logText).toContain("turntable-missing-tool is not available on this image");
   }, 600_000);
 });

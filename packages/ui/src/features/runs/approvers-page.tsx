@@ -171,7 +171,7 @@ export function ApproversPage() {
         {d.approvers.length === 0 ? (
           <p className="rounded-xl border border-line p-4 text-sm text-dim">
             No approver is enrolled. The first one is enrolled from the server:{" "}
-            <code className="font-mono text-xs">longshore approvals bootstrap</code>. After that,
+            <code className="font-mono text-xs">turntable approvals bootstrap</code>. After that,
             new keys need a quorum of existing approvers.
           </p>
         ) : (

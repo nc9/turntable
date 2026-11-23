@@ -1,8 +1,8 @@
 // Realtime wire protocol: one WebSocket at /api/v1/realtime, JSON text frames. This file is pure
 // (no imports) so the web UI shares the exact types and constants the server uses.
 //
-// Connect:   new WebSocket(url, ["longshore.v1", "bearer.<token>"]). The token rides in
-//            Sec-WebSocket-Protocol (never the query string); the server echoes only longshore.v1.
+// Connect:   new WebSocket(url, ["turntable.v1", "bearer.<token>"]). The token rides in
+//            Sec-WebSocket-Protocol (never the query string); the server echoes the protocol name offered (never the token).
 // Topics:    org                      every event in the token's grant
 //            project:<slug>           events of one project
 //            run:<id>                 events of one run (job and attempt changes included)
@@ -11,7 +11,9 @@
 // Every subscribe is authorized by dispatching the matching read operation as the caller.
 
 export const REALTIME_PATH = "/api/v1/realtime";
-export const SUBPROTOCOL = "longshore.v1";
+export const SUBPROTOCOL = "turntable.v1";
+/** The subprotocol before the rename (formerly Longshore). The server still accepts it. */
+export const LEGACY_SUBPROTOCOL = "longshore.v1"; // rename-keep
 export const BEARER_PREFIX = "bearer.";
 
 /** Close codes (4000 to 4999 are application-defined). */
@@ -138,6 +140,8 @@ export type WireStep = {
 };
 
 export type WireCut = { at_offset: number; omitted_bytes: number; reason: string };
+/** A system notice on the attempt, out of band from the log text. */
+export type WireNotice = { at_offset: number; source: string; text: string };
 
 export type ServerMessage =
   /** The subscription is live. `cursor` is where replay starts (events) or `offset` (log). */
@@ -146,7 +150,7 @@ export type ServerMessage =
   /** Redacted log text from `offset`, `bytes` long. `eof` follows the last chunk of a finished attempt. */
   | { type: "log"; id: string; offset: number; bytes: number; text: string; eof?: boolean }
   /** The full current set of steps and cuts; replace what you hold. */
-  | { type: "steps"; id: string; steps: WireStep[]; cuts: WireCut[] }
+  | { type: "steps"; id: string; steps: WireStep[]; cuts: WireCut[]; notices: WireNotice[] }
   /** Where the output cap removed bytes from the log (sent on a log subscription; replace what you hold). */
-  | { type: "cuts"; id: string; cuts: WireCut[] }
+  | { type: "cuts"; id: string; cuts: WireCut[]; notices: WireNotice[] }
   | { type: "error"; id?: string; code: string; message: string };

@@ -1,4 +1,4 @@
-import type { SafeFetch } from "@longshore/net";
+import type { SafeFetch } from "@turntable/net";
 import {
   FileTooLargeError,
   InfraError,
@@ -15,11 +15,12 @@ import {
   type SandboxSpec,
   type ShellRunner,
   type WrappedExecOptions,
-} from "@longshore/provider-sdk";
+} from "@turntable/provider-sdk";
 import {
   type DaytonaSandbox,
   DaytonaApi,
   DaytonaKeyRejectedError,
+  DaytonaQuotaExceededError,
   DEFAULT_BASE_URL,
   readJson,
 } from "./api";
@@ -34,8 +35,10 @@ import type { ApiKeySource } from "./key";
 import {
   DEFAULT_ORG_CLASS,
   DEFAULT_ORG_CPU_LIMIT,
+  DEFAULT_SANDBOX_DISK_GIB,
+  DEFAULT_SANDBOX_MEM_GIB,
+  orgUsage,
   DEFAULT_ORG_REGION,
-  cpuInUse,
   type OwnerCiPreflight,
   type RegionUsageRow,
   LIVE_STATES,
@@ -63,7 +66,7 @@ export interface DaytonaProviderOptions {
   /** Where to read the API key at runtime: a file path, an env var name, or a function. */
   apiKey: ApiKeySource;
   baseUrl?: string;
-  /** Run id stamped on every sandbox as the `longshore-run` label unless the spec already has one. */
+  /** Run id stamped on every sandbox as the `turntable-run` label unless the spec already has one. */
   runId?: string;
   /** Live sandboxes of ours at once. Default 2, never above 3. */
   maxLive?: number;
@@ -125,7 +128,7 @@ export interface DaytonaProviderOptions {
    * This instance's fleet in a shared account: the label `<fleet>=1` and the name prefix
    * `<fleet>-`. Everything that counts, lists, verifies or deletes sandboxes is limited to it, so
    * instances with different fleets (a dev machine and a hosted shadow) never touch each other's
-   * sandboxes or count against each other's `maxLive`. Lower case, starts with `longshore-`, at
+   * sandboxes or count against each other's `maxLive`. Lower case, starts with `turntable-`, at
    * most 30 characters. Default `longshore-dev`.
    */
   fleet?: string;
@@ -184,6 +187,24 @@ function unframe(result: string): { exitCode: number; stdout: Uint8Array; stderr
   return { exitCode: code, stdout: b64(lines[out + 1]), stderr: b64(lines[err + 1]) };
 }
 
+/** What one new sandbox takes from the org's quotas. */
+interface SandboxNeed {
+  cpu: number;
+  memGiB: number;
+  diskGiB: number;
+}
+
+type OrgRoom =
+  | { ok: true }
+  | {
+      ok: false;
+      resource: "cpu" | "disk" | "memory";
+      used: number;
+      limit: number;
+      need: number;
+      unit: string;
+    };
+
 export class DaytonaProvider implements Provider {
   readonly info: ProviderInfo;
   readonly exec: Provider["exec"];
@@ -200,6 +221,13 @@ export class DaytonaProvider implements Provider {
   private readonly startTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  /**
+   * The sandboxes we created (or were told about at boot) and have not confirmed gone. This is the
+   * own-fleet count's source: Daytona's listings cannot be trusted (a label-filtered list returns
+   * nothing for new sandboxes, the unfiltered list shows deleted ones as started), only a get by
+   * id is accurate. An id leaves the set only when a get says it is gone (or not ours).
+   */
+  private readonly recorded = new Set<string>();
   /** Serialises create() so the capacity check and the create cannot interleave in this process. */
   private createChain: Promise<unknown> = Promise.resolve();
 
@@ -399,11 +427,59 @@ export class DaytonaProvider implements Provider {
     throw new InfraError("Daytona: sandbox listing did not end");
   }
 
+  /**
+   * Tells the provider about sandboxes it should own from before this process started (the core
+   * reads them from attempts that recorded a sandbox and no confirmed destroy). Nothing is
+   * trusted yet: each id is confirmed with a get on its first use, and one that is gone or not
+   * ours is dropped there.
+   */
+  adopt(ids: readonly string[]): void {
+    for (const id of ids) if (/^[A-Za-z0-9_-]{1,128}$/.test(id)) this.recorded.add(id);
+  }
+
+  /** What the count is made from, for status and logs. */
+  private countingMode(): { mode: "recorded-ids"; tracked: number } {
+    return { mode: "recorded-ids", tracked: this.recorded.size };
+  }
+
+  /**
+   * The state of each recorded sandbox, by get (the only accurate read). A sandbox that is gone
+   * or destroyed, or does not carry our label, leaves the set. Any other failure is thrown: an
+   * unreadable fleet is never taken for an empty one.
+   */
+  private async recordedSandboxes(): Promise<DaytonaSandbox[]> {
+    const out = await Promise.all(
+      [...this.recorded].map(async (id): Promise<DaytonaSandbox | undefined> => {
+        try {
+          const sb = await this.api.json<DaytonaSandbox>(
+            "GET",
+            `/sandbox/${encodeURIComponent(id)}`,
+          );
+          if (!this.fleet.isOwn(sb) || sb.state === "destroyed") {
+            this.recorded.delete(id);
+            this.known.delete(id);
+            return undefined;
+          }
+          return sb;
+        } catch (e) {
+          if (e instanceof SandboxNotFoundError) {
+            this.recorded.delete(id);
+            this.known.delete(id);
+            return undefined;
+          }
+          throw e;
+        }
+      }),
+    );
+    return out.filter((s): s is DaytonaSandbox => s !== undefined);
+  }
+
+  /**
+   * Our live sandboxes: the recorded ones confirmed by get, plus strays a best-effort listing finds
+   * (confirmed by get too). The listing can only add to the count, never lower it.
+   */
   private async ownLive(): Promise<number> {
-    const all = await this.listAll({
-      labels: JSON.stringify({ [this.fleet.label]: OWN_LABEL_VALUE }),
-    });
-    return all.filter((s) => this.fleet.isOwn(s) && isLive(s.state)).length;
+    return (await this.list({})).length;
   }
 
   /**
@@ -423,10 +499,46 @@ export class DaytonaProvider implements Provider {
   private warnedNoOrg = false;
   /** Set once the usage read answered 403: from then on the own-fleet budget is the only gate. */
   private usageForbidden = false;
+  /** The limits the last usage check judged against, for diagnose(). */
+  private readonly limitsUsed: {
+    cpu?: number;
+    diskGiB?: number | undefined;
+    memGiB?: number | undefined;
+    diskFrom?: string;
+    memFrom?: string;
+  } = {};
 
   /** What gates a create, for status and the logs. */
-  diagnose(): { quotaMode: "off" | "org-usage" | "own-fleet"; reason: string; maxLive: number } {
-    const base = { maxLive: this.maxLive };
+  diagnose(): {
+    quotaMode: "off" | "org-usage" | "own-fleet";
+    reason: string;
+    maxLive: number;
+    counting: { mode: "recorded-ids"; tracked: number };
+    limits: {
+      cpu: number;
+      diskGiB: number | null;
+      memGiB: number | null;
+      diskFrom: string;
+      memFrom: string;
+    };
+  } {
+    const o = this.opts.ownerCiPreflight;
+    const base = {
+      maxLive: this.maxLive,
+      counting: this.countingMode(),
+      // What the org check judges against: the configured values until a usage read has said more.
+      limits: {
+        cpu: this.limitsUsed.cpu ?? (o === false ? 0 : (o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT)),
+        diskGiB: this.limitsUsed.diskGiB ?? (o === false ? null : (o?.diskLimitGiB ?? null)),
+        memGiB: this.limitsUsed.memGiB ?? (o === false ? null : (o?.memLimitGiB ?? null)),
+        diskFrom:
+          this.limitsUsed.diskFrom ??
+          (o !== false && o?.diskLimitGiB !== undefined ? "config" : "not read yet"),
+        memFrom:
+          this.limitsUsed.memFrom ??
+          (o !== false && o?.memLimitGiB !== undefined ? "config" : "not read yet"),
+      },
+    };
     if (this.opts.ownerCiPreflight === false) {
       return { quotaMode: "off", reason: "ownerCiPreflight is false", ...base };
     }
@@ -444,14 +556,13 @@ export class DaytonaProvider implements Provider {
    * the check does not apply), else the reading. Reading errors are thrown: an unreadable usage is
    * never taken for room.
    */
-  private async orgRoom(
-    vcpu: number,
-  ): Promise<{ ok: true } | { ok: false; cpu: number; limit: number }> {
+  private async orgRoom(need: SandboxNeed): Promise<OrgRoom> {
     const o = this.opts.ownerCiPreflight;
     if (o === false) return { ok: true };
     // Own-fleet budget: the caller already waits while our live count is at maxLive.
     if (this.opts.quotaMode === "own-fleet" || this.usageForbidden) return { ok: true };
     const limit = o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT;
+    this.limitsUsed.cpu = limit;
     if (this.orgId === undefined) {
       const first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
         query: { limit: 1 },
@@ -494,17 +605,54 @@ export class DaytonaProvider implements Provider {
       }
       throw e;
     }
-    const cpu = cpuInUse(
+    const u = orgUsage(
       usage.regionUsage,
       o?.region ?? DEFAULT_ORG_REGION,
       o?.sandboxClass ?? DEFAULT_ORG_CLASS,
     );
-    if (cpu === undefined) throw new InfraError("Daytona usage reply has no CPU reading");
-    return cpu + vcpu <= limit ? { ok: true } : { ok: false, cpu, limit };
+    if (u.cpu === undefined) throw new InfraError("Daytona usage reply has no CPU reading");
+    if (u.cpu + need.cpu > limit) {
+      return { ok: false, resource: "cpu", used: u.cpu, limit, need: need.cpu, unit: "vCPU" };
+    }
+    // Disk and memory: the configured limit, else the quota the reply reports, else not checked.
+    // A reading the reply does not carry is skipped, never taken for room or for full.
+    const diskLimit = o?.diskLimitGiB ?? u.quota.disk;
+    const memLimit = o?.memLimitGiB ?? u.quota.mem;
+    this.limitsUsed.diskGiB = diskLimit;
+    this.limitsUsed.memGiB = memLimit;
+    this.limitsUsed.diskFrom =
+      o?.diskLimitGiB !== undefined
+        ? "config"
+        : u.quota.disk !== undefined
+          ? "usage reply"
+          : "none";
+    this.limitsUsed.memFrom =
+      o?.memLimitGiB !== undefined ? "config" : u.quota.mem !== undefined ? "usage reply" : "none";
+    if (diskLimit !== undefined && u.disk !== undefined && u.disk + need.diskGiB > diskLimit) {
+      return {
+        ok: false,
+        resource: "disk",
+        used: u.disk,
+        limit: diskLimit,
+        need: need.diskGiB,
+        unit: "GiB disk",
+      };
+    }
+    if (memLimit !== undefined && u.mem !== undefined && u.mem + need.memGiB > memLimit) {
+      return {
+        ok: false,
+        resource: "memory",
+        used: u.mem,
+        limit: memLimit,
+        need: need.memGiB,
+        unit: "GiB memory",
+      };
+    }
+    return { ok: true };
   }
 
   /** Waits until we are under our own cap and the owner's CI is not busy, or gives up. */
-  private async waitForCapacity(vcpu = 1): Promise<void> {
+  private async waitForCapacity(need: SandboxNeed): Promise<void> {
     const deadline = this.now() + this.capacityWaitMs;
     // With no threshold configured the label gate never holds (the count is 0 and never read).
     const foreignAt = this.opts.ownerCiLabelWaitAt ?? Number.POSITIVE_INFINITY;
@@ -512,13 +660,15 @@ export class DaytonaProvider implements Provider {
       const [own, foreign, room] = await Promise.all([
         this.ownLive(),
         this.foreignLive(),
-        this.orgRoom(vcpu),
+        this.orgRoom(need),
       ]);
       if (own < this.maxLive && foreign < foreignAt && room.ok) return;
       if (this.now() >= deadline) {
         if (!room.ok && own < this.maxLive && foreign < foreignAt) {
           throw new InfraError(
-            `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.cpu} vCPU in use (waiting above ${room.limit}, this sandbox needs ${vcpu})`,
+            room.resource === "cpu"
+              ? `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.used} vCPU in use (waiting above ${room.limit}, this sandbox needs ${room.need})`
+              : `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.used} of ${room.limit} ${room.unit} in use (this sandbox needs ${room.need})`,
           );
         }
         throw new InfraError(
@@ -623,12 +773,44 @@ export class DaytonaProvider implements Provider {
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const body = this.buildCreateBody(spec); // refuse a bad spec before queueing anything
     const run = async (): Promise<SandboxHandle> => {
-      await this.waitForCapacity(spec.resources?.cpus ?? 1);
-      const startedAt = this.now();
-      const sb = await this.api.json<DaytonaSandbox>("POST", "/sandbox", {
-        json: body,
-        timeoutMs: 120_000,
-      });
+      const need: SandboxNeed = {
+        cpu: spec.resources?.cpus ?? 1,
+        memGiB: spec.resources?.memoryMb
+          ? Math.ceil(spec.resources.memoryMb / 1024)
+          : DEFAULT_SANDBOX_MEM_GIB,
+        diskGiB: spec.resources?.diskGb ?? DEFAULT_SANDBOX_DISK_GIB,
+      };
+      // A quota 400 on create ("Total disk limit exceeded") is capacity, not a bad request: the
+      // account is full, so wait (the same budget as every other capacity wait) and try again.
+      const quotaDeadline = this.now() + this.capacityWaitMs;
+      let warned = false;
+      let startedAt = 0;
+      let sb: DaytonaSandbox;
+      for (;;) {
+        await this.waitForCapacity(need);
+        startedAt = this.now();
+        try {
+          sb = await this.api.json<DaytonaSandbox>("POST", "/sandbox", {
+            json: body,
+            timeoutMs: 120_000,
+          });
+          break;
+        } catch (e) {
+          if (!(e instanceof DaytonaQuotaExceededError)) throw e;
+          if (this.now() >= quotaDeadline) {
+            throw new InfraError(`waited ${Math.round(this.capacityWaitMs / 1000)}s: ${e.message}`);
+          }
+          if (!warned) {
+            warned = true;
+            this.opts.log?.(
+              `daytona: ${e.message}; waiting for room (up to ${Math.round(this.capacityWaitMs / 1000)}s)`,
+            );
+          }
+          await this.sleep(this.pollMs);
+        }
+      }
+      // Recorded the moment it exists, before anything can fail, so it is counted and cleaned up.
+      this.recorded.add(sb.id);
       try {
         if (!this.fleet.isOwn(sb))
           throw new InfraError("Daytona created a sandbox without our label; refusing to continue");
@@ -648,9 +830,6 @@ export class DaytonaProvider implements Provider {
         await this.waitStarted(sb.id);
         const base = await this.verify(sb.id, true);
         await this.waitToolbox(sb.id, base);
-        // Listings lag behind creation. Wait until it shows up, so counts, caps and
-        // destroyByLabels see this sandbox as soon as create returns.
-        await this.waitListed(sb.id, true);
         if (
           (spec.network.egress === "deny-all-except-proxy" ||
             spec.network.egress === "proxy-domain-filtered") &&
@@ -667,8 +846,13 @@ export class DaytonaProvider implements Provider {
         return { id: sb.id, startedAt };
       } catch (e) {
         // Never leave a half-created sandbox behind.
-        await this.api.json("DELETE", `/sandbox/${encodeURIComponent(sb.id)}`).catch(() => {});
+        const gone = await this.api
+          .json("DELETE", `/sandbox/${encodeURIComponent(sb.id)}`)
+          .then(() => true)
+          .catch((err) => err instanceof SandboxNotFoundError);
         this.known.delete(sb.id);
+        // A delete that failed leaves it recorded: it still counts, and the next sweep retries it.
+        if (gone) this.recorded.delete(sb.id);
         throw e;
       }
     };
@@ -691,7 +875,7 @@ export class DaytonaProvider implements Provider {
     const name = endpoint.tlsName ?? endpoint.host;
     let caFile: string[] = [];
     if (this.opts.proxyTlsCaPem !== undefined) {
-      const path = "/tmp/longshore-proxy-ca.pem";
+      const path = "/tmp/turntable-proxy-ca.pem";
       await this.files.put(id, path, new TextEncoder().encode(this.opts.proxyTlsCaPem));
       caFile = [path];
     }
@@ -763,10 +947,14 @@ export class DaytonaProvider implements Provider {
     try {
       sb = await this.api.json<DaytonaSandbox>("GET", `/sandbox/${encodeURIComponent(id)}`);
     } catch (e) {
-      if (e instanceof SandboxNotFoundError) return;
+      if (e instanceof SandboxNotFoundError) {
+        this.recorded.delete(id);
+        return;
+      }
       throw e;
     }
     if (!this.fleet.isOwn(sb)) {
+      this.recorded.delete(id);
       throw new SpecError(
         `refusing to delete sandbox ${id}: it is not labelled ${this.fleet.label}=${OWN_LABEL_VALUE}`,
       );
@@ -778,7 +966,7 @@ export class DaytonaProvider implements Provider {
     }
     this.known.delete(id);
     await this.waitGone(id);
-    await this.waitListed(id, false);
+    this.recorded.delete(id);
     const destroyedAt = this.now();
     const createdAt = sb.createdAt ? Date.parse(sb.createdAt) : destroyedAt;
     this.opts.onUsage?.({
@@ -788,24 +976,6 @@ export class DaytonaProvider implements Provider {
       destroyedAt,
       seconds: Math.max(0, Math.round((destroyedAt - createdAt) / 1000)),
     });
-  }
-
-  /** Listings are eventually consistent: wait until `id` is (or is no longer) in our own listing. */
-  private async waitListed(id: string, present: boolean): Promise<void> {
-    const deadline = this.now() + 90_000;
-    for (;;) {
-      const all = await this.listAll({
-        labels: JSON.stringify({ [this.fleet.label]: OWN_LABEL_VALUE }),
-      });
-      const here = all.some((s) => s.id === id && this.fleet.isOwn(s) && isLive(s.state));
-      if (here === present) return;
-      if (this.now() >= deadline) {
-        throw new InfraError(
-          `Daytona listing did not ${present ? "show" : "drop"} sandbox ${id} within 90 s`,
-        );
-      }
-      await this.sleep(Math.min(this.pollMs, 500));
-    }
   }
 
   /** Deletion is asynchronous: wait until the sandbox is really gone so counts and caps are true. */
@@ -832,24 +1002,50 @@ export class DaytonaProvider implements Provider {
     return found.length;
   }
 
+  /**
+   * Our sandboxes, live and matching `filter`. The recorded ids (confirmed by get) are the
+   * authority. The label-filtered listing is added as a best effort, to find strays an earlier
+   * process lost track of; it can miss new sandboxes and show deleted ones, so it never lowers a
+   * count and an empty answer from it means nothing. A failing listing is ignored.
+   */
   async list(filter: { labels?: Labels }): Promise<SandboxInfo[]> {
     // Our own label is always part of the query and is checked again on every result, so a
     // listing can never include (and a delete can never reach) a sandbox that is not ours.
     const want = { ...filter.labels, [this.fleet.label]: OWN_LABEL_VALUE };
-    const all = await this.listAll({ labels: JSON.stringify(want) });
-    return all
-      .filter(
-        (s) =>
-          this.fleet.isOwn(s) &&
-          isLive(s.state) &&
-          Object.entries(want).every(([k, v]) => s.labels?.[k] === v),
-      )
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        labels: s.labels ?? {},
-        createdAt: s.createdAt ? Date.parse(s.createdAt) : 0,
-      }));
+    const mine = (s: DaytonaSandbox): boolean =>
+      this.fleet.isOwn(s) &&
+      isLive(s.state) &&
+      Object.entries(want).every(([k, v]) => s.labels?.[k] === v);
+    const byId = new Map<string, DaytonaSandbox>();
+    for (const s of await this.recordedSandboxes()) if (mine(s)) byId.set(s.id, s);
+    let strays: DaytonaSandbox[] = [];
+    try {
+      strays = await this.listAll({ labels: JSON.stringify(want) });
+    } catch {
+      // best effort only
+    }
+    for (const s of strays) {
+      if (byId.has(s.id) || !mine(s)) continue;
+      // The listing may be stale: confirm with a get before counting or acting on it.
+      try {
+        const fresh = await this.api.json<DaytonaSandbox>(
+          "GET",
+          `/sandbox/${encodeURIComponent(s.id)}`,
+        );
+        if (mine(fresh)) {
+          byId.set(fresh.id, fresh);
+          this.recorded.add(fresh.id);
+        }
+      } catch {
+        // gone, or unreadable: not counted
+      }
+    }
+    return [...byId.values()].map((s) => ({
+      id: s.id,
+      name: s.name,
+      labels: s.labels ?? {},
+      createdAt: s.createdAt ? Date.parse(s.createdAt) : 0,
+    }));
   }
 
   async count(filter: { labels?: Labels }): Promise<number> {
