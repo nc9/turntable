@@ -1,0 +1,167 @@
+---
+title: "Design: a microVM-class sandbox provider"
+description: Which sandbox providers really isolate at microVM level, how the conformance suite can verify the class instead of trusting the declaration, and a recommendation for hosted mode.
+---
+
+This is a design. Nothing here is built, and no account was opened to write it: every fact below comes from public documentation, cited inline and to be re-checked in the spike. It answers [#246](https://github.com/nc9/turntable/issues/246).
+
+## The problem
+
+Hosted multi-tenant mode requires the `microvm` isolation class (`requiredIsolation` in the scheduler). The only built-in hosted provider, Daytona, declares `container`, so a hosted instance refuses every job. The hosted shadow runs with `LONGSHORE_HOSTED` off until a provider exists that is a microVM or better, declares it, and proves it.
+
+Two requirements follow:
+
+1. A provider that really is a microVM (a dedicated guest kernel per sandbox, a hypervisor boundary between tenants).
+2. A way to check that, because today a declaration is only checked to be one of the four class names (`packages/provider-conformance/src/conformance.ts`). A provider that over-declares would silently weaken the tenant boundary.
+
+## What a candidate must provide
+
+From the provider SDK contract, a candidate needs:
+
+| Need | Why |
+| --- | --- |
+| Create from an image or snapshot, with labels or tags | `createFrom`, `labels`, `listByLabel` |
+| Short synchronous exec (tens of seconds is enough) | The shared wrapper builds detached exec from short exec plus files, so native background exec is optional |
+| File put and get | The wrapper keeps the script, the log and the exit file in the sandbox, so offset logs and status come from files |
+| List and destroy by label, plus a TTL or a reaper | Orphan cleanup, per-org quotas |
+| Egress `none` at create time | `checkProviderInfo` requires it for a built-in ceiling |
+| An egress path to the secrets proxy only | `deny-all-except-proxy` or `proxy-domain-filtered`, as in [the Daytona design](/design/daytona-proxy) |
+| No env field on create | Secrets only reach a sandbox through the proxy |
+
+## Candidates
+
+All claims are from vendor documentation unless marked otherwise. "Isolation evidence" is what the vendor publishes; none of it is independent.
+
+### Vercel Sandbox
+
+- **Isolation.** Each sandbox is "its own Firecracker microVM with a dedicated kernel" ([security](https://vercel.com/docs/sandbox/concepts/security)). The page is candid about side channels.
+- **Exec.** `runCommand({ detached: true })` returns a command id with `logs()`, `wait` and `kill` ([SDK reference](https://vercel.com/docs/sandbox/sdk-reference)). Logs stream; there is no documented offset read, so the wrapper (file-backed logs) is still the safe route.
+- **Labels.** `Sandbox.list({ tags })`, at most 5 tags, so labels map to tags. Value length and character limits need checking.
+- **Egress.** A `deny-all` mode and a user-defined firewall keyed on domains (SNI), updatable on a live sandbox ([firewall](https://vercel.com/docs/sandbox/concepts/firewall)). That is domain filtering, so it maps to `proxy-domain-filtered`, not to IP-level `deny-all-except-proxy`.
+- **Cost and limits.** Published pricing and limits ([pricing](https://vercel.com/docs/sandbox/pricing)).
+- **Fit.** Strong hosted option. A new provider package, a new vendor account, and a vendor SDK dependency.
+
+### E2B
+
+- **Isolation.** Firecracker microVM per sandbox, own cgroup and network namespace; the runtime is open source under Apache-2.0 and needs Linux with KVM ([e2b-dev/infra](https://github.com/e2b-dev/infra)).
+- **Exec.** Background commands exist with a default 60 s timeout and reattach by pid, but no offset reads, so output must go to a file ([background commands](https://docs.e2b.dev/commands/background.md)). The wrapper covers this.
+- **Egress.** `allowOut` and `denyOut` with SNI and Host filtering ([internet access](https://docs.e2b.dev/network/internet-access.md)). The page notes a DNS allowance for 8.8.8.8 and that a blocked TCP connection can appear to succeed, so egress probes must test data transfer, not connect success.
+- **Self-host.** Bring-your-own-cloud is Enterprise only ([BYOC](https://docs.e2b.dev/byoc.md)); the Apache-2.0 infra repo is the free route and makes us operate it.
+- **Fit.** Good, and the only hosted vendor with a credible self-host exit. Egress semantics need the strictest probing.
+
+### Daytona VM sandboxes
+
+- **Isolation.** Daytona documents a "Full virtual machine with its own kernel" ([isolation](https://www.daytona.io/docs/en/isolation.md)) but does not name the technology. Linux VM sandboxes are created from VM snapshots only; nested KVM needs org enablement ([Linux sandboxes](https://www.daytona.io/docs/en/linux-sandboxes.md)).
+- **Egress.** The same `networkAllowList`, `domainAllowList` and `networkBlockAll` as today ([network limits](https://www.daytona.io/docs/en/network-limits.md)).
+- **Fit.** Lowest effort: the provider, the fleet budget handling and the proxy path exist already. The class is unnamed and `docs/providers.mdx` records that the `linux-vm` class is untested. This is the candidate where verification matters most: we would raise the ceiling only after the probes pass on a real account.
+
+### Fly Machines
+
+- **Isolation.** Firecracker microVMs ([architecture](https://docs.fly.io/reference/architecture)).
+- **Exec.** The Machines exec endpoint returns stdout, stderr and an exit code in one response ([exec](https://docs.machines.dev/machines/Machines_exec)); long background work is a known rough edge.
+- **Egress.** Network policies are allow-only rules per port and protocol, default deny per direction, and are not applied to fly-proxy traffic ([network policies](https://docs.fly.io/machines/guides-examples/network-policies)). There is no per-host allow, so the proxy-only path is weak.
+- **Fit.** Not recommended: egress control is the gap.
+
+### DigitalOcean MicroVMs
+
+- **Isolation.** Documented as microVMs ([overview](https://docs.digitalocean.com/products/microvms)).
+- **Limits.** Exec is capped at 40 s and 4 MiB per call, files at 64 MiB ([limits](https://docs.digitalocean.com/products/microvms/details/limits)). That is enough for the wrapper but tight for large artifacts.
+- **Egress.** Default-deny allow rules, with HTTP and HTTPS forced through a proxy ([restrict outbound traffic](https://docs.digitalocean.com/products/microvms/how-to/restrict-outbound-traffic)).
+- **Fit.** Promising but new, with a small region set. Revisit after it has a track record.
+
+### Self-hosted Firecracker
+
+- **Isolation.** KVM plus the jailer and seccomp; Firecracker's own production guidance is to disable SMT, KSM and swap and to run one process per tenant ([README](https://github.com/firecracker-microvm/firecracker), [prod host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)).
+- **Egress.** Firecracker does no traffic filtering; we write the host firewall rules ourselves. We would get true IP-level deny-all-except-proxy, the strongest egress of any option.
+- **Cost.** We would build and operate an image pipeline, a pool or snapshot restore, a reaper, and a host fleet on bare metal. The docs test on bare-metal hosts and do not discuss nested virtualisation, so cloud VMs are a risk.
+- **Fit.** The right end state for a self-hosted operator who wants control, and the wrong first step for us.
+
+### Kata Containers
+
+- Lightweight VMs behind an OCI runtime, with Cloud Hypervisor, Firecracker, QEMU and Dragonball as hypervisors ([Kata](https://github.com/kata-containers/kata-containers), [hypervisors](https://github.com/kata-containers/kata-containers/blob/main/docs/hypervisors.md)).
+- It needs hardware virtualisation and a Kubernetes or containerd host. That makes it a good base for a self-hosted provider, with Docker-style tooling, and a poor fit for a first hosted option.
+
+### Considered and set aside
+
+- gVisor-based providers (for example Modal) isolate at the `gvisor` class, below what hosted mode needs.
+- Vendors without public isolation, exec or egress documentation were not evaluated.
+
+## Comparison
+
+| Candidate | Isolation named | Detached exec | Egress control | Self-host exit | Effort |
+| --- | --- | --- | --- | --- | --- |
+| Vercel Sandbox | Firecracker | native, logs streamed | deny-all, domain rules | no | new provider |
+| E2B | Firecracker | native, no offsets | allow/deny, SNI | yes (Apache-2.0) | new provider |
+| Daytona VM | unnamed "VM" | existing path | existing path | no | small |
+| Fly Machines | Firecracker | exec only | port rules, weak | no | new provider |
+| DO MicroVMs | microVM | short exec | allow rules + proxy | no | new provider |
+| Self-hosted Firecracker | Firecracker | our own agent | host firewall, strongest | n/a | large |
+
+## Verifying the class
+
+The conformance suite should stop trusting `info.isolation` for `microvm` and `vm`. A new probe group runs inside a fresh sandbox through the normal exec path and compares against facts the controller knows about its own host. No single probe is proof, so the suite requires all of them to agree.
+
+| Probe | Reads | What a microVM shows | What a container shows |
+| --- | --- | --- | --- |
+| Kernel identity | `uname -r`, `/proc/sys/kernel/random/boot_id`, `/proc/version` | A boot id that differs from every other sandbox on the provider and a kernel the provider chose | Same kernel and boot id as the host and its neighbours |
+| Hypervisor flag | `hypervisor` in `/proc/cpuinfo`, `systemd-detect-virt`, DMI product strings | Hypervisor present (KVM, Firecracker) | Often absent, or the host's own values |
+| No shared kernel surface | `/proc/self/cgroup` and `ns/*` link targets, `/proc/1/cmdline`, number of host-visible processes | A private PID 1 and a private process table | Host cgroup paths, a containerised PID 1 |
+| Virtual hardware | `/sys/class/dmi`, `lspci`, `/dev/vda` style block devices, virtio devices | virtio block and net devices | Overlay filesystem, no virtio disks |
+
+Two cross-sandbox checks make the result stronger than a single read. First, create two sandboxes at once and require different boot ids and no shared writable path. Second, record the kernel release and compare to the set the provider documents, so a silent downgrade to a container runtime shows as a changed kernel family.
+
+Honest limits. A sandbox on a nested hypervisor, or a container that fakes `/proc` files (gVisor does), can pass some probes. A malicious provider can also lie to every probe. The probes catch mislabelling and misconfiguration, not a hostile provider, which is why a provider is a trust decision and why the ceiling lives in `BUILTIN_CEILINGS` and not in the plugin's own declaration.
+
+Operationally:
+
+- A provider declaring `microvm` or `vm` must have a recorded conformance run in CI that includes the class probes. The ceiling is raised in the same PR as the run output.
+- At runtime the worker runs a cheap subset (boot id differs from the previous sandbox, hypervisor flag set) on the first job per sandbox and fails closed if it does not hold. The cost is one short exec.
+- A failure marks the provider degraded and refuses hosted jobs until an operator clears it.
+
+## Egress verification
+
+Egress `none` is already tested. For microVM providers we add:
+
+- A DNS exfiltration probe: a lookup of a unique name under a domain we control must fail, and the controller's resolver log must show no query. Several vendors document DNS exceptions (E2B's 8.8.8.8 allowance is an example), so connect success is not the signal.
+- A data-transfer probe, not a connect probe, because a blocked TCP connection can appear to succeed on some providers.
+- For the proxy path, a canary reachable only through the proxy, exactly as in the [Daytona design](/design/daytona-proxy).
+- A domain-filtered provider maps to `proxy-domain-filtered`, which the policy already treats as weaker than `deny-all-except-proxy`. Hosted mode should accept it only with the probes above passing.
+
+## Recommendation
+
+Two steps, in this order.
+
+1. **Spike Daytona VM sandboxes first.** It is the cheapest possible win: the provider, the fleet budget, the proxy relay and the account already exist. The work is a `vm` option in the existing provider (create from a VM snapshot), the class probes above, and a ceiling decision based on the result. If the probes pass and Daytona confirms the hypervisor, we raise the Daytona VM path to `microvm`. If they do not, we have learned that cheaply and nothing is declared.
+2. **Build one independent provider: Vercel Sandbox or E2B, decided by the spike.** A second vendor is the real answer to #246, because the hosted tenant boundary should not rest on a single vendor whose class is unnamed. Recommended choice: **E2B**, since it names Firecracker, has the Apache-2.0 runtime as a self-host exit, and its egress semantics (SNI filtering, documented DNS caveats) are testable by the probes above. Vercel Sandbox is the alternate if E2B's egress or pricing fails the spike. Neither needs an account until the spike is approved.
+
+Self-hosted Firecracker or Kata is the later track for operators who run their own metal. It should be a plugin, not a built-in.
+
+## Provider plugin plan
+
+The plan has a prerequisite. There is no external plugin loader today: `checkProviderInfo` and `parsePluginPins` describe the trust rules (sha256 pins, never in hosted mode), but nothing loads a plugin. Two ways forward:
+
+- **Built-in provider package** (`packages/provider-<name>`), with an entry in `BUILTIN_CEILINGS`. This is the fast path and the one used by `docker` and `daytona`. It fits a hosted-mode provider, because hosted mode refuses external plugins anyway.
+- **Plugin loader first**, for self-hosted Firecracker or Kata and for third parties. Needs a loader, a pin check and a sandboxed load path. Not on the critical path for hosted mode.
+
+Recommended shape, per provider:
+
+1. `info`: `isolation` declared as the ceiling it earns, `exec.detached` true through the shared wrapper, `logsByOffset` true, `network.egressPolicy` as measured, labels mapped to the vendor's tags or metadata.
+2. `create`: image or snapshot, labels, TTL, `egress: none` or the proxy allow rule at create time, never an env field.
+3. `exec` through `wrapped-exec.ts` over the vendor's short exec and file APIs.
+4. `list`, `count`, `destroyByLabels`, and an own-fleet budget like Daytona's, because vendor-wide usage reads may be forbidden.
+5. Conformance: the existing suite, the class probes and the egress probes, run on a real account by a maintainer, with sandbox-minutes logged.
+6. Docs: a section in `docs/providers.mdx`, with the measured egress class and the limits found.
+
+## Open questions
+
+- Does Daytona name its VM hypervisor in a contract or only in marketing? We should ask before relying on it.
+- What happens to a vendor's labels or tags under the limits (count, length, characters)? Vercel allows 5 tags.
+- Do any of these vendors let us pin the guest kernel version, so the probes can compare against a known value?
+- Is a second signal available for the class, such as a vendor attestation or a published isolation report, to complement the in-sandbox probes?
+- Cost per sandbox-minute for a typical 10 minute job on each candidate, measured, not from the price page.
+
+## Out of scope
+
+- Writing the provider or the probes.
+- Opening accounts or running anything on a vendor.
+- A loader for external plugins.
