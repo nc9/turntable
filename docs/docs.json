@@ -29,7 +29,8 @@
           "hosted",
           "tenant-isolation",
           "postgres",
-          "instance-admin"
+          "instance-admin",
+          "deploy/railway"
         ]
       },
       {

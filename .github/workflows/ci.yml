@@ -50,6 +50,8 @@ jobs:
         run: bun run scripts/toolchain-versions.ts
       - name: The operations table matches the registry
         run: bun run scripts/ops-table.ts --check
+      - name: The configuration reference matches the code
+        run: bun run scripts/config-reference.ts --check
       - name: Migrations match schema and embedded modules are current (SQLite and Postgres)
         timeout-minutes: 5
         run: |

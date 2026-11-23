@@ -657,7 +657,12 @@ describe("a fully compromised main process cannot cause a signature", () => {
       const rel = relative(SRC, f);
       const text = readFileSync(f, "utf8");
       const inLane = rel.startsWith("release/") || rel === "roles.ts";
-      if (/TURNTABLE_RELEASE_/.test(text) && !inLane && rel !== "main.ts")
+      if (
+        /TURNTABLE_RELEASE_/.test(text) &&
+        !inLane &&
+        rel !== "main.ts" &&
+        rel !== "config-reference.ts"
+      )
         violations.push(`${rel}: reads a release variable`);
       // the signing service is built and called only by the lane (the op named sign_release always refuses)
       if (
@@ -673,6 +678,10 @@ describe("a fully compromised main process cannot cause a signature", () => {
     const main = readFileSync(join(SRC, "main.ts"), "utf8");
     expect(/process\.env\.TURNTABLE_RELEASE_/.test(main)).toBe(false);
     expect(/releaseConfigFromEnv/.test(main)).toBe(false);
+    // config-reference.ts only LISTS the variables' names for the docs: it reads no environment at all
+    const reference = readFileSync(join(SRC, "config-reference.ts"), "utf8");
+    expect(/process\.env/.test(reference)).toBe(false);
+    expect(/releaseConfigFromEnv/.test(reference)).toBe(false);
     expect(violations).toEqual([]);
   });
 
