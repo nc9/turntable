@@ -9,6 +9,7 @@ import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
 import { registerCredentialRevoker } from "./incident";
 import { createForgeToken } from "./pins/forge-token";
+import { createHostedManifestHandler, type HostedManifestHandler } from "./github/hosted-manifest";
 import { parseTrustedProxies } from "./github/trusted-proxies";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import {
@@ -130,6 +131,8 @@ Environment:
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
                     the webhook failure limiter keys on the client the forwarded chain reports through them
+  LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256  sha256 of a setup token (longshore token generate): enables creating the
+                    GitHub App from this instance at /api/v1/instance/github-app/manifest; needs LONGSHORE_PUBLIC_URL
   LONGSHORE_CLAIM_INSTALLATIONS  set to 1 on a hosted instance: an org claims its own App installation
                     (start_installation_claim, then GitHub redirects to /api/v1/github/setup)
   LONGSHORE_WORKER, LONGSHORE_PROVIDER, LONGSHORE_PROVIDER_CONFIG, LONGSHORE_POLL, LONGSHORE_IMAGE,
@@ -530,6 +533,8 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
+  let appManifest: HostedManifestHandler | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
   let wake: ((repo: string) => void) | undefined;
   // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
@@ -607,6 +612,25 @@ async function serve(args: string[]): Promise<void> {
         }),
       };
     }
+    const setupHash = process.env.LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256?.trim();
+    if (setupHash) {
+      const publicBase = (values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL)?.trim();
+      if (!publicBase) {
+        console.warn(
+          "LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256 is set but there is no public URL (LONGSHORE_PUBLIC_URL): the GitHub App cannot be created from this instance",
+        );
+      } else {
+        appManifest = createHostedManifestHandler({
+          db,
+          store,
+          publicUrl: publicBase,
+          setupTokenSha256: setupHash,
+          ...(claimMode ? { claimFlow: true } : {}),
+          onReplaced: () => auth.dropCached(),
+          log: (m) => console.log(`[longshore] ${m}`),
+        });
+      }
+    }
     if (process.env.LONGSHORE_TRUST_FORWARDED_FOR !== undefined) {
       console.warn(
         "warning: LONGSHORE_TRUST_FORWARDED_FOR is no longer read; name your proxies in LONGSHORE_TRUSTED_PROXIES",
@@ -651,6 +675,7 @@ async function serve(args: string[]): Promise<void> {
         ...(webauthn ? { webauthn } : {}),
         ...(oidc ? { oidc } : {}),
         ...(claims ? { claims } : {}),
+        ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
         trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),

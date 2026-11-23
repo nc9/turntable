@@ -1,7 +1,7 @@
 // Secrets, the GitHub App record, installations and webhook deliveries. Like index.ts, part of
 // the only code allowed to name tenant tables. Secret values are stored only as sealed records
 // and are never returned by any query written for an API response.
-import { and, asc, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, like, lt, ne } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
@@ -432,5 +432,60 @@ export function consumeInstallationClaim(
       )
       .returning();
     return rows[0];
+  });
+}
+
+// ---- the hosted App manifest flow (github/hosted-manifest.ts) ----
+
+/** `startedBy` prefix of an installation_claims row that is really an App manifest nonce. */
+export const MANIFEST_NONCE_PREFIX = "app-manifest:";
+
+/**
+ * Records the single-use nonce of an App manifest flow. It reuses `installation_claims` (a nonce,
+ * its owner org and an expiry is all either flow needs); the prefix on `startedBy` keeps the two
+ * kinds apart, and each flow's state is signed under its own key.
+ */
+export function createManifestNonce(
+  db: Db,
+  scope: Scope,
+  input: { nonce: string; startedBy: string; expiresAt: number },
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm.insert(s.installationClaims).values({
+      nonce: input.nonce,
+      orgId: scope.orgId,
+      startedBy: `${MANIFEST_NONCE_PREFIX}${input.startedBy}`,
+      expiresAt: input.expiresAt,
+    });
+  });
+}
+
+/** Consumes a manifest nonce, atomically. False when unknown, expired, used, or not a manifest nonce. */
+export function consumeManifestNonce(db: Db, nonce: string, now: number): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.installationClaims)
+      .set({ usedAt: now })
+      .where(
+        and(
+          eq(s.installationClaims.nonce, nonce),
+          like(s.installationClaims.startedBy, `${MANIFEST_NONCE_PREFIX}%`),
+          isNull(s.installationClaims.usedAt),
+          gt(s.installationClaims.expiresAt, now),
+        ),
+      )
+      .returning({ n: s.installationClaims.nonce });
+    return rows.length > 0;
+  });
+}
+
+/** Drops this org's App rows other than `keepAppId` (a replaced App). Returns the removed ids. */
+export function removeOtherGithubApps(db: Db, scope: Scope, keepAppId: string): Promise<string[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .delete(s.githubApps)
+      .where(and(eq(s.githubApps.orgId, scope.orgId), ne(s.githubApps.appId, keepAppId)))
+      .returning({ id: s.githubApps.appId });
+    return rows.map((r) => r.id);
   });
 }

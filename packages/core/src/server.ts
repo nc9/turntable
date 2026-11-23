@@ -14,6 +14,7 @@ import {
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
+import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { serveUi } from "./ui-assets";
@@ -91,6 +92,8 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
+  appManifest?: HostedManifestHandler;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
@@ -132,6 +135,8 @@ export function startServer(options: ServeOptions) {
   async function route(req: Request, srv: Bun.Server<WsData>): Promise<Response | undefined> {
     const hook = await options.webhooks?.handle(req, srv.requestIP(req)?.address);
     if (hook) return hook;
+    const manifest = await options.appManifest?.handle(req);
+    if (manifest) return manifest;
     const claimed = await options.claims?.handler.handle(req);
     if (claimed) return claimed;
     const idp = await options.oidc?.handle(req);

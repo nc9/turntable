@@ -5,7 +5,7 @@
 import { type SafeFetch, safeFetch } from "@longshore/net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db";
-import { appendAudit, setGithubApp } from "../db/repos";
+import { appendAudit, removeOtherGithubApps, setGithubApp } from "../db/repos";
 import type { SecretStore } from "../secrets/store";
 import { SECRET_APP_ID, SECRET_CLIENT, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "./app-auth";
 import { WEBHOOK_PATH } from "./webhook";
@@ -15,6 +15,11 @@ export interface ManifestOptions {
   /** Public base URL of this instance. */
   url: string;
   redirectUrl: string;
+  /**
+   * The hosted claim flow is on: GitHub sends the installer to our setup URL with a user
+   * authorization code, which is how an org proves it owns the installation it claims.
+   */
+  claimFlow?: boolean;
 }
 
 /**
@@ -37,6 +42,13 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
       pull_requests: "read",
     },
     default_events: ["push", "pull_request", "check_run"],
+    ...(o.claimFlow
+      ? {
+          setup_url: `${base}/api/v1/github/setup`,
+          request_oauth_on_install: true,
+          callback_urls: [`${base}/api/v1/github/setup`],
+        }
+      : {}),
   };
 }
 
@@ -118,7 +130,13 @@ export async function storeApp(
   store: SecretStore,
   orgId: string,
   c: ManifestConversion,
-): Promise<{ appId: string; slug: string; htmlUrl: string }> {
+  o: {
+    /** Who is recorded in the audit entry. Default: the local CLI. */
+    principal?: { kind: string; id: string };
+    /** Drop this org's other App rows: the new App replaces them. */
+    replace?: boolean;
+  } = {},
+): Promise<{ appId: string; slug: string; htmlUrl: string; replaced: string[] }> {
   await store.set(orgId, SECRET_APP_ID, String(c.id));
   await store.set(orgId, SECRET_PRIVATE_KEY, c.pem);
   await store.set(orgId, SECRET_WEBHOOK, c.webhook_secret);
@@ -135,19 +153,25 @@ export async function storeApp(
       clientId: c.client_id,
     },
   );
+  const replaced = o.replace ? await removeOtherGithubApps(db, { orgId }, String(c.id)) : [];
   await appendAudit(
     db,
     { orgId },
     {
-      principalKind: "cli",
-      principalId: "local",
-      op: "github_app_create",
+      principalKind: o.principal?.kind ?? "cli",
+      principalId: o.principal?.id ?? "local",
+      op: replaced.length > 0 ? "github_app_replace" : "github_app_create",
       effect: "write",
       outcome: "ok",
-      input: { app_id: String(c.id), slug: c.slug, owner: c.owner.login },
+      input: {
+        app_id: String(c.id),
+        slug: c.slug,
+        owner: c.owner.login,
+        ...(replaced.length > 0 ? { replaced_app_ids: replaced } : {}),
+      },
     },
   );
-  return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url };
+  return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url, replaced };
 }
 
 export interface ManifestFlowOptions {
@@ -233,7 +257,7 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
             o.apiBase,
           );
           const app = await storeApp(o.db, o.store, o.orgId, conv);
-          resolveDone(app);
+          resolveDone({ appId: app.appId, slug: app.slug, htmlUrl: app.htmlUrl });
           return html(
             200,
             `<p>The App <b>${escapeHtml(app.slug)}</b> was created and its credentials were stored. You can close this tab.</p>`,
