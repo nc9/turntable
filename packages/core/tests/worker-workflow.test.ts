@@ -468,6 +468,17 @@ jobs:
     expect(byKey("odd").spec.resources).toEqual({ cpus: 8 });
   });
 
+  test("a project's own snapshot beats the size class's, which beats the provider's; the class's size still applies", async () => {
+    await setSandboxPolicy(db, "local", "local", { sandboxSnapshot: "project-snap" });
+    const { byKey } = await run({ sizes });
+    // heavy maps to a class with its own snapshot, light to one with none: both start from the project's
+    expect(byKey("heavy").spec.snapshot).toBe("project-snap");
+    expect(byKey("light").spec.snapshot).toBe("project-snap");
+    // the class still chooses the size
+    expect(byKey("heavy").spec.resources).toEqual({ cpus: 4, memoryMb: 8192 });
+    expect(byKey("light").spec.resources).toEqual({ cpus: 2, memoryMb: 4096 });
+  });
+
   test("the size follows the class the job runs as (recorded on its attempt): an approved untrusted run gets untrustedClass, a trusted one keeps its label's size", async () => {
     const sizesCfg = parseSandboxSizes(
       JSON.stringify({
