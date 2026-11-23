@@ -90,6 +90,7 @@ import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } fro
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
+import { countHumanWithoutApprover } from "./ops/setting-guard";
 import { ForwardedObserver } from "./doctor/observe";
 import { readerOf, realInputs } from "./doctor/real";
 import { serveRelease } from "./release/serve";
@@ -962,6 +963,7 @@ async function serve(args: string[]): Promise<void> {
       observed: forwarded.snapshot(),
       db: readerOf(db),
       masterKeys,
+      humanApprovalGaps: () => countHumanWithoutApprover(settings, db),
     });
     try {
       return await runDoctor(inputs);

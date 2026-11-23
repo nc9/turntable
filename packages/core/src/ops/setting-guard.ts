@@ -2,9 +2,11 @@
 // CLI commands that alias a setting (`set_project_settings`, `turntable policy set`). One place,
 // so an alias can never be looser than the registry's own op.
 import type { Db } from "../db";
-import { getOrgById, getProject } from "../db/repos";
+import { allProjectRefs, getKeyPolicy, getOrgById, getProject, listApprovers } from "../db/repos";
+import { notCountingReason } from "../approvals/identity";
+import { keyPolicyViolation } from "../approvals/key-policy";
 import type { UntrustedRunApproval } from "../db/schema";
-import { settingsRegistry } from "../settings/definitions";
+import { settingsRegistry, untrustedRunApprovalSetting } from "../settings/definitions";
 import type { SettingDef } from "../settings/define";
 import { type Resolved, resolveSetting, type SettingSubject } from "../settings/resolve";
 import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
@@ -77,7 +79,32 @@ export async function guardSettingChange(
   const refused = def.refuse?.(parsed.data);
   if (refused) throw new OpError("invalid_input", refused);
   if (oneWay && p && p.kind !== "instance") refuseLoosening(def, before, parsed.data);
+  if (def.key === untrustedRunApprovalSetting.key && parsed.data === "human") {
+    await requireApprover(db, subject.orgId);
+  }
   return { before, next: parsed.data };
+}
+
+/**
+ * Whether an org has an active approver that counts: not revoked, tied to a forge login, and its
+ * key satisfying the org key policy. `human` approval can only be satisfied by such a key.
+ */
+export async function hasQualifyingApprover(db: Db, orgId: string): Promise<boolean> {
+  const policy = await getKeyPolicy(db, orgId);
+  const active = await listApprovers(db, orgId);
+  return active.some(
+    (a) => notCountingReason(a) === null && keyPolicyViolation(policy, a) === null,
+  );
+}
+
+/** Message of the refusal; fixed, so it names no key, person or org. */
+export const HUMAN_REQUIRES_APPROVER =
+  "human_requires_approver: untrusted_run_approval=human needs the org to have an active approver " +
+  "whose key satisfies the org key policy; enrol one first (turntable approvals bootstrap)";
+
+async function requireApprover(db: Db, orgId: string | undefined): Promise<void> {
+  if (orgId && (await hasQualifyingApprover(db, orgId))) return;
+  throw new OpError("conflict", HUMAN_REQUIRES_APPROVER, { reason: "human_requires_approver" });
 }
 
 /**
@@ -132,4 +159,27 @@ export async function effectiveApproval(
     await projectSubject(db, orgId, projectId),
   );
   return r.value as UntrustedRunApproval;
+}
+
+/**
+ * How many projects resolve to `human` while their org has no approver that counts (revoked
+ * since, or the key policy tightened). A value from `turntable.toml` or the environment is not
+ * refused at boot, so this is where it shows.
+ */
+export async function countHumanWithoutApprover(
+  rt: SettingsRuntime | undefined,
+  db: Db,
+): Promise<number> {
+  const covered = new Map<string, boolean>();
+  let n = 0;
+  for (const p of await allProjectRefs(db)) {
+    if ((await effectiveApproval(rt, db, p.orgId, p.id)) !== "human") continue;
+    let ok = covered.get(p.orgId);
+    if (ok === undefined) {
+      ok = await hasQualifyingApprover(db, p.orgId);
+      covered.set(p.orgId, ok);
+    }
+    if (!ok) n += 1;
+  }
+  return n;
 }
