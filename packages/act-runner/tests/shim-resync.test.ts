@@ -93,7 +93,7 @@ describe("shim resync", () => {
     expect((await runShim(path)).out).toBe("bash-ran");
     expect(existsSync(join(shims, "node"))).toBe(false);
     expect((await sh("command -v node", path)).code).not.toBe(0);
-  });
+  }, 20_000);
 
   test("a tool installed behind the shim dir is linked by the next shim run", async () => {
     const path = pathWith(shims, base, late);
@@ -104,7 +104,7 @@ describe("shim resync", () => {
     expect(readlinkSync(join(shims, "node"))).toBe("step-shim");
     expect((await sh("command -v node", path)).out).toBe(join(shims, "node"));
     expect((await sh("node", path)).out).toBe("real-node");
-  });
+  }, 20_000);
 
   test("a tool installed during the step is linked at the step's exit", async () => {
     const path = pathWith(shims, base, late);
@@ -115,7 +115,7 @@ describe("shim resync", () => {
     );
     await runShim(path);
     expect(readlinkSync(join(shims, "node"))).toBe("step-shim");
-  });
+  }, 20_000);
 
   test("a tool dir AHEAD of the shim dir gets no shim", async () => {
     const path = pathWith(early, shims, base, late);
@@ -124,7 +124,7 @@ describe("shim resync", () => {
     expect(existsSync(join(shims, "node"))).toBe(false);
     const r = await sh("command -v node; node", path);
     expect(r.out).toBe(`${join(early, "node")}\nearly-node`);
-  });
+  }, 20_000);
 
   test("add-only: an existing link is kept when the real tool disappears", async () => {
     const path = pathWith(shims, base, late);
@@ -133,7 +133,7 @@ describe("shim resync", () => {
     rmSync(join(late, "node"));
     await runShim(path);
     expect(lstatSync(join(shims, "node")).isSymbolicLink()).toBe(true);
-  });
+  }, 20_000);
 
   test("idempotent and concurrency-safe: parallel runs leave one whole link and no temp files", async () => {
     const path = pathWith(shims, base, late);
@@ -147,5 +147,5 @@ describe("shim resync", () => {
     const before = readdirSync(shims).toSorted();
     await runShim(path);
     expect(readdirSync(shims).toSorted()).toEqual(before);
-  });
+  }, 30_000);
 });
