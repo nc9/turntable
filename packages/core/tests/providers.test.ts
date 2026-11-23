@@ -174,6 +174,25 @@ test(
   },
 );
 
+test("the daytona fleet is config: validated when the provider is built, the default is longshore-dev", () => {
+  const key = { apiKeyEnv: "X" };
+  const fleetOf = (cfg: Record<string, unknown>) =>
+    (createProvider("daytona", { ...key, ...cfg }) as unknown as { fleet: { name: string } }).fleet
+      .name;
+  expect(fleetOf({})).toBe("longshore-dev");
+  expect(fleetOf({ fleet: "longshore-shadow" })).toBe("longshore-shadow");
+  for (const bad of [
+    "shadow",
+    "Longshore-shadow",
+    "longshore-",
+    "longshore-".padEnd(31, "a"),
+    "",
+  ]) {
+    expect(() => createProvider("daytona", { ...key, fleet: bad }), bad).toThrow();
+  }
+  expect(() => createProvider("daytona", { ...key, fleet: 5 })).toThrow(/fleet/);
+});
+
 test("daytona owner-CI labels are config, none by default, and the label wait needs them", () => {
   const key = { apiKeyEnv: "X" };
   // Nothing is assumed: no labels, no wait.
