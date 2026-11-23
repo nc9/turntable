@@ -27,7 +27,10 @@ import {
   getEnvPolicy,
   getOrgById,
   getProject,
+  appendEvent,
   insertApprover,
+  lastApproverRevocation,
+  revokeApprover,
   getRun,
   insertRecord,
   listEnrolmentRecords,
@@ -50,6 +53,7 @@ import {
   type EnvStatement,
   type PolicyStatement,
 } from "./statement";
+import { systemOrgId } from "../audit/failures";
 import { parseEd25519PublicKey } from "./keys";
 import { dbKeyStore } from "./store";
 import { verifySignature, VerifyError, type SignatureMaterial, type Verified } from "./verify";
@@ -443,19 +447,32 @@ export async function approvalWarnings(
  * Enrols the FIRST approver of an org from an offline ed25519 public key (#341). The one
  * implementation behind `turntable approvals bootstrap` (the host's CLI) and the instance
  * administrator's `bootstrap_approver` op. Refused with an ApprovalConflict once the org has any
- * active approver: it never adds to an existing set. Callers that need the check and the insert
- * to be atomic run it in a transaction. A key that does not parse throws, and nothing is written.
+ * active approver: it never adds to an existing set. With `delayMs`, also refused until that long
+ * after the org's last approver revocation, so a stolen instance token cannot revoke every
+ * approver and enrol its own key at once; an org that never had an approver has no delay. Callers
+ * that need the check and the insert to be atomic run it in a transaction. A key that does not
+ * parse throws, and nothing is written. Emits `approver.bootstrapped` to the org's feed (and so
+ * to its outbound webhooks).
  */
 export async function bootstrapFirstApprover(
   db: Db,
   orgId: string,
   a: { person: string; forgeLogin: string; publicKey: string; createdBy: string },
   now: number,
+  opts: { delayMs?: number } = {},
 ): Promise<{ id: string; person: string; fingerprint: string }> {
   if ((await listApprovers(db, orgId)).length > 0) {
     throw new ApprovalConflict(
       "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
     );
+  }
+  if (opts.delayMs !== undefined) {
+    const revoked = await lastApproverRevocation(db, orgId);
+    if (revoked !== null && revoked + opts.delayMs > now) {
+      throw new ApprovalConflict(
+        `this org's approvers were revoked recently: a first approver can be bootstrapped again after ${new Date(revoked + opts.delayMs).toISOString()}.`,
+      );
+    }
   }
   const publicKey = parseEd25519PublicKey(a.publicKey);
   const row = await insertApprover(
@@ -471,11 +488,49 @@ export async function bootstrapFirstApprover(
     },
     now,
   );
-  return {
-    id: row.id,
-    person: row.person,
-    fingerprint: keyFingerprint({ kind: "ed25519", credentialId: null, publicKey }),
+  const fingerprint = keyFingerprint({ kind: "ed25519", credentialId: null, publicKey });
+  await appendEvent(
+    db,
+    { orgId },
+    {
+      type: "approver.bootstrapped",
+      payload: { approver_id: row.id, person: row.person, key_fingerprint: fingerprint },
+    },
+  );
+  return { id: row.id, person: row.person, fingerprint };
+}
+
+/**
+ * Revokes one approver key. When that leaves the org with no active approver, it also emits
+ * `approvers.depleted` to the org's feed (and so its outbound webhooks) and audits the loss in
+ * the org's chain and the system chain: from that moment the org's release gates cannot be
+ * satisfied and only a delayed bootstrap restores them. Returns whether a key was revoked.
+ */
+export async function revokeApproverNotifying(
+  db: Db,
+  org: { id: string; slug: string },
+  approverId: string,
+  now: number,
+  by: { kind: string; id: string },
+): Promise<boolean> {
+  const done = await revokeApprover(db, org.id, approverId, now);
+  if (!done || (await listApprovers(db, org.id)).length > 0) return done;
+  await appendEvent(
+    db,
+    { orgId: org.id },
+    { type: "approvers.depleted", payload: { approver_id: approverId } },
+  );
+  const entry = {
+    principalKind: by.kind,
+    principalId: by.id,
+    op: "revoke_approver",
+    effect: "write" as const,
+    outcome: "ok" as const,
+    input: { target_org: org.slug, approver_id: approverId, active_approvers: 0 },
   };
+  await appendAudit(db, { orgId: org.id }, entry);
+  await appendAudit(db, { orgId: await systemOrgId(db) }, entry);
+  return done;
 }
 
 // ---- key policy changes (#152) ----

@@ -3,6 +3,8 @@
 // org token of any role can, whatever its grant, and none of these is an MCP tool. Their audit
 // entries go to the system org's chain.
 import { z } from "zod";
+import { createSettingsRuntime, resolveSetting } from "../../settings/resolve";
+import { settingsRegistry } from "../../settings/definitions";
 import { approvalWarnings, bootstrapFirstApprover } from "../../approvals/apply";
 import {
   ApprovalConflict,
@@ -201,7 +203,12 @@ export const bootstrapApprover = defineOp({
     "offline (`turntable approvals keygen`); the private key never reaches the server. Works only " +
     "while the org has no active approver and never adds to an existing set: after that, new keys " +
     "need a quorum of existing approvers (request_enrolment and approve_enrolment), and the " +
-    "bootstrap key signs the passkey's enrolment as usual. Returns the approver id and the key's " +
+    "bootstrap key signs the passkey's enrolment as usual. An org whose approvers were all revoked " +
+    "can be bootstrapped again only after the `approver_rebootstrap_delay_hours` setting (24 by " +
+    "default, at least 1) has passed since the last revocation, so a stolen token cannot revoke " +
+    "every approver and enrol its own key at once; the refusal says when. Revoking the last " +
+    "approver and every bootstrap emit an event (`approvers.depleted`, `approver.bootstrapped`) " +
+    "that outbound webhooks can carry. Returns the approver id and the key's " +
     "fingerprint. The change is audited in the system org's chain and in the target org's own, " +
     "with the fingerprint and never the key. Only the instance administrator can call it: an " +
     "org's own tokens, of any role, never can. Not an MCP tool.",
@@ -238,6 +245,13 @@ export const bootstrapApprover = defineOp({
   async handler(ctx, i) {
     const org = await getOrgBySlug(ctx.db, i.target_org);
     if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    const rt = ctx.settings ?? createSettingsRuntime(settingsRegistry);
+    const hours = (
+      await resolveSetting(rt, ctx.db, "approver_rebootstrap_delay_hours", {
+        orgId: org.id,
+        orgSlug: org.slug,
+      })
+    ).value as number;
     let made: { id: string; person: string; fingerprint: string };
     try {
       made = await bootstrapFirstApprover(
@@ -250,6 +264,7 @@ export const bootstrapApprover = defineOp({
           createdBy: `instance:${ctx.principal.id}`,
         },
         ctx.now(),
+        { delayMs: hours * 3_600_000 },
       );
     } catch (e) {
       if (e instanceof ApprovalConflict) throw new OpError("conflict", e.message);

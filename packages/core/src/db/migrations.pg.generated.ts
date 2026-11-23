@@ -218,5 +218,13 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"sandbox_ttl_seconds\" bigint;"
     ]
+  },
+  {
+    "tag": "0012_approver_event_types",
+    "when": 1795434012361,
+    "statements": [
+      "ALTER TABLE \"events\" DROP CONSTRAINT \"events_type_check\";",
+      "ALTER TABLE \"events\" ADD CONSTRAINT \"events_type_check\" CHECK (type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled', 'approver.bootstrapped', 'approvers.depleted'));"
+    ]
   }
 ];

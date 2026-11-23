@@ -470,5 +470,24 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `job_attempts` ADD `sandbox_ttl_seconds` integer;"
     ]
+  },
+  {
+    "tag": "0041_approver_event_types",
+    "when": 1795434011737,
+    "statements": [
+      "PRAGMA foreign_keys=OFF;",
+      "-- Keep the AUTOINCREMENT high-water mark: a feed cursor must never meet a reused id.\nCREATE TEMP TABLE `__events_seq` AS SELECT seq FROM sqlite_sequence WHERE name = 'events';",
+      "CREATE TABLE `__new_events` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`public_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`type` text NOT NULL,\n\t`run_id` text,\n\t`job_id` text,\n\t`attempt_id` text,\n\t`payload` text DEFAULT '{}' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"events_type_check\" CHECK(type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled', 'approver.bootstrapped', 'approvers.depleted'))\n);",
+      "INSERT INTO `__new_events`(\"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\") SELECT \"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\" FROM `events`;",
+      "DROP TABLE `events`;",
+      "ALTER TABLE `__new_events` RENAME TO `events`;",
+      "-- An empty events table leaves no sqlite_sequence row after the rebuild: create it, then raise it.\nINSERT INTO sqlite_sequence (name, seq) SELECT 'events', coalesce((SELECT max(seq) FROM `__events_seq`), 0) WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events');",
+      "UPDATE sqlite_sequence SET seq = max(seq, coalesce((SELECT max(seq) FROM `__events_seq`), 0)) WHERE name = 'events';",
+      "DROP TABLE `__events_seq`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE INDEX `events_org_idx` ON `events` (`org_id`,`id`);",
+      "CREATE INDEX `events_org_project_idx` ON `events` (`org_id`,`project_id`,`id`);",
+      "CREATE UNIQUE INDEX `events_public_id_unique` ON `events` (`public_id`);"
+    ]
   }
 ];

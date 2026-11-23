@@ -11,10 +11,14 @@ import {
   getKeyPolicy,
   listApprovers,
   listEnvPolicies,
-  revokeApprover,
   setEnvPolicy,
 } from "../db/repos";
-import { approvalWarnings, bootstrapFirstApprover, setKeyPolicyBootstrap } from "./apply";
+import {
+  approvalWarnings,
+  bootstrapFirstApprover,
+  revokeApproverNotifying,
+  setKeyPolicyBootstrap,
+} from "./apply";
 import { notCountingReason } from "./identity";
 import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
 import { generateEd25519, signEd25519 } from "./keys";
@@ -219,7 +223,10 @@ export async function approvalsCommand(args: string[]): Promise<number> {
       return 0;
     }
     if (!values.id) return usage();
-    const done = await revokeApprover(db, org.id, values.id, now);
+    const done = await revokeApproverNotifying(db, org, values.id, now, {
+      kind: "cli",
+      id: "local",
+    });
     console.log(JSON.stringify({ revoked: done }));
     return done ? 0 : 1;
   } finally {

@@ -57,6 +57,8 @@ export const EVENT_TYPES = [
   "quota.warning",
   "quota.reached",
   "webhook.disabled",
+  "approver.bootstrapped",
+  "approvers.depleted",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
