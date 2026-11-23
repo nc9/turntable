@@ -157,6 +157,24 @@ describe("the shim", () => {
     expect(readdirSync(scratchTmp).filter((f) => f.startsWith("ls-step."))).toEqual([]);
   });
 
+  test("a grandchild started with a scrubbed env keeps its stderr apart from its stdout", async () => {
+    // As a test that spawns `bash` with an explicit env does: TURNTABLE_STEP_IO is gone, so only
+    // the inherited fifo says this is already a wrapped step. Without that, the nested shim merged
+    // stderr into stdout and the caller that piped them apart read an empty stderr.
+    writeFileSync(
+      join(bin, "bash"),
+      `#!/bin/sh
+if [ "$1" = inner ]; then echo to-out; echo to-err >&2; exit 3; fi
+a=$(env -i PATH="$PATH" TMPDIR="$TMPDIR" bash inner 2>&1 >/dev/null); echo "err=[$a]"
+b=$(env -i PATH="$PATH" TMPDIR="$TMPDIR" bash inner 2>/dev/null); echo "out=[$b]"
+echo "step-err" >&2
+`,
+    );
+    chmodSync(join(bin, "bash"), 0o755);
+    const r = await viaShim([]);
+    expect(r.out.split("\n").filter(Boolean)).toEqual(["err=[to-err]", "out=[to-out]", "step-err"]);
+  });
+
   test("a background process holding the pipe does not hold the step", async () => {
     realBash("(sleep 30 &) ; echo started");
     const t0 = Date.now();

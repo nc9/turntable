@@ -146,17 +146,25 @@ if [ -z "$real" ]; then
   echo "turntable: $self: command not found" >&2
   exit 127
 fi
-# Already inside a wrapped step: what it started inherits non-tty stdio, so just run it.
+# Already inside a wrapped step: what it started inherits non-tty stdio, so just run it. The marker
+# is TURNTABLE_STEP_IO or, for a child started with a scrubbed environment (a test or tool that
+# passes an explicit env), its process group: the interpreter's group leader left a marker file
+# named for the group. Wrapping again would merge the child's stderr into its stdout, and a
+# caller that pipes them apart would read an empty stderr.
 if [ -n "\${TURNTABLE_STEP_IO:-}" ]; then exec "$real" "$@"; fi
+if read -r stat </proc/$$/stat 2>/dev/null; then
+  pgrp=$(set -- \${stat##*) }; echo "$3")
+  if [ -n "$pgrp" ] && [ -e "$dir/.grp.$pgrp" ]; then exec "$real" "$@"; fi
+fi
 fifo=$(mktemp -u "\${TMPDIR:-/tmp}/ls-step.XXXXXX" 2>/dev/null) && mkfifo -m 600 "$fifo" 2>/dev/null || exec "$real" "$@"
 cat <"$fifo" &
 cpid=$!
-trap 'rm -f "$fifo"' EXIT
+trap 'rm -f "$fifo" "$dir/.grp.$rpid"' EXIT
 shim=$$
 grace=\${TURNTABLE_STEP_GRACE:-5}
 if command -v perl >/dev/null 2>&1; then
   # Own process group; and undo what the shell does to an async command (ignore INT and QUIT).
-  TURNTABLE_STEP_IO=1 perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or exit 127' "$real" "$@" >"$fifo" 2>&1 </dev/null &
+  TURNTABLE_STEP_IO=1 perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; setpgrp(0,0); my $m=shift; open(my $f,">",$m.$$) and close $f; exec @ARGV or exit 127' "$dir/.grp." "$real" "$@" >"$fifo" 2>&1 </dev/null &
   rpid=$!
   # Signal the interpreter's whole group through perl: the shell kill builtin with a negative pid is not portable across the
   # shells that stand in for sh (dash, the Linux default, failed it). Bare pid if the group is not
@@ -176,9 +184,10 @@ if command -v perl >/dev/null 2>&1; then
   # pty it ran on closes, which hangs up the shim's process group: a watcher left in that group
   # (a subshell is) can die in the same instant, before its next poll, and the interpreter is
   # never taken down. So it is a perl process in a process group of its own, ignoring HUP.
-  perl -e '$SIG{HUP}="IGNORE"; setpgrp(0,0); my($shim,$rpid,$grace)=@ARGV;
+  perl -e '$SIG{HUP}="IGNORE"; setpgrp(0,0); my($shim,$rpid,$grace,$dir)=@ARGV;
     sleep 1 while kill(0,$shim);
-    if (kill(0,$rpid)) { kill("TERM",-$rpid) or kill("TERM",$rpid); sleep $grace; kill("KILL",-$rpid) or kill("KILL",$rpid); }' "$shim" "$rpid" "$grace" >/dev/null 2>&1 </dev/null &
+    if (kill(0,$rpid)) { kill("TERM",-$rpid) or kill("TERM",$rpid); sleep $grace; kill("KILL",-$rpid) or kill("KILL",$rpid); }
+    unlink("$dir/.grp.$rpid");' "$shim" "$rpid" "$grace" "$dir" >/dev/null 2>&1 </dev/null &
   wait "$rpid"
   rc=$?
   # A trapped signal interrupts wait while the interpreter is still going: wait for the real end.
