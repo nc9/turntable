@@ -24,6 +24,24 @@ export const tagRefsSchema = z
   .max(10)
   .default([]);
 
+/**
+ * Non-secret variables for `${{ vars.NAME }}` in a workflow's `if:` and expressions (what GitHub
+ * calls repository variables). Values are stored in the clear and shown in `policy show`: never
+ * put a secret here. Names follow GitHub's rule (no `GITHUB_` prefix).
+ */
+export const varsSchema = z
+  .record(
+    z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/, "a variable name")
+      .refine((n) => !/^github_/i.test(n), {
+        message: "a variable name cannot start with GITHUB_",
+      })
+      .refine((n) => n !== "__proto__", { message: "a variable name is reserved" }),
+    z.string().max(1024),
+  )
+  .refine((v) => Object.keys(v).length <= 50, { message: "at most 50 variables" });
+
 const repoName = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "owner/name");
 
 /**
@@ -106,6 +124,8 @@ export const pollConfigSchema = z
             /** Most runs of this repo that may wait for approval at once. */
             maxWaitingRuns: z.int().min(1).max(500).default(20),
             maxRunsPerHour: z.int().min(1).max(1000).default(30),
+            /** Non-secret `vars.*` for this repo's workflows. */
+            vars: varsSchema.optional(),
           })
           .strict(),
       )
@@ -141,6 +161,8 @@ export const ingestSettingsSchema = z
     mergeQueue: z.boolean().default(false),
     intervalSeconds: z.int().min(30).max(3600).default(60),
     egress: z.enum(["none", "open", "allowlist"]).optional(),
+    /** Non-secret `vars.*` for the workflows (set with `policy set --ingest on --var NAME=value`). */
+    vars: varsSchema.optional(),
   })
   .strict();
 export type IngestSettings = z.infer<typeof ingestSettingsSchema>;

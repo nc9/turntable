@@ -37,6 +37,7 @@ export const POLICY_USAGE = `Usage:
   longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
+      [--var NAME=value ...]   (non-secret vars.* for workflows, e.g. LONGSHORE_CI=true; replaces the stored ones)
       [--merge-queue] [--data-dir ./data]
   longshore policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
 
@@ -153,6 +154,8 @@ export async function setIngestPolicy(
     mergeQueue?: boolean | undefined;
     /** Tag ref patterns to ingest as release runs (refs/tags/v*). Unset: tags are not ingested. */
     tagRefs?: string[] | undefined;
+    /** Non-secret `vars.*` for the workflows. Replaces the stored ones. */
+    vars?: Record<string, string> | undefined;
     /** Asks GitHub for a repo's default branch, once, when `defaultBranch` is not given. */
     resolveDefaultBranch?: ((repo: string) => Promise<string>) | undefined;
   } = {},
@@ -186,6 +189,7 @@ export async function setIngestPolicy(
       ...(opts.authors ? { authors: opts.authors } : {}),
       ...(opts.mergeQueue ? { mergeQueue: true } : {}),
       ...(opts.tagRefs ? { tagRefs: opts.tagRefs } : {}),
+      ...(opts.vars && Object.keys(opts.vars).length > 0 ? { vars: opts.vars } : {}),
     });
     if (!parsed.success) {
       throw new Error(
