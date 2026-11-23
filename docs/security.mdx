@@ -9,6 +9,12 @@ The goal is one instance that safely runs PR CI, website publishing and signed r
 
 Scoped, versioned secrets with policy evaluated by the core: bound to an org (and optionally a project, environment and ref pattern), usable only by the trust classes named (never `untrusted_pr`) and only toward named destination hosts. Values are sealed under a per-org, per-domain key derived from the master key, are never returned by any operation, and every use and denial is audited with the run, job, attempt and destination. Child processes the server starts get an allowlisted environment only. Design and threat model: [Secrets vault](/secrets-vault).
 
+### The master key and the data volume
+
+A key file on the same volume as the sealed store puts the key into every volume backup. On a hosted instance set the key as `TURNTABLE_MASTER_KEY` instead: it is read once at boot, deleted from the process environment before anything else starts, and never passed to a child (children get an allowlist). Both the variable and a key file is an error. `doctor` warns when a key file sits inside the data directory, or is left there after the key moved to the variable.
+
+To rotate with no shell, set the new key and the old one as `TURNTABLE_MASTER_KEY_PREVIOUS` and deploy: every sealed row (secrets, vault versions, webhook secrets, audit anchor state) is re-encrypted in one transaction, verified by opening it under the new key, and audited with counts per table in the system chain, or nothing changes and the boot fails. It is idempotent. The runbook, including why the App private key, the webhook secret and the vault secrets must then be rotated (old backups still hold values the old key opens), is in [Hosted deployment](/hosted#the-master-key-from-a-variable-and-rotating-it).
+
 ## Secrets proxy
 
 Sandboxes never hold raw secrets. A proxy sits on the sandbox's only network path and injects credentials into outbound requests, per allowed host and rule. Job code and third-party actions see placeholders at most, and a proxied job is verified from inside its sandbox before it runs. Docker and Daytona sandboxes are both supported. See [Secrets proxy](/secrets-proxy).
@@ -310,7 +316,7 @@ The reason is shown in the web UI to everyone on the org or project. Freezing a 
 1. **Freeze.** `turntable incident freeze --org acme --reason "deploy key printed in a build log"`. Read the counts it returns.
 2. **Scope it.** Run `secret_usage` for each affected secret from before the first suspect run. Note every destination: each is a place the secret may now be.
 3. **Rotate at the source.** Replace the credential where it is issued (the registry, the cloud account, the forge). Then store the new value (`turntable secret rotate`). Anything flagged in `incident_status` is on your list until rotated.
-4. **Rotate Turntable's own secrets** if they were in scope: the GitHub App private key and webhook secret (`turntable github-app rotate-webhook-secret`), the master key.
+4. **Rotate Turntable's own secrets** if they were in scope: the GitHub App private key and webhook secret (`turntable github-app rotate-webhook-secret`), the master key (see the [rotation runbook](/hosted#the-master-key-from-a-variable-and-rotating-it)).
 5. **Revoke agent tokens** you do not trust, and review the audit log for the window (`turntable audit verify`, `turntable audit export`).
 6. **Review the runs** that used the secret: logs, artifacts, and what the destinations received.
 7. **Unfreeze** with `turntable incident unfreeze --org acme`. Queued work resumes. Keep the rotation flags open until each secret is rotated.

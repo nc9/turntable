@@ -254,6 +254,24 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "32-byte master key file for the encrypted secret store (`turntable keys init`). Required for the GitHub App, its webhook endpoint, the vault and OIDC.",
   },
   {
+    name: "TURNTABLE_MASTER_KEY",
+    area: "Secrets and keys",
+    description:
+      "The master key itself: 32 bytes as base64 (`openssl rand -base64 32`) or 64 hex characters. It keeps the key off the data volume, so a volume backup does not hold the key next to what it unseals. Read once at boot and deleted from the environment before any child process starts. Setting it together with `TURNTABLE_MASTER_KEY_FILE` is an error.",
+  },
+  {
+    name: "TURNTABLE_MASTER_KEY_PREVIOUS",
+    area: "Secrets and keys",
+    description:
+      "The master key the sealed rows are under now, set together with the new key to rotate it. At boot every sealed row (secrets, vault versions, webhook secrets, audit anchor files) is re-encrypted under the new key in one transaction, verified and audited; on any failure nothing changes and the boot stops. Rows already under the new key are skipped, so it is safe to leave set for one more boot, but remove it once a new backup is taken. Same encoding as `TURNTABLE_MASTER_KEY`.",
+  },
+  {
+    name: "TURNTABLE_MASTER_KEY_PREVIOUS_FILE",
+    area: "Secrets and keys",
+    description:
+      "The previous master key as a 32-byte file, instead of `TURNTABLE_MASTER_KEY_PREVIOUS`.",
+  },
+  {
     name: "TURNTABLE_SECRETS_PROXY",
     area: "Secrets proxy",
     default: "off",
@@ -541,7 +559,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     flag: "--init-master-key",
     default: "off",
     description:
-      "Set to `1` to create `TURNTABLE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `TURNTABLE_MASTER_KEY_FILE`. Back the key up: without it stored secrets cannot be opened.",
+      "Set to `1` to create `TURNTABLE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `TURNTABLE_MASTER_KEY_FILE`, and is refused with `TURNTABLE_MASTER_KEY`. Back the key up: without it stored secrets cannot be opened.",
   },
   {
     name: "TURNTABLE_REQUIRE_ORG_KEYS",

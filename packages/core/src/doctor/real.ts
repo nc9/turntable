@@ -10,12 +10,14 @@ import {
   statSync,
   existsSync,
   readFileSync,
+  readdirSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { controlPost, type ControlTarget } from "@turntable/net";
 import { DIALECT } from "../db/dialect";
 import { embeddedMigrationTags, openReadOnly } from "../db/read-only";
 import { loadMasterKey } from "../secrets/crypto";
+import { type MasterKeys, parseMasterKeyValue } from "../secrets/master-key";
 import { createProvider } from "../scheduler/providers";
 import { resolveProviderConfig } from "../serve-config";
 import { channelMac } from "../release/channel";
@@ -65,6 +67,13 @@ export function realFs(): DoctorFs {
         }
       } catch {
         return undefined;
+      }
+    },
+    list(path) {
+      try {
+        return readdirSync(path);
+      } catch {
+        return [];
       }
     },
   };
@@ -247,6 +256,8 @@ export interface RealOptions {
   observed?: ForwardedSnapshot | undefined;
   /** An already open handle (the server's own); else the database file is opened read-only. */
   db?: DbReader | undefined;
+  /** The keys the server took at boot (TURNTABLE_MASTER_KEY is deleted from its environment). */
+  masterKeys?: MasterKeys | undefined;
 }
 
 export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): void } {
@@ -269,6 +280,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
     }
   }
   const keyFile = o.env.TURNTABLE_MASTER_KEY_FILE?.trim();
+  const envKey = o.env.TURNTABLE_MASTER_KEY?.trim();
   return {
     inputs: {
       env: o.env,
@@ -279,10 +291,12 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       db: reader,
       openError,
       expectedMigrations: embeddedMigrationTags(),
+      masterKeyEnv: o.masterKeys ? o.masterKeys.source === "env" : Boolean(envKey),
       masterKey: () => {
-        if (!keyFile) return undefined;
+        if (o.masterKeys) return o.masterKeys.key;
         try {
-          return loadMasterKey(keyFile);
+          if (envKey) return parseMasterKeyValue("TURNTABLE_MASTER_KEY", envKey);
+          return keyFile ? loadMasterKey(keyFile) : undefined;
         } catch {
           return undefined;
         }

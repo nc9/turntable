@@ -64,6 +64,10 @@ function fakeFs(
     },
     writable: (p) => files[p]?.writable ?? true,
     read: (p) => files[p]?.bytes,
+    list: (dir) =>
+      Object.keys(files)
+        .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes("/"))
+        .map((p) => p.slice(dir.length + 1)),
   };
 }
 
@@ -224,6 +228,43 @@ describe("the master key", () => {
     expect(loose).toMatchObject({ status: "warn" });
     expect(loose.fix).toContain("chmod 600");
     expect(at({ [KEY]: { size: 32, mode: 0o400 } }, env)).toMatchObject({ status: "pass" });
+  });
+  test("a key file inside the data directory warns: every volume backup holds it", () => {
+    const inData = `${DIR}/master.key`;
+    const r = at(
+      { [DIR]: { isDirectory: true }, [inData]: { size: 32, mode: 0o600 } },
+      { TURNTABLE_MASTER_KEY_FILE: inData },
+    );
+    expect(r).toMatchObject({ status: "warn" });
+    expect(r.summary).toContain("inside the data directory");
+    expect(r.fix).toContain("TURNTABLE_MASTER_KEY");
+    // A key on a separate mount is fine.
+    expect(
+      at({ [KEY]: { size: 32, mode: 0o600 } }, { TURNTABLE_MASTER_KEY_FILE: KEY }),
+    ).toMatchObject({ status: "pass" });
+  });
+  test("a key from the environment passes; a key file left in the data directory warns", () => {
+    const base_ = (files: Record<string, Partial<FileFacts>>) =>
+      checkMasterKey(base({ fs: fakeFs(files), env: {}, masterKeyEnv: true }));
+    expect(base_({ [DIR]: { isDirectory: true } })).toMatchObject({ status: "pass" });
+    const stray = base_({
+      [DIR]: { isDirectory: true },
+      [`${DIR}/master.key`]: { size: 32, mode: 0o600 },
+    });
+    expect(stray).toMatchObject({ status: "warn" });
+    expect(stray.summary).toContain("master.key");
+    expect(stray.fix).toContain("rotate");
+    // Other files of other sizes are not key files.
+    expect(
+      base_({ [DIR]: { isDirectory: true }, [`${DIR}/turntable.db`]: { size: 4096 } }),
+    ).toMatchObject({ status: "pass" });
+  });
+  test("the variable and a configured file together fail", () => {
+    expect(
+      checkMasterKey(
+        base({ fs: fakeFs({}), env: { TURNTABLE_MASTER_KEY_FILE: KEY }, masterKeyEnv: true }),
+      ),
+    ).toMatchObject({ status: "fail" });
   });
   test("the key's path is not in the output", () => {
     expect(

@@ -1,4 +1,5 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { open, secretAad } from "../secrets/crypto";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../github/app-auth";
@@ -121,25 +122,56 @@ export function checkPrivileges(i: DoctorInputs): DoctorCheck[] {
   return out;
 }
 
+/** True when `path` is `dir` or inside it. */
+const inside = (dir: string, path: string): boolean => {
+  const rel = relative(resolve(dir), resolve(path));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+const KEY_ON_VOLUME_FIX =
+  "Move the key off the volume: set it as TURNTABLE_MASTER_KEY (or mount the file from a separate secrets store), re-wrap with TURNTABLE_MASTER_KEY_PREVIOUS, then delete the file. See the key rotation runbook in docs/hosted.mdx.";
+
 export function checkMasterKey(i: DoctorInputs): DoctorCheck {
   const path = set(i.env.TURNTABLE_MASTER_KEY_FILE);
   const area = "keys";
+  if (i.masterKeyEnv) {
+    if (path) {
+      return fail(
+        "master_key",
+        area,
+        "TURNTABLE_MASTER_KEY and TURNTABLE_MASTER_KEY_FILE are both set",
+        "Use one. Remove TURNTABLE_MASTER_KEY_FILE once the key is in the variable.",
+      );
+    }
+    // A key file left in the data directory is the thing the variable was meant to get rid of:
+    // every volume backup would still carry it. Any 32-byte `*.key` file counts.
+    const stray = (i.fs.list?.(i.dataDir) ?? []).filter((n) => {
+      if (!n.endsWith(".key")) return false;
+      const f = i.fs.stat(join(i.dataDir, n));
+      return f !== undefined && !f.isDirectory && f.size === 32;
+    });
+    if (stray.length > 0) {
+      return warn(
+        "master_key",
+        area,
+        `the master key comes from TURNTABLE_MASTER_KEY, but the data directory still holds a key file (${stray.join(", ")}): volume backups carry it`,
+        "Once a backup taken after the re-wrap exists, delete the file from the volume, then rotate the GitHub App private key, the webhook secret and the vault secrets so the copies in older backups are dead.",
+      );
+    }
+    return pass(
+      "master_key",
+      area,
+      "the master key comes from TURNTABLE_MASTER_KEY, off the data volume",
+    );
+  }
   if (!path) {
     const what =
       "without a master key there is no vault, secrets store, GitHub App, OIDC issuer or signed audit checkpoints";
+    const fix =
+      "Set TURNTABLE_MASTER_KEY (`openssl rand -base64 32`), or create a file with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.";
     return i.hosted
-      ? fail(
-          "master_key",
-          area,
-          `no master key is configured: ${what}`,
-          "Create one with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.",
-        )
-      : warn(
-          "master_key",
-          area,
-          `no master key is configured: ${what}`,
-          "Create one with `turntable keys init` and set TURNTABLE_MASTER_KEY_FILE.",
-        );
+      ? fail("master_key", area, `no master key is configured: ${what}`, fix)
+      : warn("master_key", area, `no master key is configured: ${what}`, fix);
   }
   const f = i.fs.stat(path);
   if (!f) {
@@ -164,6 +196,14 @@ export function checkMasterKey(i: DoctorInputs): DoctorCheck {
       area,
       `the master key file is readable by group or others (mode ${f.mode.toString(8)})`,
       "chmod 600 the file, and keep it out of the data directory's backups unless they are encrypted.",
+    );
+  }
+  if (inside(i.dataDir, path)) {
+    return warn(
+      "master_key",
+      area,
+      "the master key file is inside the data directory: every volume backup holds the key next to what it unseals",
+      KEY_ON_VOLUME_FIX,
     );
   }
   return pass(
