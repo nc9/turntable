@@ -347,6 +347,12 @@ export const jobAttempts = sqliteTable(
     /** The forge check run reporting this attempt, so a retry or a re-attach updates it. */
     checkRunId: text("check_run_id"),
     /**
+     * When a sweep took the exclusive claim to post this attempt's skipped check (epoch ms). A
+     * claim older than the sweep's TTL is retaken, so a worker that died before posting strands
+     * nothing.
+     */
+    skipCheckClaimedAt: integer("skip_check_claimed_at", { mode: "number" }),
+    /**
      * The resolved job plan (actions pinned to shas, layout, argv, files) as JSON text, stored
      * when the attempt starts, so a restarted controller can re-attach with no repo fetch.
      */

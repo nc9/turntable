@@ -422,5 +422,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE `projects` ADD `sandbox_snapshot` text;",
       "ALTER TABLE `projects` ADD `max_concurrent` integer;"
     ]
+  },
+  {
+    "tag": "0036_skip_check_claim",
+    "when": 1795419761142,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `skip_check_claimed_at` integer;"
+    ]
   }
 ];
