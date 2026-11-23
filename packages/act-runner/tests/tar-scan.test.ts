@@ -267,17 +267,49 @@ describe("names are compared the way the extractor reads them", () => {
     expect(m2.has(long.slice(1))).toBe(false);
   });
 
-  test("two names that fold together (case, normalisation, ignorable characters, trailing dots) are refused", async () => {
-    await refuses(arc(ROOT, file("Readme"), file("README")), /folds names/, "case");
+  const FOLD = { ...OPTS, refuseFoldedNames: true };
+  const refusesFold = async (tgz: Uint8Array, label: string): Promise<void> => {
+    let err: unknown;
+    await scanTarGz(tgz, FOLD).catch((e) => (err = e));
+    expect((err as Error)?.message, label).toMatch(/folds names/);
+  };
+
+  test("by default two names that differ only by case or normalisation are two files, as on Linux", async () => {
     const u = (s: string): H => ({ name: Buffer.from(s) });
-    await refuses(
+    const m = await scanTarGz(
+      arc(
+        ROOT,
+        file("Readme"),
+        file("README"),
+        file("x", "1", u("caf\u00e9")),
+        file("x", "1", u("cafe\u0301")),
+      ),
+      OPTS,
+    );
+    expect([...m.keys()]).toHaveLength(5);
+  });
+
+  test("with refuseFoldedNames, names that fold together (case, normalisation, ignorable characters, trailing dots) are refused", async () => {
+    const u = (s: string): H => ({ name: Buffer.from(s) });
+    await refusesFold(arc(ROOT, file("Readme"), file("README")), "case");
+    await refusesFold(
       arc(ROOT, file("x", "1", u("caf\u00e9")), file("x", "1", u("cafe\u0301"))),
-      /folds names/,
       "nfc",
     );
-    await refuses(arc(ROOT, file("ab"), file("x", "1", u("a\u200cb"))), /folds names/, "ignorable");
-    await refuses(arc(ROOT, file("a"), file("a.")), /folds names/, "trailing dot");
-    await refuses(arc(ROOT, dir("D/"), dir("d/")), /folds names/, "directories");
+    await refusesFold(arc(ROOT, file("ab"), file("x", "1", u("a\u200cb"))), "ignorable");
+    await refusesFold(arc(ROOT, file("a"), file("a.")), "trailing dot");
+    await refusesFold(arc(ROOT, dir("D/"), dir("d/")), "directories");
+    await scanTarGz(arc(ROOT, file("a"), file("b")), FOLD); // distinct names pass
+  });
+
+  test("a disguised .git or .gitmodules name is refused in both modes; the plain spellings are not", async () => {
+    const u = (s: string): H => ({ name: Buffer.from(s) });
+    for (const name of [".GIT", ".g\u200cit", ".git.", ".Gitmodules", "GIT~1", ".gitmodules "])
+      for (const opts of [OPTS, FOLD])
+        await expect(scanTarGz(arc(ROOT, file("x", "1", u(name))), opts), name).rejects.toThrow(
+          /disguised/,
+        );
+    await scanTarGz(arc(ROOT, dir(".git/"), file(".git/config"), file(".gitmodules")), OPTS);
   });
 });
 

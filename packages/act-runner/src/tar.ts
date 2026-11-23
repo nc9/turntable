@@ -399,6 +399,13 @@ export interface ScanOptions {
   captureUpTo: number;
   /** Most bytes captured in all; past it files are listed but not captured. */
   captureTotal: number;
+  /**
+   * Refuse two names that fold together (case, normalisation, ignorable characters, trailing dots).
+   * Off by default: a Linux sandbox extracts `Readme` and `README` as two files and the scanner keys
+   * them exactly. Turn it on when the archive will be extracted onto a folding filesystem
+   * (macOS, Windows).
+   */
+  refuseFoldedNames?: boolean;
 }
 
 export class TarFormatError extends Error {
@@ -440,6 +447,7 @@ function exactUtf8(bytes: Uint8Array, what: string): string {
   if (!Buffer.from(s).equals(bytes)) bad(`${what} does not survive a decode and encode`);
   return s;
 }
+const GIT_NAMES = new Set([".git", ".gitmodules", "git~1", "gitmod~1"]);
 const PAX_VALUE_CAP = 1024 * 1024;
 /** A path (or link target) over this many bytes is not one a filesystem takes (PATH_MAX). */
 const MAX_NAME_BYTES = 4096;
@@ -647,10 +655,18 @@ export async function scanTarGz(
     if (first && key !== ".") bad("the archive does not start with its root directory");
     first = false;
     if (out.has(key)) bad("an entry name is repeated");
-    const folded = foldKey(key);
-    if (foldedKeys.has(folded))
-      bad("two entry names are the same name on a filesystem that folds names");
-    foldedKeys.add(folded);
+    // A disguised `.git` or `.gitmodules` (case, NFC, ignorable characters, trailing dots, 8.3
+    // names) is refused everywhere: it is about git's safety, not about how the archive extracts.
+    for (const seg of segs) {
+      const f = foldKey(seg).split(":", 1)[0]!;
+      if (GIT_NAMES.has(f) && seg !== f) bad("an entry name is a disguised spelling of a git name");
+    }
+    if (o.refuseFoldedNames) {
+      const folded = foldKey(key);
+      if (foldedKeys.has(folded))
+        bad("two entry names are the same name on a filesystem that folds names");
+      foldedKeys.add(folded);
+    }
     if (key !== ".") {
       const parent = segs.length === 1 ? "." : segs.slice(0, -1).join("/");
       const p = out.get(parent);
