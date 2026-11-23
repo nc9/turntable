@@ -44,6 +44,11 @@ export interface JobResult {
 export type RunEvent =
   | { kind: "phase"; phase: "preparing" | "running" | "draining" }
   | { kind: "log"; offset: number; bytes: Uint8Array }
+  /**
+   * The sandbox dropped `omittedBytes` of output at logical `offset` (its head and tail caps).
+   * A record, never text: it is not in any log bytes, so job output cannot forge it.
+   */
+  | { kind: "cut"; offset: number; omittedBytes: number }
   | { kind: "act"; event: ActEvent };
 
 export interface RunInput {
@@ -387,6 +392,15 @@ export async function* watchExec(
         maxErr,
         pollMs,
       );
+      if (r.cut) {
+        yield { kind: "cut", offset, omittedBytes: r.cut.omittedBytes };
+        // Whatever line was in flight is cut off: finish it, so the tail starts a fresh line.
+        for (const ev of parser.end()) {
+          if (!mine(ev)) continue;
+          events.push(ev);
+          yield { kind: "act", event: ev };
+        }
+      }
       if (r.bytes.length > 0) {
         yield { kind: "log", offset, bytes: r.bytes };
         for (const ev of parser.push(dec.decode(r.bytes, { stream: true }))) {
