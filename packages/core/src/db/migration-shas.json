@@ -151,7 +151,7 @@
     },
     {
       "tag": "0037_settings_registry",
-      "sha256": "87ecd22c830d6061e50830b5fd7b028d2c463bbec2c9e9ec6df7f16c7d2fe346"
+      "sha256": "75b9e5ed67ca1f68ea0eb3b5c61ee97db0d49b9e9c65e76ff12a7275e5fdd9f8"
     }
   ],
   "pg": [
@@ -189,7 +189,7 @@
     },
     {
       "tag": "0008_settings_registry",
-      "sha256": "837897defe7355deb457e660b6dd1ae1d945af6f27f8854ba0b741752ec61452"
+      "sha256": "b7516f9e33bbb87490f509d0ed0c174e0b17c1b06874cf2455106a22628161fd"
     }
   ]
 }

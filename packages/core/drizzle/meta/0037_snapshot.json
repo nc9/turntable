@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bfba7d90-fc5c-487b-8642-20c6010e84a3",
+  "id": "2541d31a-c506-4b3b-8136-d4ac1d5dd543",
   "prevId": "d2ac1c9f-79f6-4abc-8152-01eb6385d152",
   "tables": {
     "action_pins": {
@@ -4824,6 +4824,13 @@
           "autoincrement": false,
           "default": "''"
         },
+        "org_id": {
+          "name": "org_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "key": {
           "name": "key",
           "type": "text",
@@ -4854,7 +4861,21 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "settings_org_id_orgs_id_fk": {
+          "name": "settings_org_id_orgs_id_fk",
+          "tableFrom": "settings",
+          "tableTo": "orgs",
+          "columnsFrom": [
+            "org_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "settings_scope_kind_scope_id_key_pk": {
           "columns": [
@@ -4870,6 +4891,10 @@
         "settings_scope_kind_check": {
           "name": "settings_scope_kind_check",
           "value": "scope_kind IN ('instance', 'org', 'project')"
+        },
+        "settings_org_id_check": {
+          "name": "settings_org_id_check",
+          "value": "(\"settings\".\"scope_kind\" = 'instance' AND \"settings\".\"org_id\" IS NULL) OR (\"settings\".\"scope_kind\" = 'org' AND \"settings\".\"org_id\" IS NOT NULL AND \"settings\".\"scope_id\" = \"settings\".\"org_id\") OR (\"settings\".\"scope_kind\" = 'project' AND \"settings\".\"org_id\" IS NOT NULL)"
         }
       }
     },

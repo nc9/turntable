@@ -3,6 +3,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { chainedAudit, type Db } from "../src/db";
+import * as s from "../src/db/schema";
+import { getStoredSetting, putStoredSetting } from "../src/db/repos/settings";
 import { dispatch, registry, type Credential, type DispatchEnv } from "../src/ops";
 import { createSettingsRegistry, defineSetting } from "../src/settings/define";
 import { backupKeepSetting, settingsRegistry } from "../src/settings/definitions";
@@ -541,6 +543,71 @@ describe("set_setting and the instance twin", () => {
     const r = rt({}, "[orgs.org-a]\nlabel = 'L'");
     const got = await run(r, admin(), "get_setting", { key: "org_label" });
     expect(got.ok && got.output).toMatchObject({ source: "toml", locked: true, locked_by: "toml" });
+  });
+});
+
+describe("org_id", () => {
+  const row = (over: Record<string, unknown>) => ({
+    scopeKind: "org",
+    scopeId: "x",
+    orgId: "x",
+    key: "k",
+    value: "1",
+    updatedBy: "t",
+    updatedAt: 1,
+    ...over,
+  });
+  const insert = (over: Record<string, unknown>) =>
+    db.run((h) => h.orm.insert(s.settings).values(row(over) as never));
+
+  test("the CHECK: null only for instance scope, and an org row is about its own org", async () => {
+    await expect(
+      insert({ scopeKind: "instance", scopeId: "", orgId: null }),
+    ).resolves.toBeDefined();
+    await expect(
+      insert({ scopeKind: "instance", scopeId: "", orgId: a.orgId, key: "k2" }),
+    ).rejects.toThrow();
+    await expect(insert({ scopeKind: "org", scopeId: a.orgId, orgId: null })).rejects.toThrow();
+    const c = await seedTenant(db, "org-d");
+    await expect(
+      insert({ scopeKind: "org", scopeId: a.orgId, orgId: c.scope.orgId }),
+    ).rejects.toThrow();
+    await expect(
+      insert({ scopeKind: "project", scopeId: a.projectId, orgId: null }),
+    ).rejects.toThrow();
+    await expect(
+      insert({ scopeKind: "org", scopeId: a.orgId, orgId: a.orgId }),
+    ).resolves.toBeDefined();
+  });
+
+  test("a project row's org must be the project's org, checked at write time", async () => {
+    const c = await seedTenant(db, "org-e");
+    const target = { kind: "project", id: a.projectId } as const;
+    await expect(
+      putStoredSetting(db, { ...target, orgId: c.scope.orgId }, "project_note", "x", "t", 1),
+    ).rejects.toThrow(/not in org/);
+    await putStoredSetting(db, { ...target, orgId: a.orgId }, "project_note", "x", "t", 1);
+    expect(await getStoredSetting(db, { ...target, orgId: a.orgId }, "project_note")).toMatchObject(
+      { value: "x" },
+    );
+    // Another org's id with the same scope id reaches nothing.
+    expect(
+      await getStoredSetting(db, { ...target, orgId: c.scope.orgId }, "project_note"),
+    ).toBeUndefined();
+    expect(await getStoredSetting(db, { ...target, orgId: null }, "project_note")).toBeUndefined();
+  });
+
+  test("the ops store the caller's org, and instance rows have none", async () => {
+    const r = rt();
+    await run(r, admin(), "set_setting", { key: "org_label", value: "v" });
+    await run(r, await instance(), "instance_set_setting", { key: "backup_keep", value: 3 });
+    const rows = await db.run((h) => h.orm.select().from(s.settings));
+    expect(rows.map((x) => [x.scopeKind, x.orgId])).toEqual(
+      expect.arrayContaining([
+        ["org", a.orgId],
+        ["instance", null],
+      ]),
+    );
   });
 });
 

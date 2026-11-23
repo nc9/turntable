@@ -84,13 +84,14 @@ function tomlValue(
 
 /** The database row's target for a setting about `subject`. */
 export function storeTarget(def: SettingDef, subject: SettingSubject): SettingTarget {
-  if (def.scope === "instance") return { kind: "instance", id: "" };
+  if (def.scope === "instance") return { kind: "instance", id: "", orgId: null };
   if (def.scope === "org") {
     if (!subject.orgId) throw new Error(`${def.key} is an org setting: an org is needed`);
-    return { kind: "org", id: subject.orgId };
+    return { kind: "org", id: subject.orgId, orgId: subject.orgId };
   }
   if (!subject.projectId) throw new Error(`${def.key} is a project setting: a project is needed`);
-  return { kind: "project", id: subject.projectId };
+  if (!subject.orgId) throw new Error(`${def.key} is a project setting: an org is needed`);
+  return { kind: "project", id: subject.projectId, orgId: subject.orgId };
 }
 
 /** The environment and file layers: the ones that lock a setting. */
