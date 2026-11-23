@@ -78,6 +78,8 @@ On a host where the lane runs in the same service, a key file on the data volume
 
 To rotate it, set the new key and `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` on the lane. At boot the lane re-wraps its publish credentials (release-class vault rows) and its signing key files under the new key, verified before the commit, and audits it as `release_key_rewrap`. **Keep `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed, then remove it.** A vault row that opens under neither release key is left alone and named in the log: it is sealed under the main key.
 
+When the lane runs in the same process as the main service, give that process both pairs. The main re-wrap tries every key it holds (main previous and new, release previous and new) and re-seals each row under the new key of the family it opened under, all in one transaction. A release-class vault row that opens under none of the held keys fails the boot, naming the row (table and id, never a value): provide the release master key (`TURNTABLE_RELEASE_MASTER_KEY` and `_PREVIOUS`) too. The one exception is a main process that does not hold the release keys while a release lane is configured for the instance (`TURNTABLE_RELEASE_MASTER_KEY_FILE` or the worker's publish channel is set): such a row is counted and logged as left for the release service.
+
 Keep the new key in your secrets manager as well as in the platform variable. Losing it loses every stored secret.
 
 ## Instance administrator access on a host with no shell

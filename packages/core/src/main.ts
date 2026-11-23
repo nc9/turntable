@@ -77,7 +77,7 @@ import {
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
-import { mainRuntime, RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV, resolveRoles } from "./roles";
+import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
@@ -550,8 +550,9 @@ async function serve(args: string[]): Promise<void> {
   }
   // A process that is not the release lane holds nothing of it: those variables do nothing here.
   const runtime = mainRuntime(roles, process.env);
-  // The lane's key is not this process's to hold, nor for a child to inherit.
-  for (const k of [RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV]) delete process.env[k];
+  // The lane's keys, if given, are used once for the boot re-wrap and removed: not for a child to inherit.
+  const releaseLaneElsewhere = releaseLaneConfigured(process.env);
+  const releaseKeys = takeReleaseKeys(process.env);
   if (runtime.ignoredReleaseEnv.length > 0) {
     console.warn(
       `warning: ${runtime.ignoredReleaseEnv.join(", ")} belong to the release lane and are ignored here; run it as its own process (serve --roles release)`,
@@ -610,17 +611,19 @@ async function serve(args: string[]): Promise<void> {
   await ensureInstance(db);
   // A rotation: the previous key is given, so every sealed row moves to the new key before anything
   // reads one. All or nothing; a failure stops the boot.
-  if (masterKeys?.previous) {
+  if (masterKeys && (masterKeys.previous || releaseKeys?.previous)) {
     await rewrapMasterKey({
       db,
       next: masterKeys.key,
       previous: masterKeys.previous,
+      release: releaseKeys,
+      releaseElsewhere: !releaseKeys && releaseLaneElsewhere,
       anchorDir: auditStateDir(masterKeys, dataDir),
       auditOrgId: await systemOrgId(db),
       log: (m) => console.log(`[turntable] ${m}`),
     });
     console.warn(
-      "[turntable] the previous master key is set: once the re-wrap is done and a new backup is taken, remove it",
+      "[turntable] a previous master key is set: once the re-wrap is done and a new backup is taken, remove it",
     );
   }
   // A key changed without its previous one: say so now, with the fix, not as a bare AnchorCorrupt

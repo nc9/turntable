@@ -3,7 +3,8 @@
 // renamed into place after the commit and read back):
 //   - release-class vault rows (publish credentials) in the shared database. The lane cannot tell
 //     them from a main-key row that merely allows `release`, so a row that opens under neither of
-//     its keys is left alone and named in the log; the main process's re-wrap leaves it likewise;
+//     its keys is left alone and named in the log (the main process's re-wrap fails the boot on a
+//     release-class row that opens under none of the keys it holds, unless the lane runs elsewhere);
 //   - the signing key files in the lane's own data directory (`keysDir`).
 // A row or file is tried under the NEW key first (already done: skipped), then the previous one.
 // Each re-sealed value is opened again under the new key and compared before anything commits. A

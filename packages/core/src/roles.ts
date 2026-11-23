@@ -257,3 +257,37 @@ export function releaseKeyLocation(
   const file = env.TURNTABLE_RELEASE_MASTER_KEY_FILE?.trim();
   return file ? { file, dataDir: env.TURNTABLE_RELEASE_DATA_DIR?.trim() || undefined } : undefined;
 }
+
+/**
+ * The release keys a main process holds, for its boot re-wrap (alpha.1 runs the lane in-process, so
+ * both pairs can be present). Reads and removes both variables, like the lane's own config does.
+ */
+export function takeReleaseKeys(
+  env: Record<string, string | undefined>,
+): { next: Buffer; previous?: Buffer } | undefined {
+  const keyValue = env[RELEASE_KEY_ENV]?.trim();
+  const prevValue = env[RELEASE_KEY_PREVIOUS_ENV]?.trim();
+  delete env[RELEASE_KEY_ENV];
+  delete env[RELEASE_KEY_PREVIOUS_ENV];
+  if (!keyValue) {
+    if (prevValue)
+      throw new Error(`${RELEASE_KEY_PREVIOUS_ENV} is set but there is no current release key`);
+    return undefined;
+  }
+  const next = parseMasterKeyValue(RELEASE_KEY_ENV, keyValue);
+  const previous = prevValue ? parseMasterKeyValue(RELEASE_KEY_PREVIOUS_ENV, prevValue) : undefined;
+  return previous && !previous.equals(next) ? { next, previous } : { next };
+}
+
+/**
+ * Whether a release lane is configured for this instance while its keys are not in this process:
+ * the lane's key file, or the worker's publish channel to it, is set.
+ */
+export function releaseLaneConfigured(env: Record<string, string | undefined>): boolean {
+  return [
+    "TURNTABLE_RELEASE_MASTER_KEY_FILE",
+    "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",
+    "TURNTABLE_PUBLISH_CHANNEL_URL",
+    "TURNTABLE_PUBLISH_CHANNEL_SOCKET",
+  ].some((k) => Boolean(env[k]?.trim()));
+}

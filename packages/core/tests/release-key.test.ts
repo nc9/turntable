@@ -11,7 +11,12 @@ import { rewrapMasterKey, RewrapError } from "../src/secrets/rewrap";
 import { SecretVault } from "../src/secrets/vault";
 import { fileKeyVault } from "../src/release/key-vault";
 import { rewrapReleaseKey } from "../src/release/rewrap";
-import { releaseConfigFromEnv, releaseMasterKey } from "../src/roles";
+import {
+  releaseConfigFromEnv,
+  releaseLaneConfigured,
+  releaseMasterKey,
+  takeReleaseKeys,
+} from "../src/roles";
 import * as s from "../src/db/schema";
 import { seedWorld } from "./ops-helpers";
 
@@ -175,15 +180,96 @@ describe("re-wrapping the release lane's state", () => {
       auditOrgId: a.orgId,
     });
     expect(again).toMatchObject({ vault_secret_versions: 0, signing_key_files: 0 });
-    // And the main process's re-wrap leaves the lane's row alone too.
-    const main = await rewrapMasterKey({
+  });
+
+  const mainNew = randomBytes(32);
+  const mainRun = (db: Awaited<ReturnType<typeof world>>["db"], orgId: string, o = {}) =>
+    rewrapMasterKey({ db, next: mainNew, previous: mainKey, auditOrgId: orgId, ...o });
+  const opensUnder = async (
+    db: Awaited<ReturnType<typeof world>>["db"],
+    name: string,
+    key: Buffer,
+  ): Promise<boolean> => {
+    const { row } = await cipherOf(db, name);
+    try {
+      open(
+        key,
+        row.ciphertext,
+        vaultAad(row.orgId, row.secretId, row.version, name),
+        "job",
+        row.orgId,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  test("a main-only rotation with a release row and no release key fails, naming the row, and changes nothing", async () => {
+    const { db, a } = await world();
+    const before = (await db.orm.select().from(s.vaultSecretVersions)).map((v) => v.ciphertext);
+    const err = await mainRun(db, a.orgId).catch((e) => e as Error);
+    expect(err).toBeInstanceOf(RewrapError);
+    const msg = (err as Error).message;
+    expect(msg).toContain("vault_secret_versions");
+    expect(msg).toContain("TURNTABLE_RELEASE_MASTER_KEY[_PREVIOUS]");
+    expect(msg).not.toContain(VALUE);
+    expect((await db.orm.select().from(s.vaultSecretVersions)).map((v) => v.ciphertext)).toEqual(
+      before,
+    );
+  });
+
+  test("with the release keys held, each row moves under the new key of its own family (one tx, idempotent)", async () => {
+    const { db, a } = await world();
+    const logs: string[] = [];
+    const r = await mainRun(db, a.orgId, {
+      release: { next: newKey, previous: oldKey },
+      log: (m: string) => logs.push(m),
+    });
+    expect(r.releaseRewrapped).toBe(1);
+    expect(r.rewrapped.vault_secret_versions).toBe(2);
+    expect(await opensUnder(db, "NPM_TOKEN", newKey)).toBe(true);
+    expect(await opensUnder(db, "NPM_TOKEN", mainNew)).toBe(false);
+    expect(await opensUnder(db, "DEPLOY_KEY", mainNew)).toBe(true);
+    expect(await opensUnder(db, "DEPLOY_KEY", newKey)).toBe(false);
+    const again = await mainRun(db, a.orgId, { release: { next: newKey, previous: oldKey } });
+    expect(again.rewrapped.vault_secret_versions).toBe(0);
+    expect(again.releaseRewrapped).toBe(0);
+    expect(again.alreadyCurrent.vault_secret_versions).toBe(2);
+  });
+
+  test("with a release lane configured elsewhere, the release row is counted and logged as left", async () => {
+    const { db, a } = await world();
+    const logs: string[] = [];
+    const npm = (await cipherOf(db, "NPM_TOKEN")).row.ciphertext;
+    const r = await mainRun(db, a.orgId, {
+      releaseElsewhere: true,
+      log: (m: string) => logs.push(m),
+    });
+    expect(r.skipped).toHaveLength(1);
+    expect(r.rewrapped.vault_secret_versions).toBe(1);
+    expect((await cipherOf(db, "NPM_TOKEN")).row.ciphertext).toBe(npm);
+    expect(logs.join("\n")).toContain("left 1 release-class vault rows for the release service");
+  });
+
+  test("a release row under none of the held keys still fails when the release keys are held", async () => {
+    const { db, a } = await world();
+    await expect(
+      mainRun(db, a.orgId, { release: { next: randomBytes(32), previous: randomBytes(32) } }),
+    ).rejects.toThrow(RewrapError);
+  });
+
+  test("the lane's own re-wrap still leaves the main key's row alone", async () => {
+    const { db, a, keys } = await world();
+    const before = await cipherOf(db, "DEPLOY_KEY");
+    await rewrapReleaseKey({
       db,
-      next: randomBytes(32),
-      previous: mainKey,
+      next: newKey,
+      previous: oldKey,
+      keysDir: keys,
       auditOrgId: a.orgId,
     });
-    expect(main.rewrapped.vault_secret_versions).toBe(1);
-    expect(main.skipped).toHaveLength(1);
+    expect((await cipherOf(db, "DEPLOY_KEY")).row.ciphertext).toBe(before.row.ciphertext);
   });
 
   test("a signing key file under neither key stops the run before anything is written", async () => {
@@ -223,5 +309,30 @@ describe("an audit anchor under another key", () => {
       auditOrgId: a.orgId,
     });
     expect(new AuditAnchor(dir, newKey).unreadable()).toEqual([]);
+  });
+});
+
+describe("the release keys a main process takes", () => {
+  test("are read and removed from the environment; a previous key alone is refused", () => {
+    const next = randomBytes(32);
+    const prev = randomBytes(32);
+    const env: Record<string, string | undefined> = {
+      TURNTABLE_RELEASE_MASTER_KEY: next.toString("base64"),
+      TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS: prev.toString("base64"),
+    };
+    const k = takeReleaseKeys(env);
+    expect(k?.next.equals(next)).toBe(true);
+    expect(k?.previous?.equals(prev)).toBe(true);
+    expect(env).toEqual({});
+    expect(takeReleaseKeys({})).toBeUndefined();
+    expect(() =>
+      takeReleaseKeys({ TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS: prev.toString("base64") }),
+    ).toThrow(/no current release key/);
+  });
+
+  test("a release lane is configured elsewhere by its key file or the publish channel", () => {
+    expect(releaseLaneConfigured({})).toBe(false);
+    expect(releaseLaneConfigured({ TURNTABLE_RELEASE_MASTER_KEY_FILE: "/k" })).toBe(true);
+    expect(releaseLaneConfigured({ TURNTABLE_PUBLISH_CHANNEL_URL: "https://x" })).toBe(true);
   });
 });
