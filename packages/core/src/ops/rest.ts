@@ -16,6 +16,15 @@ export const API_HEADERS = {
   "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
 } as const;
 
+/**
+ * The untrusted-content marker. `x-longshore-untrusted-content` is the pre-rename name, still sent
+ * with the same value because a client may key on it; it is deprecated and goes in a later release.
+ */
+export const UNTRUSTED_HEADER = "x-turntable-untrusted-content";
+export const DEPRECATED_UNTRUSTED_HEADER = "x-longshore-untrusted-content"; // rename-keep
+
+const UNTRUSTED_HEADERS = { [UNTRUSTED_HEADER]: "true", [DEPRECATED_UNTRUSTED_HEADER]: "true" };
+
 type Route = {
   op: Op;
   pattern: RegExp;
@@ -199,11 +208,7 @@ export function createRestApi(
             : {},
         );
       }
-      return json(
-        result.output,
-        200,
-        result.untrusted ? { "x-longshore-untrusted-content": "true" } : {},
-      );
+      return json(result.output, 200, result.untrusted ? UNTRUSTED_HEADERS : {});
     } catch (err) {
       if (err instanceof OpError) return failure(err);
       console.error("turntable: REST adapter error", err);
