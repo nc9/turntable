@@ -1730,7 +1730,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 11,
+              "maxItems": 12,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1745,7 +1745,8 @@
                   "infra.error",
                   "quota.warning",
                   "quota.reached",
-                  "webhook.disabled"
+                  "webhook.disabled",
+                  "approval.policy_loosened"
                 ]
               }
             }
@@ -1849,7 +1850,8 @@
                               "infra.error",
                               "quota.warning",
                               "quota.reached",
-                              "webhook.disabled"
+                              "webhook.disabled",
+                              "approval.policy_loosened"
                             ]
                           },
                           "project": {
@@ -5285,12 +5287,28 @@
                           "allow_author_approval": {
                             "type": "boolean"
                           },
+                          "key_policy": {
+                            "type": "string",
+                            "enum": ["any", "hardware"],
+                            "description": "Added to the org key policy for this environment: hardware is stricter."
+                          },
+                          "locked": {
+                            "type": "boolean",
+                            "description": "Set by the environment or turntable.toml: it cannot be changed here."
+                          },
                           "source": {
                             "type": "string",
                             "enum": ["configured", "default"]
                           }
                         },
-                        "required": ["environment", "required", "allow_author_approval", "source"],
+                        "required": [
+                          "environment",
+                          "required",
+                          "allow_author_approval",
+                          "key_policy",
+                          "locked",
+                          "source"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -7561,6 +7579,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -7573,7 +7595,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }
@@ -7697,6 +7720,10 @@
                           },
                           "mcp_editable": {
                             "type": "boolean"
+                          },
+                          "warning": {
+                            "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                            "type": ["string", "null"]
                           }
                         },
                         "required": [
@@ -7709,7 +7736,8 @@
                           "locked",
                           "locked_by",
                           "role",
-                          "mcp_editable"
+                          "mcp_editable",
+                          "warning"
                         ],
                         "additionalProperties": false
                       }
@@ -7829,6 +7857,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -7841,7 +7873,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }
@@ -9564,6 +9597,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -9576,7 +9613,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }
@@ -9656,6 +9694,10 @@
                           },
                           "mcp_editable": {
                             "type": "boolean"
+                          },
+                          "warning": {
+                            "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                            "type": ["string", "null"]
                           }
                         },
                         "required": [
@@ -9668,7 +9710,8 @@
                           "locked",
                           "locked_by",
                           "role",
-                          "mcp_editable"
+                          "mcp_editable",
+                          "warning"
                         ],
                         "additionalProperties": false
                       }
@@ -9785,6 +9828,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -9797,7 +9844,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }

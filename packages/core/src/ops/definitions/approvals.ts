@@ -135,7 +135,7 @@ export const approvalStatus = defineOp({
     const now = ctx.now();
     const environments = [];
     for (const environment of names) {
-      const policy = await getEnvPolicy(ctx.db, ctx.scope.orgId, environment);
+      const policy = await getEnvPolicy(ctx.db, ctx.scope.orgId, environment, ctx.settings);
       const live =
         run.sha && trust
           ? liveEnvironmentRecords(
@@ -219,6 +219,12 @@ export const approversOverview = defineOp({
         environment: z.string(),
         required: z.int(),
         allow_author_approval: z.boolean(),
+        key_policy: z
+          .enum(["any", "hardware"])
+          .describe("Added to the org key policy for this environment: hardware is stricter."),
+        locked: z
+          .boolean()
+          .describe("Set by the environment or turntable.toml: it cannot be changed here."),
         source: z.enum(["configured", "default"]),
       }),
     ),
@@ -252,15 +258,17 @@ export const approversOverview = defineOp({
         expires_at: iso(e.expiresAt)!,
       });
     }
-    const configured = await listEnvPolicies(ctx.db, orgId);
+    const configured = await listEnvPolicies(ctx.db, orgId, ctx.settings);
     const names = new Set([...PROTECTED_ENVIRONMENTS, ...configured.map((p) => p.environment)]);
     const policies = [];
     for (const environment of [...names].toSorted()) {
-      const p = await getEnvPolicy(ctx.db, orgId, environment);
+      const p = await getEnvPolicy(ctx.db, orgId, environment, ctx.settings);
       policies.push({
         environment,
         required: p.required,
         allow_author_approval: p.allowAuthorApproval,
+        key_policy: p.keyPolicy,
+        locked: p.locked,
         source: p.source,
       });
     }

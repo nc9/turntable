@@ -218,5 +218,13 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"sandbox_ttl_seconds\" bigint;"
     ]
+  },
+  {
+    "tag": "0012_approval_policy_settings",
+    "when": 1795434274826,
+    "statements": [
+      "-- #345: the events type CHECK is dropped (the type is validated in code, see EVENT_TYPES), so a new\n-- event type never needs a migration.\nALTER TABLE \"events\" DROP CONSTRAINT \"events_type_check\";",
+      "-- #345: every org's approval policies are copied into one `approval_policy` setting, so the\n-- resolver reads what the table held. The table stays (nothing reads or writes it any more), so\n-- rolling the binary back loses nothing but changes made after this ran.\nINSERT INTO \"settings\" (\"scope_kind\", \"scope_id\", \"org_id\", \"key\", \"value\", \"updated_by\", \"updated_at\")\nSELECT 'org', \"org_id\", \"org_id\", 'approval_policy',\n\tjsonb_object_agg(\"environment\", jsonb_build_object('required', LEAST(GREATEST(\"required\", 1), 10), 'allow_author_approval', \"allow_author_approval\" = 1, 'key_policy', 'any'))::text,\n\t'migration', (extract(epoch from now()) * 1000)::bigint\nFROM \"approval_policies\"\nWHERE NOT EXISTS (\n\tSELECT 1 FROM \"settings\"\n\tWHERE \"settings\".\"scope_kind\" = 'org' AND \"settings\".\"scope_id\" = \"approval_policies\".\"org_id\" AND \"settings\".\"key\" = 'approval_policy'\n)\nGROUP BY \"org_id\";"
+    ]
   }
 ];

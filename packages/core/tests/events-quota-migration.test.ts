@@ -49,11 +49,8 @@ test("the type list is widened, old quota notices become quota.*, real infra err
   ]);
   expect(JSON.parse(rows[1]!.payload)).toEqual({ metric: "runs_per_hour", used: 8, limit: 10 });
   expect(JSON.parse(rows[3]!.payload)).toEqual({ error_class: "sandbox_create_failed" });
-  // the new types are accepted, an unknown one still is not
+  // the new types are accepted (the type is validated in code now, not by a CHECK)
   sqlite.run("INSERT INTO events (public_id, org_id, type) VALUES ('n1', 'o1', 'quota.reached')");
-  expect(() =>
-    sqlite.run("INSERT INTO events (public_id, org_id, type) VALUES ('n2', 'o1', 'quota.other')"),
-  ).toThrow();
   expect(sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 

@@ -64,12 +64,6 @@ test("the type list is widened, old quota notices become quota.*, real infra err
     await orm.execute(
       sql`insert into events (public_id, org_id, type) values ('n1', 'o1', 'quota.reached')`,
     );
-    const bad = async () => {
-      await orm.execute(
-        sql`insert into events (public_id, org_id, type) values ('n2', 'o1', 'quota.other')`,
-      );
-    };
-    await expect(bad()).rejects.toThrow();
   } finally {
     await client.close();
   }
