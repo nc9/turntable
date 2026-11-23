@@ -383,6 +383,7 @@ export type WireSetting = {
   locked_by: string | null;
   role: string;
   mcp_editable: boolean;
+  strictness: string[] | null;
 };
 
 export type WireSettings = { settings: WireSetting[]; next_cursor: string | null };

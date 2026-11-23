@@ -41,6 +41,12 @@ const settingView = z.object({
   locked_by: z.string().nullable().describe("For a locked value, the variable or file."),
   role: z.string().describe("The least role that may change it."),
   mcp_editable: z.boolean(),
+  strictness: z
+    .array(z.string())
+    .nullable()
+    .describe(
+      "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise.",
+    ),
 });
 type SettingView = z.infer<typeof settingView>;
 
@@ -61,8 +67,10 @@ function view(def: SettingDef, r: Resolved, showFile: boolean): SettingView {
       : r.source === "env" || showFile
         ? (r.origin ?? r.source)
         : r.source,
-    role: def.instanceAdminOnly ? "instance_admin" : def.role,
+    // With a strictness order the role is the least that may tighten; loosening is the instance's.
+    role: def.instanceAdminOnly && !def.strictness ? "instance_admin" : def.role,
     mcp_editable: def.mcpEditable,
+    strictness: def.strictness ? [...def.strictness] : null,
   };
 }
 
@@ -240,6 +248,8 @@ export const setSettingOp = defineOp({
     "refused when the setting is locked (the environment or turntable.toml sets it; the error " +
     "says which), when your role is below the setting's own, and over MCP for a setting that " +
     "raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). " +
+    "A setting with a `strictness` order may be tightened by its role but only loosened by the " +
+    "instance administrator, and unsetting counts as setting the default. " +
     "The old and new values are audited. Returns the setting as `get_setting` does.",
   roleNote:
     "Requires role operator, and the setting's own role (shown by `list_settings`); a few " +

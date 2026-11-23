@@ -42,8 +42,11 @@ export async function guardSettingChange(
     );
   }
   const p = caller.principal;
+  // An org principal on a setting with a strictness order may still tighten it: the value check
+  // below refuses loosening, after the role and MCP refusals.
+  const oneWay = def.instanceAdminOnly === true && def.strictness !== undefined;
   if (p && p.kind !== "instance") {
-    if (def.instanceAdminOnly) {
+    if (def.instanceAdminOnly && !def.strictness) {
       throw new OpError("forbidden", `only the instance administrator can change ${def.key}`);
     }
     if (def.scope !== "instance" && !roleSatisfies(p.role, def.role as never)) {
@@ -60,7 +63,10 @@ export async function guardSettingChange(
   if (unset === (i.value !== undefined)) {
     throw new OpError("invalid_input", "give either a value to set or unset: true, not both");
   }
-  if (unset) return { before, next: undefined };
+  if (unset) {
+    if (oneWay && p && p.kind !== "instance") refuseLoosening(def, before, def.default);
+    return { before, next: undefined };
+  }
   const parsed = def.type.safeParse(i.value);
   if (!parsed.success) {
     throw new OpError(
@@ -70,7 +76,26 @@ export async function guardSettingChange(
   }
   const refused = def.refuse?.(parsed.data);
   if (refused) throw new OpError("invalid_input", refused);
+  if (oneWay && p && p.kind !== "instance") refuseLoosening(def, before, parsed.data);
   return { before, next: parsed.data };
+}
+
+/**
+ * Refuses a value less strict than the effective one. `before` is read in the caller's write
+ * transaction. A current value the order does not list ranks as the strictest, so it fails closed.
+ */
+function refuseLoosening(def: SettingDef, before: Resolved, next: unknown): void {
+  const order = def.strictness!;
+  const rank = (v: unknown): number => {
+    const i = order.indexOf(v as string);
+    return i < 0 ? order.length : i;
+  };
+  if (rank(next) < rank(before.value)) {
+    throw new OpError(
+      "forbidden",
+      `only the instance administrator can loosen ${def.key} (current: ${String(before.value)})`,
+    );
+  }
 }
 
 /** The slugs a project's `turntable.toml` section is keyed by, from its ids. */

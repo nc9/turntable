@@ -12,7 +12,7 @@ import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { setSandboxPolicy } from "../src/ops/policy-cli";
 import { settingsRegistry, untrustedRunApprovalSetting } from "../src/settings/definitions";
 import { loadSettingsRuntime } from "../src/settings/boot";
-import { resolveSetting, type SettingsRuntime } from "../src/settings/resolve";
+import { resolveSetting, type SettingsRuntime, storeTarget } from "../src/settings/resolve";
 import { SettingsConfigError } from "../src/settings/toml";
 import { mintToken, rawExec, seedWorld, type Tenant } from "./ops-helpers";
 
@@ -201,19 +201,26 @@ describe("a toml lock refuses every way in, naming the file", () => {
 });
 
 describe("the same refusals on every path", () => {
-  test("set_setting by an org token is refused: only the instance administrator raises it", async () => {
-    const r = await asToken(rt(), "set_setting", { key: KEY, value: "any" });
-    expect(!r.ok && r.error.message).toBe(`only the instance administrator can change ${KEY}`);
+  test("set_setting by an org owner is refused when it loosens: only the instance administrator raises it", async () => {
+    const r = await dispatch(
+      { registry, db, settings: rt() },
+      { kind: "principal", principal: { kind: "member", id: "o", orgId: a.orgId, role: "owner" } },
+      "set_setting",
+      { key: KEY, value: "any", project: a.projectSlug },
+    );
+    expect(!r.ok && r.error.message).toBe(
+      `only the instance administrator can loosen ${KEY} (current: no_agents)`,
+    );
   });
 
-  test("set_setting refuses an admin token of the project's own org, and the lock is reported first", async () => {
+  test("set_setting refuses a token of the project's own org, and the lock is reported first", async () => {
     const { secret } = await mintToken(db, a.scope, "release_operator", { kind: "person" });
     const env = { registry, db, settings: rt() } as DispatchEnv;
     const r = await dispatch(env, { kind: "bearer", token: secret }, "set_setting", {
       key: KEY,
       value: "any",
     });
-    expect(!r.ok && r.error.message).toMatch(/only the instance administrator/);
+    expect(!r.ok && r.error.message).toMatch(/requires role owner/);
     const locked = await dispatch(
       { ...env, settings: lock("no_agents", "org-a", a.projectSlug) },
       { kind: "bearer", token: secret },
@@ -321,5 +328,138 @@ describe("cross-tenant", () => {
         1,
       ),
     ).rejects.toThrow(/not in org/);
+  });
+});
+
+describe("strictness: an org tightens, only the instance administrator loosens (#335)", () => {
+  const subject = () => ({ orgId: a.orgId, projectId: a.projectId });
+  const effective = async () => (await resolveSetting(rt(), db, KEY, subject())).value;
+  const setAsInstance = (value: string) =>
+    asInstance(rt(), { target_project: a.projectSlug, untrusted_run_approval: value });
+  // Tokens top out at release_operator; the setting's role is owner, which only people hold.
+  const asOwner = (
+    op: string,
+    input: Record<string, unknown>,
+    o: { viaMcp?: boolean; role?: "owner" | "admin"; settings?: SettingsRuntime } = {},
+  ) =>
+    dispatch(
+      {
+        registry,
+        db,
+        settings: o.settings ?? rt(),
+        ...(o.viaMcp ? { viaMcp: true } : {}),
+      },
+      {
+        kind: "principal",
+        principal: { kind: "member", id: "o", orgId: a.orgId, role: o.role ?? "owner" },
+      },
+      op,
+      { project: a.projectSlug, ...input },
+    );
+  const orgSet = (input: Record<string, unknown>, o = {}) =>
+    asOwner("set_setting", { key: KEY, ...input }, o);
+
+  test("the definition declares the order and is listed with it", async () => {
+    expect(untrustedRunApprovalSetting.strictness).toEqual(["any", "no_agents", "human"]);
+    expect(untrustedRunApprovalSetting.mcpEditable).toBe(false);
+    const r = await asOwner("get_setting", { key: KEY });
+    expect(r.ok && r.output).toMatchObject({
+      role: "owner",
+      strictness: ["any", "no_agents", "human"],
+      mcp_editable: false,
+    });
+  });
+
+  test("an org admin tightens any to no_agents, and it is audited", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    const r = await orgSet({ value: "no_agents" });
+    expect(r.ok).toBe(true);
+    expect(await effective()).toBe("no_agents");
+    const row = (await listAudit(db, { orgId: a.orgId }, { limit: 10 })).find(
+      (x) => x.op === "setting_changed",
+    );
+    expect(JSON.stringify(row)).toContain("no_agents");
+  });
+
+  test("setting the same value is allowed", async () => {
+    expect((await orgSet({ value: "no_agents" })).ok).toBe(true);
+  });
+
+  test("an org admin loosening no_agents to any is refused and nothing changes", async () => {
+    expect((await setAsInstance("no_agents")).ok).toBe(true);
+    const r = await orgSet({ value: "any" });
+    expect(!r.ok && r.error.message).toBe(
+      `only the instance administrator can loosen ${KEY} (current: no_agents)`,
+    );
+    expect(await effective()).toBe("no_agents");
+  });
+
+  test("a reset to the looser default is refused; a reset to an equal default is allowed", async () => {
+    // default is no_agents: any stored value above it cannot be reset by the org
+    await setAsInstance("any");
+    expect((await orgSet({ unset: true })).ok).toBe(true); // any -> default no_agents tightens
+    expect(await effective()).toBe("no_agents");
+    expect((await orgSet({ unset: true })).ok).toBe(true); // already default
+  });
+
+  test("an org reset when the default is looser than the current is refused", async () => {
+    // a stored value stricter than the default: unsetting would loosen it
+    await putStoredSetting(
+      db,
+      storeTarget(untrustedRunApprovalSetting, subject()),
+      KEY,
+      "human",
+      "tester",
+      Date.now(),
+    );
+    const r = await orgSet({ unset: true });
+    expect(!r.ok && r.error.message).toBe(
+      `only the instance administrator can loosen ${KEY} (current: human)`,
+    );
+    expect(await effective()).toBe("human");
+  });
+
+  test("the instance administrator loosens, and may unset", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    expect(await effective()).toBe("any");
+    const r = await dispatch(
+      { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
+      { kind: "bearer", token: instanceSecret },
+      "instance_set_setting",
+      { key: KEY, unset: true, target_org: "org-a", target_project: a.projectSlug },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("the host CLI is the operator and may loosen", async () => {
+    await setSandboxPolicy(db, "org-a", a.projectSlug, { untrustedRunApproval: "any" });
+    expect(await effective()).toBe("any");
+  });
+
+  test("over MCP it is still refused, tightening included", async () => {
+    await setAsInstance("any");
+    const r = await orgSet({ value: "no_agents" }, { viaMcp: true });
+    expect(!r.ok && r.error.message).toMatch(/cannot be changed over MCP/);
+    expect(await effective()).toBe("any");
+  });
+
+  test("a lock by toml is refused as locked before the strictness rule", async () => {
+    const settings = lock("no_agents", "org-a", a.projectSlug);
+    for (const value of ["any", "human"]) {
+      const r = await orgSet({ value }, { settings });
+      expect(!r.ok && r.error.message).toMatch(/locked/);
+    }
+  });
+
+  test("an admin, below the setting's owner role is refused", async () => {
+    const r = await orgSet({ value: "no_agents" }, { role: "admin" });
+    expect(!r.ok && r.error.message).toBe(`changing ${KEY} requires role owner`);
+  });
+});
+
+describe("tokens", () => {
+  test("a release_operator token cannot tighten it: the role is held only by people", async () => {
+    const r = await asToken(rt(), "set_setting", { key: KEY, value: "human" });
+    expect(!r.ok && r.error.message).toBe(`changing ${KEY} requires role owner`);
   });
 });
