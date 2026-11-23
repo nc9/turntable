@@ -7,7 +7,7 @@ import {
   type KeyPolicyMode,
 } from "../../approvals/key-policy";
 import { approverIdentity } from "../../approvals/identity";
-import { and, asc, desc, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import {
   type ApprovalPolicyMap,
   approvalPolicyMap,
@@ -345,6 +345,17 @@ export function insertApprover(
       throw e;
     }
     return row;
+  });
+}
+
+/** When the org's most recent approver revocation happened, or null if none was ever revoked. */
+export function lastApproverRevocation(db: Db, orgId: string): Promise<number | null> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ at: sql<number | null>`max(${s.approvers.revokedAt})` })
+      .from(s.approvers)
+      .where(eq(s.approvers.orgId, orgId));
+    return row?.at == null ? null : Number(row.at);
   });
 }
 

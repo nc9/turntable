@@ -8,20 +8,23 @@ import { openDatabase } from "../db";
 import {
   ApprovalConflict,
   getOrgBySlug,
-  insertApprover,
   getKeyPolicy,
   listApprovers,
   listEnvPolicies,
-  revokeApprover,
 } from "../db/repos";
 import { setAmbientSettings } from "../settings/ambient";
 import { loadSettingsRuntime } from "../settings/boot";
+import {
+  approvalWarnings,
+  bootstrapFirstApprover,
+  revokeApproverNotifying,
+  setKeyPolicyBootstrap,
+} from "./apply";
 import { changeEnvPolicy } from "./policy-change";
 import { MAX_REQUIRED_APPROVALS } from "./policy-setting";
-import { approvalWarnings, setKeyPolicyBootstrap } from "./apply";
 import { notCountingReason } from "./identity";
 import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
-import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "./keys";
+import { generateEd25519, signEd25519 } from "./keys";
 
 export const APPROVALS_USAGE = `Usage:
   turntable approvals keygen --out <private-key-file>
@@ -137,25 +140,24 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     setAmbientSettings(loadSettingsRuntime({ config: values.config }));
     if (sub === "bootstrap") {
       if (!values.person || !values["public-key"] || !values["forge-login"]) return usage();
-      if ((await listApprovers(db, org.id)).length > 0) {
-        console.error(
-          "this org already has approvers. New approvers need a quorum of existing ones: use request_enrolment and approve_enrolment.",
+      let a: { id: string; person: string };
+      try {
+        a = await bootstrapFirstApprover(
+          db,
+          org.id,
+          {
+            person: values.person,
+            forgeLogin: values["forge-login"],
+            publicKey: read(values["public-key"]),
+            createdBy: "cli:bootstrap",
+          },
+          now,
         );
+      } catch (e) {
+        if (!(e instanceof ApprovalConflict)) throw e;
+        console.error(e.message);
         return 1;
       }
-      const a = await insertApprover(
-        db,
-        org.id,
-        {
-          person: values.person,
-          forgeLogin: values["forge-login"],
-          kind: "ed25519",
-          publicKey: parseEd25519PublicKey(read(values["public-key"])),
-          alg: "EdDSA",
-          createdBy: "cli:bootstrap",
-        },
-        now,
-      );
       for (const w of await approvalWarnings(db, org.id, ["production", "release"]))
         console.error(`warning: ${w}`);
       console.log(JSON.stringify({ approver_id: a.id, person: a.person }));
@@ -245,7 +247,10 @@ export async function approvalsCommand(args: string[]): Promise<number> {
       return 0;
     }
     if (!values.id) return usage();
-    const done = await revokeApprover(db, org.id, values.id, now);
+    const done = await revokeApproverNotifying(db, org, values.id, now, {
+      kind: "cli",
+      id: "local",
+    });
     console.log(JSON.stringify({ revoked: done }));
     return done ? 0 : 1;
   } finally {

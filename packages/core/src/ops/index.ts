@@ -27,6 +27,7 @@ import {
   createOrgTokenOp,
   moveRepoBindingOp,
   setQuotas,
+  bootstrapApprover,
 } from "./definitions/instance";
 import { githubAppStatus, instanceGithubAppStatus } from "./definitions/github-app-status";
 import { getQuotas } from "./definitions/quotas";
@@ -125,6 +126,7 @@ export const registry = createRegistry([
   instanceListOrgs,
   instanceDoctorOp,
   setQuotas,
+  bootstrapApprover,
   dbBackupOp,
   acceptActionMoveOp,
   setSecretOp,
