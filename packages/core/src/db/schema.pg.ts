@@ -420,6 +420,8 @@ export const jobAttempts = pgTable(
     sandboxCreatedAt: bigint("sandbox_created_at", { mode: "number" }),
     /** When the provider confirmed the destroy. Null: never confirmed (the provider's own TTL ended it). */
     sandboxDestroyedAt: bigint("sandbox_destroyed_at", { mode: "number" }),
+    /** The provider's effective TTL for this sandbox, in seconds. Null: none reported (a legacy row, Docker). */
+    sandboxTtlSeconds: bigint("sandbox_ttl_seconds", { mode: "number" }),
   },
   (t) => [
     foreignKey({

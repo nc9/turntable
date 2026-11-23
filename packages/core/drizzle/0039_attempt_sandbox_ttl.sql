@@ -1,0 +1,1 @@
+ALTER TABLE `job_attempts` ADD `sandbox_ttl_seconds` integer;

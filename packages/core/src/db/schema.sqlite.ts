@@ -406,6 +406,8 @@ export const jobAttempts = sqliteTable(
     sandboxCreatedAt: integer("sandbox_created_at", { mode: "number" }),
     /** When the provider confirmed the destroy. Null: never confirmed (the provider's own TTL ended it). */
     sandboxDestroyedAt: integer("sandbox_destroyed_at", { mode: "number" }),
+    /** The provider's effective TTL for this sandbox, in seconds. Null: none reported (a legacy row, Docker). */
+    sandboxTtlSeconds: integer("sandbox_ttl_seconds", { mode: "number" }),
   },
   (t) => [
     foreignKey({

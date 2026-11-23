@@ -456,5 +456,12 @@ export const migrations: Migration[] = [
     "statements": [
       "CREATE TABLE `settings` (\n\t`scope_kind` text NOT NULL,\n\t`scope_id` text DEFAULT '' NOT NULL,\n\t`org_id` text,\n\t`key` text NOT NULL,\n\t`value` text NOT NULL,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tPRIMARY KEY(`scope_kind`, `scope_id`, `key`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"settings_scope_kind_check\" CHECK(scope_kind IN ('instance', 'org', 'project')),\n\tCONSTRAINT \"settings_org_id_check\" CHECK((\"settings\".\"scope_kind\" = 'instance' AND \"settings\".\"org_id\" IS NULL) OR (\"settings\".\"scope_kind\" = 'org' AND \"settings\".\"org_id\" IS NOT NULL AND \"settings\".\"scope_id\" = \"settings\".\"org_id\") OR (\"settings\".\"scope_kind\" = 'project' AND \"settings\".\"org_id\" IS NOT NULL))\n);"
     ]
+  },
+  {
+    "tag": "0039_attempt_sandbox_ttl",
+    "when": 1795427014778,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `sandbox_ttl_seconds` integer;"
+    ]
   }
 ];

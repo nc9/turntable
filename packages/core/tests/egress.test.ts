@@ -328,3 +328,33 @@ test("a proxied job asks for the strict confinement, and the domain-filtered one
   expect(proxyEgress(["none", "open"], addr)).toBeUndefined();
   expect(proxyEgress(["proxy-domain-filtered"], addr)).toBeUndefined();
 });
+
+test("the sandbox's effective TTL is recorded with it: the shorter of the ask and the provider's cap", async () => {
+  const { SecretRegistry } = await import("@turntable/redact");
+  const run = async (cap: number | undefined): Promise<(number | undefined)[]> => {
+    const world = new FakeWorld({ hostPaths: [tmp] });
+    try {
+      const prov = world.provider();
+      const seen: (number | undefined)[] = [];
+      const info = cap === undefined ? prov.info : { ...prov.info, ttlSeconds: cap };
+      const { env } = jobEnv(world, {
+        provider: { ...prov, info, create: prov.create.bind(prov), exec: prov.exec },
+        registry: new SecretRegistry(),
+        timeoutSeconds: 60,
+      });
+      env.store.setSandbox = async (_a: string, _s: string, _c?: number, ttl?: number) => {
+        seen.push(ttl);
+        throw new Error("stop after the sandbox is recorded");
+      };
+      await executeJob(env as never, { runId: "r", jobId: "j", attemptId: "a" }, {} as never).catch(
+        () => {},
+      );
+      return seen;
+    } finally {
+      world.dispose();
+    }
+  };
+  expect(await run(600)).toEqual([600]); // asked 960 s, capped at 600
+  expect(await run(1800)).toEqual([960]); // the ask is shorter than the cap
+  expect(await run(undefined)).toEqual([undefined]); // the provider reports none
+});

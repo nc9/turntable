@@ -59,6 +59,11 @@ export interface ProviderInfo {
   };
   resources: { cpus: boolean; memoryMb: boolean; diskGb: boolean };
   ttl: boolean;
+  /**
+   * The longest a sandbox of this provider lives, in seconds, when it reports one (Daytona: its
+   * effective `maxTtlSeconds`). Absent when the provider has no fixed value (Docker).
+   */
+  ttlSeconds?: number;
   labels: boolean;
   list: boolean;
   listByLabel: boolean;

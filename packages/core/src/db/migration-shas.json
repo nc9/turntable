@@ -156,6 +156,10 @@
     {
       "tag": "0038_settings_registry",
       "sha256": "75b9e5ed67ca1f68ea0eb3b5c61ee97db0d49b9e9c65e76ff12a7275e5fdd9f8"
+    },
+    {
+      "tag": "0039_attempt_sandbox_ttl",
+      "sha256": "26af83345d5b1a062362a04ab27f21049b77c7ed3d8606e0dc436347db826ce1"
     }
   ],
   "pg": [
@@ -198,6 +202,10 @@
     {
       "tag": "0009_settings_registry",
       "sha256": "b7516f9e33bbb87490f509d0ed0c174e0b17c1b06874cf2455106a22628161fd"
+    },
+    {
+      "tag": "0010_attempt_sandbox_ttl",
+      "sha256": "4c32112e78acd7e0e7942602d4ad6ffd53cab3adf227453967de027b17a6dfee"
     }
   ]
 }

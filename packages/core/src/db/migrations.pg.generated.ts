@@ -204,5 +204,12 @@ export const migrations: Migration[] = [
       "CREATE TABLE \"settings\" (\n\t\"scope_kind\" text NOT NULL,\n\t\"scope_id\" text DEFAULT '' NOT NULL,\n\t\"org_id\" text,\n\t\"key\" text NOT NULL,\n\t\"value\" text NOT NULL,\n\t\"updated_by\" text NOT NULL,\n\t\"updated_at\" bigint NOT NULL,\n\tCONSTRAINT \"settings_scope_kind_scope_id_key_pk\" PRIMARY KEY(\"scope_kind\",\"scope_id\",\"key\"),\n\tCONSTRAINT \"settings_scope_kind_check\" CHECK (scope_kind IN ('instance', 'org', 'project')),\n\tCONSTRAINT \"settings_org_id_check\" CHECK ((\"settings\".\"scope_kind\" = 'instance' AND \"settings\".\"org_id\" IS NULL) OR (\"settings\".\"scope_kind\" = 'org' AND \"settings\".\"org_id\" IS NOT NULL AND \"settings\".\"scope_id\" = \"settings\".\"org_id\") OR (\"settings\".\"scope_kind\" = 'project' AND \"settings\".\"org_id\" IS NOT NULL))\n);",
       "ALTER TABLE \"settings\" ADD CONSTRAINT \"settings_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;"
     ]
+  },
+  {
+    "tag": "0010_attempt_sandbox_ttl",
+    "when": 1795427015421,
+    "statements": [
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"sandbox_ttl_seconds\" bigint;"
+    ]
   }
 ];
