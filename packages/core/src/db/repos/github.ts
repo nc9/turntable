@@ -282,6 +282,33 @@ export function adoptRepoBinding(
   });
 }
 
+/**
+ * Active installations whose org holds a GitHub binding with no installation (a polled repo):
+ * the only ones the boot sweep has anything to adopt for. Two cheap queries, no GitHub call.
+ */
+export function listInstallationsWithPolledBindings(db: Db): Promise<GithubInstallation[]> {
+  return db.run(async (h) => {
+    const polled = await h.orm
+      .selectDistinct({ orgId: s.projectRepos.orgId })
+      .from(s.projectRepos)
+      .where(and(eq(s.projectRepos.forge, "github"), isNull(s.projectRepos.installationId)));
+    if (polled.length === 0) return [];
+    return h.orm
+      .select()
+      .from(s.githubInstallations)
+      .where(
+        and(
+          eq(s.githubInstallations.status, "active"),
+          inArray(
+            s.githubInstallations.orgId,
+            polled.map((r) => r.orgId),
+          ),
+        ),
+      )
+      .orderBy(asc(s.githubInstallations.createdAt));
+  });
+}
+
 /** Bindings that came from one installation. */
 export function listInstallationBindings(
   db: Db,

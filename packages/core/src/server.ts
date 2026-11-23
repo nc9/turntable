@@ -15,6 +15,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
+import type { GithubFacts } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { DoctorReport } from "./doctor/types";
@@ -98,6 +99,8 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /** GitHub API facts, for `resync_installation`. */
+  githubFacts?: GithubFacts;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
@@ -126,6 +129,7 @@ export function startServer(options: ServeOptions) {
     db: options.db,
     vault: options.vault,
     claims: options.claims?.starter,
+    githubFacts: options.githubFacts,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,

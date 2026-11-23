@@ -12,6 +12,7 @@ import {
   getGithubApp,
   getInstallation,
   getProjectBySlug,
+  listInstallationsWithPolledBindings,
   listInstallationBindings,
   setInstallationStatus,
   unbindRepo,
@@ -187,4 +188,45 @@ async function createProjectFor(
     }
   }
   throw new Error(`no free project slug for ${fullName}`);
+}
+
+/**
+ * Boot sweep for installations synced before polled bindings were adopted: re-runs the sync for
+ * each active installation whose org still has a binding with no installation. Idempotent, and
+ * makes no GitHub call when no org has one. A failure for one installation is logged and audited
+ * and never stops the others. Run it after the server is listening: it must not hold up startup.
+ */
+export async function adoptPolledBindings(
+  db: Db,
+  facts: GithubFacts,
+  log: (message: string) => void = () => {},
+): Promise<{ adopted: string[]; failed: string[] }> {
+  const out = { adopted: [] as string[], failed: [] as string[] };
+  for (const inst of await listInstallationsWithPolledBindings(db)) {
+    try {
+      const r = await syncInstallation(db, facts, inst.installationId);
+      out.adopted.push(...r.adopted);
+      if (r.adopted.length > 0) {
+        log(`adopted ${r.adopted.length} polled repo(s) into installation ${inst.installationId}`);
+      }
+    } catch (err) {
+      out.failed.push(inst.installationId);
+      // Short: the message can carry GitHub's text, never a credential, but keep it bounded.
+      const message = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+      log(`adopt sweep failed for installation ${inst.installationId}: ${message}`);
+      await appendAudit(
+        db,
+        { orgId: inst.orgId },
+        {
+          principalKind: "system",
+          principalId: "github-installation",
+          op: "adopt_sweep",
+          effect: "write",
+          outcome: "error:sync_failed",
+          input: { installationId: inst.installationId, message },
+        },
+      ).catch(() => {});
+    }
+  }
+  return out;
 }
