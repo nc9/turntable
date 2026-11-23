@@ -14,12 +14,21 @@ export const HFS_IGNORABLE = /[\u200c\u200d\u200e\u200f\u202a-\u202e\u206a-\u206
 export function foldKey(path: string): string {
   return path
     .split("/")
-    .map((c) =>
-      c
-        .normalize("NFC")
-        .replaceAll(HFS_IGNORABLE, "")
-        .toLowerCase()
-        .replace(/[ .]+$/, ""),
-    )
+    .map((c) => {
+      // Each step can re-create something an earlier step removes (a lower-casing or a
+      // normalisation can produce an ignorable character or a trailing dot), so repeat until the
+      // value stops changing: the result is then a fixed point, foldKey(foldKey(x)) === foldKey(x).
+      let cur = c;
+      for (let i = 0; i < 8; i += 1) {
+        const next = cur
+          .replaceAll(HFS_IGNORABLE, "")
+          .toLowerCase()
+          .replace(/[ .]+$/, "")
+          .normalize("NFC");
+        if (next === cur) return cur;
+        cur = next;
+      }
+      return cur;
+    })
     .join("/");
 }
