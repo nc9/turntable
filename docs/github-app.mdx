@@ -45,6 +45,10 @@ Install the App on the repositories you want from the link the command prints.
 
 When GitHub reports an installation, Turntable does not trust the payload. It re-fetches the installation and its repositories from the GitHub API with the App's own credentials, checks that the installation belongs to this App, and then maps it to the owning org and each repository to a project. A payload that names a different installation, account or repository than the API reports changes nothing. A repository already bound by another installation or org is left alone and reported. Removing a repository from an installation, or uninstalling the App, unbinds it.
 
+### Moving a polled repo to the App
+
+A repo that was ingested by polling before the App was installed is bound with no installation, so no check runs can be posted for it. When the App is installed on it, the sync adopts that binding: it sets the installation (and the GitHub repo id, when the binding had none) and the binding keeps its project, so run history stays together. The adoption is audited as `adopt_repo_binding`. Only a binding in the same org with no installation is adopted. A binding in another org, from another installation, or whose stored GitHub repo id differs from the installation's (a renamed or recreated repo) is a conflict and is left alone. After adoption the binding is an installation binding like any other: removing the repo from the installation unbinds it, and a poll entry that still names it binds it again on the next poll cycle.
+
 ## Webhook verification
 
 The endpoint, `POST /api/v1/webhooks/github`, requires `TURNTABLE_MASTER_KEY_FILE`.

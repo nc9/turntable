@@ -4,6 +4,8 @@
 // installation, account or repository than the API reports changes nothing.
 import type { Db } from "../db";
 import {
+  adoptRepoBinding,
+  appendAudit,
   bindRepo,
   createProject,
   findGithubRepoBinding,
@@ -30,6 +32,8 @@ export interface SyncOptions {
 export interface SyncResult {
   outcome: "synced" | "suspended" | "deleted" | "unknown" | "unclaimed";
   bound: string[];
+  /** Polled repos (a binding with no installation) now served by this installation. */
+  adopted: string[];
   unbound: string[];
   /** Repos left alone because they are already bound elsewhere. */
   conflicts: string[];
@@ -53,7 +57,13 @@ export async function syncInstallation(
   installationId: string,
   opts: SyncOptions = {},
 ): Promise<SyncResult> {
-  const result: SyncResult = { outcome: "synced", bound: [], unbound: [], conflicts: [] };
+  const result: SyncResult = {
+    outcome: "synced",
+    bound: [],
+    adopted: [],
+    unbound: [],
+    conflicts: [],
+  };
   const app = await getGithubApp(db);
   if (!app) throw new Error("no GitHub App is configured");
   const existing = await getInstallation(db, installationId);
@@ -102,12 +112,32 @@ export async function syncInstallation(
       repo: repo.name,
     });
     if (found) {
-      // Already bound. Ours when it is in this org and from this installation; otherwise leave
-      // it alone: an installation must never take a repo another binding owns.
-      const ours = found.orgId === orgId && found.installationId === installationId;
-      if (!ours && !(found.orgId === orgId && found.installationId === null)) {
-        result.conflicts.push(repo.fullName);
+      // Already bound. Ours when it is in this org and from this installation. A binding in this
+      // org with no installation is a polled repo: adopt it (it keeps its project) when its
+      // forge repo id is unset or matches, so checks can be posted for it. Anything else is
+      // another owner's: an installation must never take it.
+      if (found.orgId === orgId && found.installationId === installationId) continue;
+      if (found.orgId === orgId && found.installationId === null) {
+        const adopted =
+          (found.forgeRepoId === null || found.forgeRepoId === repo.id) &&
+          (await adoptRepoBinding(db, scope, found.id, {
+            installationId,
+            forgeRepoId: repo.id,
+          }));
+        if (adopted) {
+          await appendAudit(db, scope, {
+            principalKind: "system",
+            principalId: "github-installation",
+            op: "adopt_repo_binding",
+            effect: "write",
+            outcome: "ok",
+            input: { repo: repo.fullName, installationId, projectId: found.projectId },
+          });
+          result.adopted.push(repo.fullName);
+          continue;
+        }
       }
+      result.conflicts.push(repo.fullName);
       continue;
     }
     const project = await createProjectFor(

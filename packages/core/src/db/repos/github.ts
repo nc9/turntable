@@ -1,7 +1,7 @@
 // Secrets, the GitHub App record, installations and webhook deliveries. Like index.ts, part of
 // the only code allowed to name tenant tables. Secret values are stored only as sealed records
 // and are never returned by any query written for an API response.
-import { and, asc, eq, gt, inArray, isNull, like, lt, ne, notLike } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, like, lt, ne, notLike, or } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
@@ -250,6 +250,35 @@ export function findGithubRepoBinding(
       )
       .limit(1);
     return byName;
+  });
+}
+
+/**
+ * Adopts a binding made without an installation (a polled repo) into an installation: sets its
+ * installation id, and its forge repo id when it had none. The project stays. Only a binding of
+ * this org with a null installation, and a null or equal forge repo id, is touched.
+ */
+export function adoptRepoBinding(
+  db: Db,
+  scope: Scope,
+  bindingId: string,
+  to: { installationId: string; forgeRepoId: string },
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.projectRepos)
+      .set({ installationId: to.installationId, forgeRepoId: to.forgeRepoId })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.projectRepos.orgId },
+          eq(s.projectRepos.id, bindingId),
+          isNull(s.projectRepos.installationId),
+          or(isNull(s.projectRepos.forgeRepoId), eq(s.projectRepos.forgeRepoId, to.forgeRepoId)),
+        ),
+      )
+      .returning({ id: s.projectRepos.id });
+    return rows.length > 0;
   });
 }
 
