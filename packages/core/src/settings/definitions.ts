@@ -51,6 +51,57 @@ export const orgTokenRemintDelaySetting = defineSetting({
   toml: "org_remint_delay_hours",
 });
 
+/** Minutes between exports of every org's latest audit anchor, besides one on each checkpoint. */
+export const DEFAULT_AUDIT_ANCHOR_EXPORT_MINUTES = 60;
+
+/** A URL with no credentials: a secret in a setting would be stored and shown in the clear. */
+const anchorSinkUrl = z.string().refine(
+  (v) => {
+    if (v === "") return true;
+    try {
+      const u = new URL(v);
+      return (u.protocol === "https:" || u.protocol === "http:") && !u.username && !u.password;
+    } catch {
+      return false;
+    }
+  },
+  { message: "an http(s) URL with no username or password, or an empty string to turn it off" },
+);
+
+export const auditAnchorSinkUrlSetting = defineSetting({
+  key: "audit_anchor_sink_url",
+  scope: "instance",
+  type: anchorSinkUrl,
+  default: "",
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides where the audit anchors go, so only the instance administrator changes it",
+  description:
+    "Where each org's latest audit anchor (chain head hash, sequence and time, signed with the org's audit key) is POSTed on every checkpoint and on the interval below. Empty turns the export off. The body is only the org id, sequence, head hash, time and signature. It is signed with `TURNTABLE_AUDIT_WEBHOOK_SECRET` or `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE`, never with a value kept here. A sink on a private address needs `TURNTABLE_NET_ALLOW_HOSTS`.",
+  warning:
+    "Clearing or repointing this removes the off-instance copy that detects a database rolled back to an earlier state.",
+  env: ["TURNTABLE_AUDIT_ANCHOR_SINK_URL"],
+  toml: "audit.anchor_sink_url",
+});
+
+export const auditAnchorExportIntervalSetting = defineSetting({
+  key: "audit_anchor_export_minutes",
+  scope: "instance",
+  type: z.int().min(1).max(1440),
+  default: DEFAULT_AUDIT_ANCHOR_EXPORT_MINUTES,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides how stale the off-instance audit anchor may get, so only a person changes it",
+  description:
+    "Minutes between exports of each org's latest audit anchor to `audit_anchor_sink_url`, besides the one on every checkpoint (1 to 1440).",
+  env: ["TURNTABLE_AUDIT_ANCHOR_EXPORT_MINUTES"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "audit.anchor_export_minutes",
+});
+
 export const untrustedRunApprovalSetting = defineSetting({
   key: "untrusted_run_approval",
   scope: "project",
@@ -155,6 +206,8 @@ export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
   approverRebootstrapDelaySetting,
   orgTokenRemintDelaySetting,
+  auditAnchorSinkUrlSetting,
+  auditAnchorExportIntervalSetting,
   untrustedRunApprovalSetting,
   approvalPolicySetting,
   schedulingClassSetting,

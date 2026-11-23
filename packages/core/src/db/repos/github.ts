@@ -19,6 +19,7 @@ import {
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
+import { clearRecentDismissals } from "./dismissals";
 import { type Scope, scoped } from "./scope";
 
 export type GithubApp = typeof s.githubApps.$inferSelect;
@@ -322,6 +323,7 @@ export function moveRepoBinding(
       .where(eq(s.projectRepos.id, bindingId))
       .returning({ id: s.projectRepos.id });
     if (rows.length === 0) return false;
+    await clearRecentDismissals(h, to, ["no_binding", "no_installation"]);
     const seen = await h.orm
       .select()
       .from(s.pollSeen)
@@ -366,8 +368,14 @@ export function adoptRepoBinding(
           or(isNull(s.projectRepos.forgeRepoId), eq(s.projectRepos.forgeRepoId, to.forgeRepoId)),
         ),
       )
-      .returning({ id: s.projectRepos.id });
-    return rows.length > 0;
+      .returning({ id: s.projectRepos.id, projectId: s.projectRepos.projectId });
+    const row = rows[0];
+    if (!row) return false;
+    await clearRecentDismissals(h, { orgId: scope.orgId, projectId: row.projectId }, [
+      "no_binding",
+      "no_installation",
+    ]);
+    return true;
   });
 }
 

@@ -7,12 +7,13 @@ import {
   createRun,
   upsertStep,
 } from "../src/db";
+import type { Db } from "../src/db";
 import type { Claim } from "../src/db/repos";
 import { setup } from "./github-helpers";
 
 /** An org with an installed repo `acme/web`, a project, and a way to mint claims on it. */
-export async function setupChecksWorld() {
-  const { db, org, store } = await setup();
+export async function setupChecksWorld(open?: () => Db) {
+  const { db, org, store } = await setup(undefined, open);
   const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "App" });
   const scope = { orgId: org.id, projectId: project.id };
   const installationId = "9001";

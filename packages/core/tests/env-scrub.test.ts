@@ -9,6 +9,7 @@ const source = {
   LANG: "C",
   TURNTABLE_MASTER_KEY_FILE: "/secret/master.key",
   TURNTABLE_BOOTSTRAP_TOKEN_SHA256: "abc",
+  TURNTABLE_AUDIT_WEBHOOK_SECRET: "hook",
   GITHUB_TOKEN: "ghs_x",
   AWS_SECRET_ACCESS_KEY: "k",
   DAYTONA_API_KEY: "d",
@@ -28,6 +29,7 @@ test("named extras pass; explicit values win; credentials and Turntable settings
   expect(scrubbedEnv({ HOME: "/work" }, [], source).HOME).toBe("/work");
   for (const name of [
     "TURNTABLE_MASTER_KEY_FILE",
+    "TURNTABLE_AUDIT_WEBHOOK_SECRET",
     "GITHUB_TOKEN",
     "AWS_SECRET_ACCESS_KEY",
     "DAYTONA_API_KEY",

@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureInstance, getOrgById, getOrgBySlug, openDatabase, type Db } from "../db";
 import { orgsWithAudit } from "../db/repos";
-import { masterKeyForCommand } from "../secrets/master-key";
+import { auditStateDir, masterKeyForCommand } from "../secrets/master-key";
 import { SecretStore } from "../secrets/store";
 import { AuditAnchor } from "./anchor";
 import {
@@ -21,7 +21,7 @@ import { exportOrg, jsonlSink, webhookSink, type AuditSink } from "./export";
 import { verifyAudit, type AnchorCheckpoint } from "./verify";
 
 const USAGE = `usage:
-  turntable audit verify [--org <slug>] [--pubkey <file>]... [--anchor <file>]... [--data-dir ./data]
+  turntable audit verify [--org <slug>] [--pubkey <file>]... [--anchors <file>]... [--data-dir ./data]
   turntable audit init-key --org <slug> --out <file>
   turntable audit adopt --org <slug>
   turntable audit checkpoint [--org <slug>]
@@ -32,7 +32,7 @@ and writes the public key file to keep off this server. adopt is for an org that
 checkpoints before the sealed anchor existed: it trusts the chain as it is, once, after it verifies.
 init-key, adopt, checkpoint and export-key need TURNTABLE_MASTER_KEY_FILE or TURNTABLE_MASTER_KEY (or --master-key-file).
 Keep the export-key file and the exported checkpoints OFF this server. verify --pubkey rejects
-checkpoints signed by any other key; verify --anchor (an export file or a saved checkpoint)
+checkpoints signed by any other key; verify --anchors (an export file, the bodies the anchor sink received, or a saved checkpoint)
 fails if the database lacks a checkpoint the anchor has. Without them, verify says
 "unanchored: integrity only", which an attacker with database and secret store access can defeat.`;
 
@@ -49,6 +49,7 @@ export async function auditCommand(args: string[]): Promise<number> {
       org: { type: "string" },
       pubkey: { type: "string", multiple: true },
       anchor: { type: "string", multiple: true },
+      anchors: { type: "string", multiple: true },
       out: { type: "string" },
       "master-key-file": { type: "string" },
       "data-dir": { type: "string", default: "./data" },
@@ -67,7 +68,7 @@ export async function auditCommand(args: string[]): Promise<number> {
     const store = masterKey ? new SecretStore(db, masterKey) : undefined;
     const anchor = masterKey
       ? new AuditAnchor(
-          keyFile ? AuditAnchor.dirFor(keyFile) : join(resolve(values["data-dir"]), "audit-state"),
+          auditStateDir(keyFile ? { file: keyFile } : undefined, resolve(values["data-dir"])),
           masterKey,
         )
       : undefined;
@@ -174,7 +175,9 @@ export async function auditCommand(args: string[]): Promise<number> {
 
     // verify
     const pinned = (values.pubkey ?? []).map((f) => parsePublicKeyFile(readFileSync(f, "utf8")));
-    const anchors = (values.anchor ?? []).flatMap((f) => readAnchorFile(f));
+    const anchors = [...(values.anchor ?? []), ...(values.anchors ?? [])].flatMap((f) =>
+      readAnchorFile(f),
+    );
     let failed = false;
     for (const o of orgs) {
       const keys = new Map<string, string>();
@@ -207,17 +210,46 @@ export async function auditCommand(args: string[]): Promise<number> {
   }
 }
 
-/** Checkpoints from an export file (JSONL, entries ignored) or a saved single checkpoint. */
-function readAnchorFile(path: string): AnchorCheckpoint[] {
+/**
+ * Checkpoints from an export file (JSONL, entries ignored), the bodies an anchor sink received
+ * (`{org_id, sequence, head_hash, time, signature}` per line, or the `{org, lines}` of the audit export), or a saved single checkpoint.
+ */
+export function readAnchorFile(path: string): AnchorCheckpoint[] {
   const out: AnchorCheckpoint[] = [];
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const t = line.trim();
-    if (t === "") continue;
-    const o = JSON.parse(t) as Partial<AnchorCheckpoint> & { type?: string };
+  const take = (o: Partial<AnchorCheckpoint> & { type?: string; lines?: unknown }): void => {
+    if (Array.isArray(o.lines)) {
+      for (const l of o.lines) take(l as Partial<AnchorCheckpoint> & { type?: string });
+      return;
+    }
+    const ex = o as { org_id?: unknown; sequence?: unknown; head_hash?: unknown; time?: unknown };
+    if (typeof ex.org_id === "string" && typeof ex.sequence === "number" && o.signature) {
+      // The minimal body an anchor sink receives: no key id, so verify tries the trusted keys.
+      out.push({
+        orgId: ex.org_id,
+        seq: ex.sequence,
+        hash: String(ex.head_hash),
+        signedAt: Number(ex.time),
+        keyId: "",
+        signature: o.signature,
+      });
+      return;
+    }
     const isCp = o.type === "checkpoint" || (o.type === undefined && o.signature !== undefined);
     if (isCp && o.orgId && typeof o.seq === "number" && o.hash && o.keyId && o.signature) {
       out.push(o as AnchorCheckpoint);
     }
+  };
+  const text = readFileSync(path, "utf8");
+  // One pretty-printed JSON document, else one JSON value per line.
+  try {
+    take(JSON.parse(text));
+    return out;
+  } catch {
+    out.length = 0;
+  }
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (t !== "") take(JSON.parse(t));
   }
   return out;
 }

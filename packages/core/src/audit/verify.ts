@@ -106,6 +106,19 @@ export async function walkChain(db: Db, orgId: string): Promise<ChainWalk> {
  */
 export type AnchorStanding = "ok" | "rolled_back" | "bad_signature" | "mismatch";
 
+/**
+ * The public keys an anchor may be signed under: the one named by its key id, or every trusted
+ * key when it names none (an exported anchor body carries no key id).
+ */
+export function anchorCandidates(
+  an: AnchorCheckpoint,
+  publicKeys: ReadonlyMap<string, string>,
+): string[] {
+  if (an.keyId === "") return [...publicKeys.values()];
+  const key = publicKeys.get(an.keyId);
+  return key === undefined ? [] : [key];
+}
+
 export function anchorStanding(
   an: AnchorCheckpoint,
   hashes: ReadonlyMap<number, string>,
@@ -164,17 +177,17 @@ export async function verifyAudit(
   }
   const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
   for (const an of anchors) {
-    const standing = anchorStanding(an, hashes, headSeq, publicKeys.get(an.keyId));
+    const standing = anchorStanding(an, hashes, headSeq, anchorCandidates(an, publicKeys));
     if (standing === "bad_signature")
       problems.push(`anchor checkpoint ${an.seq} has no valid signature under a trusted key`);
-    else if (standing === "rolled_back")
-      problems.push(`anchor checkpoint ${an.seq} covers an entry the chain no longer has`);
-    else if (standing === "mismatch") {
+    // A bad signature does not hide a position problem: both are reported.
+    const at = hashes.get(an.seq);
+    if (at === undefined) {
       problems.push(
-        hashes.has(an.seq)
-          ? `anchor checkpoint ${an.seq} does not match the entry at that position`
-          : `anchor checkpoint ${an.seq} covers an entry the chain no longer has`,
+        `anchor checkpoint ${an.seq} covers an entry the chain no longer has: the chain ends at ${headSeq}, behind the exported anchor (rolled back or truncated)`,
       );
+    } else if (at !== an.hash) {
+      problems.push(`anchor checkpoint ${an.seq} does not match the entry at that position`);
     }
     if (!cps.some((c) => c.seq === an.seq && c.hash === an.hash)) {
       problems.push(`checkpoint ${an.seq} from the anchor is missing from the database`);
@@ -220,21 +233,21 @@ export type AnchorVerdict = "ok" | "rolled_back" | "mismatch";
 
 /**
  * Checks an org's chain against exported anchors, with no pinned key file: the chain must be
- * intact, every anchor must carry a valid signature under one of `keys`, and each must match the
+ * intact, every anchor must carry a valid signature under one of `publicKeys` (all of them when it names no key id), and each must match the
  * entry at its position. A valid anchor past the head is a rollback; anything else wrong is a
  * mismatch, which wins over a rollback.
  */
 export async function verifyAnchors(
   db: Db,
   orgId: string,
-  keys: readonly string[],
+  publicKeys: ReadonlyMap<string, string>,
   anchors: readonly AnchorCheckpoint[],
 ): Promise<AnchorVerdict> {
   const walk = await walkChain(db, orgId);
   if (walk.problems.length > 0) return "mismatch";
   let rolledBack = false;
   for (const an of anchors) {
-    const st = anchorStanding(an, walk.hashes, walk.headSeq, keys);
+    const st = anchorStanding(an, walk.hashes, walk.headSeq, anchorCandidates(an, publicKeys));
     if (st === "rolled_back") rolledBack = true;
     else if (st !== "ok") return "mismatch";
   }

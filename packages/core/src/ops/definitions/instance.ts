@@ -616,7 +616,7 @@ export const instanceAuditVerifyOp = defineOp({
     const byOrg = new Map<string, AnchorCheckpoint[]>();
     for (const a of i.anchors) {
       const list = byOrg.get(a.org_id) ?? [];
-      // The body names no key id: the signature is tried under the org's key.
+      // The body names no key id: the signature is tried under every trusted key.
       list.push({
         orgId: a.org_id,
         seq: a.sequence,
@@ -637,7 +637,12 @@ export const instanceAuditVerifyOp = defineOp({
       let result: keyof typeof VERDICT_SENTENCE = "mismatch";
       if (await getOrgById(ctx.db, orgId)) {
         const key = await loadAuditKey(store, orgId).catch(() => undefined);
-        result = await verifyAnchors(ctx.db, orgId, key ? [key.publicKeyPem] : [], anchors);
+        result = await verifyAnchors(
+          ctx.db,
+          orgId,
+          new Map(key ? [[key.keyId, key.publicKeyPem]] : []),
+          anchors,
+        );
       }
       orgs.push({
         org_id: orgId,

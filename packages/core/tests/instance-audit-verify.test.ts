@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, gt } from "drizzle-orm";
 import { AuditAnchor } from "../src/audit/anchor";
+import { toAnchor } from "../src/audit/anchor-export";
 import { createCheckpoint, initAuditKey } from "../src/audit/checkpoint";
 import { systemOrgId } from "../src/audit/failures";
-import { appendAudit, type Db, listAudit } from "../src/db";
+import { appendAudit, type Db, listAudit, listCheckpoints } from "../src/db";
 import * as s from "../src/db/schema";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { mcpTools } from "../src/ops/mcp";
@@ -93,6 +94,18 @@ describe("instance_audit_verify", () => {
       .delete(s.auditLog)
       .where(and(eq(s.auditLog.orgId, a.orgId), gt(s.auditLog.seq, 4)));
     expect(await resultOf(signed)).toBe("rolled_back");
+  });
+
+  test("accepts the exact keyless body the #392 export sends, ok and rolled_back", async () => {
+    const cps = await listCheckpoints(db, a.orgId);
+    const exported = cps.map((c) => JSON.parse(JSON.stringify(toAnchor(c))) as unknown);
+    expect(exported).toHaveLength(2);
+    expect(Object.keys(exported[0] as object)).not.toContain("key_id");
+    expect(await resultOf(exported)).toBe("ok");
+    await db.orm
+      .delete(s.auditLog)
+      .where(and(eq(s.auditLog.orgId, a.orgId), gt(s.auditLog.seq, 4)));
+    expect(await resultOf(exported)).toBe("rolled_back");
   });
 
   test("mismatch: a modified entry", async () => {
