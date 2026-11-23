@@ -46,9 +46,13 @@ console.log("ok ${SHA} files=3 tarball=1234");`,
     const r = await runCheckoutChild(
       req(cmd, { url: "http://127.0.0.1:1/a/b.git", allowHosts: ["127.0.0.1"] }),
     );
-    expect(r).toEqual({ files: 3, tarballBytes: 1234 });
+    expect(r).toEqual({ sha: SHA, files: 3, tarballBytes: 1234 });
     const a = JSON.parse(readFileSync(join(tmp, "o.tgz.args"), "utf8")) as string[];
-    expect(a.slice(0, 3)).toEqual(["fetch-source", "acme/web", SHA]);
+    expect(a[0]).toBe("fetch-source");
+    // the positionals come last, after `--`, so nothing in them can be taken for an option
+    expect(a.slice(-3)).toEqual(["--", "acme/web", SHA]);
+    expect(a.indexOf("--")).toBeGreaterThan(a.indexOf("--limits"));
+    expect(a[a.indexOf("--max-memory-mib") + 1]).toBe(String(DEFAULT_CHECKOUT_CONFIG.memoryMb));
     expect(a).toContain("--allow-host");
     expect(a[a.indexOf("--url") + 1]).toBe("http://127.0.0.1:1/a/b.git");
     const limits = JSON.parse(a[a.indexOf("--limits") + 1]!);
@@ -225,6 +229,12 @@ describe("settings", () => {
   test("the host is pinned to github.com unless the operator allowed another, and . and .. are not repository names", () => {
     expect(() => assertCloneHost("https://github.com/a/b.git")).not.toThrow();
     expect(() => assertCloneHost("https://GitHub.com/a/b.git")).not.toThrow();
+    expect(() => assertCloneHost("https://github.com:443/a/b.git")).not.toThrow(); // the default port, spelled out, is the default
+    expect(() => assertCloneHost("http://github.com/a/b.git")).toThrow(/https/);
+    expect(() => assertCloneHost("https://github.com:8443/a/b.git")).toThrow(/default port/);
+    expect(() => assertCloneHost("https://github.com:8443/a/b.git", ["github.com"])).toThrow(
+      /default port/,
+    );
     expect(() => assertCloneHost("https://evil.example/a/b.git")).toThrow(/not github.com/);
     expect(() => assertCloneHost("https://github.com.evil.example/a/b.git")).toThrow(
       /not github.com/,

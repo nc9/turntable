@@ -25,6 +25,8 @@ export interface CheckoutRequest {
   fetch?: SafeFetch;
   /** Hosts besides github.com the URL may name (an operator's allowlist; a test server). */
   allowHosts?: readonly string[];
+  /** Called often during the work; it may throw to stop it (the parent is gone, memory is over). */
+  checkpoint?: () => void;
 }
 
 export interface CheckoutResult {
@@ -45,13 +47,20 @@ export const isRepoPart = (s: string): boolean => PART.test(s) && s !== "." && s
  * that was not chosen on purpose.
  */
 export function assertCloneHost(url: string, allowHosts: readonly string[] = []): void {
-  let host: string;
+  let u: URL;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    u = new URL(url);
   } catch {
     throw new Error("the repository URL is not a URL");
   }
-  if (host !== "github.com" && !allowHosts.some((h) => h.toLowerCase() === host))
+  const host = u.hostname.toLowerCase();
+  if (host === "github.com") {
+    // github.com only over https and its own port: not http, not another port on the same name.
+    if (u.protocol !== "https:" || u.port !== "")
+      throw new Error("github.com is only fetched over https on its default port");
+    return;
+  }
+  if (!allowHosts.some((h) => h.toLowerCase() === host))
     throw new Error(`the repository host ${host} is not github.com or an allowed host`);
 }
 
@@ -68,6 +77,7 @@ export async function performCheckout(r: CheckoutRequest): Promise<CheckoutResul
     sha,
     fetch: r.fetch ?? createHttpClient({ allowHosts: [...(r.allowHosts ?? [])] }).fetch,
     limits,
+    ...(r.checkpoint ? { checkpoint: r.checkpoint } : {}),
   });
   const dir = r.dir ?? mkdtempSync(join(tmpdir(), "tt-src-"));
   if (r.dir) {
@@ -76,7 +86,16 @@ export async function performCheckout(r: CheckoutRequest): Promise<CheckoutResul
   }
   // The remote the sandbox sees is the repository's address, never with credentials.
   const remote = r.url ?? `https://github.com/${r.owner}/${r.repo}`;
-  const m = materialize(dir, fetched, remote, limits);
-  const tar = tarGzDirectoryToFile(dir, r.out, { maxBytes: limits.maxTarballBytes });
+  const m = materialize(
+    dir,
+    fetched,
+    remote,
+    limits,
+    r.checkpoint ? { checkpoint: r.checkpoint } : {},
+  );
+  const tar = await tarGzDirectoryToFile(dir, r.out, {
+    maxBytes: limits.maxTarballBytes,
+    ...(r.checkpoint ? { checkpoint: r.checkpoint } : {}),
+  });
   return { dir, sha, files: m.files, tarballBytes: tar.bytes };
 }

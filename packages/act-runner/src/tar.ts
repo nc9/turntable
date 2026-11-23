@@ -5,16 +5,18 @@
 // as written and the CALLER decides what is safe to do with it.
 import { Buffer } from "node:buffer";
 import {
-  closeSync,
+  createWriteStream,
   lstatSync,
   openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
-  writeSync,
+  rmSync,
 } from "node:fs";
 import { join } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGunzip, createGzip, gunzipSync, gzipSync } from "node:zlib";
 
 export interface TarEntry {
   path: string;
@@ -164,7 +166,8 @@ export interface TarWriteEntry {
   mode: number;
   mtime?: number;
   data?: Uint8Array;
-  linkTarget?: string;
+  /** A symlink's target: bytes are kept as they are (a target need not be valid UTF-8). */
+  linkTarget?: string | Uint8Array;
 }
 
 const enc = new TextEncoder();
@@ -185,15 +188,15 @@ function num(h: Uint8Array, off: number, len: number, value: number): void {
 }
 
 function header(
-  path: string,
+  path: Uint8Array,
   type: string,
   mode: number,
   size: number,
   mtime: number,
-  link: string,
+  link: Uint8Array,
 ): Uint8Array {
   const h = new Uint8Array(BLOCK);
-  field(h, 0, 100, path);
+  h.set(path.subarray(0, 100), 0);
   num(h, 100, 8, mode);
   num(h, 108, 8, 0);
   num(h, 116, 8, 0);
@@ -201,7 +204,7 @@ function header(
   num(h, 136, 12, mtime);
   field(h, 148, 8, "        ");
   h[156] = type.charCodeAt(0);
-  field(h, 157, 100, link);
+  h.set(link.subarray(0, 100), 157);
   field(h, 257, 6, "ustar\0");
   field(h, 263, 2, "00");
   let sum = 0;
@@ -220,28 +223,38 @@ function paxBlock(records: Record<string, string>): Uint8Array[] {
   }
   const data = enc.encode(body);
   const pad = new Uint8Array((BLOCK - (data.length % BLOCK)) % BLOCK);
-  return [header("PaxHeader", "x", 0o644, data.length, 0, ""), data, pad];
+  return [header(enc.encode("PaxHeader"), "x", 0o644, data.length, 0, new Uint8Array()), data, pad];
 }
 
 function entryChunks(e: TarWriteEntry): Uint8Array[] {
   const parts: Uint8Array[] = [];
   const isDir = e.type === "dir";
   const path = isDir && !e.path.endsWith("/") ? `${e.path}/` : e.path;
-  const link = e.linkTarget ?? "";
+  const link =
+    typeof e.linkTarget === "string"
+      ? enc.encode(e.linkTarget)
+      : (e.linkTarget ?? new Uint8Array());
   const data = e.type === "file" ? (e.data ?? new Uint8Array()) : new Uint8Array();
   const long: Record<string, string> = {};
   if (enc.encode(path).length > 100) long.path = path;
-  if (enc.encode(link).length > 100) long.linkpath = link;
+  if (link.length > 100) {
+    // A long target goes in a pax record, which is UTF-8 text: a target that is not cannot be kept.
+    try {
+      long.linkpath = new TextDecoder("utf-8", { fatal: true }).decode(link);
+    } catch {
+      throw new Error("tar: a link target longer than 100 bytes must be valid UTF-8");
+    }
+  }
   if (Object.keys(long).length > 0) parts.push(...paxBlock(long));
   const t = e.type === "file" ? "0" : e.type === "dir" ? "5" : "2";
   parts.push(
     header(
-      long.path ? path.slice(0, 100) : path,
+      long.path ? enc.encode(path).subarray(0, 100) : enc.encode(path),
       t,
       e.mode & 0o777,
       data.length,
       Math.max(0, e.mtime ?? 0),
-      long.linkpath ? link.slice(0, 100) : link,
+      link,
     ),
   );
   if (data.length > 0) parts.push(data, new Uint8Array((BLOCK - (data.length % BLOCK)) % BLOCK));
@@ -269,7 +282,13 @@ export function tarDirectorySync(dir: string, entries: string[] = ["."]): Uint8A
       for (const child of readdirSync(full).toSorted())
         add(rel === "." ? child : `${rel}/${child}`);
     } else if (st.isSymbolicLink()) {
-      out.push({ path: name, type: "symlink", mode: 0o777, mtime, linkTarget: readlinkSync(full) });
+      out.push({
+        path: name,
+        type: "symlink",
+        mode: 0o777,
+        mtime,
+        linkTarget: readlinkSync(full, { encoding: "buffer" }),
+      });
     } else if (st.isFile()) {
       out.push({
         path: name,
@@ -300,7 +319,13 @@ function* walkDirectory(dir: string, entries: string[] = ["."]): Generator<TarWr
       for (const child of readdirSync(full).toSorted())
         yield* add(rel === "." ? child : `${rel}/${child}`);
     } else if (st.isSymbolicLink()) {
-      yield { path: rel, type: "symlink", mode: 0o777, mtime, linkTarget: readlinkSync(full) };
+      yield {
+        path: rel,
+        type: "symlink",
+        mode: 0o777,
+        mtime,
+        linkTarget: readlinkSync(full, { encoding: "buffer" }),
+      };
     } else if (st.isFile()) {
       yield { path: rel, type: "file", mode: st.mode & 0o777, mtime, data: readFileSync(full) };
     }
@@ -310,46 +335,202 @@ function* walkDirectory(dir: string, entries: string[] = ["."]): Generator<TarWr
 
 /**
  * Packs a directory into a gzip tarball ON DISK, streaming: entries are read one at a time and
- * compressed in batches written as they fill (a gzip file may be several members back to back, which
- * every gzip reader accepts), so memory stays at one batch plus one file. `maxBytes` caps the
- * compressed size written; past it the file is cut and an error thrown.
+ * flow through ONE gzip stream into the file, so memory stays at one file plus the stream's buffers
+ * and the result is a single ordinary gzip member that every reader accepts. The file is created
+ * exclusively (`wx`: an existing file or link at that path is an error). `maxBytes` caps the
+ * compressed size written; past it the stream fails and the file is removed. `checkpoint` is called
+ * between entries.
  */
-export function tarGzDirectoryToFile(
+export async function tarGzDirectoryToFile(
   dir: string,
   outPath: string,
-  opts: { maxBytes: number; entries?: string[]; batchBytes?: number } = {
+  opts: { maxBytes: number; entries?: string[]; checkpoint?: () => void } = {
     maxBytes: 512 * 1024 * 1024,
   },
-): { bytes: number; entries: number } {
-  const batchLimit = opts.batchBytes ?? 4 * 1024 * 1024;
-  const fd = openSync(outPath, "w", 0o600);
-  let written = 0;
+): Promise<{ bytes: number; entries: number }> {
   let count = 0;
-  let batch: Uint8Array[] = [];
-  let batched = 0;
-  const flush = (last = false): void => {
-    if (last) batch.push(new Uint8Array(BLOCK * 2));
-    if (batch.length === 0) return;
-    const gz = gzipSync(Buffer.concat(batch));
-    written += gz.length;
-    if (written > opts.maxBytes) throw new Error("tar: the tarball is larger than the cap");
-    let off = 0;
-    while (off < gz.length) off += writeSync(fd, gz, off, gz.length - off);
-    batch = [];
-    batched = 0;
-  };
-  try {
+  let written = 0;
+  async function* chunks(): AsyncGenerator<Uint8Array> {
     for (const e of walkDirectory(dir, opts.entries)) {
+      opts.checkpoint?.();
       count += 1;
-      for (const c of entryChunks(e)) {
-        batch.push(c);
-        batched += c.length;
-      }
-      if (batched >= batchLimit) flush();
+      for (const c of entryChunks(e)) yield c;
     }
-    flush(true);
-  } finally {
-    closeSync(fd);
+    yield new Uint8Array(BLOCK * 2);
+  }
+  const cap = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      written += chunk.length;
+      if (written > opts.maxBytes) cb(new Error("tar: the tarball is larger than the cap"));
+      else cb(null, chunk);
+    },
+  });
+  // Created exclusively and BEFORE anything else: if the path is taken, that is an error and what
+  // is there is left alone. Only a file this call made is removed when it fails.
+  const fd = openSync(outPath, "wx", 0o600);
+  try {
+    await pipeline(Readable.from(chunks()), createGzip(), cap, createWriteStream(outPath, { fd }));
+  } catch (e) {
+    rmSync(outPath, { force: true });
+    throw e;
   }
   return { bytes: written, entries: count };
+}
+
+// ---- scanning a tarball without unpacking it ----
+
+export interface ScannedEntry {
+  type: TarEntry["type"];
+  size: number;
+  linkTarget?: string;
+  /** The contents, only for a file small enough and while the capture budget lasts. */
+  data?: Uint8Array;
+}
+
+export interface ScanOptions {
+  /** Most bytes of archive content after gunzip. */
+  maxUnpackedBytes: number;
+  maxEntries: number;
+  /** A file up to this size is captured. */
+  captureUpTo: number;
+  /** Most bytes captured in all; past it files are listed but not captured. */
+  captureTotal: number;
+}
+
+/**
+ * Reads a gzip tarball as a stream and keeps the LIST of entries and the contents of small files
+ * only, so memory is bounded by `captureTotal` however large the repository, and the inflate
+ * runs off the event loop. This is how the server reads what it plans from: the same bytes it
+ * will deliver, not a directory a child process also wrote.
+ */
+export async function scanTarGz(
+  tgz: Uint8Array,
+  o: ScanOptions,
+): Promise<Map<string, ScannedEntry>> {
+  const out = new Map<string, ScannedEntry>();
+  const gz = createGunzip();
+  const input = Readable.from([Buffer.from(tgz.buffer, tgz.byteOffset, tgz.byteLength)]);
+  input.on("error", (e) => gz.destroy(e));
+  input.pipe(gz);
+  let total = 0;
+  let captured = 0;
+  let pending: Buffer = Buffer.alloc(0);
+  let pax = new Map<string, string>();
+  let longName: string | undefined;
+  let longLink: string | undefined;
+  // What the stream is in the middle of: a header to read, or `left` bytes of an entry's data.
+  let cur:
+    | {
+        meta: "x" | "g" | "L" | "K" | undefined;
+        name: string;
+        type: TarEntry["type"] | "other";
+        size: number;
+        left: number;
+        pad: number;
+        link: string;
+        keep: Buffer[] | undefined;
+      }
+    | undefined;
+  const take = (n: number): Buffer => {
+    const b = pending.subarray(0, n);
+    pending = pending.subarray(n);
+    return b;
+  };
+  const finish = (): void => {
+    const c = cur!;
+    cur = undefined;
+    const data = c.keep ? Buffer.concat(c.keep) : undefined;
+    if (c.meta === "x") {
+      for (const [k, v] of paxRecords(data ?? new Uint8Array())) pax.set(k, v);
+      return;
+    }
+    if (c.meta === "L") longName = cstr(data ?? new Uint8Array(), 0, data?.length ?? 0);
+    else if (c.meta === "K") longLink = cstr(data ?? new Uint8Array(), 0, data?.length ?? 0);
+    if (c.meta !== undefined) return;
+    if (c.type === "other") return;
+    if (out.size >= o.maxEntries) throw new Error("tar: too many entries");
+    const name = (c.type === "dir" ? c.name.replace(/\/+$/, "") : c.name).replace(/^\.\//, "");
+    out.set(name, {
+      type: c.type,
+      size: c.size,
+      ...(c.type === "symlink" || c.type === "link" ? { linkTarget: c.link } : {}),
+      ...(c.type === "file" && data ? { data } : {}),
+    });
+  };
+  for await (const chunk of gz) {
+    total += chunk.length;
+    if (total > o.maxUnpackedBytes) throw new Error("tar: archive is too large");
+    pending = pending.length === 0 ? (chunk as Buffer) : Buffer.concat([pending, chunk as Buffer]);
+    for (;;) {
+      if (cur === undefined) {
+        if (pending.length < BLOCK) break;
+        const h = take(BLOCK);
+        if (h.every((x) => x === 0)) {
+          cur = undefined;
+          pending = Buffer.alloc(0);
+          break;
+        }
+        if (!checksumOk(h)) throw new Error("tar: bad header checksum");
+        const ch = String.fromCharCode(h[156] === 0 ? 0x30 : h[156]!);
+        const size = octal(h, 124, 12);
+        const prefix = cstr(h, 345, 155);
+        const name =
+          pax.get("path") ??
+          longName ??
+          (prefix ? `${prefix}/${cstr(h, 0, 100)}` : cstr(h, 0, 100));
+        const link = pax.get("linkpath") ?? longLink ?? cstr(h, 157, 100);
+        const paxSize = pax.get("size");
+        const real = paxSize !== undefined ? Number(paxSize) : size;
+        const meta = ch === "x" || ch === "g" || ch === "L" || ch === "K" ? ch : undefined;
+        const type: TarEntry["type"] | "other" =
+          ch === "0" || ch === "7"
+            ? "file"
+            : ch === "5"
+              ? "dir"
+              : ch === "2"
+                ? "symlink"
+                : ch === "1"
+                  ? "link"
+                  : "other";
+        if (meta === undefined) {
+          pax = new Map();
+          longName = undefined;
+          longLink = undefined;
+        }
+        const wantData =
+          meta !== undefined ||
+          (type === "file" && real <= o.captureUpTo && captured + real <= o.captureTotal);
+        const left = meta === undefined ? real : size;
+        cur = {
+          meta: meta as "x" | "g" | "L" | "K" | undefined,
+          name,
+          type,
+          size: real,
+          left,
+          pad: (BLOCK - (left % BLOCK)) % BLOCK,
+          link,
+          keep: wantData ? [] : undefined,
+        };
+        if (meta === undefined && type === "file" && wantData) captured += real;
+        if (left === 0 && cur.pad === 0) finish();
+        continue;
+      }
+      // data of the current entry
+      if (cur.left > 0) {
+        if (pending.length === 0) break;
+        const n = Math.min(cur.left, pending.length);
+        const piece = take(n);
+        cur.keep?.push(Buffer.from(piece));
+        cur.left -= n;
+        if (cur.left > 0) break;
+      }
+      if (cur.pad > 0) {
+        if (pending.length < cur.pad) break;
+        take(cur.pad);
+        cur.pad = 0;
+      }
+      finish();
+    }
+  }
+  return out;
 }

@@ -138,6 +138,8 @@ export interface FetchOptions {
   sha: string;
   fetch?: SafeFetch;
   limits?: Partial<FetchLimits>;
+  /** Called often (between requests, objects and files): it may throw to stop the work (parent gone, over memory). */
+  checkpoint?: () => void;
 }
 
 /** The objects of one commit at depth 1, verified. */
@@ -158,6 +160,7 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   const f = o.fetch ?? safeFetch;
   const deadline = Date.now() + limits.timeoutMs;
   const left = (): number => {
+    o.checkpoint?.();
     const ms = deadline - Date.now();
     if (ms <= 0) throw new GitFetchError("the fetch took too long");
     return ms;
@@ -257,7 +260,7 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
       "the server sent no packfile (is the commit reachable, and the repository public?)",
     );
   left();
-  const objects = readPack(concat(pack), limits, deadline);
+  const objects = readPack(concat(pack), limits, deadline, o.checkpoint);
 
   // 3. The commit asked for must be in it, with its own sha.
   const commit = objects.get(o.sha);
@@ -367,6 +370,7 @@ export function readPack(
   pack: Uint8Array,
   limits: FetchLimits = DEFAULT_FETCH_LIMITS,
   deadline: number = Date.now() + limits.timeoutMs,
+  checkpoint?: () => void,
 ): Map<string, GitObject> {
   if (pack.length < 32 || dec.decode(pack.subarray(0, 4)) !== "PACK")
     throw new GitFetchError("not a packfile");
@@ -394,6 +398,7 @@ export function readPack(
     return pack[pos++]!;
   };
   for (let n = 0; n < count; n += 1) {
+    checkpoint?.();
     if (Date.now() > deadline) throw new GitFetchError("the fetch took too long");
     const start = pos;
     let c = byte();
@@ -459,6 +464,7 @@ export function readPack(
     if (done) return done;
     if (depth > limits.maxDeltaDepth) throw new GitFetchError("a delta chain is too long");
     if (resolving.has(offset)) throw new GitFetchError("a delta depends on itself");
+    checkpoint?.();
     if (Date.now() > deadline) throw new GitFetchError("the fetch took too long");
     const raw = byOffset.get(offset);
     if (!raw) throw new GitFetchError("a delta points outside the pack");
@@ -565,7 +571,8 @@ interface TreeEntry {
   oid: string;
 }
 
-const strict = new TextDecoder("utf-8", { fatal: true });
+// `ignoreBOM: true` keeps a leading U+FEFF in a name instead of silently dropping it.
+const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /**
  * A tree's entries, one at a time (so a cap inside the caller's loop stops a huge tree early).
@@ -678,7 +685,7 @@ export function materialize(
   c: FetchedCommit,
   remoteUrl: string,
   limits: Partial<FetchLimits> = {},
-  hooks: { beforeWrite?: (path: string) => void } = {},
+  hooks: { beforeWrite?: (path: string) => void; checkpoint?: () => void } = {},
 ): Materialized {
   const max = { ...DEFAULT_FETCH_LIMITS, ...limits };
   const deadline = Date.now() + max.timeoutMs;
@@ -741,6 +748,7 @@ export function materialize(
       const key = foldKey(path);
       if (underSymlink(key)) throw new GitFetchError("the repository writes through a symlink");
       const full = join(dir, path);
+      hooks.checkpoint?.();
       hooks.beforeWrite?.(path);
       plainParents(path);
       if (e.mode === "40000") {
@@ -759,7 +767,7 @@ export function materialize(
         reachable.add(e.oid);
         if (e.mode === "120000") {
           if (isDotGitmodules(e.name)) throw new GitFetchError(".gitmodules may not be a symlink");
-          create(() => symlinkSync(dec.decode(blob.data), full));
+          create(() => symlinkSync(Buffer.from(blob.data), full)); // the target's bytes, as they are
           symlinks.add(key);
           index.push({ path, mode: 0o120000, oid: e.oid });
         } else if (e.mode === "100644" || e.mode === "100755" || e.mode === "100664") {

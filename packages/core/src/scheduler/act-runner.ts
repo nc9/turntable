@@ -1,7 +1,8 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
 // it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
 // the same from the CLI and from the worker.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm as rmAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,10 +33,13 @@ import { assertCloneHost, isRepoPart } from "../run/checkout";
 import {
   type CheckoutConfig,
   DEFAULT_CHECKOUT_CONFIG,
+  readChildTarball,
   runCheckoutChild,
   Semaphore,
+  sweepOldCheckouts,
 } from "../run/checkout-child";
-import { makeSafeReader } from "../run/safe-read";
+import { DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { tarballReader } from "../run/tarball-reader";
 import { resolvePlanActions } from "../pins";
 import type { ForgeToken } from "../pins/forge-token";
 import {
@@ -127,6 +131,12 @@ export function gitRepoSource(
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
   const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...o.config };
   const turns = new Semaphore(cfg.concurrency);
+  const lim = { ...DEFAULT_FETCH_LIMITS, ...cfg.limits };
+  // What an earlier process left in the temporary directory is cleared once, at start.
+  if (!sweptOnce) {
+    sweptOnce = true;
+    void sweepOldCheckouts().catch(() => {});
+  }
   return {
     async checkout(run, bound, opts) {
       if (!bound) throw new Error("run has no repo binding");
@@ -134,6 +144,9 @@ export function gitRepoSource(
       if (!isRepoPart(owner) || !isRepoPart(repo) || run.sha === null) {
         throw new Error("run has no sha or the repo binding is not a plain owner/name");
       }
+      const sha = run.sha.toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(sha))
+        throw new Error("the run's commit is not a 40 character sha");
       // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
       // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
       // Never with credentials in the URL.
@@ -143,15 +156,18 @@ export function gitRepoSource(
       const release = await turns.acquire(opts?.signal);
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
       const out = join(tmpdir(), `tt-src-${crypto.randomUUID()}.tgz`);
-      const dispose = (): void => {
-        rmSync(dir, { recursive: true, force: true });
-        rmSync(out, { force: true });
+      // Removed in the background: a recursive delete of a large tree must not hold the event loop.
+      const cleanup = async (): Promise<void> => {
+        await Promise.all([
+          rmAsync(dir, { recursive: true, force: true }),
+          rmAsync(out, { force: true }),
+        ]).catch(() => {});
       };
       try {
-        await runCheckoutChild({
+        const res = await runCheckoutChild({
           owner,
           repo,
-          sha: run.sha.toLowerCase(),
+          sha,
           ...(o.cloneUrl ? { url: clone } : {}),
           dir,
           out,
@@ -160,14 +176,21 @@ export function gitRepoSource(
           signal: opts?.signal,
           ...(o.command ? { command: o.command } : {}),
         });
-        return {
-          tarball: await Bun.file(out).bytes(),
-          // Repo files are untrusted: no traversal, no symlinks, size-capped.
-          readFile: makeSafeReader(dir),
-          dispose,
-        };
+        // The child is not trusted: what it says it fetched, and the file it wrote, are checked.
+        if (res.sha !== sha)
+          throw new Error("the checkout is of a different commit than the one asked for");
+        const tarball = readChildTarball(out, {
+          maxBytes: lim.maxTarballBytes,
+          expectBytes: res.tarballBytes,
+        });
+        // Planned from the bytes that will be delivered, never from the directory the child also wrote.
+        const readFile = await tarballReader(tarball, {
+          maxUnpackedBytes: 2 * lim.maxInflatedBytes + 64 * 1024 * 1024,
+        });
+        void cleanup(); // the tree and the file are not needed any more
+        return { tarball, readFile, dispose: () => {} };
       } catch (err) {
-        dispose();
+        await cleanup();
         throw err;
       } finally {
         release();
@@ -175,6 +198,8 @@ export function gitRepoSource(
     },
   };
 }
+
+let sweptOnce = false;
 
 export type ActRunnerOptions = {
   db: Db;

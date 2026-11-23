@@ -8,7 +8,18 @@
 //     tarball caps) still bound what the child can ask for;
 //   - the child holds no secret: its environment is scrubbed, and it gets everything it needs as
 //     arguments.
-import { readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
+import { readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { scrubbedEnv } from "@longshore/provider-sdk";
 import { clean, DEFAULT_FETCH_LIMITS, type FetchLimits } from "./git-fetch";
 
@@ -30,6 +41,34 @@ export const DEFAULT_CHECKOUT_CONFIG: CheckoutConfig = {
 };
 
 const MIB = 1024 * 1024;
+
+/**
+ * The environment a checkout child gets: the base allowlist (PATH and the like) and, so the child
+ * reaches GitHub the way the server does, the TLS trust and proxy settings. Nothing else: no
+ * Longshore setting, no token, no key. (Env only: the child still runs as the server's user. See
+ * docs/security.mdx.)
+ */
+export const CHILD_ENV_PASSTHROUGH: readonly string[] = [
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+];
+
+let warnedNoRss = false;
+/** Says once, when the ceiling is on but the system gives no way to read the child's memory. */
+function warnNoRssOnce(log: (m: string) => void): void {
+  if (warnedNoRss) return;
+  warnedNoRss = true;
+  log(
+    "checkout memory ceiling is on but the child's resident memory cannot be read here (no /proc): the ceiling is not enforced; the pack, unpacked and tarball caps still apply",
+  );
+}
 
 /** The checkout settings from the environment (all optional; a bad value stops the server at start). */
 export function checkoutConfigFromEnv(
@@ -124,9 +163,14 @@ export interface ChildRequest {
   /** Test seams. */
   rss?: (pid: number) => number | undefined;
   pollMs?: number;
+  /** How long to wait for a killed child to be gone before giving up on it. Default 5 s. */
+  killWaitMs?: number;
+  spawn?: typeof Bun.spawn;
+  log?: (m: string) => void;
 }
 
 export interface ChildResult {
+  sha: string;
   files: number;
   tarballBytes: number;
 }
@@ -150,32 +194,43 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
     ...cfg.limits,
     timeoutMs: cfg.timeoutMs,
   };
+  // The commit is checked here, in the parent, whatever the caller did: it goes into an argument.
+  if (!/^[0-9a-f]{40}$/.test(r.sha))
+    throw new Error("the commit must be a 40 character lower-case sha");
+  const log = r.log ?? ((m: string) => console.warn(`[longshore] ${m}`));
   const argv = [
     ...(r.command ?? selfCommand()),
     "fetch-source",
-    `${r.owner}/${r.repo}`,
-    r.sha,
     "--dir",
     r.dir,
     "--out",
     r.out,
     "--limits",
     JSON.stringify(limits),
+    "--max-memory-mib",
+    String(cfg.memoryMb),
     ...(r.url ? ["--url", r.url] : []),
     ...(r.allowHosts ?? []).flatMap((h) => ["--allow-host", h]),
+    // Nothing after this is an option, whatever a name looks like.
+    "--",
+    `${r.owner}/${r.repo}`,
+    r.sha,
   ];
   if (r.signal?.aborted) throw new Error("the checkout was cancelled");
-  const child = Bun.spawn(argv, {
+  const child = (r.spawn ?? Bun.spawn)(argv, {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: scrubbedEnv(),
+    env: scrubbedEnv({}, CHILD_ENV_PASSTHROUGH),
   });
   let killedFor: string | undefined;
+  let onKilled: () => void = () => {};
+  const killed = new Promise<void>((resolve) => (onKilled = resolve));
   const kill = (why: string): void => {
     if (killedFor) return;
     killedFor = why;
     child.kill("SIGKILL");
+    onKilled();
   };
   const started = Date.now();
   const rss = r.rss ?? readRss;
@@ -184,28 +239,108 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
     else if (Date.now() - started > cfg.timeoutMs) kill("the checkout took too long");
     else if (cfg.memoryMb > 0) {
       const used = rss(child.pid);
-      if (used !== undefined && used > cfg.memoryMb * MIB)
+      if (used === undefined) warnNoRssOnce(log);
+      else if (used > cfg.memoryMb * MIB)
         kill(`the checkout used more than ${cfg.memoryMb} MiB of memory`);
     }
   }, r.pollMs ?? 200);
   const onAbort = (): void => kill("the checkout was cancelled");
   r.signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    const [out, err, code] = await Promise.all([
+    const finished = Promise.all([
       readCapped(child.stdout, 4096),
       readCapped(child.stderr, 8192),
       child.exited,
     ]);
+    // After a kill the wait is bounded: a child that does not go away (stuck in the kernel) is
+    // given up on rather than holding the attempt, and its slot, forever.
+    const gone = killed.then(async () => {
+      await Bun.sleep(r.killWaitMs ?? 5000);
+      return "abandoned" as const;
+    });
+    const res = await Promise.race([finished, gone]);
     if (killedFor) throw new Error(killedFor);
+    if (res === "abandoned") throw new Error("the checkout did not stop");
+    const [out, err, code] = res;
     if (code !== 0) {
       const line = err.trim().split("\n").filter(Boolean).at(-1) ?? `exit ${code}`;
       throw new Error(`the checkout failed: ${clean(line)}`);
     }
-    const m = /^ok [0-9a-f]{40} files=(\d+) tarball=(\d+)/m.exec(out);
+    const m = /^ok ([0-9a-f]{40}) files=(\d+) tarball=(\d+)$/m.exec(out);
     if (!m) throw new Error("the checkout gave no result");
-    return { files: Number(m[1]), tarballBytes: Number(m[2]) };
+    return { sha: m[1] as string, files: Number(m[2]), tarballBytes: Number(m[3]) };
   } finally {
     clearInterval(timer);
     r.signal?.removeEventListener("abort", onAbort);
   }
+}
+
+/**
+ * Reads the tarball the child wrote, trusting nothing about it: the path must be a regular file
+ * (not a link, not a directory) owned by this user and no larger than the cap, it is opened
+ * without following links and checked again through the descriptor, and what it holds must be as
+ * long as the child said. Returns the bytes.
+ */
+export function readChildTarball(
+  path: string,
+  o: { maxBytes: number; expectBytes: number; uid?: number | undefined },
+): Uint8Array {
+  const uid = o.uid ?? process.getuid?.();
+  const before = lstatSync(path);
+  if (!before.isFile()) throw new Error("the checkout's tarball is not a regular file");
+  if (uid !== undefined && before.uid !== uid)
+    throw new Error("the checkout's tarball is not owned by this user");
+  if (before.size > o.maxBytes) throw new Error("the checkout's tarball is larger than the cap");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.ino !== before.ino || st.dev !== before.dev)
+      throw new Error("the checkout's tarball changed while it was opened");
+    if (st.size > o.maxBytes) throw new Error("the checkout's tarball is larger than the cap");
+    if (st.size !== o.expectBytes)
+      throw new Error("the checkout's tarball is not the size the child reported");
+    const buf = Buffer.alloc(st.size);
+    let off = 0;
+    while (off < st.size) {
+      const n = readSync(fd, buf, off, st.size - off, off);
+      if (n === 0) break;
+      off += n;
+    }
+    if (off !== st.size) throw new Error("the checkout's tarball was cut short");
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Removes what an earlier server process left behind (a crash or a kill between a checkout's
+ * start and its cleanup): `tt-src-*` directories and files in the temporary directory that are
+ * older than `maxAgeMs`. Never anything younger, so a checkout in progress is never touched.
+ */
+export async function sweepOldCheckouts(
+  dir: string = tmpdir(),
+  maxAgeMs = 60 * 60 * 1000,
+  now: number = Date.now(),
+): Promise<number> {
+  let removed = 0;
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.startsWith("tt-src-")) continue;
+    const full = join(dir, name);
+    try {
+      const st = await stat(full);
+      if (now - st.mtimeMs < maxAgeMs) continue;
+      await rm(full, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // gone already, or not ours to remove: leave it
+    }
+  }
+  return removed;
 }

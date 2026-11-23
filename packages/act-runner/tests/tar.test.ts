@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -13,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { readTar, readTarGz, tarGzDirectory, tarGzDirectoryToFile, writeTar } from "../src/tar";
 import { tarDirectory } from "../src/workspace";
 
@@ -185,30 +186,67 @@ describe("hardening", () => {
     );
   });
 
-  test("a directory streams to a file in batches (several gzip members), which tar and the reader both accept; the size cap is enforced", () => {
+  test("a directory streams to a file as ONE gzip member that every reader takes whole: node zlib, Bun, system tar and the reader", async () => {
     const d = join(tmp, "stream");
     mkdirSync(join(d, "sub"), { recursive: true });
     for (let i = 0; i < 40; i += 1)
       writeFileSync(join(d, `sub/f${i}.txt`), `file ${i}\n`.repeat(2000));
     symlinkSync("sub/f1.txt", join(d, "ln"));
+    // a link whose target bytes are not UTF-8 is kept as it is
+    symlinkSync(Buffer.from([0x74, 0xff, 0xfe, 0x74]), join(d, "raw"));
     const out = join(tmp, "stream.tgz");
-    const r = tarGzDirectoryToFile(d, out, { maxBytes: 10_000_000, batchBytes: 50_000 });
-    expect(r.entries).toBe(43); // ".", sub, 40 files, the symlink
+    const r = await tarGzDirectoryToFile(d, out, { maxBytes: 10_000_000 });
+    expect(r.entries).toBe(44); // ".", sub, 40 files, two symlinks
     const bytes = new Uint8Array(readFileSync(out));
-    // more than one gzip member: the magic number appears again after the start
+    // one member: the gzip magic with the deflate method is not found again after the header
     let members = 0;
     for (let i = 0; i + 2 < bytes.length; i += 1)
       if (bytes[i] === 0x1f && bytes[i + 1] === 0x8b && bytes[i + 2] === 8) members += 1;
-    expect(members).toBeGreaterThan(1);
+    expect(members).toBe(1);
+    const viaNode = gunzipSync(bytes);
+    const viaBun = Bun.gunzipSync(bytes);
+    expect(viaBun.length).toBe(viaNode.length);
+    expect(Buffer.from(viaBun).equals(viaNode)).toBe(true);
     const read = readTarGz(bytes);
     expect(read.filter((e) => e.type === "file")).toHaveLength(40);
-    expect(read.find((e) => e.type === "symlink")!.linkTarget).toBe("sub/f1.txt");
+    expect(read.find((e) => e.path === "ln")!.linkTarget).toBe("sub/f1.txt");
     const x = join(tmp, "stream-x");
     mkdirSync(x);
     execFileSync("tar", ["xzf", out, "-C", x]);
     expect(readFileSync(join(x, "sub/f39.txt"), "utf8")).toBe("file 39\n".repeat(2000));
-    expect(() =>
-      tarGzDirectoryToFile(d, join(tmp, "cap.tgz"), { maxBytes: 100, batchBytes: 50_000 }),
-    ).toThrow(/larger than the cap/);
+    expect(readlinkSync(join(x, "raw"), { encoding: "buffer" })).toEqual(
+      Buffer.from([0x74, 0xff, 0xfe, 0x74]),
+    );
+  });
+
+  test("the file is created exclusively, the size cap removes it, and the checkpoint runs between entries", async () => {
+    const d = join(tmp, "stream2");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "a"), "x".repeat(100_000));
+    const exists = join(tmp, "exists.tgz");
+    writeFileSync(exists, "mine");
+    await expect(tarGzDirectoryToFile(d, exists, { maxBytes: 1e6 })).rejects.toThrow(
+      /EEXIST|exists/i,
+    );
+    expect(readFileSync(exists, "utf8")).toBe("mine");
+    const link = join(tmp, "link.tgz");
+    symlinkSync(join(tmp, "victim"), link);
+    await expect(tarGzDirectoryToFile(d, link, { maxBytes: 1e6 })).rejects.toThrow();
+    expect(() => statSync(join(tmp, "victim"))).toThrow();
+    const cap = join(tmp, "cap.tgz");
+    writeFileSync(
+      join(d, "noise"),
+      new Uint8Array(200_000).map((_, i) => (i * 7919) % 251),
+    );
+    await expect(tarGzDirectoryToFile(d, cap, { maxBytes: 100 })).rejects.toThrow(
+      /larger than the cap/,
+    );
+    expect(() => statSync(cap)).toThrow(); // removed
+    let calls = 0;
+    await tarGzDirectoryToFile(d, join(tmp, "cp.tgz"), {
+      maxBytes: 1e7,
+      checkpoint: () => void (calls += 1),
+    });
+    expect(calls).toBeGreaterThanOrEqual(3);
   });
 });

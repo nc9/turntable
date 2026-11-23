@@ -447,6 +447,62 @@ describe("a hostile tree is refused before anything is written outside the direc
     }
   });
 
+  test("a leading byte-order mark in a name is kept, not silently dropped, and a symlink target is written as the bytes it is", async () => {
+    const out = join(base, `bom${n++}`);
+    mkdirSync(out);
+    // in git's order: ln, plain, then the BOM name (its first byte is 0xEF)
+    const { dir, sha } = hostile([
+      { mode: "120000", name: "ln", blob: "/x" },
+      { mode: "100644", name: "plain" },
+      { mode: "100644", name: "\ufeffb" },
+    ]);
+    const s = serveGitRepo(dir);
+    try {
+      const c = await fetchCommit({ url: s.url, sha, fetch: s.fetch });
+      materialize(out, c, s.url);
+      expect(readdirSync(out)).toContain("\ufeffb");
+      expect(readdirSync(out)).not.toContain("b");
+    } finally {
+      s.stop();
+    }
+    // a symlink whose target is not valid UTF-8: its blob is raw bytes
+    const rawTarget = Buffer.from([0x2f, 0xff, 0xfe, 0x41]);
+    const { dir: d2 } = hostile([{ mode: "100644", name: "seed" }]);
+    const rawBlob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: d2,
+      env: ENV,
+      input: rawTarget,
+    })
+      .toString()
+      .trim();
+    const treeOid = execFileSync(
+      "git",
+      ["hash-object", "-w", "-t", "tree", "--literally", "--stdin"],
+      {
+        cwd: d2,
+        env: ENV,
+        input: Buffer.concat([Buffer.from("120000 raw\0"), Buffer.from(rawBlob, "hex")]),
+      },
+    )
+      .toString()
+      .trim();
+    const sha2 = execFileSync("git", ["commit-tree", treeOid, "-m", "raw"], {
+      cwd: d2,
+      env: ENV,
+      encoding: "utf8",
+    }).trim();
+    const s2 = serveGitRepo(d2);
+    const out2 = join(base, `raw${n++}`);
+    mkdirSync(out2);
+    try {
+      const c2 = await fetchCommit({ url: s2.url, sha: sha2, fetch: s2.fetch });
+      materialize(out2, c2, s2.url);
+      expect(readlinkSync(join(out2, "raw"), { encoding: "buffer" })).toEqual(rawTarget);
+    } finally {
+      s2.stop();
+    }
+  });
+
   test("an unsupported mode is refused; a submodule is an empty directory, not a fetch", async () => {
     await refuse([{ mode: "100600", name: "x" }], /unsupported mode/);
     const { dir, sha } = hostile([

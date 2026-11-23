@@ -58,6 +58,31 @@ function parseLimits(json: string | undefined): Partial<FetchLimits> {
   return out;
 }
 
+/**
+ * A function to call often. It stops the process (through `onStop`) when the parent that started
+ * it is gone, or when its resident memory is over the ceiling (0: no ceiling). The reading is
+ * throttled: calling it in a tight loop costs a clock read.
+ */
+export function makeCheckpoint(o: {
+  parentPid: number;
+  getParentPid: () => number;
+  rss: () => number;
+  maxRssBytes: number;
+  onStop: (why: string) => void;
+  now?: () => number;
+}): () => void {
+  const now = o.now ?? Date.now;
+  let last = 0;
+  return () => {
+    const t = now();
+    if (t - last < 50) return;
+    last = t;
+    if (o.getParentPid() !== o.parentPid) o.onStop("the server that started this checkout is gone");
+    else if (o.maxRssBytes > 0 && o.rss() > o.maxRssBytes)
+      o.onStop(`the checkout used more than ${Math.round(o.maxRssBytes / 1048576)} MiB of memory`);
+  };
+}
+
 export async function fetchSourceCommand(
   args: string[],
   out: (s: string) => void = (s) => console.log(s),
@@ -71,6 +96,7 @@ export async function fetchSourceCommand(
       url: { type: "string" },
       limits: { type: "string" },
       "allow-host": { type: "string", multiple: true },
+      "max-memory-mib": { type: "string" },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -96,7 +122,21 @@ export async function fetchSourceCommand(
   const allowHosts = values["allow-host"] ?? [];
   try {
     if (values.out !== undefined) {
-      // The checkout itself, as the worker's child process.
+      // The checkout itself, as the worker's child process. It stops, without a word, when its
+      // parent is gone (an orphan holding a directory and a socket for nobody), and when its own
+      // memory passes the ceiling, whichever it notices first: at the checkpoints of its loops and
+      // on a timer while it waits on the network.
+      const stop = makeCheckpoint({
+        parentPid: process.ppid,
+        getParentPid: () => process.ppid,
+        rss: () => process.memoryUsage.rss(),
+        maxRssBytes: Number(values["max-memory-mib"] ?? 0) * 1024 * 1024,
+        onStop: (why) => {
+          console.error(`fetch-source failed: ${why}`);
+          process.exit(70);
+        },
+      });
+      const watchdog = setInterval(stop, 1000);
       const r = await performCheckout({
         owner,
         repo: name,
@@ -106,7 +146,9 @@ export async function fetchSourceCommand(
         ...(values.url ? { url: values.url } : {}),
         limits: parseLimits(values.limits),
         allowHosts,
+        checkpoint: stop,
       });
+      clearInterval(watchdog);
       out(`ok ${r.sha} files=${r.files} tarball=${r.tarballBytes}`);
       return 0;
     }
