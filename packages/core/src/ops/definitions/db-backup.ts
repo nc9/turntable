@@ -17,7 +17,9 @@ export const dbBackupOp = defineOp({
     "size and sha256. Use it before an upgrade that applies migrations. It keeps the newest " +
     "`keep` backups (default from TURNTABLE_BACKUP_KEEP, else 10) and refuses when free space " +
     "is below twice the database size. On Postgres it refuses: use pg_dump. Restoring is " +
-    "stop, replace the file, start. Only the instance administrator can call it. Not an MCP tool.",
+    "stop, replace the file, start. The copy is synchronous and blocks this server's event loop " +
+    "for its whole duration, so run it in a quiet window; on a busy hosted instance prefer " +
+    "TURNTABLE_BACKUP_BEFORE_MIGRATE=1 at boot until the backup runs in a worker. Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
     keep: z
       .int()
@@ -56,6 +58,7 @@ export const dbBackupOp = defineOp({
         version: VERSION,
         keep: i.keep ?? cfg.keep,
         now: ctx.now,
+        afterCopy: cfg.afterCopy,
       });
       return {
         path: r.path,

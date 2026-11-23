@@ -186,14 +186,11 @@ sqliteOnly("the operation", () => {
     expect(rows.find((x) => x.op === "db_backup")?.outcome).toBe("error:internal");
   });
 
-  test("a large backup does not fail concurrent writers, in or out of process", async () => {
+  test("a slow backup does not fail concurrent writers, in or out of process", async () => {
     const seed = new Database(dbPath);
     seed.run("CREATE TABLE blobs (id INTEGER PRIMARY KEY, b BLOB)");
     seed.run("CREATE TABLE probe_w (id INTEGER PRIMARY KEY AUTOINCREMENT, who TEXT)");
-    seed.run("INSERT INTO blobs (b) VALUES (zeroblob(1048576))");
-    // Doubling the table is a fast way to reach ~512 MB of pages without per-row work.
-    for (let i = 0; i < 9; i++)
-      seed.run("INSERT INTO blobs (b) SELECT randomblob(1048576) FROM blobs");
+    seed.run("INSERT INTO blobs (b) VALUES (randomblob(1048576))");
     seed.close();
 
     // A writer with its own connection, as another process would be, inserting in a loop.
@@ -233,7 +230,12 @@ sqliteOnly("the operation", () => {
     })();
     await new Promise((r) => setTimeout(r, 50));
     const started = performance.now();
-    const r = await call();
+    // The copy of this small file is instant, so the hook holds the backup in progress instead.
+    const hold = (): Promise<void> => new Promise((done) => setTimeout(done, 1500));
+    const r = await call(
+      {},
+      env({ backup: { dialect: "sqlite", dataDir: dir, dbPath, keep: 10, afterCopy: hold } }),
+    );
     const took = performance.now() - started;
     stop = true;
     await loop;

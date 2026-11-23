@@ -20,7 +20,15 @@ export const BACKUP_SPACE_FACTOR = 2;
 
 /** What the server tells `db_backup`: where the SQLite file is, or that this is Postgres. */
 export type BackupConfig =
-  { dialect: "sqlite"; dataDir: string; dbPath: string; keep: number } | { dialect: "pg" };
+  | {
+      dialect: "sqlite";
+      dataDir: string;
+      dbPath: string;
+      keep: number;
+      /** TEST ONLY: the server never sets it. See `BackupOptions.afterCopy`. */
+      afterCopy?: (() => Promise<void>) | undefined;
+    }
+  | { dialect: "pg" };
 
 export type BackupErrorCode = "unsupported" | "no_space" | "unsafe_path" | "failed";
 
@@ -54,6 +62,12 @@ export type BackupOptions = {
   label?: string | undefined;
   /** Free bytes where the backup goes. Tests inject it; the default asks the filesystem. */
   freeBytes?: ((dir: string) => number) | undefined;
+  /**
+   * TEST ONLY. Awaited right after the copy, so a test can hold the backup "in progress" while
+   * writers run (`VACUUM INTO` itself is synchronous and cannot be paused). Not in the op's input
+   * schema and not set by the CLI or the server.
+   */
+  afterCopy?: (() => Promise<void>) | undefined;
 };
 
 /** `turntable-<time>-<version>[-<label>].db`. The time prefix makes names sort oldest first. */
@@ -158,6 +172,7 @@ export async function backupSqlite(opts: BackupOptions): Promise<BackupResult> {
     } finally {
       src.close();
     }
+    await opts.afterCopy?.();
     await chmod(partial, 0o600);
     // The copy must open and be sound before it is trusted as a backup.
     const check = new Database(partial, { readonly: true, strict: true });
