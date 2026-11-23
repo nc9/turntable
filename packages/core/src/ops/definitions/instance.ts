@@ -5,6 +5,7 @@
 import { z } from "zod";
 import {
   appendAudit,
+  appendEvent,
   countActiveApiTokens,
   createOrg,
   findRepoBindingByName,
@@ -17,9 +18,10 @@ import {
   insertApiToken,
   listAllOrgs,
   moveRepoBinding,
+  orgTokenHistory,
   setOrgQuotas,
 } from "../../db/repos";
-import { SYSTEM_ORG_SLUG } from "../../audit/failures";
+import { SYSTEM_ORG_SLUG, systemOrgId } from "../../audit/failures";
 import { AGENT_ROLES, FORGES, TOKEN_KINDS } from "../../db/schema";
 import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
@@ -27,10 +29,15 @@ import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
+import { ambientSettings } from "../../settings/ambient";
+import { orgTokenRemintDelaySetting } from "../../settings/definitions";
+import { resolveSetting } from "../../settings/resolve";
 import { doctorForApi, doctorOutput } from "./doctor";
 import { quotaView, quotaViewSchema } from "./quotas";
 
 const DAY_MS = 86_400_000;
+
+const HOUR_MS = 3_600_000;
 
 const iso = (ms: number | null | undefined): string | null =>
   ms === null || ms === undefined ? null : new Date(ms).toISOString();
@@ -255,11 +262,15 @@ export const createOrgOp = defineOp({
 
 export const createOrgTokenOp = defineOp({
   name: "create_org_token",
-  summary: "Mint an org's first token (instance administrator only).",
+  summary: "Mint an org's first token, or a new one after a delay (instance administrator only).",
   description:
-    "Mints the first token of an org that has none: it is refused as a conflict once the org " +
+    "Mints a token for an org that has none active: it is refused as a conflict once the org " +
     "has any token that is neither revoked nor expired, so it cannot be used to add access to " +
-    "an org that already has some (the same one-shot rule as the env bootstrap). The role is " +
+    "an org that already has some (the same one-shot rule as the env bootstrap). An org that " +
+    "never had a token is served at once. An org that ever had one is refused until the " +
+    "`org_remint_delay_hours` setting (default 24, minimum 1) has passed since its last " +
+    "token was revoked or expired, and the refusal says when; a re-mint emits an " +
+    "`org.token_reminted` event to the org. The role is " +
     "at most `release_operator`; `kind` defaults to `person` (the operator's own token, which " +
     "may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is " +
     "returned once in `token` and cannot be read again: only its hash is stored, and the audit " +
@@ -302,6 +313,29 @@ export const createOrgTokenOp = defineOp({
         "the org already has an active token; only the org's own admins can add more",
       );
     }
+    // An org that had a token is not served at once: a stolen instance token that gets the org's
+    // tokens revoked (or waits for them to expire) must not mint itself a new one unseen (#367).
+    const history = await orgTokenHistory(ctx.db, scope);
+    let remint: { delayHours: number; lastEnd: number } | undefined;
+    if (history.everHad) {
+      const delay = await resolveSetting(
+        ctx.settings ?? ambientSettings(),
+        ctx.db,
+        orgTokenRemintDelaySetting.key,
+      );
+      const delayHours = delay.value as number;
+      // Every token has ended here (none is active), so lastEnd is set; the fallback fails closed.
+      const lastEnd = history.lastEnd ?? ctx.now();
+      const allowedAt = lastEnd + delayHours * HOUR_MS;
+      if (ctx.now() < allowedAt) {
+        throw new OpError(
+          "conflict",
+          `the org has had a token, so a new one cannot be minted until ${iso(allowedAt)} ` +
+            `(${delayHours} h after its last token ended; the org_remint_delay_hours setting)`,
+        );
+      }
+      remint = { delayHours, lastEnd };
+    }
     const secret = generateToken();
     const expiresAt = ctx.now() + i.expires_days * DAY_MS;
     const row = await insertApiToken(ctx.db, scope, {
@@ -325,8 +359,40 @@ export const createOrgTokenOp = defineOp({
         role: i.role,
         kind: i.kind,
         expires_days: i.expires_days,
+        ...(remint ? { remint: true, last_token_ended_at: iso(remint.lastEnd) } : {}),
       },
     });
+    if (remint) {
+      // The system chain's own record that access was minted again, naming the org.
+      await appendAudit(
+        ctx.db,
+        { orgId: await systemOrgId(ctx.db) },
+        {
+          principalKind: "instance",
+          principalId: ctx.principal.id,
+          op: "org_token_reminted",
+          effect: "write",
+          outcome: "ok",
+          input: {
+            target_org: org.slug,
+            token_id: row.id,
+            last_token_ended_at: iso(remint.lastEnd),
+          },
+        },
+      );
+      // The org's notice: its feed and any webhook on it see that access was minted again.
+      await appendEvent(ctx.db, scope, {
+        type: "org.token_reminted",
+        payload: {
+          token_id: row.id,
+          role: i.role,
+          kind: i.kind,
+          by: ctx.principal.id,
+          last_token_ended_at: iso(remint.lastEnd),
+          delay_hours: remint.delayHours,
+        },
+      });
+    }
     return {
       id: row.id,
       name: row.name,

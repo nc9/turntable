@@ -1730,7 +1730,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 12,
+              "maxItems": 14,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1746,7 +1746,9 @@
                   "quota.warning",
                   "quota.reached",
                   "webhook.disabled",
-                  "approval.policy_loosened"
+                  "approval.policy_loosened",
+                  "org.token_reminted",
+                  "org.tokens_exhausted"
                 ]
               }
             }
@@ -1851,7 +1853,9 @@
                               "quota.warning",
                               "quota.reached",
                               "webhook.disabled",
-                              "approval.policy_loosened"
+                              "approval.policy_loosened",
+                              "org.token_reminted",
+                              "org.tokens_exhausted"
                             ]
                           },
                           "project": {
@@ -9401,8 +9405,8 @@
     "/instance/orgs/tokens": {
       "post": {
         "operationId": "create_org_token",
-        "summary": "Mint an org's first token (instance administrator only).",
-        "description": "Mints the first token of an org that has none: it is refused as a conflict once the org has any token that is neither revoked nor expired, so it cannot be used to add access to an org that already has some (the same one-shot rule as the env bootstrap). The role is at most `release_operator`; `kind` defaults to `person` (the operator's own token, which may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is returned once in `token` and cannot be read again: only its hash is stored, and the audit entries never hold it. After this the org manages its own tokens. The system org is never a target. Audited in the system org's chain and in the org's own. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "summary": "Mint an org's first token, or a new one after a delay (instance administrator only).",
+        "description": "Mints a token for an org that has none active: it is refused as a conflict once the org has any token that is neither revoked nor expired, so it cannot be used to add access to an org that already has some (the same one-shot rule as the env bootstrap). An org that never had a token is served at once. An org that ever had one is refused until the `org_remint_delay_hours` setting (default 24, minimum 1) has passed since its last token was revoked or expired, and the refusal says when; a re-mint emits an `org.token_reminted` event to the org. The role is at most `release_operator`; `kind` defaults to `person` (the operator's own token, which may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is returned once in `token` and cannot be read again: only its hash is stored, and the audit entries never hold it. After this the org manages its own tokens. The system org is never a target. Audited in the system org's chain and in the org's own. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
