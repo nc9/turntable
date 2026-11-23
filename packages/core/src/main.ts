@@ -11,6 +11,7 @@ import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
 import { registerCredentialRevoker } from "./incident";
 import { createForgeToken } from "./pins/forge-token";
+import { createHostedManifestHandler, type HostedManifestHandler } from "./github/hosted-manifest";
 import { parseTrustedProxies } from "./github/trusted-proxies";
 import { createWebhookHandler, type WebhookHandler } from "./github/webhook";
 import {
@@ -20,6 +21,7 @@ import {
   type ClaimHandler,
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
+import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
@@ -32,6 +34,7 @@ import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
+import { JobOidc } from "./oidc/job-delivery";
 import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
 import { CacheGrants } from "./cache/grants";
@@ -144,6 +147,8 @@ Environment:
   LONGSHORE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   LONGSHORE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
                     the webhook failure limiter keys on the client the forwarded chain reports through them
+  LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256  sha256 of a setup token (longshore token generate): enables creating the
+                    GitHub App from this instance at /api/v1/instance/github-app/manifest; needs LONGSHORE_PUBLIC_URL
   LONGSHORE_CLAIM_INSTALLATIONS  set to 1 on a hosted instance: an org claims its own App installation
                     (start_installation_claim, then GitHub redirects to /api/v1/github/setup)
   LONGSHORE_WORKER, LONGSHORE_PROVIDER, LONGSHORE_PROVIDER_CONFIG, LONGSHORE_POLL, LONGSHORE_IMAGE,
@@ -170,7 +175,12 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
-  extras: { auth?: AppAuth; vault?: SecretVault; cache?: CacheService } = {},
+  extras: {
+    auth?: AppAuth;
+    vault?: SecretVault;
+    cache?: CacheService;
+    jobOidc?: JobOidc;
+  } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -280,6 +290,7 @@ async function startBackground(
         ? withSecretsProxy(r, {
             proxy: secretsProxy,
             ...(jobTokens ? { github: githubTargetOf(db) } : {}),
+            ...(extras.jobOidc ? { oidc: (c, k) => extras.jobOidc!.proxyTarget(c, k) } : {}),
           })
         : r;
     scheduler = new Scheduler({
@@ -309,6 +320,7 @@ async function startBackground(
                 }),
                 canary: true,
                 ...(jobTokens ? { jobTokens } : {}),
+                ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
                 ...(v.image ? { image: v.image } : {}),
               }),
@@ -597,6 +609,8 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
+  let appManifest: HostedManifestHandler | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
   let wake: ((repo: string) => void) | undefined;
   // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
@@ -606,6 +620,7 @@ async function serve(args: string[]): Promise<void> {
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;
+  let jobOidc: JobOidc | undefined;
   let outboundWebhooks: WebhookService | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
@@ -640,6 +655,8 @@ async function serve(args: string[]): Promise<void> {
         allowClasses: parseAllowClasses(process.env.LONGSHORE_OIDC_ALLOW_CLASSES),
       });
       oidc = createOidcHandler({ db, issuer, masterKey });
+      // Jobs that ask for an ID token get GitHub's variables, behind the secrets proxy.
+      jobOidc = new JobOidc({ db, issuer, masterKey });
     }
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
@@ -682,6 +699,28 @@ async function serve(args: string[]): Promise<void> {
           log: (m) => console.warn(`[longshore] ${m}`),
         }),
       };
+    }
+    const setupHash = process.env.LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256?.trim();
+    if (setupHash) {
+      const publicBase = (values["public-url"] ?? process.env.LONGSHORE_PUBLIC_URL)?.trim();
+      if (!publicBase) {
+        console.warn(
+          "LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256 is set but there is no public URL (LONGSHORE_PUBLIC_URL): the GitHub App cannot be created from this instance",
+        );
+      } else {
+        appManifest = createHostedManifestHandler({
+          db,
+          store,
+          publicUrl: publicBase,
+          setupTokenSha256: setupHash,
+          ...(claimMode ? { claimFlow: true } : {}),
+          // The App owns every installation of it: only the bootstrap or system org may.
+          ownerOrgSlugs: [process.env.LONGSHORE_BOOTSTRAP_ORG?.trim() || "local", SYSTEM_ORG_SLUG],
+          trustedProxies: parseTrustedProxies(process.env.LONGSHORE_TRUSTED_PROXIES),
+          onReplaced: () => auth.dropCached(),
+          log: (m) => console.log(`[longshore] ${m}`),
+        });
+      }
     }
     if (process.env.LONGSHORE_TRUST_FORWARDED_FOR !== undefined) {
       console.warn(
@@ -728,6 +767,7 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
         instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
           ? Number(values["org-cap"])
@@ -751,6 +791,7 @@ async function serve(args: string[]): Promise<void> {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
       ...(cache ? { cache } : {}),
+      ...(jobOidc ? { jobOidc } : {}),
     },
   );
 

@@ -216,6 +216,34 @@ describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
     expect(gone).toBe(true);
   }, 30_000);
 
+  test("the watcher survives what kills the shim's whole process group (act's pty teardown), and still takes the interpreter down", async () => {
+    realBash("sleep 31341 & sleep 31341; echo not-reached");
+    // The shim leads a process group of its own, as a step does on act's pty: killing the group
+    // kills the shim and anything left in it, which a subshell watcher would be.
+    const p = Bun.spawn(["perl", "-e", "setpgrp(0,0); exec @ARGV", join(shims, "bash")], {
+      env: { PATH: `${shims}:${bin}:/usr/bin:/bin`, TMPDIR: scratchTmp, LONGSHORE_STEP_GRACE: "1" },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await waitUntil(async () => (await running("sleep 31341")).length > 0, 5000)).toBe(true);
+    // Let the shim set up its watcher before the group goes.
+    expect(
+      await waitUntil(async () => (await running("my($shim,$rpid,$grace)")).length > 0, 5000),
+    ).toBe(true);
+    process.kill(-p.pid, "SIGKILL");
+    await p.exited;
+    // A hangup to the same group right after, as the closing pty sends.
+    try {
+      process.kill(-p.pid, "SIGHUP");
+    } catch {
+      // the group may already be empty
+    }
+    const gone = await waitUntil(async () => (await running("sleep 31341")).length === 0, 10_000);
+    if (!gone) await Bun.spawn(["pkill", "-f", "sleep 31341"]).exited;
+    expect(gone).toBe(true);
+  }, 30_000);
+
   test("a normal end leaves a daemon the step started on purpose alone", async () => {
     realBash("(sleep 31338 &); echo started");
     const { p, out } = startShim();

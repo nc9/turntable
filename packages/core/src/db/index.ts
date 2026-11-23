@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Gate } from "./gate";
+import { BUSY_TIMEOUT_MS, enableWal } from "./sqlite-wal";
 import { migrateLegacyDbFiles } from "./legacy-names";
 import { applyMigrations } from "./migrate";
 import { migrations } from "./migrations.generated";
@@ -134,9 +135,12 @@ export function openDatabase(path: string): Db {
   migrateLegacyDbFiles(path);
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new Database(path, { create: true, strict: true });
-  sqlite.run("PRAGMA journal_mode = WAL");
+  // First, before anything that takes a lock, so every later statement waits for another
+  // connection's lock instead of failing at once (the CLI runs next to a server, or next to a
+  // test's own handle).
+  sqlite.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  enableWal(sqlite);
   sqlite.run("PRAGMA foreign_keys = ON");
-  sqlite.run("PRAGMA busy_timeout = 5000");
   applyMigrations(sqlite, migrations);
   const orm = drizzle(sqlite, { schema });
   const gate = new Gate();

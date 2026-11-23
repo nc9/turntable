@@ -164,6 +164,7 @@ export async function setIngestPolicy(
     vars?: Record<string, string> | undefined;
     /** Job split rules (see splitsSchema). Replaces the stored ones. */
     splits?: unknown;
+    everyPush?: boolean | undefined;
     /** Asks GitHub for a repo's default branch, once, when `defaultBranch` is not given. */
     resolveDefaultBranch?: ((repo: string) => Promise<string>) | undefined;
   } = {},
@@ -199,6 +200,7 @@ export async function setIngestPolicy(
       ...(opts.tagRefs ? { tagRefs: opts.tagRefs } : {}),
       ...(opts.vars && Object.keys(opts.vars).length > 0 ? { vars: opts.vars } : {}),
       ...(opts.splits !== undefined ? { splits: opts.splits } : {}),
+      ...(opts.everyPush ? { everyPush: true } : {}),
     });
     if (!parsed.success) {
       throw new Error(

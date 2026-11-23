@@ -448,3 +448,46 @@ describe("onExec and resumeJob: a controller that restarts gets the real result"
     expect(gone).toMatchObject({ state: "infra_error" });
   });
 });
+
+describe("the OIDC request variables", () => {
+  test("reach every step through the env file, never an argv", async () => {
+    const { p, id, plan, repoTarball } = await setup();
+    const act = await fakeAct(
+      await fixture("success.jsonl"),
+      0,
+      `echo "url=$ACTIONS_ID_TOKEN_REQUEST_URL"; echo "tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN"`,
+    );
+    const argvs: string[] = [];
+    const start = p.exec.start.bind(p.exec);
+    p.exec.start = (sid, o) => {
+      argvs.push(o.argv.join("\u0000"));
+      return start(sid, o);
+    };
+    const events: RunEvent[] = [];
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        plan,
+        {
+          repoTarball,
+          act,
+          oidc: {
+            requestUrl: "https://ci.example.test/oidc/acme/token?api-version=2.0",
+            requestToken: "placeholder-value",
+          },
+        },
+        { pollMs: 50 },
+      ),
+      (e) => events.push(e),
+    );
+    const log = events
+      .filter((e) => e.kind === "log")
+      .map((e) => new TextDecoder().decode(e.bytes))
+      .join("");
+    expect(result.state).toBe("success");
+    expect(log).toContain("url=https://ci.example.test/oidc/acme/token?api-version=2.0");
+    expect(log).toContain("tok=placeholder-value");
+    expect(argvs.join("\n")).not.toContain("placeholder-value");
+  });
+});

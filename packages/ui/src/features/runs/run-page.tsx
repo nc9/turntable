@@ -17,6 +17,7 @@ import { isActive, STATE_META } from "@/lib/states";
 import { toast } from "@/lib/toast";
 import { ApprovalNotice, approvalLabel } from "./approval";
 import { ArtifactsPanel } from "./artifacts-panel";
+import { SandboxTimes } from "./sandbox-time";
 import { RerunButton } from "./rerun-dialog";
 import { EgressBadge, TrustBadge } from "./trust";
 import { JobGraph } from "./job-graph";
@@ -278,6 +279,7 @@ export function RunPage() {
                         <span className="w-16 text-right text-xs text-dim">
                           <Duration startedAt={job.startedAt} finishedAt={job.finishedAt} />
                         </span>
+                        <SandboxTimes attempts={jobAttempts} now={Date.now()} />
                       </Link>
                     </li>
                   );
