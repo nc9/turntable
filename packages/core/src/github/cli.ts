@@ -10,7 +10,16 @@ import {
 import { AuditAnchor } from "../audit/anchor";
 import { getGithubApp } from "../db/repos";
 import { initMasterKey, loadMasterKey } from "../secrets/crypto";
-import { masterKeyForCommand } from "../secrets/master-key";
+import {
+  auditStateDir,
+  MASTER_KEY_ENV,
+  MASTER_KEY_FILE_ENV,
+  PREVIOUS_KEY_ENV,
+  PREVIOUS_KEY_FILE_ENV,
+  masterKeyForCommand,
+  masterKeysForCommand,
+  type MasterKeys,
+} from "../secrets/master-key";
 import { SecretStore } from "../secrets/store";
 import { SecretVault } from "../secrets/vault";
 import { AppAuth } from "./app-auth";
@@ -26,6 +35,21 @@ function keyFile(explicit: string | undefined, dataDir?: string): string {
     (dataDir ? join(resolve(dataDir), "master.key") : undefined);
   if (!f) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
   return f;
+}
+
+/**
+ * The keys for `keys reseal`: the server's rules (one of the variable, the file variable or
+ * `--file`; the variables are read once and deleted). With none given it falls back to the data
+ * directory's `master.key`, as before.
+ */
+function resealKeys(flagFile: string | undefined, dataDir: string): MasterKeys {
+  const given =
+    flagFile ||
+    process.env[MASTER_KEY_ENV]?.trim() ||
+    process.env[MASTER_KEY_FILE_ENV]?.trim() ||
+    process.env[PREVIOUS_KEY_ENV]?.trim() ||
+    process.env[PREVIOUS_KEY_FILE_ENV]?.trim();
+  return masterKeysForCommand(given ? flagFile : keyFile(undefined, dataDir));
 }
 
 /** `turntable keys init [--file <path>] [--data-dir ./data]` */
@@ -46,7 +70,7 @@ export async function keysCommand(args: string[]): Promise<void> {
     strict: true,
   });
   if (sub === "reseal")
-    return resealOrg(values.org, keyFile(values.file, values["data-dir"]), values["data-dir"]);
+    return resealOrg(values.org, resealKeys(values.file, values["data-dir"]), values["data-dir"]);
   const path = resolve(keyFile(values.file, values["data-dir"]));
   initMasterKey(path);
   console.error(
@@ -61,18 +85,23 @@ export async function keysCommand(args: string[]): Promise<void> {
  */
 async function resealOrg(
   slug: string | undefined,
-  keyPath: string,
+  keys: MasterKeys,
   dataDir: string,
 ): Promise<void> {
   if (!slug) throw new Error("--org <slug> is required");
-  const master = loadMasterKey(resolve(keyPath));
+  const master = keys.key;
+  if (keys.previous) {
+    console.error(
+      "a previous master key is set: it is not used here. Rotation happens when the server boots with it; reseal only moves records under the org's own key.",
+    );
+  }
   const db = openDatabase(dbPath(dataDir));
   try {
     const org = await getOrgBySlug(db, slug);
     if (!org) throw new Error(`no org with slug ${slug}`);
     const store = await new SecretStore(db, master).reseal(org.id);
     const vault = await new SecretVault({ db, masterKey: master }).reseal(org.id);
-    const anchor = new AuditAnchor(AuditAnchor.dirFor(resolve(keyPath)), master).reseal(org.id);
+    const anchor = new AuditAnchor(auditStateDir(keys, resolve(dataDir)), master).reseal(org.id);
     console.error(
       `resealed org ${slug}: ${store} store records, ${vault} vault versions, anchor state ${anchor ? "yes" : "no change"}`,
     );
