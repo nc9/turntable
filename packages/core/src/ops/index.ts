@@ -46,6 +46,14 @@ import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
 import { listRuns } from "./definitions/list-runs";
+import {
+  createWebhookOp,
+  disableWebhookOp,
+  enableWebhookOp,
+  webhookEndpointsOp,
+  rotateWebhookSecretOp,
+  webhookDeliveriesOp,
+} from "./definitions/webhooks";
 import { createRegistry } from "./registry";
 
 export { authenticate, dispatch, type DispatchEnv, type DispatchResult } from "./dispatch";
@@ -112,4 +120,10 @@ export const registry = createRegistry([
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  createWebhookOp,
+  webhookEndpointsOp,
+  rotateWebhookSecretOp,
+  disableWebhookOp,
+  enableWebhookOp,
+  webhookDeliveriesOp,
 ]);

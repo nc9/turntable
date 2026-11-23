@@ -381,5 +381,27 @@ export const migrations: Migration[] = [
       "-- Quota notices were `infra.error` events with an error_class (#182): they are quota.* now.\nUPDATE `events` SET `type` = 'quota.warning', `payload` = json_remove(`payload`, '$.error_class') WHERE `type` = 'infra.error' AND json_extract(`payload`, '$.error_class') = 'quota_warning';",
       "UPDATE `events` SET `type` = 'quota.reached', `payload` = json_remove(`payload`, '$.error_class') WHERE `type` = 'infra.error' AND json_extract(`payload`, '$.error_class') = 'quota_reached';"
     ]
+  },
+  {
+    "tag": "0033_outbound_webhooks",
+    "when": 1795400535433,
+    "statements": [
+      "CREATE TABLE `outbound_webhook_deliveries` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`endpoint_id` text NOT NULL,\n\t`event_id` integer NOT NULL,\n\t`state` text DEFAULT 'pending' NOT NULL,\n\t`attempts` integer DEFAULT 0 NOT NULL,\n\t`next_attempt_at` integer NOT NULL,\n\t`lease_until` integer,\n\t`last_status` integer,\n\t`last_error` text,\n\t`last_response` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`delivered_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`endpoint_id`) REFERENCES `outbound_webhook_endpoints`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"outbound_webhook_deliveries_state_check\" CHECK(state IN ('pending', 'delivered', 'abandoned'))\n);",
+      "CREATE INDEX `outbound_webhook_deliveries_due_idx` ON `outbound_webhook_deliveries` (`state`,`next_attempt_at`);",
+      "CREATE INDEX `outbound_webhook_deliveries_endpoint_idx` ON `outbound_webhook_deliveries` (`org_id`,`endpoint_id`,`created_at`);",
+      "CREATE UNIQUE INDEX `outbound_webhook_deliveries_endpoint_event_unique` ON `outbound_webhook_deliveries` (`endpoint_id`,`event_id`);",
+      "CREATE TABLE `outbound_webhook_endpoints` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`url` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`event_types` text,\n\t`state` text DEFAULT 'active' NOT NULL,\n\t`disabled_reason` text,\n\t`consecutive_failures` integer DEFAULT 0 NOT NULL,\n\t`cursor` integer DEFAULT 0 NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"outbound_webhook_endpoints_state_check\" CHECK(state IN ('active', 'disabled'))\n);",
+      "CREATE INDEX `outbound_webhook_endpoints_org_idx` ON `outbound_webhook_endpoints` (`org_id`,`state`);",
+      "CREATE TABLE `outbound_webhook_secrets` (\n\t`org_id` text NOT NULL,\n\t`version` integer NOT NULL,\n\t`sealed` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer,\n\tPRIMARY KEY(`org_id`, `version`),\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "PRAGMA foreign_keys=OFF;",
+      "CREATE TABLE `__new_events` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`public_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`type` text NOT NULL,\n\t`run_id` text,\n\t`job_id` text,\n\t`attempt_id` text,\n\t`payload` text DEFAULT '{}' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"events_type_check\" CHECK(type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled'))\n);",
+      "INSERT INTO `__new_events`(\"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\") SELECT \"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\" FROM `events`;",
+      "DROP TABLE `events`;",
+      "ALTER TABLE `__new_events` RENAME TO `events`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE INDEX `events_org_idx` ON `events` (`org_id`,`id`);",
+      "CREATE INDEX `events_org_project_idx` ON `events` (`org_id`,`project_id`,`id`);",
+      "CREATE UNIQUE INDEX `events_public_id_unique` ON `events` (`public_id`);"
+    ]
   }
 ];

@@ -145,5 +145,24 @@ export const migrations: Migration[] = [
       "-- Quota notices were `infra.error` events with an error_class (#182): they are quota.* now.\nUPDATE \"events\" SET \"type\" = 'quota.warning', \"payload\" = (\"payload\"::jsonb - 'error_class')::text WHERE \"type\" = 'infra.error' AND \"payload\"::jsonb ->> 'error_class' = 'quota_warning';",
       "UPDATE \"events\" SET \"type\" = 'quota.reached', \"payload\" = (\"payload\"::jsonb - 'error_class')::text WHERE \"type\" = 'infra.error' AND \"payload\"::jsonb ->> 'error_class' = 'quota_reached';"
     ]
+  },
+  {
+    "tag": "0004_outbound_webhooks",
+    "when": 1795400535852,
+    "statements": [
+      "CREATE TABLE \"outbound_webhook_deliveries\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"endpoint_id\" text NOT NULL,\n\t\"event_id\" bigint NOT NULL,\n\t\"state\" text DEFAULT 'pending' NOT NULL,\n\t\"attempts\" bigint DEFAULT 0 NOT NULL,\n\t\"next_attempt_at\" bigint NOT NULL,\n\t\"lease_until\" bigint,\n\t\"last_status\" bigint,\n\t\"last_error\" text,\n\t\"last_response\" text,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"delivered_at\" bigint,\n\tCONSTRAINT \"outbound_webhook_deliveries_endpoint_event_unique\" UNIQUE(\"endpoint_id\",\"event_id\"),\n\tCONSTRAINT \"outbound_webhook_deliveries_state_check\" CHECK (state IN ('pending', 'delivered', 'abandoned'))\n);",
+      "CREATE TABLE \"outbound_webhook_endpoints\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"project_id\" text,\n\t\"url\" text NOT NULL,\n\t\"description\" text DEFAULT '' NOT NULL,\n\t\"event_types\" text,\n\t\"state\" text DEFAULT 'active' NOT NULL,\n\t\"disabled_reason\" text,\n\t\"consecutive_failures\" bigint DEFAULT 0 NOT NULL,\n\t\"cursor\" bigint DEFAULT 0 NOT NULL,\n\t\"created_by\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"updated_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\tCONSTRAINT \"outbound_webhook_endpoints_state_check\" CHECK (state IN ('active', 'disabled'))\n);",
+      "CREATE TABLE \"outbound_webhook_secrets\" (\n\t\"org_id\" text NOT NULL,\n\t\"version\" bigint NOT NULL,\n\t\"sealed\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"expires_at\" bigint,\n\tCONSTRAINT \"outbound_webhook_secrets_org_id_version_pk\" PRIMARY KEY(\"org_id\",\"version\")\n);",
+      "ALTER TABLE \"events\" DROP CONSTRAINT \"events_type_check\";",
+      "ALTER TABLE \"outbound_webhook_deliveries\" ADD CONSTRAINT \"outbound_webhook_deliveries_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"outbound_webhook_deliveries\" ADD CONSTRAINT \"outbound_webhook_deliveries_endpoint_id_outbound_webhook_endpoints_id_fk\" FOREIGN KEY (\"endpoint_id\") REFERENCES \"outbound_webhook_endpoints\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"outbound_webhook_endpoints\" ADD CONSTRAINT \"outbound_webhook_endpoints_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"outbound_webhook_endpoints\" ADD CONSTRAINT \"outbound_webhook_endpoints_project_id_org_id_projects_id_org_id_fk\" FOREIGN KEY (\"project_id\",\"org_id\") REFERENCES \"projects\"(\"id\",\"org_id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"outbound_webhook_secrets\" ADD CONSTRAINT \"outbound_webhook_secrets_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "CREATE INDEX \"outbound_webhook_deliveries_due_idx\" ON \"outbound_webhook_deliveries\" USING btree (\"state\",\"next_attempt_at\");",
+      "CREATE INDEX \"outbound_webhook_deliveries_endpoint_idx\" ON \"outbound_webhook_deliveries\" USING btree (\"org_id\",\"endpoint_id\",\"created_at\");",
+      "CREATE INDEX \"outbound_webhook_endpoints_org_idx\" ON \"outbound_webhook_endpoints\" USING btree (\"org_id\",\"state\");",
+      "ALTER TABLE \"events\" ADD CONSTRAINT \"events_type_check\" CHECK (type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled'));"
+    ]
   }
 ];
