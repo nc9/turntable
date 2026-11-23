@@ -51,6 +51,15 @@ headers=$(curl -fsS -D - -o /tmp/tt-index.html "http://127.0.0.1:$port/")
 echo "$headers" | grep -iq '^content-security-policy:.*script-src .self.' || { echo "missing CSP on /"; echo "$headers"; exit 1; }
 echo "$headers" | grep -iq '^content-security-policy:.*frame-ancestors .none.' || { echo "CSP lacks frame-ancestors"; exit 1; }
 grep -q '<div id="root">' /tmp/tt-index.html || { echo "/ is not the app shell"; exit 1; }
+# healthz names the version; an embedded asset the shell references is served, not just the shell.
+curl -fsS "http://127.0.0.1:$port/healthz" | grep -Eq '"ok":true' || { echo "healthz is not ok"; exit 1; }
+curl -fsS "http://127.0.0.1:$port/healthz" | grep -Eq '"version":"[^"]+"' || { echo "healthz has no version"; exit 1; }
+asset=$(grep -Eo '(src|href)="/[^"]+\.(js|css)"' /tmp/tt-index.html | head -1 | sed -E 's/^[a-z]+="//; s/"$//')
+test -n "$asset" || { echo "the app shell references no embedded asset"; exit 1; }
+curl -fsS -o /tmp/tt-asset -w '%{http_code} %{content_type} %{size_download}\n' "http://127.0.0.1:$port$asset" | tee /tmp/tt-asset-info
+awk '$1==200 && $3>0 {ok=1} END{exit !ok}' /tmp/tt-asset-info || { echo "embedded asset $asset not served"; exit 1; }
+# The binary runs in the distroless image with no shell: `version` proves exec and libc.
+docker run --rm --entrypoint /longshore "$image" version || { echo "version command failed"; exit 1; }
 # The image starts as root so it can own a root-owned volume, and drops before opening anything:
 # the running server must be uid 65532, real, effective and saved (so root cannot be regained).
 assert_uid() { # container id, expected uid
