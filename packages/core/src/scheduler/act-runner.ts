@@ -56,6 +56,7 @@ import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
+import { type SandboxSizes, sizeFor } from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -247,6 +248,9 @@ export type ActRunnerOptions = {
    * a placeholder and the proxy attaches the real credential. Absent: jobs get no OIDC variables.
    */
   jobOidc?: JobOidc;
+
+  /** The operator's map from `runs-on` labels to a sandbox size (see sandbox-size.ts). Absent: the provider's default size. */
+  sizes?: SandboxSizes;
 };
 
 /** What GITHUB_TOKEN holds inside a job that is behind the secrets proxy. The proxy attaches the real one. */
@@ -336,6 +340,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
     // Values that must never reach the job log: act echoes env and URLs when it is verbose.
     for (const v of secrets) registry.register(v);
+    const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
+    const size = sizeFor(o.sizes, planned?.runsOn ?? [], {
+      untrusted: parseTrust(ctx.run)?.class === "untrusted_pr",
+    });
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
       : undefined;
@@ -349,6 +357,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         out: sink ? sink.out : () => {},
         registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),
+        ...(size.resources || size.snapshot
+          ? {
+              sandbox: {
+                ...(size.resources ? { resources: size.resources } : {}),
+                ...(size.snapshot ? { snapshot: size.snapshot } : {}),
+              },
+            }
+          : {}),
         ...(githubToken !== undefined ? { githubToken } : {}),
         ...(oidc ? { oidc } : {}),
         // A job holding a minted token, in its environment or behind the proxy, is secret-bearing:

@@ -119,6 +119,32 @@ Two settings belong to the instance operator, one project at a time. A tenant mu
 - `nproc` and `/proc/meminfo` show the host, not the sandbox. Read limits from the sandbox's cgroup instead.
 - Listings are eventually consistent and deletion is asynchronous. The provider waits for both, which adds a few seconds to create and destroy.
 
+## Sandbox size per job
+
+By default every sandbox gets the provider's own default size (Docker: no limits; Daytona: the snapshot's). To give some jobs more, the operator maps `runs-on` labels to a size class. It is server configuration, not stored in the database and not a migration: set `LONGSHORE_SANDBOX_SIZES_JSON` (or `LONGSHORE_SANDBOX_SIZES_FILE`) to a document like this.
+
+```json
+{
+  "classes": {
+    "small": { "cpus": 2, "memoryMb": 4096 },
+    "large": { "cpus": 4, "memoryMb": 8192, "diskGb": 40, "snapshot": "daytona-large" }
+  },
+  "labels": { "ubuntu-latest-4-cores": "large" },
+  "default": "small",
+  "untrustedClass": "small",
+  "maxCpus": 8,
+  "maxMemoryMb": 16384,
+  "maxDiskGb": 100
+}
+```
+
+- A job's `runs-on` labels are read at plan time (a string, a list, or `labels:`; a matrix expression is resolved per leg). The first label with a mapping picks the class. A job with no mapped label gets `default`; with no `default` either, it gets the provider's own size.
+- A class sets `cpus`, `memoryMb`, `diskGb` and, for a provider that picks the size by image, a `snapshot` (Daytona: one snapshot per class, for example `daytona-large`). The scheduler puts these in the sandbox spec; a provider that cannot honour a field says so in its capabilities.
+- Daytona's capacity wait already counts the class's `cpus`, so a 4-vCPU job waits until 4 are free in the account.
+- `maxCpus`, `maxMemoryMb` and `maxDiskGb` are ceilings across every class: a class past one is clamped to it. They are instance-wide. There is no per-org CPU quota; the org's concurrency and sandbox-minute quotas still apply.
+- A workflow file chooses its own labels, so a stranger's pull request could ask for the biggest class. A run classified `untrusted_pr` ignores its labels and gets `untrustedClass` (else `default`).
+- A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default` or `untrustedClass`, a non-integer or non-positive number, or an unknown key.
+
 ## Provider trust model
 
 A provider runs the job's untrusted code, so it is a trust boundary. This is exactly what one can see and do.

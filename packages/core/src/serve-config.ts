@@ -3,6 +3,8 @@
 // from variables alone. A flag, when given, wins over its variable.
 import { type PollConfig, loadPollConfig, parsePollConfig } from "./poll/config";
 import { loadProviderConfig, parseProviderConfig } from "./scheduler/providers";
+import { type SandboxSizes, parseSandboxSizes } from "./scheduler/sandbox-size";
+import { readFileSync } from "node:fs";
 
 type Env = Record<string, string | undefined>;
 
@@ -78,4 +80,19 @@ export function resolveProviderConfig(
     return parseProviderConfig(text, PROVIDER_JSON_ENV);
   }
   return loadProviderConfig(source);
+}
+
+/** The sandbox size map comes from this variable (a JSON document) or from the file named by the next. */
+export const SANDBOX_SIZES_JSON_ENV = "LONGSHORE_SANDBOX_SIZES_JSON";
+export const SANDBOX_SIZES_FILE_ENV = "LONGSHORE_SANDBOX_SIZES_FILE";
+
+/** The operator's sandbox size map, or undefined when none is configured (providers' default sizes). */
+export function resolveSandboxSizes(env: Env = process.env): SandboxSizes | undefined {
+  const file = env[SANDBOX_SIZES_FILE_ENV]?.trim();
+  const json = env[SANDBOX_SIZES_JSON_ENV]?.trim();
+  if (file && json)
+    throw new Error(`set only one of ${SANDBOX_SIZES_FILE_ENV} and ${SANDBOX_SIZES_JSON_ENV}`);
+  if (file) return parseSandboxSizes(readFileSync(file, "utf8"), file);
+  if (json) return parseSandboxSizes(json, SANDBOX_SIZES_JSON_ENV);
+  return undefined;
 }

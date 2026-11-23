@@ -36,6 +36,7 @@ import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
 import { GithubClient, pollConfigSchema, pollRepo, type PollRepoConfig } from "../src/poll";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
+import { parseSandboxSizes } from "../src/scheduler/sandbox-size";
 import { makeGithub, SHA } from "./github-stub";
 
 const tmp = mkdtempSync(join(tmpdir(), "tt-worker-wf-"));
@@ -401,6 +402,76 @@ jobs:
     const [att] = await listAttempts(db, scope, jobs[1]!.id);
     expect(att?.errorClass).toBe("matrix fail-fast");
     expect((await getRun(db, scope, run!.id))?.status).toBe("failure");
+  });
+});
+
+describe("sandbox size from runs-on labels", () => {
+  const SIZED = `name: sized
+on:
+  push:
+    branches: [main]
+jobs:
+  heavy:
+    runs-on: ubuntu-latest-4-cores
+    steps:
+      - run: echo heavy
+  light:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo light
+  odd:
+    runs-on: ubuntu-latest-96-cores
+    steps:
+      - run: echo odd
+`;
+  const sizes = parseSandboxSizes(
+    JSON.stringify({
+      classes: {
+        small: { cpus: 2, memoryMb: 4096 },
+        large: { cpus: 4, memoryMb: 8192, snapshot: "snap-large" },
+        huge: { cpus: 96 },
+      },
+      labels: { "ubuntu-latest-4-cores": "large", "ubuntu-latest-96-cores": "huge" },
+      default: "small",
+      maxCpus: 8,
+    }),
+    "test",
+  );
+  const run = async (opts: Parameters<typeof makeScheduler>[2]) => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SIZED);
+    await ingest(gh);
+    const real = world.provider();
+    const specs: { job: string; spec: Parameters<Provider["create"]>[0] }[] = [];
+    const provider: Provider = Object.assign(Object.create(real) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push({ job: spec.labels["longshore.job"] as string, spec });
+        return real.create(spec);
+      },
+    });
+    const sched = await makeScheduler(gh, provider, opts);
+    await drain(sched);
+    const jobs = await listJobs(db, scope, (await listRuns(db, scope))[0]!.id);
+    const byKey = (k: string) => specs.find((s) => s.job === jobs.find((j) => j.jobKey === k)?.id)!;
+    return { byKey, specs };
+  };
+
+  test("each job's sandbox gets the class its label maps to; an unknown label gets the default; the ceiling clamps", async () => {
+    const { byKey } = await run({ sizes });
+    expect(byKey("heavy").spec.resources).toEqual({ cpus: 4, memoryMb: 8192 });
+    expect(byKey("heavy").spec.snapshot).toBe("snap-large");
+    expect(byKey("light").spec.resources).toEqual({ cpus: 2, memoryMb: 4096 });
+    expect(byKey("light").spec.snapshot).toBeUndefined();
+    // a class past maxCpus is clamped to it
+    expect(byKey("odd").spec.resources).toEqual({ cpus: 8 });
+  });
+
+  test("with no size map the spec carries no resources: the provider's own default", async () => {
+    const { specs } = await run({});
+    expect(specs.length).toBe(3);
+    expect(
+      specs.every((s) => s.spec.resources === undefined && s.spec.snapshot === undefined),
+    ).toBe(true);
   });
 });
 
