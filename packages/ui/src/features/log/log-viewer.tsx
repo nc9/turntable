@@ -155,10 +155,7 @@ export function LogViewer({
   const rows = useMemo(() => visibleLines(parser, overrides), [parser, version, overrides]); // eslint-disable-line react-hooks/exhaustive-deps
   // Output-cap cuts are metadata, not log lines: each becomes a row of its own, placed before
   // the first visible line that starts at or after the cut's byte offset.
-  const cutPos = useMemo(
-    () => computeCutPos(parser, rows),
-    [parser, version, rows],
-  );
+  const cutPos = useMemo(() => computeCutPos(parser, rows), [parser, version, rows]);
   const merged = useMemo(() => {
     const out = new Int32Array(rows.length + cutPos.length);
     let r = 0;

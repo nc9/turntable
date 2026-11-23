@@ -11,11 +11,17 @@ const run = (env: Record<string, string | undefined>) => {
 
 describe("applyLegacyEnv", () => {
   test("an old variable is read as the new name, and one warning names it", () => {
-    const { env, moved, warnings } = run({ LONGSHORE_PORT_X: "1", LONGSHORE_DATA_DIR: "/data", PATH: "/bin" });
+    const { env, moved, warnings } = run({
+      LONGSHORE_PORT_X: "1",
+      LONGSHORE_DATA_DIR: "/data",
+      PATH: "/bin",
+    });
     expect(env).toEqual({ TURNTABLE_PORT_X: "1", TURNTABLE_DATA_DIR: "/data", PATH: "/bin" });
     expect(moved.toSorted()).toEqual(["LONGSHORE_DATA_DIR", "LONGSHORE_PORT_X"]);
     expect(warnings).toHaveLength(2);
-    expect(warnings.some((w) => w.includes("LONGSHORE_DATA_DIR") && w.includes("TURNTABLE_DATA_DIR"))).toBe(true);
+    expect(
+      warnings.some((w) => w.includes("LONGSHORE_DATA_DIR") && w.includes("TURNTABLE_DATA_DIR")),
+    ).toBe(true);
   });
 
   test("when both are set the new name wins, with a warning, and the old one is removed", () => {
@@ -26,7 +32,10 @@ describe("applyLegacyEnv", () => {
   });
 
   test("a value is never logged", () => {
-    const { warnings } = run({ LONGSHORE_MASTER_KEY_FILE: "/very/secret/path", LONGSHORE_X: "hunter2" });
+    const { warnings } = run({
+      LONGSHORE_MASTER_KEY_FILE: "/very/secret/path",
+      LONGSHORE_X: "hunter2",
+    });
     expect(warnings.join("\n")).not.toContain("hunter2");
     expect(warnings.join("\n")).not.toContain("/very/secret/path");
   });
@@ -64,9 +73,16 @@ describe("the boot hook", () => {
         `import ${JSON.stringify(new URL("../src/legacy-env-boot", import.meta.url).pathname)};
          console.log(JSON.stringify({ n: process.env.TURNTABLE_DATA_DIR, o: process.env.LONGSHORE_DATA_DIR ?? null }));`,
       ],
-      { env: { PATH: process.env.PATH ?? "", LONGSHORE_DATA_DIR: "/d" }, stdout: "pipe", stderr: "pipe" },
+      {
+        env: { PATH: process.env.PATH ?? "", LONGSHORE_DATA_DIR: "/d" },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     );
-    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
     await proc.exited;
     expect(JSON.parse(out)).toEqual({ n: "/d", o: null });
     expect(err).toContain("LONGSHORE_DATA_DIR is deprecated");

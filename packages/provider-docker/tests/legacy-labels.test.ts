@@ -51,9 +51,16 @@ if (args[0] === "ps") {
 
 let dir = "";
 let bin = "";
-const put = (kind: "containers" | "networks", id: string, name: string, labels: Record<string, string>) =>
-  writeFileSync(join(dir, kind, `${id}.json`), JSON.stringify({ id, name, labels }));
-const left = (kind: string): string[] => readdirSync(join(dir, kind)).map((f) => f.replace(".json", "")).toSorted();
+const put = (
+  kind: "containers" | "networks",
+  id: string,
+  name: string,
+  labels: Record<string, string>,
+) => writeFileSync(join(dir, kind, `${id}.json`), JSON.stringify({ id, name, labels }));
+const left = (kind: string): string[] =>
+  readdirSync(join(dir, kind))
+    .map((f) => f.replace(".json", ""))
+    .toSorted();
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "tt-legacy-docker-"));
@@ -66,8 +73,16 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("sandboxes labelled before the rename", () => {
   test("list and count see both label sets, and report only the caller's labels", async () => {
-    put("containers", "old1", "old-job", { "longshore.managed": "1", "longshore.expires-at": "9", "longshore.run": "r1" });
-    put("containers", "new1", "new-job", { "turntable.managed": "1", "turntable.expires-at": "9", "turntable.run": "r2" });
+    put("containers", "old1", "old-job", {
+      "longshore.managed": "1",
+      "longshore.expires-at": "9",
+      "longshore.run": "r1",
+    });
+    put("containers", "new1", "new-job", {
+      "turntable.managed": "1",
+      "turntable.expires-at": "9",
+      "turntable.run": "r2",
+    });
     put("containers", "other", "not-ours", { app: "x" });
     const p = new DockerProvider({ docker: bin });
     const all = await p.list({});
@@ -102,8 +117,14 @@ describe("sandboxes labelled before the rename", () => {
 
   test("an expired network with the old labels is reaped; a live one and a new-label one follow the same rule", async () => {
     put("networks", "gone", "gone-net", { "longshore.managed": "1", "longshore.expires-at": "1" });
-    put("networks", "live", "live-net", { "longshore.managed": "1", "longshore.expires-at": String(Date.now() + 3_600_000) });
-    put("networks", "gone2", "gone2-net", { "turntable.managed": "1", "turntable.expires-at": "1" });
+    put("networks", "live", "live-net", {
+      "longshore.managed": "1",
+      "longshore.expires-at": String(Date.now() + 3_600_000),
+    });
+    put("networks", "gone2", "gone2-net", {
+      "turntable.managed": "1",
+      "turntable.expires-at": "1",
+    });
     const p = new DockerProvider({ docker: bin });
     await (p as unknown as { reapExpired(): Promise<void> }).reapExpired();
     expect(left("networks")).toEqual(["live"]);

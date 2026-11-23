@@ -19,7 +19,8 @@ export const DOCKER_ENV_PASSTHROUGH = [
 /** Names that can never be passed through, whoever asks. */
 // rename-keep-begin
 /** Both spellings: the product's settings used to be LONGSHORE_* (formerly Longshore). */
-const NEVER = /^(?:TURNTABLE|LONGSHORE)_|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|MASTER|API_?KEY|CREDENTIAL/i;
+const NEVER =
+  /^(?:TURNTABLE|LONGSHORE)_|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|MASTER|API_?KEY|CREDENTIAL/i;
 // rename-keep-end
 
 /**

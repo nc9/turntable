@@ -780,8 +780,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
   }
 
-  const stripAnsi = (t: string): string =>
-    t.replace(/\u001b\[[0-9;]*m/g, "");
+  const stripAnsi = (t: string): string => t.replace(/\u001b\[[0-9;]*m/g, "");
   const textOf = (attemptId: string): string[] => {
     const l = logOf(attemptId);
     if (!l) return [];

@@ -75,8 +75,7 @@ export async function applyPgMigrations(orm: PgOrm, list: Migration[]): Promise<
       sql`create table if not exists __turntable_migrations (tag text primary key, applied_at bigint not null)`,
     );
     const rows = (await tx.execute(sql`select tag from __turntable_migrations`)) as unknown as
-      | { tag: string }[]
-      | { rows: { tag: string }[] };
+      { tag: string }[] | { rows: { tag: string }[] };
     const done = new Set((Array.isArray(rows) ? rows : rows.rows).map((r) => r.tag));
     for (const m of list.toSorted((a, b) => a.when - b.when)) {
       if (done.has(m.tag)) continue;

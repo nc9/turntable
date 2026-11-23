@@ -2,14 +2,7 @@
 // negative integers, byte and text strings, arrays, maps with integer or text keys, booleans,
 // null). Anything else, indefinite lengths included, is refused.
 export type Cbor =
-  | number
-  | bigint
-  | string
-  | Uint8Array
-  | boolean
-  | null
-  | Cbor[]
-  | Map<Cbor, Cbor>;
+  number | bigint | string | Uint8Array | boolean | null | Cbor[] | Map<Cbor, Cbor>;
 
 export class CborError extends Error {}
 

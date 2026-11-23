@@ -104,8 +104,12 @@ describe("migrations table rename (SQLite)", () => {
   test("both tables present is refused with a clear error, and nothing is changed", () => {
     const s = new Database(":memory:");
     applyMigrations(s, migrations);
-    s.run("CREATE TABLE __longshore_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)");
-    expect(() => migrateLegacyMigrationsTable(s)).toThrow(/both __turntable_migrations and __longshore_migrations/);
+    s.run(
+      "CREATE TABLE __longshore_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+    );
+    expect(() => migrateLegacyMigrationsTable(s)).toThrow(
+      /both __turntable_migrations and __longshore_migrations/,
+    );
     expect(() => applyMigrations(s, migrations)).toThrow(/refusing to guess/);
     expect(names(s).toSorted()).toEqual(["__longshore_migrations", "__turntable_migrations"]);
   });
@@ -135,7 +139,9 @@ describe("migrations table rename (Postgres, PGlite)", () => {
       await expect(applyPgMigrations(orm as never, pgMigrations)).rejects.toThrow(
         /both __turntable_migrations and __longshore_migrations/,
       );
-      await expect(migrateLegacyPgMigrationsTable(orm as never)).rejects.toThrow(/refusing to guess/);
+      await expect(migrateLegacyPgMigrationsTable(orm as never)).rejects.toThrow(
+        /refusing to guess/,
+      );
     } finally {
       await client.close();
     }

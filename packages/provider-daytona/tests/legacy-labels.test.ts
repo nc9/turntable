@@ -47,8 +47,18 @@ describe("fleets and labels from before the rename", () => {
   test("a turntable- fleet and a longshore- fleet in one account never see each other", async () => {
     const a = make({ fleet: "longshore-shadow" });
     const b = make({ fleet: "turntable-shadow" });
-    const ha = await a.create({ name: "x", labels: { grp: "g" }, ttlSeconds: 600, network: { egress: "open" } });
-    const hb = await b.create({ name: "y", labels: { grp: "g" }, ttlSeconds: 600, network: { egress: "open" } });
+    const ha = await a.create({
+      name: "x",
+      labels: { grp: "g" },
+      ttlSeconds: 600,
+      network: { egress: "open" },
+    });
+    const hb = await b.create({
+      name: "y",
+      labels: { grp: "g" },
+      ttlSeconds: 600,
+      network: { egress: "open" },
+    });
     expect(mock.sandboxes.get(ha.id)!.name.startsWith("longshore-shadow-")).toBe(true);
     expect(mock.sandboxes.get(hb.id)!.name.startsWith("turntable-shadow-")).toBe(true);
     expect(mock.sandboxes.get(hb.id)!.labels["turntable-run"]).toBeDefined();

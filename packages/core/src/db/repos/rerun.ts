@@ -17,12 +17,7 @@ export const MAX_RERUNS_PER_JOB_PER_SHA = 2;
 
 export class RerunError extends Error {
   readonly code:
-    | "unknown_job"
-    | "not_finished"
-    | "never_ran"
-    | "limit"
-    | "nothing_to_rerun"
-    | "conflict";
+    "unknown_job" | "not_finished" | "never_ran" | "limit" | "nothing_to_rerun" | "conflict";
   constructor(code: RerunError["code"], message: string) {
     super(message);
     this.code = code;

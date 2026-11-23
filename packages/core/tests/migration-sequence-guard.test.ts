@@ -69,7 +69,8 @@ function insertRow(db: Db, table: string, forced: Record<string, string | number
     const hint = HINTS[table]?.[c.name];
     if (forced[c.name] !== undefined) values[c.name] = forced[c.name]!;
     else if (hint !== undefined) values[c.name] = hint;
-    else if (c.pk && /INT/i.test(c.type)) continue; // the AUTOINCREMENT id itself
+    else if (c.pk && /INT/i.test(c.type))
+      continue; // the AUTOINCREMENT id itself
     else if (c.notnull && c.dflt_value === null) {
       values[c.name] = fkCols.has(c.name)
         ? FK_VALUE

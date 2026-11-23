@@ -112,8 +112,7 @@ export interface JobTokensOptions {
    * token would only make it a secret-bearing job. Unknown means private.
    */
   isPublic?:
-    | ((owner: string, repo: string, installationId: string) => Promise<boolean>)
-    | undefined;
+    ((owner: string, repo: string, installationId: string) => Promise<boolean>) | undefined;
 }
 
 /** True when the permissions are nothing beyond `contents: read` and `metadata: read`. */
@@ -123,8 +122,7 @@ export const isReadOnlyContents = (p: Readonly<Record<string, string>>): boolean
 export class JobTokens {
   readonly #auth: TokenAuthority;
   readonly #isPublic:
-    | ((owner: string, repo: string, installationId: string) => Promise<boolean>)
-    | undefined;
+    ((owner: string, repo: string, installationId: string) => Promise<boolean>) | undefined;
 
   constructor(auth: TokenAuthority, o: JobTokensOptions = {}) {
     this.#auth = auth;

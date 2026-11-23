@@ -7,8 +7,7 @@ const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !
 export const NODE_RUNTIMES: readonly string[] = ["node12", "node16", "node20", "node24"];
 
 export type ActionRuntime =
-  | { kind: "composite"; steps: unknown[] }
-  | { kind: "node"; using: string };
+  { kind: "composite"; steps: unknown[] } | { kind: "node"; using: string };
 
 /**
  * Decides what an `action.yml` `runs:` section is, failing closed. `using` is trimmed and

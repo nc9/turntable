@@ -41,9 +41,7 @@ exit 0
 `.replace(/\\\$/g, "$");
 
 export type CanaryVerdict =
-  | { kind: "blocked" }
-  | { kind: "reachable"; target: string }
-  | { kind: "unknown"; why: string };
+  { kind: "blocked" } | { kind: "reachable"; target: string } | { kind: "unknown"; why: string };
 
 export type CanaryOptions = {
   targets?: readonly string[];

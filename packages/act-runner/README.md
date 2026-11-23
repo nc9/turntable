@@ -53,7 +53,7 @@ issues cite them.
    from `/dev/null` and stdout and stderr (merged, as the runner captures them) on a pipe, and
    forwards the pipe to act's pty; everything the step starts inherits it. Found by a parity
    run of a real project's CLI tests: its `fmt` colours when `process.stdout.isTTY &&
-   TERM !== "dumb"`, and two tests that assert the output has no escape sequence failed.
+TERM !== "dumb"`, and two tests that assert the output has no escape sequence failed.
    The shim stays as the step's parent so output is fully flushed before act moves on, which
    would make act's step-timeout SIGKILL (sent to the direct child only) hit the shim and leave
    the interpreter running. So the shim guards it: the interpreter runs in its own process group

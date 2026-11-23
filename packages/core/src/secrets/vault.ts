@@ -195,8 +195,7 @@ export type UseDenial =
   | "decrypt_failed";
 
 export type UseResult =
-  | { ok: true; value: string; version: number; secretId: string }
-  | { ok: false; reason: UseDenial };
+  { ok: true; value: string; version: number; secretId: string } | { ok: false; reason: UseDenial };
 
 export interface VaultOptions {
   db: Db;
@@ -584,8 +583,7 @@ export interface PublishUseRequest {
 }
 
 export type PublishUseResult =
-  | { ok: true; value: string; version: number; secretId: string }
-  | { ok: false; reason: UseDenial };
+  { ok: true; value: string; version: number; secretId: string } | { ok: false; reason: UseDenial };
 
 /** The environment a job runs in, if its plan records one. Today none does. */
 function jobEnvironment(planned: string | null): string | null {

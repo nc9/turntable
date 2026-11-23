@@ -28,7 +28,11 @@ export const INTERNAL_LABELS: ReadonlySet<string> = new Set([
   LEGACY_EXPIRES_LABEL,
 ]);
 /** A Go template that reads a label under its current or its pre-rename name. */
-export function labelTemplate(root: ".Labels" | ".Config.Labels", name: string, legacy: string): string {
+export function labelTemplate(
+  root: ".Labels" | ".Config.Labels",
+  name: string,
+  legacy: string,
+): string {
   return `{{or (index ${root} "${name}") (index ${root} "${legacy}")}}`;
 }
 /** Port the relay listens on, inside the sandbox's internal network. */

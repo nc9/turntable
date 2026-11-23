@@ -13,7 +13,8 @@ test("role ladder: approve needs release_operator or higher", () => {
 });
 
 test("log notices written before the rename keep their old tag and still parse", () => {
-  const head = "[longshore] egress canary could not run (timeout); egress none is unverified\nSet up job\n"; // rename-keep
+  const head =
+    "[longshore] egress canary could not run (timeout); egress none is unverified\nSet up job\n"; // rename-keep
   const n = parseLogNotices(head);
   expect(n.map((x) => x.kind)).toEqual(["egress_unverified"]);
   expect(n[0]!.text.startsWith("[")).toBe(false);
