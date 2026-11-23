@@ -6,6 +6,8 @@
 // in a file the main process cannot reach. Only then does it call the signing service, which
 // applies its own policy on top (release class, release ref, approvals).
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -18,6 +20,7 @@ import {
 } from "../db/repos";
 import type { AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
+import { ReleaseFiles } from "./files";
 import type { ForgeFacts } from "./forge";
 import { publishGithubRelease } from "./publish/github-release";
 import { verifyOciImage } from "./publish/oci";
@@ -38,6 +41,8 @@ export interface ReleaseSigner {
         /** `refs/tags/<tag>`: the run must have been built from exactly this ref. */
         ref: string;
         subjects: readonly { name: string; sha256: string }[];
+        /** The zips the subjects were unpacked from, with the digest of each zip. */
+        archives?: readonly { name: string; sha256: string }[];
       };
     },
   ): Promise<
@@ -71,6 +76,8 @@ export type LaneDenial =
   | "artifact_bytes_missing"
   | "digest_mismatch"
   | "size_mismatch"
+  | "unpack_failed"
+  | "duplicate_subject"
   | "attestation_mismatch"
   | `signer:${string}`;
 
@@ -85,12 +92,17 @@ export interface LaneOptions {
   publish?: PublishWiring;
   /** This lane's identity in claimed_by. */
   owner: string;
+  /**
+   * Where artifact zips are unpacked, each into a fresh directory that is removed afterwards.
+   * Default: a directory under the system temp directory.
+   */
+  unpackRoot?: string;
   now?: () => number;
   log?: (m: string) => void;
 }
 
-const TAG = /^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/;
 const sha256 = (b: Uint8Array): string => createHash("sha256").update(b).digest("hex");
+const TAG = /^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/;
 
 type Decision =
   | {
@@ -103,6 +115,8 @@ type Decision =
         sha: string;
         digests: Record<string, string>;
         envelope: unknown;
+        /** The signed files, still unpacked; the lane removes them when it is done. */
+        files: ReleaseFiles;
       };
     }
   | { status: "refused"; reason: LaneDenial; detail?: string; facts: Record<string, unknown> };
@@ -155,7 +169,13 @@ export class ReleaseLane {
         now(),
       );
       try {
-        published = await this.#publish(req, scope, decision.verified);
+        published = await this.#publish(
+          req,
+          scope,
+          decision.verified,
+          false,
+          decision.verified.files,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         published = [
@@ -164,6 +184,7 @@ export class ReleaseLane {
         await this.#audit(scope, req, "error:publish_error", { detail: msg.slice(0, 200) });
       }
     }
+    if (decision.status === "signed") await decision.verified.files.dispose();
     await finishReleaseRequest(
       this.#o.db,
       req.id,
@@ -242,57 +263,90 @@ export class ReleaseLane {
     const missing = names.filter((n) => !byName.has(n));
     if (missing.length > 0) return refuse("artifact_not_recorded", missing.join(", "));
 
-    const digests: Record<string, string> = {};
-    for (const name of names) {
-      const bytes = await this.#o.bytes.read(req.runId, name);
-      if (!bytes) return refuse("artifact_bytes_missing", name);
-      const actual = sha256(bytes);
-      digests[name] = actual;
-      facts.digests = digests;
-      // The bytes must be what the build recorded...
-      if (actual !== byName.get(name)) return refuse("digest_mismatch", name);
-      // ...and be as long as the build said: the recorded size is what the org's stored-bytes
-      // quota charged, and the stored file is where the true size is. Same digest, other length
-      // can only mean the recorded size is wrong.
-      const recordedSize = sizeOf.get(name);
-      if (recordedSize !== undefined && recordedSize !== bytes.length)
-        return refuse("size_mismatch", `${name}: recorded ${recordedSize}, stored ${bytes.length}`);
-    }
-    // ...and what this lane attested for this TAG before, in a store the main process cannot
-    // write. Keyed by the release identity, not the run: a new run for an attested tag gets no
-    // fresh first sight, and a tag is never signed twice with different digests.
-    const identity = { orgId: scope.orgId, projectId: scope.projectId, repo: pinned, tag: req.tag };
-    const c = this.#o.attest.checkRelease(identity, digests);
-    if (c.state === "mismatch") return refuse("attestation_mismatch", c.why);
-    const now = (this.#o.now ?? Date.now)();
-    this.#o.attest.attestRelease(identity, digests, now);
-
-    if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
-
-    // The service signs exactly what was verified here: the commit the forge confirmed, the
-    // pinned repository and the digests computed from the bytes. If a row changed since, it
-    // refuses; and what comes back must be exactly these subjects.
-    const subjects = names.map((name) => ({ name, sha256: digests[name]! }));
-    const out = await this.#o.signer.signRelease(scope, {
+    // The artifacts are transport. Each is checked against what the build recorded (its own
+    // digest and size) and only then unpacked, safely, and what gets signed is the files in it.
+    const opened = await ReleaseFiles.open({
+      bytes: this.#o.bytes,
       runId: req.runId,
-      artifacts: names,
-      verified: { sha: tag.sha, repo: pinned, ref: `refs/tags/${req.tag}`, subjects },
+      names,
+      unpackRoot: this.#o.unpackRoot ?? join(tmpdir(), "turntable-release-unpack"),
+      check: (name, bytes) => {
+        const actual = sha256(bytes);
+        facts.digests = { ...(facts.digests as object), [name]: actual };
+        // The bytes must be what the build recorded...
+        if (actual !== byName.get(name)) return "digest_mismatch";
+        // ...and be as long as the build said: the recorded size is what the org's stored-bytes
+        // quota charged, and the stored file is where the true size is. Same digest, other length
+        // can only mean the recorded size is wrong.
+        const recordedSize = sizeOf.get(name);
+        if (recordedSize !== undefined && recordedSize !== bytes.length)
+          return `size_mismatch:${name}: recorded ${recordedSize}, stored ${bytes.length}`;
+        return undefined;
+      },
     });
-    if (!out.ok) return refuse(`signer:${out.reason}`, out.detail);
-    const got = [...out.subjects].toSorted((x, y) => x.name.localeCompare(y.name));
-    const want = [...subjects].toSorted((x, y) => x.name.localeCompare(y.name));
-    if (JSON.stringify(got) !== JSON.stringify(want)) {
-      return refuse(
-        "signed_subjects_differ",
-        "the signed statement does not name what was verified",
-      );
+    if (!opened.ok) {
+      if (opened.reason !== "rejected") return refuse(opened.reason, opened.detail);
+      return opened.cause.startsWith("size_mismatch:")
+        ? refuse("size_mismatch", opened.cause.slice("size_mismatch:".length))
+        : refuse("digest_mismatch", opened.detail);
     }
-    return {
-      status: "signed",
-      result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
-      facts,
-      verified: { repo: pinned, sha: tag.sha, digests, envelope: out.envelope },
-    };
+    const files = opened.files;
+    const digests = files.digests;
+    facts.digests = digests;
+    if (files.archives.length > 0) facts.archives = files.archives;
+    // The unpacked files stay for the publish step when this signs, and go on any other outcome.
+    let keep = false;
+    try {
+      // ...and what this lane attested for this TAG before, in a store the main process cannot
+      // write. Keyed by the release identity, not the run: a new run for an attested tag gets no
+      // fresh first sight, and a tag is never signed twice with different digests.
+      const identity = {
+        orgId: scope.orgId,
+        projectId: scope.projectId,
+        repo: pinned,
+        tag: req.tag,
+      };
+      const c = this.#o.attest.checkRelease(identity, digests);
+      if (c.state === "mismatch") return refuse("attestation_mismatch", c.why);
+      const now = (this.#o.now ?? Date.now)();
+      this.#o.attest.attestRelease(identity, digests, now);
+
+      if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
+
+      // The service signs exactly what was verified here: the commit the forge confirmed, the
+      // pinned repository and the digests computed from the bytes. If a row changed since, it
+      // refuses; and what comes back must be exactly these subjects.
+      const subjects = Object.keys(digests).map((name) => ({ name, sha256: digests[name]! }));
+      const out = await this.#o.signer.signRelease(scope, {
+        runId: req.runId,
+        artifacts: names,
+        verified: {
+          sha: tag.sha,
+          repo: pinned,
+          ref: `refs/tags/${req.tag}`,
+          subjects,
+          ...(files.archives.length > 0 ? { archives: files.archives } : {}),
+        },
+      });
+      if (!out.ok) return refuse(`signer:${out.reason}`, out.detail);
+      const got = [...out.subjects].toSorted((x, y) => x.name.localeCompare(y.name));
+      const want = [...subjects].toSorted((x, y) => x.name.localeCompare(y.name));
+      if (JSON.stringify(got) !== JSON.stringify(want)) {
+        return refuse(
+          "signed_subjects_differ",
+          "the signed statement does not name what was verified",
+        );
+      }
+      keep = true;
+      return {
+        status: "signed",
+        result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
+        facts,
+        verified: { repo: pinned, sha: tag.sha, digests, envelope: out.envelope, files },
+      };
+    } finally {
+      if (!keep) await files.dispose();
+    }
   }
 
   /**
@@ -348,6 +402,49 @@ export class ReleaseLane {
       envelope: unknown;
     },
     ensureCompat = false,
+    given?: ReleaseFiles,
+  ): Promise<TargetResult[]> {
+    const w = this.#o.publish;
+    const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
+    if (!w || Object.keys(targets).length === 0) return [];
+    // The signed files: the ones the signing pass unpacked, or (finalize, a later run) unpacked
+    // again now from the same artifacts, which must give exactly the digests that were attested.
+    let own: ReleaseFiles | undefined;
+    let files = given;
+    if (!files) {
+      const opened = await ReleaseFiles.open({
+        bytes: this.#o.bytes,
+        runId: req.runId,
+        names: JSON.parse(req.artifacts) as string[],
+        unpackRoot: this.#o.unpackRoot ?? join(tmpdir(), "turntable-release-unpack"),
+      });
+      if (opened.ok) {
+        own = opened.files;
+        const same = (x: Record<string, string>, y: Record<string, string>): boolean =>
+          Object.keys(x).length === Object.keys(y).length &&
+          Object.keys(x).every((k) => x[k] === y[k]);
+        // Other files than the ones attested: nothing is read from them.
+        if (same(own.digests, v.digests)) files = own;
+      }
+    }
+    try {
+      return await this.#publishTo(req, scope, v, ensureCompat, files);
+    } finally {
+      await own?.dispose();
+    }
+  }
+
+  async #publishTo(
+    req: ReleaseRequest,
+    scope: { orgId: string; projectId: string },
+    v: {
+      repo: string;
+      sha: string;
+      digests: Record<string, string>;
+      envelope: unknown;
+    },
+    ensureCompat: boolean,
+    files: ReleaseFiles | undefined,
   ): Promise<TargetResult[]> {
     const w = this.#o.publish;
     const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
@@ -365,7 +462,7 @@ export class ReleaseLane {
       repo: v.repo,
       tag: req.tag,
       digests: v.digests,
-      readBytes: (name: string) => this.#o.bytes.read(req.runId, name),
+      readBytes: async (name: string) => files?.readBytes(name),
       provenance: typeof v.envelope === "string" ? v.envelope : JSON.stringify(v.envelope),
     };
     const out: TargetResult[] = [];

@@ -680,7 +680,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           );
         }
       }
-      // A job that uses neither vault rules nor a token is not proxied, and its egress is unchanged.
+      // A job with no network of its own that uploads artifacts reaches the artifact service
+      // through the proxy, which lets it through to the upload endpoints and nothing else; the
+      // credential it holds there is upload-only. With open egress it reaches the service itself.
+      const artifactsViaProxy =
+        ctx.proxy?.artifactUpload === true && egressForRun(ctx.run.plan, o.egress) !== "open";
+      if (artifactsViaProxy) useProxy = true;
+      // A job that uses none of vault rules, a token or an artifact upload is not proxied, and
+      // its egress is unchanged.
       const { proxy: access, ...rest } = ctx;
       const jobCtx: AttemptContext = {
         ...rest,
@@ -712,6 +719,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               klass: jobKlass,
               egress: egressForRun(ctx.run.plan, o.egress) === "open" ? "open" : "none",
               local: dbRun.local === true,
+              proxyRoute: artifactsViaProxy,
             })
           : undefined;
       try {

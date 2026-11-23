@@ -37,6 +37,29 @@ export function plannedIdToken(planned: string | PlannedJob | null | undefined):
   }
 }
 
+/**
+ * Whether the stored plan says the job uploads artifacts (it has an `actions/upload-artifact`
+ * step). The control plane gives such a job, when its sandbox has no network of its own, a narrow
+ * upload-only route to the artifact service through the proxy; a job that does not ask gets no
+ * route. A missing, unreadable or legacy plan means no.
+ */
+export function plannedArtifactUpload(planned: string | PlannedJob | null | undefined): boolean {
+  if (!planned) return false;
+  try {
+    const p = typeof planned === "string" ? (JSON.parse(planned) as unknown) : planned;
+    return (
+      typeof p === "object" &&
+      p !== null &&
+      (p as { artifactUpload?: unknown }).artifactUpload === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** A step that is `actions/upload-artifact` (any ref), the one action that writes artifacts. */
+const UPLOAD_ARTIFACT = /^actions\/upload-artifact(\/[^@\s]*)?@/i;
+
 export interface PlannedJob {
   /** Unique within the run: the job id, or `id[n]` for a matrix leg. */
   key: string;
@@ -70,6 +93,8 @@ export interface PlannedJob {
    * mint endpoint only for such a job.
    */
   idToken?: boolean;
+  /** The job has an `actions/upload-artifact` step (see `plannedArtifactUpload`). */
+  artifactUpload?: boolean;
   /**
    * Set on a leg made by an operator's `splits` rule (not by `strategy.matrix`): this leg runs
    * shard `index` of `total`. `partition[i]` is shard i's named steps (names, or `#<n>` for the
@@ -563,6 +588,9 @@ export function planWorkflow(
         ...(maxParallel !== undefined ? { maxParallel } : {}),
         ...(environment !== undefined ? { environment } : {}),
         ...(wantsIdTokenIn(doc, id) ? { idToken: true } : {}),
+        ...(stepsOf(job).some((st) => typeof st.uses === "string" && UPLOAD_ARTIFACT.test(st.uses))
+          ? { artifactUpload: true }
+          : {}),
         ...(() => {
           const runsOn = runsOnLabelList(job["runs-on"], ctx);
           return runsOn.length > 0 ? { runsOn } : {};

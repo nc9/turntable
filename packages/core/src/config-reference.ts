@@ -622,7 +622,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_ARTIFACTS_URL",
     area: "Job cache",
     description:
-      "The base URL jobs reach the control plane at for `actions/upload-artifact@v4` and `download-artifact@v4`, no trailing slash. Setting it turns the artifact store on; only jobs with open egress can use it. Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts).",
+      "The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts).",
   },
   {
     name: "TURNTABLE_ARTIFACT_MAX_GIB",

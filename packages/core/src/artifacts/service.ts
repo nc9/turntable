@@ -1,7 +1,14 @@
-// The artifact service: what actions/upload-artifact@v4 and download-artifact@v4 talk to, served
-// from the control plane. Those actions use @actions/artifact v2, which speaks a twirp API
+// The artifact service: what actions/upload-artifact and download-artifact (v4 and up) talk to,
+// served from the control plane. The releases this repo pins (upload-artifact v7, download-artifact
+// v8) use @actions/artifact 6.3.1, and v4 used 2.x; the protocol is the same twirp API
 // (`ArtifactService`, at ACTIONS_RESULTS_URL) for the metadata and Azure block-blob requests for
-// the bytes, to a "signed URL" the twirp API hands back. This service implements the twirp
+// the bytes, to a "signed URL" the twirp API hands back. What 6.x adds, handled here:
+// - CreateArtifact carries `version: 7` and a `mimeType` (a plain string in the JSON, as every
+//   wrapper type is); `archive: false` uploads one raw file under its own name, not a zip;
+// - ListArtifacts carries a `digest` ("sha256:<hex>") that download-artifact compares with the
+//   digest of the bytes it received, failing the step on a mismatch by default;
+// - a download is told what it is by Content-Type: a zip is extracted, anything else is written
+//   as one file named by Content-Disposition. This service implements the twirp
 // methods a single run needs and the three block-blob requests the client sends (Put Block, Put
 // Block List, Put Blob), and nothing else. The bytes the client uploads are its zip of the files,
 // stored and served as one blob.
@@ -25,6 +32,7 @@ import {
   type ArtifactRow,
 } from "../db";
 import type { ArtifactGrant, ArtifactGrants } from "./grants";
+import { looksLikeZip } from "../release/unpack";
 import { ARTIFACT_NAME, ArtifactTooLargeError, type FsArtifactStore } from "./store";
 
 export const TWIRP_PREFIX = "/twirp/github.actions.results.api.v1.ArtifactService/";
@@ -161,7 +169,9 @@ export function createArtifactService(o: ArtifactOptions): ArtifactService {
 
   const asObj = (v: unknown): Record<string, unknown> =>
     v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  /** A protobuf wrapper (StringValue, Int64Value) is a bare string in JSON; `{value}` is tolerated. */
   const wrapped = (v: unknown): string | undefined => {
+    if (typeof v === "string") return v;
     const x = asObj(v).value;
     return typeof x === "string" ? x : undefined;
   };
@@ -275,6 +285,7 @@ export function createArtifactService(o: ArtifactOptions): ArtifactService {
         name: r.name,
         size: String(r.size),
         created_at: new Date(r.createdAt).toISOString(),
+        digest: `sha256:${r.sha256}`,
       })),
     };
   }
@@ -304,6 +315,9 @@ export function createArtifactService(o: ArtifactOptions): ArtifactService {
       return rpcError(new RpcError(400, "malformed", "bad request body"));
     }
     try {
+      // An upload-only grant can create and finalize its own uploads, nothing else.
+      if (g.mode === "upload" && method !== "CreateArtifact" && method !== "FinalizeArtifact")
+        throw new RpcError(403, "permission_denied", "this credential can only upload");
       switch (method) {
         case "CreateArtifact":
           return json(200, await createArtifact(g, token, body));
@@ -386,6 +400,8 @@ export function createArtifactService(o: ArtifactOptions): ArtifactService {
 
   async function blobDownload(g: ArtifactGrant, req: Request, name: string) {
     if (req.method !== "GET") return new Response(null, { status: 405 });
+    if (g.mode === "upload")
+      return new Response("this credential can only upload", { status: 403 });
     const rows = await getRunArtifactsByName(o.db, g.scope, g.runId, [name]);
     const { ok, refused } = await readable(g, rows);
     for (const m of refused) o.onNotice?.(g, m);
@@ -401,8 +417,16 @@ export function createArtifactService(o: ArtifactOptions): ArtifactService {
       );
       return new Response("integrity check failed", { status: 500 });
     }
+    // The client extracts what is a zip and saves anything else as one file under this name. Which
+    // it is comes from the bytes (the client's own `mimeType` is never echoed back).
+    const head = new Uint8Array(await blob.file.slice(0, 4).arrayBuffer());
+    const zip = looksLikeZip(head);
     return new Response(blob.file, {
-      headers: { "content-type": "application/zip", "content-length": String(blob.size) },
+      headers: {
+        "content-type": zip ? "application/zip" : "application/octet-stream",
+        "content-length": String(blob.size),
+        ...(zip ? {} : { "content-disposition": `attachment; filename="${row.name}"` }),
+      },
     });
   }
 

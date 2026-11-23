@@ -1,6 +1,10 @@
-// The artifact service (#340): what actions/upload-artifact@v4 and download-artifact@v4 reach.
-// The client in here sends what @actions/artifact v2 sends: twirp JSON calls with the runtime
-// token, then Azure block-blob requests to the signed URL it was given.
+// The artifact service (#340): what actions/upload-artifact and download-artifact reach. The
+// client in here sends what @actions/artifact 6.3.1 sends, the version inside the releases
+// release.yml pins (upload-artifact v7.0.2, download-artifact v8.0.2): twirp JSON calls
+// (camelCase fields, bare strings for the wrapper types, `version: 7`, a `mimeType`) with the
+// runtime token as a bearer, then Azure block-blob requests (Put Block, Put Block List) to the
+// signed URL, and for a download a GET that decides zip or raw by Content-Type and checks the
+// `digest` ListArtifacts reported.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -146,15 +150,36 @@ const blockId = (n: number): string => Buffer.from(String(n).padStart(6, "0")).t
 const blockList = (ids: string[]): string =>
   `<?xml version="1.0" encoding="utf-8"?><BlockList>${ids.map((i) => `<Latest>${i}</Latest>`).join("")}</BlockList>`;
 
-/** What upload-artifact does: create, stage blocks, commit the list, finalize. */
+/** The run and job ids the client reads from the token's `scp` claim (getBackendIdsFromToken). */
+const backendIds = (token: string) => {
+  const scp = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()).scp as string;
+  const [, workflowRunBackendId, workflowJobRunBackendId] = scp.split(":");
+  return { workflowRunBackendId, workflowJobRunBackendId };
+};
+
+/**
+ * What upload-artifact does: create, stage blocks, commit the list, finalize. `raw` is v7's
+ * `archive: false`: one file under its own name, with the mime type of that file.
+ */
 async function upload(
   j: Job,
   name: string,
   blocks: (string | Uint8Array)[],
-  o: { hash?: string; size?: number } = {},
+  o: { hash?: string; size?: number; raw?: boolean } = {},
   service: ArtifactService = svc,
 ) {
-  const created = await rpc(j.token, "CreateArtifact", { name, version: 4 }, service);
+  const ids6 = backendIds(j.token);
+  const created = await rpc(
+    j.token,
+    "CreateArtifact",
+    {
+      ...ids6,
+      name,
+      mimeType: o.raw ? "application/octet-stream" : "application/zip",
+      version: 7,
+    },
+    service,
+  );
   if (created.status !== 200) return { created };
   const url = created.body.signed_upload_url as string;
   const ids: string[] = [];
@@ -172,9 +197,10 @@ async function upload(
           j.token,
           "FinalizeArtifact",
           {
+            ...ids6,
             name,
             size: String(o.size ?? all.length),
-            hash: { value: o.hash ?? `sha256:${sha(all)}` },
+            hash: o.hash ?? `sha256:${sha(all)}`,
           },
           service,
         )
@@ -183,10 +209,13 @@ async function upload(
 }
 
 const list = (j: Job, filter?: string) =>
-  rpc(j.token, "ListArtifacts", filter === undefined ? {} : { name_filter: { value: filter } });
+  rpc(j.token, "ListArtifacts", {
+    ...backendIds(j.token),
+    ...(filter === undefined ? {} : { nameFilter: filter }),
+  });
 
 async function download(j: Job, name: string): Promise<Response | undefined> {
-  const r = await rpc(j.token, "GetSignedArtifactURL", { name });
+  const r = await rpc(j.token, "GetSignedArtifactURL", { ...backendIds(j.token), name });
   if (r.status !== 200) return undefined;
   return (await svc.handle(new Request(r.body.signed_url)))!;
 }
@@ -492,5 +521,162 @@ describe("the control-plane server", () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe("what @actions/artifact 6.3.1 (upload-artifact v7, download-artifact v8) adds", () => {
+  const ZIP = new Uint8Array([80, 75, 3, 4, 9, 9, 9, 9, 9, 9]);
+
+  test("a zip is served as application/zip, and ListArtifacts reports the digest the client checks", async () => {
+    const j = await job(a, "protected");
+    await upload(j, "dist", [ZIP]);
+    const l = await list(await attach(a, j.runId, "protected", "protected"), "dist");
+    expect(l.body.artifacts).toHaveLength(1);
+    // A bare string, which is how a StringValue is written in JSON.
+    expect(l.body.artifacts[0].digest).toBe(`sha256:${sha(ZIP)}`);
+    const later = await attach(a, j.runId, "protected", "protected");
+    const res = await download(later, "dist");
+    expect(res?.headers.get("content-type")).toBe("application/zip");
+    expect(sha(new Uint8Array(await res!.arrayBuffer()))).toBe(
+      l.body.artifacts[0].digest.slice("sha256:".length),
+    );
+  });
+
+  test("archive: false uploads one raw file: it is served as octet-stream, named by Content-Disposition", async () => {
+    const j = await job(a, "release");
+    const elf = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 1, 2, 3]);
+    const up = await upload(j, "turntable-linux-x64", [elf], { raw: true });
+    expect(up.fin?.status).toBe(200);
+    const later = await attach(a, j.runId, "release", "release");
+    const res = await download(later, "turntable-linux-x64");
+    expect(res?.headers.get("content-type")).toBe("application/octet-stream");
+    expect(res?.headers.get("content-disposition")).toBe(
+      'attachment; filename="turntable-linux-x64"',
+    );
+    expect(new Uint8Array(await res!.arrayBuffer())).toEqual(elf);
+    // The release lane reads the same stored bytes.
+    expect(Buffer.from((await dirArtifacts(dir).read(j.runId, "turntable-linux-x64"))!)).toEqual(
+      Buffer.from(elf),
+    );
+  });
+
+  test("the client's mimeType is never echoed: a raw file claiming application/zip is still octet-stream", async () => {
+    const j = await job(a, "protected");
+    const ids = backendIds(j.token);
+    const created = await rpc(j.token, "CreateArtifact", {
+      ...ids,
+      name: "liar",
+      mimeType: "application/zip",
+      version: 7,
+    });
+    const bytes = "not a zip at all";
+    expect((await put(created.body.signed_upload_url, bytes)).status).toBe(201);
+    expect(
+      (
+        await rpc(j.token, "FinalizeArtifact", {
+          ...ids,
+          name: "liar",
+          size: String(bytes.length),
+          hash: `sha256:${sha(bytes)}`,
+        })
+      ).status,
+    ).toBe(200);
+    const res = await download(await attach(a, j.runId, "protected", "protected"), "liar");
+    expect(res?.headers.get("content-type")).toBe("application/octet-stream");
+  });
+
+  test("a reported hash is compared (as the bare string 6.x sends), and a wrong one refuses the upload", async () => {
+    const j = await job(a, "protected");
+    const up = await upload(j, "dist", ["bytes"], { hash: `sha256:${"0".repeat(64)}` });
+    expect(up.fin?.status).toBe(400);
+    expect(await listRunArtifacts(db, j.scope, j.runId)).toEqual([]);
+  });
+
+  test("download-artifact by id: ListArtifacts takes idFilter as a bare string", async () => {
+    const j = await job(a, "protected");
+    const up = await upload(j, "dist", [ZIP]);
+    const later = await attach(a, j.runId, "protected", "protected");
+    const byId = await rpc(later.token, "ListArtifacts", {
+      ...backendIds(later.token),
+      idFilter: up.fin?.body.artifact_id,
+    });
+    expect(byId.body.artifacts.map((x: any) => x.name)).toEqual(["dist"]);
+    const none = await rpc(later.token, "ListArtifacts", {
+      ...backendIds(later.token),
+      idFilter: "1",
+    });
+    expect(none.body.artifacts).toEqual([]);
+  });
+});
+
+describe("an upload-only grant", () => {
+  async function uploadOnly(t: Tenant, runId?: string): Promise<Job> {
+    const j = await job(t, "release");
+    const at = runId ? await attach(t, runId, "release", "release") : j;
+    const token = svc.grants.issue({
+      attemptId: at.attemptId,
+      runId: at.runId,
+      scope: at.scope,
+      klass: "release",
+      mode: "upload",
+    });
+    return { ...at, token };
+  }
+
+  test("uploads its own artifact end to end", async () => {
+    const j = await uploadOnly(a);
+    const up = await upload(j, "dist", ["upload only bytes"]);
+    expect(up.fin?.status).toBe(200);
+    expect((await listRunArtifacts(db, j.scope, j.runId))[0]).toMatchObject({
+      name: "dist",
+      sha256: sha("upload only bytes"),
+    });
+  });
+
+  test("cannot list, ask for a download URL, delete or download, not even its own artifact", async () => {
+    const j = await uploadOnly(a);
+    await upload(j, "dist", ["x"]);
+    for (const method of ["ListArtifacts", "GetSignedArtifactURL", "DeleteArtifact"]) {
+      const r = await rpc(j.token, method, { ...backendIds(j.token), name: "dist" });
+      expect(r.status).toBe(403);
+      expect(r.body.code).toBe("permission_denied");
+    }
+    // A download URL minted by a full grant of the same attempt does not work with this token.
+    const full = svc.grants.issue({
+      attemptId: j.attemptId,
+      runId: j.runId,
+      scope: j.scope,
+      klass: "release",
+    });
+    const url = (await rpc(full, "GetSignedArtifactURL", { name: "dist" })).body
+      .signed_url as string;
+    // issuing a grant replaced the upload one: re-issue it, then try the URL with it swapped in.
+    const upOnly = svc.grants.issue({
+      attemptId: j.attemptId,
+      runId: j.runId,
+      scope: j.scope,
+      klass: "release",
+      mode: "upload",
+    });
+    const res = await svc.handle(new Request(url.replace(full, upOnly)));
+    expect(res!.status).toBe(403);
+    expect(await res!.text()).toBe("this credential can only upload");
+  });
+
+  test("is short-lived and ends with the attempt", async () => {
+    const grants = new ArtifactGrants({ now: () => clock });
+    const t = grants.issue({
+      attemptId: "at1",
+      runId: "r1",
+      scope: a.scope,
+      klass: "release",
+      mode: "upload",
+    });
+    expect(grants.verify(t)?.mode).toBe("upload");
+    clock += 2 * 3600_000 + 1;
+    expect(grants.verify(t)).toBeUndefined();
+    const full = grants.issue({ attemptId: "at2", runId: "r1", scope: a.scope, klass: "release" });
+    clock += 2 * 3600_000 + 1;
+    expect(grants.verify(full)?.mode).toBe("full");
   });
 });

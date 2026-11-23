@@ -39,8 +39,9 @@ import type { TrustClass } from "../src/trust";
 // uploads it, a later job of the run downloads it and checks the checksum.
 const enabled = process.env.TT_ARTIFACTS_E2E === "1";
 const IMAGE = process.env.TT_ACT_IMAGE ?? "node:22-bookworm";
-const UPLOAD = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"; // v4.6.2
-const DOWNLOAD = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"; // v4.3.0
+// The same pins as .github/workflows/release.yml: what a real release uses.
+const UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"; // v7.0.2
+const DOWNLOAD = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"; // v8.0.2
 const tmp = mkdtempSync(join(tmpdir(), "tt-artifacts-e2e-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -55,6 +56,12 @@ jobs:
         with:
           name: app
           path: out/
+      # v7's \`archive: false\`: one raw file, uploaded under its own name, not a zip.
+      - run: printf '%s' 'raw-${payload}' > raw-bin
+      - uses: ${UPLOAD}
+        with:
+          path: raw-bin
+          archive: false
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -64,6 +71,11 @@ jobs:
           path: got/
       - run: |
           cd got && test "$(sha256sum app.bin | cut -d' ' -f1)" = "$(cat app.sha256)" && echo "checksum-ok=$(cat app.bin)"
+      - uses: ${DOWNLOAD}
+        with:
+          name: raw-bin
+          path: got-raw/
+      - run: test "$(cat got-raw/raw-bin)" = 'raw-${payload}' && echo "raw-ok=$(cat got-raw/raw-bin)"
 `;
 
 async function freePort(): Promise<number> {
@@ -182,12 +194,16 @@ describe.skipIf(!enabled)("artifacts end to end (real act, real artifact actions
     const r = await newRun("protected", payload);
     expect((await runJobAs(r, "protected", "build")).state).toBe("success");
     const { db, scope } = await setup;
-    const [row] = await listRunArtifacts(db, scope, r.run.id);
-    expect(row).toMatchObject({ name: "app", klass: "protected", digestSource: "computed" });
+    const rows = await listRunArtifacts(db, scope, r.run.id);
+    expect(rows.map((x) => x.name).toSorted()).toEqual(["app", "raw-bin"]);
+    const row = rows.find((x) => x.name === "app");
+    expect(row).toMatchObject({ klass: "protected", digestSource: "computed" });
     expect(row?.sha256).toMatch(/^[0-9a-f]{64}$/);
     const verify = await runJobAs(r, "protected", "verify");
     expect(verify.state).toBe("success");
     expect(verify.log).toContain(`checksum-ok=${payload}`);
+    // The raw upload came back as the same bytes, and the actions' own digest check passed.
+    expect(verify.log).toContain(`raw-ok=raw-${payload}`);
   }, 900_000);
 
   test("a release job cannot download what a lower class built in the same run", async () => {

@@ -17,8 +17,18 @@ export type ArtifactGrant = {
   scope: { orgId: string; projectId: string };
   /** The class the job runs as: what its downloads are decided against. */
   klass: TrustClass;
+  /**
+   * `full` reads and writes the run's artifacts (a job that can reach the service itself).
+   * `upload` can only create and finalize its own uploads and put blocks into them: it cannot
+   * list, ask for a download URL or download (the grant of a job whose only way to the service is
+   * the narrow proxy route).
+   */
+  mode: "full" | "upload";
   expiresAt: number;
 };
+
+/** How long an upload-only grant lives, at most: it is minted per attempt and revoked with it. */
+export const UPLOAD_GRANT_MS = 2 * 3600_000;
 
 const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url");
 const SHAPE = /^[A-Za-z0-9_-]{8,400}\.[A-Za-z0-9_-]{8,400}\.[A-Za-z0-9_-]{16,64}$/;
@@ -35,7 +45,7 @@ export class ArtifactGrants {
   }
 
   /** Mints a credential for the attempt. A second grant for the same attempt replaces the first. */
-  issue(g: Omit<ArtifactGrant, "expiresAt">): string {
+  issue(g: Omit<ArtifactGrant, "expiresAt" | "mode"> & { mode?: ArtifactGrant["mode"] }): string {
     this.revoke(g.attemptId);
     const token = [
       b64({ alg: "none", typ: "JWT" }),
@@ -43,7 +53,9 @@ export class ArtifactGrants {
       randomBytes(24).toString("base64url"),
     ].join(".");
     const h = hash(token);
-    this.#byHash.set(h, { ...g, expiresAt: this.#now() + this.#maxMs });
+    const mode = g.mode ?? "full";
+    const ttl = mode === "upload" ? Math.min(this.#maxMs, UPLOAD_GRANT_MS) : this.#maxMs;
+    this.#byHash.set(h, { ...g, mode, expiresAt: this.#now() + ttl });
     this.#byAttempt.set(g.attemptId, h);
     return token;
   }

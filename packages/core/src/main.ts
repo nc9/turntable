@@ -39,7 +39,7 @@ import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { JobOidc } from "./oidc/job-delivery";
-import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
+import { artifactTargetOf, githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
 import { ArtifactGrants } from "./artifacts/grants";
 import { jobArtifactProvider } from "./artifacts/job";
@@ -328,6 +328,9 @@ async function startBackground(
             proxy: secretsProxy,
             ...(jobTokens ? { github: githubTargetOf(db) } : {}),
             ...(extras.jobOidc ? { oidc: (c, k) => extras.jobOidc!.proxyTarget(c, k) } : {}),
+            ...(extras.artifacts
+              ? { artifacts: () => artifactTargetOf(extras.artifacts!.resultsUrl) }
+              : {}),
           })
         : r;
     scheduler = new Scheduler({
