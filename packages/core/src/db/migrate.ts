@@ -44,14 +44,14 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
   for (const row of checkMigrationShas(recorded, migrations)) {
     sqlite.run("UPDATE __turntable_migrations SET sha256 = ? WHERE tag = ?", [row.sha, row.tag]);
   }
-  const done = new Set(recorded.keys());
   const applied: string[] = [];
   for (const migration of migrations.toSorted((a, b) => a.when - b.when)) {
-    if (done.has(migration.tag)) continue;
+    if (recorded.has(migration.tag)) continue;
     // SQLite ignores `PRAGMA foreign_keys` inside a transaction, so the table-rebuild migrations
     // drizzle-kit emits (drop and recreate a table other tables reference) would trip foreign
     // keys. Turn enforcement off around the transaction, as SQLite's own guidance says, check
     // the result before committing, and always turn it back on.
+    let ran = false;
     sqlite.run("PRAGMA foreign_keys = OFF");
     try {
       // IMMEDIATE: the write lock is taken at the start, where the busy timeout applies. A deferred
@@ -59,6 +59,13 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
       // connection wrote in between.
       sqlite
         .transaction(() => {
+          // Re-read under the lock: another process may have applied this migration since the read
+          // above, and then it is skipped, not run twice.
+          const taken = sqlite
+            .query("SELECT 1 FROM __turntable_migrations WHERE tag = ?")
+            .get(migration.tag);
+          if (taken) return;
+          ran = true;
           for (const statement of migration.statements) sqlite.run(statement);
           const broken = sqlite.query("PRAGMA foreign_key_check").all();
           if (broken.length > 0) {
@@ -75,7 +82,7 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
     } finally {
       sqlite.run("PRAGMA foreign_keys = ON");
     }
-    applied.push(migration.tag);
+    if (ran) applied.push(migration.tag);
   }
   return applied;
 }
