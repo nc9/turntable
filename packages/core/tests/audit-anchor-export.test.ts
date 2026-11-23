@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, gt } from "drizzle-orm";
 import { AuditAnchor } from "../src/audit/anchor";
-import { createAnchorExporter } from "../src/audit/anchor-export";
+import {
+  ANCHOR_KEYS,
+  backoffMs,
+  createAnchorExporter,
+  type ExportedAnchor,
+} from "../src/audit/anchor-export";
+import { AuditWebhookSecretError, takeAuditWebhookSecret } from "../src/audit/webhook-secret";
 import {
   checkpointDue,
   checkpointSignatureValid,
@@ -20,7 +26,7 @@ import {
   chainedAudit,
   createOrg,
   ensureInstance,
-  getOrgBySlug,
+  getOrgById,
   listCheckpoints,
   openDatabase,
   type Db,
@@ -180,14 +186,36 @@ describe("anchor export", () => {
     expect(msg.headers["x-longshore-signature"]).toBe(
       `sha256=${createHmac("sha256", "hmac-secret-for-test").update(msg.body).digest("hex")}`,
     );
-    const body = JSON.parse(msg.body) as { org: string; lines: Record<string, unknown>[] };
-    const org = await getOrgBySlug(db, body.org);
-    expect(org?.id).toBe(a.orgId);
-    const line = body.lines[0] as never as Parameters<typeof checkpointSignatureValid>[1];
-    expect(line).toMatchObject({ type: "checkpoint", orgId: a.orgId, seq: 4, keyId: key.keyId });
-    expect(checkpointSignatureValid(key.publicKeyPem, line)).toBe(true);
+    const body = JSON.parse(msg.body) as ExportedAnchor;
+    expect(body).toMatchObject({ org_id: a.orgId, sequence: 4 });
     const head = (await chainedAudit(db, a.orgId, 0, 10)).at(-1)!;
-    expect(line.hash).toBe(head.hash as string);
+    expect(body.head_hash).toBe(head.hash as string);
+    // The audit key's signature over the checkpoint, checkable with the pinned public key.
+    expect(
+      checkpointSignatureValid(key.publicKeyPem, {
+        orgId: body.org_id,
+        seq: body.sequence,
+        hash: body.head_hash,
+        signedAt: body.time,
+        keyId: key.keyId,
+        signature: body.signature,
+      } as Parameters<typeof checkpointSignatureValid>[1]),
+    ).toBe(true);
+  });
+
+  test("the body is exactly version, org_id, sequence, head_hash, time and signature", async () => {
+    await setUp();
+    await createCheckpoint(db, store, anchor, a.orgId);
+    const sent: Sent[] = [];
+    await createAnchorExporter({ db, settings: runtime(), fetch: fakeFetch(sent) }).flush();
+    const body = JSON.parse(sent[0]!.body) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([...ANCHOR_KEYS].sort());
+    expect(body.version).toBe(1);
+    // No slug, name or count anywhere in the bytes.
+    const org = await getOrgById(db, a.orgId);
+    for (const word of [org?.slug, org?.name, "lines", "slug"]) {
+      if (word) expect(sent[0]!.body).not.toContain(`"${word}"`);
+    }
   });
 
   test("a sink that is not set sends nothing; the export is audited once per new anchor", async () => {
@@ -214,25 +242,120 @@ describe("anchor export", () => {
     expect(mine[0]!.input).toContain("anchors.example.test/hook");
   });
 
-  test("a failing sink is audited once per streak and does not throw", async () => {
+  test("a failing sink is audited once per streak and retried with a growing backoff", async () => {
     await setUp();
     await createCheckpoint(db, store, anchor, a.orgId);
     const sent: Sent[] = [];
     const logs: string[] = [];
+    const timers: { f: () => void; ms: number; live: boolean }[] = [];
+    let status = 500;
     const ex = createAnchorExporter({
       db,
       settings: runtime(),
-      fetch: fakeFetch(sent, 500),
+      fetch: ((url: string, init: { headers: Record<string, string>; body: string }) => {
+        sent.push({ url, headers: init.headers, body: init.body });
+        return Promise.resolve({ ok: status < 400, status });
+      }) as never,
       log: (m) => logs.push(m),
+      setTimer: (f, ms) => {
+        const t = { f, ms, live: true };
+        timers.push(t);
+        return () => {
+          t.live = false;
+        };
+      },
     });
     await ex.flush();
+    expect(sent.length).toBe(1);
+    // A flush while a retry is waiting does not hammer the sink.
     await ex.flush();
-    expect(sent.length).toBe(2);
-    expect(logs.length).toBe(2);
-    const rows = await db.run((h) =>
-      h.orm.select().from(s.auditLog).where(eq(s.auditLog.op, "audit_anchor_export")),
+    expect(sent.length).toBe(1);
+    expect(timers.map((t) => t.ms)).toEqual([backoffMs(1)]);
+    for (let i = 0; i < 3; i++) {
+      timers.at(-1)!.f();
+      await ex.flush();
+      await Bun.sleep(20);
+    }
+    expect(timers.map((t) => t.ms)).toEqual([5_000, 10_000, 20_000, 40_000]);
+    expect(backoffMs(30)).toBe(15 * 60_000);
+    const failures = async () =>
+      (
+        await db.run((h) =>
+          h.orm.select().from(s.auditLog).where(eq(s.auditLog.op, "audit_anchor_export")),
+        )
+      ).filter((r) => r.outcome === "failed").length;
+    expect(await failures()).toBe(1);
+    // The sink recovers: the retry sends, audits the success and the streak ends.
+    status = 200;
+    timers.at(-1)!.f();
+    await Bun.sleep(50);
+    const sentOk = sent.length;
+    expect(sentOk).toBe(5);
+    status = 500;
+    await createCheckpoint(db, store, anchor, a.orgId);
+    await add(a, 9);
+    await createCheckpoint(db, store, anchor, a.orgId);
+    await ex.flush();
+    // A new streak is audited again.
+    expect(await failures()).toBe(2);
+    expect(logs.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test("a hanging sink does not hold up checkpointing, and nothing throws", async () => {
+    await setUp();
+    let calls = 0;
+    const ex = createAnchorExporter({
+      db,
+      settings: runtime(),
+      fetch: (() => {
+        calls += 1;
+        return new Promise(() => {});
+      }) as never,
+      setTimer: () => () => {},
+    });
+    const t0 = Date.now();
+    const n = await checkpointDue(db, store, anchor, {
+      everyEntries: 1,
+      onCheckpoint: (orgId, cp) => ex.onCheckpoint(orgId, cp),
+    });
+    expect(n).toBe(1);
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    // The next checkpoint also completes while the first send is still hanging.
+    await add(a, 7);
+    expect(
+      await checkpointDue(db, store, anchor, {
+        everyEntries: 1,
+        onCheckpoint: (orgId, cp) => ex.onCheckpoint(orgId, cp),
+      }),
+    ).toBe(1);
+    await Bun.sleep(50);
+    expect(calls).toBe(1);
+    expect((await listCheckpoints(db, a.orgId)).length).toBe(2);
+  });
+});
+
+describe("the webhook secret", () => {
+  test("is read once from the environment and deleted from it", () => {
+    const env: Record<string, string | undefined> = { TURNTABLE_AUDIT_WEBHOOK_SECRET: " s3cret " };
+    expect(takeAuditWebhookSecret(env)).toBe("s3cret");
+    expect(env.TURNTABLE_AUDIT_WEBHOOK_SECRET).toBeUndefined();
+    expect(takeAuditWebhookSecret(env)).toBeUndefined();
+  });
+
+  test("a file works, and a variable with a file is an error that still scrubs the variable", () => {
+    const file = join(tmp, "hook.secret");
+    writeFileSync(file, "from-file\n");
+    expect(takeAuditWebhookSecret({ TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE: file })).toBe("from-file");
+    const env: Record<string, string | undefined> = {
+      TURNTABLE_AUDIT_WEBHOOK_SECRET: "x",
+      TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE: file,
+    };
+    expect(() => takeAuditWebhookSecret(env)).toThrow(AuditWebhookSecretError);
+    expect(env.TURNTABLE_AUDIT_WEBHOOK_SECRET).toBeUndefined();
+    writeFileSync(file, "\n");
+    expect(() => takeAuditWebhookSecret({ TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE: file })).toThrow(
+      /empty/,
     );
-    expect(rows.filter((r) => r.outcome === "failed").length).toBe(1);
   });
 });
 
@@ -280,6 +403,14 @@ describe("verify against exported anchors", () => {
     const f1 = join(tmp, "one.json");
     writeFileSync(f1, JSON.stringify({ org: "o", lines: [cp] }, null, 2));
     expect(readAnchorFile(f1).length).toBe(1);
+    const f3 = join(tmp, "sink.jsonl");
+    writeFileSync(
+      f3,
+      `${JSON.stringify({ version: 1, org_id: "O1", sequence: 5, head_hash: "h", time: 2, signature: "s" })}\n`,
+    );
+    expect(readAnchorFile(f3)).toEqual([
+      { orgId: "O1", seq: 5, hash: "h", signedAt: 2, keyId: "", signature: "s" },
+    ]);
     const f2 = join(tmp, "two.jsonl");
     writeFileSync(f2, `${JSON.stringify(cp)}\n${JSON.stringify({ type: "entry", orgId: "O1" })}\n`);
     expect(readAnchorFile(f2).length).toBe(1);

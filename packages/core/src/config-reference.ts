@@ -401,7 +401,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_AUDIT_ANCHOR_SINK_URL",
     area: "Audit",
     description:
-      "Where each org's latest signed audit anchor is POSTed, on every checkpoint and on an interval. The environment name of the `audit_anchor_sink_url` setting, which `turntable.toml` and `instance_set_setting` also set. Signed with `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE`.",
+      "Where each org's latest signed audit anchor is POSTed, on every checkpoint and on an interval. The environment name of the `audit_anchor_sink_url` setting, which `turntable.toml` and `instance_set_setting` also set. Signed with `TURNTABLE_AUDIT_WEBHOOK_SECRET` or `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE`.",
   },
   {
     name: "TURNTABLE_AUDIT_ANCHOR_EXPORT_MINUTES",
@@ -417,10 +417,16 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "POST audit batches here, signed with the secret file. A webhook on a private address needs `TURNTABLE_NET_ALLOW_HOSTS`.",
   },
   {
+    name: "TURNTABLE_AUDIT_WEBHOOK_SECRET",
+    area: "Audit",
+    description:
+      "HMAC secret for audit webhook batches and anchor exports (`x-longshore-signature: sha256=...`). Read once at boot and deleted from the environment. Setting it with the file variable is an error.",
+  },
+  {
     name: "TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE",
     area: "Audit",
     description:
-      "File holding the HMAC secret for audit webhook batches and anchor exports (`x-longshore-signature: sha256=...`).",
+      "File holding the same secret, for a secrets mount. Prefer the variable or a secrets mount over a file on the data volume.",
   },
   // ---- OIDC ----
   {

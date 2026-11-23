@@ -130,10 +130,13 @@ export async function verifyAudit(
   }
   const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
   for (const an of anchors) {
-    const key = publicKeys.get(an.keyId);
-    const sigOk =
-      key !== undefined &&
-      checkpointSignatureValid(key, { ...an, signature: an.signature } as AuditCheckpoint);
+    // An exported anchor carries no key id (the sink body is minimal): any trusted key may sign it.
+    const candidates = an.keyId === "" ? [...publicKeys.values()] : [publicKeys.get(an.keyId)];
+    const sigOk = candidates.some(
+      (key) =>
+        key !== undefined &&
+        checkpointSignatureValid(key, { ...an, signature: an.signature } as AuditCheckpoint),
+    );
     if (!sigOk)
       problems.push(`anchor checkpoint ${an.seq} has no valid signature under a trusted key`);
     const at = hashes.get(an.seq);

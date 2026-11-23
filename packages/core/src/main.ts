@@ -30,6 +30,7 @@ import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { createAnchorExporter } from "./audit/anchor-export";
+import { takeAuditWebhookSecret } from "./audit/webhook-secret";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import {
@@ -613,6 +614,8 @@ async function serve(args: string[]): Promise<void> {
   // The key is read once, here, and TURNTABLE_MASTER_KEY is deleted from the environment before
   // any provider, plugin or child process starts. Both a variable and a file is refused.
   const masterKeys: MasterKeys | undefined = takeMasterKeys(process.env);
+  // Likewise the audit webhook secret, which signs both the audit export and the anchor export.
+  const auditWebhookSecret = takeAuditWebhookSecret(process.env);
   // Before the database is opened (and so migrated) by this binary. SQLite only: on Postgres the
   // operator takes the backup with pg_dump.
   if (
@@ -802,11 +805,6 @@ async function serve(args: string[]): Promise<void> {
   const claimMode = process.env.TURNTABLE_CLAIM_INSTALLATIONS === "1";
   let checks: CheckReporter | undefined;
   const auditStops: (() => void)[] = [];
-  // One HMAC secret signs both the audit export and the anchor export.
-  const auditSecretFile = process.env.TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE?.trim();
-  const auditWebhookSecret = auditSecretFile
-    ? (await Bun.file(auditSecretFile).text()).trim()
-    : undefined;
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;

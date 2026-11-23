@@ -212,13 +212,26 @@ export async function auditCommand(args: string[]): Promise<number> {
 
 /**
  * Checkpoints from an export file (JSONL, entries ignored), the bodies an anchor sink received
- * (`{org, lines}` per line, or one such object), or a saved single checkpoint.
+ * (`{org_id, sequence, head_hash, time, signature}` per line, or the `{org, lines}` of the audit export), or a saved single checkpoint.
  */
 export function readAnchorFile(path: string): AnchorCheckpoint[] {
   const out: AnchorCheckpoint[] = [];
   const take = (o: Partial<AnchorCheckpoint> & { type?: string; lines?: unknown }): void => {
     if (Array.isArray(o.lines)) {
       for (const l of o.lines) take(l as Partial<AnchorCheckpoint> & { type?: string });
+      return;
+    }
+    const ex = o as { org_id?: unknown; sequence?: unknown; head_hash?: unknown; time?: unknown };
+    if (typeof ex.org_id === "string" && typeof ex.sequence === "number" && o.signature) {
+      // The minimal body an anchor sink receives: no key id, so verify tries the trusted keys.
+      out.push({
+        orgId: ex.org_id,
+        seq: ex.sequence,
+        hash: String(ex.head_hash),
+        signedAt: Number(ex.time),
+        keyId: "",
+        signature: o.signature,
+      });
       return;
     }
     const isCp = o.type === "checkpoint" || (o.type === undefined && o.signature !== undefined);

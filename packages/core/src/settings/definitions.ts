@@ -78,7 +78,7 @@ export const auditAnchorSinkUrlSetting = defineSetting({
   mcpEditable: false,
   mcpReason: "it decides where the audit anchors go, so only the instance administrator changes it",
   description:
-    "Where each org's latest audit anchor (chain head hash, sequence and time, signed with the org's audit key) is POSTed on every checkpoint and on the interval below. Empty turns the export off. Batches are signed with the secret in `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE`, never with a value kept here. A sink on a private address needs `TURNTABLE_NET_ALLOW_HOSTS`.",
+    "Where each org's latest audit anchor (chain head hash, sequence and time, signed with the org's audit key) is POSTed on every checkpoint and on the interval below. Empty turns the export off. The body is only the org id, sequence, head hash, time and signature. It is signed with `TURNTABLE_AUDIT_WEBHOOK_SECRET` or `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE`, never with a value kept here. A sink on a private address needs `TURNTABLE_NET_ALLOW_HOSTS`.",
   warning:
     "Clearing or repointing this removes the off-instance copy that detects a database rolled back to an earlier state.",
   env: ["TURNTABLE_AUDIT_ANCHOR_SINK_URL"],
