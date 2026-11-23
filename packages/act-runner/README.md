@@ -65,8 +65,13 @@ TERM !== "dumb"`, and two tests that assert the output has no escape sequence fa
    group with no watchdog. Known limits: the interpreter still has a controlling terminal
    (`/dev/tty` opens), since dropping it would need a new session; git prompts are off
    (`GIT_TERMINAL_PROMPT=0`). An interpreter that a step puts ahead of the shims (a `node` from
-   `setup-node`) is not wrapped; it still inherits the wrapped step's pipes when started from a
-   shimmed shell.
+   `setup-node`, a `python` from `setup-python`) is not wrapped; it still inherits the wrapped
+   step's pipes when started from a shimmed shell. Each shim run re-checks at start and at exit and
+   links a shim for an interpreter that now exists on PATH behind the shim directory and has none
+   yet (for example a `pwsh` installed with apt in a step). That resync is add-only (it never
+   removes a link, never links before the tool exists, and skips a tool whose directory is ahead of
+   the shims), and it makes each link under a temp name and renames it into place, so concurrent
+   shims never leave a partial link. A tool installed mid-job is wrapped from the next shimmed step.
 2. **P2: `CI=true` and `GITHUB_ACTIONS=true`.** act sets both for every step (`env["CI"] = "true"`
    and `env["GITHUB_ACTIONS"] = "true"` in `pkg/runner/run_context.go`, v0.2.97). Pinned by the
    end-to-end parity job.
