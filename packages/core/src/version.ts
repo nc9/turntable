@@ -1,5 +1,5 @@
-// `scripts/build.ts` replaces LONGSHORE_BUILD_VERSION at compile time via --define.
-declare const LONGSHORE_BUILD_VERSION: string | undefined;
+// `scripts/build.ts` replaces TURNTABLE_BUILD_VERSION at compile time via --define.
+declare const TURNTABLE_BUILD_VERSION: string | undefined;
 
 export const VERSION: string =
-  typeof LONGSHORE_BUILD_VERSION === "string" ? LONGSHORE_BUILD_VERSION : "0.0.0-dev";
+  typeof TURNTABLE_BUILD_VERSION === "string" ? TURNTABLE_BUILD_VERSION : "0.0.0-dev";

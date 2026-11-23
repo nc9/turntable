@@ -1,7 +1,7 @@
 // The check-runs API of GitHub, behind a small interface. Every request goes through the
 // SSRF-guarded outbound client (address validation, pinned resolution, redirect rules, caps); a
 // test injects its own.
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 
 export type CheckRunBody = {
   name?: string;
@@ -63,7 +63,7 @@ export function githubCheckRunsApi(
           authorization: `Bearer ${token}`,
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
-          "user-agent": "longshore",
+          "user-agent": "turntable",
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),

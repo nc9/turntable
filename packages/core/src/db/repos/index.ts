@@ -18,6 +18,7 @@ export * from "./api";
 export * from "./approve";
 export * from "./artifacts";
 export * from "./quotas";
+export * from "./project-settings";
 export * from "./approvals";
 export * from "./proxy-rules";
 export * from "./github";
@@ -45,7 +46,7 @@ export type JobAttempt = typeof s.jobAttempts.$inferSelect;
 
 const now = () => Date.now();
 
-/** Metadata `longshore run` or the forge supplies with a run. Free text is length-capped. */
+/** Metadata `turntable run` or the forge supplies with a run. Free text is length-capped. */
 export type RunInput = {
   workflowPath: string;
   event: string;
@@ -59,7 +60,7 @@ export type RunInput = {
   /** Run-level planning facts (JSON text); see `runs.plan`. */
   plan?: string | undefined;
   concurrencyGroup?: string | undefined;
-  /** Started by `longshore run`; see `runs.local`. */
+  /** Started by `turntable run`; see `runs.local`. */
   local?: boolean | undefined;
   /** `owner/name`, lower case, for runs the poller creates; see `runs.repo`. */
   repo?: string | undefined;

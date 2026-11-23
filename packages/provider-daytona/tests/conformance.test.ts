@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import { runConformance } from "@longshore/provider-conformance";
+import { runConformance } from "@turntable/provider-conformance";
 import { DaytonaApi, type DaytonaSandbox } from "../src/api";
 import { DaytonaProvider, type UsageRecord, withSandbox } from "../src/index";
 
@@ -63,7 +63,7 @@ if (!live) {
       const p = make();
       const spec = (egress: "none" | "open") => ({
         name: `verify-${egress}-${runId}`,
-        labels: { "longshore-run": runId },
+        labels: { "turntable-run": runId },
         ttlSeconds: 600,
         network: { egress },
       });

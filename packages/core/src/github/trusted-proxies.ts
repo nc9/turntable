@@ -1,9 +1,9 @@
 // Who the client of a request really is. A rate limit keyed on a spoofable header is no limit,
 // so the forwarded chain is believed only for the hops an operator named as their own proxies
-// (LONGSHORE_TRUSTED_PROXIES: comma-separated addresses and CIDR ranges). The client is the first
+// (TURNTABLE_TRUSTED_PROXIES: comma-separated addresses and CIDR ranges). The client is the first
 // hop, walking from the right, that is not one of them; and the chain is read at all only when
 // the socket peer itself is a trusted proxy.
-import { parseIp, type ParsedIp } from "@longshore/net";
+import { parseIp, type ParsedIp } from "@turntable/net";
 
 interface Range {
   family: 4 | 6;
@@ -45,14 +45,14 @@ export function parseTrustedProxies(raw: string | undefined): TrustedProxies {
     const [addr, prefix, extra] = entry.split("/");
     const p = addr ? parseIp(addr) : undefined;
     if (!p || extra !== undefined)
-      throw new Error(`LONGSHORE_TRUSTED_PROXIES: not an address or range: ${entry}`);
+      throw new Error(`TURNTABLE_TRUSTED_PROXIES: not an address or range: ${entry}`);
     const n = normalise(p);
     const max = n.family === 4 ? 32 : 128;
     // an IPv4-mapped IPv6 range counts its prefix in IPv6 bits: keep it simple and exact
     const bits =
       prefix === undefined ? max : Number(prefix) - (p.family === 6 && n.family === 4 ? 96 : 0);
     if (prefix !== undefined && (!/^\d{1,3}$/.test(prefix) || bits < 0 || bits > max)) {
-      throw new Error(`LONGSHORE_TRUSTED_PROXIES: bad prefix length in ${entry}`);
+      throw new Error(`TURNTABLE_TRUSTED_PROXIES: bad prefix length in ${entry}`);
     }
     ranges.push({ family: n.family, bytes: n.bytes, bits });
   }

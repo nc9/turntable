@@ -7,4 +7,4 @@ jobs:
       - name: Use a tool the image does not have
         run: |
           echo "about to call a missing tool"
-          longshore-missing-tool --version
+          turntable-missing-tool --version

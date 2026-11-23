@@ -224,3 +224,12 @@ export function renderParity(r: ParityReport, head: { run: string; sha: string |
   );
   return out.join("\n");
 }
+
+export type ParityVerdictWord = "match" | "diverge" | "pending";
+
+/** One word for a whole comparison: any divergence, else anything unfinished (or nothing paired), else match. */
+export function verdictOf(r: ParityReport): { word: ParityVerdictWord; text: string } {
+  if (r.totals.diverge > 0) return { word: "diverge", text: `${r.totals.diverge} diverge` };
+  if (r.totals.pending > 0 || r.rows.length === 0) return { word: "pending", text: "pending" };
+  return { word: "match", text: "match" };
+}

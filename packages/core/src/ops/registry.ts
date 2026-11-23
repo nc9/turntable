@@ -10,7 +10,7 @@ export type OpRegistry = {
   /** Ops that take no token: the signed statement in the request is the credential. */
   signatureOps(): Op[];
   /**
-   * Ops only the instance administrator can call (an `lsi_` token over REST). No org token of any
+   * Ops only the instance administrator can call (a `tti_` token over REST). No org token of any
    * role reaches them, and they are not MCP tools.
    */
   instanceOps(): Op[];

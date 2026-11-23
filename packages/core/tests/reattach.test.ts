@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import type { Provider } from "@longshore/provider-sdk";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   appendLogFenced,
   bindRepo,
@@ -25,7 +25,7 @@ import {
 import { claimNextAttempt } from "../src/db";
 import { executeJob } from "../src/run/job-exec";
 import type { RunStore } from "../src/run/store";
-import { SecretRegistry } from "@longshore/redact";
+import { SecretRegistry } from "@turntable/redact";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
 import { onPostgres } from "./pg-mode";
 
@@ -284,7 +284,7 @@ test.skipIf(onPostgres)(
   "kill -9 the worker while the job runs, let the job finish, reboot: success with the full log",
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "tt-kill9-attach-"));
-    const path = join(dir, "longshore.db");
+    const path = join(dir, "turntable.db");
     try {
       db = openDatabase(path);
       const org = await createOrg(db, { slug: "k", name: "k" });

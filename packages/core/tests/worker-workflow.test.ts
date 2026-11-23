@@ -4,9 +4,9 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import type { Provider } from "@longshore/provider-sdk";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   type Db,
   ensureLocalTenant,
@@ -24,7 +24,13 @@ import {
   updateAttempt,
 } from "../src/db";
 import { dispatch, registry } from "../src/ops";
-import { setEgressPolicy, setPolicy, showEgress, showPolicy } from "../src/ops/policy-cli";
+import {
+  setEgressPolicy,
+  setPolicy,
+  setSandboxPolicy,
+  showEgress,
+  showPolicy,
+} from "../src/ops/policy-cli";
 import { egressForRun } from "../src/scheduler/egress";
 import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
@@ -70,7 +76,7 @@ case "$J" in
     sleep 1
     printf '%s' "$out" ;;
   forger)
-    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[longshore: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[turntable: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
 esac
 case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
@@ -1501,7 +1507,7 @@ jobs:
     expect(egressForRun('{"trust":"trusted_pr","egress":"open"}')).toBe("open");
   });
 
-  test("longshore policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
+  test("turntable policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
     await expect(setEgressPolicy(db, "local", undefined, "wide")).rejects.toThrow();
     await expect(setEgressPolicy(db, "local", "nope", "open")).rejects.toThrow();
     const changed = await setEgressPolicy(db, "local", "local", "open");
@@ -1658,7 +1664,7 @@ jobs:
       // A job that prints the old marker text gets ordinary text and no cut.
       const forger = await text("forger");
       expect(forger.job.state).toBe("success");
-      expect(forger.log).toContain("[longshore: 99999 bytes of output omitted]");
+      expect(forger.log).toContain("[turntable: 99999 bytes of output omitted]");
       const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
         job_id: forger.job.id,
         attempt: 1,
@@ -1752,6 +1758,26 @@ jobs:
     });
     expect(ran.map((r) => r.length)).toEqual([1, 1, 1]);
     expect(new Set(ran.flat()).size).toBe(3);
+    // the API names each shard, the job they share and the step each owns
+    const token = (await mintToken(db, scope, "reader")).secret;
+    const got = await dispatch({ registry, db }, { kind: "bearer", token }, "get_run", {
+      run_id: run!.id,
+    });
+    const apiJobs = (got.ok ? (got.output as any) : undefined).jobs as {
+      job_key: string;
+      shard: { job: string; index: number; total: number; steps: string[] } | null;
+    }[];
+    expect(apiJobs.find((j) => j.job_key === "gate")!.shard).toBeNull();
+    expect(
+      apiJobs
+        .filter((j) => j.shard)
+        .map((j) => j.shard)
+        .toSorted((a, b) => a!.index - b!.index),
+    ).toEqual([
+      { job: "tests", index: 0, total: 3, steps: ["Audit engine tests"] },
+      { job: "tests", index: 1, total: 3, steps: ["Rules tests"] },
+      { job: "tests", index: 2, total: 3, steps: ["Rest tests"] },
+    ]);
     // the gate ran after every shard finished
     const finished = Math.max(
       ...after.filter((j) => j.jobKey.startsWith("tests[")).map((j) => j.finishedAt ?? 0),
@@ -1783,5 +1809,47 @@ jobs:
       "gate",
       "tests",
     ]);
+  });
+});
+
+describe("a project's sandbox snapshot", () => {
+  const ONE = `name: one
+on:
+  push:
+    branches: [main]
+jobs:
+  only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+  async function specsFor(snapshot: string | undefined): Promise<{ snapshot?: string }[]> {
+    if (snapshot !== undefined)
+      await setSandboxPolicy(db, "local", "local", { sandboxSnapshot: snapshot });
+    const gh = makeGithub();
+    gh.state.files.set("*", ONE);
+    await ingest(gh);
+    const specs: { snapshot?: string }[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    return specs;
+  }
+
+  test("the project's snapshot is on the sandbox spec of its jobs; with none set the spec names none", async () => {
+    const without = await specsFor(undefined);
+    expect(without.length).toBeGreaterThan(0);
+    expect(without.every((s) => s.snapshot === undefined)).toBe(true);
+  });
+
+  test("with a snapshot set, every sandbox of the project starts from it", async () => {
+    const withSnap = await specsFor("daytona-large");
+    expect(withSnap.length).toBeGreaterThan(0);
+    expect(withSnap.every((s) => s.snapshot === "daytona-large")).toBe(true);
   });
 });

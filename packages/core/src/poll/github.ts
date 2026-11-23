@@ -5,7 +5,7 @@
 import type { ForgePermission } from "../trust";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-import { safeFetch } from "@longshore/net";
+import { safeFetch } from "@turntable/net";
 
 /** What GitHub last said about the rate limit, from the `x-ratelimit-*` headers. */
 export type RateLimitInfo = {
@@ -131,7 +131,7 @@ export class GithubClient {
     const headers: Record<string, string> = {
       accept,
       "x-github-api-version": "2022-11-28",
-      "user-agent": "longshore-poller",
+      "user-agent": "turntable-poller",
       ...(this.#token ? { authorization: `Bearer ${this.#token}` } : {}),
       ...(cached ? { "if-none-match": cached.etag } : {}),
     };

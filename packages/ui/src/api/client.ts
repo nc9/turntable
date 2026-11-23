@@ -48,7 +48,7 @@ export type ApiCapabilities = {
   approve: boolean;
 };
 
-export interface LongshoreApi {
+export interface TurntableApi {
   readonly capabilities: ApiCapabilities;
   listOrgs(): Promise<Org[]>;
   listProjects(orgId: string): Promise<Project[]>;

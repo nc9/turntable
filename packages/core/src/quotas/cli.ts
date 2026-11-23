@@ -1,4 +1,4 @@
-// `longshore quotas show|set`: the instance operator's tool, on the host, against the data
+// `turntable quotas show|set`: the instance operator's tool, on the host, against the data
 // directory (like `token`, `policy` and `approvals`). Quotas limit tenants, so they are not
 // settable over the API by the tenant's own tokens: only someone who can run this on the server,
 // or hold an instance token (`set_quotas`, REST only), can change them. Reading them is `get_quotas` (REST and MCP, org-level reader token).
@@ -7,10 +7,10 @@ import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
 import { getOrgBySlug, getOrgQuotas, quotaStatuses, quotaUsage, setOrgQuotas } from "../db/repos";
 
-export const QUOTAS_USAGE = `Usage: longshore quotas show --org <slug> [--data-dir ./data]
-       longshore quotas get --url <https://host> --org <slug> [--token-file <path>]
+export const QUOTAS_USAGE = `Usage: turntable quotas show --org <slug> [--data-dir ./data]
+       turntable quotas get --url <https://host> --org <slug> [--token-file <path>]
                             (remote read over REST with an org-level reader token)
-       longshore quotas set --org <slug> [--data-dir ./data]
+       turntable quotas set --org <slug> [--data-dir ./data]
                             [--max-concurrent <n|none>] [--max-runs-per-hour <n|none>]
                             [--max-sandbox-minutes-per-day <n|none>] [--max-log-bytes <n|none>]
                             [--max-stored-bytes <n|none>]
@@ -47,14 +47,14 @@ export async function quotasCommand(args: string[]): Promise<number> {
       args: rest,
       options: {
         org: { type: "string" },
-        "data-dir": { type: "string", default: process.env.LONGSHORE_DATA_DIR ?? "./data" },
+        "data-dir": { type: "string", default: process.env.TURNTABLE_DATA_DIR ?? "./data" },
         ...Object.fromEntries(Object.keys(FLAGS).map((k) => [k, { type: "string" as const }])),
       },
       strict: true,
     }));
   } catch (e) {
     console.error(
-      `longshore quotas: ${e instanceof Error ? e.message : "bad arguments"}\n\n${QUOTAS_USAGE}`,
+      `turntable quotas: ${e instanceof Error ? e.message : "bad arguments"}\n\n${QUOTAS_USAGE}`,
     );
     return 2;
   }
@@ -62,7 +62,7 @@ export async function quotasCommand(args: string[]): Promise<number> {
     console.error(QUOTAS_USAGE);
     return 2;
   }
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     const org = await getOrgBySlug(db, values.org);
     if (!org) {
@@ -88,7 +88,7 @@ export async function quotasCommand(args: string[]): Promise<number> {
     }
     return 0;
   } catch (e) {
-    console.error(`longshore quotas: ${e instanceof Error ? e.message : "failed"}`);
+    console.error(`turntable quotas: ${e instanceof Error ? e.message : "failed"}`);
     return 1;
   } finally {
     db.close();

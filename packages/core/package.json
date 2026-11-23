@@ -1,5 +1,5 @@
 {
-  "name": "@longshore/core",
+  "name": "@turntable/core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,21 +7,21 @@
     "./realtime-protocol": "./src/realtime/protocol.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "typecheck": "bun check",
     "db:generate": "bun run scripts/db-generate.ts",
     "db:pg-schema": "bun run scripts/gen-pg-schema.ts",
     "db:embed": "bun run scripts/gen-migrations.ts",
     "openapi:gen": "bun run scripts/gen-openapi.ts"
   },
   "dependencies": {
-    "@longshore/act-runner": "workspace:*",
-    "@longshore/net": "workspace:*",
-    "@longshore/provider-daytona": "workspace:*",
-    "@longshore/provider-docker": "workspace:*",
-    "@longshore/provider-sdk": "workspace:*",
-    "@longshore/proxy": "workspace:*",
-    "@longshore/redact": "workspace:*",
-    "@longshore/signer": "workspace:*",
+    "@turntable/act-runner": "workspace:*",
+    "@turntable/net": "workspace:*",
+    "@turntable/provider-daytona": "workspace:*",
+    "@turntable/provider-docker": "workspace:*",
+    "@turntable/provider-sdk": "workspace:*",
+    "@turntable/proxy": "workspace:*",
+    "@turntable/redact": "workspace:*",
+    "@turntable/signer": "workspace:*",
     "@modelcontextprotocol/sdk": "1.32.2",
     "drizzle-orm": "0.45.4",
     "yaml": "2.9.1",

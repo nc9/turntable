@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
-import type { SafeFetch } from "@longshore/net";
+import type { SafeFetch } from "@turntable/net";
 import { chainedAudit, createReleaseRequest, type Db } from "../src/db";
 import * as s from "../src/db/schema";
 import { AttestationStore } from "../src/release/attest";

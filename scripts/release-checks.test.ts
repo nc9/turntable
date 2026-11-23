@@ -18,7 +18,7 @@ function dist(
 ): string {
   const dir = mkdtempSync(join(tmp, "dist-"));
   const files: Record<string, string> = Object.fromEntries(BINARIES.map((b) => [b, `bin ${b}`]));
-  files["longshore-0.1.0.cdx.json"] = "{}";
+  files["turntable-0.1.0.cdx.json"] = "{}";
   if (over.extra) files[over.extra[0]] = over.extra[1];
   const lines = Object.entries(files)
     .filter(([n]) => n !== over.omit)
@@ -36,14 +36,14 @@ describe("SHA256SUMS", () => {
     expect(checkSums(dist())).toEqual([]);
   });
   test("a missing binary entry, a changed file, an unlisted file and a malformed line fail", () => {
-    expect(checkSums(dist({ omit: "longshore-linux-arm64" })).map((p) => p.what)).toEqual(
+    expect(checkSums(dist({ omit: "turntable-linux-arm64" })).map((p) => p.what)).toEqual(
       expect.arrayContaining([
-        "longshore-linux-arm64 is not in SHA256SUMS",
-        "longshore-linux-arm64 is in dist but not in SHA256SUMS",
+        "turntable-linux-arm64 is not in SHA256SUMS",
+        "turntable-linux-arm64 is in dist but not in SHA256SUMS",
       ]),
     );
-    expect(checkSums(dist({ tamper: "longshore-linux-x64" })).map((p) => p.what)).toContain(
-      "longshore-linux-x64 does not match its SHA256SUMS entry",
+    expect(checkSums(dist({ tamper: "turntable-linux-x64" })).map((p) => p.what)).toContain(
+      "turntable-linux-x64 does not match its SHA256SUMS entry",
     );
     expect(
       checkSums(dist({ extra: ["notes.txt", "x"], omit: "notes.txt" })).map((p) => p.what),
@@ -53,7 +53,7 @@ describe("SHA256SUMS", () => {
   });
   test("a second SBOM, or none, is a problem", () => {
     expect(
-      checkSums(dist({ extra: ["longshore-0.2.0.cdx.json", "{}"] })).map((p) => p.what),
+      checkSums(dist({ extra: ["turntable-0.2.0.cdx.json", "{}"] })).map((p) => p.what),
     ).toContain("expected one SBOM file in dist, found 2");
   });
 });
@@ -113,9 +113,9 @@ describe("reproducibility comparison", () => {
     expect(compareHashes({}, {})).toEqual([]);
   });
   test("SHA256SUMS lines parse, other lines are ignored", () => {
-    expect(parseSums(`${a}  longshore-linux-x64\nnoise\n${b}  longshore-darwin-arm64\n`)).toEqual({
-      "longshore-linux-x64": a,
-      "longshore-darwin-arm64": b,
+    expect(parseSums(`${a}  turntable-linux-x64\nnoise\n${b}  turntable-darwin-arm64\n`)).toEqual({
+      "turntable-linux-x64": a,
+      "turntable-darwin-arm64": b,
     });
   });
 });
@@ -156,7 +156,7 @@ describe("the output directory guard", () => {
       `${repo}/..`,
       `${home}/.`,
     ]) {
-      expect(() => assertSafeDist(bad, repo, home)).toThrow(/refusing LONGSHORE_DIST/);
+      expect(() => assertSafeDist(bad, repo, home)).toThrow(/refusing TURNTABLE_DIST/);
     }
   });
   test("a directory inside the repository, or elsewhere, is allowed", () => {
@@ -177,14 +177,14 @@ describe("the output directory guard", () => {
 describe("rebuilt binaries against the published list", () => {
   const h = (s: string) => sha(s);
   test("equal linux hashes pass; a different, missing or absent one fails; darwin is ignored", () => {
-    const built = { "longshore-linux-x64": h("a"), "longshore-darwin-arm64": h("unsigned") };
-    const published = { "longshore-linux-x64": h("a"), "longshore-darwin-arm64": h("signed") };
+    const built = { "turntable-linux-x64": h("a"), "turntable-darwin-arm64": h("unsigned") };
+    const published = { "turntable-linux-x64": h("a"), "turntable-darwin-arm64": h("signed") };
     expect(checkAgainstSums(built, published)).toEqual([]);
-    expect(checkAgainstSums(built, { ...published, "longshore-linux-x64": h("b") })[0]).toContain(
+    expect(checkAgainstSums(built, { ...published, "turntable-linux-x64": h("b") })[0]).toContain(
       "differs from the published",
     );
     expect(checkAgainstSums(built, {})[0]).toContain("is not in the published");
-    expect(checkAgainstSums({ "longshore-darwin-arm64": h("x") }, published)[0]).toContain(
+    expect(checkAgainstSums({ "turntable-darwin-arm64": h("x") }, published)[0]).toContain(
       "no linux binary",
     );
   });

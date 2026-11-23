@@ -1,16 +1,16 @@
-// `longshore usage`: read sandbox time per UTC day (and per project) from a server over REST
+// `turntable usage`: read sandbox time per UTC day (and per project) from a server over REST
 // (`sandbox_usage`), with a reader token read from a file. It never opens the database. A token
 // bound to one project sees only that project.
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { parseArgs } from "node:util";
 import { baseString, parseBaseUrl } from "../channel/api";
 import { readTokenFile } from "../mcp/stdio";
 
-export const USAGE_USAGE = `Usage: longshore usage --url <https://host> [--days <1-92>] [--by-project] [--json]
+export const USAGE_USAGE = `Usage: turntable usage --url <https://host> [--days <1-92>] [--by-project] [--json]
                        [--token-file <path>] [--allow-insecure]
 
 Sandbox time per UTC day, from the provider's create to its confirmed destroy. --by-project adds
-each project's own days and total. LONGSHORE_URL and LONGSHORE_TOKEN_FILE are read when the
+each project's own days and total. TURNTABLE_URL and TURNTABLE_TOKEN_FILE are read when the
 flags are absent.`;
 
 type Day = {
@@ -97,13 +97,13 @@ export async function usageCommand(args: string[]): Promise<number> {
     }));
   } catch (e) {
     console.error(
-      `longshore usage: ${e instanceof Error ? e.message : "bad arguments"}\n\n${USAGE_USAGE}`,
+      `turntable usage: ${e instanceof Error ? e.message : "bad arguments"}\n\n${USAGE_USAGE}`,
     );
     return 2;
   }
   try {
-    const url = values.url ?? env("LONGSHORE_URL");
-    const tokenFile = values["token-file"] ?? env("LONGSHORE_TOKEN_FILE");
+    const url = values.url ?? env("TURNTABLE_URL");
+    const tokenFile = values["token-file"] ?? env("TURNTABLE_TOKEN_FILE");
     if (!url || !tokenFile) throw new Error("--url and a token file are required");
     let days: number | undefined;
     if (values.days !== undefined) {
@@ -121,7 +121,7 @@ export async function usageCommand(args: string[]): Promise<number> {
     console.log(values.json ? JSON.stringify(view, null, 2) : formatUsage(view));
     return 0;
   } catch (e) {
-    console.error(`longshore usage: ${e instanceof Error ? e.message : "failed"}`);
+    console.error(`turntable usage: ${e instanceof Error ? e.message : "failed"}`);
     return 1;
   }
 }

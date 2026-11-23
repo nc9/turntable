@@ -30,7 +30,7 @@ const view: UsageView = {
   ],
 };
 
-describe("longshore usage", () => {
+describe("turntable usage", () => {
   test("formats the org days, the total and each project", () => {
     const text = formatUsage(view);
     expect(text).toContain("2026-11-22");

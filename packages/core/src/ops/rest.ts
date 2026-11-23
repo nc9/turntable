@@ -95,7 +95,7 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
  * can fall through. Only `auth.type === "token"` ops get routes.
  */
 export type RestOptions = {
-  /** Trust `x-forwarded-proto` from a proxy you control (LONGSHORE_TRUST_FORWARDED_PROTO=1). */
+  /** Trust `x-forwarded-proto` from a proxy you control (TURNTABLE_TRUST_FORWARDED_PROTO=1). */
   trustForwardedProto?: boolean;
 };
 
@@ -176,7 +176,7 @@ export function createRestApi(
       }
       if (!bearer) {
         return failure(new OpError("unauthenticated", "missing bearer token"), {
-          "www-authenticate": 'Bearer realm="longshore"',
+          "www-authenticate": 'Bearer realm="turntable"',
         });
       }
       if (route.op.secretInputFields.length > 0 && !secureTransport(req, opts, peer)) {
@@ -195,7 +195,7 @@ export function createRestApi(
         return failure(
           result.error,
           result.error.code === "unauthenticated"
-            ? { "www-authenticate": 'Bearer realm="longshore"' }
+            ? { "www-authenticate": 'Bearer realm="turntable"' }
             : {},
         );
       }
@@ -206,7 +206,7 @@ export function createRestApi(
       );
     } catch (err) {
       if (err instanceof OpError) return failure(err);
-      console.error("longshore: REST adapter error", err);
+      console.error("turntable: REST adapter error", err);
       return failure(new OpError("internal", "internal error"));
     }
   };

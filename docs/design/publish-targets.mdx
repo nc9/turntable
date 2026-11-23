@@ -19,7 +19,7 @@ Three targets, each with a different kind of credential:
 
 ## Two ways to publish
 
-**Strict (declarative).** The workflow only builds and records artifacts. The release lane, after it has verified and signed them, performs the publish itself from the bytes it verified. No job ever sees a credential or runs a publish command. The project declares *what* to publish in its Longshore configuration (target, package or image name, which recorded artifacts), never in the workflow file, which untrusted pull requests can edit.
+**Strict (declarative).** The workflow only builds and records artifacts. The release lane, after it has verified and signed them, performs the publish itself from the bytes it verified. No job ever sees a credential or runs a publish command. The project declares *what* to publish in its Turntable configuration (target, package or image name, which recorded artifacts), never in the workflow file, which untrusted pull requests can edit.
 
 **Compat.** An existing workflow already runs `npm publish` or `docker push` or `gh release upload`. The publish step runs in a job, and the secrets proxy attaches the credential to its requests, only to the registry, only for the one package, only while the release lane has approved this run. The job never holds the credential, but it does choose the bytes, so the proxy and the lane check them.
 
@@ -47,7 +47,7 @@ Either way: if the request is not approved, there are no rules, the proxy refuse
 
 **What the job can and cannot do.** It can publish the approved tarball under the approved package, once per version (npm refuses a repeat). It cannot publish another package, unpublish, change owners or tokens, read other packages' metadata, or reach any other host. It cannot read the token.
 
-**Provenance.** npm's own provenance needs a trusted publisher, which a self-hosted issuer cannot be. Longshore instead attaches its own SLSA provenance, signed by the release lane's key, as a release asset next to the tarball (`<name>-<version>.intoto.json`), and `longshore verify` checks a download against it. This is stated in the package's documentation, not claimed as npm provenance.
+**Provenance.** npm's own provenance needs a trusted publisher, which a self-hosted issuer cannot be. Turntable instead attaches its own SLSA provenance, signed by the release lane's key, as a release asset next to the tarball (`<name>-<version>.intoto.json`), and `turntable verify` checks a download against it. This is stated in the package's documentation, not claimed as npm provenance.
 
 ## Container images (ghcr.io)
 
@@ -104,7 +104,7 @@ All of it goes into the per-org hash-chained audit log, written before the crede
 1. This document.
 2. Strict GitHub Releases and strict npm in the lane, with per-target state, retries and the audit rows. The lane gets a write credential for GitHub minted per publish.
 3. The release proxy in the lane, and the compat rules: npm (`npmPackage`, `expectDigests`), GitHub (`uploads.github.com`, the draft body check), then `oci-registry` with token exchange and manifest pinning.
-4. A reference workflow for a hosted hop: a workflow on a platform that supports trusted publishing downloads the release, verifies the signature with `longshore verify`, and publishes by trusted publishing, for projects that want npm's own provenance.
+4. A reference workflow for a hosted hop: a workflow on a platform that supports trusted publishing downloads the release, verifies the signature with `turntable verify`, and publishes by trusted publishing, for projects that want npm's own provenance.
 5. A spike on PyPI through a cloud identity chain, written up whatever the result.
 
 ## Open questions

@@ -48,11 +48,7 @@ export type ApprovalVerdict =
       required: number;
       have: number;
       reason:
-        | "insufficient_approvals"
-        | "expired"
-        | "self_approval"
-        | "run_not_found"
-        | "sha_mismatch";
+        "insufficient_approvals" | "expired" | "self_approval" | "run_not_found" | "sha_mismatch";
     };
 
 export interface ApprovalVerifier {

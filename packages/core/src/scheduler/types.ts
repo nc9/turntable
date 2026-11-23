@@ -1,5 +1,5 @@
-import type { Provider } from "@longshore/provider-sdk";
-import type { SecretRegistry } from "@longshore/redact";
+import type { Provider } from "@turntable/provider-sdk";
+import type { SecretRegistry } from "@turntable/redact";
 import type { ProxyAccess } from "../proxy";
 import type { Claim, Job, JobAttempt, Run, Scope } from "../db/repos";
 import type { StepInput } from "../db/repos";

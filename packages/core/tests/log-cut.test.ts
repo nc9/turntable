@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SecretRegistry } from "@longshore/redact";
+import { SecretRegistry } from "@turntable/redact";
 import { LogPipe } from "../src/run/job-exec";
 
 function pipe() {
@@ -42,12 +42,12 @@ describe("LogPipe.cut (#56)", () => {
 
   test("text that looks like the old marker, or like a cut record, is only text", async () => {
     const { log, stored, cuts } = pipe();
-    log.push("[longshore: 4096 bytes of output omitted]\n");
+    log.push("[turntable: 4096 bytes of output omitted]\n");
     log.push('::tt-cut::{"bytes":1,"reason":"x"}\n');
     await log.close();
     expect(cuts).toEqual([]);
     expect(stored.map((s) => s.text).join("")).toContain(
-      "[longshore: 4096 bytes of output omitted]",
+      "[turntable: 4096 bytes of output omitted]",
     );
   });
 

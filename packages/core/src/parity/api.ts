@@ -1,9 +1,9 @@
 // The two read-only sides of a parity comparison: our run over the REST API with a reader token,
 // and the check runs another CI posted for a commit, from GitHub's checks API. Neither side is
 // written to. Tokens go in a header only; redirects are refused so a token cannot be carried to
-// another host. Every request goes through @longshore/net.
-import { foldShardStates } from "@longshore/act-runner";
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+// another host. Every request goes through @turntable/net.
+import { foldShardStates } from "@turntable/act-runner";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { baseString } from "../channel/api";
 import type { OurJob, TheirCheck } from "./compare";
 
@@ -27,6 +27,33 @@ async function getJson(
     throw new ParityApiError(`${what}: ${msg}`);
   }
   return res.json();
+}
+
+export type OurRunRef = { id: string; sha: string | null; state: string };
+
+/** The newest runs matching a branch and event, newest first (one page, at most 100). */
+export async function listOurRuns(o: {
+  baseUrl: URL;
+  org: string;
+  token: string;
+  branch?: string | undefined;
+  event?: string | undefined;
+  limit: number;
+  fetch?: SafeFetch;
+}): Promise<OurRunRef[]> {
+  const f = o.fetch ?? createHttpClient({ allowHosts: [o.baseUrl.hostname] }).fetch;
+  const u = new URL(`${baseString(o.baseUrl)}/api/v1/runs`);
+  u.searchParams.set("org", o.org);
+  u.searchParams.set("limit", String(Math.min(100, Math.max(1, o.limit))));
+  if (o.branch) u.searchParams.set("branch", o.branch);
+  if (o.event) u.searchParams.set("event", o.event);
+  const body = (await getJson(
+    f,
+    u,
+    { authorization: `Bearer ${o.token}`, accept: "application/json" },
+    "our runs",
+  )) as { runs?: { id: string; sha: string | null; state: string }[] };
+  return (body.runs ?? []).map((r) => ({ id: r.id, sha: r.sha, state: r.state }));
 }
 
 export type OurRun = { id: string; sha: string | null; jobs: OurJob[] };

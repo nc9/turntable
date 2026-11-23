@@ -1,5 +1,5 @@
 // Removes every registered secret form from a response, bytes and header values alike.
-import { REPLACEMENT, type SecretRegistry } from "@longshore/redact";
+import { REPLACEMENT, type SecretRegistry } from "@turntable/redact";
 
 /** Replaces each form (longest first) in `buf`; returns the new bytes and how many were replaced. */
 export function scrubBytes(

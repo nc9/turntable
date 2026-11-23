@@ -1,5 +1,5 @@
 {
-  "name": "longshore-workspace",
+  "name": "turntable-workspace",
   "version": "0.0.0",
   "private": true,
   "workspaces": [
@@ -7,9 +7,8 @@
   ],
   "type": "module",
   "scripts": {
-    "format": "oxfmt .",
-    "format:check": "oxfmt --check .",
-    "lint": "oxlint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check",
     "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner typecheck:daytona typecheck:net typecheck:proxy typecheck:signer",
     "test": "bun run scripts/run-tests.ts",
     "build": "bun run scripts/build.ts",
@@ -18,13 +17,13 @@
     "typecheck:provider-sdk": "bun run --cwd packages/provider-sdk typecheck",
     "typecheck:provider-conformance": "bun run --cwd packages/provider-conformance typecheck",
     "test:core": "bun test packages/core/tests/db.test.ts packages/core/tests/server.test.ts packages/core/tests/job-state.test.ts",
-    "test:provider": "bun test packages/provider-sdk/tests/sdk.test.ts packages/provider-sdk/tests/read-capped.test.ts packages/provider-conformance/tests/fake.test.ts packages/provider-conformance/tests/fake-faults.test.ts packages/provider-docker/tests/commands.test.ts",
+    "test:provider": "bun test packages/provider-sdk/tests/sdk.test.ts packages/provider-sdk/tests/read-capped.test.ts packages/provider-sdk/tests/wrapper-watcher.test.ts packages/provider-sdk/tests/legacy-env.test.ts packages/provider-conformance/tests/fake.test.ts packages/provider-conformance/tests/fake-faults.test.ts packages/provider-docker/tests/commands.test.ts packages/provider-docker/tests/legacy-labels.test.ts",
     "typecheck:provider-docker": "bun run --cwd packages/provider-docker typecheck",
     "typecheck:redact": "bun run --cwd packages/redact typecheck",
     "typecheck:ui": "bun run --cwd packages/ui typecheck",
     "typecheck:daytona": "bun run --cwd packages/provider-daytona typecheck",
-    "test:daytona": "bun test packages/provider-daytona/tests/policy.test.ts packages/provider-daytona/tests/provider.test.ts packages/provider-daytona/tests/env-file.test.ts packages/provider-daytona/tests/conformance-mock.test.ts packages/provider-daytona/tests/proxy-path.test.ts",
-    "test:ui": "bun test packages/ui/tests/log-parser.test.ts packages/ui/tests/sandbox.test.ts packages/ui/tests/fixture.test.ts packages/ui/tests/http-adapter.test.ts packages/ui/tests/openapi-contract.test.ts packages/ui/tests/polling-realtime.test.ts packages/ui/tests/ws-adapter.test.ts packages/ui/tests/ui-lib.test.ts packages/ui/tests/webauthn-lib.test.ts packages/ui/tests/approval-statement.test.ts packages/core/tests/ui-assets.test.ts",
+    "test:daytona": "bun test packages/provider-daytona/tests/policy.test.ts packages/provider-daytona/tests/provider.test.ts packages/provider-daytona/tests/env-file.test.ts packages/provider-daytona/tests/conformance-mock.test.ts packages/provider-daytona/tests/proxy-path.test.ts packages/provider-daytona/tests/legacy-labels.test.ts",
+    "test:ui": "bun test packages/ui/tests/log-parser.test.ts packages/ui/tests/sandbox.test.ts packages/ui/tests/fixture.test.ts packages/ui/tests/http-adapter.test.ts packages/ui/tests/openapi-contract.test.ts packages/ui/tests/polling-realtime.test.ts packages/ui/tests/ws-adapter.test.ts packages/ui/tests/ui-lib.test.ts packages/ui/tests/shards.test.ts packages/ui/tests/webauthn-lib.test.ts packages/ui/tests/approval-statement.test.ts packages/core/tests/ui-assets.test.ts",
     "test:redact": "bun test packages/redact/tests/redact.test.ts",
     "test:docker": "TT_DOCKER_CONFORMANCE=1 bun test packages/provider-docker/tests/conformance.test.ts",
     "test:core2": "bun test packages/core/tests/migration-parity.test.ts packages/core/tests/tenancy-guard.test.ts packages/core/tests/tenancy.test.ts packages/core/tests/db-transaction.test.ts",
@@ -34,7 +33,7 @@
     "test:act": "bun test packages/act-runner/tests/plan.test.ts packages/act-runner/tests/events.test.ts packages/act-runner/tests/checkout-stub.test.ts packages/act-runner/tests/missing-tool.test.ts packages/act-runner/tests/permissions.test.ts packages/act-runner/tests/run-job.test.ts packages/act-runner/tests/expr.test.ts packages/act-runner/tests/triggers.test.ts packages/act-runner/tests/cut.test.ts",
     "test:missing-tool-e2e": "TT_ACT_E2E=1 bun test packages/core/tests/missing-tool-e2e.test.ts",
     "test:proxy-e2e": "TT_PROXY_E2E=1 bun test packages/core/tests/proxy-e2e.test.ts",
-    "test:cache-encrypted": "LONGSHORE_TEST_CACHE_ENCRYPT=1 bun test packages/core/tests/cache.test.ts",
+    "test:cache-encrypted": "TURNTABLE_TEST_CACHE_ENCRYPT=1 bun test packages/core/tests/cache.test.ts",
     "test:cache-blobs": "bun test packages/core/tests/cache-blob-encryption.test.ts",
     "test:vault-e2e": "TT_VAULT_E2E=1 bun test packages/core/tests/vault-jwt-e2e.test.ts",
     "test:cache-e2e": "TT_CACHE_E2E=1 bun test packages/core/tests/cache-e2e.test.ts",
@@ -46,7 +45,7 @@
     "test:act2": "bun test packages/act-runner/tests/workflow-plan.test.ts packages/act-runner/tests/job-shards.test.ts packages/act-runner/tests/split.test.ts packages/act-runner/tests/readiness.test.ts packages/act-runner/tests/vendored-ci-plan.test.ts packages/act-runner/tests/dogfood-ci-plan.test.ts packages/act-runner/tests/step-env.test.ts",
     "test:sched": "bun test packages/core/tests/scheduler.test.ts packages/core/tests/poll.test.ts packages/core/tests/reattach.test.ts packages/core/tests/worker-workflow.test.ts packages/core/tests/providers.test.ts packages/core/tests/isolation.test.ts packages/core/tests/egress.test.ts",
     "test:scripts": "bun test scripts/rcodesign.test.ts scripts/supply-chain.test.ts scripts/runner-toolset.test.ts scripts/public-hygiene.test.ts scripts/dry-run-provenance.test.ts scripts/check-pins.test.ts scripts/release-checks.test.ts",
-    "test:prereqs": "bun test packages/core/tests/release-prereqs.test.ts packages/core/tests/legacy-names.test.ts",
+    "test:prereqs": "bun test packages/core/tests/release-prereqs.test.ts packages/core/tests/legacy-names.test.ts packages/core/tests/legacy-env.test.ts",
     "test:github": "bun test packages/core/tests/secrets.test.ts packages/core/tests/github-installations.test.ts packages/core/tests/github-webhook.test.ts packages/core/tests/github-app.test.ts packages/core/tests/github-hosted-manifest.test.ts packages/core/tests/github-serve.test.ts",
     "test:trust": "bun test packages/core/tests/trust.test.ts packages/core/tests/workflow-taint.test.ts",
     "test:oidc": "bun test packages/core/tests/oidc.test.ts packages/core/tests/job-oidc.test.ts packages/core/tests/job-oidc-runner.test.ts",
@@ -69,11 +68,7 @@
     "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/http.test.ts packages/proxy/tests/proxy.test.ts packages/core/tests/proxy-wiring.test.ts packages/core/tests/proxy-rules-ops.test.ts packages/core/tests/job-token.test.ts packages/core/tests/job-token-proxy.test.ts packages/core/tests/job-token-runner.test.ts",
     "typecheck:signer": "bun run --cwd packages/signer typecheck",
     "test:signer": "bun test packages/signer/tests/signer.test.ts packages/signer/tests/kms.test.ts packages/core/tests/signing.test.ts packages/core/tests/verify-cli.test.ts",
-    "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts"
-  },
-  "devDependencies": {
-    "@typescript/native-preview": "7.0.0-dev.20260707.2",
-    "oxfmt": "0.77.0",
-    "oxlint": "1.92.0"
+    "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts",
+    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts"
   }
 }

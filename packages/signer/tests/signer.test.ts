@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  LONGSHORE_BUILD_TYPE,
+  TURNTABLE_BUILD_TYPE,
   LocalSigner,
   PAYLOAD_TYPE,
   PREDICATE_TYPE,
@@ -21,7 +21,7 @@ const memoryVault = (): KeyVault & { map: Map<string, string> } => {
 
 const artifact = Buffer.from("the release binary");
 const input = {
-  builderId: "https://ci.example.test/longshore",
+  builderId: "https://ci.example.test/turntable",
   invocationId: "run1",
   repo: "acme/web",
   workflowPath: ".github/workflows/release.yml",
@@ -35,7 +35,7 @@ const input = {
     // The same commit named twice is listed once.
     { uses: "actions/checkout@v4", repo: "actions/checkout", ref: "v4", sha: "c".repeat(40) },
   ],
-  subjects: [{ name: "longshore-linux-x64", sha256: sha256Hex(artifact) }],
+  subjects: [{ name: "turntable-linux-x64", sha256: sha256Hex(artifact) }],
   byproducts: [{ name: "sbom.json", sha256: "d".repeat(64) }],
   startedOn: "2026-11-22T00:00:00.000Z",
   finishedOn: "2026-11-22T00:05:00.000Z",
@@ -141,13 +141,13 @@ describe("DSSE envelopes", () => {
 describe("provenance contents", () => {
   const statement = buildStatement(input);
 
-  test("subjects are the attested artifacts; the predicate is SLSA v1 with Longshore's build type", () => {
+  test("subjects are the attested artifacts; the predicate is SLSA v1 with Turntable's build type", () => {
     expect(statement.predicateType).toBe(PREDICATE_TYPE);
     expect(statement.subject).toEqual([
-      { name: "longshore-linux-x64", digest: { sha256: sha256Hex(artifact) } },
+      { name: "turntable-linux-x64", digest: { sha256: sha256Hex(artifact) } },
     ]);
-    expect(statement.predicate.buildDefinition.buildType).toBe(LONGSHORE_BUILD_TYPE);
-    expect(statement.predicate.runDetails.builder.id).toBe("https://ci.example.test/longshore");
+    expect(statement.predicate.buildDefinition.buildType).toBe(TURNTABLE_BUILD_TYPE);
+    expect(statement.predicate.runDetails.builder.id).toBe("https://ci.example.test/turntable");
     expect(statement.predicate.runDetails.metadata).toEqual({
       invocationId: "run1",
       startedOn: "2026-11-22T00:00:00.000Z",
@@ -196,13 +196,13 @@ describe("verifying an artifact", () => {
   test("the artifact, the provenance and the right key verify", async () => {
     const { key, envelope } = await signed();
     const v = verifyArtifact({ artifact, envelope, publicKeyPem: key.publicKeyPem });
-    expect(v).toMatchObject({ ok: true, subject: "longshore-linux-x64", keyid: key.keyid });
+    expect(v).toMatchObject({ ok: true, subject: "turntable-linux-x64", keyid: key.keyid });
     expect(
       verifyArtifact({
         artifact,
         envelope,
         publicKeyPem: key.publicKeyPem,
-        name: "longshore-linux-x64",
+        name: "turntable-linux-x64",
       }).ok,
     ).toBe(true);
   });

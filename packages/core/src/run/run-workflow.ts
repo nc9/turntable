@@ -6,9 +6,9 @@ import {
   type ActionRefResolver,
   type Value,
   type WorkflowEvent,
-} from "@longshore/act-runner";
-import type { SafeFetch } from "@longshore/net";
-import type { Provider } from "@longshore/provider-sdk";
+} from "@turntable/act-runner";
+import type { SafeFetch } from "@turntable/net";
+import type { Provider } from "@turntable/provider-sdk";
 import { type Db } from "../db";
 import {
   appendAudit,
@@ -50,7 +50,7 @@ export interface RunWorkflowOptions {
   readFile: (path: string) => string | undefined;
   resolver?: ActionRefResolver;
   /**
-   * The operator's GitHub token (default: LONGSHORE_GITHUB_TOKEN) for resolving and verifying
+   * The operator's GitHub token (default: TURNTABLE_GITHUB_TOKEN) for resolving and verifying
    * actions. A local run is the operator's own checkout, so it is used for any action that
    * passes the public check (a private or missing repo is refused with the same words).
    */
@@ -231,7 +231,7 @@ export async function runWorkflowLocal(o: RunWorkflowOptions): Promise<RunWorkfl
     ...(resolver ? { resolver } : {}),
     forgeToken: createForgeToken({
       db: o.db,
-      envToken: o.githubToken ?? (process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined),
+      envToken: o.githubToken ?? (process.env.TURNTABLE_GITHUB_TOKEN?.trim() || undefined),
       log: (m) => o.out(`warning: ${m}\n`),
     }),
     ...(o.reachable ? { reachable: o.reachable } : {}),

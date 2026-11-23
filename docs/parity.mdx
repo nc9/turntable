@@ -3,19 +3,19 @@ title: Parity with another CI
 description: Compare one of your runs with the checks another CI posted for the same commit, job by job.
 ---
 
-When you move a workflow to Longshore you want to know that it gives the same answers as the CI it replaces. `longshore parity` takes one of your runs, reads the check runs a GitHub App posted for the same commit, pairs them by name and says for each job whether the two agree.
+When you move a workflow to Turntable you want to know that it gives the same answers as the CI it replaces. `turntable parity` takes one of your runs, reads the check runs a GitHub App posted for the same commit, pairs them by name and says for each job whether the two agree.
 
 ```sh
-longshore parity --run <run id> --repo owner/name --app-id <n> \
-  --url https://longshore.example.com --org acme --token-file ~/.longshore/token
+turntable parity --run <run id> --repo owner/name --app-id <n> \
+  --url https://turntable.example.com --org acme --token-file ~/.turntable/token
 ```
 
 `--app-id` is the numeric id of the App whose check runs are the reference. It is always passed in; nothing is built in. The command only reads, on both sides.
 
 ## What it reads
 
-- Your run, over the REST API, with a reader token from `--token-file` (or `LONGSHORE_TOKEN_FILE`; mode 0600). The server is `--url` or `LONGSHORE_URL`, the org `--org` or `LONGSHORE_ORG`. For each skipped job it also reads the first line of the job's log, which is where the reason is stored.
-- GitHub's check runs for the run's commit, filtered to the App you named. It needs no token for a public repository. For a private one, or to avoid the unauthenticated rate limit, give `--github-token-file` (or `LONGSHORE_GITHUB_TOKEN_FILE`). Tokens are read from files, never from the command line, and are sent only in a header to their own host.
+- Your run, over the REST API, with a reader token from `--token-file` (or `TURNTABLE_TOKEN_FILE`; mode 0600). The server is `--url` or `TURNTABLE_URL`, the org `--org` or `TURNTABLE_ORG`. For each skipped job it also reads the first line of the job's log, which is where the reason is stored.
+- GitHub's check runs for the run's commit, filtered to the App you named. It needs no token for a public repository. For a private one, or to avoid the unauthenticated rate limit, give `--github-token-file` (or `TURNTABLE_GITHUB_TOKEN_FILE`). Tokens are read from files, never from the command line, and are sent only in a header to their own host.
 
 ## How jobs are compared
 
@@ -25,6 +25,25 @@ Two rules cover how CI systems report jobs that did not run.
 
 - Our `skipped` equals their `success` when our job was gated off by its own `if:`. A required check has to report something, and a CI that reports a skipped required job as a success is behaving correctly. The output names the `if:` expression. A skip for any other reason, such as an unsupported job or an `if:` that could not be evaluated, is a divergence.
 - Their contexts that we do not run are listed as **not ours**, and our jobs that they do not post as **not reported**. Neither counts as a divergence.
+
+## The last N commits
+
+`--last <n>` replaces `--run` and compares the newest `n` runs (1 to 50). `--branch` and `--event` narrow them, so the health question "parity status for the last 10 commits of main" is:
+
+```sh
+turntable parity --last 10 --branch main --event push \
+  --repo owner/name --app-id <n> --url https://turntable.example.com --org acme --token-file ~/.turntable/token
+```
+
+It lists the runs with `list_runs`, keeps the newest run of each commit (a rerun does not count twice), runs the same job-by-job comparison for each, and prints one line per commit, newest first:
+
+```text
+a1b2c3d4e5f6  match  (7 match, 0 diverge, 0 pending, run 01H...)
+b2c3d4e5f6a1  2 diverge  (5 match, 2 diverge, 0 pending, run 01H...)
+c3d4e5f6a1b2  pending  (3 match, 0 diverge, 1 pending, run 01H...)
+```
+
+The word is `diverge` when any job differs, else `pending` when a job is still running or the other CI has posted nothing for that commit yet, else `match`. With `--json` the output is an array with the run, sha, verdict, summary and totals of each commit. The exit status is 1 if any commit diverges. For the full table of one commit, run it again with `--run <id>`.
 
 ## Output
 

@@ -82,6 +82,8 @@ export type WireJob = {
   state: JobState;
   needs: string[];
   matrix: Record<string, unknown> | null;
+  /** Set on one shard of a job the operator splits across sandboxes; null otherwise. */
+  shard: { job: string; index: number; total: number; steps: string[] } | null;
   approval_kind: "untrusted_author" | "environment" | null;
   exit_code: number | null;
   started_at: string | null;

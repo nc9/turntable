@@ -8,7 +8,7 @@ import {
   planWorkflow,
   workflowHeadCheckouts,
   type PlanWarning,
-} from "@longshore/act-runner";
+} from "@turntable/act-runner";
 import { assessJob, credentialsFor, lintFailsFor, type RunFacts } from "../src/trust";
 
 const readFile = (): undefined => undefined;

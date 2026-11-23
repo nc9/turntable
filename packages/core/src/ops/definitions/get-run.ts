@@ -42,10 +42,17 @@ const jobSchema = z.object({
     .nullable()
     .describe("This leg's matrix values; null when the job has no matrix."),
   shard: z
-    .object({ job: z.string(), index: z.int(), total: z.int() })
+    .object({
+      job: z.string(),
+      index: z.int(),
+      total: z.int(),
+      steps: z
+        .array(z.string())
+        .describe("The steps this shard owns (names or #n); the others it turns off."),
+    })
     .nullable()
     .describe(
-      "Set when this row is one shard of a job the operator splits across sandboxes: `job` is the workflow job id the shards share (their name and forge check are the job's), `index` counts from 0. The job's result is the fold of its shards: failure if any failed, else infra_error, cancelled, skipped only if all were, else success. Null for a job that is not split.",
+      "Set when this row is one shard of a job the operator splits across sandboxes: `job` is the workflow job id the shards share (their name and forge check are the job's), `index` counts from 0, `steps` are the steps only this shard runs. The job's result is the fold of its shards: failure if any failed, else infra_error, cancelled, skipped only if all were, else success. Null for a job that is not split.",
     ),
   approval_kind: z
     .enum(APPROVAL_KINDS)
@@ -67,14 +74,21 @@ const jobSchema = z.object({
 });
 
 /** The shard a job row is, from its stored plan; null when it is not a shard (or the plan is unreadable). */
-function shardOf(planned: string | null): { job: string; index: number; total: number } | null {
+function shardOf(
+  planned: string | null,
+): { job: string; index: number; total: number; steps: string[] } | null {
   if (!planned) return null;
   try {
-    const p = JSON.parse(planned) as { id?: unknown; shard?: { index?: unknown; total?: unknown } };
+    const p = JSON.parse(planned) as {
+      id?: unknown;
+      shard?: { index?: unknown; total?: unknown; partition?: unknown };
+    };
     const s = p.shard;
-    return typeof p.id === "string" && typeof s?.index === "number" && typeof s.total === "number"
-      ? { job: p.id, index: s.index, total: s.total }
-      : null;
+    if (typeof p.id !== "string" || typeof s?.index !== "number" || typeof s.total !== "number")
+      return null;
+    const own = Array.isArray(s.partition) ? s.partition[s.index] : undefined;
+    const steps = Array.isArray(own) ? own.filter((x): x is string => typeof x === "string") : [];
+    return { job: p.id, index: s.index, total: s.total, steps };
   } catch {
     return null;
   }

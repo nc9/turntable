@@ -65,7 +65,7 @@ export const getQuotas = defineOp({
     "reason new work is held. A held limit stops new claims; running attempts finish. Events " +
     "(`quota.warning` at 80% and `quota.reached` at 100%) fire " +
     "once per window. Read-only. Needs an org-level token (a project-scoped one is refused). " +
-    "Limits are set by the instance operator, on the host (`longshore quotas set`) or with an " +
+    "Limits are set by the instance operator, on the host (`turntable quotas set`) or with an " +
     "instance token over REST (`set_quotas`), never by the org's own tokens: a tenant must not " +
     "be able to raise its own.",
   input: z.object({}),

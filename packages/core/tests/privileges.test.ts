@@ -64,7 +64,7 @@ function fake(opts: FakeOpts = {}) {
   return { ops, calls, ids: () => [uid, gid, groups] as const };
 }
 
-const SPEC = { LONGSHORE_DROP_PRIVILEGES: "65532:65532" };
+const SPEC = { TURNTABLE_DROP_PRIVILEGES: "65532:65532" };
 
 test("as root with a drop spec: own the data dir, then groups, gid, uid, in that order", () => {
   const f = fake();
@@ -112,12 +112,12 @@ test("a platform without setuid, setgid, setgroups or getgroups refuses to run a
   }
 });
 
-test("root with nothing set is refused; LONGSHORE_ALLOW_ROOT=1 allows it, and touches nothing", () => {
+test("root with nothing set is refused; TURNTABLE_ALLOW_ROOT=1 allows it, and touches nothing", () => {
   expect(() => enforceRootPolicy("/data", {}, fake().ops)).toThrow(/refusing to run as root/);
   const f = fake();
-  expect(enforceRootPolicy("/data", { LONGSHORE_ALLOW_ROOT: "1" }, f.ops)).toBe("root_allowed");
+  expect(enforceRootPolicy("/data", { TURNTABLE_ALLOW_ROOT: "1" }, f.ops)).toBe("root_allowed");
   expect(f.calls).toEqual([]);
-  expect(() => enforceRootPolicy("/data", { LONGSHORE_ALLOW_ROOT: "true" }, fake().ops)).toThrow(
+  expect(() => enforceRootPolicy("/data", { TURNTABLE_ALLOW_ROOT: "true" }, fake().ops)).toThrow(
     RootRefused,
   );
 });
@@ -127,7 +127,7 @@ test("a drop spec wins over ALLOW_ROOT, and a non-root process ignores both", ()
   expect(
     enforceRootPolicy(
       "/data",
-      { LONGSHORE_ALLOW_ROOT: "1", LONGSHORE_DROP_PRIVILEGES: "1000:1000" },
+      { TURNTABLE_ALLOW_ROOT: "1", TURNTABLE_DROP_PRIVILEGES: "1000:1000" },
       f.ops,
     ),
   ).toBe("dropped");
@@ -158,7 +158,7 @@ test("the drop spec is validated: whole numbers, never root; a bad one stops bef
     expect(() => parseDropSpec(bad)).toThrow();
   }
   const f = fake();
-  expect(() => enforceRootPolicy("/data", { LONGSHORE_DROP_PRIVILEGES: "0:0" }, f.ops)).toThrow();
+  expect(() => enforceRootPolicy("/data", { TURNTABLE_DROP_PRIVILEGES: "0:0" }, f.ops)).toThrow();
   expect(f.calls).toEqual([]);
 });
 
@@ -185,7 +185,10 @@ afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 const run = (env: Record<string, string> = {}) => chownData(data, 1, 2, env, (fd) => spy(fd));
 
 test("chowns the data dir and the database files, and nothing else", () => {
-  for (const f of ["longshore.db", "longshore.db-wal", "longshore.db-shm", "turntable.db"]) {
+  // rename-keep-begin
+  // The database under its current name and under the name it had before the rename.
+  for (const f of ["turntable.db", "turntable.db-wal", "turntable.db-shm", "longshore.db"]) {
+    // rename-keep-end
     writeFileSync(join(data, f), "x");
   }
   mkdirSync(join(data, "lost+found"));
@@ -194,9 +197,9 @@ test("chowns the data dir and the database files, and nothing else", () => {
 });
 
 test("a symlink planted in the data dir refuses the start, named, and nothing is chowned through it", () => {
-  writeFileSync(join(data, "longshore.db"), "x");
-  symlinkSync(join(outside, "shadow"), join(data, "longshore.db-wal"));
-  expect(() => run()).toThrow(/longshore\.db-wal is a symbolic link/);
+  writeFileSync(join(data, "turntable.db"), "x");
+  symlinkSync(join(outside, "shadow"), join(data, "turntable.db-wal"));
+  expect(() => run()).toThrow(/turntable\.db-wal is a symbolic link/);
   // a symlinked data dir itself is refused too
   const link = join(tmp, "datalink");
   symlinkSync(data, link);
@@ -204,13 +207,13 @@ test("a symlink planted in the data dir refuses the start, named, and nothing is
 });
 
 test("a hardlink to another file is refused: it IS that file", () => {
-  linkSync(join(outside, "shadow"), join(data, "longshore.db"));
-  expect(statSync(join(data, "longshore.db")).nlink).toBe(2);
-  expect(() => run()).toThrow(/longshore\.db has 2 hard links/);
+  linkSync(join(outside, "shadow"), join(data, "turntable.db"));
+  expect(statSync(join(data, "turntable.db")).nlink).toBe(2);
+  expect(() => run()).toThrow(/turntable\.db has 2 hard links/);
 });
 
 test("an unexpected file or directory stops the start, named", () => {
-  writeFileSync(join(data, "longshore.db"), "x");
+  writeFileSync(join(data, "turntable.db"), "x");
   writeFileSync(join(data, "evil"), "x");
   expect(() => run()).toThrow(/unexpected entry .*evil/);
   rmSync(join(data, "evil"));
@@ -224,7 +227,7 @@ test("the master key file and its audit state directory count only when they liv
   writeFileSync(join(data, "master.key.audit-state", "ABC123.state"), "x");
   expect(() => run()).toThrow(/unexpected entry/); // not told about the key
   chowned.length = 0;
-  run({ LONGSHORE_MASTER_KEY_FILE: join(data, "master.key") });
+  run({ TURNTABLE_MASTER_KEY_FILE: join(data, "master.key") });
   expect(chowned.length).toBe(4); // the dir, the key, the state dir and its one state file
 });
 
@@ -232,10 +235,10 @@ test("the audit state directory holds only state files; a planted link or extra 
   const key = join(data, "master.key");
   mkdirSync(`${key}.audit-state`);
   symlinkSync(join(outside, "shadow"), join(`${key}.audit-state`, "ABC.state"));
-  expect(() => run({ LONGSHORE_MASTER_KEY_FILE: key })).toThrow(/symbolic link/);
+  expect(() => run({ TURNTABLE_MASTER_KEY_FILE: key })).toThrow(/symbolic link/);
   rmSync(join(`${key}.audit-state`, "ABC.state"));
   writeFileSync(join(`${key}.audit-state`, "notes.txt"), "x");
-  expect(() => run({ LONGSHORE_MASTER_KEY_FILE: key })).toThrow(/unexpected entry/);
+  expect(() => run({ TURNTABLE_MASTER_KEY_FILE: key })).toThrow(/unexpected entry/);
 });
 
 test("a data dir that does not exist yet is created", () => {
@@ -252,9 +255,9 @@ const mkfifo = (path: string): void => {
 };
 
 test("a FIFO planted under an expected name does not hang the start: it is refused", () => {
-  mkfifo(join(data, "longshore.db"));
+  mkfifo(join(data, "turntable.db"));
   // O_NONBLOCK: the open returns at once, the descriptor says it is not a regular file.
-  expect(() => run()).toThrow(/longshore\.db is not a regular file/);
+  expect(() => run()).toThrow(/turntable\.db is not a regular file/);
   expect(chowned.length).toBe(1); // only the data dir itself
 });
 
@@ -262,11 +265,11 @@ test("a FIFO in the audit state directory does not hang the start either", () =>
   const key = join(data, "master.key");
   mkdirSync(`${key}.audit-state`);
   mkfifo(join(`${key}.audit-state`, "ABC.state"));
-  expect(() => run({ LONGSHORE_MASTER_KEY_FILE: key })).toThrow(/not a regular file/);
+  expect(() => run({ TURNTABLE_MASTER_KEY_FILE: key })).toThrow(/not a regular file/);
 });
 
 test("a symlink planted to a file outside the dir is never chowned", () => {
-  symlinkSync(join(outside, "shadow"), join(data, "longshore.db"));
+  symlinkSync(join(outside, "shadow"), join(data, "turntable.db"));
   const fds: number[] = [];
   expect(() => chownData(data, 1, 2, {}, (fd) => void fds.push(fd))).toThrow(/symbolic link/);
   expect(fds.length).toBe(1); // the data dir; the link's target was never opened for chown
@@ -276,7 +279,7 @@ test("a state directory swapped for a symlink to elsewhere is not followed", () 
   const key = join(data, "master.key");
   symlinkSync(outside, `${key}.audit-state`);
   writeFileSync(join(outside, "ABC.state"), "x");
-  expect(() => run({ LONGSHORE_MASTER_KEY_FILE: key })).toThrow(/symbolic link|cannot open/);
+  expect(() => run({ TURNTABLE_MASTER_KEY_FILE: key })).toThrow(/symbolic link|cannot open/);
 });
 
 test("a drop without chown touches no file: other subcommands only drop", () => {

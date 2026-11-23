@@ -158,7 +158,7 @@ describe("installation tokens (the single mint function)", () => {
 describe("manifest", () => {
   test("least privilege, the webhook URL, and no unsubscribable events", () => {
     const m = buildManifest({
-      name: "Longshore",
+      name: "Turntable",
       url: "https://ci.example.com/",
       redirectUrl: "http://127.0.0.1:9/callback",
     }) as {
@@ -191,10 +191,10 @@ describe("manifest", () => {
 
   const conv: ManifestConversion = {
     id: 4242,
-    slug: "longshore-x",
-    name: "Longshore",
+    slug: "turntable-x",
+    name: "Turntable",
     owner: { login: "acme" },
-    html_url: "https://github.com/apps/longshore-x",
+    html_url: "https://github.com/apps/turntable-x",
     client_id: "Iv1.client",
     client_secret: "client-secret-value-123",
     webhook_secret: "webhook-secret-value-123",
@@ -218,7 +218,7 @@ describe("manifest", () => {
     expect(JSON.stringify(out)).not.toContain("secret");
     expect(out).toEqual({
       appId: "4242",
-      slug: "longshore-x",
+      slug: "turntable-x",
       htmlUrl: conv.html_url,
       replaced: [],
       retired: { installations: 0, repos: 0 },
@@ -235,7 +235,7 @@ describe("manifest", () => {
       db,
       store,
       orgId: org.id,
-      name: "Longshore",
+      name: "Turntable",
       url: "https://ci.example.com",
       fetch: convertImpl,
     });
@@ -257,7 +257,7 @@ describe("manifest", () => {
 
     const ok = await fetch(`${flow.pageUrl}callback?code=good-code&state=${state}`);
     expect(ok.status).toBe(200);
-    expect(await flow.done).toEqual({ appId: "4242", slug: "longshore-x", htmlUrl: conv.html_url });
+    expect(await flow.done).toEqual({ appId: "4242", slug: "turntable-x", htmlUrl: conv.html_url });
     expect((await getGithubApp(db))?.appId).toBeDefined();
     expect(await store.get(org.id, SECRET_PRIVATE_KEY)).toBe(conv.pem);
     // The code works once: the state is spent.

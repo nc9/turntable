@@ -2,7 +2,7 @@
 // can open. It builds the same request `npm publish` does (libnpmpublish's document), from the
 // bytes, so nothing the workflow wrote decides what is published.
 import { createHash } from "node:crypto";
-import { safeFetch, type SafeFetch } from "@longshore/net";
+import { safeFetch, type SafeFetch } from "@turntable/net";
 import { tarEntries, tarEntry } from "./tar";
 import type { NpmTarget, PublishContext, TargetResult } from "./types";
 
@@ -122,7 +122,7 @@ export async function publishNpm(
   const headers = {
     authorization: `Bearer ${token}`,
     accept: "application/json",
-    "user-agent": "longshore",
+    "user-agent": "turntable",
   };
   const facts = { package: t.package, version, integrity, registry, tag: t.tag };
 

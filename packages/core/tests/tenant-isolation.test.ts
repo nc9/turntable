@@ -54,7 +54,7 @@ import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
 
 // Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
 // connection, each needs its own instance.
-process.env.LONGSHORE_TEST_PGLITE_ISOLATED = "1";
+process.env.TURNTABLE_TEST_PGLITE_ISOLATED = "1";
 
 // ---- the world ----
 
@@ -735,7 +735,14 @@ describe("generated from the registry: every op, every B principal, A's ids and 
     expect(ops.length).toBeGreaterThan(0);
     for (const who of [...hostile.aWho, ...hostile.bWho]) {
       for (const op of ops) {
-        const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+        const input =
+          op.name === "set_quotas"
+            ? { target_org: "org-a", max_log_bytes: 1 }
+            : op.name === "set_project_settings"
+              ? { target_org: "org-a", target_project: "app", max_concurrent: 1 }
+              : op.name === "create_project"
+                ? { target_org: "org-a", slug: "sneaky", name: "x" }
+                : {};
         const out = await call(hostile, who, op, input);
         expect(out.ok, `${who.label} on ${op.name}`).toBe(false);
         expect(out.code, `${who.label} on ${op.name}`).toBe("forbidden");
@@ -910,7 +917,7 @@ describe("realtime WebSocket", () => {
   async function connect(
     token: string,
   ): Promise<{ msgs: ServerMessage[]; send(m: object): void; close(): void }> {
-    const ws = new WebSocket(`ws://${base}/api/v1/realtime`, ["longshore.v1", `bearer.${token}`]);
+    const ws = new WebSocket(`ws://${base}/api/v1/realtime`, ["turntable.v1", `bearer.${token}`]);
     const msgs: ServerMessage[] = [];
     ws.onmessage = (e) => void msgs.push(JSON.parse(String(e.data)) as ServerMessage);
     await new Promise<void>((resolve, reject) => {

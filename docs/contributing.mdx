@@ -9,8 +9,8 @@ The repository is public. Never commit secrets, internal hostnames, customer dat
 
 - Use bun for everything: `bun install`, `bun run <script>`, `bun test`. Do not use node or npm.
 - TypeScript only, strict mode, with explicit types at module boundaries.
-- Lint with `oxlint` (`bun run lint`). Format with `oxfmt` (`bun run format`, check with `bun run format:check`).
-- Typecheck with `tsgo --noEmit` from `@typescript/native-preview` (`bun run typecheck`).
+- Format with `bun fmt` (`bun run format`, check with `bun fmt --check`). There is no lint step; the compiler flags `noUnusedLocals`, `noUnusedParameters` and `noFallthroughCasesInSwitch` are on.
+- Typecheck with `bun check` per package (`bun run typecheck` runs them one at a time).
 - File names are kebab-case, for example `run-queue.ts`.
 - Commits use conventional commits: `type(scope): message`, with a required scope.
 - Tests live in `packages/<name>/tests/` and run with `bun test <file>`.
@@ -32,11 +32,11 @@ The compiled binary must work from an empty directory, so never read runtime ass
 
 ## Web UI in the dev loop
 
-Run from source (`bun run packages/core/src/main.ts serve`), the server serves the built bundle in `packages/ui/dist` when it has an `index.html`: build it with `bun run --cwd packages/ui build` and reload the page (files are read per request, so a rebuild shows without a restart). To serve a bundle from elsewhere set `LONGSHORE_UI_DIR`. Without a build the server shows a placeholder that says how to build one. This is dev mode only: the compiled binary serves its embedded UI and never reads UI files from disk, and ignores `LONGSHORE_UI_DIR`. Only regular files inside the directory are served; a path that leaves it, or a symlink that does, is a 404.
+Run from source (`bun run packages/core/src/main.ts serve`), the server serves the built bundle in `packages/ui/dist` when it has an `index.html`: build it with `bun run --cwd packages/ui build` and reload the page (files are read per request, so a rebuild shows without a restart). To serve a bundle from elsewhere set `TURNTABLE_UI_DIR`. Without a build the server shows a placeholder that says how to build one. This is dev mode only: the compiled binary serves its embedded UI and never reads UI files from disk, and ignores `TURNTABLE_UI_DIR`. Only regular files inside the directory are served; a path that leaves it, or a symlink that does, is a 404.
 
 ## Docs
 
-Docs ship with each feature. This site lives in `docs/` and is built with Tangly. Run `bun run dev` in `docs/` to preview, and `bun run check` before you push. Do not run `oxfmt` on `.mdx` files.
+Docs ship with each feature. This site lives in `docs/` and is built with Tangly. Run `bun run dev` in `docs/` to preview, and `bun run check` before you push. `bun fmt` skips `.mdx` files (see `.prettierignore`).
 
 ## Branches and PRs
 

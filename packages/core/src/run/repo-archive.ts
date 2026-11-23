@@ -1,4 +1,4 @@
-import { scrubbedEnv } from "@longshore/provider-sdk";
+import { scrubbedEnv } from "@turntable/provider-sdk";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

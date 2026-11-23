@@ -9,9 +9,9 @@ export const startInstallationClaim = defineOp({
   description:
     "Starts a claim for this org and returns a link carrying a signed, single-use state that " +
     "binds the installation to the org of the caller. The link opens a confirmation page on this " +
-    "Longshore instance that names the org; confirming sets a cookie that binds the flow to that " +
+    "Turntable instance that names the org; confirming sets a cookie that binds the flow to that " +
     "browser and sends it to GitHub. The person must install (or configure) the App and be " +
-    "signed in to GitHub; Longshore then checks that they OWN the installation (an admin of the " +
+    "signed in to GitHub; Turntable then checks that they OWN the installation (an admin of the " +
     "organization, or the user the personal account belongs to) before it binds it, and audits " +
     "who claimed it. The link expires in 15 minutes. Needs an org-level token with " +
     "release_operator or admin (a project-scoped token is refused with forbidden). Not " +
@@ -40,7 +40,7 @@ export const startInstallationClaim = defineOp({
     if (!ctx.claims) {
       throw new OpError(
         "unavailable",
-        "installation claims are not configured: start the server with LONGSHORE_MASTER_KEY_FILE and a GitHub App",
+        "installation claims are not configured: start the server with TURNTABLE_MASTER_KEY_FILE and a GitHub App",
       );
     }
     try {

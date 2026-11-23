@@ -1,10 +1,10 @@
-import type { Provider } from "@longshore/provider-sdk";
+import type { Provider } from "@turntable/provider-sdk";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
 /**
  * Egress for a run's sandboxes. Deny by default for every trust class: a run gets `none` unless
  * its recorded plan names another policy (set from the project's configuration when the run is
- * created), or the runner was explicitly built with `open` (the local `longshore run` opt-in).
+ * created), or the runner was explicitly built with `open` (the local `turntable run` opt-in).
  * `allowlist` is understood so a provider that cannot enforce it is refused rather than silently
  * given more network. Anything else, including a missing, malformed or unknown value, is `none`.
  */

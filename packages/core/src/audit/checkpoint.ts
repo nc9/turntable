@@ -262,7 +262,7 @@ export async function createCheckpoint(
         db,
         orgId,
         "state_missing",
-        "a signing key exists but its sealed state file is gone; if the chain is known good, run `longshore audit adopt --org <slug>`",
+        "a signing key exists but its sealed state file is gone; if the chain is known good, run `turntable audit adopt --org <slug>`",
       );
     }
     return undefined; // never set up: nothing to refuse, nothing to sign

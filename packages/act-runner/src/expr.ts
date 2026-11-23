@@ -1,5 +1,5 @@
 /**
- * GitHub Actions expression evaluator (the subset Longshore needs to plan and schedule jobs).
+ * GitHub Actions expression evaluator (the subset Turntable needs to plan and schedule jobs).
  *
  * Supported: literals (null, booleans, numbers, 'strings' with '' escapes), contexts with `.name`
  * and `['name']` access (case-insensitive), `! == != < <= > >= && ||`, parentheses, and the

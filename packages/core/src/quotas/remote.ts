@@ -1,7 +1,7 @@
-// `longshore quotas get`: read an org's quotas from a server over REST (get_quotas), with an
+// `turntable quotas get`: read an org's quotas from a server over REST (get_quotas), with an
 // org-level reader token read from a file. Setting them is not here: that is `quotas set` on the
 // host. This command never opens the database.
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { parseArgs } from "node:util";
 import { baseString, parseBaseUrl } from "../channel/api";
 import { readTokenFile } from "../mcp/stdio";
@@ -71,13 +71,13 @@ export async function quotasGet(args: string[]): Promise<number> {
       strict: true,
     }));
   } catch (e) {
-    console.error(`longshore quotas get: ${e instanceof Error ? e.message : "bad arguments"}`);
+    console.error(`turntable quotas get: ${e instanceof Error ? e.message : "bad arguments"}`);
     return 2;
   }
   try {
-    const url = values.url ?? env("LONGSHORE_URL");
-    const org = values.org ?? env("LONGSHORE_ORG");
-    const tokenFile = values["token-file"] ?? env("LONGSHORE_TOKEN_FILE");
+    const url = values.url ?? env("TURNTABLE_URL");
+    const org = values.org ?? env("TURNTABLE_ORG");
+    const tokenFile = values["token-file"] ?? env("TURNTABLE_TOKEN_FILE");
     if (!url || !org || !tokenFile) throw new Error("--url, --org and a token file are required");
     const view = await fetchQuotas({
       baseUrl: parseBaseUrl(url, values["allow-insecure"]),
@@ -87,7 +87,7 @@ export async function quotasGet(args: string[]): Promise<number> {
     console.log(values.json ? JSON.stringify(view, null, 2) : formatQuotas(view));
     return 0;
   } catch (e) {
-    console.error(`longshore quotas get: ${e instanceof Error ? e.message : "failed"}`);
+    console.error(`turntable quotas get: ${e instanceof Error ? e.message : "failed"}`);
     return 1;
   }
 }

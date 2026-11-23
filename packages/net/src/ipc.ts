@@ -1,4 +1,4 @@
-// Calls between two Longshore processes that the operator wired together: the worker asking the
+// Calls between two Turntable processes that the operator wired together: the worker asking the
 // release lane for a job's proxy credential. The target is configured by the operator (a unix
 // socket path, or an https address with mutual TLS), never taken from a job or a request, so it
 // does not go through the address validation that outbound requests to the internet do. It lives

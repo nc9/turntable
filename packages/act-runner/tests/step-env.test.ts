@@ -148,7 +148,7 @@ describe("the shim", () => {
     // The outer step runs `bash` again through PATH (the shim), as `#!/usr/bin/env bash` scripts do.
     writeFileSync(
       join(bin, "bash"),
-      `#!/bin/sh\nif [ "$1" = inner ]; then echo "inner io=$LONGSHORE_STEP_IO"; [ -t 1 ] && echo tty || echo notty; else echo outer; bash inner; fi\n`,
+      `#!/bin/sh\nif [ "$1" = inner ]; then echo "inner io=$TURNTABLE_STEP_IO"; [ -t 1 ] && echo tty || echo notty; else echo outer; bash inner; fi\n`,
     );
     chmodSync(join(bin, "bash"), 0o755);
     const r = await viaShim([]);
@@ -206,7 +206,7 @@ function startShim(env: Record<string, string> = {}) {
 describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
   test("SIGKILL of the shim takes the interpreter and what it started down with it", async () => {
     realBash("sleep 31337 & sleep 31337; echo not-reached");
-    const { p } = startShim({ LONGSHORE_STEP_GRACE: "1" });
+    const { p } = startShim({ TURNTABLE_STEP_GRACE: "1" });
     expect(await waitUntil(async () => (await running("sleep 31337")).length > 0, 5000)).toBe(true);
     p.kill("SIGKILL");
     await p.exited;
@@ -221,7 +221,7 @@ describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
     // The shim leads a process group of its own, as a step does on act's pty: killing the group
     // kills the shim and anything left in it, which a subshell watcher would be.
     const p = Bun.spawn(["perl", "-e", "setpgrp(0,0); exec @ARGV", join(shims, "bash")], {
-      env: { PATH: `${shims}:${bin}:/usr/bin:/bin`, TMPDIR: scratchTmp, LONGSHORE_STEP_GRACE: "1" },
+      env: { PATH: `${shims}:${bin}:/usr/bin:/bin`, TMPDIR: scratchTmp, TURNTABLE_STEP_GRACE: "1" },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -269,7 +269,7 @@ describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
 
   test("an interpreter that ignores TERM is killed after the grace period", async () => {
     realBash("trap '' TERM; while :; do sleep 31340; done");
-    const { p } = startShim({ LONGSHORE_STEP_GRACE: "1" });
+    const { p } = startShim({ TURNTABLE_STEP_GRACE: "1" });
     expect(await waitUntil(async () => (await running("sleep 31340")).length > 0, 5000)).toBe(true);
     const t0 = Date.now();
     p.kill("SIGTERM");
@@ -436,7 +436,7 @@ describe("only interpreters that exist are shimmed", () => {
     expect(r.out).not.toContain("command not found");
   });
 
-  test("`command -v` behaves as it does without Longshore: node absent is non-zero and prints nothing", async () => {
+  test("`command -v` behaves as it does without Turntable: node absent is non-zero and prints nothing", async () => {
     const bin2 = hermetic("bin-nonode");
     const d = join(tmp, "shims-nonode");
     await install(d, bin2);

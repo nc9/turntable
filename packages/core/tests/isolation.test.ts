@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import type { ProviderInfo } from "@longshore/provider-sdk";
-import { isolationAtLeast, ISOLATION_ORDER } from "@longshore/provider-sdk";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import type { ProviderInfo } from "@turntable/provider-sdk";
+import { isolationAtLeast, ISOLATION_ORDER } from "@turntable/provider-sdk";
 import { requiredIsolation, trustOf, withIsolationPolicy } from "../src/scheduler/isolation";
 import type { AttemptContext, AttemptOutcome } from "../src/scheduler/types";
 

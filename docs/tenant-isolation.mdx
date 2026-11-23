@@ -24,8 +24,8 @@ Adding a store: seed it in `buildWorld`, add a marker, and the registry-driven c
 
 | Key or secret | Per org? | Notes |
 | --- | --- | --- |
-| Master key, `LONGSHORE_MASTER_KEY_FILE` | No. One per instance | The root. Every key below is derived from it by HKDF, so a leaked master key exposes every org. |
-| Wrapping keys for sealed values (`system`, `job`, `oidc` domains) | Yes. Derived per domain and org (format `v3`) | A value opens only under its own org's key, and also binds the org id in the AAD. `longshore keys reseal` converts older records, see [Secrets vault](/secrets-vault#per-org-keys). |
+| Master key, `TURNTABLE_MASTER_KEY_FILE` | No. One per instance | The root. Every key below is derived from it by HKDF, so a leaked master key exposes every org. |
+| Wrapping keys for sealed values (`system`, `job`, `oidc` domains) | Yes. Derived per domain and org (format `v3`) | A value opens only under its own org's key, and also binds the org id in the AAD. `turntable keys reseal` converts older records, see [Secrets vault](/secrets-vault#per-org-keys). |
 | Vault secrets | Yes. Sealed under the org's `job` key, with org, secret id, version and name in the AAD | A per-version data key wraps each value. |
 | Secret store (App credentials, webhook secret, claim key) | Yes. Sealed under the org's `system` key, name in the AAD | The App is an instance-level object held by its owning org. |
 | OIDC signing keys | Yes. A key pair per org, a per-org issuer URL | Sealed under the org's `oidc` key. |

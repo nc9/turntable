@@ -9,18 +9,18 @@ export type Migration = {
 
 /**
  * Applies pending migrations in order, each inside a transaction, and records them in
- * `__longshore_migrations`. Migrations are data (see migrations.generated.ts), so this works
+ * `__turntable_migrations`. Migrations are data (see migrations.generated.ts), so this works
  * from a compiled binary. Rebuild migrations (new CHECK constraints) are supported: see below. A Postgres dialect would reuse the `Migration` shape with its own
  * runner.
  */
 export function applyMigrations(sqlite: Database, migrations: Migration[]): string[] {
   migrateLegacyMigrationsTable(sqlite);
   sqlite.run(
-    "CREATE TABLE IF NOT EXISTS __longshore_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS __turntable_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
   );
   const done = new Set(
     sqlite
-      .query<{ tag: string }, []>("SELECT tag FROM __longshore_migrations")
+      .query<{ tag: string }, []>("SELECT tag FROM __turntable_migrations")
       .all()
       .map((row) => row.tag),
   );
@@ -45,7 +45,7 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
               `migration ${migration.tag} left ${broken.length} foreign key violation(s); rolled back`,
             );
           }
-          sqlite.run("INSERT INTO __longshore_migrations (tag, applied_at) VALUES (?, ?)", [
+          sqlite.run("INSERT INTO __turntable_migrations (tag, applied_at) VALUES (?, ?)", [
             migration.tag,
             Date.now(),
           ]);

@@ -1,6 +1,6 @@
 {
   "$schema": "https://tangly.dev/schema/docs.json",
-  "name": "Longshore",
+  "name": "Turntable",
   "theme": "tang",
   "thumbnails": { "enabled": false },
   "colors": { "primary": "#D97706", "light": "#F59E0B", "dark": "#B45309" },
@@ -40,7 +40,8 @@
           "internals/bun-notes",
           "design/daytona-proxy",
           "design/publish-targets",
-          "design/microvm-provider"
+          "design/microvm-provider",
+          "design/postgres-rls"
         ]
       }
     ]

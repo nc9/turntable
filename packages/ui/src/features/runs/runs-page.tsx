@@ -197,7 +197,6 @@ export function RunsPage() {
   // Keep the URL in step with the branch box, without a navigation per keystroke.
   useEffect(() => {
     if ((search.branch ?? "") !== branch) setSearch({ branch: branch || undefined });
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [branch]);
 
   const filtered = useMemo(

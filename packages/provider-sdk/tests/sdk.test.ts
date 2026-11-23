@@ -59,7 +59,7 @@ describe("capOutput", () => {
     expect(Array.from(out.bytes.subarray(0, 10))).toEqual(Array.from(b.subarray(0, 10)));
     expect(Array.from(out.bytes.subarray(10))).toEqual(Array.from(b.subarray(80)));
     expect(out.cut).toEqual({ atOffset: 10, omittedBytes: 70 });
-    expect(new TextDecoder().decode(out.bytes)).not.toContain("longshore");
+    expect(new TextDecoder().decode(out.bytes)).not.toContain("turntable");
   });
 });
 

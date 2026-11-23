@@ -27,12 +27,12 @@ const PLACEHOLDER_HTML = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Longshore</title>
+    <title>Turntable</title>
   </head>
   <body>
-    <h1>Longshore</h1>
+    <h1>Turntable</h1>
     <p>Pre-alpha. The web UI is not built yet.</p>
-    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>LONGSHORE_UI_DIR</code> to a built bundle).</p>
+    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>TURNTABLE_UI_DIR</code> to a built bundle).</p>
   </body>
 </html>
 `;
