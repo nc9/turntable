@@ -9,12 +9,15 @@ import {
   bindRepo,
   createProject,
   findGithubRepoBinding,
+  findReattachableProject,
   getGithubApp,
   getInstallation,
   getProjectBySlug,
   listInstallationsWithPolledBindings,
   listInstallationBindings,
+  type RepoBinding,
   setInstallationStatus,
+  UNBIND_AUDIT_OP,
   unbindRepo,
   upsertInstallation,
 } from "../db/repos";
@@ -83,7 +86,9 @@ export async function syncInstallation(
     // Gone: whatever the payload said, GitHub does not know it. Unbind what it granted.
     if (!existing) return { ...result, outcome: "unknown" };
     for (const b of await listInstallationBindings(db, scope, installationId)) {
-      if (await unbindRepo(db, scope, b.id)) result.unbound.push(`${b.owner}/${b.repo}`);
+      if (await unbindAndRecord(db, scope, installationId, b)) {
+        result.unbound.push(`${b.owner}/${b.repo}`);
+      }
     }
     await setInstallationStatus(db, scope, installationId, "deleted");
     return { ...result, outcome: "deleted" };
@@ -141,14 +146,12 @@ export async function syncInstallation(
       result.conflicts.push(repo.fullName);
       continue;
     }
-    const project = await createProjectFor(
-      db,
-      scope,
-      repo.owner,
-      repo.name,
-      repo.id,
-      repo.fullName,
-    );
+    // A re-grant: this org's project that last held this forge repo id and has no binding now.
+    const reattachId = await findReattachableProject(db, scope, repo.id);
+    const project =
+      reattachId !== undefined
+        ? { id: reattachId }
+        : await createProjectFor(db, scope, repo.owner, repo.name, repo.id, repo.fullName);
     await bindRepo(
       db,
       { orgId, projectId: project.id },
@@ -160,14 +163,57 @@ export async function syncInstallation(
         forgeRepoId: repo.id,
       },
     );
+    if (reattachId !== undefined) {
+      await appendAudit(db, scope, {
+        principalKind: "system",
+        principalId: "github-installation",
+        op: "reattach_repo_binding",
+        effect: "write",
+        outcome: "ok",
+        input: { repo: repo.fullName, installationId, projectId: reattachId, forgeRepoId: repo.id },
+      });
+    }
     result.bound.push(repo.fullName);
   }
   for (const b of await listInstallationBindings(db, scope, installationId)) {
     if (b.forgeRepoId !== null && !granted.has(b.forgeRepoId)) {
-      if (await unbindRepo(db, scope, b.id)) result.unbound.push(`${b.owner}/${b.repo}`);
+      if (await unbindAndRecord(db, scope, installationId, b)) {
+        result.unbound.push(`${b.owner}/${b.repo}`);
+      }
     }
   }
   return result;
+}
+
+/**
+ * Unbinds a repo the installation no longer grants and records it in the org's audit chain, with
+ * the project and forge repo id, so a later re-grant can find the project again.
+ */
+async function unbindAndRecord(
+  db: Db,
+  scope: { orgId: string },
+  installationId: string,
+  b: RepoBinding,
+): Promise<boolean> {
+  if (!(await unbindRepo(db, scope, b.id))) return false;
+  await appendAudit(
+    db,
+    { orgId: scope.orgId, projectId: b.projectId },
+    {
+      principalKind: "system",
+      principalId: "github-installation",
+      op: UNBIND_AUDIT_OP,
+      effect: "write",
+      outcome: "ok",
+      input: {
+        repo: `${b.owner}/${b.repo}`,
+        installationId,
+        projectId: b.projectId,
+        forgeRepoId: b.forgeRepoId,
+      },
+    },
+  );
+  return true;
 }
 
 async function createProjectFor(
