@@ -2,8 +2,9 @@
 // its id (the org or project id, empty for the instance) and carry the owning org, which every
 // org and project query filters on. The ops that call these have already resolved the target from
 // the caller's own org.
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "..";
+import { DIALECT } from "../dialect";
 import * as s from "../schema";
 import type { SettingScope } from "../schema";
 
@@ -136,5 +137,25 @@ export function putStoredSetting(
             .where(same)
             .returning({ k: s.settings.key });
     return hit.length > 0;
+  });
+}
+
+/**
+ * Serialises every writer of one (org, key) for the rest of the transaction, across scopes (#369).
+ * The compare-and-set in `putStoredSetting` covers one row; a key with a strictness order can be
+ * written at more than one scope (an instance-administrator write and an org tighten), and the
+ * effective value is read from them all. Take this first in the transaction, then read the
+ * effective value and write. On Postgres it is a transaction-scoped advisory lock; a transaction
+ * that waited holds an older snapshot, so SERIALIZABLE aborts it and the root runner re-runs it
+ * against the winner's value. SQLite's write transactions are already exclusive, so it is a no-op.
+ * A no-op too outside a transaction, where there is nothing to hold it for.
+ */
+export function lockSettingKey(db: Db, orgId: string, key: string): Promise<void> {
+  if (DIALECT !== "pg") return Promise.resolve();
+  return db.run(async (h) => {
+    const orm = h.orm as unknown as { execute(q: unknown): Promise<unknown> };
+    await orm.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`setting:${orgId}:${key}`}, 0))`,
+    );
   });
 }

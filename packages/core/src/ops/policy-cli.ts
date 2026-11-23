@@ -2,6 +2,7 @@
 // directory is the trust root (like `turntable token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { lockSettingKey } from "../db/repos/settings";
 import { effectiveApproval, guardSettingChange } from "./setting-guard";
 import { settingsRegistry, untrustedRunApprovalSetting } from "../settings/definitions";
 import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
@@ -605,19 +606,44 @@ export async function setSandboxPolicy(
   const rt = settings ?? createSettingsRuntime(settingsRegistry);
   const from = await getProjectSandboxSettings(db, scope);
   from.untrustedRunApproval = await effectiveApproval(rt, db, org.id, project.id);
-  if (patch.untrustedRunApproval !== undefined) {
-    // A thin alias of set_setting: the same lock and value refusals. The person at the host is
-    // the operator, so no role applies, and the CLI is never MCP.
-    try {
-      await guardSettingChange(
-        rt,
-        db,
-        untrustedRunApprovalSetting,
-        { orgId: org.id, orgSlug: org.slug, projectId: project.id, projectSlug: project.slug },
-        {},
-        { value: patch.untrustedRunApproval },
-      );
-    } catch (err) {
+  // A thin alias of set_setting: the same lock and value refusals. The person at the host is the
+  // operator, so no role applies, and the CLI is never MCP. The guard reads and the write happen
+  // under the per-(org, key) lock (#369), in one transaction.
+  let refusal: unknown;
+  let to: ProjectSandboxSettings;
+  try {
+    to = await db.transaction(async (tx) => {
+      if (patch.untrustedRunApproval !== undefined) {
+        await lockSettingKey(tx, org.id, untrustedRunApprovalSetting.key);
+        try {
+          await guardSettingChange(
+            rt,
+            tx,
+            untrustedRunApprovalSetting,
+            { orgId: org.id, orgSlug: org.slug, projectId: project.id, projectSlug: project.slug },
+            {},
+            { value: patch.untrustedRunApproval },
+          );
+        } catch (err) {
+          refusal = err;
+          throw err;
+        }
+      }
+      const after = await setProjectSandboxSettings(tx, scope, patch);
+      if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+      after.untrustedRunApproval = await effectiveApproval(rt, tx, org.id, project.id);
+      await appendAudit(tx, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "ok",
+        input: { key: "sandbox", project: project.slug, from, to: after },
+      });
+      return after;
+    });
+  } catch (err) {
+    if (refusal !== undefined) {
       await appendAudit(db, scope, {
         principalKind: "cli",
         principalId: "local",
@@ -631,23 +657,9 @@ export async function setSandboxPolicy(
           refused: err instanceof Error ? err.message : String(err),
         },
       });
-      throw err;
     }
+    throw err;
   }
-  const to = await db.transaction(async (tx) => {
-    const after = await setProjectSandboxSettings(tx, scope, patch);
-    if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
-    after.untrustedRunApproval = await effectiveApproval(rt, tx, org.id, project.id);
-    await appendAudit(tx, scope, {
-      principalKind: "cli",
-      principalId: "local",
-      op: "policy_set",
-      effect: "write",
-      outcome: "ok",
-      input: { key: "sandbox", project: project.slug, from, to: after },
-    });
-    return after;
-  });
   return { project: project.slug, from, to };
 }
 

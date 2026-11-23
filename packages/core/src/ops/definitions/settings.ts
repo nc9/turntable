@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
 import { getOrgById, getOrgBySlug, getProject, getProjectBySlug } from "../../db/repos";
-import { getStoredSetting, putStoredSetting } from "../../db/repos/settings";
+import { getStoredSetting, lockSettingKey, putStoredSetting } from "../../db/repos/settings";
 import type { SettingScope } from "../../db/schema";
 import type { SettingDef } from "../../settings/define";
 import { settingsRegistry } from "../../settings/definitions";
@@ -147,6 +147,11 @@ async function setSetting(
   // guard runs again on the new value (and may now refuse). The write, its audit rows and any
   // event commit together: a loosened policy is never stored without the trail.
   const after = await ctx.db.transaction(async (tx) => {
+    // One lock per (org, key) for every scope that feeds the effective value, taken before the
+    // first read, so a write at another scope cannot land between the guard's read and the write.
+    if (subject.orgId && (def.strictness || def.instanceAdminOnly)) {
+      await lockSettingKey(tx, subject.orgId, def.key);
+    }
     for (let attempt = 0; ; attempt++) {
       if (attempt === SET_ATTEMPTS) {
         throw new OpError("conflict", `${def.key} was changed by someone else; try again`);
