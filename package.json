@@ -7,9 +7,8 @@
   ],
   "type": "module",
   "scripts": {
-    "format": "oxfmt .",
-    "format:check": "oxfmt --check .",
-    "lint": "oxlint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check",
     "typecheck": "bun run --sequential typecheck:core typecheck:provider-sdk typecheck:provider-conformance typecheck:provider-docker typecheck:redact typecheck:ui typecheck:act-runner typecheck:daytona typecheck:net typecheck:proxy typecheck:signer",
     "test": "bun run scripts/run-tests.ts",
     "build": "bun run scripts/build.ts",
@@ -71,10 +70,5 @@
     "test:signer": "bun test packages/signer/tests/signer.test.ts packages/signer/tests/kms.test.ts packages/core/tests/signing.test.ts packages/core/tests/verify-cli.test.ts",
     "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts",
     "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts"
-  },
-  "devDependencies": {
-    "@typescript/native-preview": "7.0.0-dev.20260707.2",
-    "oxfmt": "0.77.0",
-    "oxlint": "1.92.0"
   }
 }

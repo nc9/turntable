@@ -8,7 +8,7 @@
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit -p tsconfig.json"
+    "typecheck": "bun check"
   },
   "dependencies": {
     "@longshore/net": "workspace:*",

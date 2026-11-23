@@ -9,12 +9,11 @@ export type Notification = { content: string; meta: Record<string, string> };
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_WORD = /^[a-z0-9_.]{1,40}$/;
 // C0, DEL, C1, zero-width, bidi marks and overrides, BOM.
-/* oxlint-disable eslint/no-control-regex -- stripping control characters is the point */
+// stripping control characters is the point
 const UNSAFE_CHARS = new RegExp(
   "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]",
   "g",
 );
-/* oxlint-enable eslint/no-control-regex */
 const KNOWN_STATES = new Set([
   "queued",
   "running",

@@ -72,7 +72,7 @@ const dec = new TextDecoder();
  * Text that came from the other side (a path name, a server's error line, a zlib message) goes into
  * errors and logs only shortened and with control characters (and bidi/zero-width marks) removed.
  */
-/* oxlint-disable eslint/no-control-regex -- stripping control characters is the point */
+// stripping control characters is the point
 export function clean(s: string, max = 120): string {
   const stripped = s
     .replaceAll(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, " ")
@@ -81,7 +81,6 @@ export function clean(s: string, max = 120): string {
   return chars.length > max ? `${chars.slice(0, max).join("")}...` : stripped;
 }
 
-/* oxlint-enable eslint/no-control-regex */
 export const oidOf = (type: ObjectType, data: Uint8Array): string =>
   createHash("sha1").update(`${type} ${data.length}\0`).update(data).digest("hex");
 

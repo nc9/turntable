@@ -1,4 +1,4 @@
-/* oxlint-disable unicorn/no-useless-spread -- sockets and subscriptions are removed while iterating, so copy first */
+// sockets and subscriptions are removed while iterating, so copy first
 // Realtime WebSocket server (#30). It adds no access rules of its own: authentication and scope
 // come from the operations dispatcher, and every piece of data is read by dispatching the same
 // read operation a REST caller would use (events, get_run, job_log, job_steps, job_cuts), as the

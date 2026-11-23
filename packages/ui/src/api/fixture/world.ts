@@ -781,7 +781,6 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
   }
 
   const stripAnsi = (t: string): string =>
-    // oxlint-disable-next-line no-control-regex
     t.replace(/\u001b\[[0-9;]*m/g, "");
   const textOf = (attemptId: string): string[] => {
     const l = logOf(attemptId);

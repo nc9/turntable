@@ -526,7 +526,7 @@ describe("backends", () => {
     expect(out.ok).toBe(true);
     expect(calls).toEqual(
       ["TrentService.GetPublicKey", "TrentService.Sign", "TrentService.GetPublicKey"].filter(
-        (c, i) => i < calls.length,
+        (_c, i) => i < calls.length,
       ),
     );
     if (out.ok) {

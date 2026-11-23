@@ -48,7 +48,6 @@ function useCached<T>(key: string | null, load: () => Promise<T>): Loaded<T> {
     return () => {
       live = false;
     };
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   return state.key === key ? state : { data: null, error: null };
 }

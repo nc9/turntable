@@ -107,7 +107,6 @@ function useMatches(
     }
     return { matches: s.list, byLine: s.byLine, token: s.token };
     // `version` signals appended lines
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [lines, version, query]);
 }
 
@@ -158,7 +157,6 @@ export function LogViewer({
   // the first visible line that starts at or after the cut's byte offset.
   const cutPos = useMemo(
     () => computeCutPos(parser, rows),
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
     [parser, version, rows],
   );
   const merged = useMemo(() => {
@@ -186,7 +184,6 @@ export function LogViewer({
     for (const g of parser.groups)
       if (g.id !== 0) sizes.set(g.id, (g.endLine ?? parser.lineCount - 1) - g.startLine);
     return sizes;
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [parser, version]);
 
   const virtualizer = useVirtualizer({
@@ -199,7 +196,6 @@ export function LogViewer({
 
   useEffect(() => {
     virtualizer.measure();
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [wrap]);
 
   const scrollToRow = useCallback(
@@ -244,7 +240,6 @@ export function LogViewer({
     if (!follow || total === 0) return;
     lastProgrammatic.current = Date.now();
     virtualizer.scrollToIndex(total - 1, { align: "end" });
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [follow, total, version]);
 
   // Scroll to a permalinked selection once the lines exist.
@@ -252,7 +247,6 @@ export function LogViewer({
     if (didInitialScroll.current || !selection || parser.lineCount <= selection.b) return;
     didInitialScroll.current = true;
     revealLine(selection.a);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, version]);
 
   // A permalink past the loaded window pulls in more of the log until the line exists.
@@ -265,7 +259,6 @@ export function LogViewer({
       log.status === "ready"
     )
       log.loadMore();
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, version, log.truncated, log.loadingMore, log.status]);
 
   // A whole-log search hit: scroll to it, pulling in more of the log until its line exists.
@@ -277,7 +270,6 @@ export function LogViewer({
       revealLine(line);
     } else if (log.truncated && !log.loadingMore) log.loadMore();
     else if (!log.truncated && !log.loadingMore) setPendingJump(null);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingJump, version, log.truncated, log.loadingMore, log.status]);
 
   // A finished attempt with no permalink opens at its first error.
@@ -287,7 +279,6 @@ export function LogViewer({
     if (!first) return;
     didInitialScroll.current = true;
     revealLine(first.lineIndex);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [version, log.status, active]);
 
   // Stop following when the reader scrolls away; track the step in view.
@@ -358,7 +349,6 @@ export function LogViewer({
   useEffect(() => {
     setMatchIdx(0);
     if (deferredQuery && matches.length > 0) revealLine((matches[0] as Match).line);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [deferredQuery]);
 
   const textOf = (a: number, b: number): string => {
@@ -472,7 +462,6 @@ export function LogViewer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, gotoMatch, safeIdx, parser, showTime]);
 
   const jumpToLine = useCallback(
@@ -508,7 +497,6 @@ export function LogViewer({
       if (idx >= 0 && !m.has(idx)) m.set(idx, st);
     }
     return m;
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [parser, version]);
 
   const items = virtualizer.getVirtualItems();

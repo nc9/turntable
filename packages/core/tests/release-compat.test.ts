@@ -945,7 +945,7 @@ describe("finishing a compat release", () => {
   let versions: Map<string, string>;
   let puts: number;
   const reply = (status: number, body: unknown = {}): Response => Response.json(body, { status });
-  const fakeFetch: SafeFetch = async (input, init) => {
+  const fakeFetch: SafeFetch = async (_input, init) => {
     const method = init?.method ?? "GET";
     if (method === "GET") {
       const v = Object.fromEntries([...versions].map(([k, i]) => [k, { dist: { integrity: i } }]));

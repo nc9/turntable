@@ -99,5 +99,5 @@ All patterns use bounded character classes and no nested quantifiers, so matchin
 
 ```sh
 bun test packages/redact/tests/redact.test.ts
-cd packages/redact && bunx tsgo --noEmit -p tsconfig.json
+cd packages/redact && bun check
 ```

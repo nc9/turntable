@@ -7,7 +7,7 @@
     "./realtime-protocol": "./src/realtime/protocol.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "typecheck": "bun check",
     "db:generate": "bun run scripts/db-generate.ts",
     "db:pg-schema": "bun run scripts/gen-pg-schema.ts",
     "db:embed": "bun run scripts/gen-migrations.ts",

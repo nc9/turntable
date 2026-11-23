@@ -28,7 +28,6 @@ export function useRunAttempts(jobIds: string[]): JobAttempt[] {
   return useMemo(() => {
     const set = new Set(jobIds);
     return (data ?? []).filter((a) => set.has(a.jobId)).toSorted((a, b) => a.attempt - b.attempt);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [data, jobIds.join(",")]);
 }
 
