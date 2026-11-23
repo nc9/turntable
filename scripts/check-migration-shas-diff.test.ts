@@ -19,7 +19,15 @@ const B = "b".repeat(64);
 const C = "c".repeat(64);
 const D = "d".repeat(64);
 
+/** The golden file in the current format: a list of { tag, sha256 } records per dialect. */
 const shas = (sqlite: Record<string, string>, pg: Record<string, string> = {}): string =>
+  JSON.stringify({
+    "//": "note",
+    sqlite: Object.entries(sqlite).map(([tag, sha256]) => ({ tag, sha256 })),
+    pg: Object.entries(pg).map(([tag, sha256]) => ({ tag, sha256 })),
+  });
+/** The old format: a map from tag to sha (still readable, for a base that predates the list). */
+const oldShas = (sqlite: Record<string, string>, pg: Record<string, string> = {}): string =>
   JSON.stringify({ "//": "note", sqlite, pg });
 const edited = (...tags: string[]): string =>
   `import type { Migration } from "./migrate";\n\nexport const EDITED_IN_PLACE: Record<string, { shas: string[]; reason: string }> = {\n${tags
@@ -41,6 +49,25 @@ describe("parsing", () => {
     expect(editedTags(`${edited("0033_x")}\nconst z = {\n  "0099_not": { a: 1 },\n};\n`)).toEqual(
       new Set(["0033_x"]),
     );
+  });
+});
+
+describe("the old map format", () => {
+  test("is read as well, and a base in the old format compares with a head in the list format", () => {
+    expect(parseShas(oldShas({ "0000_a": A }, { "0000_p": B }))).toEqual(
+      parseShas(shas({ "0000_a": A }, { "0000_p": B })),
+    );
+    const base = parseShas(oldShas({ "0000_a": A, "0001_b": B }));
+    const append = parseShas(shas({ "0000_a": A, "0001_b": B, "0002_c": D }));
+    const edit = parseShas(shas({ "0000_a": A, "0001_b": D }));
+    expect(diffProblems(base, append, new Set(), new Set())).toEqual([]);
+    expect(diffProblems(base, edit, new Set(), new Set())).toHaveLength(1);
+  });
+  test("malformed records are ignored, never throw", () => {
+    const text = JSON.stringify({
+      sqlite: [{ tag: "0000_a" }, null, { tag: 1, sha256: A }, { tag: "0001_b", sha256: B }],
+    });
+    expect(parseShas(text)).toEqual({ sqlite: { "0001_b": B } });
   });
 });
 
@@ -121,6 +148,14 @@ describe("against a real git base", () => {
     put(d, EDITED_PATH, edited());
     put(d, SHAS_PATH, shas({ "0000_a": A }, { "0000_p": C }));
     expect((await run(d)).problems).toEqual(["sqlite 0001_b: the entry was removed"]);
+  });
+
+  test("a base in the old map format against a head in the list format: an append passes, an edit fails", async () => {
+    const d = repo({ [SHAS_PATH]: oldShas({ "0000_a": A, "0001_b": B }), [EDITED_PATH]: edited() });
+    put(d, SHAS_PATH, shas({ "0000_a": A, "0001_b": B, "0002_c": D }));
+    expect((await run(d)).problems).toEqual([]);
+    put(d, SHAS_PATH, shas({ "0000_a": D, "0001_b": B }));
+    expect((await run(d)).problems).toHaveLength(1);
   });
 
   test("a base without the file has nothing to protect; a ref that is not there is an error", async () => {
