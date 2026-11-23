@@ -179,7 +179,13 @@ export async function verifyRunApproval(
   c: Ctx,
   statement: RunStatement,
   signature: SignatureMaterial,
-  run: { id: string; projectId: string; sha: string | null; trust: string | null },
+  run: {
+    id: string;
+    projectId: string;
+    sha: string | null;
+    trust: string | null;
+    actor: string | null;
+  },
 ): Promise<{ hash: string; approverId: string; person: string; method: "webauthn" | "ed25519" }> {
   const v = await verified(c, statement, signature);
   const org = await getOrgById(c.db, c.scope.orgId);
@@ -205,6 +211,24 @@ export async function verifyRunApproval(
     throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
   const violation = keyPolicyViolation(await getKeyPolicy(c.db, c.scope.orgId), v.key);
   if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
+  // The author may not approve their own run, and no policy switch loosens that: the untrusted
+  // authors this gate exists for are outsiders, and a trusted maintainer's own runs are never
+  // held. The login compared is run.actor, the PR author the poller's trust decision judged (the
+  // run records no separate pusher). An unknown author is not refused, since it is no signal.
+  if (
+    run.actor !== null &&
+    run.actor !== "" &&
+    v.key.forgeLogin !== null &&
+    normalizeLogin(v.key.forgeLogin) === normalizeLogin(run.actor)
+  )
+    throw new OpError(
+      "forbidden",
+      "approver_is_author: the author of a run cannot approve it",
+      undefined,
+      {
+        refused: "approver_is_author",
+      },
+    );
   // Both methods spend the server-issued challenge: a replayed statement is refused even if its
   // signature still verifies.
   const ok = await consumeChallenge(c.db, c.scope.orgId, {
