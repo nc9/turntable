@@ -23,29 +23,20 @@ import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { createEventStream } from "./realtime/sse";
 import type { WebhookService } from "./webhooks/service";
+import { pageCsp, renderPage, servePageAsset } from "./pages/server-pages";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 
-const PLACEHOLDER_HTML = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Turntable</title>
-  </head>
-  <body>
-    <h1>Turntable</h1>
-    <p>Pre-alpha. The web UI is not built yet.</p>
-    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>TURNTABLE_UI_DIR</code> to a built bundle).</p>
-  </body>
-</html>
-`;
+const PLACEHOLDER_HTML = renderPage({
+  title: "Turntable",
+  body: `<p>Pre-alpha. The web UI is not built yet.</p>
+<p class="tt-muted">From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>TURNTABLE_UI_DIR</code> to a built bundle).</p>`,
+});
 
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
-  "content-security-policy":
-    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  "content-security-policy": pageCsp(),
 } as const;
 
 /** Handler for `/api/v1/*`; resolves to undefined for any other path. */
@@ -72,6 +63,8 @@ export async function handleRequest(
       headers: { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8" },
     });
   }
+  const asset = servePageAsset(req);
+  if (asset) return asset;
   const ui = serveUi(url, req.method, SECURITY_HEADERS);
   if (ui) return ui;
   if (url.pathname === "/") {

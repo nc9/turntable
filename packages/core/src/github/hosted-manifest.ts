@@ -31,6 +31,7 @@ import {
   hasOpenManifestNonce,
 } from "../db/repos";
 import { hashToken } from "../ops/tokens";
+import { esc, pageHeaders, pageResponse } from "../pages/server-pages";
 import type { SecretStore } from "../secrets/store";
 import { signAppJwt } from "./app-auth";
 import {
@@ -126,35 +127,19 @@ export interface HostedManifestHandler {
   handle(req: Request, peer?: string): Promise<Response | undefined>;
 }
 
-const esc = (v: string): string =>
-  v
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-function headers(formAction: string, cookies: string[] = []): Headers {
-  const h = new Headers({
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-    "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'`,
-    "x-content-type-options": "nosniff",
-    "referrer-policy": "no-referrer",
-  });
-  for (const c of cookies) h.append("set-cookie", c);
-  return h;
-}
-
 const shell = (
   status: number,
   title: string,
   inner: string,
   o: { formAction?: string; cookies?: string[] } = {},
 ): Response =>
-  new Response(
-    `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><body style="font-family:system-ui;max-width:36rem;margin:4rem auto"><h1>${esc(title)}</h1>${inner}</body>`,
-    { status, headers: headers(o.formAction ?? "'none'", o.cookies) },
-  );
+  pageResponse({
+    status,
+    title,
+    body: inner,
+    formAction: o.formAction ?? "'none'",
+    cookies: o.cookies ?? [],
+  });
 
 const note = (status: number, title: string, message: string, cookies: string[] = []): Response =>
   shell(status, title, `<p>${esc(message)}</p>`, { cookies });
@@ -325,12 +310,12 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
           "Create the Turntable GitHub App",
           `<p>Sends the App manifest to GitHub, where you approve it. The App's credentials are stored on this instance and never shown.</p>
 <form method="post" action="${MANIFEST_PATH}" autocomplete="off">
-<p><label>Setup token<br><input type="password" name="setup_token" required autocomplete="off" size="48"></label></p>
-<p><label>Turntable org that will own the App (its slug)<br><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}" size="24"${o.ownerOrgSlugs?.[0] ? ` value="${esc(o.ownerOrgSlugs[0])}"` : ""}></label></p>
-<p><label>App name<br><input name="name" value="Turntable CI" maxlength="34" size="24"></label></p>
-<p><label>Create it under this GitHub organization (blank for your own account)<br><input name="gh_org" maxlength="39" size="24"></label></p>
-<p><label><input type="checkbox" name="rotate" value="1"> Replace the App this instance already has</label></p>
-<button type="submit">Continue</button>
+<label class="tt-field"><span class="tt-label">Setup token</span><input type="password" name="setup_token" required autocomplete="off"></label>
+<label class="tt-field"><span class="tt-label">Turntable org that will own the App (its slug)</span><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}"${o.ownerOrgSlugs?.[0] ? ` value="${esc(o.ownerOrgSlugs[0])}"` : ""}></label>
+<label class="tt-field"><span class="tt-label">App name</span><input name="name" value="Turntable CI" maxlength="34"></label>
+<label class="tt-field"><span class="tt-label">Create it under this GitHub organization (blank for your own account)</span><input name="gh_org" maxlength="39"></label>
+<label class="tt-check"><input type="checkbox" name="rotate" value="1"> Replace the App this instance already has</label>
+<button class="tt-button" type="submit">Continue</button>
 </form>`,
           { formAction: "'self'" },
         );
@@ -444,9 +429,12 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       // differ here: no inline script, the form may go to GitHub only, and the binding cookie.
       return new Response(manifestPage(requestedManifest(name), state, ghOrg || undefined), {
         status: 200,
-        headers: headers("https://github.com", [
-          `${MANIFEST_COOKIE}=${bindSecret}; Max-Age=${MANIFEST_TTL_MS / 1000}; ${cookieAttrs}`,
-        ]),
+        headers: pageHeaders({
+          formAction: "https://github.com",
+          cookies: [
+            `${MANIFEST_COOKIE}=${bindSecret}; Max-Age=${MANIFEST_TTL_MS / 1000}; ${cookieAttrs}`,
+          ],
+        }),
       });
     });
   };
