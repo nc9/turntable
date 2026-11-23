@@ -6,7 +6,7 @@ import type { Db } from "..";
 import * as s from "../schema";
 import type { EventType } from "../schema";
 import { ulid } from "../ulid";
-import { appendEvent, latestEventId } from "./events";
+import { appendEvent, latestSettledEventId } from "./events";
 import { type Scope, scoped } from "./scope";
 
 export type OutboundEndpoint = typeof s.outboundEndpoints.$inferSelect;
@@ -30,9 +30,17 @@ export async function createOutboundEndpoint(
     /** Start at the beginning of the feed instead of its tip. */
     fromStart: boolean;
     now: number;
+    /** The settle window (see fan-out): the start is the newest settled id, not the raw tip. */
+    settleMs?: number;
   },
 ): Promise<OutboundEndpoint> {
-  const cursor = input.fromStart ? 0 : await latestEventId(db, { orgId: scope.orgId });
+  const cursor = input.fromStart
+    ? 0
+    : await latestSettledEventId(
+        db,
+        { orgId: scope.orgId },
+        { settleMs: input.settleMs ?? 0, now: input.now },
+      );
   return db.run(async (h) => {
     const rows = await h.orm
       .insert(s.outboundEndpoints)

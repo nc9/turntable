@@ -7,7 +7,7 @@
 // (browsers do it themselves) or `?after=` gets the events after that cursor, so nothing is lost
 // or repeated. A slow reader whose unread bytes pass the cap is closed and resumes the same way.
 import { DIALECT } from "../db/dialect";
-import { onEventsAppended } from "../db/repos";
+import { latestSettledEventId, onEventsAppended } from "../db/repos";
 import { API_HEADERS } from "../ops/rest";
 import { type DispatchEnv, dispatch, resolveCallerScope } from "../ops/dispatch";
 import { OpError, errorBody } from "../ops/errors";
@@ -137,9 +137,20 @@ export function createEventStream(o: {
       // project is a normal HTTP error, not a stream that opens and closes.
       let first: EventsOut;
       let orgId: string;
+      let from: number | "now" = start;
       try {
-        first = await read(start, limits.page);
-        orgId = (await resolveCallerScope(o.env, cred)).scope.orgId;
+        const caller = await resolveCallerScope(o.env, cred);
+        orgId = caller.scope.orgId;
+        if (start === "now" && limits.settleMs > 0) {
+          // Start at the newest SETTLED id, not the raw tip: events committing just below the tip
+          // (Postgres id gaps) must not be lost. The settled ones above it are sent normally.
+          from = await latestSettledEventId(
+            o.env.db,
+            { orgId: caller.scope.orgId },
+            { settleMs: limits.settleMs, now: (o.env.now ?? Date.now)() },
+          );
+        }
+        first = await read(from, limits.page);
       } catch (err) {
         if (err instanceof OpError) return fail(err);
         console.error("longshore: SSE error", err);
@@ -155,7 +166,7 @@ export function createEventStream(o: {
       byOrg.set(orgId, (byOrg.get(orgId) ?? 0) + 1);
       srv?.timeout(req, 0); // heartbeats keep it alive; the server's idle timeout must not cut it
 
-      let cursor = start === "now" ? first.next_after : start;
+      let cursor = typeof from === "number" ? from : first.next_after;
       let closed = false;
       let pumping = false;
       let dirty = false;

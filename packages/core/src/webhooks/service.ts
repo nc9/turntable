@@ -190,6 +190,7 @@ export class WebhookService {
       ...input,
       url: validateWebhookUrl(input.url),
       now: this.#now(),
+      settleMs: this.#o.settleMs ?? defaultSettleMs(),
     });
   }
 

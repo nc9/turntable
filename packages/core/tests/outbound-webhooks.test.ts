@@ -1,7 +1,15 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { createHttpClient } from "@longshore/net";
-import { appendEvent, listAudit, listEvents, transitionJob, type Db } from "../src/db";
+import {
+  appendEvent,
+  latestSettledEventId,
+  listAudit,
+  listEvents,
+  transitionJob,
+  type Db,
+} from "../src/db";
 import * as s from "../src/db/schema";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import {
@@ -383,14 +391,82 @@ describe("events that have not settled yet (ids can commit out of order on Postg
       },
     });
     env = { registry, db, now: () => now, webhooks: held };
+    // Everything the seed wrote is old, so the endpoint starts at the tip.
+    await db.orm.update(s.events).set({ createdAt: real - 60_000 });
     await op(a, "create_webhook", { url: URL_OK });
-    await emit(a, 2);
+    const mine = await emit(a, 2);
     await held.tick();
     expect(sent).toHaveLength(0); // too young: a gap below could still be filling
     now = real + 6000;
     await held.tick();
     const cursors = sent.map((x) => JSON.parse(x.body).cursor as number);
-    expect(cursors).toHaveLength(2);
+    expect(cursors.toSorted((x, y) => x - y)).toEqual(mine.toSorted((x, y) => x - y));
     expect(cursors).toEqual(cursors.toSorted((x, y) => x - y));
+  });
+});
+
+describe("starting from now when ids can commit out of order", () => {
+  test("the newest settled id: the tip when everything is old, one below the oldest young event otherwise", async () => {
+    const [e1, e2] = await emit(a, 2);
+    const real = Date.now();
+    await db.orm.update(s.events).set({ createdAt: real - 60_000 }); // the seed too
+    // Both are old enough.
+    expect(
+      await latestSettledEventId(db, { orgId: a.orgId }, { settleMs: 1000, now: real + 5000 }),
+    ).toBe(Math.max(e1!, e2!));
+    // No window: the plain tip.
+    expect(await latestSettledEventId(db, { orgId: a.orgId }, { settleMs: 0, now: real })).toBe(
+      Math.max(e1!, e2!),
+    );
+    // A young event above two old ones: start just below it, so a gap filling below the tip is not lost.
+    const young = await appendEvent(db, a.scope, { type: "run.queued", runId: a.runId });
+    await db.orm
+      .update(s.events)
+      .set({ createdAt: real - 60_000 })
+      .where(eq(s.events.id, e1!));
+    await db.orm
+      .update(s.events)
+      .set({ createdAt: real - 60_000 })
+      .where(eq(s.events.id, e2!));
+    await db.orm.update(s.events).set({ createdAt: real }).where(eq(s.events.id, young));
+    expect(
+      await latestSettledEventId(db, { orgId: a.orgId }, { settleMs: 5000, now: real + 100 }),
+    ).toBe(young - 1);
+    // Another org's events never move it.
+    await emit(b, 3);
+    expect(
+      await latestSettledEventId(db, { orgId: a.orgId }, { settleMs: 5000, now: real + 100 }),
+    ).toBe(young - 1);
+  });
+
+  test("a new endpoint does not skip events that are still settling at the moment it is created", async () => {
+    const real = Date.now();
+    let now = real;
+    const svc2 = new WebhookService({
+      db,
+      masterKey: randomBytes(32),
+      now: () => now,
+      settleMs: 5000,
+      fetch: async (url, init) => {
+        sent.push({
+          url: String(url),
+          headers: new Headers(init?.headers),
+          body: String(init?.body),
+        });
+        return new Response("ok");
+      },
+    });
+    env = { registry, db, now: () => now, webhooks: svc2 };
+    await db.orm.update(s.events).set({ createdAt: real - 60_000 }); // the seed is old
+    const mine = await emit(a, 2); // just committed: still inside the settle window
+    await op(a, "create_webhook", { url: URL_OK });
+    await svc2.tick();
+    expect(sent).toHaveLength(0);
+    now = real + 6000;
+    await svc2.tick();
+    // Started below them, so they are delivered once settled, not skipped.
+    expect(sent.map((x) => JSON.parse(x.body).cursor as number).toSorted((x, y) => x - y)).toEqual(
+      mine.toSorted((x, y) => x - y),
+    );
   });
 });

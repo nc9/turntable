@@ -273,4 +273,15 @@ describe("the event stream", () => {
     expect(ids).toHaveLength(2);
     expect(ids).toEqual(ids.toSorted((x, y) => x - y));
   }, 20_000);
+
+  test("after=now with a settle window starts at the newest settled id: young events are delivered, not lost", async () => {
+    stream = mk({ settleMs: 2500 });
+    await Bun.sleep(2600); // the seed has settled
+    await emit(a, 2); // young: inside the window when the client connects
+    const res = await connect("?after=now");
+    const fr = events(await read(res, (f) => events(f).length >= 2, 6000));
+    const ids = fr.map((f) => Number(f.id));
+    expect(ids).toHaveLength(2);
+    expect(ids).toEqual(ids.toSorted((x, y) => x - y));
+  }, 20_000);
 });

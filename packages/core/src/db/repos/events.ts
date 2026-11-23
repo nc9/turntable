@@ -130,6 +130,35 @@ export function latestEventId(db: Db, scope: Scope): Promise<number> {
   });
 }
 
+/**
+ * Where a consumer that starts "from now" should start when ids can commit out of order
+ * (Postgres): the newest id such that no event at or below it is still settling. That is the
+ * newest id when every event is older than `settleMs`, else one less than the smallest id among
+ * the young ones (which may still have gaps filling in below them). With no settle window it is
+ * the plain tip.
+ */
+export function latestSettledEventId(
+  db: Db,
+  scope: Scope,
+  o: { settleMs: number; now: number },
+): Promise<number> {
+  if (o.settleMs <= 0) return latestEventId(db, scope);
+  return db.run(async (h) => {
+    const [young] = await h.orm
+      .select({ id: sql<number | null>`min(${s.events.id})`.mapWith(Number) })
+      .from(s.events)
+      .where(scoped(scope, EVENT_COLS, gt(s.events.createdAt, o.now - o.settleMs)));
+    const [top] = await h.orm
+      .select({ id: sql<number | null>`max(${s.events.id})`.mapWith(Number) })
+      .from(s.events)
+      .where(scoped(scope, EVENT_COLS));
+    const tip = Number(top?.id ?? 0);
+    const firstYoung = young?.id;
+    if (firstYoung === null || firstYoung === undefined || Number.isNaN(firstYoung)) return tip;
+    return Math.max(0, Math.min(tip, Number(firstYoung) - 1));
+  });
+}
+
 // ---- steps ----
 
 export type StepInput = {
