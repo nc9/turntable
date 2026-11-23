@@ -3,7 +3,9 @@
   "name": "Turntable",
   "theme": "tang",
   "thumbnails": { "enabled": false },
-  "colors": { "primary": "#D97706", "light": "#F59E0B", "dark": "#B45309" },
+  "colors": { "primary": "#0070f3", "light": "#3291ff", "dark": "#0060d0" },
+  "logo": { "light": "/logo/light.svg", "dark": "/logo/dark.svg" },
+  "favicon": "/favicon.svg",
   "navigation": {
     "groups": [
       {

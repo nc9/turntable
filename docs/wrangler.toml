@@ -1,0 +1,18 @@
+name = "turntable-docs"
+compatibility_date = "2026-11-01"
+main = "worker.ts"
+workers_dev = false
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+html_handling = "drop-trailing-slash"
+not_found_handling = "404-page"
+run_worker_first = true
+[[routes]]
+pattern = "turntableci.com/docs*"
+zone_name = "turntableci.com"
+[[routes]]
+pattern = "turntableci.com/docs/*"
+zone_name = "turntableci.com"
+[observability]
+enabled = true
