@@ -24,15 +24,20 @@ interface Env {
   ASSETS: { fetch: (request: Request) => Promise<Response> };
 }
 
-/** Put BASE back on a root-relative, same-origin Location header. */
-const rebaseLocation = (location: string, origin: string): string => {
+/**
+ * Put BASE back on a same-origin Location. Returns null for anything that would leave this origin
+ * (absolute, protocol-relative `//host`, or unparsable): the docs never redirect off-site, so such
+ * a Location is refused rather than passed through (an open redirect otherwise).
+ */
+const rebaseLocation = (location: string, origin: string): string | null => {
+  if (location.startsWith("//") || location.startsWith("\\")) return null;
   let target: URL;
   try {
     target = new URL(location, origin);
   } catch {
-    return location;
+    return null;
   }
-  if (target.origin !== origin) return location;
+  if (target.origin !== origin) return null;
   if (target.pathname === BASE || target.pathname.startsWith(`${BASE}/`)) {
     return location;
   }
@@ -49,7 +54,9 @@ export default {
       return env.ASSETS.fetch(request);
     }
 
-    const inner = url.pathname.slice(BASE.length) || "/";
+    // Collapse leading slashes: `/docs//evil.example` must not become a protocol-relative path that
+    // the assets binding could echo back in a Location header.
+    const inner = `/${url.pathname.slice(BASE.length).replace(/^[/\\]+/, "")}`;
     // Tangly canonicals carry no trailing slash. Normalise here rather than
     // letting `html_handling` do it, so the redirect keeps the prefix.
     const canonical = inner.length > 1 ? inner.replace(/\/+$/, "") || "/" : inner;
@@ -71,6 +78,7 @@ export default {
       const location = response.headers.get("location");
       if (location) {
         const rebased = rebaseLocation(location, url.origin);
+        if (rebased === null) return new Response("Not Found", { status: 404 });
         if (rebased !== location) {
           const headers = new Headers(response.headers);
           headers.set("location", rebased);
