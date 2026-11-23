@@ -1,7 +1,7 @@
 // Secrets, the GitHub App record, installations and webhook deliveries. Like index.ts, part of
 // the only code allowed to name tenant tables. Secret values are stored only as sealed records
 // and are never returned by any query written for an API response.
-import { and, asc, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, like, lt, ne } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
@@ -432,5 +432,119 @@ export function consumeInstallationClaim(
       )
       .returning();
     return rows[0];
+  });
+}
+
+// ---- the hosted App manifest flow (github/hosted-manifest.ts) ----
+
+/** `startedBy` prefix of an installation_claims row that is really an App manifest nonce. */
+export const MANIFEST_NONCE_PREFIX = "app-manifest:";
+
+/**
+ * Records the single-use nonce of an App manifest flow. It reuses `installation_claims` (a nonce,
+ * its owner org and an expiry is all either flow needs); the prefix on `startedBy` keeps the two
+ * kinds apart, and each flow's state is signed under its own key.
+ */
+export function createManifestNonce(
+  db: Db,
+  scope: Scope,
+  input: { nonce: string; startedBy: string; expiresAt: number },
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm.insert(s.installationClaims).values({
+      nonce: input.nonce,
+      orgId: scope.orgId,
+      startedBy: `${MANIFEST_NONCE_PREFIX}${input.startedBy}`,
+      expiresAt: input.expiresAt,
+    });
+  });
+}
+
+/** Consumes a manifest nonce, atomically. False when unknown, expired, used, or not a manifest nonce. */
+export function consumeManifestNonce(db: Db, nonce: string, now: number): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.installationClaims)
+      .set({ usedAt: now })
+      .where(
+        and(
+          eq(s.installationClaims.nonce, nonce),
+          like(s.installationClaims.startedBy, `${MANIFEST_NONCE_PREFIX}%`),
+          isNull(s.installationClaims.usedAt),
+          gt(s.installationClaims.expiresAt, now),
+        ),
+      )
+      .returning({ n: s.installationClaims.nonce });
+    return rows.length > 0;
+  });
+}
+
+/** Drops this org's App rows other than `keepAppId` (a replaced App). Returns the removed ids. */
+export function removeOtherGithubApps(db: Db, scope: Scope, keepAppId: string): Promise<string[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .delete(s.githubApps)
+      .where(and(eq(s.githubApps.orgId, scope.orgId), ne(s.githubApps.appId, keepAppId)))
+      .returning({ id: s.githubApps.appId });
+    return rows.map((r) => r.id);
+  });
+}
+
+/** True while a manifest flow has been started, is unexpired, and has not been finished. */
+export function hasOpenManifestNonce(db: Db, now: number): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ n: s.installationClaims.nonce })
+      .from(s.installationClaims)
+      .where(
+        and(
+          like(s.installationClaims.startedBy, `${MANIFEST_NONCE_PREFIX}%`),
+          isNull(s.installationClaims.usedAt),
+          gt(s.installationClaims.expiresAt, now),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  });
+}
+
+/**
+ * The installations of replaced Apps are dead (their App no longer exists here): mark them
+ * deleted and drop the repository bindings they granted. Unscoped on purpose: an App's
+ * installations belong to every org that claimed one. Returns what was retired, for the audit.
+ */
+export function retireAppInstallations(
+  db: Db,
+  appIds: readonly string[],
+): Promise<{ installations: number; repos: number }> {
+  return db.run(async (h) => {
+    if (appIds.length === 0) return { installations: 0, repos: 0 };
+    const live = await h.orm
+      .select()
+      .from(s.githubInstallations)
+      .where(
+        and(
+          inArray(s.githubInstallations.appId, [...appIds]),
+          ne(s.githubInstallations.status, "deleted"),
+        ),
+      );
+    let repos = 0;
+    for (const i of live) {
+      const gone = await h.orm
+        .delete(s.projectRepos)
+        .where(
+          and(
+            eq(s.projectRepos.orgId, i.orgId),
+            eq(s.projectRepos.installationId, i.installationId),
+          ),
+        )
+        .returning({ id: s.projectRepos.id });
+      repos += gone.length;
+      await h.orm
+        .update(s.githubInstallations)
+        .set({ status: "deleted", updatedAt: Date.now() })
+        .where(eq(s.githubInstallations.installationId, i.installationId));
+    }
+    return { installations: live.length, repos };
   });
 }

@@ -1,5 +1,5 @@
 import { SandboxNotFoundError, InfraError, SpecError, TransientInfraError } from "./errors";
-import { OUTPUT_HEAD_BYTES, OUTPUT_SLACK_BYTES, OUTPUT_TAIL_BYTES, cutMarker } from "./cap-output";
+import { OUTPUT_HEAD_BYTES, OUTPUT_SLACK_BYTES, OUTPUT_TAIL_BYTES } from "./cap-output";
 import type {
   ExecLogs,
   ExecLogsOptions,
@@ -252,7 +252,13 @@ export function createWrappedExec(runner: ShellRunner, o: WrappedExecOptions = {
       const finished = f[3] === "1";
       if (f[0] === "C") {
         const eof = finished && next >= size;
-        return { bytes: cutMarker(Number(f[4])), nextOffset: next, eof };
+        // The omitted region is reported as data, never as text in the stream.
+        return {
+          bytes: new Uint8Array(0),
+          nextOffset: next,
+          eof,
+          cut: { omittedBytes: Number(f[4]) },
+        };
       }
       if (f[0] !== "R" || body.length !== next - opts.fromOffset) {
         throw new InfraError(`logs: bad reply (${header}, ${body.length} bytes)`);

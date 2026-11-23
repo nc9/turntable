@@ -57,15 +57,47 @@ jobs:
           sbom="longshore-${REF_NAME#v}.cdx.json"
           bun run scripts/sbom.ts --version "${REF_NAME}" --out "dist/${sbom}"
           (cd dist && sha256sum "${sbom}" >> SHA256SUMS && sha256sum -c SHA256SUMS)
+          # The list is complete (every binary and the SBOM, nothing else) and the SBOM is exactly
+          # what the lockfile ships, before anything is attested or uploaded.
+          bun run scripts/release-checks.ts sums dist
+          bun run scripts/release-checks.ts sbom "dist/${sbom}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
           if-no-files-found: error
 
+  # The same commit built twice, the second time in a fresh copy at another path with a fresh
+  # install, gives identical bytes. A release that is not reproducible is not published.
+  reproducible:
+    needs: binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      # Two more builds of this commit (the second in a fresh copy at another path), which must
+      # agree with each other AND with what the `binaries` job built and will publish. The darwin
+      # binary is left out of the second comparison: it is signed after the compile.
+      - name: Rebuild twice and compare with the published list
+        env:
+          LONGSHORE_VERSION: ${{ env.RELEASE_VERSION }}
+        run: bun run scripts/repro-check.ts --expect dist/SHA256SUMS
+
   github-release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: binaries
+    needs: [binaries, reproducible]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -128,6 +160,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -186,6 +221,8 @@ jobs:
           output-file: longshore-image.cdx.json
           upload-artifact: false
           upload-release-assets: false
+      - name: The image SBOM saw the image's packages
+        run: bun run scripts/release-checks.ts image-sbom longshore-image.cdx.json
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/nc9/longshore
@@ -285,3 +322,19 @@ jobs:
             LONGSHORE_VERSION=${{ env.RELEASE_VERSION }}
       - name: Smoke-run the image (healthz, UI, CSP, PORT, bootstrap token)
         run: scripts/smoke-image.sh longshore:release-smoke
+      # The SBOM step of the real release, on the image just built (a local image: no registry, no
+      # attestation, nothing published). It proves Syft runs and sees the image's packages.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - name: SBOM (CycloneDX) for the image
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: longshore:release-smoke # pin-ok: the image built by the step above
+          syft-version: v1.57.0
+          format: cyclonedx-json
+          output-file: longshore-image.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: The image SBOM saw the image's packages
+        run: bun run scripts/release-checks.ts image-sbom longshore-image.cdx.json
