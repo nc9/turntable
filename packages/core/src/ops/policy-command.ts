@@ -55,6 +55,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       egress: { type: "string" },
       "sandbox-snapshot": { type: "string" },
       "max-concurrent": { type: "string" },
+      "untrusted-run-approval": { type: "string" },
       "checks-mode": { type: "string" },
       "oidc-audiences": { type: "string" },
       ingest: { type: "string" },
@@ -95,7 +96,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       }
       for (const x of await showSandbox(db, values.org))
         console.log(
-          `sandbox ${x.project}: snapshot ${x.settings.sandboxSnapshot ?? "(default)"}; max concurrent ${x.settings.maxConcurrent ?? "(no project limit)"}`,
+          `sandbox ${x.project}: snapshot ${x.settings.sandboxSnapshot ?? "(default)"}; max concurrent ${x.settings.maxConcurrent ?? "(no project limit)"}; untrusted run approval ${x.settings.untrustedRunApproval}`,
         );
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
@@ -129,13 +130,18 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}; approval environment ${r.environment}`,
         );
       }
-    } else if (values["sandbox-snapshot"] !== undefined || values["max-concurrent"] !== undefined) {
+    } else if (
+      values["sandbox-snapshot"] !== undefined ||
+      values["max-concurrent"] !== undefined ||
+      values["untrusted-run-approval"] !== undefined
+    ) {
       const r = await setSandboxPolicy(db, values.org, values.project, {
         sandboxSnapshot: values["sandbox-snapshot"],
         maxConcurrent: values["max-concurrent"],
+        untrustedRunApproval: values["untrusted-run-approval"],
       });
       console.error(
-        `sandbox ${r.project}: snapshot ${r.from.sandboxSnapshot ?? "(default)"} -> ${r.to.sandboxSnapshot ?? "(default)"}; max concurrent ${r.from.maxConcurrent ?? "none"} -> ${r.to.maxConcurrent ?? "none"}`,
+        `sandbox ${r.project}: snapshot ${r.from.sandboxSnapshot ?? "(default)"} -> ${r.to.sandboxSnapshot ?? "(default)"}; max concurrent ${r.from.maxConcurrent ?? "none"} -> ${r.to.maxConcurrent ?? "none"}; untrusted run approval ${r.from.untrustedRunApproval} -> ${r.to.untrustedRunApproval}`,
       );
     } else if (values.ingest !== undefined) {
       const r = await setIngestPolicy(db, values.org, values.project, values.ingest, {
@@ -215,7 +221,7 @@ export async function policyCommand(args: string[]): Promise<void> {
   const ours =
     rest.includes("approve-run-min-role") ||
     rest.some((a) =>
-      /^--(egress|sandbox-snapshot|max-concurrent|checks-mode|oidc-audiences|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
+      /^--(egress|sandbox-snapshot|max-concurrent|untrusted-run-approval|checks-mode|oidc-audiences|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
         a,
       ),
     );

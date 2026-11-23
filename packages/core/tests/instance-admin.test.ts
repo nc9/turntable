@@ -208,7 +208,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       }
     }
     expect(JSON.stringify(await getOrgQuotas(db, a.orgId))).toBe(before);
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });

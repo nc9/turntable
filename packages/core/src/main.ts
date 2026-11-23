@@ -104,7 +104,7 @@ Usage:
   turntable token create --instance --name <name> [--expires-days 30] [--data-dir ./data]
                          (an instance-administrator token: REST only, for quotas; list and revoke take --instance too)
   turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
-                         --name <name> [--expires-days 90] [--data-dir ./data]
+                         [--kind <agent|person>] --name <name> [--expires-days 90] [--data-dir ./data]
   turntable token generate
   turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
   turntable token revoke <id> [--data-dir ./data]
@@ -897,6 +897,7 @@ async function token(args: string[]): Promise<void> {
     org: { type: "string" },
     project: { type: "string" },
     role: { type: "string" },
+    kind: { type: "string" },
     name: { type: "string" },
     "expires-days": { type: "string" },
     instance: { type: "boolean", default: false },
@@ -921,8 +922,10 @@ async function token(args: string[]): Promise<void> {
   }
   if (values.instance) {
     // An instance-administrator token (tti_): not tied to an org, minted only here.
-    if (values.org || values.project || values.role) {
-      throw new Error("--instance takes no --org, --project or --role: it holds no org grant");
+    if (values.org || values.project || values.role || values.kind) {
+      throw new Error(
+        "--instance takes no --org, --project, --role or --kind: it holds no org grant",
+      );
     }
     const { createInstanceTokenFromCli, listInstanceTokensFromCli, revokeInstanceTokenFromCli } =
       await import("./ops/instance-token-cli");
@@ -968,13 +971,14 @@ async function token(args: string[]): Promise<void> {
         org: values.org,
         project: values.project,
         role: values.role,
+        kind: values.kind,
         name: values.name,
         expiresInDays:
           values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
       });
       // Details to stderr, the secret alone to stdout, so `TOKEN=$(turntable token create ...)` works.
       console.error(
-        `created ${created.role} token ${created.id} for ${created.org}${created.project ? `/${created.project}` : ""}, expires ${iso(created.expiresAt)}. It is shown once.`,
+        `created ${created.kind} ${created.role} token ${created.id} for ${created.org}${created.project ? `/${created.project}` : ""}, expires ${iso(created.expiresAt)}. It is shown once.`,
       );
       console.log(created.secret);
     } finally {
@@ -985,13 +989,16 @@ async function token(args: string[]): Promise<void> {
     const db = open();
     try {
       const rows = await listTokensFromCli(db, { org: values.org, project: values.project });
-      console.log(["ID", "NAME", "ROLE", "PROJECT", "STATUS", "LAST USED", "EXPIRES"].join("\t"));
+      console.log(
+        ["ID", "NAME", "ROLE", "KIND", "PROJECT", "STATUS", "LAST USED", "EXPIRES"].join("\t"),
+      );
       for (const r of rows) {
         console.log(
           [
             r.id,
             r.name,
             r.role,
+            r.kind,
             r.project ?? "(org)",
             r.status,
             iso(r.lastUsedAt),

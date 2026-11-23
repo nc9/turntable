@@ -77,7 +77,7 @@ async function claimAll(perOrgCap = 10): Promise<string[]> {
 
 describe("the settings", () => {
   test("default to none, set, clear, and are validated", async () => {
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });
@@ -85,13 +85,13 @@ describe("the settings", () => {
       sandboxSnapshot: "daytona-large",
       maxConcurrent: 4,
     });
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: "daytona-large",
       maxConcurrent: 4,
     });
     // naming one leaves the other
     await setProjectSandboxSettings(db, a.scope, { maxConcurrent: null });
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: "daytona-large",
       maxConcurrent: null,
     });
@@ -109,11 +109,11 @@ describe("the settings", () => {
 
   test("one project's settings never touch another's, in the same org or another", async () => {
     await setProjectSandboxSettings(db, a.scope, { sandboxSnapshot: "snap-a", maxConcurrent: 2 });
-    expect(await getProjectSandboxSettings(db, p2)).toEqual({
+    expect(await getProjectSandboxSettings(db, p2)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });
-    expect(await getProjectSandboxSettings(db, b.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, b.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });
@@ -181,11 +181,11 @@ describe("the operations", () => {
       sandbox_snapshot: "daytona-large",
       max_concurrent: 4,
     });
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: "daytona-large",
       maxConcurrent: 4,
     });
-    expect(await getProjectSandboxSettings(db, b.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, b.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });
@@ -226,7 +226,7 @@ describe("the operations", () => {
       sandbox_snapshot: null,
       max_concurrent: null,
     });
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });
@@ -262,7 +262,7 @@ describe("the operations", () => {
     }
     expect(registry.get("set_project_settings")?.auth.type).toBe("instance");
     expect(mcpTools(registry).map((x) => x.name)).not.toContain("set_project_settings");
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });
@@ -376,7 +376,7 @@ describe("the CLI", () => {
       sandboxSnapshot: "daytona-large",
       maxConcurrent: "4",
     });
-    expect(r.to).toEqual({ sandboxSnapshot: "daytona-large", maxConcurrent: 4 });
+    expect(r.to).toMatchObject({ sandboxSnapshot: "daytona-large", maxConcurrent: 4 });
     expect((await showSandbox(db, "org-a")).find((x) => x.project === "app")?.settings).toEqual(
       r.to,
     );
@@ -386,7 +386,7 @@ describe("the CLI", () => {
       to: { sandboxSnapshot: "daytona-large" },
     });
     await setSandboxPolicy(db, "org-a", "app", { sandboxSnapshot: "none", maxConcurrent: "none" });
-    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+    expect(await getProjectSandboxSettings(db, a.scope)).toMatchObject({
       sandboxSnapshot: null,
       maxConcurrent: null,
     });

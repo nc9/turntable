@@ -11,6 +11,9 @@ function seeded(): Database {
   sqlite.run("INSERT INTO orgs (id, slug, name) VALUES ('o1', 'acme', 'Acme')");
   sqlite.run("INSERT INTO projects (id, org_id, slug, name) VALUES ('p1', 'o1', 'app', 'App')");
   sqlite.run(
+    "INSERT INTO api_tokens (id, org_id, name, role, token_hash, created_by) VALUES ('t1', 'o1', 'old', 'operator', 'h', 'x')",
+  );
+  sqlite.run(
     "INSERT INTO runs (id, org_id, project_id, workflow_path, event, ref) VALUES ('r1', 'o1', 'p1', 'w.yml', 'push', 'main')",
   );
   sqlite.run(
@@ -48,6 +51,14 @@ test("a table-rebuild migration keeps existing rows and their foreign keys", () 
     workflow_name: null,
     pr_number: null,
   });
+
+  // a token minted before kinds existed is an agent; a project before the policy has the default
+  expect(sqlite.query("SELECT kind FROM api_tokens WHERE id = 't1'").get()).toEqual({
+    kind: "agent",
+  });
+  expect(
+    sqlite.query("SELECT untrusted_run_approval AS p FROM projects WHERE id = 'p1'").get(),
+  ).toEqual({ p: "no_agents" });
 
   // enforcement is back on, and the new state is accepted by the new CHECK
   expect(sqlite.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });

@@ -264,8 +264,15 @@
     {
       "idx": 37,
       "version": "6",
-      "when": 1795425195081,
-      "tag": "0037_settings_registry",
+      "when": 1795424035577,
+      "tag": "0037_untrusted_run_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1795426231453,
+      "tag": "0038_settings_registry",
       "breakpoints": true
     }
   ]

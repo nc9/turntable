@@ -12,7 +12,7 @@ import {
   type Scope,
   transitionJob,
 } from "../src/db";
-import type { AgentRole } from "../src/db/schema";
+import type { AgentRole, TokenKind } from "../src/db/schema";
 import { generateToken, hashToken, type Principal } from "../src/ops";
 
 export type Tenant = {
@@ -32,12 +32,13 @@ export async function mintToken(
   db: Db,
   scope: Scope,
   role: AgentRole,
-  opts: { expiresAt?: number; name?: string } = {},
+  opts: { expiresAt?: number; name?: string; kind?: TokenKind } = {},
 ): Promise<{ secret: string; id: string }> {
   const secret = generateToken();
   const row = await insertApiToken(db, scope, {
     name: opts.name ?? `test-${role}`,
     role,
+    ...(opts.kind ? { kind: opts.kind } : {}),
     tokenHash: hashToken(secret),
     createdBy: "test:setup",
     expiresAt: opts.expiresAt,

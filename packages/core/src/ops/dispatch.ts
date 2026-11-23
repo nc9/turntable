@@ -29,6 +29,8 @@ import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
 
+export type Transport = "mcp" | "rest";
+
 export type DispatchEnv = {
   registry: OpRegistry;
   db: Db;
@@ -41,6 +43,12 @@ export type DispatchEnv = {
    * socket leave it off, so an instance token is simply not a credential there.
    */
   allowInstance?: boolean | undefined;
+  /**
+   * Which adapter carries the call. Set by the MCP adapters (`mcp`) and the REST adapter
+   * (`rest`); absent for in-process callers (the CLI, tests). `approve_run` reads it to refuse an
+   * MCP call under a project's `no_agents` policy.
+   */
+  transport?: Transport | undefined;
   /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
   /** The data dir and database file `db_backup` works on; `{ dialect: "pg" }` on Postgres. */
@@ -124,6 +132,8 @@ export async function authenticate(env: DispatchEnv, credential: Credential): Pr
     orgId: row.orgId,
     projectId: row.projectId,
     role: row.role as Extract<Principal, { kind: "token" }>["role"],
+    // Only an explicit `person` is one; anything else, a missing value included, is an agent.
+    tokenKind: row.kind === "person" ? "person" : "agent",
   };
 }
 
@@ -334,6 +344,7 @@ export async function dispatch(
       claims: env.claims,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
+      transport: env.transport,
       instanceOrgCap: env.instanceOrgCap,
       backup: env.backup,
       attestationAnchors: env.attestationAnchors,
@@ -391,7 +402,10 @@ export async function dispatch(
       return { ok: true, op: target, output, untrusted: target.untrustedOutput };
     } catch (err) {
       const code = err instanceof OpError ? err.code : "internal";
-      await audit(`error:${code}`, input);
+      await audit(
+        `error:${code}`,
+        err instanceof OpError && err.auditDetail ? { ...input, ...err.auditDetail } : input,
+      );
       throw err;
     }
   } catch (err) {

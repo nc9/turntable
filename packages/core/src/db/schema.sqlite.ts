@@ -63,6 +63,18 @@ export type MemberRole = (typeof MEMBER_ROLES)[number];
 export const AGENT_ROLES = ["reader", "operator", "release_operator"] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
+/**
+ * What holds an API token: `agent` (an MCP client or script an untrusted pull request could
+ * prompt) or `person` (a human's own token). Set at mint time and never changed. A token with no
+ * kind is an agent: the column defaults to it, so tokens minted before it existed fail closed.
+ */
+export const TOKEN_KINDS = ["agent", "person"] as const;
+export type TokenKind = (typeof TOKEN_KINDS)[number];
+
+/** Who may release a run held for an untrusted author (`untrusted_run_approval`, per project). */
+export const UNTRUSTED_RUN_APPROVALS = ["human", "no_agents", "any"] as const;
+export type UntrustedRunApproval = (typeof UNTRUSTED_RUN_APPROVALS)[number];
+
 export const FORGES = ["github"] as const;
 export type Forge = (typeof FORGES)[number];
 
@@ -167,12 +179,22 @@ export const projects = sqliteTable(
      * operator only.
      */
     maxConcurrent: integer("max_concurrent", { mode: "number" }),
+    /**
+     * Who may approve a run held for an untrusted author: `human` (only an enrolled approver's
+     * signature), `no_agents` (default: not over MCP, not with an agent token) or `any`. Raising
+     * it to `any` is an instance-administrator act and is audited.
+     */
+    untrustedRunApproval: text("untrusted_run_approval").notNull().default("no_agents"),
     createdAt: createdAt(),
   },
   (t) => [
     unique("projects_org_slug_unique").on(t.orgId, t.slug),
     // Target for composite FKs, so children cannot point at another org's project.
     unique("projects_id_org_unique").on(t.id, t.orgId),
+    check(
+      "projects_untrusted_run_approval_check",
+      inList("untrusted_run_approval", UNTRUSTED_RUN_APPROVALS),
+    ),
   ],
 );
 
@@ -433,6 +455,7 @@ export const apiTokens = sqliteTable(
     projectId: text("project_id"),
     name: text("name").notNull(),
     role: text("role").notNull(),
+    kind: text("kind").notNull().default("agent"),
     tokenHash: text("token_hash").notNull(),
     /** Who minted it (`kind:id`), for audit and the "never exceeds its creator" rule. */
     createdBy: text("created_by").notNull(),
@@ -446,6 +469,7 @@ export const apiTokens = sqliteTable(
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
     unique("api_tokens_hash_unique").on(t.tokenHash),
     check("api_tokens_role_check", inList("role", AGENT_ROLES)),
+    check("api_tokens_kind_check", inList("kind", TOKEN_KINDS)),
     index("api_tokens_org_idx").on(t.orgId),
   ],
 );

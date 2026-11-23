@@ -1,4 +1,4 @@
-import type { AgentRole, MemberRole } from "../db/schema";
+import type { AgentRole, MemberRole, TokenKind } from "../db/schema";
 import { OpError } from "./errors";
 import type { Role } from "./roles";
 
@@ -8,7 +8,15 @@ import type { Role } from "./roles";
  * sessions once they exist); no network adapter can construct one.
  */
 export type Principal =
-  | { kind: "token"; id: string; orgId: string; projectId: string | null; role: AgentRole }
+  | {
+      kind: "token";
+      id: string;
+      orgId: string;
+      projectId: string | null;
+      role: AgentRole;
+      /** Who holds the token. A token row with no kind is an agent (fail closed). */
+      tokenKind: TokenKind;
+    }
   | { kind: "member"; id: string; orgId: string; role: MemberRole }
   /**
    * An enrolled approver, proven by a signature over the request's statement. It exists only for

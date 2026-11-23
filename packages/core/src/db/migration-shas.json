@@ -150,7 +150,11 @@
       "sha256": "2264b3d75c95951266a4386646b98624399fd351318df93d0e72c487cba8d782"
     },
     {
-      "tag": "0037_settings_registry",
+      "tag": "0037_untrusted_run_approval",
+      "sha256": "0a1f671acd8b557f871907b0ab9f1c722a03194071c4821de7222c47fb329a66"
+    },
+    {
+      "tag": "0038_settings_registry",
       "sha256": "75b9e5ed67ca1f68ea0eb3b5c61ee97db0d49b9e9c65e76ff12a7275e5fdd9f8"
     }
   ],
@@ -188,7 +192,11 @@
       "sha256": "0696ab60f4c478429f3b665fe9244fc70b206652dddf97a5c800b8a570310ca8"
     },
     {
-      "tag": "0008_settings_registry",
+      "tag": "0008_untrusted_run_approval",
+      "sha256": "76488b71c29268708b2095e01c759fb2c7d34f23006cc45cda767f4dd332f04a"
+    },
+    {
+      "tag": "0009_settings_registry",
       "sha256": "b7516f9e33bbb87490f509d0ed0c174e0b17c1b06874cf2455106a22628161fd"
     }
   ]

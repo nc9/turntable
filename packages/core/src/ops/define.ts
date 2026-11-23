@@ -38,6 +38,8 @@ export type OpContext = {
   vault?: SecretVault | undefined;
   /** Starts installation claims (hosted); absent without a master key. */
   claims?: InstallationClaims | undefined;
+  /** The adapter that carried the call; undefined for in-process callers. */
+  transport?: "mcp" | "rest" | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
   instanceOrgCap?: number | undefined;
   /** Where `db_backup` may write; absent when the server was not set up for it. */

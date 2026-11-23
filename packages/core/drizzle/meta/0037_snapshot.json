@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2541d31a-c506-4b3b-8136-d4ac1d5dd543",
+  "id": "f96eef55-c722-4124-99b0-487b56faac98",
   "prevId": "d2ac1c9f-79f6-4abc-8152-01eb6385d152",
   "tables": {
     "action_pins": {
@@ -245,6 +245,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'agent'"
+        },
         "token_hash": {
           "name": "token_hash",
           "type": "text",
@@ -341,6 +349,10 @@
         "api_tokens_role_check": {
           "name": "api_tokens_role_check",
           "value": "role IN ('reader', 'operator', 'release_operator')"
+        },
+        "api_tokens_kind_check": {
+          "name": "api_tokens_kind_check",
+          "value": "kind IN ('agent', 'person')"
         }
       }
     },
@@ -4000,6 +4012,14 @@
           "notNull": false,
           "autoincrement": false
         },
+        "untrusted_run_approval": {
+          "name": "untrusted_run_approval",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'no_agents'"
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -4044,7 +4064,12 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "projects_untrusted_run_approval_check": {
+          "name": "projects_untrusted_run_approval_check",
+          "value": "untrusted_run_approval IN ('human', 'no_agents', 'any')"
+        }
+      }
     },
     "proxy_passthrough_hosts": {
       "name": "proxy_passthrough_hosts",
@@ -4805,98 +4830,6 @@
       },
       "uniqueConstraints": {},
       "checkConstraints": {}
-    },
-    "settings": {
-      "name": "settings",
-      "columns": {
-        "scope_kind": {
-          "name": "scope_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "scope_id": {
-          "name": "scope_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "org_id": {
-          "name": "org_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "value": {
-          "name": "value",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "settings_org_id_orgs_id_fk": {
-          "name": "settings_org_id_orgs_id_fk",
-          "tableFrom": "settings",
-          "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "settings_scope_kind_scope_id_key_pk": {
-          "columns": [
-            "scope_kind",
-            "scope_id",
-            "key"
-          ],
-          "name": "settings_scope_kind_scope_id_key_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "settings_scope_kind_check": {
-          "name": "settings_scope_kind_check",
-          "value": "scope_kind IN ('instance', 'org', 'project')"
-        },
-        "settings_org_id_check": {
-          "name": "settings_org_id_check",
-          "value": "(\"settings\".\"scope_kind\" = 'instance' AND \"settings\".\"org_id\" IS NULL) OR (\"settings\".\"scope_kind\" = 'org' AND \"settings\".\"org_id\" IS NOT NULL AND \"settings\".\"scope_id\" = \"settings\".\"org_id\") OR (\"settings\".\"scope_kind\" = 'project' AND \"settings\".\"org_id\" IS NOT NULL)"
-        }
-      }
     },
     "users": {
       "name": "users",

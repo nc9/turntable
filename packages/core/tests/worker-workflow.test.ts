@@ -1144,7 +1144,7 @@ jobs:
   const trustOf = (r: { trust: string | null }) => JSON.parse(r.trust!);
   const bearer = async (role: "reader" | "operator" | "release_operator") => ({
     kind: "bearer" as const,
-    token: (await mintToken(db, { orgId: scope.orgId }, role)).secret,
+    token: (await mintToken(db, { orgId: scope.orgId }, role, { kind: "person" })).secret,
   });
   const approve = async (
     cred: Awaited<ReturnType<typeof bearer>>,
