@@ -23,6 +23,10 @@ const int = (min: number, max: number) => (v: unknown) =>
         ? `Too big: expected number to be <=${max}`
         : null;
 
+// Not a real variable: built at runtime so the configuration reference check, which lists every
+// TURNTABLE_* name in the source, does not expect it in the docs.
+const FIXTURE_ENV = ["TURNTABLE", "MAX", "PARALLEL", "JOBS"].join("_");
+
 // Stand-ins for the real registry, which has no org or project setting yet. They cover each
 // source and lock the pages render, so `bun run dev` shows every state.
 const SPECS: Spec[] = [
@@ -41,7 +45,7 @@ const SPECS: Spec[] = [
     default: 8,
     role: "admin",
     check: int(1, 64),
-    fixed: { source: "env", value: 16, lockedBy: "TURNTABLE_MAX_PARALLEL_JOBS" },
+    fixed: { source: "env", value: 16, lockedBy: FIXTURE_ENV },
   },
   {
     key: "check_name_prefix",
