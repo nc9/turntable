@@ -13,3 +13,4 @@ packages/core/tests/skipped-checks.test.ts
 packages/core/tests/skipped-check-claim.test.ts
 packages/core/tests/skipped-dismissed.test.ts
 packages/core/tests/token-ops.test.ts
+packages/core/tests/token-realtime.test.ts
