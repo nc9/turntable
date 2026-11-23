@@ -5,12 +5,15 @@ import { describe, expect, test } from "bun:test";
 import {
   bindRepo,
   createOrg,
+  createProject,
   getProjectSandboxSettings,
   listAudit,
   listProjects,
   listRepos,
   setProjectSandboxSettings,
 } from "../src/db";
+import { auditLog, projects } from "../src/db/schema";
+import { eq } from "drizzle-orm";
 import { syncInstallation } from "../src/github/installations";
 import { fakeFacts, inst, repo, setup } from "./github-helpers";
 
@@ -115,5 +118,46 @@ describe("re-grant re-attaches a binding-only repo", () => {
       installationId: "100",
       projectId: project.id,
     });
+  });
+
+  test("the most recent unbound_at wins among several candidates", async () => {
+    const { db, org, f, project: first } = await granted();
+    f.repos.set("100", []);
+    await syncInstallation(db, f.facts, "100");
+    // A second project that also last held forge repo 1, unbound later than the first.
+    const second = await createProject(db, { orgId: org.id }, { slug: "second", name: "Second" });
+    await db.orm
+      .update(projects)
+      .set({ lastForgeRepoId: "1", unboundAt: Date.now() + 10_000 })
+      .where(eq(projects.id, second.id));
+    f.repos.set("100", [repo("1", "api")]);
+    await syncInstallation(db, f.facts, "100");
+    expect(await listRepos(db, { orgId: org.id, projectId: second.id })).toHaveLength(1);
+    expect(await listRepos(db, { orgId: org.id, projectId: first.id })).toHaveLength(0);
+  });
+
+  test("the columns are set on unbind and cleared on bind", async () => {
+    const { db, org, f, project } = await granted();
+    f.repos.set("100", []);
+    const before = Date.now();
+    await syncInstallation(db, f.facts, "100");
+    const [p] = await db.orm.select().from(projects).where(eq(projects.id, project.id));
+    expect(p).toMatchObject({ lastForgeRepoId: "1" });
+    expect(p!.unboundAt!).toBeGreaterThanOrEqual(before);
+    f.repos.set("100", [repo("1", "api")]);
+    await syncInstallation(db, f.facts, "100");
+    const [q] = await db.orm.select().from(projects).where(eq(projects.id, project.id));
+    expect(q).toMatchObject({ lastForgeRepoId: null, unboundAt: null });
+    expect(org.id).toBe(q!.orgId);
+  });
+
+  test("the audit log is never read: pruning it changes nothing", async () => {
+    const { db, org, f, project } = await granted();
+    f.repos.set("100", []);
+    await syncInstallation(db, f.facts, "100");
+    await db.orm.delete(auditLog).where(eq(auditLog.orgId, org.id));
+    f.repos.set("100", [repo("1", "api")]);
+    await syncInstallation(db, f.facts, "100");
+    expect((await listProjects(db, { orgId: org.id })).map((p) => p.id)).toEqual([project.id]);
   });
 });

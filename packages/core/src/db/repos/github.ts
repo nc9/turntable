@@ -1,7 +1,21 @@
 // Secrets, the GitHub App record, installations and webhook deliveries. Like index.ts, part of
 // the only code allowed to name tenant tables. Secret values are stored only as sealed records
 // and are never returned by any query written for an API response.
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notLike, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  ne,
+  notLike,
+  or,
+} from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
@@ -404,24 +418,42 @@ export function listInstallationBindings(
   );
 }
 
+/**
+ * Removes a binding and notes on its project which forge repo id it lost and when, so a re-grant
+ * can find the project again. Both writes are in one transaction.
+ */
 export function unbindRepo(db: Db, scope: Scope, bindingId: string): Promise<boolean> {
-  return db.run(async (h) => {
+  return db.transaction(async (h) => {
     const rows = await h.orm
       .delete(s.projectRepos)
       .where(scoped(scope, { orgId: s.projectRepos.orgId }, eq(s.projectRepos.id, bindingId)))
-      .returning({ id: s.projectRepos.id });
+      .returning({
+        projectId: s.projectRepos.projectId,
+        orgId: s.projectRepos.orgId,
+        forgeRepoId: s.projectRepos.forgeRepoId,
+      });
+    for (const r of rows) await markProjectUnbound(h, r, Date.now());
     return rows.length > 0;
   });
 }
 
-/** Audit op written when a sync unbinds a repo; it is the record `findReattachableProject` reads. */
-export const UNBIND_AUDIT_OP = "unbind_repo_binding";
+async function markProjectUnbound(
+  h: Db,
+  r: { projectId: string; orgId: string; forgeRepoId: string | null },
+  at: number,
+): Promise<void> {
+  if (r.forgeRepoId === null) return;
+  await h.orm
+    .update(s.projects)
+    .set({ lastForgeRepoId: r.forgeRepoId, unboundAt: at })
+    .where(and(eq(s.projects.id, r.projectId), eq(s.projects.orgId, r.orgId)));
+}
 
 /**
- * The project a repo was last bound to, for a re-grant: the newest `unbind_repo_binding` audit
- * entry of THIS org for the same forge repo id whose project still exists and has no binding
- * now. Never by name, never across orgs (the audit chain and the project lookup are both scoped).
- * Undefined when there is none, so the caller creates a new project.
+ * The project a repo was last bound to, for a re-grant: in THIS org, whose `lastForgeRepoId` is
+ * the re-granted repo's forge id and which has no binding now; the newest `unboundAt` wins.
+ * Never by name, never across orgs, and never from the audit log. Undefined when there is none,
+ * so the caller creates a new project.
  */
 export function findReattachableProject(
   db: Db,
@@ -429,43 +461,25 @@ export function findReattachableProject(
   forgeRepoId: string,
 ): Promise<string | undefined> {
   return db.run(async (h) => {
-    const rows = await h.orm
-      .select({ projectId: s.auditLog.projectId, input: s.auditLog.input })
-      .from(s.auditLog)
+    const candidates = await h.orm
+      .select({ id: s.projects.id })
+      .from(s.projects)
       .where(
         scoped(
           scope,
-          { orgId: s.auditLog.orgId },
-          eq(s.auditLog.op, UNBIND_AUDIT_OP),
-          eq(s.auditLog.outcome, "ok"),
+          { orgId: s.projects.orgId },
+          eq(s.projects.lastForgeRepoId, forgeRepoId),
+          isNotNull(s.projects.unboundAt),
         ),
       )
-      .orderBy(desc(s.auditLog.id));
-    const seen = new Set<string>();
-    for (const r of rows) {
-      if (!r.projectId || seen.has(r.projectId)) continue;
-      let id: unknown;
-      try {
-        id = (JSON.parse(r.input) as { forgeRepoId?: unknown }).forgeRepoId;
-      } catch {
-        continue;
-      }
-      if (id !== forgeRepoId) continue;
-      seen.add(r.projectId);
-      const [project] = await h.orm
-        .select({ id: s.projects.id })
-        .from(s.projects)
-        .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, r.projectId)))
-        .limit(1);
-      if (!project) continue;
+      .orderBy(desc(s.projects.unboundAt), desc(s.projects.id));
+    for (const p of candidates) {
       const [bound] = await h.orm
         .select({ id: s.projectRepos.id })
         .from(s.projectRepos)
-        .where(
-          scoped(scope, { orgId: s.projectRepos.orgId }, eq(s.projectRepos.projectId, r.projectId)),
-        )
+        .where(scoped(scope, { orgId: s.projectRepos.orgId }, eq(s.projectRepos.projectId, p.id)))
         .limit(1);
-      if (!bound) return project.id;
+      if (!bound) return p.id;
     }
     return undefined;
   });
@@ -732,7 +746,13 @@ export function retireAppInstallations(
             eq(s.projectRepos.installationId, i.installationId),
           ),
         )
-        .returning({ id: s.projectRepos.id });
+        .returning({
+          projectId: s.projectRepos.projectId,
+          orgId: s.projectRepos.orgId,
+          forgeRepoId: s.projectRepos.forgeRepoId,
+        });
+      const now = Date.now();
+      for (const r of gone) await markProjectUnbound(h, r, now);
       repos += gone.length;
       await h.orm
         .update(s.githubInstallations)

@@ -47,7 +47,7 @@ When GitHub reports an installation, Turntable does not trust the payload. It re
 
 ### Re-granting a repo
 
-When an installation drops a repo (or is deleted), the sync unbinds it and writes an `unbind_repo_binding` audit entry with the project and the forge repo id. The project, its settings and its runs stay. If the same forge repo id is granted again, the sync re-attaches it to that project instead of creating a new one, and writes a `reattach_repo_binding` audit entry. Three rules hold: the project must be in the same org as the installation, the forge repo id must match (never the name alone, so a renamed or recreated repo gets a new project), and the project must have no binding now. With several candidates, the most recently unbound wins. Projects unbound before this existed have no entry and are not re-attached.
+When an installation drops a repo (or is deleted), the sync unbinds it and records on the project which forge repo id it lost and when (`last_forge_repo_id`, `unbound_at`). The project, its settings and its runs stay. If the same forge repo id is granted again, the sync re-attaches it to that project instead of creating a new one, clears the two columns and writes a `reattach_repo_binding` audit entry. Three rules hold: the project must be in the same org as the installation, the forge repo id must match (never the name alone, so a renamed or recreated repo gets a new project), and the project must have no binding now. With several candidates, the most recently unbound wins. The decision reads only these columns, never the audit log. Projects unbound before this existed have no columns set and are not re-attached.
 
 ### Moving a polled repo to the App
 

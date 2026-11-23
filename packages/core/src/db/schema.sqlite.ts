@@ -184,6 +184,14 @@ export const projects = sqliteTable(
      */
     maxConcurrent: integer("max_concurrent", { mode: "number" }),
     /**
+     * The forge repo id of the binding this project last lost (an installation sync dropped it),
+     * and when. A re-grant of the same id in the same org re-attaches to the project with the
+     * newest `unboundAt` that has no binding now. Both are cleared when the project is bound
+     * again. Null: never unbound, or bound.
+     */
+    lastForgeRepoId: text("last_forge_repo_id"),
+    unboundAt: integer("unbound_at", { mode: "number" }),
+    /**
      * Who may approve a run held for an untrusted author: `human` (only an enrolled approver's
      * signature), `no_agents` (default: not over MCP, not with an agent token) or `any`. Raising
      * it to `any` is an instance-administrator act and is audited.

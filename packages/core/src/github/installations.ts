@@ -17,7 +17,6 @@ import {
   listInstallationBindings,
   type RepoBinding,
   setInstallationStatus,
-  UNBIND_AUDIT_OP,
   unbindRepo,
   upsertInstallation,
 } from "../db/repos";
@@ -146,7 +145,7 @@ export async function syncInstallation(
       result.conflicts.push(repo.fullName);
       continue;
     }
-    // A re-grant: this org's project that last held this forge repo id and has no binding now.
+    // A re-grant: this org's project whose last_forge_repo_id is this repo and has no binding now.
     const reattachId = await findReattachableProject(db, scope, repo.id);
     const project =
       reattachId !== undefined
@@ -186,8 +185,8 @@ export async function syncInstallation(
 }
 
 /**
- * Unbinds a repo the installation no longer grants and records it in the org's audit chain, with
- * the project and forge repo id, so a later re-grant can find the project again.
+ * Unbinds a repo the installation no longer grants. `unbindRepo` notes the lost forge repo id on
+ * the project (the state a re-grant reads); the audit entry is only a record and is never read.
  */
 async function unbindAndRecord(
   db: Db,
@@ -202,7 +201,7 @@ async function unbindAndRecord(
     {
       principalKind: "system",
       principalId: "github-installation",
-      op: UNBIND_AUDIT_OP,
+      op: "unbind_repo_binding",
       effect: "write",
       outcome: "ok",
       input: {
