@@ -241,7 +241,7 @@ export function countPolledSince(
     const [row] = await h.orm
       .select({ n: count() })
       .from(s.pollSeen)
-      .leftJoin(s.runs, eq(s.runs.id, s.pollSeen.runId))
+      .leftJoin(s.runs, and(eq(s.runs.id, s.pollSeen.runId), eq(s.runs.orgId, s.pollSeen.orgId)))
       .where(
         and(
           scoped(
@@ -627,6 +627,7 @@ export function markPollSkipped(
         workflowPath: input.workflowPath,
         event: input.event,
         sha: input.sha,
+        // Sentinel for "no run" (a binding move writes "moved", see MOVED_RUN_ID in repos/github.ts).
         runId: "skipped",
         ...(input.now === undefined ? {} : { createdAt: input.now }),
       })
@@ -808,6 +809,54 @@ export function listIngestBindings(db: Db): Promise<
               owner: r.owner,
               repo: r.repo,
               config: r.config,
+            },
+          ]
+        : [],
+    );
+  });
+}
+
+/**
+ * GitHub repos bound through an App installation, across every tenant (the poller serves all of
+ * them), so the poller can read each with a token minted for that one repo.
+ */
+export function listInstalledRepos(db: Db): Promise<
+  {
+    orgSlug: string;
+    projectSlug: string;
+    owner: string;
+    repo: string;
+    installationId: string;
+  }[]
+> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        orgSlug: s.orgs.slug,
+        projectSlug: s.projects.slug,
+        owner: s.projectRepos.owner,
+        repo: s.projectRepos.repo,
+        forge: s.projectRepos.forge,
+        installationId: s.projectRepos.installationId,
+      })
+      .from(s.projectRepos)
+      .innerJoin(
+        s.projects,
+        and(
+          eq(s.projects.id, s.projectRepos.projectId),
+          eq(s.projects.orgId, s.projectRepos.orgId),
+        ),
+      )
+      .innerJoin(s.orgs, eq(s.orgs.id, s.projects.orgId));
+    return rows.flatMap((r) =>
+      r.forge === "github" && r.installationId !== null
+        ? [
+            {
+              orgSlug: r.orgSlug,
+              projectSlug: r.projectSlug,
+              owner: r.owner,
+              repo: r.repo,
+              installationId: r.installationId,
             },
           ]
         : [],

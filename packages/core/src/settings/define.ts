@@ -31,6 +31,14 @@ export type SettingSpec<T> = {
    */
   instanceAdminOnly?: boolean;
   /**
+   * The values of an enum setting from least to most strict. Only meaningful with
+   * `instanceAdminOnly`, which it relaxes one way: `instanceAdminOnly` alone means every change
+   * needs the instance administrator, while with `strictness` an org principal holding `role`
+   * may set a value at least as strict as the current effective one (a reset counts as setting
+   * the default). Loosening stays the instance administrator's. For limit-type settings.
+   */
+  strictness?: readonly string[];
+  /**
    * Whether `set_setting` may change it over MCP. False for anything that raises a limit or
    * widens what a run may do: a value in an agent's context is not a human decision (#188).
    */
@@ -102,6 +110,21 @@ export function defineSetting<T>(spec: SettingSpec<T>): SettingDef {
   }
   if (!spec.mcpEditable && !spec.mcpReason) {
     throw new Error(`${k}: a setting MCP may not change needs an mcpReason`);
+  }
+  if (spec.strictness) {
+    if (!spec.instanceAdminOnly) {
+      throw new Error(`${k}: strictness needs instanceAdminOnly (it relaxes it one way)`);
+    }
+    if (new Set(spec.strictness).size !== spec.strictness.length || spec.strictness.length < 2) {
+      throw new Error(`${k}: strictness lists at least two distinct values`);
+    }
+    for (const v of spec.strictness) {
+      if (!spec.type.safeParse(v).success)
+        throw new Error(`${k}: strictness value ${v} is not valid`);
+    }
+    if (!spec.strictness.includes(spec.default as string)) {
+      throw new Error(`${k}: the default is not in strictness`);
+    }
   }
   const bad = spec.type.safeParse(spec.default);
   if (!bad.success) throw new Error(`${k}: the default does not satisfy its own type`);

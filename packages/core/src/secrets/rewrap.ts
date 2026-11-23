@@ -117,6 +117,11 @@ export interface RewrapOptions {
   releaseElsewhere?: boolean | undefined;
   /** Directory of the audit anchor state files, when there is one. */
   anchorDir?: string;
+  /**
+   * Read-only check: nothing is written and nothing is audited. With no `previous` and no release
+   * keys, it throws RewrapError unless every row already opens under `next`.
+   */
+  dryRun?: boolean;
   /** Org whose chain takes the audit entry (the system org). */
   auditOrgId: string;
   log?: (m: string) => void;
@@ -274,6 +279,7 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
         `cannot re-wrap ${failed.length} row${failed.length === 1 ? "" : "s"}: ${failed.join(", ")}. ${failed.length === 1 ? "It opens" : "They open"} under none of the master keys held. ${releaseRows ? `Provide the release master key (${RELEASE_KEY_ENV}[_PREVIOUS]) too, or the previous main key if it is missing. ` : "Check that the previous master key is the one these rows were sealed under. "}Nothing was changed.`,
       );
     }
+    if (o.dryRun) return;
     for (const { row, sealed } of secretRows) {
       await tx.orm
         .update(s.secrets)
@@ -325,6 +331,8 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
       );
     }
   });
+
+  if (o.dryRun) return { rewrapped, alreadyCurrent, skipped, releaseRewrapped };
 
   // Committed. The anchor files are atomic renames, checked by reading back; a crash before they
   // finish is repaired by the next boot (they open under the previous key, so they are planned again).

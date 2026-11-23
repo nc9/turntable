@@ -1,5 +1,5 @@
 import type { Db } from "../db";
-import { appendAudit, listIngestBindings } from "../db/repos";
+import { appendAudit, listIngestBindings, listInstalledRepos } from "../db/repos";
 import { backoffMs } from "./backoff";
 import {
   ANONYMOUS_REQUESTS_PER_HOUR,
@@ -12,10 +12,30 @@ import {
 } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
 import { newTagCaches, pollRepo } from "./ingest";
-import { ingestStatus, type RepoStatus } from "./status";
+import { ingestStatus, type PollAuthMode, type RepoStatus } from "./status";
+
+/** What the poller needs from the GitHub App: the one mint function (it caches until near expiry). */
+export interface InstallationMinter {
+  mint(
+    installationId: string,
+    scope: {
+      repositories?: readonly string[];
+      permissions?: Readonly<Record<string, "read" | "write">>;
+    },
+  ): Promise<{ token: string }>;
+}
+
+/** What a poll reads: nothing is written, so nothing more is asked for. */
+const POLL_PERMISSIONS = { contents: "read", metadata: "read", pull_requests: "read" } as const;
 
 export type PollerOptions = {
   db: Db;
+  /**
+   * The GitHub App. A repo bound through an installation is then read with a token minted for that
+   * one repo (read-only), which has its own 5,000 an hour budget; the poll token or no token
+   * stays the fallback for every other repo and whenever a mint fails.
+   */
+  auth?: InstallationMinter | undefined;
   config: PollConfig;
   fetch?: FetchLike;
   now?: () => number;
@@ -54,6 +74,12 @@ export class Poller {
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #failures = new Map<string, number>();
   readonly #overCap = new Set<string>();
+  /** One client per installed repo: its own ETag cache and its own rate-limit reading. */
+  readonly #installed = new Map<string, GithubClient>();
+  /** Installation id per lower-case `owner/name`, for repos whose binding is in the repo's project. */
+  #installs = new Map<string, string>();
+  /** When a mint failure was last logged, per repo: one warning per interval. */
+  readonly #mintWarned = new Map<string, number>();
   readonly #tagCaches = newTagCaches();
   readonly #busy = new Set<string>();
   readonly #again = new Set<string>();
@@ -74,6 +100,7 @@ export class Poller {
     this.#o = o;
     const token = readPollToken(o.config);
     this.#anonymous = token === undefined;
+    ingestStatus.fallbackAuth = token === undefined ? "anonymous" : "token";
     this.#github = new GithubClient({
       ...(o.fetch ? { fetch: o.fetch } : {}),
       baseUrl: o.config.apiBaseUrl,
@@ -144,6 +171,9 @@ export class Poller {
         maxRunsPerHour: 30,
       });
     }
+    await this.#refreshInstalls(next).catch((e) =>
+      log(`ingest installations: ${e instanceof Error ? e.message : String(e)}`),
+    );
     for (const key of this.#bound.keys()) if (!next.has(key)) this.#bound.delete(key);
     this.#boundIds.clear();
     for (const b of rows) {
@@ -174,7 +204,70 @@ export class Poller {
       nextPollAt: null,
       consecutiveFailures: 0,
       runsCreated: 0,
+      authMode: null,
+      rateLimit: undefined,
     });
+  }
+
+  /**
+   * The installation of each polled repo, from the bindings of the same org and project the repo
+   * is polled into (a binding in another tenant never lends its installation). Best effort.
+   */
+  async #refreshInstalls(pending: ReadonlyMap<string, PollRepoConfig>): Promise<void> {
+    if (!this.#o.auth) return;
+    const next = new Map<string, string>();
+    for (const b of await listInstalledRepos(this.#o.db)) {
+      const key = `${b.owner}/${b.repo}`.toLowerCase();
+      const cfg =
+        this.#o.config.repos.find((c) => c.repo.toLowerCase() === key) ?? pending.get(key);
+      if (!cfg || (cfg.org ?? "local") !== b.orgSlug || (cfg.project ?? "local") !== b.projectSlug)
+        continue;
+      if (!next.has(key)) next.set(key, b.installationId);
+    }
+    this.#installs = next;
+    for (const key of this.#installed.keys()) if (!next.has(key)) this.#installed.delete(key);
+  }
+
+  /**
+   * The client for one poll of `cfg`: for an installed repo, one carrying a token minted now for
+   * that repo alone (the App's cache keeps it until near expiry and drops it on a freeze), else the
+   * fallback. A failed mint is logged once per interval and never stalls the poll.
+   */
+  async #clientFor(cfg: PollRepoConfig): Promise<{ github: GithubClient; mode: PollAuthMode }> {
+    const fallback = {
+      github: this.#github,
+      mode: this.#anonymous ? ("anonymous" as const) : ("token" as const),
+    };
+    const key = cfg.repo.toLowerCase();
+    const installationId = this.#installs.get(key);
+    if (!this.#o.auth || !installationId) return fallback;
+    try {
+      const { token } = await this.#o.auth.mint(installationId, {
+        repositories: [cfg.repo.split("/")[1] as string],
+        permissions: POLL_PERMISSIONS,
+      });
+      let client = this.#installed.get(key);
+      if (!client) {
+        client = new GithubClient({
+          ...(this.#o.fetch ? { fetch: this.#o.fetch } : {}),
+          baseUrl: this.#o.config.apiBaseUrl,
+          ...(this.#o.now ? { now: this.#o.now } : {}),
+        });
+        this.#installed.set(key, client);
+      }
+      client.setToken(token);
+      return { github: client, mode: "installation" };
+    } catch (err) {
+      const now = this.#now();
+      const last = this.#mintWarned.get(key);
+      if (last === undefined || now - last >= cfg.intervalSeconds * 1000) {
+        this.#mintWarned.set(key, now);
+        this.#o.log?.(
+          `poll ${cfg.repo}: could not mint an installation token, using ${fallback.mode}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return fallback;
+    }
   }
 
   #now(): number {
@@ -241,6 +334,9 @@ export class Poller {
     const intervalMs = cfg.intervalSeconds * 1000;
     const now = this.#now();
 
+    const { github, mode } = await this.#clientFor(cfg);
+    status.authMode = mode;
+
     const finish = (
       outcome: RepoStatus["lastOutcome"],
       error: string | null,
@@ -251,12 +347,15 @@ export class Poller {
       status.lastError = error;
       status.nextPollAt = now + waitMs;
       status.consecutiveFailures = this.#failures.get(repo) ?? 0;
-      ingestStatus.rateLimit = this.#github.rateLimit ?? ingestStatus.rateLimit;
+      status.rateLimit = github.rateLimit ?? status.rateLimit;
+      // The fallback budget only moves with the fallback client; an installation has its own.
+      if (mode !== "installation")
+        ingestStatus.rateLimit = github.rateLimit ?? ingestStatus.rateLimit;
       return waitMs;
     };
 
     // Nearly out of budget: do not spend the rest, wait for the window to reset.
-    const rate = this.#github.rateLimit;
+    const rate = github.rateLimit;
     if (
       rate?.remaining !== undefined &&
       rate.remaining <= RESERVE &&
@@ -271,11 +370,11 @@ export class Poller {
     }
 
     try {
-      await this.#checkDrift(cfg);
+      await this.#checkDrift(cfg, github);
       const res = await pollRepo(
         {
           db: this.#o.db,
-          github: this.#github,
+          github,
           provider: this.#o.config.provider,
           overCap: this.#overCap,
           tagCaches: this.#tagCaches,
@@ -285,6 +384,8 @@ export class Poller {
         cfg,
       );
       this.#failures.delete(repo);
+      if (res.skipped)
+        return finish("error", "bound to another project; poll entry is stale", intervalMs);
       status.runsCreated += res.created.length;
       if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
       if (res.created.length > 0) this.#o.onQueued?.();
@@ -317,13 +418,13 @@ export class Poller {
    * audited once per change and the stored one stays in use. Best effort: a failed look is not a
    * failed poll.
    */
-  async #checkDrift(cfg: PollRepoConfig): Promise<void> {
+  async #checkDrift(cfg: PollRepoConfig, github: GithubClient): Promise<void> {
     const key = cfg.repo.toLowerCase();
     const ids = this.#boundIds.get(key);
     if (!ids) return; // a static-config repo names its own branch
     let live: string;
     try {
-      live = await this.#github.repoDefaultBranch(cfg.repo);
+      live = await github.repoDefaultBranch(cfg.repo);
     } catch {
       return;
     }
