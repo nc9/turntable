@@ -34,6 +34,27 @@ Steps see the event as they do on GitHub where it matters: act is given a `githu
 | Reusable workflows | Not yet verified |
 | Services and job containers | A job that needs docker is skipped with the reason as its log |
 
+## Splitting a job across sandboxes
+
+A heavy job can run as several shards, each in its own sandbox, **without editing the workflow**. The operator configures it per repo (`splits` in the poll config, or `longshore policy set --ingest on ... --splits-json '<json>'` for a bound repo); it is never read from the repository, so a pull request cannot change it.
+
+```json
+"splits": [{
+  "job": "tests",
+  "shards": [
+    { "steps": ["Audit engine tests"] },
+    { "steps": ["Rules tests"] },
+    { "steps": ["Remaining package and script tests"] }
+  ]
+}]
+```
+
+`job` is the job id. Each shard lists the steps (by `name:`, or `#<n>` for the nth step counted from 1) that run only there; 2 to 8 shards, and a step may be in one shard only. Every other step (checkout, setup, anything the rule does not name) runs in every shard, so each shard sets itself up. The only change made to a shard's workflow is `if: false` on the steps another shard owns: no step is added or edited. A step the rule names that no longer exists (a pull request renamed it) is owned by no shard, so it runs in all of them: coverage is never lost, only time.
+
+- **One job to everything else.** The shards are ordinary jobs (`tests[0]`, `tests[1]`, ...) with the job's own name. `needs` waits for all of them; `needs.<job>.result` is the fold (failure if any shard failed, else infrastructure error, cancelled, skipped only if all were, else success); outputs merge with a later non-empty value winning. The forge sees **one check, under the job's name**, running until the last shard finishes, with the fold as its conclusion and each shard's result in its summary. `longshore parity` treats the shards as one job and reports the wall time from the first shard's start to the last one's finish, not the sum.
+- **Failure.** Shards never cancel each other (a job's steps already run every suite even when one is red). An infrastructure error in one shard is an infrastructure failure of the job. Cancelling the run cancels every shard. A shard can be rerun alone (the others keep their results); the rerun reports its own check with the fold of the latest result of each shard.
+- **Limits.** Each shard counts against the project's and the org's concurrency caps like any job, and pays its own setup. A job with `strategy.matrix`, or whose declared outputs read the output of a step a shard owns, is not split and runs whole; the run's plan says why (`splitNotices`).
+
 ## Unsupported in v1
 
 | Feature | Notes |

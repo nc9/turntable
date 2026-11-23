@@ -41,6 +41,12 @@ const jobSchema = z.object({
     .record(z.string(), z.unknown())
     .nullable()
     .describe("This leg's matrix values; null when the job has no matrix."),
+  shard: z
+    .object({ job: z.string(), index: z.int(), total: z.int() })
+    .nullable()
+    .describe(
+      "Set when this row is one shard of a job the operator splits across sandboxes: `job` is the workflow job id the shards share (their name and forge check are the job's), `index` counts from 0. The job's result is the fold of its shards: failure if any failed, else infra_error, cancelled, skipped only if all were, else success. Null for a job that is not split.",
+    ),
   approval_kind: z
     .enum(APPROVAL_KINDS)
     .nullable()
@@ -59,6 +65,20 @@ const jobSchema = z.object({
     .nullable()
     .describe("REST path of the latest attempt's log (job_log); null before any attempt."),
 });
+
+/** The shard a job row is, from its stored plan; null when it is not a shard (or the plan is unreadable). */
+function shardOf(planned: string | null): { job: string; index: number; total: number } | null {
+  if (!planned) return null;
+  try {
+    const p = JSON.parse(planned) as { id?: unknown; shard?: { index?: unknown; total?: unknown } };
+    const s = p.shard;
+    return typeof p.id === "string" && typeof s?.index === "number" && typeof s.total === "number"
+      ? { job: p.id, index: s.index, total: s.total }
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export const getRun = defineOp({
   name: "get_run",
@@ -137,6 +157,7 @@ export const getRun = defineOp({
           state: job.state as z.infer<typeof jobStateSchema>,
           needs: JSON.parse(job.needs) as string[],
           matrix: job.matrix === null ? null : (JSON.parse(job.matrix) as Record<string, unknown>),
+          shard: shardOf(job.planned),
           approval_kind: job.approvalKind as (typeof APPROVAL_KINDS)[number] | null,
           exit_code: job.exitCode,
           started_at: iso(job.startedAt),
