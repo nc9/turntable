@@ -82,7 +82,7 @@ export const setProjectSettings = defineOp({
     "per-org cap (`--org-cap`): a value above it is refused. Both are operator controls and a " +
     "tenant must not choose its own image or lift its own cap, so only the instance " +
     "administrator can call it: an org's own tokens, of any role, never can. " +
-    "`untrusted_run_approval` (no_agents or any; `human` is not selectable yet, #324) says who may approve a run held for an " +
+    "`untrusted_run_approval` (human, no_agents or any) says who may approve a run held for an " +
     "untrusted author; raising it to `any` lets agents approve, so it is audited with the old " +
     "and new value like every change here and is never an MCP call. The change is " +
     "audited in the system org's chain and in the target org's own. Not an MCP tool.",
@@ -125,8 +125,8 @@ export const setProjectSettings = defineOp({
     }
     const scope = { orgId: org.id, projectId: project.id };
     const rt = ctx.settings ?? createSettingsRuntime(settingsRegistry);
-    // A thin alias of set_setting: the same lock, role, MCP and value refusals, so selecting
-    // `human` is refused by the registry and a turntable.toml value locks the field.
+    // A thin alias of set_setting: the same lock, role, MCP and value refusals, so a turntable.toml
+    // value locks the field.
     if (i.untrusted_run_approval !== undefined) {
       // The same per-(org, key) lock as set_setting (#369), held to the end of the transaction.
       await lockSettingKey(ctx.db, org.id, untrustedRunApprovalSetting.key);

@@ -44,7 +44,7 @@ Every run the server ingests gets a trust class, decided once at ingest from for
 
 | Value | Who can approve |
 | --- | --- |
-| `human` | Not selectable yet (#324): `set_project_settings` and `turntable policy set` refuse it. The approve-time refusal stays as a backstop. Intended: only an enrolled approver's signed approval (WebAuthn or ed25519). No token qualifies, over MCP or REST. |
+| `human` | Only a signed `turntable.approve_run.v1` statement from an enrolled approver (WebAuthn or ed25519), relayed through `approve_run`. A token alone is refused, over MCP or REST, whatever its kind. An agent may carry a statement a person signed; it cannot make one. |
 | `no_agents` (default) | Not over MCP, whoever holds the token. Not with a token whose kind is `agent`, over REST either, so an agent cannot step around the MCP block. A person approves in the web UI, or over REST or the CLI with their own `person` token. |
 | `any` | Any caller with the role `approve_run` needs. This is how it worked before the setting existed. |
 
@@ -52,7 +52,18 @@ Every run the server ingests gets a trust class, decided once at ingest from for
 
 Set it per project with `turntable policy set --org <slug> --project <slug> --untrusted-run-approval <human|no_agents|any>` on the host, or `set_project_settings` over REST with an instance token (`get_project_settings` reads it). It is the instance operator's setting to loosen: the order is `any` < `no_agents` < `human`, an org owner (a person; no token holds that role) may only tighten it through `set_setting` or the web UI, a reset to a looser default counts as loosening, and only the instance administrator can loosen it. It is not an MCP tool, and every change (raising it to `any` included) is audited with the old and new value in the system chain and the org's. A project's setting affects only that project.
 
-**Known gap.** `human` refuses every token, but the signed path that releases a held run is not built yet: a signed approval today covers environment gates only. Until it lands, a `human` project cannot release an untrusted run at all. That fails closed, and `no_agents` is the setting to use for a person-approved flow.
+**Signed approval under `human`.** An enrolled approver signs a statement that binds the org, project, run id, head sha, workflow hash, the trust class being approved, their approver id, a single-use nonce and an expiry of at most 10 minutes:
+
+```json
+{ "type": "turntable.approve_run.v1", "org": "acme", "project": "api",
+  "run_id": "...", "head_sha": "...", "workflow_hash": "...", "trust_class": "untrusted_pr",
+  "approver": "<approver key id>", "expires_at": 1767225600000, "nonce": "..." }
+```
+
+- **WebAuthn.** The UI calls `approve_run_challenge` with the run id and the approver's key id, signs the returned `challenge` with the passkey, then calls `approve_run` with the run's `head_sha` and `workflow_hash` plus the `statement` and the assertion as `signature`.
+- **Offline ed25519.** `approve_run_challenge` returns `canonical`; sign it on the approver's machine with `turntable approvals sign --key <private-key-file> --statement -` and pass the printed signature object to `approve_run` with the statement.
+
+`approve_run` verifies the signature against the org's enrolled approvers and its key policy (`any` or `hardware`), and refuses a statement for another org, project, run, sha, workflow or trust class, an expired one, a replayed nonce (the nonce is a server-issued challenge, spent atomically for both methods), a revoked or unenrolled key, and a key that does not count (no forge login). An approver of another org is unknown here. The audit row records the statement hash and the approver id; the signature is omitted. A statement given under `no_agents` or `any` is verified the same way, but those policies do not need one. `approve_run_challenge` is not an MCP tool. Before choosing `human`, enrol an approver (`turntable approvals bootstrap`): without one, nobody can release an untrusted run.
 
 **Egress.** Untrusted code with network access is a mining and exfiltration vector even without secrets, so a run classified `untrusted_pr` gets egress `none` whatever the repo or project allows. A repo's poll config may set `untrustedEgress: "allowlist"`; `open` is not accepted. The worker applies the same cap to the run's plan, so a plan that says otherwise is still held at `none`.
 
