@@ -15,6 +15,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { clearRecentDismissals, type DismissReason } from "./dismissals";
 import { getEnvPolicy, plannedEnvironment } from "./approvals";
 import { requireProject, type Scope, scoped } from "./scope";
 
@@ -367,6 +368,8 @@ export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Pr
       .update(s.projects)
       .set({ checksMode: mode })
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
+    // Checks turned on: skips dismissed while they were off get their check on the next sweep.
+    if (mode !== "off") await clearRecentDismissals(h, { ...scope, projectId }, ["checks_off"]);
   });
 }
 
@@ -461,17 +464,18 @@ export function listUnreportedSkips(
   );
 }
 
-/** Marks a skipped attempt as having nothing to post, so the sweep stops selecting it. */
+/** Marks a skipped attempt as having nothing to post (and why), so the sweep stops selecting it. */
 export function dismissSkippedCheck(
   db: Db,
   scope: Scope,
   attemptId: string,
   now: number,
+  reason: DismissReason,
 ): Promise<void> {
   return db.run(async (h) => {
     await h.orm
       .update(s.jobAttempts)
-      .set({ checkDismissedAt: now })
+      .set({ checkDismissedAt: now, checkDismissedReason: reason })
       .where(
         scoped(
           scope,

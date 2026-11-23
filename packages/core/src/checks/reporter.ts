@@ -6,6 +6,7 @@ import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
   claimSkippedCheck,
+  type DismissReason,
   dismissSkippedCheck,
   getAttemptCheckRunId,
   getOrgById,
@@ -132,8 +133,9 @@ export class CheckReporter {
       // The shards of a job share one chain and one check, as for a job that ran.
       await this.#enqueue(chainKey(claim), async () => {
         // Nothing to post (checks off, no repo or App): persisted, so a restart does not re-sweep.
-        if ((await this.#postSkipped(claim)) === "nothing") {
-          await dismissSkippedCheck(this.#o.db, scope, row.attempt.id, now);
+        const out = await this.#postSkipped(claim);
+        if (typeof out === "object") {
+          await dismissSkippedCheck(this.#o.db, scope, row.attempt.id, now, out.nothing);
         }
       });
     }
@@ -187,16 +189,24 @@ export class CheckReporter {
    * be posted (checks off, a local run, a repo not installed through the App).
    */
   async #target(claim: Claim): Promise<PostTarget | undefined> {
+    const t = await this.#gate(claim);
+    return "reason" in t ? undefined : t;
+  }
+
+  /** `#target`, with the reason when there is nothing to post. */
+  async #gate(claim: Claim): Promise<PostTarget | { reason: DismissReason }> {
     const { db } = this.#o;
     const { scope, run } = claim;
     const mode: ChecksMode = await getProjectChecksMode(db, scope);
-    if (mode === "off") return undefined;
-    if (!run.repo || !run.sha) return undefined; // local runs and runs with no forge commit
+    if (mode === "off") return { reason: "checks_off" };
+    if (!run.repo || !run.sha) return { reason: "local_run" }; // local runs and runs with no forge commit
     const [owner, name] = run.repo.split("/") as [string, string];
     const bound = (await listRepos(db, scope)).find(
       (r) => r.forge === "github" && r.owner === owner && r.repo === name,
     );
-    if (!bound?.installationId) return undefined; // not installed through the App: no token to mint
+    if (!bound) return { reason: "no_binding" };
+    // Not installed through the App: no token to mint.
+    if (!bound.installationId) return { reason: "no_installation" };
 
     const installationId = bound.installationId;
     const { token } = await this.#retry("mint token", () =>
@@ -215,12 +225,12 @@ export class CheckReporter {
    * (when a shard ran, the job already has its check and this shard just records it). Returns
    * `nothing` when there is nothing to post at all, so the sweep stops looking at it.
    */
-  async #postSkipped(claim: Claim): Promise<"posted" | "waiting" | "nothing"> {
+  async #postSkipped(claim: Claim): Promise<"posted" | "waiting" | { nothing: DismissReason }> {
     const { db } = this.#o;
     const { scope, run, job, attempt } = claim;
     if ((await getAttemptCheckRunId(db, scope, attempt.id)) !== null) return "posted";
-    const target = await this.#target(claim);
-    if (!target) return "nothing";
+    const target = await this.#gate(claim);
+    if ("reason" in target) return { nothing: target.reason };
     const all = await listJobs(db, scope, run.id);
     const mine = shardGroup(job.planned);
     const members = mine ? all.filter((j) => shardGroup(j.planned)?.id === mine.id) : [job];

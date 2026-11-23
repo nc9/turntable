@@ -1,5 +1,5 @@
 {
-  "id": "b876de51-9569-43ca-a7a6-0a30c2bde1eb",
+  "id": "b4b9ccf6-bf1d-4422-a983-45980e5ab676",
   "prevId": "81f0b0f9-e6cf-43d4-b7bc-158e34a8ba71",
   "version": "7",
   "dialect": "postgresql",
@@ -2553,6 +2553,12 @@
         "check_dismissed_at": {
           "name": "check_dismissed_at",
           "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "check_dismissed_reason": {
+          "name": "check_dismissed_reason",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

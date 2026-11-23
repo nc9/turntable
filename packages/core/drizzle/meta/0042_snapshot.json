@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0433eb03-0aa3-4c6b-88b4-ac37f4ebc745",
+  "id": "b867ae3a-0dc6-4693-8b7f-e45ce881a01d",
   "prevId": "f9cd759e-ebe1-43de-8c93-e0d5feee4d5f",
   "tables": {
     "action_pins": {
@@ -2464,6 +2464,13 @@
         "check_dismissed_at": {
           "name": "check_dismissed_at",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "check_dismissed_reason": {
+          "name": "check_dismissed_reason",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

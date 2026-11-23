@@ -229,9 +229,10 @@ export const migrations: Migration[] = [
   },
   {
     "tag": "0013_dismissed_skips",
-    "when": 1795445052063,
+    "when": 1795445273585,
     "statements": [
-      "ALTER TABLE \"job_attempts\" ADD COLUMN \"check_dismissed_at\" bigint;"
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"check_dismissed_at\" bigint;",
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"check_dismissed_reason\" text;"
     ]
   }
 ];

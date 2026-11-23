@@ -4,6 +4,7 @@
 // Every public function is async and wraps its body in `db.run` (see `Db` in ../index.ts). Inside
 // the callback, use the handle it receives (`h`) for nested repo calls. Queries are written
 // `await orm.select()...` with no `.get()/.all()/.run()` so they run on sync and async drivers.
+import { clearRecentDismissals } from "./dismissals";
 import { and, asc, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "..";
 import { canTransition, exitCodeValid, FINISHED_STATES } from "../job-state";
@@ -35,6 +36,7 @@ export * from "./events";
 export * from "./lease";
 export * from "./instance-tokens";
 export * from "./poll";
+export * from "./dismissals";
 export * from "./readiness";
 export * from "./usage";
 export * from "./rerun";
@@ -202,6 +204,10 @@ export function bindRepo(
       .from(s.projectRepos)
       .where(eq(s.projectRepos.id, id))
       .limit(1);
+    // A claimed repo can now post checks: skips dismissed for lack of a binding get theirs.
+    if (input.installationId) {
+      await clearRecentDismissals(h, { ...scope, projectId }, ["no_binding", "no_installation"]);
+    }
     return row!;
   });
 }

@@ -400,6 +400,8 @@ export const jobAttempts = pgTable(
      * sweep skips dismissed attempts, so a restart does not re-sweep them.
      */
     checkDismissedAt: bigint("check_dismissed_at", { mode: "number" }),
+    /** Why it was dismissed (`DismissReason`), so an event that resolves the reason can clear it. */
+    checkDismissedReason: text("check_dismissed_reason"),
     /**
      * The resolved job plan (actions pinned to shas, layout, argv, files) as JSON text, stored
      * when the attempt starts, so a restarted controller can re-attach with no repo fetch.
