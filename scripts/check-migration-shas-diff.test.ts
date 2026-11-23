@@ -10,7 +10,9 @@ import {
   diffProblems,
   EDITED_PATH,
   editedTags,
+  mergeFirstParent,
   parseShas,
+  resolveBase,
   SHAS_PATH,
 } from "./check-migration-shas-diff";
 
@@ -203,5 +205,117 @@ describe("against a real git base", () => {
     expect(urls[0]).toBe(
       `https://raw.githubusercontent.com/acme/web/${"a".repeat(40)}/${SHAS_PATH}`,
     );
+  });
+});
+
+describe("the base of a pull request run is the merge commit's own first parent", () => {
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+      cwd,
+      encoding: "utf8",
+    }).trim();
+  const write = (d: string, p: string, text: string): void => {
+    mkdirSync(dirname(join(d, p)), { recursive: true });
+    writeFileSync(join(d, p), text);
+  };
+
+  /**
+   * The race: main is C0 (no golden file) when the PR's merge ref M is built (parents: C0, P);
+   * then #304 lands on main (C1 adds the file). The run checks out M, so HEAD has no file, while
+   * the moving tip of main already has it.
+   */
+  function race(): { d: string; c0: string; c1: string; m: string } {
+    const d = mkdtempSync(join(tmpdir(), "ls-shas-merge-"));
+    roots.push(d);
+    git(d, "init", "-q", "-b", "main");
+    write(d, "README.md", "base\n");
+    git(d, "add", "-A");
+    git(d, "commit", "-q", "-m", "c0");
+    const c0 = git(d, "rev-parse", "HEAD");
+    git(d, "checkout", "-q", "-b", "pr");
+    write(d, "feature.txt", "pr\n");
+    git(d, "add", "-A");
+    git(d, "commit", "-q", "-m", "p");
+    git(d, "checkout", "-q", "main");
+    git(d, "merge", "-q", "--no-ff", "-m", "merge ref", "pr"); // M: parents C0, P
+    const m = git(d, "rev-parse", "HEAD");
+    // main moved on: C1 (not part of M) adds the golden file
+    git(d, "checkout", "-q", "-b", "tip", c0);
+    write(d, SHAS_PATH, shas({ "0000_a": A, "0001_b": B }));
+    write(d, EDITED_PATH, edited());
+    git(d, "add", "-A");
+    git(d, "commit", "-q", "-m", "c1: the golden file lands");
+    const c1 = git(d, "rev-parse", "HEAD");
+    git(d, "checkout", "-q", "--detach", m); // the run's checkout: the merge commit
+    return { d, c0, c1, m };
+  }
+
+  test("a merge commit's first parent is found; a plain commit has none", () => {
+    const { d, c0, c1 } = race();
+    expect(mergeFirstParent(d)).toBe(c0);
+    expect(mergeFirstParent(d, c1)).toBeUndefined();
+  });
+
+  test("auto resolves to the first parent, else the event's base sha, else it is an error", () => {
+    const { d, c0, c1 } = race();
+    expect(resolveBase(d, "auto", "f".repeat(40))).toBe(c0);
+    git(d, "checkout", "-q", "--detach", c1); // not a merge commit
+    expect(resolveBase(d, "auto", "f".repeat(40))).toBe("f".repeat(40));
+    expect(() => resolveBase(d, "auto")).toThrow(/not a merge commit/);
+    expect(resolveBase(d, "origin/main", "f".repeat(40))).toBe("origin/main"); // used as given
+  });
+
+  test("the race passes: the first parent lacks the file although the moving tip has it", async () => {
+    const { d, c0 } = race();
+    const r = await checkRepo({ repo: d, base: resolveBase(d, "auto") });
+    expect(r).toEqual({ problems: [], skipped: true });
+    expect(c0).toBe(mergeFirstParent(d));
+  });
+
+  test("the same race with the moving tip as base, the old behaviour, reads as a removal (and no longer crashes)", async () => {
+    const { d, c1 } = race();
+    const r = await checkRepo({ repo: d, base: c1 });
+    expect(r.skipped).toBe(false);
+    expect(r.problems).toEqual([
+      "sqlite 0000_a: the entry was removed",
+      "sqlite 0001_b: the entry was removed",
+    ]);
+  });
+
+  test("the script with --base auto exits 0 in the race, and 1 when the PR really deletes the file", () => {
+    const { d } = race();
+    const script = join(import.meta.dir, "check-migration-shas-diff.ts");
+    const exec = (): number =>
+      Bun.spawnSync(["bun", "run", script, "--base", "auto", "--repo", d], {
+        stderr: "pipe",
+        stdout: "pipe",
+      }).exitCode ?? -1;
+    expect(exec()).toBe(0);
+    // a real deletion: the first parent HAS the file and the merge result does not
+    const e = mkdtempSync(join(tmpdir(), "ls-shas-del-"));
+    roots.push(e);
+    git(e, "init", "-q", "-b", "main");
+    write(e, SHAS_PATH, shas({ "0000_a": A }));
+    write(e, EDITED_PATH, edited());
+    git(e, "add", "-A");
+    git(e, "commit", "-q", "-m", "base");
+    git(e, "checkout", "-q", "-b", "pr");
+    git(e, "rm", "-q", SHAS_PATH);
+    git(e, "commit", "-q", "-m", "pr deletes it");
+    git(e, "checkout", "-q", "main");
+    write(e, "other.txt", "x\n");
+    git(e, "add", "-A");
+    git(e, "commit", "-q", "-m", "main moves");
+    git(e, "merge", "-q", "--no-ff", "-m", "merge ref", "pr");
+    const del = Bun.spawnSync(["bun", "run", script, "--base", "auto", "--repo", e], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(del.exitCode).toBe(1);
+    expect(del.stderr.toString()).toContain("the entry was removed");
   });
 });
