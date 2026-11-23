@@ -539,6 +539,23 @@ function isNamed(name: string, target: string, short: string): boolean {
   const base = folded.split(":", 1)[0] ?? folded;
   return base === target || base === short;
 }
+/**
+ * A path as a name-folding filesystem would compare it: each component in Unicode NFC (HFS+ and
+ * APFS store and compare by normalisation form), without HFS-ignorable characters, lower-cased,
+ * without trailing dots and spaces (NTFS). Two paths with the same key may be the same file.
+ */
+function foldKey(path: string): string {
+  return path
+    .split("/")
+    .map((c) =>
+      c
+        .normalize("NFC")
+        .replaceAll(HFS_IGNORABLE, "")
+        .toLowerCase()
+        .replace(/[ .]+$/, ""),
+    )
+    .join("/");
+}
 const isDotGit = (name: string): boolean => isNamed(name, ".git", "git~1");
 const isDotGitmodules = (name: string): boolean => isNamed(name, ".gitmodules", "gitmod~1");
 
@@ -661,22 +678,46 @@ export function materialize(
   c: FetchedCommit,
   remoteUrl: string,
   limits: Partial<FetchLimits> = {},
+  hooks: { beforeWrite?: (path: string) => void } = {},
 ): Materialized {
   const max = { ...DEFAULT_FETCH_LIMITS, ...limits };
   const deadline = Date.now() + max.timeoutMs;
   let entries = 0;
   let bytes = 0;
-  // The paths of symlinks the tree made, lowercased. Nothing is written at or below one.
+  // The folded paths of symlinks the tree made. Nothing is written at or below one.
   const symlinks = new Set<string>();
   const reachable = new Set<string>([c.sha, c.tree]);
   const index: IndexEntry[] = [];
-  const underSymlink = (lower: string): boolean => {
-    let at = lower.indexOf("/");
+  const underSymlink = (key: string): boolean => {
+    let at = key.indexOf("/");
     while (at >= 0) {
-      if (symlinks.has(lower.slice(0, at))) return true;
-      at = lower.indexOf("/", at + 1);
+      if (symlinks.has(key.slice(0, at))) return true;
+      at = key.indexOf("/", at + 1);
     }
-    return symlinks.has(lower);
+    return symlinks.has(key);
+  };
+  // The second layer, and the one that does not depend on how names compare: every parent of what
+  // is about to be written is looked at ON DISK, right now, and must be a plain directory. A parent
+  // that became a symlink (a name the key above did not fold together, another process in the
+  // directory) is refused, so nothing is ever written through one.
+  const plainParents = (path: string): void => {
+    const parts = path.split("/");
+    let cur = dir;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      cur = join(cur, parts[i] as string);
+      const st = lstatSync(cur, { throwIfNoEntry: false });
+      if (!st || !st.isDirectory())
+        throw new GitFetchError("the repository writes through a symlink");
+    }
+  };
+  const create = <T>(f: () => T): T => {
+    try {
+      return f();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST")
+        throw new GitFetchError("two paths of the repository are the same name on this filesystem");
+      throw e;
+    }
   };
   const walk = (treeOid: string, rel: string, depth: number): void => {
     if (depth > 200) throw new GitFetchError("the tree is nested too deeply");
@@ -694,17 +735,20 @@ export function materialize(
       if (entries % 256 === 0 && Date.now() > deadline)
         throw new GitFetchError("the fetch took too long");
       const path = rel === "" ? e.name : `${rel}/${e.name}`;
-      // Nothing is written through a symlink the tree itself made (a case-folding filesystem could
-      // make `A` and `a` the same name; this holds there too).
-      if (underSymlink(path.toLowerCase()))
-        throw new GitFetchError("the repository writes through a symlink");
+      // Nothing is written through a symlink the tree itself made. The key folds the way the
+      // filesystems that fold names do (Unicode normalisation, ignorable characters, case,
+      // trailing dots and spaces), so `A` and `a`, or an NFD and an NFC spelling, are one name here.
+      const key = foldKey(path);
+      if (underSymlink(key)) throw new GitFetchError("the repository writes through a symlink");
       const full = join(dir, path);
+      hooks.beforeWrite?.(path);
+      plainParents(path);
       if (e.mode === "40000") {
         reachable.add(e.oid);
-        mkdirSync(full, { recursive: true });
+        create(() => mkdirSync(full));
         walk(e.oid, path, depth + 1);
       } else if (e.mode === "160000") {
-        mkdirSync(full, { recursive: true }); // a submodule: an empty directory, never fetched
+        create(() => mkdirSync(full)); // a submodule: an empty directory, never fetched
         index.push({ path, mode: 0o160000, oid: e.oid });
       } else {
         const blob = c.objects.get(e.oid);
@@ -715,11 +759,12 @@ export function materialize(
         reachable.add(e.oid);
         if (e.mode === "120000") {
           if (isDotGitmodules(e.name)) throw new GitFetchError(".gitmodules may not be a symlink");
-          symlinkSync(dec.decode(blob.data), full);
-          symlinks.add(path.toLowerCase());
+          create(() => symlinkSync(dec.decode(blob.data), full));
+          symlinks.add(key);
           index.push({ path, mode: 0o120000, oid: e.oid });
         } else if (e.mode === "100644" || e.mode === "100755" || e.mode === "100664") {
-          writeFileSync(full, blob.data);
+          // `wx`: create, never open an existing file or follow a link at the final name.
+          create(() => writeFileSync(full, blob.data, { flag: "wx" }));
           const exec = e.mode === "100755";
           chmodSync(full, exec ? 0o755 : 0o644);
           index.push({ path, mode: exec ? 0o100755 : 0o100644, oid: e.oid });

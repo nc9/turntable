@@ -5,9 +5,11 @@ import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
   lstatSync,
   readlinkSync,
@@ -353,6 +355,96 @@ describe("a hostile tree is refused before anything is written outside the direc
       ],
       /through a symlink/,
     );
+  });
+
+  test("names that a normalising or ignoring filesystem treats as one are refused: NFD against NFC, ignorable characters, trailing dots", async () => {
+    // a symlink first, then a directory whose name is the same file on HFS+/APFS or NTFS
+    const nfd = "e\u0301"; // e + combining acute: sorts BEFORE the NFC form, so the symlink must be the NFD one
+    const nfc = "\u00e9";
+    await refuse(
+      [
+        { mode: "120000", name: nfd, blob: "/tmp" },
+        { mode: "40000", name: nfc, sub: "1" },
+      ],
+      /through a symlink/,
+    );
+    await refuse(
+      [
+        { mode: "120000", name: "ab", blob: "/tmp" },
+        { mode: "40000", name: "a\u200cb", sub: "1" }, // a zero-width non-joiner HFS+ ignores
+      ],
+      /through a symlink/,
+    );
+    await refuse(
+      [
+        { mode: "120000", name: "x", blob: "/tmp" },
+        { mode: "40000", name: "x.", sub: "1" }, // NTFS drops the trailing dot
+      ],
+      /through a symlink/,
+    );
+    // the same folding applies to a FILE named like the symlink
+    await refuse(
+      [
+        { mode: "120000", name: "Q", blob: "/tmp" },
+        { mode: "100644", name: "q" },
+      ],
+      /through a symlink/,
+    );
+  });
+
+  test("whatever the names say, a parent that is a symlink ON DISK when a write comes is refused: the real guard", async () => {
+    const { dir, sha } = hostile([{ mode: "40000", name: "d", sub: "1" }]);
+    const s = serveGitRepo(dir);
+    const out = join(base, `swap${n++}`);
+    const outside = join(base, `outside${n++}`);
+    mkdirSync(out);
+    mkdirSync(outside);
+    try {
+      const c = await fetchCommit({ url: s.url, sha, fetch: s.fetch });
+      expect(() =>
+        materialize(
+          out,
+          c,
+          s.url,
+          {},
+          {
+            beforeWrite: (path) => {
+              // just before d/inner is written, d (made a moment ago) becomes a link to somewhere else
+              if (path === "d/inner") {
+                rmSync(join(out, "d"), { recursive: true });
+                symlinkSync(outside, join(out, "d"));
+              }
+            },
+          },
+        ),
+      ).toThrow(/through a symlink/);
+      expect(readdirSync(outside)).toEqual([]); // nothing was written through it
+    } finally {
+      s.stop();
+    }
+  });
+
+  test("two paths that collide on the disk are an error, not an overwrite", async () => {
+    // a file written where something already is: simulated by creating it before the walk reaches it
+    const { dir, sha } = hostile([{ mode: "100644", name: "f" }]);
+    const s = serveGitRepo(dir);
+    const out = join(base, `collide${n++}`);
+    mkdirSync(out);
+    try {
+      const c = await fetchCommit({ url: s.url, sha, fetch: s.fetch });
+      expect(() =>
+        materialize(
+          out,
+          c,
+          s.url,
+          {},
+          { beforeWrite: () => writeFileSync(join(out, "f"), "already here") },
+        ),
+      ).toThrow(/same name on this filesystem/);
+      expect(readFileSync(join(out, "f"), "utf8")).toBe("already here");
+    } finally {
+      s.stop();
+    }
   });
 
   test("an unsupported mode is refused; a submodule is an empty directory, not a fetch", async () => {
