@@ -70,7 +70,8 @@
     "typecheck:signer": "bun run --cwd packages/signer typecheck",
     "test:signer": "bun test packages/signer/tests/signer.test.ts packages/signer/tests/kms.test.ts packages/core/tests/signing.test.ts packages/core/tests/verify-cli.test.ts",
     "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts",
-    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts"
+    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts",
+    "test:sandbox-size": "bun test packages/core/tests/sandbox-size.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
