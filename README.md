@@ -1,5 +1,7 @@
 # Turntable
 
+Secure MCP-first CI runner for cloud containers.
+
 Turntable is an open source CI system. It runs GitHub Actions workflows outside GitHub, on the sandbox or container provider you choose. It ships as a single compiled Bun binary with a built-in web UI. Security is a design goal from the start, not an add-on.
 
 It is pre-alpha and under active development. Interfaces will change without notice, and it is not ready for general use.
