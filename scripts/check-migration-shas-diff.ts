@@ -6,7 +6,13 @@
 // Appending entries (a new migration) is always fine.
 //
 //   bun run scripts/check-migration-shas-diff.ts --base origin/main
-//   bun run scripts/check-migration-shas-diff.ts --base origin/main --base-repo owner/name --base-sha <sha>
+//   bun run scripts/check-migration-shas-diff.ts --base auto --base-repo owner/name --base-sha <sha>
+//
+// `--base auto` is for a pull_request run, whose checkout is the PR's merge commit
+// (refs/pull/N/merge): the base is that merge commit's OWN first parent, the base branch as it was
+// when the merge was built. Never the moving tip of the branch: main can gain golden entries
+// between the build of the merge ref and this run, and a stale head against a fresh tip reads as
+// "the head removed them". When HEAD is not a merge commit, `--base-sha` is the base.
 //
 // The base content comes from git (`git show <base>:<path>`); when that ref is not in this checkout
 // (a runner that fetched only the one commit), `--base-repo` and `--base-sha` fetch it from
@@ -87,6 +93,39 @@ export function diffProblems(
   return problems;
 }
 
+/** The first parent of `rev` when it is a merge commit (two or more parents), else undefined. */
+export function mergeFirstParent(repo: string, rev = "HEAD"): string | undefined {
+  const r = Bun.spawnSync(["git", "cat-file", "-p", rev], { cwd: repo });
+  if (r.exitCode !== 0) return undefined;
+  const parents = r.stdout
+    .toString()
+    .split("\n\n", 1)[0]!
+    .split("\n")
+    .filter((l) => l.startsWith("parent "))
+    .map((l) => l.slice(7).trim());
+  return parents.length >= 2 ? parents[0] : undefined;
+}
+
+/**
+ * The base to compare with. `auto`: the merge commit's own first parent, else `fallbackSha` (the
+ * pull request event's base sha); never a branch tip. Anything else is used as given.
+ */
+export function resolveBase(repo: string, spec: string, fallbackSha?: string): string {
+  if (spec !== "auto") return spec;
+  const parent = mergeFirstParent(repo);
+  if (parent) return parent;
+  if (fallbackSha) return fallbackSha;
+  throw new Error("--base auto: HEAD is not a merge commit and no --base-sha was given");
+}
+
+/** Best effort: makes `sha` available in `repo` (a shallow checkout has only the merge commit). */
+function fetchCommit(repo: string, sha: string): void {
+  if (!/^[0-9a-f]{40}$/.test(sha)) return;
+  const have = Bun.spawnSync(["git", "cat-file", "-e", `${sha}^{commit}`], { cwd: repo });
+  if (have.exitCode === 0) return;
+  Bun.spawnSync(["git", "fetch", "--no-tags", "--depth=1", "origin", sha], { cwd: repo });
+}
+
 async function baseText(
   repo: string,
   base: string,
@@ -127,7 +166,14 @@ export async function checkRepo(o: {
   const baseShas = await baseText(o.repo, o.base, SHAS_PATH, f, o.remote);
   if (baseShas === null) return { problems: [], skipped: true };
   const baseSrc = (await baseText(o.repo, o.base, EDITED_PATH, f, o.remote)) ?? "";
-  const headShas = parseShas(readFileSync(join(o.repo, SHAS_PATH), "utf8"));
+  // A head without the file, against a base that has it, removed every entry: a problem to report,
+  // not a crash.
+  let headShas: Shas = {};
+  try {
+    headShas = parseShas(readFileSync(join(o.repo, SHAS_PATH), "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
   let headSrc = "";
   try {
     headSrc = readFileSync(join(o.repo, EDITED_PATH), "utf8");
@@ -151,15 +197,17 @@ if (import.meta.main) {
   });
   if (!values.base)
     throw new Error(
-      "usage: check-migration-shas-diff.ts --base <ref> [--base-repo owner/name --base-sha <sha>]",
+      "usage: check-migration-shas-diff.ts --base <ref|auto> [--base-repo owner/name --base-sha <sha>]",
     );
+  const baseRef = resolveBase(values.repo!, values.base, values["base-sha"]);
+  fetchCommit(values.repo!, baseRef);
+  // The remote fallback names the SAME commit as the base (by sha), never a branch tip.
+  const remoteSha = /^[0-9a-f]{40}$/.test(baseRef) ? baseRef : values["base-sha"];
   const remote =
-    values["base-repo"] && values["base-sha"]
-      ? { repo: values["base-repo"], sha: values["base-sha"] }
-      : undefined;
+    values["base-repo"] && remoteSha ? { repo: values["base-repo"], sha: remoteSha } : undefined;
   const r = await checkRepo({
     repo: values.repo!,
-    base: values.base,
+    base: baseRef,
     ...(remote ? { remote } : {}),
   });
   if (r.skipped) {

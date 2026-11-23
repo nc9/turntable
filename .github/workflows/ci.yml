@@ -29,18 +29,19 @@ jobs:
           bun-version: 1.4.5
       - run: bun install --frozen-lockfile
       # A shipped migration is immutable: its hash in migration-shas.json may only be appended to,
-      # or edited with the tag named in EDITED_IN_PLACE in the same PR. Compares with the base.
+      # or edited with the tag named in EDITED_IN_PLACE in the same PR. The base is the PR merge
+      # commit's OWN first parent (the base branch as it was when refs/pull/N/merge was built),
+      # never the moving tip of the branch: main can gain golden entries between that build and
+      # this run, and a stale head against a fresh tip reads as "the head removed them".
+      # The checkout is depth 1, so the script fetches exactly that parent by its sha (never history);
+      # the event's base sha is only the fallback for a head that is not a merge commit, and an older
+      # base is harmless (the head's extra entries are appends).
       - name: Migration hashes are only appended to
         if: github.event_name == 'pull_request'
         env:
-          BASE_REF: ${{ github.base_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO: ${{ github.repository }}
-        run: |
-          # The base branch from git when it can be fetched; a checkout of only one commit that
-          # cannot reach it (Turntable's) has the script fetch the two files by the base sha.
-          git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
-          bun run scripts/check-migration-shas-diff.ts --base "origin/${BASE_REF}" --base-repo "${REPO}" --base-sha "${BASE_SHA}"
+        run: bun run scripts/check-migration-shas-diff.ts --base auto --base-repo "${REPO}" --base-sha "${BASE_SHA}"
       - name: Everything fetched is pinned by digest, commit or checksum
         run: bun run scripts/check-pins.ts
       - run: bun fmt --check
