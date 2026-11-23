@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
+import { foldKey, HFS_IGNORABLE } from "@longshore/act-runner";
 import { safeFetch, type SafeFetch } from "@longshore/net";
 
 export class GitFetchError extends Error {
@@ -527,11 +528,6 @@ export function readPack(
 
 // ---- writing the checkout ----
 
-/** Characters HFS+ ignores when comparing names, so `.g\u200cit` is `.git` there. */
-/* oxlint-disable eslint/no-misleading-character-class -- these are single code points, listed on purpose */
-const HFS_IGNORABLE = /[\u200c\u200d\u200e\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
-
-/* oxlint-enable eslint/no-misleading-character-class */
 /**
  * Whether a name IS `target` (or its 8.3 short name `short`) on a filesystem that folds case,
  * ignores trailing dots and spaces (NTFS), ignorable Unicode (HFS+) or names an NTFS alternate data
@@ -544,23 +540,6 @@ function isNamed(name: string, target: string, short: string): boolean {
     .replace(/[ .]+$/, "");
   const base = folded.split(":", 1)[0] ?? folded;
   return base === target || base === short;
-}
-/**
- * A path as a name-folding filesystem would compare it: each component in Unicode NFC (HFS+ and
- * APFS store and compare by normalisation form), without HFS-ignorable characters, lower-cased,
- * without trailing dots and spaces (NTFS). Two paths with the same key may be the same file.
- */
-function foldKey(path: string): string {
-  return path
-    .split("/")
-    .map((c) =>
-      c
-        .normalize("NFC")
-        .replaceAll(HFS_IGNORABLE, "")
-        .toLowerCase()
-        .replace(/[ .]+$/, ""),
-    )
-    .join("/");
 }
 const isDotGit = (name: string): boolean => isNamed(name, ".git", "git~1");
 const isDotGitmodules = (name: string): boolean => isNamed(name, ".gitmodules", "gitmod~1");

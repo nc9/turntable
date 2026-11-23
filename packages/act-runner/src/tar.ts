@@ -3,6 +3,7 @@
 // GNU long names, regular files, directories, symlinks and hard links (read as links). Reading is
 // for untrusted archives (a source tarball from GitHub): every size is capped, a path is returned
 // as written and the CALLER decides what is safe to do with it.
+import { foldKey } from "./fold-key";
 import { Buffer } from "node:buffer";
 import {
   createWriteStream,
@@ -415,18 +416,35 @@ const zero = (h: Uint8Array, from: number, to: number): boolean => {
   return true;
 };
 /** `len - 1` octal digits and a NUL, exactly as the writer's `num` writes them. */
+const OCTAL_RE = new Map<number, RegExp>([
+  [8, /^[0-7]{7}$/],
+  [12, /^[0-7]{11}$/],
+]);
 function strictOctal(h: Uint8Array, off: number, len: number, what: string): number {
   const s = Buffer.from(h.subarray(off, off + len - 1)).toString("latin1");
-  if (!new RegExp(`^[0-7]{${len - 1}}$`).test(s) || h[off + len - 1] !== 0)
-    bad(`the ${what} field is not canonical`);
+  const re = OCTAL_RE.get(len) ?? bad("an internal octal width is wrong");
+  if (!re.test(s) || h[off + len - 1] !== 0) bad(`the ${what} field is not canonical`);
   return Number.parseInt(s, 8);
 }
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+// `ignoreBOM: true` keeps a leading U+FEFF: without it the decoder drops it and the planner's name
+// would differ from the bytes tar sees.
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/** Text that is valid UTF-8 and encodes back to exactly the same bytes, or the archive is refused. */
+function exactUtf8(bytes: Uint8Array, what: string): string {
+  let s: string;
+  try {
+    s = utf8.decode(bytes);
+  } catch {
+    return bad(`${what} is not valid UTF-8`);
+  }
+  if (!Buffer.from(s).equals(bytes)) bad(`${what} does not survive a decode and encode`);
+  return s;
+}
 const PAX_VALUE_CAP = 1024 * 1024;
 /** A path (or link target) over this many bytes is not one a filesystem takes (PATH_MAX). */
 const MAX_NAME_BYTES = 4096;
 /** All names and link targets together: a listing of millions of entries cannot be used to exhaust memory. */
-const MAX_TOTAL_NAME_BYTES = 32 * 1024 * 1024;
+const MAX_TOTAL_NAME_BYTES = 64 * 1024 * 1024;
 
 /** A path as our writer writes it: no absolute path, no empty, `.` or `..` segment, no `./` prefix, no doubled slash. */
 function canonical(path: string, dir: boolean): string[] {
@@ -462,12 +480,7 @@ function strictPax(data: Uint8Array): { path?: string; linkpath?: string } {
     const len = Number(lenText);
     if (i + len > data.length || data[i + len - 1] !== 0x0a || sp >= i + len)
       bad("a pax record is not framed by its length");
-    let rec: string;
-    try {
-      rec = utf8.decode(data.subarray(sp + 1, i + len - 1));
-    } catch {
-      return bad("a pax record is not valid UTF-8");
-    }
+    const rec = exactUtf8(data.subarray(sp + 1, i + len - 1), "a pax record");
     const eq = rec.indexOf("=");
     if (eq <= 0) bad("a pax record has no key");
     const key = rec.slice(0, eq);
@@ -518,6 +531,7 @@ export async function scanTarGz(
   let pending: Buffer = Buffer.alloc(0);
   let zeroBlocks = 0;
   let nameBytes_ = 0;
+  const foldedKeys = new Set<string>();
   let pax: { path?: string; linkpath?: string } | undefined;
   let first = true;
   type Cur = {
@@ -538,7 +552,13 @@ export async function scanTarGz(
     return b;
   };
   const header = (h: Buffer): void => {
-    if (!checksumOk(h)) bad("a header checksum does not match");
+    let sumOk = false;
+    try {
+      sumOk = checksumOk(h);
+    } catch {
+      // the lenient reader throws on a checksum field that is not octal: here that is a refusal
+    }
+    if (!sumOk) bad("a header checksum does not match");
     if (h.subarray(148, 156).toString("latin1") !== `${octalOf(h, 148)}\0 `)
       bad("the checksum field is not canonical");
     if (
@@ -571,6 +591,10 @@ export async function scanTarGz(
         linkBytes.length !== 0
       )
         bad("a pax header is not the one this archive writes");
+      // Checked before a byte of the body is buffered, and counted against what the scan may keep.
+      if (size === 0 || size > PAX_VALUE_CAP) bad("a pax header has a bad size");
+      if (captured + size > o.captureTotal) bad("the pax headers are larger than the scan keeps");
+      captured += size;
       cur = {
         kind: "pax",
         type: "file",
@@ -598,11 +622,7 @@ export async function scanTarGz(
         bad("a header name does not match its pax path");
       name = pax.path;
     } else {
-      try {
-        name = utf8.decode(nameBytes);
-      } catch {
-        return bad("an entry name is not valid UTF-8");
-      }
+      name = exactUtf8(nameBytes, "an entry name");
     }
     if (pax?.linkpath !== undefined) {
       if (type !== "symlink") bad("a pax linkpath on something that is not a symlink");
@@ -627,6 +647,10 @@ export async function scanTarGz(
     if (first && key !== ".") bad("the archive does not start with its root directory");
     first = false;
     if (out.has(key)) bad("an entry name is repeated");
+    const folded = foldKey(key);
+    if (foldedKeys.has(folded))
+      bad("two entry names are the same name on a filesystem that folds names");
+    foldedKeys.add(folded);
     if (key !== ".") {
       const parent = segs.length === 1 ? "." : segs.slice(0, -1).join("/");
       const p = out.get(parent);

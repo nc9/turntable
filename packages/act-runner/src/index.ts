@@ -8,6 +8,7 @@ export * from "./checkout-stub";
 export * from "./layout";
 export * from "./workspace";
 export * from "./tar";
+export * from "./fold-key";
 export * from "./expr";
 export * from "./triggers";
 export * from "./workflow-plan";

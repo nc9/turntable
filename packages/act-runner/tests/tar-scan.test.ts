@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { scanTarGz, tarGzDirectoryToFile, TarFormatError, writeTar } from "../src/tar";
 
 const tmp = mkdtempSync(join(tmpdir(), "ls-tarscan-"));
@@ -211,16 +211,73 @@ describe("size caps: names, pax bodies and the total of all names", () => {
     );
   });
 
+  test("a pax header's size is checked when the header is read, before any of its body", async () => {
+    // declares 2 MiB and carries none: refused for its size, not for being cut short
+    await refuses(
+      raw(...ROOT, hdr({ name: "PaxHeader", type: "x", size: 2 * 1024 * 1024 }), END),
+      /bad size/,
+      "declared pax size",
+    );
+    await refuses(
+      raw(...ROOT, hdr({ name: "PaxHeader", type: "x", size: 0 }), END),
+      /bad size/,
+      "zero pax size",
+    );
+  });
+
+  test("pax bytes count against what the scan may keep", async () => {
+    const long = "p".repeat(150);
+    let err: unknown;
+    await scanTarGz(
+      arc(ROOT, pax(rec("path", long)), file("x", "1", { name: Buffer.from(long.slice(0, 100)) })),
+      {
+        ...OPTS,
+        captureTotal: 10,
+      },
+    ).catch((e) => (err = e));
+    expect((err as Error).message).toMatch(/pax headers are larger/);
+  });
+
   test("the names of all entries together are capped", async () => {
     const parts: Buffer[][] = [ROOT];
-    // 3000 entries with ~4000-byte names would be 12 MB: use a lowered check via many long names
     const long = "n".repeat(3900);
-    const n = Math.ceil((32 * 1024 * 1024) / 3900) + 2;
+    const n = Math.ceil((64 * 1024 * 1024) / 3900) + 2;
     for (let i = 0; i < n; i += 1) {
       const name = `${long}${i}`;
       parts.push(pax(rec("path", name)), file("x", "", { name: Buffer.from(name.slice(0, 100)) }));
     }
     await refuses(arc(...parts), /add up to too much/, "total names");
+  });
+});
+
+describe("names are compared the way the extractor reads them", () => {
+  test("a leading U+FEFF is kept in a name, in a header and in a pax path", async () => {
+    const m = await scanTarGz(arc(ROOT, file("x", "1", { name: Buffer.from("\uFEFFa") })), OPTS);
+    expect([...m.keys()]).toEqual([".", "\uFEFFa"]);
+    const long = `\uFEFF${"p".repeat(150)}`;
+    const m2 = await scanTarGz(
+      arc(
+        ROOT,
+        pax(rec("path", long)),
+        file("x", "1", { name: Buffer.from(long).subarray(0, 100) }),
+      ),
+      OPTS,
+    );
+    expect(m2.has(long)).toBe(true);
+    expect(m2.has(long.slice(1))).toBe(false);
+  });
+
+  test("two names that fold together (case, normalisation, ignorable characters, trailing dots) are refused", async () => {
+    await refuses(arc(ROOT, file("Readme"), file("README")), /folds names/, "case");
+    const u = (s: string): H => ({ name: Buffer.from(s) });
+    await refuses(
+      arc(ROOT, file("x", "1", u("caf\u00e9")), file("x", "1", u("cafe\u0301"))),
+      /folds names/,
+      "nfc",
+    );
+    await refuses(arc(ROOT, file("ab"), file("x", "1", u("a\u200cb"))), /folds names/, "ignorable");
+    await refuses(arc(ROOT, file("a"), file("a.")), /folds names/, "trailing dot");
+    await refuses(arc(ROOT, dir("D/"), dir("d/")), /folds names/, "directories");
   });
 });
 
@@ -445,5 +502,120 @@ describe("what the writer writes always passes, and system tar extracts exactly 
         .filter((l) => l !== "" && l !== ".");
       expect(listing.toSorted()).toEqual([...reported.keys()].toSorted());
     }
+  }, 120_000);
+});
+
+describe("mutations: whenever the scan accepts, system tar extracts exactly what it reported", () => {
+  let seed = 987654;
+  const rnd = (n: number): number => {
+    seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+    return (seed >>> 8) % n;
+  };
+  const sum = (b: Buffer, off: number): void => {
+    let s = 0;
+    for (let i = 0; i < BLOCK; i += 1) s += i >= 148 && i < 156 ? 32 : b[off + i]!;
+    b.write(`${s.toString(8).padStart(6, "0")}\0 `, off + 148, "latin1");
+  };
+
+  test("1500 mutated archives: no accepted one is read differently by tar", async () => {
+    const root = join(tmp, "mut-src");
+    mkdirSync(join(root, "d", "e"), { recursive: true });
+    writeFileSync(join(root, "a.txt"), "alpha\n");
+    writeFileSync(join(root, "d", "b.txt"), "b".repeat(700));
+    writeFileSync(join(root, "d", "e", `${"n".repeat(130)}.txt`), "long name");
+    symlinkSync("t".repeat(140), join(root, "d", "link"));
+    symlinkSync("a.txt", join(root, "s"));
+    const out = join(tmp, "mut-src.tgz");
+    await tarGzDirectoryToFile(root, out, { maxBytes: 1e8 });
+    const base = Buffer.from(gunzipSync(readFileSync(out)));
+    // where every header (and its body) starts
+    const headers: number[] = [];
+    const bodies: number[] = [];
+    for (let off = 0; off + BLOCK <= base.length && base[off] !== 0;) {
+      headers.push(off);
+      const size = Number.parseInt(base.subarray(off + 124, off + 135).toString("latin1"), 8);
+      if (size > 0) bodies.push(off + BLOCK);
+      off += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
+    }
+    expect([...(await scanTarGz(gzipSync(base), OPTS)).keys()]).toHaveLength(8); // the base is fine
+    let accepted = 0;
+    for (let i = 0; i < 1500; i += 1) {
+      const b = Buffer.from(base);
+      const kind = rnd(6);
+      const edits = 1 + rnd(3);
+      for (let e = 0; e < edits; e += 1) {
+        if (kind <= 2) {
+          const h = headers[rnd(headers.length)]!;
+          b[h + rnd(BLOCK)] = [
+            0,
+            0x30,
+            0x35,
+            0x32,
+            0x78,
+            0x67,
+            0x4c,
+            0x4b,
+            0x20,
+            0x2f,
+            0x2e,
+            rnd(256),
+          ][rnd(12)]!;
+          if (rnd(10) < 8) sum(b, h);
+        } else if (kind === 3) {
+          const body = bodies[rnd(bodies.length)]!;
+          b[body + rnd(BLOCK)] = rnd(256);
+        } else if (kind === 4) {
+          b[b.length - 1 - rnd(1024)] = rnd(256);
+        } else {
+          // padding after file data
+          const body = bodies[rnd(bodies.length)]!;
+          b[body + 511] = rnd(3);
+        }
+      }
+      let tail: Buffer = b;
+      if (rnd(8) === 0) tail = b.subarray(0, b.length - rnd(1100));
+      if (rnd(8) === 0) tail = Buffer.concat([tail, Buffer.alloc(rnd(600), rnd(2) ? 0 : 1)]);
+      const tgz = gzipSync(tail);
+      let scanned: Awaited<ReturnType<typeof scanTarGz>>;
+      try {
+        scanned = await scanTarGz(tgz, OPTS);
+      } catch (err) {
+        expect(err).toBeInstanceOf(TarFormatError);
+        continue;
+      }
+      accepted += 1;
+      const file = join(tmp, `mut${i}.tgz`);
+      writeFileSync(file, tgz);
+      const x = join(tmp, `mut${i}-x`);
+      mkdirSync(x);
+      execFileSync("tar", ["xzf", file, "--no-same-permissions", "-C", x]);
+      const seen = new Map<string, string>();
+      const walk = (rel: string): void => {
+        for (const name of readdirSync(join(x, rel)).toSorted()) {
+          const p = rel === "" ? name : `${rel}/${name}`;
+          const st = lstatSync(join(x, p));
+          if (st.isSymbolicLink()) seen.set(p, `symlink:${readlinkSync(join(x, p))}`);
+          else if (st.isDirectory()) {
+            seen.set(p, "dir");
+            walk(p);
+          } else seen.set(p, `file:${readFileSync(join(x, p)).toString("hex")}`);
+        }
+      };
+      walk("");
+      const reported = new Map<string, string>();
+      for (const [k, v] of scanned) {
+        if (k === ".") continue;
+        reported.set(
+          k,
+          v.type === "symlink"
+            ? `symlink:${v.linkTarget}`
+            : v.type === "dir"
+              ? "dir"
+              : `file:${Buffer.from(v.data ?? new Uint8Array()).toString("hex")}`,
+        );
+      }
+      expect([...seen].toSorted(), `mutation ${i}`).toEqual([...reported].toSorted());
+    }
+    expect(accepted).toBeGreaterThan(20); // the unmutated-in-effect ones: the round trip is exercised
   }, 120_000);
 });
