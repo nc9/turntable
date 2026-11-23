@@ -194,6 +194,7 @@ describe("mapping", () => {
         state: "failure",
         needs: [],
         matrix: null,
+        shard: null,
         approval_kind: null,
         exit_code: 1,
         started_at: "2026-11-22T10:00:10.000Z",
@@ -243,6 +244,7 @@ describe("mapping", () => {
       jobKey: "test",
       needs: [],
       matrix: null,
+      shard: null,
       approval: null,
       exitCode: 1,
     });
@@ -348,6 +350,30 @@ describe("mapping", () => {
     });
   });
 
+  test("maps the shard of a split job, with the steps it owns; other jobs have none", async () => {
+    const shardRow = (i: number): WireRunDetail["jobs"][number] => ({
+      ...detail.jobs[0]!,
+      id: `s${i}`,
+      job_key: `tests[${i}]`,
+      name: "CLI tests",
+      state: "success",
+      shard: { job: "tests", index: i, total: 3, steps: [`suite ${i}`] },
+      attempts: [],
+    });
+    const { api } = make(() =>
+      json({ ...detail, jobs: [detail.jobs[0]!, shardRow(0), shardRow(2)] }),
+    );
+    const d = await api.getRun("run1");
+    expect(d.jobs[0]!.shard).toBeNull();
+    expect(d.jobs[1]!.shard).toEqual({ job: "tests", index: 0, total: 3, steps: ["suite 0"] });
+    expect(d.jobs[2]!.shard).toMatchObject({ index: 2, total: 3 });
+    // an older server that sends no `shard` is the same as none
+    const old = { ...detail.jobs[0]! } as Record<string, unknown>;
+    delete old.shard;
+    const o = make(() => json({ ...detail, jobs: [old] }));
+    expect((await o.api.getRun("run1")).jobs[0]!.shard).toBeNull();
+  });
+
   test("capabilities: rerun and approve are available", () => {
     const { api } = make(() => json({}));
     expect(api.capabilities).toEqual({
@@ -412,6 +438,7 @@ describe("job log by offset", () => {
         state,
         needs: [],
         matrix: null,
+        shard: null,
         approval_kind: null,
         exit_code: null,
         started_at: null,
@@ -536,6 +563,7 @@ describe("operations added for trust, digests, search and ingest", () => {
                 state: "failure",
                 needs: [],
                 matrix: null,
+                shard: null,
                 approval_kind: null,
                 exit_code: 1,
                 started_at: null,

@@ -11,7 +11,7 @@ test("GET /healthz returns ok and version", async () => {
 test("GET / returns placeholder html", async () => {
   const res = await handleRequest(new Request("http://localhost/"));
   expect(res.headers.get("content-type")).toContain("text/html");
-  expect(await res.text()).toContain("Longshore");
+  expect(await res.text()).toContain("Turntable");
 });
 
 test("unknown path is 404 and non-GET is 405", async () => {

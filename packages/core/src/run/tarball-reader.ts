@@ -6,7 +6,7 @@
 // that: the bytes planned are the bytes delivered. Same rules as `makeSafeReader`: a path that is
 // not repository-relative, a symlink (the file or any parent), and a file over the limit are refused
 // loudly, never read as missing.
-import { scanTarGz } from "@longshore/act-runner";
+import { scanTarGz } from "@turntable/act-runner";
 import { assertRepoRelative, MAX_REPO_FILE_BYTES, UnsafePathError } from "./safe-read";
 
 export interface TarballReaderOptions {

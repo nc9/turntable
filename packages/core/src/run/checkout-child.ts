@@ -12,7 +12,7 @@ import { constants, readFileSync } from "node:fs";
 import { lstat, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scrubbedEnv } from "@longshore/provider-sdk";
+import { scrubbedEnv } from "@turntable/provider-sdk";
 import { clean, DEFAULT_FETCH_LIMITS, type FetchLimits } from "./git-fetch";
 
 export interface CheckoutConfig {
@@ -37,7 +37,7 @@ const MIB = 1024 * 1024;
 /**
  * The environment a checkout child gets: the base allowlist (PATH and the like) and, so the child
  * reaches GitHub the way the server does, the TLS trust and proxy settings. Nothing else: no
- * Longshore setting, no token, no key. (Env only: the child still runs as the server's user. See
+ * Turntable setting, no token, no key. (Env only: the child still runs as the server's user. See
  * docs/security.mdx.)
  */
 export const CHILD_ENV_PASSTHROUGH: readonly string[] = [
@@ -75,17 +75,17 @@ export function checkoutConfigFromEnv(
     return n;
   };
   const cfg: CheckoutConfig = { ...DEFAULT_CHECKOUT_CONFIG, limits: {} };
-  const t = num("LONGSHORE_CHECKOUT_TIMEOUT_SECONDS", 10, 3600);
+  const t = num("TURNTABLE_CHECKOUT_TIMEOUT_SECONDS", 10, 3600);
   if (t !== undefined) cfg.timeoutMs = t * 1000;
-  const mem = num("LONGSHORE_CHECKOUT_MAX_MEMORY_MIB", 0, 65536);
+  const mem = num("TURNTABLE_CHECKOUT_MAX_MEMORY_MIB", 0, 65536);
   if (mem !== undefined) cfg.memoryMb = mem;
-  const c = num("LONGSHORE_CHECKOUT_CONCURRENCY", 1, 16);
+  const c = num("TURNTABLE_CHECKOUT_CONCURRENCY", 1, 16);
   if (c !== undefined) cfg.concurrency = c;
-  const pack = num("LONGSHORE_CHECKOUT_MAX_PACK_MIB", 1, 4096);
+  const pack = num("TURNTABLE_CHECKOUT_MAX_PACK_MIB", 1, 4096);
   if (pack !== undefined) cfg.limits.maxPackBytes = pack * MIB;
-  const unpacked = num("LONGSHORE_CHECKOUT_MAX_UNPACKED_MIB", 1, 16384);
+  const unpacked = num("TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB", 1, 16384);
   if (unpacked !== undefined) cfg.limits.maxInflatedBytes = unpacked * MIB;
-  const tarball = num("LONGSHORE_CHECKOUT_MAX_TARBALL_MIB", 1, 4096);
+  const tarball = num("TURNTABLE_CHECKOUT_MAX_TARBALL_MIB", 1, 4096);
   if (tarball !== undefined) cfg.limits.maxTarballBytes = tarball * MIB;
   return cfg;
 }
@@ -189,7 +189,7 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
   // The commit is checked here, in the parent, whatever the caller did: it goes into an argument.
   if (!/^[0-9a-f]{40}$/.test(r.sha))
     throw new Error("the commit must be a 40 character lower-case sha");
-  const log = r.log ?? ((m: string) => console.warn(`[longshore] ${m}`));
+  const log = r.log ?? ((m: string) => console.warn(`[turntable] ${m}`));
   const argv = [
     ...(r.command ?? selfCommand()),
     "fetch-source",

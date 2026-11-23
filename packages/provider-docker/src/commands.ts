@@ -1,11 +1,40 @@
-import { SpecError, type Labels, type SandboxSpec } from "@longshore/provider-sdk";
+import { SpecError, type Labels, type SandboxSpec } from "@turntable/provider-sdk";
 
 /** Label on every container this provider creates. Listing and destroying only touch these. */
-export const MANAGED_LABEL = "longshore.managed";
-export const EXPIRES_LABEL = "longshore.expires-at";
+export const MANAGED_LABEL = "turntable.managed";
+export const EXPIRES_LABEL = "turntable.expires-at";
 /** Labels that link a proxied sandbox to its relay container and internal network. */
-export const NET_LABEL = "longshore.net";
-export const RELAY_LABEL = "longshore.relay";
+export const NET_LABEL = "turntable.net";
+export const RELAY_LABEL = "turntable.relay";
+
+// rename-keep-begin
+/**
+ * The same four labels as containers and networks carried before the rename (formerly Longshore).
+ * New ones are written with the names above; every list, count, reap and destroy reads both, so a
+ * sandbox started by the old binary is still found, counted and removed.
+ */
+export const LEGACY_MANAGED_LABEL = "longshore.managed";
+export const LEGACY_EXPIRES_LABEL = "longshore.expires-at";
+export const LEGACY_NET_LABEL = "longshore.net";
+export const LEGACY_RELAY_LABEL = "longshore.relay";
+// rename-keep-end
+/** The label that marks a container as ours, under either name. */
+export const MANAGED_LABELS: readonly string[] = [MANAGED_LABEL, LEGACY_MANAGED_LABEL];
+/** Labels the provider sets itself: never reported back as the caller's. */
+export const INTERNAL_LABELS: ReadonlySet<string> = new Set([
+  MANAGED_LABEL,
+  EXPIRES_LABEL,
+  LEGACY_MANAGED_LABEL,
+  LEGACY_EXPIRES_LABEL,
+]);
+/** A Go template that reads a label under its current or its pre-rename name. */
+export function labelTemplate(
+  root: ".Labels" | ".Config.Labels",
+  name: string,
+  legacy: string,
+): string {
+  return `{{or (index ${root} "${name}") (index ${root} "${legacy}")}}`;
+}
 /** Port the relay listens on, inside the sandbox's internal network. */
 export const RELAY_PORT = 3128;
 
@@ -127,8 +156,8 @@ export function buildRunArgs(
 }
 
 /** `docker ps` argv that lists managed containers matching all labels, ids only. */
-export function buildPsArgs(labels: Labels | undefined): string[] {
-  const filters = Object.entries({ ...labels, [MANAGED_LABEL]: "1" }).flatMap(([k, v]) => [
+export function buildPsArgs(labels: Labels | undefined, managed: string = MANAGED_LABEL): string[] {
+  const filters = Object.entries({ ...labels, [managed]: "1" }).flatMap(([k, v]) => [
     "--filter",
     `label=${k}=${v}`,
   ]);

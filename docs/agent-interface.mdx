@@ -1,13 +1,13 @@
 ---
 title: Agent interface (MCP and API)
-description: How agents and scripts drive Longshore through MCP, REST, events and webhooks.
+description: How agents and scripts drive Turntable through MCP, REST, events and webhooks.
 ---
 
 <Note>
   The operations registry, agent tokens, the REST API, the OpenAPI document, the MCP server and the realtime feed are built. Server-sent events and signed outbound webhooks are built (issue [#25](https://github.com/nc9/turntable/issues/25)). The CLI covers the host and setup commands; most day-to-day operations are reached through REST and MCP.
 </Note>
 
-Longshore is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
+Turntable is MCP-first. Everything it can do is drivable through MCP and through a REST API with OpenAPI 3.1. There is no UI-only or CLI-only capability.
 
 ## Operations registry
 
@@ -78,17 +78,17 @@ No token role reaches `admin`, so a token can never create tokens.
 | `incident_freeze` | destructive | release_operator | Incident response: stop scheduling for the org or a project, kill running jobs, drop cached tokens, flag secret names for rotation. Audited. See [Incident response](/security#incident-response). |
 | `incident_unfreeze` | write | release_operator | Resume scheduling. Clears the pause only; rotation flags stay. Audited. |
 | `incident_status` | read | reader | Whether the scope is frozen, why, and how many secrets still need rotation. Their names are listed only for release_operator and above. |
-| `sandbox_usage` | read | reader | Exact sandbox time per UTC day, from the provider's create to its confirmed destroy (waiting for capacity is not counted), with how many attempts have no confirmed destroy. The number quotas limit. `group_by: project` adds each project's own days and total; a project-scoped token sees only its project. `longshore usage` reads it. |
+| `sandbox_usage` | read | reader | Exact sandbox time per UTC day, from the provider's create to its confirmed destroy (waiting for capacity is not counted), with how many attempts have no confirmed destroy. The number quotas limit. `group_by: project` adds each project's own days and total; a project-scoped token sees only its project. `turntable usage` reads it. |
 | `secret_usage` | read | release_operator | Where a secret name was used in a time range: runs, jobs, attempts and destinations, from the audit log. |
 | `create_api_token` | write | admin | Create an agent token. The secret is shown once. Audited. |
 
-Secret values are set only through the REST API (over https) or `longshore secret set`, never through MCP or the OpenAPI agent description: see [Secrets vault](/secrets-vault).
+Secret values are set only through the REST API (over https) or `turntable secret set`, never through MCP or the OpenAPI agent description: see [Secrets vault](/secrets-vault).
 
 Two more operations are signature operations: `approve_environment` (`POST /api/v1/approvals`) and `approve_enrolment` (`POST /api/v1/approvers/approve`). They take no bearer token and are never MCP tools. The request carries a statement an enrolled approver signed, and the signature is the credential. See [Human approvals](/security#human-approvals).
 
 `checks_for_sha` takes the latest run of each workflow for the full commit sha. Any failure, infrastructure error or cancellation is `RED`. Anything queued, running or waiting for approval is `PENDING`. Every workflow counts as required until required-check configuration exists.
 
-`get_run` and `list_runs` also return run metadata (`workflow_name`, `commit_message`, `actor`, `head_branch`, `pr_number`) and, per job, `needs`, `matrix` and `approval_kind` (`untrusted_author`, `environment` or null). The forge supplies them; `longshore run` fills them for local runs. They are forge text, so untrusted.
+`get_run` and `list_runs` also return run metadata (`workflow_name`, `commit_message`, `actor`, `head_branch`, `pr_number`) and, per job, `needs`, `matrix` and `approval_kind` (`untrusted_author`, `environment` or null). The forge supplies them; `turntable run` fills them for local runs. They are forge text, so untrusted.
 
 `rerun` only queues work. It puts the jobs back in `queued` with a new attempt that carries the reason, and reopens the run. Starting the queued attempts is the scheduler's job, which comes later, so until then a reran job stays queued. The cap is per job key per commit across all runs of that sha (per run when it has none); past it the call is refused with `409 conflict`, and the right response is to read the failure, not to retry. The call is all or nothing. A rerun never bypasses approval: a job with an `approval_kind` goes back to `awaiting_approval` (and emits `approval.required`) whatever its previous state, and a job that never ran (skipped, or cancelled before it started) and needs approval is refused.
 
@@ -102,7 +102,7 @@ Release and environment approvals are human-only. An operation with `auth.type` 
 
 ## REST and OpenAPI
 
-Routes are generated from the registry under `/api/v1`. Send `Authorization: Bearer ls_...`.
+Routes are generated from the registry under `/api/v1`. Send `Authorization: Bearer tt_...`.
 
 - Query parameters and path parameters carry the input of `GET` calls. `POST` calls take a JSON object body of at most 64 KiB.
 - Errors are typed JSON: `{ "error": { "code", "message", "details?" } }`, with codes `invalid_input`, `unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `payload_too_large` and `internal`.
@@ -118,40 +118,40 @@ Every operation a bearer token may call is an MCP tool, generated from the regis
 **Claude Code, local agent (stdio).** Put a token in a file only you can read, then register the command. The token is read from the file, never from the command line.
 
 ```sh
-longshore token create --org local --role reader --name claude-code > ~/.longshore-token
-chmod 600 ~/.longshore-token
-claude mcp add longshore -e LONGSHORE_TOKEN_FILE=$HOME/.longshore-token -- \
-  longshore mcp --data-dir /path/to/data
+turntable token create --org local --role reader --name claude-code > ~/.turntable-token
+chmod 600 ~/.turntable-token
+claude mcp add turntable -e TURNTABLE_TOKEN_FILE=$HOME/.turntable-token -- \
+  turntable mcp --data-dir /path/to/data
 ```
 
-`longshore mcp` opens the data directory of the server (SQLite) and reads `LONGSHORE_TOKEN_FILE` or `--token-file`. It refuses a token file that other users can read. Only stdout carries the protocol; messages go to stderr.
+`turntable mcp` opens the data directory of the server (SQLite) and reads `TURNTABLE_TOKEN_FILE` or `--token-file`. It refuses a token file that other users can read. Only stdout carries the protocol; messages go to stderr.
 
 **Claude Code, remote server (streamable HTTP).** The server answers at `/mcp`, with the token in the `Authorization` header only (a token in a query string is ignored and refused).
 
 ```sh
-claude mcp add --transport http longshore https://ci.example.com/mcp \
-  --header "Authorization: Bearer $(cat ~/.longshore-token)"
+claude mcp add --transport http turntable https://ci.example.com/mcp \
+  --header "Authorization: Bearer $(cat ~/.turntable-token)"
 ```
 
 The HTTP transport is stateless: every request authenticates its own token and no session outlives it. A revoked token stops working at once on both transports.
 
 **Untrusted content.** A result that carries log or forge text (branch names, commit messages, step names, job logs) is wrapped: `{ "untrusted": true, "source": "job_log", "notice": "...", "content": { ... } }`. The fixed notice tells the agent the content is data to read, not instructions to follow. Resource reads are wrapped the same way. Errors come back as tool errors with the typed body `{ "error": { "code", "message" } }`.
 
-**Resources.** `longshore://runs/{id}` is a run with its jobs (the `get_run` result). `longshore://runs/{id}/jobs/{key}/log` is the tail of a job's latest log (the `job_log` result); URL-encode the job key, for example `build%5B0%5D` for a matrix leg. Both are read through the same operations and scopes.
+**Resources.** `turntable://runs/{id}` is a run with its jobs (the `get_run` result). `turntable://runs/{id}/jobs/{key}/log` is the tail of a job's latest log (the `job_log` result); URL-encode the job key, for example `build%5B0%5D` for a matrix leg. Both are read through the same operations and scopes.
 
 **Reading failures cheaply.** Start with `checks_for_sha` or `list_runs`, then `failure_digest`, which returns the failing step (as the runner recorded it) and about 2 KiB of the first error: the first `::error` annotation if there is one, else the first error-looking line near the step's end with a little context, else the last lines. It is extracted text, never a summary, and redacted. For more, `job_log` with `mode=grep` finds lines matching `pattern` with `context` lines and at most `max_matches` hits. Literal text is the default; `regex=true` takes a linear-time subset (literals, `.`, `[]`, `\d \w \s`, `^ $ \b`, groups, `|`, `* + ? {n,m}`; no backreferences or lookaround) that cannot be made to run slowly. A call scans at most 4 MiB and 2 seconds; `next_offset` continues a long log. Hits are prefixed with their byte offset, which `job_log` with `mode=range` can page from.
 
 ## Scoped agent tokens
 
-Agents authenticate with a token (`ls_` plus 32 random bytes, base64url) with one role, limited to an org or to one project, and expiring (90 days by default, 365 at most). Only the sha256 hash is stored. The secret is shown once, when `create_api_token` returns it. A revoked, expired or unknown token all fail with the same error. Secrets are never returned by any other operation, see [Secrets and security](/security).
+Agents authenticate with a token (`tt_` plus 32 random bytes, base64url) with one role, limited to an org or to one project, and expiring (90 days by default, 365 at most). Only the sha256 hash is stored. The secret is shown once, when `create_api_token` returns it. A revoked, expired or unknown token all fail with the same error. Secrets are never returned by any other operation, see [Secrets and security](/security).
 
 The first token comes from the command line, because creating one over the network needs an org admin and sessions do not exist yet:
 
 ```sh
-longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator> --name <name> [--expires-days 90] [--data-dir ./data]
+turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator> --name <name> [--expires-days 90] [--data-dir ./data]
 ```
 
-Local access to the data directory is the trust root. The command writes through the same repos, audits the creation, prints the secret alone on stdout (so `TOKEN=$(longshore token create ...)` works) and the details on stderr. `longshore token list` and `longshore token revoke <id>` manage them. A token can never create a token with a higher role or a wider scope than its own.
+Local access to the data directory is the trust root. The command writes through the same repos, audits the creation, prints the secret alone on stdout (so `TOKEN=$(turntable token create ...)` works) and the details on stderr. `turntable token list` and `turntable token revoke <id>` manage them. A token can never create a token with a higher role or a wider scope than its own.
 
 ## Event feed and webhooks
 
@@ -196,7 +196,7 @@ An org admin can have events pushed to a URL. Operations: `create_webhook`, `web
 
 `/api/v1/realtime` pushes the same events the feed carries, and live log bytes, over one WebSocket. The message types are in `packages/core/src/realtime/protocol.ts`, which the web UI imports too.
 
-**Connect.** Open the socket with the subprotocols `longshore.v1` and `bearer.<token>`. The server echoes only `longshore.v1`. A token in the query string is refused, and a browser `Origin` must be the page's own or listed with `--allowed-origin`.
+**Connect.** Open the socket with the subprotocols `turntable.v1` and `bearer.<token>`. The server echoes only `turntable.v1`. A token in the query string is refused, and a browser `Origin` must be the page's own or listed with `--allowed-origin`.
 
 **Subscribe.** Send `{"op":"subscribe","id":"s1","topic":"org","after":123}`. Topics:
 
@@ -216,14 +216,14 @@ Omit `after` to start from now. With a cursor the server replays from the feed, 
 
 ## Claude Code channel
 
-A Claude Code channel pushes events, such as a failed run, into a running Claude Code session, so an agent can react without polling. `longshore channel` is that channel. It follows the [channels contract](https://code.claude.com/docs/en/channels-reference): Claude Code starts it as an MCP server over stdio, it declares the `claude/channel` capability, and it sends `notifications/claude/channel`. Channels are a research preview in Claude Code, so the flags and protocol may change.
+A Claude Code channel pushes events, such as a failed run, into a running Claude Code session, so an agent can react without polling. `turntable channel` is that channel. It follows the [channels contract](https://code.claude.com/docs/en/channels-reference): Claude Code starts it as an MCP server over stdio, it declares the `claude/channel` capability, and it sends `notifications/claude/channel`. Channels are a research preview in Claude Code, so the flags and protocol may change.
 
 ### What it sends
 
 By default: a run finished with `failure` or `infra_error`, and a job that needs approval. Each notification is a few lines of facts: the run id, conclusion, failing jobs with the failing step name, and a link to the run. Example:
 
 ```
-Longshore: run finished, conclusion failure.
+Turntable: run finished, conclusion failure.
 project: "api"
 run: 01J...  workflow: "CI"  branch: "main"  event: push
 failed jobs: "lint" (failure, step "Run oxlint")
@@ -231,15 +231,15 @@ link: https://ci.example.com/acme/api/runs/01J...
 Untrusted data: quoted values come from the forge or workflow files. No log content is included.
 ```
 
-Log text is never in a notification. The channel reads only the step name from `failure_digest` and drops the excerpt. The agent follows up with the Longshore MCP tools (`failure_digest`, `job_log`) using the run id. Branch, workflow, job and step names come from the forge or workflow files, so they are quoted, cut to 60 characters, stripped of control and direction characters, and escaped so they cannot close the `<channel>` tag. The tag attributes carry ids and enums only. The server's `instructions` tell the model the quoted text is data and not to act on it.
+Log text is never in a notification. The channel reads only the step name from `failure_digest` and drops the excerpt. The agent follows up with the Turntable MCP tools (`failure_digest`, `job_log`) using the run id. Branch, workflow, job and step names come from the forge or workflow files, so they are quoted, cut to 60 characters, stripped of control and direction characters, and escaped so they cannot close the `<channel>` tag. The tag attributes carry ids and enums only. The server's `instructions` tell the model the quoted text is data and not to act on it.
 
 ### Set up
 
 1. Create a reader-role token and put it in a file only you can read. The channel refuses a token file that others can read, and never takes a token on the command line.
 
    ```sh
-   longshore token create --org acme --role reader --name claude-channel
-   umask 077 && printf '%s' "$TOKEN" > ~/.config/longshore/channel-token
+   turntable token create --org acme --role reader --name claude-channel
+   umask 077 && printf '%s' "$TOKEN" > ~/.config/turntable/channel-token
    ```
 
 2. Register the server in your project's `.mcp.json` (or `~/.claude.json` with absolute paths):
@@ -247,10 +247,10 @@ Log text is never in a notification. The channel reads only the step name from `
    ```json
    {
      "mcpServers": {
-       "longshore": {
-         "command": "longshore",
+       "turntable": {
+         "command": "turntable",
          "args": ["channel", "--url", "https://ci.example.com", "--org", "acme",
-                  "--token-file", "/home/you/.config/longshore/channel-token",
+                  "--token-file", "/home/you/.config/turntable/channel-token",
                   "--project", "api", "--branch", "main,release/*"]
        }
      }
@@ -260,25 +260,25 @@ Log text is never in a notification. The channel reads only the step name from `
 3. Start Claude Code with the channel enabled. A custom channel is not on Anthropic's allowlist, so during the preview use the development flag:
 
    ```sh
-   claude --dangerously-load-development-channels server:longshore
+   claude --dangerously-load-development-channels server:turntable
    ```
 
    Team and Enterprise organizations must also have channels enabled (`channelsEnabled`) by an owner. Channels need claude.ai or Console API-key login.
 
-A plugin manifest is in `claude-plugin/` for publishing the channel through a marketplace. It asks for the URL, org and token file path, and starts `longshore channel` with them.
+A plugin manifest is in `claude-plugin/` for publishing the channel through a marketplace. It asks for the URL, org and token file path, and starts `turntable channel` with them.
 
 ### Options
 
 | Option | Environment | Default |
 | --- | --- | --- |
-| `--url` | `LONGSHORE_URL` | required. `https` only, except loopback (`--allow-insecure` overrides) |
-| `--org` | `LONGSHORE_ORG` | required |
-| `--token-file` | `LONGSHORE_TOKEN_FILE` | required, mode 0600 |
-| `--project a,b` | `LONGSHORE_CHANNEL_PROJECTS` | all projects the token sees |
-| `--branch main,release/*` | `LONGSHORE_CHANNEL_BRANCHES` | all branches. `*` is a glob. A run with no known branch never matches a branch filter. |
-| `--types` | `LONGSHORE_CHANNEL_TYPES` | `run.finished,approval.required` (add `quota.warning,quota.reached` for quota notices) |
-| `--conclusions` | `LONGSHORE_CHANNEL_CONCLUSIONS` | `failure,infra_error` (for `run.finished`) |
-| `--state-file` | `LONGSHORE_CHANNEL_STATE_FILE` | a file under `$XDG_STATE_HOME/longshore` |
+| `--url` | `TURNTABLE_URL` | required. `https` only, except loopback (`--allow-insecure` overrides) |
+| `--org` | `TURNTABLE_ORG` | required |
+| `--token-file` | `TURNTABLE_TOKEN_FILE` | required, mode 0600 |
+| `--project a,b` | `TURNTABLE_CHANNEL_PROJECTS` | all projects the token sees |
+| `--branch main,release/*` | `TURNTABLE_CHANNEL_BRANCHES` | all branches. `*` is a glob. A run with no known branch never matches a branch filter. |
+| `--types` | `TURNTABLE_CHANNEL_TYPES` | `run.finished,approval.required` (add `quota.warning,quota.reached` for quota notices) |
+| `--conclusions` | `TURNTABLE_CHANNEL_CONCLUSIONS` | `failure,infra_error` (for `run.finished`) |
+| `--state-file` | `TURNTABLE_CHANNEL_STATE_FILE` | a file under `$XDG_STATE_HOME/turntable` |
 
 ### Resume and limits
 

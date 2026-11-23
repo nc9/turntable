@@ -4,7 +4,7 @@
 // falls back to a placeholder page.
 //
 // Dev mode (running from source, never the compiled binary): `enableDevUi` serves a built bundle
-// straight from a directory, `packages/ui/dist` by default or LONGSHORE_UI_DIR, so the dev loop
+// straight from a directory, `packages/ui/dist` by default or TURNTABLE_UI_DIR, so the dev loop
 // is `bun run --cwd packages/ui build` and reload. The directory is read per request, so a
 // rebuild shows without a restart. A request can only reach regular files inside that directory.
 import { realpathSync, statSync } from "node:fs";
@@ -38,7 +38,7 @@ export type DevUi = { dir: string; source: "env" | "source" };
 
 /**
  * Turns dev mode on when the process runs from source, no embedded UI is registered and a built
- * bundle (an index.html) exists: LONGSHORE_UI_DIR if set, else `packages/ui/dist`. Returns what
+ * bundle (an index.html) exists: TURNTABLE_UI_DIR if set, else `packages/ui/dist`. Returns what
  * it chose, or undefined. The compiled binary never reads UI assets from disk: it returns
  * undefined whatever the environment says.
  */
@@ -48,7 +48,7 @@ export function enableDevUi(
 ): DevUi | undefined {
   if (o.compiled ?? compiledBinary()) return undefined;
   if (hasUi()) return undefined;
-  const fromEnv = env.LONGSHORE_UI_DIR?.trim();
+  const fromEnv = env.TURNTABLE_UI_DIR?.trim();
   const dir = fromEnv ? resolve(fromEnv) : (o.sourceDist ?? SOURCE_DIST);
   try {
     const real = realpathSync(dir);

@@ -31,7 +31,6 @@ export function useAsync<T>(load: () => Promise<T>, deps: readonly unknown[]): A
     return () => {
       live = false;
     };
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, n]);
   const reload = useCallback(() => setN((x) => x + 1), []);
   return { ...state, reload };

@@ -5,9 +5,9 @@ import { eq } from "drizzle-orm";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import type { Provider } from "@longshore/provider-sdk";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   type Db,
   ensureLocalTenant,
@@ -79,7 +79,7 @@ case "$J" in
     sleep 1
     printf '%s' "$out" ;;
   forger)
-    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[longshore: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[turntable: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
 esac
 case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
@@ -1639,7 +1639,7 @@ jobs:
     expect(egressForRun('{"trust":"trusted_pr","egress":"open"}')).toBe("open");
   });
 
-  test("longshore policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
+  test("turntable policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
     await expect(setEgressPolicy(db, "local", undefined, "wide")).rejects.toThrow();
     await expect(setEgressPolicy(db, "local", "nope", "open")).rejects.toThrow();
     const changed = await setEgressPolicy(db, "local", "local", "open");
@@ -1796,7 +1796,7 @@ jobs:
       // A job that prints the old marker text gets ordinary text and no cut.
       const forger = await text("forger");
       expect(forger.job.state).toBe("success");
-      expect(forger.log).toContain("[longshore: 99999 bytes of output omitted]");
+      expect(forger.log).toContain("[turntable: 99999 bytes of output omitted]");
       const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
         job_id: forger.job.id,
         attempt: 1,
@@ -1890,6 +1890,26 @@ jobs:
     });
     expect(ran.map((r) => r.length)).toEqual([1, 1, 1]);
     expect(new Set(ran.flat()).size).toBe(3);
+    // the API names each shard, the job they share and the step each owns
+    const token = (await mintToken(db, scope, "reader")).secret;
+    const got = await dispatch({ registry, db }, { kind: "bearer", token }, "get_run", {
+      run_id: run!.id,
+    });
+    const apiJobs = (got.ok ? (got.output as any) : undefined).jobs as {
+      job_key: string;
+      shard: { job: string; index: number; total: number; steps: string[] } | null;
+    }[];
+    expect(apiJobs.find((j) => j.job_key === "gate")!.shard).toBeNull();
+    expect(
+      apiJobs
+        .filter((j) => j.shard)
+        .map((j) => j.shard)
+        .toSorted((a, b) => a!.index - b!.index),
+    ).toEqual([
+      { job: "tests", index: 0, total: 3, steps: ["Audit engine tests"] },
+      { job: "tests", index: 1, total: 3, steps: ["Rules tests"] },
+      { job: "tests", index: 2, total: 3, steps: ["Rest tests"] },
+    ]);
     // the gate ran after every shard finished
     const finished = Math.max(
       ...after.filter((j) => j.jobKey.startsWith("tests[")).map((j) => j.finishedAt ?? 0),

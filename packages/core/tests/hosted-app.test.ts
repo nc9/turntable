@@ -47,7 +47,7 @@ describe("trusted proxies", () => {
       expect(t.isTrusted(no)).toBe(false);
     expect(parseTrustedProxies(undefined).empty).toBe(true);
     for (const bad of ["10.0.0.0/33", "10.0.0.0/x", "300.1.1.1", "10.0.0.1/8/9", "hello"]) {
-      expect(() => parseTrustedProxies(bad)).toThrow(/LONGSHORE_TRUSTED_PROXIES/);
+      expect(() => parseTrustedProxies(bad)).toThrow(/TURNTABLE_TRUSTED_PROXIES/);
     }
   });
 
@@ -142,7 +142,7 @@ describe("the installation claim flow", () => {
         return "none";
       }
     };
-    // The browser that confirmed on Longshore carries the cookie; pass cookie=null for one without.
+    // The browser that confirmed on Turntable carries the cookie; pass cookie=null for one without.
     const callback = async (
       q: Record<string, string>,
       cookie?: string | null,
@@ -193,7 +193,7 @@ describe("the installation claim flow", () => {
     };
   }
 
-  test("start gives a Longshore confirmation link; confirming sets the binding cookie and goes to GitHub; the happy path binds the installation to the claiming org", async () => {
+  test("start gives a Turntable confirmation link; confirming sets the binding cookie and goes to GitHub; the happy path binds the installation to the claiming org", async () => {
     const h = await harness();
     const { url } = await h.claims.start(h.tenantB.id, "token:t1");
     expect(url.startsWith(`${CLAIM_START_PATH}?state=`)).toBe(true);
@@ -216,7 +216,7 @@ describe("the installation claim flow", () => {
     expect(
       go.headers
         .get("location")!
-        .startsWith("https://github.com/apps/longshore-test/installations/new?state="),
+        .startsWith("https://github.com/apps/turntable-test/installations/new?state="),
     ).toBe(true);
     const cookie = go.headers.getSetCookie().find((c) => c.startsWith(`${CLAIM_COOKIE}=`))!;
     expect(cookie).toContain(`${CLAIM_COOKIE}=${h.nonceOf(state)}`);
@@ -757,18 +757,18 @@ describe("the whole server configured from the environment", () => {
   test("every serve option has a variable, with sane defaults; flags win (they are parseArgs defaults)", () => {
     const d = serveDefaults({
       PORT: "9000",
-      LONGSHORE_HOST: "0.0.0.0",
-      LONGSHORE_DATA_DIR: "/data",
-      LONGSHORE_WORKER: "1",
-      LONGSHORE_PROVIDER: "daytona",
-      LONGSHORE_PROVIDER_CONFIG_JSON: '{"apiKeyEnv":"DAYTONA_API_KEY"}',
-      LONGSHORE_POLL_JSON: "{}",
-      LONGSHORE_GLOBAL_CAP: "3",
-      LONGSHORE_ORG_CAP: "1",
-      LONGSHORE_LEASE_SECONDS: "45",
-      LONGSHORE_IMAGE: "ghcr.io/x/y:1",
-      LONGSHORE_HOSTED: "1",
-      LONGSHORE_ISOLATION_OVERRIDE: "reason",
+      TURNTABLE_HOST: "0.0.0.0",
+      TURNTABLE_DATA_DIR: "/data",
+      TURNTABLE_WORKER: "1",
+      TURNTABLE_PROVIDER: "daytona",
+      TURNTABLE_PROVIDER_CONFIG_JSON: '{"apiKeyEnv":"DAYTONA_API_KEY"}',
+      TURNTABLE_POLL_JSON: "{}",
+      TURNTABLE_GLOBAL_CAP: "3",
+      TURNTABLE_ORG_CAP: "1",
+      TURNTABLE_LEASE_SECONDS: "45",
+      TURNTABLE_IMAGE: "ghcr.io/x/y:1",
+      TURNTABLE_HOSTED: "1",
+      TURNTABLE_ISOLATION_OVERRIDE: "reason",
     });
     expect(d).toMatchObject({
       port: "9000",
@@ -795,7 +795,7 @@ describe("the whole server configured from the environment", () => {
     });
     // a file path wins over the JSON variable
     expect(
-      serveDefaults({ LONGSHORE_POLL: "/etc/poll.json", LONGSHORE_POLL_JSON: "{}" }).poll,
+      serveDefaults({ TURNTABLE_POLL: "/etc/poll.json", TURNTABLE_POLL_JSON: "{}" }).poll,
     ).toBe("/etc/poll.json");
   });
 
@@ -816,13 +816,13 @@ describe("the whole server configured from the environment", () => {
 
   test("the poll config can be JSON in a variable, with the token in another; the config never carries the token", () => {
     const cfg = resolvePollConfig(ENV_POLL_SOURCE, {
-      LONGSHORE_POLL_JSON: pollJson,
+      TURNTABLE_POLL_JSON: pollJson,
       GH_POLL_TOKEN: " tok ",
     });
     expect(cfg?.repos[0]?.repo).toBe("acme/web");
     expect(readPollToken(cfg!, { GH_POLL_TOKEN: " tok " })).toBe("tok");
     expect(() => readPollToken(cfg!, {})).toThrow(/GH_POLL_TOKEN/);
-    expect(() => resolvePollConfig(ENV_POLL_SOURCE, {})).toThrow(/LONGSHORE_POLL_JSON is not set/);
+    expect(() => resolvePollConfig(ENV_POLL_SOURCE, {})).toThrow(/TURNTABLE_POLL_JSON is not set/);
     expect(() => parsePollConfig("{not json", "x")).toThrow(/cannot read poll config/);
     // a token pasted inline, both sources, or neither: refused
     for (const bad of [
@@ -837,12 +837,12 @@ describe("the whole server configured from the environment", () => {
 
   test("the provider config can be JSON in a variable", () => {
     const cfg = resolveProviderConfig(ENV_PROVIDER_SOURCE, {
-      LONGSHORE_PROVIDER_CONFIG_JSON: '{"apiKeyEnv":"DAYTONA_API_KEY","maxLive":3}',
+      TURNTABLE_PROVIDER_CONFIG_JSON: '{"apiKeyEnv":"DAYTONA_API_KEY","maxLive":3}',
     });
     expect(cfg).toEqual({ apiKeyEnv: "DAYTONA_API_KEY", maxLive: 3 });
     expect(() => resolveProviderConfig(ENV_PROVIDER_SOURCE, {})).toThrow(/not set/);
     expect(() =>
-      resolveProviderConfig(ENV_PROVIDER_SOURCE, { LONGSHORE_PROVIDER_CONFIG_JSON: "[1]" }),
+      resolveProviderConfig(ENV_PROVIDER_SOURCE, { TURNTABLE_PROVIDER_CONFIG_JSON: "[1]" }),
     ).toThrow(/JSON object/);
     expect(resolveProviderConfig(undefined)).toEqual({});
   });

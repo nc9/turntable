@@ -14,7 +14,7 @@ export function plain(text: string, max = 100): string {
 
 /**
  * The check name: `shadow / <job>` in shadow mode (so a required-check rule never matches it),
- * `longshore / <job>` in live mode, plus the matrix leg when the job has one.
+ * `turntable / <job>` in live mode, plus the matrix leg when the job has one.
  */
 export function checkName(
   mode: Exclude<ChecksMode, "off">,
@@ -30,7 +30,7 @@ export function checkName(
       // an unreadable matrix adds no leg
     }
   }
-  return `${mode === "shadow" ? "shadow" : "longshore"} / ${plain(job.name)}${leg}`;
+  return `${mode === "shadow" ? "shadow" : "turntable"} / ${plain(job.name)}${leg}`;
 }
 
 const WORD: Record<AttemptResult, string> = {
@@ -52,11 +52,11 @@ export function conclusionFor(mode: Exclude<ChecksMode, "off">, result: AttemptR
 }
 
 export function titleFor(mode: Exclude<ChecksMode, "off">, result: AttemptResult): string {
-  return `${mode === "shadow" ? "Shadow" : "Longshore"}: ${WORD[result]}`;
+  return `${mode === "shadow" ? "Shadow" : "Turntable"}: ${WORD[result]}`;
 }
 
 export const RUNNING_TITLE = (mode: Exclude<ChecksMode, "off">): string =>
-  `${mode === "shadow" ? "Shadow" : "Longshore"}: running`;
+  `${mode === "shadow" ? "Shadow" : "Turntable"}: running`;
 
 /** A code fence longer than any fence in the text, so the text cannot close it. */
 export function fenced(text: string): string {
@@ -125,19 +125,19 @@ export function summaryFor(i: SummaryInput): string {
   const lines: string[] = [`**Result:** ${WORD[i.result]}`];
   if (i.mode === "shadow") {
     lines.push(
-      "This is a shadow check: it is always neutral and never gates a merge. The result above is what Longshore found.",
+      "This is a shadow check: it is always neutral and never gates a merge. The result above is what Turntable found.",
     );
   }
   if (i.result === "infra_error") {
     lines.push(
       "Infrastructure error: the sandbox or the runner failed, so this says nothing about the code.",
     );
-    lines.push(`Reason: ${i.infraClass ?? "internal"}. See the Longshore run for details.`);
+    lines.push(`Reason: ${i.infraClass ?? "internal"}. See the Turntable run for details.`);
   }
   if (i.shards && i.shards.length > 0)
     lines.push(`**Shards:**\n${i.shards.map((s) => `- ${s}`).join("\n")}`);
   if (i.failingStep) lines.push(`**Failing step:** ${plain(i.failingStep, 120)}`);
-  if (i.runUrl) lines.push(`[Open the run in Longshore](${i.runUrl})`);
+  if (i.runUrl) lines.push(`[Open the run in Turntable](${i.runUrl})`);
   if (i.excerpt) lines.push(fenced(i.excerpt));
   return lines.join("\n\n");
 }

@@ -13,11 +13,15 @@ import {
   type SandboxSpec,
   type ShellRunner,
   type WrappedExecOptions,
-} from "@longshore/provider-sdk";
+} from "@turntable/provider-sdk";
 import {
   EXPIRES_LABEL,
   GET_SH,
-  MANAGED_LABEL,
+  INTERNAL_LABELS,
+  LEGACY_EXPIRES_LABEL,
+  LEGACY_NET_LABEL,
+  LEGACY_RELAY_LABEL,
+  MANAGED_LABELS,
   NET_LABEL,
   PUT_SH,
   RELAY_LABEL,
@@ -30,6 +34,7 @@ import {
   buildExecArgs,
   buildInspectArgs,
   buildPsArgs,
+  labelTemplate,
   buildNetworkCreateArgs,
   buildRelayRunArgs,
   buildRmArgs,
@@ -265,13 +270,17 @@ export class DockerProvider implements Provider {
 
   /** Removes internal networks (and their relays) whose sandbox TTL passed and that nothing uses. */
   private async reapExpired(): Promise<void> {
-    const ls = await this.cli(["network", "ls", "-q", "--filter", `label=${MANAGED_LABEL}=1`]);
-    for (const id of dec.decode(ls.stdout).split("\n").filter(Boolean)) {
+    const ids = new Set<string>();
+    for (const managed of MANAGED_LABELS) {
+      const ls = await this.cli(["network", "ls", "-q", "--filter", `label=${managed}=1`]);
+      for (const id of dec.decode(ls.stdout).split("\n").filter(Boolean)) ids.add(id);
+    }
+    for (const id of ids) {
       const insp = await this.cli([
         "network",
         "inspect",
         "--format",
-        `{{index .Labels "${EXPIRES_LABEL}"}} {{.Name}}`,
+        `${labelTemplate(".Labels", EXPIRES_LABEL, LEGACY_EXPIRES_LABEL)} {{.Name}}`,
         id,
       ]);
       const [exp, name] = dec.decode(insp.stdout).trim().split(" ");
@@ -286,7 +295,7 @@ export class DockerProvider implements Provider {
     const links = await this.cli([
       "inspect",
       "--format",
-      `{{index .Config.Labels "${RELAY_LABEL}"}} {{index .Config.Labels "${NET_LABEL}"}}`,
+      `${labelTemplate(".Config.Labels", RELAY_LABEL, LEGACY_RELAY_LABEL)} ${labelTemplate(".Config.Labels", NET_LABEL, LEGACY_NET_LABEL)}`,
       "--",
       assertRef(id),
     ]);
@@ -310,9 +319,14 @@ export class DockerProvider implements Provider {
   }
 
   async list(filter: { labels?: Labels }): Promise<SandboxInfo[]> {
-    const ps = await this.cli(buildPsArgs(filter.labels));
-    if (ps.exitCode !== 0) this.fail("docker ps", ps);
-    const ids = dec.decode(ps.stdout).split("\n").filter(Boolean);
+    // Containers started before the rename carry the old managed label: ask for both, merge.
+    const found = new Set<string>();
+    for (const managed of MANAGED_LABELS) {
+      const ps = await this.cli(buildPsArgs(filter.labels, managed));
+      if (ps.exitCode !== 0) this.fail("docker ps", ps);
+      for (const id of dec.decode(ps.stdout).split("\n").filter(Boolean)) found.add(id);
+    }
+    const ids = [...found];
     if (ids.length === 0) return [];
     const insp = await this.cli(buildInspectArgs(ids));
     // A container can vanish between ps and inspect (it is --rm); inspect then exits 1 but
@@ -326,9 +340,7 @@ export class DockerProvider implements Provider {
         Config: { Labels: Record<string, string> };
       };
       const labels = Object.fromEntries(
-        Object.entries(c.Config.Labels ?? {}).filter(
-          ([k]) => k !== MANAGED_LABEL && k !== EXPIRES_LABEL,
-        ),
+        Object.entries(c.Config.Labels ?? {}).filter(([k]) => !INTERNAL_LABELS.has(k)),
       );
       out.push({
         id: c.Id,

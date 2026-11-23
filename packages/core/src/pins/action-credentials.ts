@@ -9,15 +9,15 @@
 // and never for an untrusted run. Every other action is resolved without a token: a 404 on a
 // private repo then correctly means "not found". Even with a token, a repo that is not the run's
 // own is refused when GitHub says it is private.
-import { PlanError, type ActionRefResolver } from "@longshore/act-runner";
+import { PlanError, type ActionRefResolver } from "@turntable/act-runner";
 import {
   type Backoff,
   fetchWithBackoff,
   RateLimitedError,
   type SafeFetch,
   safeFetch,
-} from "@longshore/net";
-import { InfraError } from "@longshore/provider-sdk";
+} from "@turntable/net";
+import { InfraError } from "@turntable/provider-sdk";
 import type { ReachabilityChecker } from "./reachability";
 
 export interface ActionCredentialOptions {
@@ -30,7 +30,7 @@ export interface ActionCredentialOptions {
   /** An untrusted run never uses a token, not even for its own repository. */
   untrusted: boolean;
   /**
-   * A local run (`longshore run`, the operator's own checkout and own token): the token is used
+   * A local run (`turntable run`, the operator's own checkout and own token): the token is used
    * for any action that passes the public check below, since the operator chose to run this
    * workflow. A server run keeps the strict per-action rule.
    */
@@ -78,7 +78,7 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
               headers: {
                 accept: "application/vnd.github+json",
                 "x-github-api-version": "2022-11-28",
-                "user-agent": "longshore",
+                "user-agent": "turntable",
                 authorization: `Bearer ${token}`,
               },
               timeoutMs: 30_000,

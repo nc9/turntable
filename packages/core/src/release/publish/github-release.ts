@@ -3,7 +3,7 @@
 // A release that is already published is never touched: it is left alone if it matches and
 // refused if it does not.
 import { createHash } from "node:crypto";
-import { safeFetch, type SafeFetch } from "@longshore/net";
+import { safeFetch, type SafeFetch } from "@turntable/net";
 import type { GithubReleaseTarget, PublishContext, TargetResult } from "./types";
 
 const MAX_ASSET = 512 * 1024 * 1024;
@@ -41,7 +41,7 @@ export async function publishGithubRelease(
     authorization: `Bearer ${token}`,
     accept: "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
-    "user-agent": "longshore",
+    "user-agent": "turntable",
   };
   const refuse = (
     reason: string,
@@ -235,7 +235,7 @@ export async function ensureDraft(
     authorization: `Bearer ${token}`,
     accept: "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
-    "user-agent": "longshore",
+    "user-agent": "turntable",
   };
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await f(`${api}${path}`, {

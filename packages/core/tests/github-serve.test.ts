@@ -40,7 +40,7 @@ describe("keys init and the webhook endpoint through the real server", () => {
     const keyFile = join(tmp, "serve.key");
     await run(["keys", "init", "--file", keyFile]);
     const data = join(tmp, "data");
-    const db = openDatabase(join(data, "longshore.db"));
+    const db = openDatabase(join(data, "turntable.db"));
     const org = await createOrg(db, { slug: "acme", name: "Acme" });
     await setGithubApp(
       db,
@@ -62,7 +62,7 @@ describe("keys init and the webhook endpoint through the real server", () => {
     db.close();
 
     const s = Bun.spawn(["bun", "run", MAIN, "serve", "--port", "0", "--data-dir", data], {
-      env: { PATH: process.env.PATH ?? "", HOME: tmp, LONGSHORE_MASTER_KEY_FILE: keyFile },
+      env: { PATH: process.env.PATH ?? "", HOME: tmp, TURNTABLE_MASTER_KEY_FILE: keyFile },
       stdout: "pipe",
       stderr: "pipe",
     });

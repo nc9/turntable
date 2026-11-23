@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
-import type { Provider } from "@longshore/provider-sdk";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import type { Provider } from "@turntable/provider-sdk";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { CANARY_TARGETS, probeEgress } from "../src/run/egress-canary";
 import { executeJob, proxyEgress } from "../src/run/job-exec";
 import { egressDecision, egressForRun, withEgressPolicy } from "../src/scheduler/egress";
@@ -210,7 +210,7 @@ test.skipIf(!hasCurl)(
               ? [...o.argv.slice(0, 4), `127.0.0.1:${open.port}`]
               : o.argv,
         });
-      const { SecretRegistry } = await import("@longshore/redact");
+      const { SecretRegistry } = await import("@turntable/redact");
       const { env } = jobEnv(world, {
         provider: prov,
         canary: true,
@@ -238,7 +238,7 @@ test("a secret-bearing job is not run when the canary cannot verify isolation", 
     const orig = prov.exec.start.bind(prov.exec);
     // a sandbox image with no test tool: the probe exits 125
     prov.exec.start = (id, o) => orig(id, { ...o, argv: ["sh", "-c", "exit 125"] });
-    const { SecretRegistry } = await import("@longshore/redact");
+    const { SecretRegistry } = await import("@turntable/redact");
     const { env } = jobEnv(world, {
       provider: prov,
       canary: true,
@@ -285,7 +285,7 @@ for (const [label, mustNotReach] of [
       // Every probe reports success: the only thing wrong is the missing list.
       const orig = prov.exec.start.bind(prov.exec);
       prov.exec.start = (id, o) => orig(id, { ...o, argv: ["sh", "-c", "exit 0"] });
-      const { SecretRegistry } = await import("@longshore/redact");
+      const { SecretRegistry } = await import("@turntable/redact");
       const { env } = jobEnv(world, {
         provider: prov,
         registry: new SecretRegistry(),

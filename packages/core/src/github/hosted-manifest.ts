@@ -1,11 +1,11 @@
-// The App manifest flow for an instance with no shell (Railway and the like). `longshore
+// The App manifest flow for an instance with no shell (Railway and the like). `turntable
 // github-app create` serves a loopback page on the machine that holds the data dir, so a hosted
 // instance could never get its App credentials. This serves the same flow from the instance:
 //
 //  1. An operator opens GET /api/v1/instance/github-app/manifest (a small form) and submits it, or
 //     POSTs the same fields with `Authorization: Bearer <setup token>`. The setup token is a
 //     secret the operator generated; only its sha256 is configured
-//     (LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256), like the bootstrap token.
+//     (TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256), like the bootstrap token.
 //  2. The reply is a page that posts the App manifest to GitHub. Its `state` is an HMAC over (org,
 //     nonce, expiry, rotate flag, requested name and owner, a MAC of a browser-binding secret), the
 //     nonce is stored and single use, and a HttpOnly cookie holds the secret itself, so only the
@@ -19,7 +19,7 @@
 // Every step is audited in the owning org's chain; a refusal before an org is known goes to the
 // system chain through the throttled failure path.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { auditFailure } from "../audit/failures";
 import type { Db } from "../db";
 import {
@@ -196,7 +196,7 @@ async function readForm(req: Request): Promise<Form | undefined | "too_large"> {
 export function createHostedManifestHandler(o: HostedManifestOptions): HostedManifestHandler {
   const hash = o.setupTokenSha256.trim().toLowerCase();
   if (!SHA256_HEX.test(hash)) {
-    throw new Error("LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256 must be 64 hex characters (a sha256)");
+    throw new Error("TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256 must be 64 hex characters (a sha256)");
   }
   const base = o.publicUrl.trim().replace(/\/+$/, "");
   const u = new URL(base);
@@ -322,12 +322,12 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       ? closedPage()
       : shell(
           200,
-          "Create the Longshore GitHub App",
+          "Create the Turntable GitHub App",
           `<p>Sends the App manifest to GitHub, where you approve it. The App's credentials are stored on this instance and never shown.</p>
 <form method="post" action="${MANIFEST_PATH}" autocomplete="off">
 <p><label>Setup token<br><input type="password" name="setup_token" required autocomplete="off" size="48"></label></p>
-<p><label>Longshore org that will own the App (its slug)<br><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}" size="24"${o.ownerOrgSlugs?.[0] ? ` value="${esc(o.ownerOrgSlugs[0])}"` : ""}></label></p>
-<p><label>App name<br><input name="name" value="Longshore" maxlength="34" size="24"></label></p>
+<p><label>Turntable org that will own the App (its slug)<br><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}" size="24"${o.ownerOrgSlugs?.[0] ? ` value="${esc(o.ownerOrgSlugs[0])}"` : ""}></label></p>
+<p><label>App name<br><input name="name" value="Turntable" maxlength="34" size="24"></label></p>
 <p><label>Create it under this GitHub organization (blank for your own account)<br><input name="gh_org" maxlength="39" size="24"></label></p>
 <p><label><input type="checkbox" name="rotate" value="1"> Replace the App this instance already has</label></p>
 <button type="submit">Continue</button>
@@ -367,7 +367,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     }
 
     const slug = field("org");
-    const name = field("name") || "Longshore";
+    const name = field("name") || "Turntable";
     const ghOrg = field("gh_org");
     const rotate = field("rotate") === "1" || field("rotate") === "true";
     if (!ORG_SLUG.test(slug)) return note(400, "Bad request", "Give the org's slug.");
@@ -464,7 +464,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${signAppJwt(String(c.id), c.pem, now())}`,
-        "user-agent": "longshore",
+        "user-agent": "turntable",
       },
       signal: AbortSignal.timeout(30_000),
     });
@@ -611,7 +611,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       return shell(
         200,
         "The GitHub App was created",
-        `<p>The App <strong>${esc(app.slug)}</strong> was created and its credentials are stored on this instance. They are not shown.</p>${retired}<p>Next, install it on your repositories: <a href="${esc(app.htmlUrl)}/installations/new" rel="noreferrer">${esc(app.htmlUrl)}/installations/new</a></p><p>This page is now closed until the instance restarts. Remove <code>LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256</code> from the instance's variables.</p>`,
+        `<p>The App <strong>${esc(app.slug)}</strong> was created and its credentials are stored on this instance. They are not shown.</p>${retired}<p>Next, install it on your repositories: <a href="${esc(app.htmlUrl)}/installations/new" rel="noreferrer">${esc(app.htmlUrl)}/installations/new</a></p><p>This page is now closed until the instance restarts. Remove <code>TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256</code> from the instance's variables.</p>`,
         { cookies: [clearCookie] },
       );
     });

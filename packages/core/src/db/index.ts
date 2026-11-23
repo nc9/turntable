@@ -61,8 +61,8 @@ const ended = () => new Error("transaction handle used after it ended");
 
 /**
  * Opens the database. A `postgres://` URL (or, when set, the process's `--database-url` /
- * LONGSHORE_DATABASE_URL) selects Postgres; anything else is a SQLite file path or `:memory:`.
- * The test harness can send `:memory:` to Postgres too (LONGSHORE_TEST_DB), so the same suites
+ * TURNTABLE_DATABASE_URL) selects Postgres; anything else is a SQLite file path or `:memory:`.
+ * The test harness can send `:memory:` to Postgres too (TURNTABLE_TEST_DB), so the same suites
  * run on both. The dialect of the schema modules was fixed at import (dialect.ts), so a URL is
  * only valid in a process that started as Postgres.
  */
@@ -120,7 +120,7 @@ export function openDatabase(path: string): Db {
         t === "pglite"
           ? {
               pglite: true,
-              ...(process.env.LONGSHORE_TEST_PGLITE_ISOLATED === "1"
+              ...(process.env.TURNTABLE_TEST_PGLITE_ISOLATED === "1"
                 ? { isolated: true as const }
                 : {}),
             }
@@ -218,7 +218,7 @@ export function openDatabase(path: string): Db {
             try {
               hook();
             } catch (err) {
-              console.error("longshore: afterCommit hook failed", err);
+              console.error("turntable: afterCommit hook failed", err);
             }
           }
           return out;

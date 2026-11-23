@@ -2,7 +2,7 @@
 # Runs the built (distroless) image and proves it works at runtime: libc fit, healthz, the UI
 # and its CSP, PORT as the default port, first-boot access via a bootstrap token hash, and a real
 # worker checkout of a commit over https.
-# Usage: scripts/smoke-image.sh longshore:smoke
+# Usage: scripts/smoke-image.sh turntable:smoke
 set -euo pipefail
 image="$1"
 cids=()
@@ -44,8 +44,8 @@ wait_healthy() { # port
   echo "server did not become healthy on $1"; return 1
 }
 
-# 1. Defaults: LONGSHORE_HOST=0.0.0.0 and a mapped port.
-start_container 8080 -e LONGSHORE_HOST=0.0.0.0 "$image"
+# 1. Defaults: TURNTABLE_HOST=0.0.0.0 and a mapped port.
+start_container 8080 -e TURNTABLE_HOST=0.0.0.0 "$image"
 wait_healthy "$port"
 echo "healthz: $(curl -fsS "http://127.0.0.1:$port/healthz")"
 headers=$(curl -fsS -D - -o /tmp/tt-index.html "http://127.0.0.1:$port/")
@@ -60,7 +60,7 @@ test -n "$asset" || { echo "the app shell references no embedded asset"; exit 1;
 curl -fsS -o /tmp/tt-asset -w '%{http_code} %{content_type} %{size_download}\n' "http://127.0.0.1:$port$asset" | tee /tmp/tt-asset-info
 awk '$1==200 && $3>0 {ok=1} END{exit !ok}' /tmp/tt-asset-info || { echo "embedded asset $asset not served"; exit 1; }
 # The binary runs in the distroless image with no shell: `version` proves exec and libc.
-docker run --rm --entrypoint /longshore "$image" version || { echo "version command failed"; exit 1; }
+docker run --rm --entrypoint /turntable "$image" version || { echo "version command failed"; exit 1; }
 # The image starts as root so it can own a root-owned volume, and drops before opening anything:
 # the running server must be uid 65532, real, effective and saved (so root cannot be regained).
 assert_uid() { # container id, expected uid
@@ -76,8 +76,8 @@ echo "image: healthz, ui, csp, drops to 65532 ok"
 # 2. PORT is the default for --port, and a bootstrap token hash gives first-boot access.
 token="ls_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 hash=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
-start_container 9090 -e PORT=9090 -e LONGSHORE_HOST=0.0.0.0 \
-  -e LONGSHORE_BOOTSTRAP_TOKEN_SHA256="$hash" "$image"
+start_container 9090 -e PORT=9090 -e TURNTABLE_HOST=0.0.0.0 \
+  -e TURNTABLE_BOOTSTRAP_TOKEN_SHA256="$hash" "$image"
 wait_healthy "$port"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/api/v1/runs")
 test "$code" = "401" || { echo "unauthenticated API returned $code, expected 401"; exit 1; }
@@ -92,10 +92,10 @@ if sudo -n true 2>/dev/null; then
   vol=$(mktemp -d)
   sudo chown root:root "$vol"
   sudo chmod 0755 "$vol"
-  start_container 8080 -e LONGSHORE_HOST=0.0.0.0 -v "$vol:/data" "$image"
+  start_container 8080 -e TURNTABLE_HOST=0.0.0.0 -v "$vol:/data" "$image"
   wait_healthy "$port"
   assert_uid "$cid" 65532
-  owner=$(sudo stat -c '%u' "$vol/longshore.db")
+  owner=$(sudo stat -c '%u' "$vol/turntable.db")
   test "$owner" = "65532" || { echo "database is owned by $owner, expected 65532"; exit 1; }
   test "$(sudo stat -c '%u' "$vol")" = "65532" || { echo "data dir was not chowned"; exit 1; }
   remove_container "$cid"
@@ -106,9 +106,9 @@ else
 fi
 
 # 4. No drop spec means a root server is refused, unless explicitly allowed.
-out=$(docker run --rm -e LONGSHORE_DROP_PRIVILEGES= "$image" 2>&1) && { echo "root server started without being allowed"; exit 1; }
+out=$(docker run --rm -e TURNTABLE_DROP_PRIVILEGES= "$image" 2>&1) && { echo "root server started without being allowed"; exit 1; }
 echo "$out" | grep -q "refusing to run as root" || { echo "unexpected refusal output: $out"; exit 1; }
-start_container 8080 -e LONGSHORE_HOST=0.0.0.0 -e LONGSHORE_DROP_PRIVILEGES= -e LONGSHORE_ALLOW_ROOT=1 "$image"
+start_container 8080 -e TURNTABLE_HOST=0.0.0.0 -e TURNTABLE_DROP_PRIVILEGES= -e TURNTABLE_ALLOW_ROOT=1 "$image"
 wait_healthy "$port"
 assert_uid "$cid" 0
 remove_container "$cid"
@@ -120,7 +120,7 @@ echo "image: root refused unless allowed ok"
 # commit: a depth-1 fetch over https with every object verified, the tree and .git written, packed.
 # `fetch-source` prints one line and exits 0 only when all of that worked. An image whose worker
 # cannot check out a commit fails every job, which none of the checks above would notice.
-out=$(docker run --rm --user 65532:65532 --entrypoint /longshore "$image" \
+out=$(docker run --rm --user 65532:65532 --entrypoint /turntable "$image" \
   fetch-source octocat/Hello-World 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d --file README 2>&1) \
   || { echo "worker checkout failed in the image:"; echo "$out"; exit 1; }
 echo "$out" | grep -Eq '^ok 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d files=[1-9][0-9]* tarball=[1-9][0-9]* file=README:[1-9][0-9]*$' \

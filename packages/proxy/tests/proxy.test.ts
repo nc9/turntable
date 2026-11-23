@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import net from "node:net";
 import tls from "node:tls";
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { JobCa } from "../src/ca";
 import { type RunningProxy, sourceKey, startProxy } from "../src/proxy";
 import { AttemptRegistry } from "../src/registry";

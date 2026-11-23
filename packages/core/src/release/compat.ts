@@ -3,7 +3,7 @@
 // approved request. These are the rules the proxy is given for a release the lane has signed:
 // each names one host, one package or repository, and the digests the lane attested, so a job can
 // publish the approved bytes under the approved name and nothing else.
-import { npmPath, type Rule } from "@longshore/proxy";
+import { npmPath, type Rule } from "@turntable/proxy";
 import type { GithubReleaseTarget, NpmTarget, OciTarget, PublishTarget } from "./publish/types";
 
 /** The rule `secret` that means the lane's own GitHub write credential (not a vault secret). */

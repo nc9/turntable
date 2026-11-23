@@ -33,7 +33,7 @@ import { ReleaseLane, type ArtifactRecords, type ReleaseSigner } from "../src/re
 import { fileKeyVault } from "../src/release/key-vault";
 import { releaseCommand } from "../src/release/cli";
 import { serveRelease, signingWiring } from "../src/release/serve";
-import { LocalSigner, verifyDigest } from "@longshore/signer";
+import { LocalSigner, verifyDigest } from "@turntable/signer";
 import { builtinKeyRef, SigningService } from "../src/signing";
 import { mainRuntime, releaseConfigFromEnv, resolveRoles } from "../src/roles";
 import { initMasterKey } from "../src/secrets/crypto";
@@ -104,15 +104,15 @@ beforeEach(async () => {
   forgeTags = new Map([["acme/web@v1.0.0", SHA]]);
   forgeCalls = [];
   forgeThrows = false;
-  blobs = new Map([[`${a.runId}/longshore-linux-x64`, "binary-bytes"]]);
-  recorded = new Map([[`${a.runId}/longshore-linux-x64`, digest("binary-bytes")]]);
+  blobs = new Map([[`${a.runId}/turntable-linux-x64`, "binary-bytes"]]);
+  recorded = new Map([[`${a.runId}/turntable-linux-x64`, digest("binary-bytes")]]);
   recordedSizes = new Map();
   signed = [];
   signerAnswer = {
     ok: true,
     envelope: { payload: "x", signatures: [{ keyid: "k1", sig: "y" }] },
     keyid: "k1",
-    subjects: [{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }],
+    subjects: [{ name: "turntable-linux-x64", sha256: digest("binary-bytes") }],
   };
   attest = new AttestationStore(":memory:");
   attest.pinRepo(a.orgId, a.projectId, "acme/web", 0);
@@ -128,7 +128,7 @@ const request = (over: Partial<{ runId: string; tag: string; artifacts: string[]
   createReleaseRequest(db, a.scope, {
     runId: over.runId ?? a.runId,
     tag: over.tag ?? "v1.0.0",
-    artifacts: over.artifacts ?? ["longshore-linux-x64"],
+    artifacts: over.artifacts ?? ["turntable-linux-x64"],
     requestedBy: "test",
   });
 
@@ -148,12 +148,12 @@ describe("the lane signs only what it has checked itself", () => {
     expect(signed).toEqual([
       {
         runId: a.runId,
-        artifacts: ["longshore-linux-x64"],
+        artifacts: ["turntable-linux-x64"],
         verified: {
           sha: SHA,
           repo: "acme/web",
           ref: "refs/tags/v1.0.0",
-          subjects: [{ name: "longshore-linux-x64", sha256: digest("binary-bytes") }],
+          subjects: [{ name: "turntable-linux-x64", sha256: digest("binary-bytes") }],
         },
       },
     ]);
@@ -196,7 +196,7 @@ describe("the lane signs only what it has checked itself", () => {
   });
 
   test("artifacts tampered after they were recorded: the lane's own digest does not match", async () => {
-    blobs.set(`${a.runId}/longshore-linux-x64`, "tampered-bytes");
+    blobs.set(`${a.runId}/turntable-linux-x64`, "tampered-bytes");
     const row = await process1();
     expect(row).toMatchObject({ status: "refused", reason: "digest_mismatch" });
     expect(signed).toEqual([]);
@@ -206,8 +206,8 @@ describe("the lane signs only what it has checked itself", () => {
     // the first, honest request: the lane attests the digest it saw
     expect((await process1()).status).toBe("signed");
     // the main process, with full database access, now swaps the bytes AND the recorded digest
-    blobs.set(`${a.runId}/longshore-linux-x64`, "malicious-bytes");
-    recorded.set(`${a.runId}/longshore-linux-x64`, digest("malicious-bytes"));
+    blobs.set(`${a.runId}/turntable-linux-x64`, "malicious-bytes");
+    recorded.set(`${a.runId}/turntable-linux-x64`, digest("malicious-bytes"));
     const row = await process1();
     expect(row).toMatchObject({ status: "refused", reason: "attestation_mismatch" });
     expect(signed.length).toBe(1);
@@ -216,19 +216,19 @@ describe("the lane signs only what it has checked itself", () => {
   test("a recorded size that is not the stored file's length is refused, even with the right digest", async () => {
     // an under-reported size (what would dodge the stored-bytes quota) and an over-reported one
     for (const size of [1, 4096]) {
-      recordedSizes.set(`${a.runId}/longshore-linux-x64`, size);
+      recordedSizes.set(`${a.runId}/turntable-linux-x64`, size);
       const row = await process1();
       expect(row).toMatchObject({ status: "refused", reason: "size_mismatch" });
       expect(row.result ?? "").not.toContain("signed");
     }
     expect(signed).toEqual([]);
     // the true size passes (a row with no size, as an older record, is not refused either)
-    recordedSizes.set(`${a.runId}/longshore-linux-x64`, "binary-bytes".length);
+    recordedSizes.set(`${a.runId}/turntable-linux-x64`, "binary-bytes".length);
     expect((await process1()).status).toBe("signed");
   });
 
   test("a recorded digest edited alone does not match the bytes", async () => {
-    recorded.set(`${a.runId}/longshore-linux-x64`, digest("something else"));
+    recorded.set(`${a.runId}/turntable-linux-x64`, digest("something else"));
     expect((await process1()).reason).toBe("digest_mismatch");
   });
 
@@ -290,7 +290,7 @@ describe("what is signed is exactly what the lane verified", () => {
       ok: true,
       envelope: { payload: "x" },
       keyid: "k1",
-      subjects: [{ name: "longshore-linux-x64", sha256: digest("something else") }],
+      subjects: [{ name: "turntable-linux-x64", sha256: digest("something else") }],
     };
     const row = await process1();
     expect(row).toMatchObject({ status: "refused", reason: "signed_subjects_differ" });
@@ -350,7 +350,7 @@ describe("what is signed is exactly what the lane verified", () => {
       await recordArtifact(db, a.scope, {
         runId: a.runId,
         attemptId: a.attemptId,
-        name: "longshore-linux-x64",
+        name: "turntable-linux-x64",
         sha256: digest("binary-bytes"),
         size: 12,
       });
@@ -386,7 +386,7 @@ describe("what is signed is exactly what the lane verified", () => {
       const row = (await getReleaseRequest(db, a.scope, r.id))!;
       expect(row.status).toBe("signed");
       expect(JSON.parse(row.result!).subjects).toEqual([
-        { name: "longshore-linux-x64", sha256: digest("binary-bytes") },
+        { name: "turntable-linux-x64", sha256: digest("binary-bytes") },
       ]);
     });
 
@@ -479,8 +479,8 @@ describe("a release is attested by its identity, not by its run", () => {
   test("a second run for the same tag with other bytes is refused, even with fresh recorded digests", async () => {
     expect((await process1()).status).toBe("signed");
     const run2 = await newRun();
-    blobs.set(`${run2}/longshore-linux-x64`, "other-bytes");
-    recorded.set(`${run2}/longshore-linux-x64`, digest("other-bytes"));
+    blobs.set(`${run2}/turntable-linux-x64`, "other-bytes");
+    recorded.set(`${run2}/turntable-linux-x64`, digest("other-bytes"));
     const row = await process1(request({ runId: run2 }));
     expect(row).toMatchObject({ status: "refused", reason: "attestation_mismatch" });
     expect(row.detail).toContain("v1.0.0");
@@ -490,8 +490,8 @@ describe("a release is attested by its identity, not by its run", () => {
   test("signing the same tag again with identical digests is fine (idempotent)", async () => {
     expect((await process1()).status).toBe("signed");
     const run2 = await newRun();
-    blobs.set(`${run2}/longshore-linux-x64`, "binary-bytes");
-    recorded.set(`${run2}/longshore-linux-x64`, digest("binary-bytes"));
+    blobs.set(`${run2}/turntable-linux-x64`, "binary-bytes");
+    recorded.set(`${run2}/turntable-linux-x64`, digest("binary-bytes"));
     expect((await process1(request({ runId: run2 }))).status).toBe("signed");
     expect(signed.length).toBe(2);
   });
@@ -500,14 +500,14 @@ describe("a release is attested by its identity, not by its run", () => {
     expect((await process1()).status).toBe("signed");
     const run2 = await newRun();
     for (const [n, b] of [
-      ["longshore-linux-x64", "binary-bytes"],
+      ["turntable-linux-x64", "binary-bytes"],
       ["extra", "x"],
     ] as const) {
       blobs.set(`${run2}/${n}`, b);
       recorded.set(`${run2}/${n}`, digest(b));
     }
     const added = await process1(
-      request({ runId: run2, artifacts: ["longshore-linux-x64", "extra"] }),
+      request({ runId: run2, artifacts: ["turntable-linux-x64", "extra"] }),
     );
     expect(added).toMatchObject({ status: "refused", reason: "attestation_mismatch" });
     expect(added.detail).toContain("different set");
@@ -585,7 +585,7 @@ describe("an incident freeze stops releases", () => {
       {
         run_id: a.runId,
         tag: "v1.0.0",
-        artifacts: ["longshore-linux-x64"],
+        artifacts: ["turntable-linux-x64"],
       },
     );
     expect(res.ok).toBe(false);
@@ -601,8 +601,8 @@ describe("a fully compromised main process cannot cause a signature", () => {
       .update(s.runs)
       .set({ ref: "refs/tags/v6.6.6", sha: forgedSha })
       .where(eq(s.runs.id, a.runId));
-    blobs.set(`${a.runId}/longshore-linux-x64`, "evil");
-    recorded.set(`${a.runId}/longshore-linux-x64`, digest("evil"));
+    blobs.set(`${a.runId}/turntable-linux-x64`, "evil");
+    recorded.set(`${a.runId}/turntable-linux-x64`, digest("evil"));
     const row = await process1(request({ tag: "v6.6.6" }));
     expect(row).toMatchObject({ status: "refused", reason: "tag_not_found" });
     // ... or hand-write a finished, signed-looking request. The lane never reads it back, and a
@@ -621,11 +621,11 @@ describe("a fully compromised main process cannot cause a signature", () => {
 
   test("the main process role holds no release configuration, even with the variables present", () => {
     const env = {
-      LONGSHORE_RELEASE_MASTER_KEY_FILE: "/secret/release.key",
-      LONGSHORE_RELEASE_GITHUB_TOKEN: "ghp_x",
-      LONGSHORE_RELEASE_DATA_DIR: "/release",
-      LONGSHORE_RELEASE_ARTIFACT_DIR: "/artifacts",
-      LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+      TURNTABLE_RELEASE_MASTER_KEY_FILE: "/secret/release.key",
+      TURNTABLE_RELEASE_GITHUB_TOKEN: "ghp_x",
+      TURNTABLE_RELEASE_DATA_DIR: "/release",
+      TURNTABLE_RELEASE_ARTIFACT_DIR: "/artifacts",
+      TURNTABLE_RELEASE_BUILDER_ID: "https://ci.example.com",
       AWS_ACCESS_KEY_ID: "AKIA",
     };
     for (const roles of [
@@ -637,7 +637,7 @@ describe("a fully compromised main process cannot cause a signature", () => {
       expect(rt.release).toBeUndefined();
       expect(rt.ignoredReleaseEnv.toSorted()).toEqual(
         Object.keys(env)
-          .filter((k) => k.startsWith("LONGSHORE_RELEASE_"))
+          .filter((k) => k.startsWith("TURNTABLE_RELEASE_"))
           .toSorted(),
       );
       expect(JSON.stringify(rt)).not.toContain("ghp_x");
@@ -657,7 +657,7 @@ describe("a fully compromised main process cannot cause a signature", () => {
       const rel = relative(SRC, f);
       const text = readFileSync(f, "utf8");
       const inLane = rel.startsWith("release/") || rel === "roles.ts";
-      if (/LONGSHORE_RELEASE_/.test(text) && !inLane && rel !== "main.ts")
+      if (/TURNTABLE_RELEASE_/.test(text) && !inLane && rel !== "main.ts")
         violations.push(`${rel}: reads a release variable`);
       // the signing service is built and called only by the lane (the op named sign_release always refuses)
       if (
@@ -671,7 +671,7 @@ describe("a fully compromised main process cannot cause a signature", () => {
     }
     // main.ts may only mention the variables in its usage text, never read them
     const main = readFileSync(join(SRC, "main.ts"), "utf8");
-    expect(/process\.env\.LONGSHORE_RELEASE_/.test(main)).toBe(false);
+    expect(/process\.env\.TURNTABLE_RELEASE_/.test(main)).toBe(false);
     expect(/releaseConfigFromEnv/.test(main)).toBe(false);
     expect(violations).toEqual([]);
   });
@@ -680,7 +680,7 @@ describe("a fully compromised main process cannot cause a signature", () => {
     const env = { registry, db };
     const relop = (await mintToken(db, a.scope, "release_operator")).secret;
     const operator = (await mintToken(db, a.scope, "operator")).secret;
-    const input = { run_id: a.runId, tag: "v1.0.0", artifacts: ["longshore-linux-x64"] };
+    const input = { run_id: a.runId, tag: "v1.0.0", artifacts: ["turntable-linux-x64"] };
     expect(
       (await dispatch(env, { kind: "bearer", token: operator }, "request_release", input)).ok,
     ).toBe(false);
@@ -724,33 +724,33 @@ describe("roles", () => {
 
   test("the release role needs all of its own configuration", () => {
     const full = {
-      LONGSHORE_RELEASE_MASTER_KEY_FILE: "/k",
-      LONGSHORE_RELEASE_DATA_DIR: "/d",
-      LONGSHORE_RELEASE_GITHUB_TOKEN: "t",
-      LONGSHORE_RELEASE_ARTIFACT_DIR: "/a",
-      LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+      TURNTABLE_RELEASE_MASTER_KEY_FILE: "/k",
+      TURNTABLE_RELEASE_DATA_DIR: "/d",
+      TURNTABLE_RELEASE_GITHUB_TOKEN: "t",
+      TURNTABLE_RELEASE_ARTIFACT_DIR: "/a",
+      TURNTABLE_RELEASE_BUILDER_ID: "https://ci.example.com",
     };
     expect(releaseConfigFromEnv(full)).toMatchObject({ masterKeyFile: "/k", pollMs: 5000 });
     for (const k of Object.keys(full)) {
       expect(() => releaseConfigFromEnv({ ...full, [k]: undefined })).toThrow(k);
     }
-    expect(() => releaseConfigFromEnv({ ...full, LONGSHORE_RELEASE_POLL_MS: "5" })).toThrow();
+    expect(() => releaseConfigFromEnv({ ...full, TURNTABLE_RELEASE_POLL_MS: "5" })).toThrow();
   });
 
   test("the release process refuses to start without its own key file; with it, it starts and stops", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "ls-rel-"));
     try {
       const env = {
-        LONGSHORE_RELEASE_MASTER_KEY_FILE: join(tmp, "release.key"),
-        LONGSHORE_RELEASE_DATA_DIR: join(tmp, "rel"),
-        LONGSHORE_RELEASE_GITHUB_TOKEN: "t",
-        LONGSHORE_RELEASE_ARTIFACT_DIR: join(tmp, "art"),
-        LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+        TURNTABLE_RELEASE_MASTER_KEY_FILE: join(tmp, "release.key"),
+        TURNTABLE_RELEASE_DATA_DIR: join(tmp, "rel"),
+        TURNTABLE_RELEASE_GITHUB_TOKEN: "t",
+        TURNTABLE_RELEASE_ARTIFACT_DIR: join(tmp, "art"),
+        TURNTABLE_RELEASE_BUILDER_ID: "https://ci.example.com",
       };
       await expect(
         serveRelease({ "data-dir": join(tmp, "data") }, signingWiring, env),
       ).rejects.toThrow(/master key file not found/);
-      initMasterKey(env.LONGSHORE_RELEASE_MASTER_KEY_FILE);
+      initMasterKey(env.TURNTABLE_RELEASE_MASTER_KEY_FILE);
       const lane = await serveRelease({ "data-dir": join(tmp, "data") }, signingWiring, env);
       lane.stop();
     } finally {
@@ -779,13 +779,13 @@ describe("roles", () => {
       await recordArtifact(db, a.scope, {
         runId: a.runId,
         attemptId: a.attemptId,
-        name: "longshore-linux-x64",
+        name: "turntable-linux-x64",
         sha256: digest("binary-bytes"),
         size: 12,
       });
       expect(
-        await wired.records.recorded(a.scope, a.runId, ["longshore-linux-x64", "missing"]),
-      ).toEqual([{ name: "longshore-linux-x64", sha256: digest("binary-bytes"), size: 12 }]);
+        await wired.records.recorded(a.scope, a.runId, ["turntable-linux-x64", "missing"]),
+      ).toEqual([{ name: "turntable-linux-x64", sha256: digest("binary-bytes"), size: 12 }]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -797,17 +797,17 @@ describe("roles", () => {
     try {
       const { openDatabase, createOrg, createProject, ensureInstance } = await import("../src/db");
       const dataDir = join(tmp, "data");
-      const d = openDatabase(join(dataDir, "longshore.db"));
+      const d = openDatabase(join(dataDir, "turntable.db"));
       await ensureInstance(d);
       const org = await createOrg(d, { slug: "acme", name: "acme" });
       const proj = await createProject(d, { orgId: org.id }, { slug: "web", name: "web" });
       d.close();
       Object.assign(process.env, {
-        LONGSHORE_RELEASE_MASTER_KEY_FILE: join(tmp, "release.key"),
-        LONGSHORE_RELEASE_DATA_DIR: join(tmp, "rel"),
-        LONGSHORE_RELEASE_GITHUB_TOKEN: "t",
-        LONGSHORE_RELEASE_ARTIFACT_DIR: join(tmp, "art"),
-        LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+        TURNTABLE_RELEASE_MASTER_KEY_FILE: join(tmp, "release.key"),
+        TURNTABLE_RELEASE_DATA_DIR: join(tmp, "rel"),
+        TURNTABLE_RELEASE_GITHUB_TOKEN: "t",
+        TURNTABLE_RELEASE_ARTIFACT_DIR: join(tmp, "art"),
+        TURNTABLE_RELEASE_BUILDER_ID: "https://ci.example.com",
       });
       const args = ["pin-repo", "--org", "acme", "--project", "web", "--data-dir", dataDir];
       expect(await releaseCommand([...args, "--repo", "Acme/Web"])).toBe(0);

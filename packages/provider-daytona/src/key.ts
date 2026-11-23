@@ -1,4 +1,4 @@
-import { SpecError } from "@longshore/provider-sdk";
+import { SpecError } from "@turntable/provider-sdk";
 
 /**
  * Where the API key comes from. It is read when needed, never stored in config, and never logged.

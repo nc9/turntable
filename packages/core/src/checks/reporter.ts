@@ -1,8 +1,8 @@
 // Reports each job's result to the forge as a check run, from the scheduler's attempt events.
 // A GitHub outage never blocks a run: reporting is queued per attempt, retried with backoff, and
 // its failures are logged, never thrown into the scheduler.
-import { redactString } from "@longshore/redact";
-import { foldShardStates } from "@longshore/act-runner";
+import { redactString } from "@turntable/redact";
+import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
   getAttemptCheckRunId,
@@ -323,10 +323,10 @@ export class CheckReporter {
 function summaryRunning(mode: Exclude<ChecksMode, "off">, runUrl: string | undefined): string {
   const lines = [
     mode === "shadow"
-      ? "Longshore is running this job as a shadow check: the result will be neutral."
-      : "Longshore is running this job.",
+      ? "Turntable is running this job as a shadow check: the result will be neutral."
+      : "Turntable is running this job.",
   ];
-  if (runUrl) lines.push(`[Open the run in Longshore](${runUrl})`);
+  if (runUrl) lines.push(`[Open the run in Turntable](${runUrl})`);
   return lines.join("\n\n");
 }
 

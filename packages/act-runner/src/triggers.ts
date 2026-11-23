@@ -1,5 +1,5 @@
 /**
- * Workflow trigger router. act ignores `on:` filters, so Longshore evaluates them: event names,
+ * Workflow trigger router. act ignores `on:` filters, so Turntable evaluates them: event names,
  * branch and tag filters, path filters, and activity types.
  */
 

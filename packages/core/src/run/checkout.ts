@@ -7,8 +7,8 @@
 import { mkdirSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tarGzDirectoryToFile } from "@longshore/act-runner";
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { tarGzDirectoryToFile } from "@turntable/act-runner";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { DEFAULT_FETCH_LIMITS, fetchCommit, materialize, type FetchLimits } from "./git-fetch";
 
 export interface CheckoutRequest {

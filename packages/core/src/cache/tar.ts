@@ -35,7 +35,8 @@ export const DENIED_COMPONENTS: readonly string[] = [
   ".github",
   ".ssh",
   ".gnupg",
-  ".longshore",
+  ".turntable",
+  ".longshore", // rename-keep: the pre-rename directory is denied too
 ];
 /** Files denied by name wherever they sit. */
 export const DENIED_FILES: readonly string[] = [

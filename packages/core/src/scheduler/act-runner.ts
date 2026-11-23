@@ -1,5 +1,5 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
-// it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
+// it with act in a provider sandbox. It shares executeJob with `turntable run`, so a job behaves
 // the same from the CLI and from the worker.
 import { mkdtempSync } from "node:fs";
 import { rm as rmAsync } from "node:fs/promises";
@@ -20,12 +20,12 @@ import {
   rebuildArgv,
   splitJob,
   workflowHeadCheckouts,
-} from "@longshore/act-runner";
+} from "@turntable/act-runner";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
 import { listJobs, listRepos, type Run } from "../db/repos";
-import { SecretRegistry } from "@longshore/redact";
+import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { buildActEvent } from "../run/act-event";
@@ -49,7 +49,7 @@ import {
 } from "../pins/action-credentials";
 import { githubReachability } from "../pins/reachability";
 import { cachedReachability, cachedResolver, type VerdictTtl } from "../pins/verdict-cache";
-import { createBackoff, type SafeFetch } from "@longshore/net";
+import { createBackoff, type SafeFetch } from "@turntable/net";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
@@ -68,7 +68,7 @@ export interface Checkout {
 }
 
 export interface RepoSource {
-  /** `repo` is undefined for a local run (`longshore run`), which has no bound repo. */
+  /** `repo` is undefined for a local run (`turntable run`), which has no bound repo. */
   checkout(
     run: Run,
     repo: { owner: string; repo: string } | undefined,
@@ -77,7 +77,7 @@ export interface RepoSource {
 }
 
 /**
- * The source of a `longshore run`: the tarball and files already read from the working repo. The
+ * The source of a `turntable run`: the tarball and files already read from the working repo. The
  * workflow file is served from the text read at launch, so every job of the run plans from the
  * same bytes even if the file changes while the run is going.
  */
@@ -113,7 +113,7 @@ export function assertNoCredentials(u: string): void {
 /**
  * Fetches exactly the run's commit from a public repo (see run/git-fetch.ts: git's smart-HTTP
  * protocol at depth 1, every object verified), writes the tree and the `.git` git would have made,
- * and packs them the way `longshore run` does. It runs no `git` or `tar` binary, and it runs in a
+ * and packs them the way `turntable run` does. It runs no `git` or `tar` binary, and it runs in a
  * CHILD process of this same binary (run/checkout-child.ts), because it parses hostile input: one
  * deadline, a memory ceiling where the system can enforce one, at most `concurrency` at a time,
  * and killed when the attempt is cancelled. The child writes the tree and a tarball to a private
@@ -234,7 +234,7 @@ export type ActRunnerOptions = {
   cache?: JobCacheProvider;
   /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
   planRoot?: string;
-  /** Live terminal output of a job, line by line (`longshore run` prints it with a key prefix). */
+  /** Live terminal output of a job, line by line (`turntable run` prints it with a key prefix). */
   out?: (jobKey: string, text: string) => void;
   /**
    * Gives each job its own GitHub token as GITHUB_TOKEN (see github/job-token): minted at job
@@ -254,7 +254,7 @@ export type ActRunnerOptions = {
 };
 
 /** What GITHUB_TOKEN holds inside a job that is behind the secrets proxy. The proxy attaches the real one. */
-export const PROXIED_TOKEN_PLACEHOLDER = "longshore-token-is-added-by-the-proxy";
+export const PROXIED_TOKEN_PLACEHOLDER = "turntable-token-is-added-by-the-proxy";
 
 /**
  * The persistence executeJob writes to while a worker runs an attempt. Every write goes through
@@ -478,7 +478,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               }),
               planned.id,
               {
-                workflowPath: `.longshore/jobs/${safeName(planned.key)}.yml`,
+                workflowPath: `.turntable/jobs/${safeName(planned.key)}.yml`,
                 event: dbRun.event,
                 readFile: checkout.readFile,
                 split: true,
@@ -599,7 +599,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               jobId: plannedJob?.id ?? job.jobKey,
             });
             if ("none" in r) {
-              notices.push(`[longshore] GITHUB_TOKEN is not set (${r.none})`);
+              notices.push(`[turntable] GITHUB_TOKEN is not set (${r.none})`);
             } else if (egressForRun(ctx.run.plan, o.egress) === "open") {
               // A job holding a token never runs with open egress.
               await r.revoke();
@@ -621,14 +621,14 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
                 .map(([k, v]) => `${k}:${v}`)
                 .join(", ");
               notices.push(
-                `[longshore] GITHUB_TOKEN for ${repo.owner}/${repo.repo}: ${perms} (${ctx.proxy ? "added by the proxy" : "in the environment"}), revoked when the job ends`,
-                ...r.notes.map((n) => `[longshore] GITHUB_TOKEN: ${n}`),
+                `[turntable] GITHUB_TOKEN for ${repo.owner}/${repo.repo}: ${perms} (${ctx.proxy ? "added by the proxy" : "in the environment"}), revoked when the job ends`,
+                ...r.notes.map((n) => `[turntable] GITHUB_TOKEN: ${n}`),
               );
             }
           } catch (err) {
             // The job runs without a token rather than not at all; its log says so.
             notices.push(
-              "[longshore] GITHUB_TOKEN is not available: the installation token could not be minted",
+              "[turntable] GITHUB_TOKEN is not available: the installation token could not be minted",
             );
             console.warn(
               `job token for ${repo.owner}/${repo.repo}: ${err instanceof Error ? err.message : String(err)}`,
@@ -639,7 +639,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       if (o.jobTokens && repo?.installationId && jobKlass && !ctx.proxy && !issued) {
         if (jobKlass !== "protected" && jobKlass !== "release") {
           notices.push(
-            "[longshore] GITHUB_TOKEN is not set (this class may not hold a token, and no secrets proxy is running to attach one)",
+            "[turntable] GITHUB_TOKEN is not set (this class may not hold a token, and no secrets proxy is running to attach one)",
           );
         }
       }
@@ -658,10 +658,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         if ("none" in r) {
           // Silent when the job never asked: most jobs do not.
           if (r.none !== "the job did not ask for it")
-            notices.push(`[longshore] ACTIONS_ID_TOKEN_REQUEST_URL is not set (${r.none})`);
+            notices.push(`[turntable] ACTIONS_ID_TOKEN_REQUEST_URL is not set (${r.none})`);
         } else if (!ctx.proxy) {
           notices.push(
-            "[longshore] ACTIONS_ID_TOKEN_REQUEST_URL is not set (no secrets proxy is running to attach the credential)",
+            "[turntable] ACTIONS_ID_TOKEN_REQUEST_URL is not set (no secrets proxy is running to attach the credential)",
           );
         } else if (egressForRun(ctx.run.plan, o.egress) === "open") {
           return {
@@ -674,7 +674,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           oidcVars = { requestUrl: r.requestUrl, requestToken: r.requestToken };
           useProxy = true;
           notices.push(
-            "[longshore] ID token: ACTIONS_ID_TOKEN_REQUEST_URL points at this org's issuer, the credential is added by the proxy",
+            "[turntable] ID token: ACTIONS_ID_TOKEN_REQUEST_URL points at this org's issuer, the credential is added by the proxy",
           );
         }
       }

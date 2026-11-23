@@ -75,7 +75,7 @@ function operation(op: Op): Json {
     op.auth.type === "signature"
       ? "No bearer token: the request carries a statement signed by an enrolled approver."
       : op.auth.type === "instance"
-        ? "Instance administrator only: an `lsi_` token minted on the host with `longshore token create --instance`. No org token of any role can call it. Not an MCP tool."
+        ? "Instance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool."
         : `Required role: ${op.auth.minRole}.`,
     op.effect === "read" ? "Read-only." : `Side effects: ${op.effect}; audited.`,
     op.untrustedOutput
@@ -132,11 +132,11 @@ export function buildOpenApi(registry: OpRegistry, version: string): Json {
   return {
     openapi: "3.1.0",
     info: {
-      title: "Longshore API",
+      title: "Turntable API",
       version,
       description:
         "Generated from the operations registry; the same operations are MCP tools. " +
-        "Authenticate with `Authorization: Bearer ls_...`.",
+        "Authenticate with `Authorization: Bearer tt_...`.",
     },
     servers: [{ url: "/api/v1" }],
     security: [{ bearerAuth: [] }],
@@ -146,7 +146,7 @@ export function buildOpenApi(registry: OpRegistry, version: string): Json {
         bearerAuth: {
           type: "http",
           scheme: "bearer",
-          description: "An agent token (`ls_...`) scoped to an org or project.",
+          description: "An agent token (`tt_...`) scoped to an org or project.",
         },
       },
       schemas: { Error: ERROR_SCHEMA },

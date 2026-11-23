@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DockerProvider } from "@longshore/provider-docker";
-import type { ProviderInfo } from "@longshore/provider-sdk";
+import { DockerProvider } from "@turntable/provider-docker";
+import type { ProviderInfo } from "@turntable/provider-sdk";
 import { createProvider } from "../src/scheduler/providers";
 import {
   BUILTIN_CEILINGS,
@@ -137,7 +137,7 @@ describe("external plugins", () => {
     const parent = {
       PATH: "/bin",
       LANG: "C",
-      LONGSHORE_MASTER_KEY: "secret-master",
+      TURNTABLE_MASTER_KEY: "secret-master",
       DATABASE_URL: "postgres://x",
       DAYTONA_API_KEY: "key",
       HOME: "/root",
@@ -149,6 +149,6 @@ describe("external plugins", () => {
       LANG: "C",
       DAYTONA_API_KEY: "key",
     });
-    expect(Object.keys(pluginEnv(parent))).not.toContain("LONGSHORE_MASTER_KEY");
+    expect(Object.keys(pluginEnv(parent))).not.toContain("TURNTABLE_MASTER_KEY");
   });
 });

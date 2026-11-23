@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { splitRuleProblem } from "@longshore/act-runner";
+import { splitRuleProblem } from "@turntable/act-runner";
 import { z } from "zod";
 
 /**

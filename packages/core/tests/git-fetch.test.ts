@@ -16,8 +16,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readTarGz } from "@longshore/act-runner";
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { readTarGz } from "@turntable/act-runner";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import {
   clean,
   DEFAULT_FETCH_LIMITS,

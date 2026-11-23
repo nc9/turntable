@@ -5,7 +5,7 @@ import {
   SandboxNotFoundError,
   SpecError,
   type SandboxSpec,
-} from "@longshore/provider-sdk";
+} from "@turntable/provider-sdk";
 import {
   ALL_STATES,
   DaytonaProvider,
@@ -15,7 +15,7 @@ import {
   readApiKey,
   withSandbox,
 } from "../src/index";
-import { safeFetch } from "@longshore/net";
+import { safeFetch } from "@turntable/net";
 import { MOCK_KEY, startMock } from "../src/testing/mock-daytona";
 
 let mock: ReturnType<typeof startMock>;
@@ -42,7 +42,7 @@ const makeLabeled = (o: Partial<DaytonaProviderOptions> = {}) =>
 
 const spec = (over: Partial<SandboxSpec> = {}): SandboxSpec => ({
   name: "job-1",
-  labels: { "longshore-run": "run-42" },
+  labels: { "turntable-run": "run-42" },
   ttlSeconds: 600,
   network: { egress: "open" },
   ...over,
@@ -90,7 +90,7 @@ describe("what is sent on create", () => {
     const { id } = await p.create(spec({ network: { egress: "none" } }));
     const body = created()[0]!.body as Record<string, unknown>;
     expect(body.name).toBe("longshore-dev-job-1");
-    expect(body.labels).toEqual({ "longshore-run": "run-42", "longshore-dev": "1" });
+    expect(body.labels).toEqual({ "turntable-run": "run-42", "longshore-dev": "1" });
     expect(body.networkBlockAll).toBe(true);
     expect(body.public).toBe(false);
     expect(body).not.toHaveProperty("env");
@@ -108,7 +108,7 @@ describe("what is sent on create", () => {
     const { id } = await p.create(spec({ labels: {} }));
     expect((created()[0]!.body as { labels: Record<string, string> }).labels).toEqual({
       "longshore-dev": "1",
-      "longshore-run": "abc123",
+      "turntable-run": "abc123",
     });
     await p.destroy(id);
     expect(() => p.buildCreateBody(spec({ labels: { "longshore-dev": "0" } }))).toThrow(SpecError);
@@ -374,7 +374,7 @@ describe("fleets: two instances in one account never touch each other", () => {
     const { id } = await p.create(spec({ labels: {} }));
     const sent = created()[0]!.body as { name: string; labels: Record<string, string> };
     expect(sent.name.startsWith("longshore-shadow-")).toBe(true);
-    expect(sent.labels).toEqual({ "longshore-shadow": "1", "longshore-run": "r1" });
+    expect(sent.labels).toEqual({ "longshore-shadow": "1", "turntable-run": "r1" });
     expect(sent.labels["longshore-dev"]).toBeUndefined();
     // its own label is the reserved one, not the default's
     expect(() => p.buildCreateBody(spec({ labels: { "longshore-shadow": "0" } }))).toThrow(
@@ -443,22 +443,22 @@ describe("fleets: two instances in one account never touch each other", () => {
     await p.destroy(id);
   });
 
-  test("a fleet name is validated: lower case, longshore- first, at most 30 characters", () => {
+  test("a fleet name is validated: lower case, turntable- first, at most 30 characters", () => {
     for (const bad of [
       "shadow",
       "Longshore-shadow",
-      "longshore-",
-      "longshore--x",
-      "longshore-x-",
-      "longshore-x y",
-      "longshore-é",
-      "other-longshore-x",
-      "longshore-".padEnd(31, "a"),
+      "turntable-",
+      "turntable--x",
+      "turntable-x-",
+      "turntable-x y",
+      "turntable-é",
+      "other-turntable-x",
+      "turntable-".padEnd(31, "a"),
       "",
     ]) {
       expect(() => make({ fleet: bad }), bad).toThrow(RangeError);
     }
-    expect(make({ fleet: "longshore-".padEnd(30, "a") }).fleet.name).toHaveLength(30);
+    expect(make({ fleet: "turntable-".padEnd(30, "a") }).fleet.name).toHaveLength(30);
     expect(make({ fleet: "longshore-shadow" }).fleet.name).toBe("longshore-shadow");
   });
 });

@@ -218,7 +218,7 @@ export class ReleaseLane {
     if (!pinned)
       return refuse(
         "repo_not_pinned",
-        "pin the project's repository with `longshore release pin-repo`",
+        "pin the project's repository with `turntable release pin-repo`",
       );
     if (run.repo.toLowerCase() !== pinned)
       return refuse("repo_mismatch", `the project is pinned to ${pinned}`);

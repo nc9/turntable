@@ -50,7 +50,7 @@ test("both migration sets apply cleanly to an empty database and create the same
   applyMigrations(lite, sqliteMigrations);
   const liteTables = lite
     .query<{ name: string }, []>(
-      "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' and name != '__longshore_migrations'",
+      "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' and name != '__turntable_migrations'",
     )
     .all()
     .map((r) => r.name)
@@ -78,7 +78,7 @@ test("both migration sets apply cleanly to an empty database and create the same
     };
     const pgTables = (
       await rows<{ table_name: string }>(
-        sql`select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' and table_name != '__longshore_migrations'`,
+        sql`select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' and table_name != '__turntable_migrations'`,
       )
     )
       .map((r) => r.table_name)
@@ -86,7 +86,7 @@ test("both migration sets apply cleanly to an empty database and create the same
     expect(pgTables).toEqual(liteTables);
     const pgCols = (
       await rows<{ table_name: string; column_name: string; is_nullable: string }>(
-        sql`select table_name, column_name, is_nullable from information_schema.columns where table_schema = 'public' and table_name != '__longshore_migrations'`,
+        sql`select table_name, column_name, is_nullable from information_schema.columns where table_schema = 'public' and table_name != '__turntable_migrations'`,
       )
     ).map((c) => ({ table: c.table_name, name: c.column_name, notNull: c.is_nullable === "NO" }));
     const key = (c: Col) => `${c.table}.${c.name}:${c.notNull}`;

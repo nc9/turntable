@@ -9,7 +9,7 @@ import {
   sha256Hex,
   signEnvelope,
   statementBytes,
-} from "@longshore/signer";
+} from "@turntable/signer";
 import { verifyCommand } from "../src/verify/cli";
 import { setSigningPolicy } from "../src/ops/policy-cli";
 import { createOrg, createProject, openDatabase, getProjectSigning, listAudit } from "../src/db";
@@ -30,7 +30,7 @@ async function fixture(name: string) {
     PAYLOAD_TYPE,
     statementBytes(
       buildStatement({
-        builderId: "https://ci.example.test/longshore",
+        builderId: "https://ci.example.test/turntable",
         invocationId: "run1",
         repo: "acme/web",
         workflowPath: ".github/workflows/release.yml",
@@ -80,7 +80,7 @@ const cli = (p: { artifact: string; provenance: string; pubkey: string }, extra:
   ...extra,
 ];
 
-describe("longshore verify", () => {
+describe("turntable verify", () => {
   test("an artifact, its provenance and the right key verify, and the result says where it came from", async () => {
     const { paths, key } = await fixture("good");
     const r = await run(cli(paths));
@@ -89,7 +89,7 @@ describe("longshore verify", () => {
     expect(r.out).toContain(`sha256:${sha256Hex(BINARY)}`);
     expect(r.out).toContain(key.keyid);
     expect(r.out).toContain("refs/tags/v1.0.0");
-    expect(r.out).toContain("https://ci.example.test/longshore");
+    expect(r.out).toContain("https://ci.example.test/turntable");
     expect((await run(cli(paths, ["--name", "app.bin"]))).code).toBe(0);
   });
 
@@ -144,7 +144,7 @@ describe("longshore verify", () => {
   });
 });
 
-describe("longshore policy: signing", () => {
+describe("turntable policy: signing", () => {
   test("release refs and the key are set per project, validated and audited", async () => {
     const db = openDatabase(":memory:");
     const org = await createOrg(db, { slug: "acme", name: "Acme" });

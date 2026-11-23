@@ -9,7 +9,7 @@
 //  - `untrusted_pr` can never be allowed: refused when a secret is written and again at use.
 //  - Policy never guesses: two equally specific matches, an unknown environment, an empty
 //    destination list and a failed decrypt are all denials.
-import { matchesPatterns } from "@longshore/act-runner";
+import { matchesPatterns } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
   listVaultCiphertexts,
@@ -195,8 +195,7 @@ export type UseDenial =
   | "decrypt_failed";
 
 export type UseResult =
-  | { ok: true; value: string; version: number; secretId: string }
-  | { ok: false; reason: UseDenial };
+  { ok: true; value: string; version: number; secretId: string } | { ok: false; reason: UseDenial };
 
 export interface VaultOptions {
   db: Db;
@@ -584,8 +583,7 @@ export interface PublishUseRequest {
 }
 
 export type PublishUseResult =
-  | { ok: true; value: string; version: number; secretId: string }
-  | { ok: false; reason: UseDenial };
+  { ok: true; value: string; version: number; secretId: string } | { ok: false; reason: UseDenial };
 
 /** The environment a job runs in, if its plan records one. Today none does. */
 function jobEnvironment(planned: string | null): string | null {

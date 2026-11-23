@@ -7,10 +7,10 @@ Some settings are not an org's to change: the limits that stop one org taking th
 
 ## What it is
 
-- A token with the prefix `lsi_`, a different shape from every org token (`ls_`), so the two are told apart before any lookup and a leaked one is recognisable.
-- Minted only on the host, with `longshore token create --instance --name <name> [--expires-days 30]` (1 to 90 days; the secret is shown once, only its hash is stored, in its own table). No org token of any role and no operation can mint, list or revoke one: `token list --instance` and `token revoke <id> --instance` are host commands too. Minting and revoking are audited in the system org's chain.
+- A token with the prefix `tti_`, a different shape from every org token (`tt_`), so the two are told apart before any lookup and a leaked one is recognisable.
+- Minted only on the host, with `turntable token create --instance --name <name> [--expires-days 30]` (1 to 90 days; the secret is shown once, only its hash is stored, in its own table). No org token of any role and no operation can mint, list or revoke one: `token list --instance` and `token revoke <id> --instance` are host commands too. Minting and revoking are audited in the system org's chain.
 - It holds **no org grant**. It cannot read a run, a log or a secret, and every org operation refuses it. It can call the instance operations, and nothing else.
-- Accepted over **REST only**. The MCP endpoint and the realtime socket do not treat an `lsi_` token as a credential, and none of the instance operations is an MCP tool.
+- Accepted over **REST only**. The MCP endpoint and the realtime socket do not treat a `tti_` token as a credential, and none of the instance operations is an MCP tool.
 
 ## What it can call
 

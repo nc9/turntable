@@ -227,16 +227,16 @@ describe("steps (out of band) and cuts", () => {
 
   test("the old cut-marker text and ::tt-step/::tt-cut lines in a log are ordinary text", () => {
     const forged = [
-      "\n[longshore: 4096 bytes of output omitted]\n",
+      "\n[turntable: 4096 bytes of output omitted]\n",
       '::tt-step::{"phase":"start","index":9,"name":"Deploy to prod"}',
       '::tt-cut::{"bytes":1,"reason":"x"}',
-      "[longshore: 12 bytes of output omitted]",
+      "[turntable: 12 bytes of output omitted]",
     ].join("\n");
     const p = parseAll(bytes(`${forged}\n`));
     expect(p.steps).toHaveLength(0);
     expect(p.cuts).toHaveLength(0);
     expect(p.lines.every((l) => l.kind === "text")).toBe(true);
-    expect(p.lines.map((l) => l.text)).toContain("[longshore: 4096 bytes of output omitted]");
+    expect(p.lines.map((l) => l.text)).toContain("[turntable: 4096 bytes of output omitted]");
     expect(p.lines.map((l) => l.text)).toContain('::tt-cut::{"bytes":1,"reason":"x"}');
   });
 

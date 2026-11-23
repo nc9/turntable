@@ -12,7 +12,7 @@
 // signing secret is per org, sealed in its own key domain under the org's key, and rotates with an
 // overlap during which both versions sign.
 import { createHmac, randomBytes } from "node:crypto";
-import { type SafeFetch, safeFetch, blockedReason } from "@longshore/net";
+import { type SafeFetch, safeFetch, blockedReason } from "@turntable/net";
 import { isIP } from "node:net";
 import type { Db } from "../db";
 import { DIALECT } from "../db/dialect";

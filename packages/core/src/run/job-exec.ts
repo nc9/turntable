@@ -1,4 +1,4 @@
-import type { AttemptCredential } from "@longshore/proxy";
+import type { AttemptCredential } from "@turntable/proxy";
 import { probeEgress, probeProxy } from "./egress-canary";
 import {
   EXPORT_STEP_NAME,
@@ -244,7 +244,7 @@ export async function executeJob(
       }
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
-        labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
+        labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
         image: env.image,
         ...(env.sandbox?.resources ? { resources: env.sandbox.resources } : {}),
         // The project's snapshot (set by the instance operator) beats a size class's, which beats the provider's.
@@ -338,7 +338,7 @@ export async function executeJob(
             );
           }
           log.push(
-            `[longshore] egress canary could not run (${v.why}); egress none is unverified\n`,
+            `[turntable] egress canary could not run (${v.why}); egress none is unverified\n`,
           );
         }
       }

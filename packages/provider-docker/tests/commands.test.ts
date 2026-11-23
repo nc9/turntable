@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SpecError, type SandboxSpec } from "@longshore/provider-sdk";
+import { SpecError, type SandboxSpec } from "@turntable/provider-sdk";
 import {
   buildExecArgs,
   buildInspectArgs,
@@ -30,7 +30,7 @@ describe("buildRunArgs", () => {
     expect(a[a.indexOf("--cpus") + 1]).toBe("1.5");
     expect(a[a.indexOf("--memory") + 1]).toBe("512m");
     expect(a).toContain("run=r1");
-    expect(a).toContain("longshore.expires-at=601000");
+    expect(a).toContain("turntable.expires-at=601000");
     expect(a.slice(-4)).toEqual(["--", "alpine:3.22", "sleep", "600"]);
     expect(a).toContain("--network");
     expect(a[a.indexOf("--network") + 1]).toBe("none");
@@ -120,7 +120,7 @@ describe("other commands", () => {
       "--filter",
       "label=a=b",
       "--filter",
-      "label=longshore.managed=1",
+      "label=turntable.managed=1",
     ]);
   });
   test("exec args", () => {
@@ -153,8 +153,8 @@ describe("deny-all-except-proxy", () => {
     const a = buildRunArgs(proxied, 1000);
     expect(a[a.indexOf("--network") + 1]).toBe("job-1-a-net");
     expect(a.filter((x) => x === "--network")).toHaveLength(1);
-    expect(a).toContain("longshore.net=job-1-a-net");
-    expect(a).toContain("longshore.relay=job-1-a-relay");
+    expect(a).toContain("turntable.net=job-1-a-net");
+    expect(a).toContain("turntable.relay=job-1-a-relay");
     expect(a).not.toContain("--add-host");
     for (const bad of ["-e", "--env", "--env-file", "-p", "--publish", "--network=host"]) {
       expect(a).not.toContain(bad);
@@ -170,7 +170,7 @@ describe("deny-all-except-proxy", () => {
   test("the internal network has no route out", () => {
     const a = buildNetworkCreateArgs("job-1-a-net", 1000, 600);
     expect(a.slice(0, 3)).toEqual(["network", "create", "--internal"]);
-    expect(a).toContain("longshore.expires-at=601000");
+    expect(a).toContain("turntable.expires-at=601000");
   });
 
   test("the host gets no address on the network (isolated gateway), so its listeners are unreachable", () => {
@@ -191,7 +191,7 @@ describe("deny-all-except-proxy", () => {
     expect(a).toContain("--read-only");
     expect(a[a.indexOf("--cap-drop") + 1]).toBe("ALL");
     expect(a[a.indexOf("--name") + 1]).toBe("job-1-a-relay");
-    expect(a).not.toContain("longshore.managed=1");
+    expect(a).not.toContain("turntable.managed=1");
     expect(a.slice(-4)).toEqual([String(RELAY_PORT), "host.docker.internal", "4000", "600"]);
     expect(() =>
       buildRelayRunArgs(

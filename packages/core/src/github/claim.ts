@@ -17,14 +17,14 @@
 //     with the user's token); for a personal account, the account is the user. It then re-fetches
 //     the installation with the App's own credentials (it must be our App) and only then binds it
 //     to the org in the state, consuming the nonce, and audits who claimed it.
-//  4. The link handed out by `start` points at Longshore, not GitHub. Opening it shows which
-//     Longshore org will receive the installation and asks for a confirmation; confirming sets a
+//  4. The link handed out by `start` points at Turntable, not GitHub. Opening it shows which
+//     Turntable org will receive the installation and asks for a confirmation; confirming sets a
 //     short-lived HttpOnly cookie holding the nonce and redirects to GitHub. The callback needs
 //     that cookie, so a link forwarded to another browser (or one opened by a victim's browser
 //     without the confirmation) cannot complete, and an attacker cannot finish a flow the victim
 //     started.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -122,7 +122,7 @@ export class InstallationClaims {
   }
 
   /**
-   * Starts a claim for `orgId` by `startedBy`. Returns a Longshore link (the confirmation page)
+   * Starts a claim for `orgId` by `startedBy`. Returns a Turntable link (the confirmation page)
    * carrying the signed state. `expectedLogin`, when known, restricts who may complete it.
    */
   async start(
@@ -237,11 +237,11 @@ export class InstallationClaims {
       });
       throw new ClaimError(status, message);
     };
-    // The browser that confirmed the claim on Longshore is the one that must finish it.
+    // The browser that confirmed the claim on Turntable is the one that must finish it.
     if (!q.cookieNonce || !safeEqual(q.cookieNonce, st.n)) {
       return refuse(
         403,
-        "open the claim link from this Longshore instance and confirm it in the same browser",
+        "open the claim link from this Turntable instance and confirm it in the same browser",
       );
     }
     if (!q.code) {
@@ -349,7 +349,7 @@ export function githubUserVerifier(o: {
     authorization: `Bearer ${token}`,
     accept: "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
-    "user-agent": "longshore",
+    "user-agent": "turntable",
   });
   return {
     async verify(code) {
@@ -362,7 +362,7 @@ export function githubUserVerifier(o: {
         headers: {
           accept: "application/json",
           "content-type": "application/json",
-          "user-agent": "longshore",
+          "user-agent": "turntable",
         },
         body: JSON.stringify({ client_id: app.clientId, client_secret: secret, code }),
         timeoutMs: 15_000,
@@ -546,7 +546,7 @@ async function startPage(claims: InstallationClaims, req: Request, url: URL): Pr
     return shell(
       200,
       "Connect a GitHub installation",
-      `<p>You are about to connect a GitHub installation to the Longshore org <strong>${esc(d.orgName)}</strong>.</p>` +
+      `<p>You are about to connect a GitHub installation to the Turntable org <strong>${esc(d.orgName)}</strong>.</p>` +
         `<p>Only continue if you started this from that org. You will sign in to GitHub next, and only an owner of the GitHub account can complete it.</p>` +
         `<form method="post" action="${CLAIM_START_PATH}"><input type="hidden" name="state" value="${esc(state)}"><input type="hidden" name="csrf" value="${esc(mac)}"><button type="submit">Continue to GitHub</button></form>`,
       [

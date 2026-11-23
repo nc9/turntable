@@ -5,7 +5,7 @@ description: Process model, storage, migrations and the tenancy model.
 
 ## Process model
 
-Longshore is one process. `longshore serve` opens the database, applies migrations, then starts an HTTP server. Depending on `--roles`, the same process also runs the poller, workers (scheduler, log pipeline, provider supervisor) and the realtime feed. Signing and publishing run in a separate release process, see [Release lane](/release-lane). Sandboxes are separate, disposable environments created by providers, one per job.
+Turntable is one process. `turntable serve` opens the database, applies migrations, then starts an HTTP server. Depending on `--roles`, the same process also runs the poller, workers (scheduler, log pipeline, provider supervisor) and the realtime feed. Signing and publishing run in a separate release process, see [Release lane](/release-lane). Sandboxes are separate, disposable environments created by providers, one per job.
 
 ## Operations registry
 
@@ -23,7 +23,7 @@ flowchart TD
 
 ## Storage
 
-SQLite is the default and lives at `<data-dir>/longshore.db`. Postgres is not built yet. Access goes through Drizzle ORM, and the schema uses portable column types (ULID text ids, epoch-ms integers, text plus CHECK for enums, no arrays) so the Postgres port stays mechanical.
+SQLite is the default and lives at `<data-dir>/turntable.db`. Postgres is not built yet. Access goes through Drizzle ORM, and the schema uses portable column types (ULID text ids, epoch-ms integers, text plus CHECK for enums, no arrays) so the Postgres port stays mechanical.
 
 ## Embedded migrations
 
@@ -31,7 +31,7 @@ The compiled binary must work from an empty directory, so it never reads assets 
 
 ## Tenancy model
 
-One Longshore instance serves many orgs. An org is the tenant. Isolation is enforced in the data layer, not by convention.
+One Turntable instance serves many orgs. An org is the tenant. Isolation is enforced in the data layer, not by convention.
 
 ### Entities
 
@@ -40,7 +40,7 @@ One Longshore instance serves many orgs. An org is the tenant. Isolation is enfo
 - **Project repo**: binds a project to a forge repo (today: GitHub, optionally with an installation id). A `(forge, owner, repo)` triple belongs to exactly one project instance-wide, so webhook routing is unambiguous. Owner and repo are stored lowercase (forges treat them case-insensitively). `forge_repo_id` holds the forge's stable numeric id, unique per forge when set. Webhook routing should prefer it when present, because names change on rename and transfer.
 - **User**: global identity. A person can belong to several orgs.
 - **Org member**: links a user to an org with a role: `owner`, `admin`, `member` or `viewer`.
-- **Local tenant**: `longshore run` uses a built-in org `local` with project `local`, created idempotently by `ensureLocalTenant`.
+- **Local tenant**: `turntable run` uses a built-in org `local` with project `local`, created idempotently by `ensureLocalTenant`.
 
 ### Runs, jobs, attempts, logs
 

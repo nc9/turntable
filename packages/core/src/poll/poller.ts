@@ -22,7 +22,7 @@ export type PollerOptions = {
   log?: (message: string) => void;
   /**
    * Also poll repos bound to a project through an installation, for projects that have ingest
-   * settings (`longshore policy set --ingest`). A binding alone never causes ingest. A repo in the
+   * settings (`turntable policy set --ingest`). A binding alone never causes ingest. A repo in the
    * static config wins over a binding of the same name.
    */
   bindings?: boolean;

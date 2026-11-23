@@ -1,4 +1,4 @@
-// `longshore incident freeze|unfreeze|status`: the local operator's way to stop an incident, with
+// `turntable incident freeze|unfreeze|status`: the local operator's way to stop an incident, with
 // no token and no network. It acts as the local owner through the same operations the API has, so
 // the audit log records it like any other freeze. It works on the data directory's database, so
 // another process's server sees the flag at its next claim; the server's token cache lives in
@@ -9,9 +9,9 @@ import { openDatabase } from "../db";
 import { getOrgBySlug } from "../db/repos";
 import { dispatch, registry } from "../ops";
 
-export const INCIDENT_USAGE = `Usage: longshore incident freeze --org <slug> [--project <slug>] --reason <text> [--data-dir ./data]
-       longshore incident unfreeze --org <slug> [--project <slug>] [--data-dir ./data]
-       longshore incident status --org <slug> [--project <slug>] [--data-dir ./data]
+export const INCIDENT_USAGE = `Usage: turntable incident freeze --org <slug> [--project <slug>] --reason <text> [--data-dir ./data]
+       turntable incident unfreeze --org <slug> [--project <slug>] [--data-dir ./data]
+       turntable incident status --org <slug> [--project <slug>] [--data-dir ./data]
 
 freeze   stops scheduling for the org (or one project), kills running jobs, drops cached tokens
          held by this process and flags every secret for rotation.
@@ -42,7 +42,7 @@ export async function incidentCommand(args: string[]): Promise<number> {
     console.error("--reason is required: it is shown to every user and recorded in the audit log");
     return 2;
   }
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     const org = await getOrgBySlug(db, values.org);
     if (!org) {

@@ -15,9 +15,9 @@ import {
   type RunningProxy,
   type Rule,
   type SecretScope,
-} from "@longshore/proxy";
-import type { SafeFetch } from "@longshore/net";
-import type { ProxyEndpoint } from "@longshore/provider-sdk";
+} from "@turntable/proxy";
+import type { SafeFetch } from "@turntable/net";
+import type { ProxyEndpoint } from "@turntable/provider-sdk";
 import { createHash } from "node:crypto";
 import type net from "node:net";
 import type { Db } from "../db";

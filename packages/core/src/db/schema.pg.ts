@@ -144,14 +144,14 @@ export const projects = pgTable(
     /**
      * Whether the server reports job results to the forge as check runs: `off` (default),
      * `shadow` (always neutral, the real result in the text) or `live` (real conclusions). Set
-     * only from the CLI (`longshore policy set --checks-mode`).
+     * only from the CLI (`turntable policy set --checks-mode`).
      */
     checksMode: text("checks_mode").notNull().default("off"),
     /**
      * Ingest settings (JSON text, validated by the poll layer) for a repo bound to this project
      * through a GitHub installation: workflow path, default branch, pull request mode, trusted
      * authors, merge queue. Null (default): the project is not ingested. Set only from the CLI
-     * (`longshore policy set --ingest`), because it decides who is trusted.
+     * (`turntable policy set --ingest`), because it decides who is trusted.
      */
     ingestConfig: text("ingest_config"),
     /** Incident freeze for this project alone; the org's freeze applies on top of it. */
@@ -252,7 +252,7 @@ export const runs = pgTable(
     event: text("event").notNull(),
     ref: text("ref").notNull(),
     sha: text("sha"),
-    /** Metadata the forge (or `longshore run`) supplies. All forge text: untrusted when shown. */
+    /** Metadata the forge (or `turntable run`) supplies. All forge text: untrusted when shown. */
     workflowName: text("workflow_name"),
     commitMessage: text("commit_message"),
     /** Forge login of whoever triggered it. */
@@ -268,7 +268,7 @@ export const runs = pgTable(
     /** The workflow's concurrency group (project-wide), for cancel-in-progress. */
     concurrencyGroup: text("concurrency_group"),
     /**
-     * Started by `longshore run`: only the process that started it runs its attempts. A server's
+     * Started by `turntable run`: only the process that started it runs its attempts. A server's
      * worker never claims them, so a shared data directory is safe.
      */
     local: boolean("local").notNull().default(false),
@@ -461,7 +461,7 @@ export const apiTokens = pgTable(
 /**
  * Instance-administrator tokens (#205). Not tenant-owned: no org_id, no role, no project. They
  * hold no org grant at all; the one thing they can call is an `instance` op. Minted only by the
- * host CLI (`longshore token create --instance`), stored as a hash, prefix `lsi_`.
+ * host CLI (`turntable token create --instance`), stored as a hash, prefix `tti_`.
  */
 export const instanceTokens = pgTable(
   "instance_tokens",

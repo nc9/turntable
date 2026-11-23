@@ -4,11 +4,11 @@ import { openDatabase } from "../db";
 import { registry } from "../ops";
 import { readTokenFile, runMcpStdio } from "./stdio";
 
-export const MCP_USAGE = `Usage: longshore mcp [--token-file <path>] [--data-dir ./data]
+export const MCP_USAGE = `Usage: turntable mcp [--token-file <path>] [--data-dir ./data]
 
 Serves MCP over stdio for a local agent. The token is read from --token-file or the
-LONGSHORE_TOKEN_FILE environment variable (a file with mode 0600). It is never taken from the
-command line. Create one with "longshore token create". Only stdout carries the protocol.`;
+TURNTABLE_TOKEN_FILE environment variable (a file with mode 0600). It is never taken from the
+command line. Create one with "turntable token create". Only stdout carries the protocol.`;
 
 /** Runs until the client closes stdin. Returns a process exit code only on a start failure. */
 export async function mcpCommand(args: string[]): Promise<void> {
@@ -25,12 +25,12 @@ export async function mcpCommand(args: string[]): Promise<void> {
     console.error(MCP_USAGE);
     return;
   }
-  const tokenFile = values["token-file"] ?? process.env.LONGSHORE_TOKEN_FILE?.trim();
+  const tokenFile = values["token-file"] ?? process.env.TURNTABLE_TOKEN_FILE?.trim();
   if (!tokenFile) {
-    console.error(`no token file: pass --token-file or set LONGSHORE_TOKEN_FILE\n\n${MCP_USAGE}`);
+    console.error(`no token file: pass --token-file or set TURNTABLE_TOKEN_FILE\n\n${MCP_USAGE}`);
     process.exit(2);
   }
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     await runMcpStdio({
       env: { registry, db },
@@ -43,7 +43,7 @@ export async function mcpCommand(args: string[]): Promise<void> {
   } catch (e) {
     db.close();
     // stderr only: stdout is the protocol channel.
-    console.error(`longshore mcp: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`turntable mcp: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(2);
   }
 }

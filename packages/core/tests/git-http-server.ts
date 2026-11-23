@@ -1,6 +1,6 @@
 // A git smart-HTTP v2 server for tests: `git upload-pack --stateless-rpc` behind Bun.serve, over a
 // real repository on disk. This is only for tests (they have git); the code under test needs none.
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 
 export interface GitHttpServer {
   /** `http://127.0.0.1:<port>/<name>.git`, for any `name`: every path serves the repository. */

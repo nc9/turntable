@@ -4,7 +4,7 @@ on:
   push:
     tags: ["v*"]
   # A dry run: builds every target, signs darwin, writes SHA256SUMS and the SBOM, smoke-runs the
-  # image, and checks Longshore's own provenance path on the binaries. It publishes nothing: no
+  # image, and checks Turntable's own provenance path on the binaries. It publishes nothing: no
   # release, no image push, no attestation (those write to public logs), no upload but one
   # workflow artifact. Its jobs have read-only permissions, so they could not publish if they tried.
   workflow_dispatch:
@@ -41,20 +41,20 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
         env:
-          LONGSHORE_VERSION: ${{ env.RELEASE_VERSION }}
+          TURNTABLE_VERSION: ${{ env.RELEASE_VERSION }}
           # Re-sign darwin with the pinned rcodesign BEFORE hashing, so SHA256SUMS matches
           # what users download.
-          LONGSHORE_SIGN_DARWIN: "1"
+          TURNTABLE_SIGN_DARWIN: "1"
       - name: Verify the darwin signature and SHA256SUMS
         run: |
-          bun run scripts/rcodesign.ts verify dist/longshore-darwin-arm64
+          bun run scripts/rcodesign.ts verify dist/turntable-darwin-arm64
           (cd dist && sha256sum -c SHA256SUMS)
-      - run: scripts/smoke.sh dist/longshore-linux-x64
+      - run: scripts/smoke.sh dist/turntable-linux-x64
       - name: SBOM (CycloneDX) for the binaries, hashed into SHA256SUMS
         env:
           REF_NAME: ${{ env.RELEASE_VERSION }}
         run: |
-          sbom="longshore-${REF_NAME#v}.cdx.json"
+          sbom="turntable-${REF_NAME#v}.cdx.json"
           bun run scripts/sbom.ts --version "${REF_NAME}" --out "dist/${sbom}"
           (cd dist && sha256sum "${sbom}" >> SHA256SUMS && sha256sum -c SHA256SUMS)
           # The list is complete (every binary and the SBOM, nothing else) and the SBOM is exactly
@@ -92,7 +92,7 @@ jobs:
       # binary is left out of the second comparison: it is signed after the compile.
       - name: Rebuild twice and compare with the published list
         env:
-          LONGSHORE_VERSION: ${{ env.RELEASE_VERSION }}
+          TURNTABLE_VERSION: ${{ env.RELEASE_VERSION }}
         run: bun run scripts/repro-check.ts --expect dist/SHA256SUMS
 
   github-release:
@@ -124,19 +124,19 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist/longshore-linux-*
-            dist/longshore-darwin-*
+            dist/turntable-linux-*
+            dist/turntable-darwin-*
             dist/SHA256SUMS
       - name: Name the SBOM file
         id: sbom
         env:
           REF_NAME: ${{ env.RELEASE_VERSION }}
-        run: echo "path=dist/longshore-${REF_NAME#v}.cdx.json" >> "$GITHUB_OUTPUT"
+        run: echo "path=dist/turntable-${REF_NAME#v}.cdx.json" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: |
-            dist/longshore-linux-*
-            dist/longshore-darwin-*
+            dist/turntable-linux-*
+            dist/turntable-darwin-*
           sbom-path: ${{ steps.sbom.outputs.path }}
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
@@ -176,9 +176,9 @@ jobs:
           REF_NAME: ${{ env.RELEASE_VERSION }}
         run: |
           version="${REF_NAME#v}"
-          tags="ghcr.io/nc9/longshore:${version}"
+          tags="ghcr.io/nc9/turntable:${version}"
           if [[ "${version}" != *-* ]]; then
-            tags="${tags},ghcr.io/nc9/longshore:latest"
+            tags="${tags},ghcr.io/nc9/turntable:latest"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
@@ -191,11 +191,11 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: longshore:release-smoke
+          tags: turntable:release-smoke
           build-args: |
-            LONGSHORE_VERSION=${{ steps.tags.outputs.version }}
+            TURNTABLE_VERSION=${{ steps.tags.outputs.version }}
       - name: Smoke-run the image
-        run: scripts/smoke-image.sh longshore:release-smoke
+        run: scripts/smoke-image.sh turntable:release-smoke
       - id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -204,10 +204,10 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            LONGSHORE_VERSION=${{ steps.tags.outputs.version }}
+            TURNTABLE_VERSION=${{ steps.tags.outputs.version }}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/nc9/longshore
+          subject-name: ghcr.io/nc9/turntable
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
       # Syft is pinned by version; the action by commit. The SBOM covers the OS packages of the
@@ -215,25 +215,25 @@ jobs:
       - name: SBOM (CycloneDX) for the image
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ghcr.io/nc9/longshore@${{ steps.push.outputs.digest }}
+          image: ghcr.io/nc9/turntable@${{ steps.push.outputs.digest }}
           syft-version: v1.57.0
           format: cyclonedx-json
-          output-file: longshore-image.cdx.json
+          output-file: turntable-image.cdx.json
           upload-artifact: false
           upload-release-assets: false
       - name: The image SBOM saw the image's packages
-        run: bun run scripts/release-checks.ts image-sbom longshore-image.cdx.json
+        run: bun run scripts/release-checks.ts image-sbom turntable-image.cdx.json
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/nc9/longshore
+          subject-name: ghcr.io/nc9/turntable
           subject-digest: ${{ steps.push.outputs.digest }}
-          sbom-path: longshore-image.cdx.json
+          sbom-path: turntable-image.cdx.json
           push-to-registry: true
       - name: Attach the image SBOM to the release
         env:
           GH_TOKEN: ${{ github.token }}
           REF_NAME: ${{ env.RELEASE_VERSION }}
-        run: gh release upload "${REF_NAME}" longshore-image.cdx.json --repo "${GITHUB_REPOSITORY}"
+        run: gh release upload "${REF_NAME}" turntable-image.cdx.json --repo "${GITHUB_REPOSITORY}"
 
   # ---- dry run (workflow_dispatch): the same checks, nothing published ----
 
@@ -263,7 +263,7 @@ jobs:
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bun run scripts/release-notes.ts --to "${GITHUB_SHA}" --out release-notes.md
-      - name: Provenance through Longshore's own path, verified, with a negative control
+      - name: Provenance through Turntable's own path, verified, with a negative control
         env:
           VERSION: ${{ env.RELEASE_VERSION }}
           REF: ${{ github.ref }}
@@ -309,7 +309,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           build-args: |
-            LONGSHORE_VERSION=${{ env.RELEASE_VERSION }}
+            TURNTABLE_VERSION=${{ env.RELEASE_VERSION }}
       - name: Build the amd64 image and run it
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -317,11 +317,11 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: longshore:release-smoke
+          tags: turntable:release-smoke
           build-args: |
-            LONGSHORE_VERSION=${{ env.RELEASE_VERSION }}
+            TURNTABLE_VERSION=${{ env.RELEASE_VERSION }}
       - name: Smoke-run the image (healthz, UI, CSP, PORT, bootstrap token)
-        run: scripts/smoke-image.sh longshore:release-smoke
+        run: scripts/smoke-image.sh turntable:release-smoke
       # The SBOM step of the real release, on the image just built (a local image: no registry, no
       # attestation, nothing published). It proves Syft runs and sees the image's packages.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -330,11 +330,11 @@ jobs:
       - name: SBOM (CycloneDX) for the image
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: longshore:release-smoke # pin-ok: the image built by the step above
+          image: turntable:release-smoke # pin-ok: the image built by the step above
           syft-version: v1.57.0
           format: cyclonedx-json
-          output-file: longshore-image.cdx.json
+          output-file: turntable-image.cdx.json
           upload-artifact: false
           upload-release-assets: false
       - name: The image SBOM saw the image's packages
-        run: bun run scripts/release-checks.ts image-sbom longshore-image.cdx.json
+        run: bun run scripts/release-checks.ts image-sbom turntable-image.cdx.json

@@ -116,14 +116,14 @@ describe("serve", () => {
     const token = (await new Response(gen.stdout).text()).trim();
     const err = await new Response(gen.stderr).text();
     expect(await gen.exited).toBe(0);
-    expect(token.startsWith("ls_")).toBe(true);
+    expect(token.startsWith("tt_")).toBe(true);
     expect(err).toContain(`sha256: ${hashToken(token)}`);
     expect(err).not.toContain(token);
 
     const port = await freePort();
     const s = await startServer({
       PORT: String(port),
-      LONGSHORE_BOOTSTRAP_TOKEN_SHA256: hashToken(token),
+      TURNTABLE_BOOTSTRAP_TOKEN_SHA256: hashToken(token),
     });
     try {
       expect(s.log()).toContain("bootstrap: created an operator token for org local");

@@ -36,7 +36,7 @@ export type DepState = {
 
 /**
  * What the engine decides about a queued job. The shape matches `jobReadiness` of
- * `@longshore/act-runner`, so plugging the multi-job engine in is one adapter (turn `deps` into
+ * `@turntable/act-runner`, so plugging the multi-job engine in is one adapter (turn `deps` into
  * its `needs` record, pass the planned job).
  *
  * - `ready`: may be claimed now.
@@ -53,7 +53,7 @@ export type Decision =
 /** `run` is the job's run, for run-level facts (the contexts `if:` sees, whether it was cancelled). */
 export type Readiness = (job: Job, deps: readonly DepState[], run?: Run) => Decision;
 
-/** A dependency in the `needs` record shape of `jobReadiness` from `@longshore/act-runner`. */
+/** A dependency in the `needs` record shape of `jobReadiness` from `@turntable/act-runner`. */
 export type NeedStatus = {
   state: string;
   outputs?: Record<string, string>;

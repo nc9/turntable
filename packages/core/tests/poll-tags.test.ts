@@ -27,7 +27,7 @@ import { SecretStore } from "../src/secrets/store";
 import { GithubClient, Poller, pollConfigSchema, pollRepo } from "../src/poll";
 import { ingestSettingsSchema } from "../src/poll/config";
 import { includeCovers, patternProtected, REQUIRED_RULES } from "../src/poll/tag-protection";
-import { matchesPatterns } from "@longshore/act-runner";
+import { matchesPatterns } from "@turntable/act-runner";
 import { newTagCaches } from "../src/poll/ingest";
 import { dispatch, registry } from "../src/ops";
 import { getApproveRunMinRole, setApproveRunMinRole } from "../src/db/repos";
@@ -888,8 +888,8 @@ describe("the webhook for a tag push only wakes the poller", () => {
       { orgId: org.id },
       {
         appId: "42",
-        slug: "longshore-test",
-        name: "Longshore",
+        slug: "turntable-test",
+        name: "Turntable",
         ownerLogin: "acme",
         htmlUrl: "https://github.com/apps/x",
         clientId: "Iv1.abc",

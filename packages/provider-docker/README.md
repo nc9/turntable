@@ -1,4 +1,4 @@
-# @longshore/provider-docker
+# @turntable/provider-docker
 
 Provider for the local Docker daemon, via the `docker` CLI. It is the try-out provider and the
 one CI uses to run the conformance suite.
@@ -7,7 +7,7 @@ one CI uses to run the conformance suite.
 
 `docker run -d --rm --init` with the container's main process set to `sleep <ttlSeconds>`. That
 is the TTL backstop: when the sleep ends the container exits and `--rm` removes it, even if the
-controller is gone. Every container carries `longshore.managed=1` plus the spec labels, and
+controller is gone. Every container carries `turntable.managed=1` plus the spec labels, and
 list and destroy only touch managed containers. Commands run through `docker exec` with the
 SDK's detached wrapper. No env is ever passed (`-e` is never emitted).
 
