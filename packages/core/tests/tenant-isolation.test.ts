@@ -12,7 +12,7 @@
 //  - positive controls run the same inputs as A and must see the markers, so the detector is
 //    proven able to see.
 // It also runs the same inputs through REST and MCP, and the realtime WebSocket.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { getTableConfig as pgTableConfig, PgTable } from "drizzle-orm/pg-core";
 import { getTableConfig, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { randomBytes } from "node:crypto";
@@ -51,6 +51,10 @@ import { handleRequest } from "../src/server";
 import { SecretVault } from "../src/secrets/vault";
 import { WebhookService } from "../src/webhooks/service";
 import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
+
+// Generated from the op registry: every op is probed per principal, so the cases grow with the
+// registry and run slower on Postgres. The 5 s default is too tight for them.
+setDefaultTimeout(60_000);
 
 // Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
 // connection, each needs its own instance.

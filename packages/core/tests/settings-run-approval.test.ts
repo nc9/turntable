@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { createJob, createRun, type Db, listAudit } from "../src/db";
-import { putStoredSetting } from "../src/db/repos/settings";
+import { lockSettingKey, putStoredSetting } from "../src/db/repos/settings";
 import { UNTRUSTED_RUN_APPROVALS } from "../src/db/schema";
 import { setSettingOp } from "../src/ops/definitions/settings";
 import type { OpContext } from "../src/ops/define";
@@ -454,6 +454,47 @@ describe("strictness: an org tightens, only the instance administrator loosens (
     expect(await effective()).toBe("no_agents");
   });
 
+  // #369: the admin's write and the owner's tighten take different locks (the instance's and the
+  // org's audit chain), and a key can be written at more than one scope. Both now take the
+  // per-(org, key) lock first, so the owner's guard reads the effective value after the admin's
+  // write commits, or the owner gets a conflict. The admin holds its transaction open after the
+  // write, which is where an unlocked owner would read the old value and then overwrite it.
+  test("an owner's tighten queues behind an admin's human on the same key, across scopes", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let wrote: () => void = () => {};
+    const adminWrote = new Promise<void>((r) => (wrote = r));
+    const admin = db.transaction(async (tx) => {
+      await lockSettingKey(tx, a.orgId, KEY);
+      await putStoredSetting(
+        tx,
+        storeTarget(untrustedRunApprovalSetting, { orgId: a.orgId, projectId: a.projectId }),
+        KEY,
+        "human",
+        "admin",
+        Date.now(),
+      );
+      wrote();
+      await gate;
+    });
+    await adminWrote;
+    let ownerDone = false;
+    const owner = orgSet({ value: "no_agents" }).then((r) => {
+      ownerDone = true;
+      return r;
+    });
+    await Bun.sleep(100);
+    expect(ownerDone).toBe(false);
+    release();
+    await admin;
+    const r = await owner;
+    expect(await effective()).toBe("human");
+    expect(!r.ok && r.error.message).toBe(
+      `only the instance administrator can loosen ${KEY} (current: human)`,
+    );
+  });
+
   test("setting the same value is allowed", async () => {
     expect((await orgSet({ value: "no_agents" })).ok).toBe(true);
   });
@@ -535,4 +576,52 @@ describe("tokens", () => {
     const r = await asToken(rt(), "set_setting", { key: KEY, value: "human" });
     expect(!r.ok && r.error.message).toBe(`changing ${KEY} requires role owner`);
   });
+});
+
+describe("strictness keys resolve from the project row only (#369)", () => {
+  // `lockSettingKey` serialises the writers of one (org, key) and the one-way check reads the
+  // effective value once. Both assume a strictness key has a single stored scope. If a key gains
+  // org scope or inheritance, the lock and the check must be reworked first.
+  const WHY =
+    "a strictness key must resolve from the project row only. Giving it org scope or inheritance needs the per-key lock (lockSettingKey) and the one-way check reworked first, see #369";
+  const strict = settingsRegistry.settings.filter((d) => d.strictness);
+
+  test("the registry has at least one strictness key", () => {
+    expect(strict.length).toBeGreaterThan(0);
+  });
+
+  for (const def of strict) {
+    test(`${def.key}: the effective value comes from the project row, not an org or instance row`, async () => {
+      expect(def.scope, WHY).toBe("project");
+      const order = def.strictness!;
+      const other = order.find((v) => v !== def.default)!;
+      const subject = { orgId: a.orgId, orgSlug: "org-a", projectId: a.projectId };
+      const plain = rt();
+      // Rows at the other scopes, set to a value the default is not, must change nothing.
+      await putStoredSetting(
+        db,
+        { kind: "org", id: a.orgId, orgId: a.orgId },
+        def.key,
+        other,
+        "t",
+        1,
+      );
+      await putStoredSetting(db, { kind: "instance", id: "", orgId: null }, def.key, other, "t", 1);
+      const inherited = await resolveSetting(plain, db, def.key, subject);
+      expect(inherited, WHY).toMatchObject({ value: def.default, source: "default" });
+      // The project row is what counts.
+      await putStoredSetting(
+        db,
+        { kind: "project", id: a.projectId, orgId: a.orgId },
+        def.key,
+        order[order.length - 1],
+        "t",
+        1,
+      );
+      expect(await resolveSetting(plain, db, def.key, subject), WHY).toMatchObject({
+        value: order[order.length - 1],
+        source: "db",
+      });
+    });
+  }
 });

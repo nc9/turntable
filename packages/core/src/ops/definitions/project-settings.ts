@@ -12,6 +12,7 @@ import { UNTRUSTED_RUN_APPROVALS } from "../../db/schema";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
 import { settingsRegistry, untrustedRunApprovalSetting } from "../../settings/definitions";
 import { createSettingsRuntime } from "../../settings/resolve";
+import { lockSettingKey } from "../../db/repos/settings";
 import { effectiveApproval, guardSettingChange } from "../setting-guard";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
@@ -127,6 +128,8 @@ export const setProjectSettings = defineOp({
     // A thin alias of set_setting: the same lock, role, MCP and value refusals, so selecting
     // `human` is refused by the registry and a turntable.toml value locks the field.
     if (i.untrusted_run_approval !== undefined) {
+      // The same per-(org, key) lock as set_setting (#369), held to the end of the transaction.
+      await lockSettingKey(ctx.db, org.id, untrustedRunApprovalSetting.key);
       await guardSettingChange(
         rt,
         ctx.db,
