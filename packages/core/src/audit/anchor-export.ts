@@ -20,26 +20,41 @@ import {
   auditAnchorExportIntervalSetting,
   auditAnchorSinkUrlSetting,
 } from "../settings/definitions";
+import { recordAnchorCutover } from "./anchor-cutover";
 import { systemOrgId } from "./failures";
 
-/** The exact keys of an exported anchor. `version` is fixed so a reader can tell the shape. */
-export const ANCHOR_KEYS = ["version", "org_id", "sequence", "head_hash", "time", "signature"];
+/**
+ * The exact keys of an exported anchor. `version` is fixed so a reader can tell the shape: v2
+ * (#398) adds `key_id`, and a verifier checks the signature under that key only. The keyless v1
+ * body is read only for anchors at or before the org's recorded cutover (anchor-cutover.ts).
+ */
+export const ANCHOR_KEYS = [
+  "version",
+  "org_id",
+  "sequence",
+  "head_hash",
+  "time",
+  "key_id",
+  "signature",
+];
 
 export interface ExportedAnchor {
-  version: 1;
+  version: 2;
   org_id: string;
   sequence: number;
   head_hash: string;
   time: number;
+  key_id: string;
   signature: string;
 }
 
 export const toAnchor = (c: AuditCheckpoint): ExportedAnchor => ({
-  version: 1,
+  version: 2,
   org_id: c.orgId,
   sequence: c.seq,
   head_hash: c.hash,
   time: c.signedAt,
+  key_id: c.keyId,
   signature: c.signature,
 });
 
@@ -162,6 +177,8 @@ export function createAnchorExporter(o: AnchorExporterOptions): AnchorExporter {
       const org = cp ? await getOrgById(o.db, orgId) : undefined;
       if (!cp || !org) return;
       try {
+        // The first v2 body of an org fixes its cutover, before any v2 body leaves.
+        await recordAnchorCutover(o.db, orgId, { seq: cp.seq, time: cp.signedAt }, now());
         await post(url, toAnchor(cp));
       } catch (e) {
         // One alert per streak of failures, not one per retry.

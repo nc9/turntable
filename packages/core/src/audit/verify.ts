@@ -1,6 +1,7 @@
 import type { Db } from "../db";
 import { chainedAudit, listCheckpoints, type AuditCheckpoint, type AuditRow } from "../db/repos";
 import { entryHash, GENESIS_HASH, type ChainFields } from "./chain";
+import { getAnchorCutover } from "./anchor-cutover";
 import { CHECKPOINT_EVERY_MS, checkpointSignatureValid } from "./checkpoint";
 
 export interface VerifyReport {
@@ -107,8 +108,9 @@ export async function walkChain(db: Db, orgId: string): Promise<ChainWalk> {
 export type AnchorStanding = "ok" | "rolled_back" | "bad_signature" | "mismatch";
 
 /**
- * The public keys an anchor may be signed under: the one named by its key id, or every trusted
- * key when it names none (an exported anchor body carries no key id).
+ * The public keys an anchor may be signed under: only the one named by its key id (a v2 export
+ * body), and none when that key is not trusted for the org. A keyless v1 body names none, so every
+ * trusted key may vouch for it; `anchorRefusal` limits that to anchors before the v2 cutover.
  */
 export function anchorCandidates(
   an: AnchorCheckpoint,
@@ -117,6 +119,40 @@ export function anchorCandidates(
   if (an.keyId === "") return [...publicKeys.values()];
   const key = publicKeys.get(an.keyId);
   return key === undefined ? [] : [key];
+}
+
+/** Why an anchor is refused before its signature is looked at. */
+export type AnchorRefusal = "unknown_key" | "keyless_after_cutover";
+
+/**
+ * A v2 anchor whose key id is not a trusted key of the org is refused, and so is a keyless v1
+ * anchor past the org's v2 cutover (`cutoverSeq`, undefined when it never exported a v2 body).
+ */
+export function anchorRefusal(
+  an: AnchorCheckpoint,
+  publicKeys: ReadonlyMap<string, string>,
+  cutoverSeq: number | undefined,
+): AnchorRefusal | undefined {
+  if (an.keyId === "") {
+    return cutoverSeq !== undefined && an.seq > cutoverSeq ? "keyless_after_cutover" : undefined;
+  }
+  return publicKeys.has(an.keyId) ? undefined : "unknown_key";
+}
+
+/**
+ * The v2 cutover to hold anchors to: the recorded one and the lowest v2 anchor in the set,
+ * whichever is earlier, so a verifier with no database row still refuses a keyless body that
+ * follows a keyed one.
+ */
+export async function anchorCutoverSeq(
+  db: Db,
+  orgId: string,
+  anchors: readonly AnchorCheckpoint[],
+): Promise<number | undefined> {
+  const seqs = anchors.filter((a) => a.orgId === orgId && a.keyId !== "").map((a) => a.seq);
+  const recorded = (await getAnchorCutover(db, orgId))?.seq;
+  if (recorded !== undefined) seqs.push(recorded);
+  return seqs.length === 0 ? undefined : Math.min(...seqs);
 }
 
 export function anchorStanding(
@@ -176,9 +212,23 @@ export async function verifyAudit(
     );
   }
   const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
+  const cutoverSeq = await anchorCutoverSeq(db, orgId, anchors);
   for (const an of anchors) {
-    const standing = anchorStanding(an, hashes, headSeq, anchorCandidates(an, publicKeys));
-    if (standing === "bad_signature")
+    const refusal = anchorRefusal(an, publicKeys, cutoverSeq);
+    if (refusal === "unknown_key") {
+      problems.push(
+        `anchor checkpoint ${an.seq} names key ${an.keyId}, which is not trusted for this org`,
+      );
+    } else if (refusal === "keyless_after_cutover") {
+      problems.push(
+        `anchor checkpoint ${an.seq} is a keyless v1 body after the v2 cutover (entry ${cutoverSeq})`,
+      );
+    }
+    const standing =
+      refusal === undefined
+        ? anchorStanding(an, hashes, headSeq, anchorCandidates(an, publicKeys))
+        : "bad_signature";
+    if (standing === "bad_signature" && refusal === undefined)
       problems.push(`anchor checkpoint ${an.seq} has no valid signature under a trusted key`);
     // A bad signature does not hide a position problem: both are reported.
     const at = hashes.get(an.seq);
@@ -233,7 +283,8 @@ export type AnchorVerdict = "ok" | "rolled_back" | "mismatch";
 
 /**
  * Checks an org's chain against exported anchors, with no pinned key file: the chain must be
- * intact, every anchor must carry a valid signature under one of `publicKeys` (all of them when it names no key id), and each must match the
+ * intact, every anchor must carry a valid signature under the key it names in `publicKeys` (any of
+ * them for a keyless v1 anchor, which is refused past the org's v2 cutover), and each must match the
  * entry at its position. A valid anchor past the head is a rollback; anything else wrong is a
  * mismatch, which wins over a rollback.
  */
@@ -245,8 +296,11 @@ export async function verifyAnchors(
 ): Promise<AnchorVerdict> {
   const walk = await walkChain(db, orgId);
   if (walk.problems.length > 0) return "mismatch";
+  const mine = anchors.filter((a) => a.orgId === orgId);
+  const cutoverSeq = await anchorCutoverSeq(db, orgId, mine);
   let rolledBack = false;
   for (const an of anchors) {
+    if (anchorRefusal(an, publicKeys, cutoverSeq) !== undefined) return "mismatch";
     const st = anchorStanding(an, walk.hashes, walk.headSeq, anchorCandidates(an, publicKeys));
     if (st === "rolled_back") rolledBack = true;
     else if (st !== "ok") return "mismatch";

@@ -27,7 +27,13 @@ import {
 } from "../../db/repos";
 import { loadAuditKey } from "../../audit/checkpoint";
 import { SYSTEM_ORG_SLUG, systemOrgId } from "../../audit/failures";
-import { verifyAnchors, type AnchorCheckpoint } from "../../audit/verify";
+import {
+  anchorCutoverSeq,
+  anchorRefusal,
+  verifyAnchors,
+  type AnchorCheckpoint,
+  type AnchorRefusal,
+} from "../../audit/verify";
 import { AGENT_ROLES, FORGES, TOKEN_KINDS } from "../../db/schema";
 import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
@@ -561,29 +567,35 @@ const VERDICT_SENTENCE = {
     "The chain or an anchor does not check out: a hash or a signature disagrees, or the org has no audit chain.",
 } as const;
 
+const anchorBody = {
+  org_id: z.string().min(1).max(64),
+  sequence: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
+  head_hash: z.string().min(1).max(128),
+  time: z.int().min(0).max(Number.MAX_SAFE_INTEGER),
+  signature: z.string().min(1).max(512),
+};
+
 export const instanceAuditVerifyOp = defineOp({
   name: "instance_audit_verify",
   summary: "Check orgs' audit chains against exported anchors, for the instance administrator.",
   description:
-    "Takes anchor bodies exported from the audit export sink (`{version: 1, org_id, sequence, " +
-    "head_hash, time, signature}`, up to 1000) and, per org, walks its audit chain and checks each " +
-    "anchor's signature and hash. The result per org is `ok`, `rolled_back` (the chain ends behind " +
+    "Takes anchor bodies exported from the audit export sink (v2: `{version: 2, org_id, sequence, " +
+    "head_hash, time, key_id, signature}`, up to 1000; a keyless `version: 1` body is accepted only " +
+    "at or before the org's v2 cutover) and, per org, walks its audit chain and checks each " +
+    "anchor's signature, under the key its `key_id` names and no other, and its hash. The result per org is `ok`, `rolled_back` (the chain ends behind " +
     "a validly signed anchor) or `mismatch` (a hash or signature disagrees, the chain is broken, " +
-    "or the org is unknown), with a fixed sentence and never a raw error. Signatures are checked " +
+    "or the org is unknown), with a fixed sentence and never a raw error; `reasons` classifies a refused anchor " +
+    "(`unknown_key`: the key id is not a trusted key of the org; `keyless_after_cutover`). Signatures are checked " +
     "under the org's audit key from the secret store: for a key pinned outside the server use " +
     "`turntable audit verify --pubkey`. Only the instance administrator can call it. Read-only. " +
     "Not an MCP tool.",
   input: z.object({
     anchors: z
       .array(
-        z.object({
-          version: z.literal(1),
-          org_id: z.string().min(1).max(64),
-          sequence: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
-          head_hash: z.string().min(1).max(128),
-          time: z.int().min(0).max(Number.MAX_SAFE_INTEGER),
-          signature: z.string().min(1).max(512),
-        }),
+        z.discriminatedUnion("version", [
+          z.object({ ...anchorBody, version: z.literal(1) }),
+          z.object({ ...anchorBody, version: z.literal(2), key_id: z.string().min(1).max(128) }),
+        ]),
       )
       .min(1)
       .max(AUDIT_VERIFY_MAX_ANCHORS)
@@ -596,6 +608,7 @@ export const instanceAuditVerifyOp = defineOp({
         result: z.enum(["ok", "rolled_back", "mismatch"]),
         anchors: z.int(),
         message: z.string(),
+        reasons: z.array(z.enum(["unknown_key", "keyless_after_cutover"])),
       }),
     ),
   }),
@@ -616,13 +629,14 @@ export const instanceAuditVerifyOp = defineOp({
     const byOrg = new Map<string, AnchorCheckpoint[]>();
     for (const a of i.anchors) {
       const list = byOrg.get(a.org_id) ?? [];
-      // The body names no key id: the signature is tried under every trusted key.
+      // A v2 body names its key and is checked under it alone; a keyless v1 body is tried under
+      // every trusted key, and only before the org's v2 cutover.
       list.push({
         orgId: a.org_id,
         seq: a.sequence,
         hash: a.head_hash,
         signedAt: a.time,
-        keyId: "",
+        keyId: a.version === 2 ? a.key_id : "",
         signature: a.signature,
       });
       byOrg.set(a.org_id, list);
@@ -632,23 +646,27 @@ export const instanceAuditVerifyOp = defineOp({
       result: keyof typeof VERDICT_SENTENCE;
       anchors: number;
       message: string;
+      reasons: AnchorRefusal[];
     }[] = [];
     for (const [orgId, anchors] of byOrg) {
       let result: keyof typeof VERDICT_SENTENCE = "mismatch";
+      const reasons = new Set<AnchorRefusal>();
       if (await getOrgById(ctx.db, orgId)) {
         const key = await loadAuditKey(store, orgId).catch(() => undefined);
-        result = await verifyAnchors(
-          ctx.db,
-          orgId,
-          new Map(key ? [[key.keyId, key.publicKeyPem]] : []),
-          anchors,
-        );
+        const keys = new Map(key ? [[key.keyId, key.publicKeyPem]] : []);
+        const cutover = await anchorCutoverSeq(ctx.db, orgId, anchors);
+        for (const an of anchors) {
+          const r = anchorRefusal(an, keys, cutover);
+          if (r) reasons.add(r);
+        }
+        result = await verifyAnchors(ctx.db, orgId, keys, anchors);
       }
       orgs.push({
         org_id: orgId,
         result,
         anchors: anchors.length,
         message: VERDICT_SENTENCE[result],
+        reasons: [...reasons],
       });
     }
     // The dispatcher writes nothing for a read, so the call is recorded here, in the system chain.

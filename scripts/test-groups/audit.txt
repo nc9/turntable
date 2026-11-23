@@ -4,3 +4,4 @@ packages/core/tests/audit-cli.test.ts
 packages/core/tests/audit-hardening.test.ts
 packages/core/tests/audit-anchor-export.test.ts
 packages/core/tests/instance-audit-verify.test.ts
+packages/core/tests/audit-anchor-v2.test.ts

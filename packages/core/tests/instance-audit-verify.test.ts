@@ -96,11 +96,11 @@ describe("instance_audit_verify", () => {
     expect(await resultOf(signed)).toBe("rolled_back");
   });
 
-  test("accepts the exact keyless body the #392 export sends, ok and rolled_back", async () => {
+  test("accepts the exact v2 body the export sends, ok and rolled_back", async () => {
     const cps = await listCheckpoints(db, a.orgId);
     const exported = cps.map((c) => JSON.parse(JSON.stringify(toAnchor(c))) as unknown);
     expect(exported).toHaveLength(2);
-    expect(Object.keys(exported[0] as object)).not.toContain("key_id");
+    expect(exported[0]).toMatchObject({ version: 2, key_id: cps[0]!.keyId });
     expect(await resultOf(exported)).toBe("ok");
     await db.orm
       .delete(s.auditLog)

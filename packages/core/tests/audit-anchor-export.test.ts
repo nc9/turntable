@@ -203,14 +203,14 @@ describe("anchor export", () => {
     ).toBe(true);
   });
 
-  test("the body is exactly version, org_id, sequence, head_hash, time and signature", async () => {
+  test("the body is exactly version, org_id, sequence, head_hash, time, key_id and signature", async () => {
     await setUp();
     await createCheckpoint(db, store, anchor, a.orgId);
     const sent: Sent[] = [];
     await createAnchorExporter({ db, settings: runtime(), fetch: fakeFetch(sent) }).flush();
     const body = JSON.parse(sent[0]!.body) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual([...ANCHOR_KEYS].sort());
-    expect(body.version).toBe(1);
+    expect(body.version).toBe(2);
     // No slug, name or count anywhere in the bytes.
     const org = await getOrgById(db, a.orgId);
     for (const word of [org?.slug, org?.name, "lines", "slug"]) {
