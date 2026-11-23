@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type {
   WireApprovalStatus,
   WireArtifacts,
+  WireSandboxUsage,
   WireConsumption,
   WireQuotas,
   WireApprovers,
@@ -137,6 +138,9 @@ test("get_run: run, job and attempt fields", () => {
       started_at: true,
       finished_at: true,
       duration_ms: true,
+      sandbox_created_at: true,
+      sandbox_destroyed_at: true,
+      sandbox_seconds: true,
     }),
   );
 });
@@ -583,5 +587,38 @@ test("incident_status", () => {
     "reason",
     "flagged_by",
     "flagged_at",
+  ]);
+});
+
+test("sandbox_usage: the days and totals the Usage page reads", () => {
+  const o = op("/usage/sandbox", "get");
+  expect((o.parameters ?? []).map((p) => p.name)).toEqual(
+    expect.arrayContaining(["days", "group_by"]),
+  );
+  const out = ok(o);
+  expectKeys(
+    out,
+    keysOf<Omit<WireSandboxUsage, "projects">>({
+      days: true,
+      total_seconds: true,
+      total_minutes: true,
+    }),
+  );
+  // `projects` is optional: only an answer to group_by=project has it.
+  expect(Object.keys(out.properties!)).toContain("projects");
+  expectKeys(out.properties!.projects!.items!, [
+    "project_id",
+    "project_slug",
+    "project_name",
+    "days",
+    "total_seconds",
+    "total_minutes",
+  ]);
+  expectKeys(out.properties!.days!.items!, [
+    "day",
+    "sandbox_seconds",
+    "sandbox_minutes",
+    "attempts",
+    "estimated_attempts",
   ]);
 });

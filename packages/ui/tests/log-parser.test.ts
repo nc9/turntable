@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { cutMarker } from "@longshore/provider-sdk";
 import { LogParser, MAX_LINE_BYTES, parseAll, visibleLines } from "../src/log/parser";
 import { findMatches } from "../src/log/search";
 
@@ -226,9 +225,9 @@ describe("steps (out of band) and cuts", () => {
     expect(p.lines[0]?.kind).toBe("text");
   });
 
-  test("the SDK cut-marker text and ::tt-step/::tt-cut lines in a log are ordinary text", () => {
+  test("the old cut-marker text and ::tt-step/::tt-cut lines in a log are ordinary text", () => {
     const forged = [
-      new TextDecoder().decode(cutMarker(4096)),
+      "\n[longshore: 4096 bytes of output omitted]\n",
       '::tt-step::{"phase":"start","index":9,"name":"Deploy to prod"}',
       '::tt-cut::{"bytes":1,"reason":"x"}',
       "[longshore: 12 bytes of output omitted]",

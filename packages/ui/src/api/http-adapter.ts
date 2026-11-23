@@ -5,6 +5,7 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
   PolicyStatement,
   ApproveResult,
   EnrolStatement,
@@ -33,6 +34,7 @@ import type {
   OrgQuotas,
 } from "./types";
 import type {
+  WireSandboxUsage,
   WireApprovalStatus,
   WireApprovers,
   WireChallenge,
@@ -176,6 +178,9 @@ function mapAttempt(a: WireAttempt, job: WireJob, run: WireRun, org: string): Jo
     createdAt: ms(a.started_at) ?? ms(run.created_at) ?? 0,
     startedAt: ms(a.started_at),
     finishedAt: ms(a.finished_at),
+    sandboxCreatedAt: ms(a.sandbox_created_at),
+    sandboxDestroyedAt: ms(a.sandbox_destroyed_at),
+    sandboxSeconds: a.sandbox_seconds,
   };
 }
 
@@ -618,6 +623,45 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
 
     async getQuotas(): Promise<OrgQuotas> {
       return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
+    },
+
+    async sandboxUsage({ days, byProject }): Promise<SandboxUsage> {
+      const w = await call<WireSandboxUsage>("GET", "/usage/sandbox", {
+        org: org(),
+        days,
+        ...(byProject ? { group_by: "project" } : {}),
+      });
+      const mapDay = (d: WireSandboxUsage["days"][number]) => ({
+        day: d.day,
+        seconds: d.sandbox_seconds,
+        minutes: d.sandbox_minutes,
+        attempts: d.attempts,
+        estimatedAttempts: d.estimated_attempts,
+      });
+      let limit: number | null = null;
+      try {
+        // The quota limit is optional context: a token that cannot read quotas still gets the chart.
+        const q = await call<{ limits: { max_sandbox_minutes_per_day: number | null } }>(
+          "GET",
+          "/quotas",
+          { org: org() },
+        );
+        limit = q.limits.max_sandbox_minutes_per_day;
+      } catch {
+        limit = null;
+      }
+      return {
+        days: w.days.map(mapDay),
+        totalMinutes: w.total_minutes,
+        projects: (w.projects ?? []).map((p) => ({
+          id: p.project_id,
+          slug: p.project_slug,
+          name: p.project_name,
+          days: p.days.map(mapDay),
+          totalMinutes: p.total_minutes,
+        })),
+        limitMinutesPerDay: limit,
+      };
     },
 
     async approversOverview(): Promise<ApproversOverview> {

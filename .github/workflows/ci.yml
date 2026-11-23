@@ -33,6 +33,8 @@ jobs:
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
+      - name: One bun version in every workflow and the Dockerfile
+        run: bun run scripts/toolchain-versions.ts
       - name: Migrations match schema and embedded modules are current (SQLite and Postgres)
         timeout-minutes: 5
         run: |

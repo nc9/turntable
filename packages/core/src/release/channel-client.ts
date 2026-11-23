@@ -71,6 +71,7 @@ export function createChannelClient(o: {
           // The job holds publish rights through this proxy: it must run with no other route.
           vaultRules: true,
           setGithubToken: () => {},
+          setOidcMinter: () => {},
         },
       };
     },

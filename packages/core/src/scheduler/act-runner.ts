@@ -54,6 +54,7 @@ import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
+import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, parseTrust } from "../db/repos";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
@@ -240,6 +241,12 @@ export type ActRunnerOptions = {
    * class and the App's grant, revoked when the job ends. Absent: jobs get no GITHUB_TOKEN.
    */
   jobTokens?: JobTokens;
+  /**
+   * Gives a job that asked for it (`permissions: id-token: write`) GitHub's OIDC request
+   * variables, for a class the issuer allows. Behind the secrets proxy only: the request token is
+   * a placeholder and the proxy attaches the real credential. Absent: jobs get no OIDC variables.
+   */
+  jobOidc?: JobOidc;
 };
 
 /** What GITHUB_TOKEN holds inside a job that is behind the secrets proxy. The proxy attaches the real one. */
@@ -272,6 +279,7 @@ function workerStore(ctx: AttemptContext): RunStore {
     setExec: (_id, execId) => ctx.store.setExec({ execId }),
     resetOutput: () => ctx.store.reset(),
     appendLog: (_id, offset, bytes) => ctx.store.appendLog(offset, bytes),
+    addCut: (_id, cut) => ctx.store.addCut(cut),
     recordStep: (_id, step) => {
       const { attemptId: _drop, ...rest } = stepInputOf(ctx.attempt.id, step);
       return ctx.store.recordStep(rest);
@@ -319,6 +327,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     repoTarball: Uint8Array | undefined,
     githubToken?: string,
     secrets: readonly string[] = [],
+    oidc?: { requestUrl: string; requestToken: string },
   ): Promise<AttemptOutcome> => {
     const registry = ctx.redact ?? new SecretRegistry();
     // A real token in the environment is something the log must never show.
@@ -338,9 +347,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),
         ...(githubToken !== undefined ? { githubToken } : {}),
+        ...(oidc ? { oidc } : {}),
         // A job holding a minted token, in its environment or behind the proxy, is secret-bearing:
         // an egress canary that cannot verify isolation refuses it instead of letting it run.
-        ...(githubToken !== undefined ? { secretBearing: true } : {}),
+        ...(githubToken !== undefined || oidc ? { secretBearing: true } : {}),
         signal: ctx.signal,
         ...(ctx.notices ? { notices: ctx.notices } : {}),
         ...(ctx.resume || !repoTarball ? {} : { image: o.image ?? DEFAULT_IMAGE, repoTarball }),
@@ -612,6 +622,41 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           );
         }
       }
+      // The job's OIDC request variables, when it asked and its class may mint. Only behind the
+      // proxy, which holds the credential; a job with no proxy gets nothing and the log says so.
+      let oidcVars: { requestUrl: string; requestToken: string } | undefined;
+      if (o.jobOidc && jobKlass) {
+        const plannedJob = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+        const r = await o.jobOidc.issue({
+          orgId: ctx.scope.orgId,
+          attemptId: ctx.attempt.id,
+          klass: jobKlass,
+          workflowYaml,
+          jobId: plannedJob?.id ?? job.jobKey,
+        });
+        if ("none" in r) {
+          // Silent when the job never asked: most jobs do not.
+          if (r.none !== "the job did not ask for it")
+            notices.push(`[longshore] ACTIONS_ID_TOKEN_REQUEST_URL is not set (${r.none})`);
+        } else if (!ctx.proxy) {
+          notices.push(
+            "[longshore] ACTIONS_ID_TOKEN_REQUEST_URL is not set (no secrets proxy is running to attach the credential)",
+          );
+        } else if (egressForRun(ctx.run.plan, o.egress) === "open") {
+          return {
+            state: "infra_error",
+            reason:
+              "this job asked for an OIDC identity token, and a job that can mint one cannot run with open egress",
+          };
+        } else {
+          ctx.proxy.setOidcMinter(r.credentialFor);
+          oidcVars = { requestUrl: r.requestUrl, requestToken: r.requestToken };
+          useProxy = true;
+          notices.push(
+            "[longshore] ID token: ACTIONS_ID_TOKEN_REQUEST_URL points at this org's issuer, the credential is added by the proxy",
+          );
+        }
+      }
       // A job that uses neither vault rules nor a token is not proxied, and its egress is unchanged.
       const { proxy: access, ...rest } = ctx;
       const jobCtx: AttemptContext = {
@@ -641,6 +686,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           checkout.tarball,
           githubToken,
           jobCache ? [jobCache.secret] : [],
+          oidcVars,
         );
       } finally {
         jobCache?.release();

@@ -212,6 +212,9 @@ describe("mapping", () => {
             started_at: "2026-11-22T10:00:10.000Z",
             finished_at: "2026-11-22T10:00:20.000Z",
             duration_ms: 10000,
+            sandbox_created_at: "2026-11-22T10:00:12.000Z",
+            sandbox_destroyed_at: "2026-11-22T10:00:21.500Z",
+            sandbox_seconds: 9.5,
           },
           {
             id: "a2",
@@ -223,6 +226,9 @@ describe("mapping", () => {
             started_at: "2026-11-22T10:00:25.000Z",
             finished_at: "2026-11-22T10:01:00.000Z",
             duration_ms: 35000,
+            sandbox_created_at: "2026-11-22T10:00:26.000Z",
+            sandbox_destroyed_at: null,
+            sandbox_seconds: null,
           },
         ],
       },
@@ -244,6 +250,102 @@ describe("mapping", () => {
       [1, "infra_error", "heartbeat_lost"],
       [2, "failure", null],
     ]);
+  });
+
+  test("maps sandbox times, leaving an unconfirmed destroy null", async () => {
+    const { api } = make(() => json(detail));
+    const d = await api.getRun("run1");
+    expect(
+      d.attempts.map((a) => [a.sandboxCreatedAt, a.sandboxDestroyedAt, a.sandboxSeconds]),
+    ).toEqual([
+      [Date.parse("2026-11-22T10:00:12.000Z"), Date.parse("2026-11-22T10:00:21.500Z"), 9.5],
+      [Date.parse("2026-11-22T10:00:26.000Z"), null, null],
+    ]);
+  });
+
+  test("sandboxUsage maps the days and reads the quota limit, tolerating a refusal", async () => {
+    const days = {
+      days: [
+        {
+          day: "2026-11-22",
+          sandbox_seconds: 90,
+          sandbox_minutes: 1.5,
+          attempts: 2,
+          estimated_attempts: 1,
+        },
+      ],
+      total_seconds: 90,
+      total_minutes: 1.5,
+    };
+    const ok = make((url) =>
+      url.pathname.endsWith("/usage/sandbox")
+        ? json(days)
+        : json({ limits: { max_sandbox_minutes_per_day: 600 } }),
+    );
+    expect(await ok.api.sandboxUsage({ days: 7 })).toEqual({
+      days: [{ day: "2026-11-22", seconds: 90, minutes: 1.5, attempts: 2, estimatedAttempts: 1 }],
+      totalMinutes: 1.5,
+      projects: [],
+      limitMinutesPerDay: 600,
+    });
+    expect(ok.calls[0]!.url.searchParams.get("days")).toBe("7");
+    expect(ok.calls[0]!.url.searchParams.has("group_by")).toBe(false);
+    const refused = make((url) =>
+      url.pathname.endsWith("/usage/sandbox")
+        ? json(days)
+        : json({ error: { code: "forbidden", message: "no" } }, 403),
+    );
+    expect((await refused.api.sandboxUsage({ days: 7 })).limitMinutesPerDay).toBeNull();
+  });
+
+  test("sandboxUsage with byProject asks for group_by=project and maps each project", async () => {
+    const d = (minutes: number) => ({
+      day: "2026-11-22",
+      sandbox_seconds: minutes * 60,
+      sandbox_minutes: minutes,
+      attempts: 1,
+      estimated_attempts: 0,
+    });
+    const fx = make((url) =>
+      url.pathname.endsWith("/usage/sandbox")
+        ? json({
+            days: [d(3)],
+            total_seconds: 180,
+            total_minutes: 3,
+            projects: [
+              {
+                project_id: "p1",
+                project_slug: "api",
+                project_name: "API",
+                days: [d(2)],
+                total_seconds: 120,
+                total_minutes: 2,
+              },
+              {
+                project_id: "p2",
+                project_slug: "web",
+                project_name: "Web",
+                days: [d(1)],
+                total_seconds: 60,
+                total_minutes: 1,
+              },
+            ],
+          })
+        : json({ limits: { max_sandbox_minutes_per_day: null } }),
+    );
+    const u = await fx.api.sandboxUsage({ days: 7, byProject: true });
+    expect(fx.calls[0]!.url.searchParams.get("group_by")).toBe("project");
+    expect(u.projects.map((p) => [p.id, p.slug, p.name, p.totalMinutes])).toEqual([
+      ["p1", "api", "API", 2],
+      ["p2", "web", "Web", 1],
+    ]);
+    expect(u.projects[0]!.days[0]).toEqual({
+      day: "2026-11-22",
+      seconds: 120,
+      minutes: 2,
+      attempts: 1,
+      estimatedAttempts: 0,
+    });
   });
 
   test("capabilities: rerun and approve are available", () => {
@@ -328,6 +430,9 @@ describe("job log by offset", () => {
             started_at: null,
             finished_at: null,
             duration_ms: null,
+            sandbox_created_at: null,
+            sandbox_destroyed_at: null,
+            sandbox_seconds: null,
           },
         ],
       },

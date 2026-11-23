@@ -175,8 +175,24 @@ export interface ExecLogsOptions {
   maxBytes: number;
 }
 
+/**
+ * A region of output the sandbox dropped (the head and tail caps). It is data, never bytes: the
+ * output a job prints can contain any text, so a marker inside the stream could be forged.
+ */
+export interface ExecCut {
+  /** How many bytes of the full output were dropped. */
+  omittedBytes: number;
+}
+
 export interface ExecLogs {
+  /** Output bytes. Empty when this reply is a cut. Never contains a marker for omitted output. */
   bytes: Uint8Array;
+  /**
+   * Set when the output between `fromOffset` and `nextOffset` was dropped: `nextOffset` is then
+   * `fromOffset + omittedBytes`, and the caller records the cut at the position it has reached
+   * in what it stored. A reply is either bytes or a cut, never both.
+   */
+  cut?: ExecCut;
   /** Pass as `fromOffset` next time. Offsets are logical positions in the full output. */
   nextOffset: number;
   /** The command has finished and nextOffset is the end of its output. */
