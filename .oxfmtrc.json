@@ -8,6 +8,9 @@
     "data",
     "bun.lock",
     "**/*.generated.ts",
-    "packages/core/drizzle"
+    "packages/core/drizzle",
+    "packages/core/drizzle-pg",
+    "packages/core/src/db/schema.pg.ts",
+    "packages/core/src/db/schema.ts"
   ]
 }

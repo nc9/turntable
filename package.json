@@ -50,6 +50,8 @@
     "test:trust": "bun test packages/core/tests/trust.test.ts packages/core/tests/workflow-taint.test.ts",
     "test:oidc": "bun test packages/core/tests/oidc.test.ts",
     "test:tenant": "bun test packages/core/tests/tenant-isolation.test.ts",
+    "pg:test": "bun run scripts/run-tests-pg.ts",
+    "test:pg-parity": "bun test packages/core/tests/pg-parity.test.ts",
     "test:hosted": "bun test packages/core/tests/hosted-app.test.ts packages/core/tests/hosted-e2e.test.ts",
     "test:parity": "bun test packages/core/tests/pr-event-parity.test.ts",
     "test:usage": "bun test packages/core/tests/sandbox-usage.test.ts",

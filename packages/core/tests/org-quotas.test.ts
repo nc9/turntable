@@ -24,7 +24,7 @@ import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
 import { parseLimit, quotasCommand } from "../src/quotas/cli";
 import { mcpTools } from "../src/ops/mcp";
-import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { mintToken, seedWorld, type Tenant, rawExec } from "./ops-helpers";
 
 let db: Db;
 let a: Tenant;
@@ -36,10 +36,11 @@ beforeEach(async () => {
   ({ db, a, b } = await seedWorld());
   // seedWorld leaves one queued-or-running attempt per tenant: start from a clean slate.
   await db.run(async (h) => {
-    await h.orm.run(
+    await rawExec(
+      h.orm,
       sql`update job_attempts set state = 'success', started_at = null, finished_at = null`,
     );
-    await h.orm.run(sql`update jobs set state = 'success'`);
+    await rawExec(h.orm, sql`update jobs set state = 'success'`);
   });
 });
 

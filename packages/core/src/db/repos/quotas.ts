@@ -4,6 +4,7 @@
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
+import { asBigint, greatestOf, leastOf } from "../sql-dialect";
 import { appendEvent } from "./events";
 
 export type OrgQuotas = {
@@ -92,11 +93,11 @@ export type QuotaUsage = {
 export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
   return db.run(async (h) => {
     const [conc] = await h.orm
-      .select({ n: sql<number>`count(*)` })
+      .select({ n: sql<number>`count(*)`.mapWith(Number) })
       .from(s.jobAttempts)
       .where(and(eq(s.jobAttempts.orgId, orgId), eq(s.jobAttempts.state, "running")));
     const [runs] = await h.orm
-      .select({ n: sql<number>`count(distinct ${s.jobs.runId})` })
+      .select({ n: sql<number>`count(distinct ${s.jobs.runId})`.mapWith(Number) })
       .from(s.jobAttempts)
       .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
       .where(
@@ -111,30 +112,30 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
     const [ms] = await h.orm
       .select({
         n: sql<number>`coalesce(sum(
-          min(coalesce(${s.jobAttempts.finishedAt}, ${now}), ${now}) -
-          max(${s.jobAttempts.startedAt}, ${dayStart})
-        ), 0)`,
+          ${leastOf(sql`coalesce(${s.jobAttempts.finishedAt}, ${asBigint(now)})`, asBigint(now))} -
+          ${greatestOf(sql`${s.jobAttempts.startedAt}`, asBigint(dayStart))}
+        ), 0)`.mapWith(Number),
       })
       .from(s.jobAttempts)
       .where(
         and(
           eq(s.jobAttempts.orgId, orgId),
           isNotNull(s.jobAttempts.startedAt),
-          sql`coalesce(${s.jobAttempts.finishedAt}, ${now}) > ${dayStart}`,
+          sql`coalesce(${s.jobAttempts.finishedAt}, ${asBigint(now)}) > ${asBigint(dayStart)}`,
         ),
       );
     const [logs] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)` })
+      .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
       .from(s.logChunks)
       .where(eq(s.logChunks.orgId, orgId));
     const [arts] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.artifacts.size}), 0)` })
+      .select({ n: sql<number>`coalesce(sum(${s.artifacts.size}), 0)`.mapWith(Number) })
       .from(s.artifacts)
       .where(eq(s.artifacts.orgId, orgId));
     // The control-plane cache counts too: complete entries and live reservations (the cache has
     // its own per-class shares inside this org; this is the org-wide figure).
     const [cache] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)` })
+      .select({ n: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)`.mapWith(Number) })
       .from(s.cacheEntries)
       .where(eq(s.cacheEntries.orgId, orgId));
     return {

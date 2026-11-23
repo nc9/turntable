@@ -1,3 +1,4 @@
+import type { SQL } from "drizzle-orm";
 import {
   appendLog,
   createAttempt,
@@ -81,3 +82,23 @@ export async function addLog(db: Db, t: Tenant, text: string, at = 0): Promise<n
 }
 
 export { transitionJob };
+
+/** Runs a raw SQL statement on whichever dialect the suite runs on (tests only). */
+export async function rawExec(orm: unknown, query: SQL): Promise<void> {
+  const o = orm as { execute?: (q: SQL) => Promise<unknown>; run?: (q: SQL) => unknown };
+  if (typeof o.execute === "function") await o.execute(query);
+  else await o.run!(query);
+}
+
+/** Runs a raw SQL query and returns its rows on whichever dialect the suite runs on (tests only). */
+export async function rawRows<T>(orm: unknown, query: SQL): Promise<T[]> {
+  const o = orm as {
+    execute?: (q: SQL) => Promise<unknown>;
+    all?: (q: SQL) => Promise<unknown[]> | unknown[];
+  };
+  if (typeof o.execute === "function") {
+    const r = (await o.execute(query)) as T[] | { rows: T[] };
+    return Array.isArray(r) ? r : r.rows;
+  }
+  return (await o.all!(query)) as T[];
+}
