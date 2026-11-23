@@ -56,7 +56,7 @@ export function renderSettings(): string {
     const [head, ...rest] = d.toml.split(".");
     const toml = rest.length > 0 ? `[${section}${head}] ${rest.join(".")}` : `${section}${d.toml}`;
     out.push(
-      `| ${code(d.key)} | ${d.scope} | ${cell(describeType(d))} | ${code(JSON.stringify(d.default))} | ${d.role} | ${
+      `| ${code(d.key)} | ${d.scope} | ${cell(describeType(d))} | ${code(JSON.stringify(d.default))} | ${d.operatorOnly ? "instance_admin" : d.role} | ${
         d.mcpEditable ? "yes" : `no: ${cell(d.mcpReason ?? "")}`
       } | ${d.env.length > 0 ? d.env.map(code).join(", ") : "none"} | ${code(toml)} | ${cell(d.description)} |`,
     );

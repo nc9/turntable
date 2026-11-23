@@ -19,9 +19,8 @@ import {
   storeTarget,
 } from "../../settings/resolve";
 import { defineOp, type OpContext } from "../define";
+import { guardSettingChange } from "../setting-guard";
 import { OpError } from "../errors";
-import { orgRole } from "../principal";
-import { roleSatisfies } from "../roles";
 
 const settingView = z.object({
   key: z.string(),
@@ -56,7 +55,7 @@ function view(def: SettingDef, r: Resolved, showFile: boolean): SettingView {
       : r.source === "env" || showFile
         ? (r.origin ?? r.source)
         : r.source,
-    role: def.role,
+    role: def.operatorOnly ? "instance_admin" : def.role,
     mcp_editable: def.mcpEditable,
   };
 }
@@ -100,46 +99,16 @@ async function setSetting(
   i: { value?: unknown; unset?: boolean | undefined },
   showFile: boolean,
 ): Promise<SettingView> {
-  // Refusals, most specific reason first, on every transport: a lock (a TOML value on a setting
-  // MCP may not edit is still a lock), then the caller's role, then MCP. The subject comes from
-  // the caller's own org, never from input.
   const rt = runtimeOf(ctx);
   const subject = await subjectOf(ctx, def);
-  const before = await resolveSetting(rt, ctx.db, def.key, subject);
-  if (before.locked) {
-    throw new OpError(
-      "conflict",
-      `${def.key} is locked: it is set by ${
-        before.source === "env" ? `the environment (${before.origin})` : "turntable.toml"
-      }; change it there`,
-    );
-  }
-  // Who: the setting's own role, on top of the op's. An instance setting's caller is the
-  // instance administrator by construction.
-  if (def.scope !== "instance" && !roleSatisfies(orgRole(ctx.principal), def.role as never)) {
-    throw new OpError("forbidden", `changing ${def.key} requires role ${def.role}`);
-  }
-  if (ctx.viaMcp && !def.mcpEditable) {
-    throw new OpError(
-      "forbidden",
-      `${def.key} cannot be changed over MCP: ${def.mcpReason ?? "a human changes it"}`,
-    );
-  }
-  const unset = i.unset === true;
-  if (unset === (i.value !== undefined)) {
-    throw new OpError("invalid_input", "give either a value to set or unset: true, not both");
-  }
-  let next: unknown;
-  if (!unset) {
-    const parsed = def.type.safeParse(i.value);
-    if (!parsed.success) {
-      throw new OpError(
-        "invalid_input",
-        `${def.key}: ${parsed.error.issues.map((x) => x.message).join("; ")}`,
-      );
-    }
-    next = parsed.data;
-  }
+  const { before, next } = await guardSettingChange(
+    rt,
+    ctx.db,
+    def,
+    subject,
+    { principal: ctx.principal, viaMcp: ctx.viaMcp },
+    i,
+  );
   await putStoredSetting(
     ctx.db,
     storeTarget(def, subject),

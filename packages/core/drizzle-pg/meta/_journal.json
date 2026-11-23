@@ -71,6 +71,13 @@
       "when": 1795426232091,
       "tag": "0009_settings_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795426897008,
+      "tag": "0010_untrusted_run_approval_to_settings",
+      "breakpoints": true
     }
   ]
 }

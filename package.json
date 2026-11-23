@@ -38,7 +38,7 @@
     "test:vault-e2e": "TT_VAULT_E2E=1 bun test packages/core/tests/vault-jwt-e2e.test.ts",
     "test:cache-e2e": "TT_CACHE_E2E=1 bun test packages/core/tests/cache-e2e.test.ts",
     "test:act-e2e": "TT_ACT_E2E=1 bun test packages/act-runner/tests/e2e.test.ts",
-    "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts packages/core/tests/events-quota-migration.test.ts packages/core/tests/migration-sequence-guard.test.ts packages/core/tests/migration-sha.test.ts packages/core/tests/migration-shas-golden.test.ts packages/core/tests/migration-concurrent.test.ts",
+    "test:core3": "bun test packages/core/tests/events.test.ts packages/core/tests/migration-rebuild.test.ts packages/core/tests/events-quota-migration.test.ts packages/core/tests/migration-sequence-guard.test.ts packages/core/tests/migration-sha.test.ts packages/core/tests/migration-shas-golden.test.ts packages/core/tests/migration-concurrent.test.ts packages/core/tests/untrusted-run-approval-migration.test.ts",
     "test:ops2": "bun test packages/core/tests/ops-events.test.ts packages/core/tests/ops-gaps.test.ts packages/core/tests/mcp.test.ts packages/core/tests/mcp-untrusted-marker.test.ts packages/core/tests/incident.test.ts packages/core/tests/approvals.test.ts packages/core/tests/attestation.test.ts packages/core/tests/failure-digest.test.ts packages/core/tests/channel.test.ts packages/core/tests/checks.test.ts packages/core/tests/job-shards-checks.test.ts packages/core/tests/skipped-checks.test.ts packages/core/tests/skipped-check-claim.test.ts",
     "test:run": "bun test packages/core/tests/run-local.test.ts packages/core/tests/repo-archive.test.ts packages/core/tests/run-workflow.test.ts packages/core/tests/safe-read.test.ts packages/core/tests/log-cut.test.ts",
     "test:run-e2e": "TT_RUN_E2E=1 bun test packages/core/tests/run-e2e.test.ts",
@@ -81,7 +81,7 @@
     "test:exec-wrapper": "bun test packages/provider-sdk/tests/wrapper-watcher.test.ts",
     "test:pg-only": "bun test packages/core/tests/pg-transactions.test.ts",
     "test:poll-usage": "bun test packages/core/tests/poll-before.test.ts packages/core/tests/usage-cli.test.ts",
-    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts packages/core/tests/untrusted-run-approval.test.ts",
+    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts packages/core/tests/untrusted-run-approval.test.ts packages/core/tests/settings-run-approval.test.ts",
     "test:sandbox-size": "bun test packages/core/tests/sandbox-size.test.ts"
   }
 }

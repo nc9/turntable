@@ -54,6 +54,10 @@ function readSection(
             `${file}: ${at}${path} (setting ${def.key}): ${r.error.issues.map((i) => i.message).join("; ")}`,
           );
         }
+        const refused = def.refuse?.(r.data);
+        if (refused) {
+          throw new SettingsConfigError(`${file}: ${at}${path} (setting ${def.key}): ${refused}`);
+        }
         out.set(def.key, r.data);
       } else if (isTable(v) && defs.some((d) => d.toml.startsWith(`${path}.`))) {
         walk(v, path);

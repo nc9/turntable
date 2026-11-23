@@ -54,6 +54,8 @@ export function envValue(def: SettingDef, env: Env): { name: string; value: unkn
         `${name} (setting ${def.key}): ${parsed.error.issues.map((i) => i.message).join("; ")}`,
       );
     }
+    const refused = def.refuse?.(parsed.data);
+    if (refused) throw new SettingsConfigError(`${name} (setting ${def.key}): ${refused}`);
     return { name, value: parsed.data };
   }
   return undefined;

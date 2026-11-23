@@ -5,6 +5,7 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { UNTRUSTED_RUN_APPROVALS, type UntrustedRunApproval } from "../schema";
+import { getStoredSetting, putStoredSetting } from "./settings";
 import { requireProject, type Scope } from "./scope";
 
 export type ProjectSandboxSettings = {
@@ -14,23 +15,39 @@ export type ProjectSandboxSettings = {
   untrustedRunApproval: UntrustedRunApproval;
 };
 
-/** A stored value as a policy; anything unknown reads as the strictest, `human` (fail closed). */
-const asApproval = (v: string | null | undefined): UntrustedRunApproval =>
-  v == null
-    ? "no_agents"
-    : (UNTRUSTED_RUN_APPROVALS as readonly string[]).includes(v)
-      ? (v as UntrustedRunApproval)
-      : "human";
+/**
+ * `untrusted_run_approval` lives in the settings table (#321), the registry's database layer; the
+ * `projects` column it came from is no longer read or written. A stored value is a policy;
+ * anything unknown reads as the strictest, `human` (fail closed). This is the stored layer only:
+ * `approve_run` and the ops read the effective value through the resolver, which adds the
+ * environment and `turntable.toml`.
+ */
+const APPROVAL_KEY = "untrusted_run_approval";
+
+async function storedApproval(db: Db, scope: Scope): Promise<UntrustedRunApproval> {
+  const { projectId } = requireProject(scope);
+  const stored = await getStoredSetting(
+    db,
+    { kind: "project", id: projectId, orgId: scope.orgId },
+    APPROVAL_KEY,
+  );
+  if (stored === undefined) return "no_agents";
+  return (UNTRUSTED_RUN_APPROVALS as readonly string[]).includes(stored.value as string)
+    ? (stored.value as UntrustedRunApproval)
+    : "human";
+}
 
 const COLS = {
   snap: s.projects.sandboxSnapshot,
   max: s.projects.maxConcurrent,
-  approval: s.projects.untrustedRunApproval,
 };
-const settingsOf = (row: { snap: string | null; max: number | null; approval: string | null }) => ({
+const settingsOf = (
+  row: { snap: string | null; max: number | null },
+  approval: UntrustedRunApproval,
+) => ({
   sandboxSnapshot: row.snap ?? null,
   maxConcurrent: row.max ?? null,
-  untrustedRunApproval: asApproval(row.approval),
+  untrustedRunApproval: approval,
 });
 
 /** A provider snapshot name: letters, digits, `.`, `_`, `-`; one to 128 characters; starts alphanumeric. */
@@ -45,7 +62,9 @@ export function getProjectSandboxSettings(db: Db, scope: Scope): Promise<Project
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
       .limit(1);
     // A project that is not found reads as the default; the callers resolved it already.
-    return row ? settingsOf(row) : settingsOf({ snap: null, max: null, approval: null });
+    return row
+      ? settingsOf(row, await storedApproval(db, scope))
+      : settingsOf({ snap: null, max: null }, "no_agents");
   });
 }
 
@@ -57,6 +76,8 @@ export function setProjectSandboxSettings(
   db: Db,
   scope: Scope,
   patch: Partial<ProjectSandboxSettings>,
+  /** Who and when, for the settings row the approval policy is stored in. */
+  by: { id: string; now: number } = { id: "local", now: Date.now() },
 ): Promise<ProjectSandboxSettings | undefined> {
   if (patch.sandboxSnapshot != null && !SNAPSHOT_NAME.test(patch.sandboxSnapshot))
     throw new Error("a snapshot name is letters, digits, . _ - (up to 128, starting alphanumeric)");
@@ -75,8 +96,6 @@ export function setProjectSandboxSettings(
     const set: Partial<typeof s.projects.$inferInsert> = {};
     if (patch.sandboxSnapshot !== undefined) set.sandboxSnapshot = patch.sandboxSnapshot;
     if (patch.maxConcurrent !== undefined) set.maxConcurrent = patch.maxConcurrent;
-    if (patch.untrustedRunApproval !== undefined)
-      set.untrustedRunApproval = patch.untrustedRunApproval;
     if (Object.keys(set).length > 0) {
       const rows = await tx.orm
         .update(s.projects)
@@ -84,13 +103,30 @@ export function setProjectSandboxSettings(
         .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
         .returning({ id: s.projects.id });
       if (rows.length === 0) return undefined;
+    } else if (patch.untrustedRunApproval !== undefined) {
+      const [p] = await tx.orm
+        .select({ id: s.projects.id })
+        .from(s.projects)
+        .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+        .limit(1);
+      if (!p) return undefined;
+    }
+    if (patch.untrustedRunApproval !== undefined) {
+      await putStoredSetting(
+        tx,
+        { kind: "project", id: projectId, orgId: scope.orgId },
+        APPROVAL_KEY,
+        patch.untrustedRunApproval,
+        by.id,
+        by.now,
+      );
     }
     const [row] = await tx.orm
       .select(COLS)
       .from(s.projects)
       .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
       .limit(1);
-    return row ? settingsOf(row) : undefined;
+    return row ? settingsOf(row, await storedApproval(tx, scope)) : undefined;
   });
 }
 

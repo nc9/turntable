@@ -160,6 +160,7 @@ Only some settings are on the registry so far; the rest are still read straight 
 | Key | Scope | Type | Default | Role | MCP | Environment | TOML | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `backup_keep` | instance | whole number, 1 to 10000 | `10` | instance_admin | no: instance settings are changed by the instance administrator, never by an agent | `TURNTABLE_BACKUP_KEEP` | `[backup] keep` | How many backups to keep under `<data-dir>/backups`, newest first. |
+| `untrusted_run_approval` | project | one of "human", "no_agents", "any" | `"no_agents"` | instance_admin | no: it decides whether agents may approve runs, so only a person changes it | none | `orgs.<slug>.projects.<slug>.untrusted_run_approval` | Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`. |
 
 {/* settings:end */}
 
