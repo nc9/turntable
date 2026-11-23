@@ -10,6 +10,7 @@ import {
   getProjectChecksMode,
   listAttempts,
   listJobs,
+  listUnreportedSkips,
   listProjects,
   listRepos,
   setAttemptCheckRunId,
@@ -25,6 +26,8 @@ import {
   checkName,
   classifyInfra,
   conclusionFor,
+  NO_ATTEMPT_SKIP,
+  skipReasonFor,
   RUNNING_TITLE,
   summaryFor,
   titleFor,
@@ -58,9 +61,17 @@ export type CheckReporterOptions = {
 /** The digest excerpt in a summary is capped at this many bytes. */
 export const SUMMARY_EXCERPT_BYTES = 1024;
 
+/** Skipped jobs older than this are not looked for (a check on a week-old commit is moot). */
+const SKIP_WINDOW_MS = 3 * 24 * 3600_000;
+/** Most skipped attempts one sweep looks at. */
+const SKIP_BATCH = 200;
+
 export class CheckReporter {
   readonly #o: CheckReporterOptions;
   readonly #chains = new Map<string, Promise<void>>();
+  #sweeping = false;
+  /** Skipped attempts this process found nothing to post for (checks off, no repo or App). */
+  readonly #dismissed = new Set<string>();
 
   constructor(o: CheckReporterOptions) {
     this.#o = o;
@@ -76,6 +87,41 @@ export class CheckReporter {
     this.#enqueue(chainKey(claim), () => this.#post(claim, outcome));
   }
 
+  /**
+   * Called at the end of every scheduler claim pass: posts a `skipped` check for each job the
+   * scheduler resolved as skipped without an attempt. Does nothing while a sweep is running.
+   */
+  tick(): void {
+    if (this.#sweeping) return;
+    this.#sweeping = true;
+    this.#enqueue("sweep:skipped", () => this.sweepSkipped()).finally(() => {
+      this.#sweeping = false;
+    });
+  }
+
+  /**
+   * Posts one check run per job that ended skipped without an attempt (a false `if:`, a failed or
+   * skipped need, every shard path-skipped), under the same checks-mode gate as every other check.
+   * Idempotent: the check is created by external id and its id stored on the attempt, so a rerun
+   * of the sweep, a reconcile or a second worker never posts a second one for the same job.
+   */
+  async sweepSkipped(): Promise<void> {
+    const now = (this.#o.now ?? Date.now)();
+    const rows = await listUnreportedSkips(this.#o.db, {
+      since: now - SKIP_WINDOW_MS,
+      limit: SKIP_BATCH,
+    });
+    for (const row of rows) {
+      if (this.#dismissed.has(row.attempt.id)) continue;
+      const scope = { orgId: row.attempt.orgId, projectId: row.attempt.projectId };
+      const claim: Claim = { attempt: row.attempt, job: row.job, run: row.run, scope };
+      // The shards of a job share one chain and one check, as for a job that ran.
+      await this.#enqueue(chainKey(claim), async () => {
+        if ((await this.#postSkipped(claim)) === "nothing") this.#dismissed.add(row.attempt.id);
+      });
+    }
+  }
+
   /** Resolves when everything queued so far has been attempted (tests, shutdown). */
   async idle(): Promise<void> {
     while (this.#chains.size > 0) await Promise.all(this.#chains.values());
@@ -85,7 +131,7 @@ export class CheckReporter {
    * One attempt's requests run in order; different attempts do not wait for each other. The
    * shards of one split job share one chain, because they share one check.
    */
-  #enqueue(attemptId: string, work: () => Promise<void>): void {
+  #enqueue(attemptId: string, work: () => Promise<void>): Promise<void> {
     const prev = this.#chains.get(attemptId) ?? Promise.resolve();
     const next = prev
       .then(work)
@@ -94,6 +140,7 @@ export class CheckReporter {
         if (this.#chains.get(attemptId) === next) this.#chains.delete(attemptId);
       });
     this.#chains.set(attemptId, next);
+    return next;
   }
 
   #log(m: string): void {
@@ -117,17 +164,26 @@ export class CheckReporter {
     }
   }
 
-  async #post(claim: Claim, outcome: AttemptOutcome | undefined): Promise<void> {
+  /**
+   * The checks-mode gate, shared by every post: the mode (nothing when off), the commit, and a
+   * token minted for the one repository with `checks: write` only. Undefined when nothing is to
+   * be posted (checks off, a local run, a repo not installed through the App).
+   */
+  async #target(
+    claim: Claim,
+  ): Promise<
+    { mode: Exclude<ChecksMode, "off">; token: string; repo: string; sha: string } | undefined
+  > {
     const { db } = this.#o;
-    const { scope, run, job, attempt } = claim;
+    const { scope, run } = claim;
     const mode: ChecksMode = await getProjectChecksMode(db, scope);
-    if (mode === "off") return;
-    if (!run.repo || !run.sha) return; // local runs and runs with no forge commit
+    if (mode === "off") return undefined;
+    if (!run.repo || !run.sha) return undefined; // local runs and runs with no forge commit
     const [owner, name] = run.repo.split("/") as [string, string];
     const bound = (await listRepos(db, scope)).find(
       (r) => r.forge === "github" && r.owner === owner && r.repo === name,
     );
-    if (!bound?.installationId) return; // not installed through the App: no token to mint
+    if (!bound?.installationId) return undefined; // not installed through the App: no token to mint
 
     const installationId = bound.installationId;
     const { token } = await this.#retry("mint token", () =>
@@ -137,6 +193,85 @@ export class CheckReporter {
         permissions: { checks: "write" },
       }),
     );
+    return { mode, token, repo: run.repo, sha: run.sha };
+  }
+
+  /**
+   * A `skipped` check for a job that ended skipped without running. For a split job the check is
+   * the job's one shared check, posted once every shard is settled and all of them were skipped
+   * (when a shard ran, the job already has its check and this shard just records it). Returns
+   * `nothing` when there is nothing to post at all, so the sweep stops looking at it.
+   */
+  async #postSkipped(claim: Claim): Promise<"posted" | "waiting" | "nothing"> {
+    const { db } = this.#o;
+    const { scope, run, job, attempt } = claim;
+    if ((await getAttemptCheckRunId(db, scope, attempt.id)) !== null) return "posted";
+    const target = await this.#target(claim);
+    if (!target) return "nothing";
+    const { mode, token } = target;
+    const all = await listJobs(db, scope, run.id);
+    const mine = shardGroup(job.planned);
+    const members = mine ? all.filter((j) => shardGroup(j.planned)?.id === mine.id) : [job];
+    if (
+      !members.every((j) =>
+        ["success", "failure", "infra_error", "cancelled", "skipped"].includes(j.state),
+      )
+    )
+      return "waiting";
+    const latest = new Map<string, typeof attempt>();
+    for (const m of members) {
+      const a = (await listAttempts(db, scope, m.id)).at(-1);
+      if (a) latest.set(m.id, a);
+    }
+    if (mine) {
+      // A shard ran: the job's check exists (or its last shard makes it). This one joins it.
+      for (const a of latest.values()) {
+        const cid = await getAttemptCheckRunId(db, scope, a.id);
+        if (cid !== null) {
+          await setAttemptCheckRunId(db, scope, attempt.id, cid);
+          return "posted";
+        }
+      }
+      if ([...latest.values()].some((a) => a.state !== "skipped" || a.startedAt !== null)) {
+        return "waiting";
+      }
+    }
+    const externalId = mine ? `shards-${run.id}-${mine.id}` : `skipped-${job.id}`;
+    const name = checkName(mode, job);
+    const runUrl = await this.#runUrl(claim);
+    const reason = skipReasonFor({
+      errorClass: attempt.errorClass,
+      needs: (JSON.parse(job.needs) as string[]).map((key) => {
+        const dep = all.find((j) => j.jobKey === key);
+        return { name: dep?.name ?? key, state: dep?.state ?? "missing" };
+      }),
+    });
+    const at = new Date((this.#o.now ?? Date.now)()).toISOString();
+    const id = await this.#create(token, target.repo, target.sha, externalId, name, {
+      name,
+      head_sha: target.sha,
+      external_id: externalId,
+      status: "completed",
+      conclusion: conclusionFor(mode, NO_ATTEMPT_SKIP),
+      started_at: at,
+      completed_at: at,
+      ...(runUrl ? { details_url: runUrl } : {}),
+      output: {
+        title: titleFor(mode, NO_ATTEMPT_SKIP),
+        summary: summaryFor({ mode, result: NO_ATTEMPT_SKIP, runUrl, skipReason: reason }),
+      },
+    });
+    for (const a of latest.values()) await setAttemptCheckRunId(db, scope, a.id, id);
+    await setAttemptCheckRunId(db, scope, attempt.id, id);
+    return "posted";
+  }
+
+  async #post(claim: Claim, outcome: AttemptOutcome | undefined): Promise<void> {
+    const { db } = this.#o;
+    const { scope, job, attempt } = claim;
+    const target = await this.#target(claim);
+    if (!target) return;
+    const { mode, token, repo, sha } = target;
     const checkName_ = checkName(mode, job);
     const runUrl = await this.#runUrl(claim);
     let id = await getAttemptCheckRunId(db, scope, attempt.id);
@@ -151,25 +286,18 @@ export class CheckReporter {
         await setAttemptCheckRunId(db, scope, attempt.id, group.sharedId);
         return;
       }
-      id = await this.#create(
-        token,
-        run.repo,
-        run.sha,
-        group?.externalId ?? attempt.id,
-        checkName_,
-        {
-          name: checkName_,
-          head_sha: run.sha,
-          status: "in_progress",
-          started_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
-          external_id: group?.externalId ?? attempt.id,
-          ...(runUrl ? { details_url: runUrl } : {}),
-          output: {
-            title: RUNNING_TITLE(mode),
-            summary: summaryRunning(mode, runUrl),
-          },
+      id = await this.#create(token, repo, sha, group?.externalId ?? attempt.id, checkName_, {
+        name: checkName_,
+        head_sha: sha,
+        status: "in_progress",
+        started_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
+        external_id: group?.externalId ?? attempt.id,
+        ...(runUrl ? { details_url: runUrl } : {}),
+        output: {
+          title: RUNNING_TITLE(mode),
+          summary: summaryRunning(mode, runUrl),
         },
-      );
+      });
       await setAttemptCheckRunId(db, scope, attempt.id, id);
       return;
     }
@@ -232,16 +360,14 @@ export class CheckReporter {
     };
     if (id !== null) {
       const existing = id;
-      await this.#retry("update check run", () =>
-        this.#o.api.update(token, run.repo!, existing, body),
-      );
+      await this.#retry("update check run", () => this.#o.api.update(token, repo, existing, body));
       return;
     }
     // The start was never reported (an outage, a restart before it): create it completed.
-    id = await this.#create(token, run.repo, run.sha, group?.externalId ?? attempt.id, checkName_, {
+    id = await this.#create(token, repo, sha, group?.externalId ?? attempt.id, checkName_, {
       ...body,
       name: checkName_,
-      head_sha: run.sha,
+      head_sha: sha,
       external_id: group?.externalId ?? attempt.id,
     });
     await setAttemptCheckRunId(db, scope, attempt.id, id);

@@ -405,6 +405,32 @@ describe("events that have not settled yet (ids can commit out of order on Postg
   });
 });
 
+describe("delivery order", () => {
+  test("six events settling in the same tick reach one endpoint in ascending cursor order, even with a slow first send", async () => {
+    const order: number[] = [];
+    let first = 0;
+    const svc3 = new WebhookService({
+      db,
+      masterKey: randomBytes(32),
+      concurrency: 8,
+      settleMs: 0,
+      fetch: async (_url, init) => {
+        const cursor = JSON.parse(String(init?.body)).cursor as number;
+        // Earlier cursors answer slower: concurrent sends would finish, and arrive, in reverse.
+        await new Promise((r) => setTimeout(r, Math.max(5, 60 - (cursor - first) * 10)));
+        order.push(cursor);
+        return new Response("ok");
+      },
+    });
+    env = { registry, db, now: () => Date.now(), webhooks: svc3 };
+    await op(a, "create_webhook", { url: URL_OK });
+    const mine = await emit(a, 6);
+    first = Math.min(...mine);
+    await svc3.tick();
+    expect(order).toEqual(mine.toSorted((x, y) => x - y));
+  });
+});
+
 describe("starting from now when ids can commit out of order", () => {
   test("the newest settled id: the tip when everything is old, one below the oldest young event otherwise", async () => {
     const [e1, e2] = await emit(a, 2);

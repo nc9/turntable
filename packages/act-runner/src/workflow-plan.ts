@@ -16,6 +16,21 @@ import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/**
+ * The one answer to "did this job ask for an ID token": the stored plan's `idToken`. The scheduler
+ * (the job's request variables) and the proxy (its mint rule) both ask here, so they cannot drift.
+ * A missing, unreadable or legacy plan means no: both fail closed.
+ */
+export function plannedIdToken(planned: string | PlannedJob | null | undefined): boolean {
+  if (!planned) return false;
+  try {
+    const p = typeof planned === "string" ? (JSON.parse(planned) as unknown) : planned;
+    return typeof p === "object" && p !== null && (p as { idToken?: unknown }).idToken === true;
+  } catch {
+    return false;
+  }
+}
+
 export interface PlannedJob {
   /** Unique within the run: the job id, or `id[n]` for a matrix leg. */
   key: string;

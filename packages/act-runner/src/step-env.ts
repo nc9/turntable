@@ -195,11 +195,13 @@ else
 fi
 # The forwarder ends at EOF. A step that leaves a background process holding the pipe must not
 # hold the step: give the forwarder two seconds, then stop it.
-( sleep 2; kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
-killer=$!
+# The killer is never signalled or waited for. A TERM sent right after its fork can run the TERM
+# trap the shim has inherited instead of stopping it, and a subshell blocked on a foreground sleep
+# does not act on TERM until the sleep ends: waiting on it made every step cost the full two
+# seconds. It only sleeps and holds no pipe, so it is left to run out. The shim's exit removes the
+# fifo, which tells the killer there is nothing left to stop (the forwarder's pid may be reused).
+( sleep 2; [ -e "$fifo" ] && kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
 wait "$cpid" 2>/dev/null
-kill "$killer" 2>/dev/null
-wait "$killer" 2>/dev/null
 resync
 exit "$rc"
 `;
