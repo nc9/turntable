@@ -4,7 +4,13 @@
 // read operation a REST caller would use (events, get_run, job_log, job_steps, job_cuts), as the
 // connection's token. A token that cannot read something over REST cannot subscribe to it either.
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
-import { getAttempt, latestEventId, onEventsAppended, onLogAppended } from "../db/repos";
+import {
+  getAttempt,
+  latestEventId,
+  onApiTokenRevoked,
+  onEventsAppended,
+  onLogAppended,
+} from "../db/repos";
 import { type DispatchEnv, authenticate, dispatch, resolveCallerScope } from "../ops/dispatch";
 import { OpError } from "../ops/errors";
 import {
@@ -89,6 +95,8 @@ type Sub = {
 
 export type WsData = {
   token: string;
+  /** The token's id (not its secret): what a revocation names. */
+  tokenId: string;
   orgId: string;
   subs: Map<string, Sub>;
   closed: boolean;
@@ -486,6 +494,20 @@ export function createRealtime(options: RealtimeOptions) {
         if (sub.topic.kind === "attempt-log" && sub.attemptId === attemptId) pump(ws, sub);
   });
 
+  // A revoked token's sockets close at once, not at the next sweep. Fired after the revoking
+  // commit, in this process only (REST, MCP and the CLI revoke all go through revokeApiToken).
+  // If another process owns the socket, or a token merely expires, nothing fires here: the
+  // periodic re-check below (`sweepMs`, 30 s by default) covers that.
+  const stopRevoked = onApiTokenRevoked((tokenId) => {
+    for (const conns of [...byOrg.values()])
+      for (const ws of [...conns])
+        if (ws.data.tokenId === tokenId)
+          closeWith(ws, CLOSE.unauthenticated, "token no longer valid");
+  });
+
+  // Every event, log and step batch is read by dispatching an op as the socket's token, which
+  // looks the token up afresh, so a token revoked or expired between sweeps fails the next read
+  // and closes the socket (see `fail`) before anything is sent.
   const sweeper = setInterval(() => {
     const now = Date.now();
     for (const conns of [...byOrg.values()]) {
@@ -524,6 +546,12 @@ export function createRealtime(options: RealtimeOptions) {
       if (!set) byOrg.set(ws.data.orgId, (set = new Set()));
       set.add(ws);
       ws.data.noSubsSince = Date.now();
+      // Revoked between the upgrade check and now (the revoke event fired before it was listed).
+      authenticate(env, cred(ws)).catch((err: unknown) => {
+        if (err instanceof OpError && err.code === "unauthenticated") {
+          closeWith(ws, CLOSE.unauthenticated, "token no longer valid");
+        }
+      });
     },
     message(ws, raw) {
       if (typeof raw !== "string") return closeWith(ws, CLOSE.protocol, "text frames only");
@@ -570,9 +598,11 @@ export function createRealtime(options: RealtimeOptions) {
     }
     const { token, protocol } = offer;
     let orgId: string;
+    let tokenId: string;
     try {
       const principal = await authenticate(env, { kind: "bearer", token });
       orgId = principal.orgId;
+      tokenId = principal.id;
     } catch {
       return refuse(401, "invalid, expired or revoked token", {
         "www-authenticate": 'Bearer realm="turntable"',
@@ -590,6 +620,7 @@ export function createRealtime(options: RealtimeOptions) {
         headers: { "Sec-WebSocket-Protocol": protocol },
         data: {
           token,
+          tokenId,
           orgId,
           subs: new Map(),
           closed: false,
@@ -614,6 +645,7 @@ export function createRealtime(options: RealtimeOptions) {
     stop() {
       stopListening();
       stopLogListening();
+      stopRevoked();
       clearInterval(sweeper);
       for (const conns of [...byOrg.values()])
         for (const ws of [...conns]) closeWith(ws, 1001, "server stopping");

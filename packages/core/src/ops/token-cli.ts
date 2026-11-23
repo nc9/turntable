@@ -193,39 +193,50 @@ export async function revokeTokenFromCli(
     // The last usable token gone leaves the org with no access but the instance administrator's
     // re-mint, which now waits (#367): tell the org, in both chains and on its feed.
     if ((await countActiveApiTokens(tx, { orgId: row.orgId }, now())) === 0) {
-      await appendAudit(
-        tx,
-        { orgId: row.orgId },
-        {
-          principalKind: "cli",
-          principalId: "local",
-          op: "org_tokens_exhausted",
-          effect: "write",
-          outcome: "ok",
-          input: { revoked_id: row.id },
-        },
-      );
-      await appendAudit(
-        tx,
-        { orgId: await systemOrgId(tx) },
-        {
-          principalKind: "cli",
-          principalId: "local",
-          op: "org_tokens_exhausted",
-          effect: "write",
-          outcome: "ok",
-          input: { org_id: row.orgId, revoked_id: row.id },
-        },
-      );
-      await appendEvent(
-        tx,
-        { orgId: row.orgId },
-        {
-          type: "org.tokens_exhausted",
-          payload: { revoked_id: row.id, reason: "revoked" },
-        },
-      );
+      await recordOrgTokensExhausted(tx, row.orgId, row.id, { kind: "cli", id: "local" });
     }
   });
   return { id: row.id, name: row.name };
+}
+
+/**
+ * The org's last usable token was just revoked: it has no access but the instance administrator's
+ * re-mint, which waits (#367). Tells the org, in both audit chains and on its feed. Call inside
+ * the revoking transaction.
+ */
+export async function recordOrgTokensExhausted(
+  tx: Db,
+  orgId: string,
+  revokedId: string,
+  by: { kind: string; id: string },
+): Promise<void> {
+  await appendAudit(
+    tx,
+    { orgId },
+    {
+      principalKind: by.kind,
+      principalId: by.id,
+      op: "org_tokens_exhausted",
+      effect: "write",
+      outcome: "ok",
+      input: { revoked_id: revokedId },
+    },
+  );
+  await appendAudit(
+    tx,
+    { orgId: await systemOrgId(tx) },
+    {
+      principalKind: by.kind,
+      principalId: by.id,
+      op: "org_tokens_exhausted",
+      effect: "write",
+      outcome: "ok",
+      input: { org_id: orgId, revoked_id: revokedId },
+    },
+  );
+  await appendEvent(
+    tx,
+    { orgId },
+    { type: "org.tokens_exhausted", payload: { revoked_id: revokedId, reason: "revoked" } },
+  );
 }
