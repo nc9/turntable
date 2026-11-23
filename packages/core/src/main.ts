@@ -22,6 +22,8 @@ import {
   type ClaimHandler,
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
+import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
+import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
@@ -108,6 +110,7 @@ Usage:
   turntable mcp [--token-file <path>] [--data-dir ./data]
   turntable approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   turntable incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
+  turntable db backup [--keep <n>] [--data-dir ./data]  (SQLite backup into <data-dir>/backups; not for Postgres)
   turntable quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
   turntable artifacts list|check --url <https://host> --org <slug> --project <slug> [--run <id>] [--token-file <path>]
   turntable quotas get --url <https://host> --org <slug> [--token-file <path>]  (remote read)
@@ -139,6 +142,9 @@ Environment:
                     sent over x-forwarded-proto: https are accepted
   TURNTABLE_DATABASE_URL  Postgres connection URL (default for --database-url); every subcommand that opens
                     the database uses it. Without it the database is SQLite in the data dir
+  TURNTABLE_BACKUP_BEFORE_MIGRATE  set to 1 to back up the SQLite database (under <data-dir>/backups) at boot,
+                    when migrations are pending and before they run; a failed backup stops the boot
+  TURNTABLE_BACKUP_KEEP  how many backups to keep (default 10), for "db backup" and the db_backup operation
   TURNTABLE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); TURNTABLE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   TURNTABLE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
@@ -542,6 +548,20 @@ async function serve(args: string[]): Promise<void> {
       "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) needs TURNTABLE_MASTER_KEY_FILE",
     );
   }
+  // Before the database is opened (and so migrated) by this binary. SQLite only: on Postgres the
+  // operator takes the backup with pg_dump.
+  if (
+    DIALECT === "sqlite" &&
+    ["1", "true"].includes(process.env.TURNTABLE_BACKUP_BEFORE_MIGRATE ?? "")
+  ) {
+    await backupBeforeMigrate({
+      dbPath: join(dataDir, "turntable.db"),
+      dataDir,
+      version: VERSION,
+      keep: backupKeepFromEnv(process.env),
+      log: (m) => console.log(`[turntable] ${m}`),
+    });
+  }
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
   if (masterKeyCreated) {
@@ -782,6 +802,15 @@ async function serve(args: string[]): Promise<void> {
         ...(claims ? { claims } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
+        backup:
+          DIALECT === "pg"
+            ? { dialect: "pg" }
+            : {
+                dialect: "sqlite",
+                dataDir,
+                dbPath: join(dataDir, "turntable.db"),
+                keep: backupKeepFromEnv(process.env),
+              },
         instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
           ? Number(values["org-cap"])
           : undefined,
@@ -1004,6 +1033,10 @@ async function main(argv: string[]): Promise<void> {
     case "incident": {
       const { incidentCommand } = await import("./incident/cli");
       process.exit(await incidentCommand(rest));
+    }
+    case "db": {
+      const { dbCommand } = await import("./db/cli");
+      process.exit(await dbCommand(rest));
     }
     case "quotas": {
       const { quotasCommand } = await import("./quotas/cli");
