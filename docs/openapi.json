@@ -9774,6 +9774,137 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/audit-verify": {
+      "post": {
+        "operationId": "instance_audit_verify",
+        "summary": "Check orgs' audit chains against exported anchors, for the instance administrator.",
+        "description": "Takes anchor bodies exported from the audit export sink (`{version: 1, org_id, sequence, head_hash, time, signature}`, up to 1000) and, per org, walks its audit chain and checks each anchor's signature and hash. The result per org is `ok`, `rolled_back` (the chain ends behind a validly signed anchor) or `mismatch` (a hash or signature disagrees, the chain is broken, or the org is unknown), with a fixed sentence and never a raw error. Signatures are checked under the org's audit key from the secret store: for a key pinned outside the server use `turntable audit verify --pubkey`. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "anchors": {
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "number",
+                          "const": 1
+                        },
+                        "org_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "sequence": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "head_hash": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "time": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "signature": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 512
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "org_id",
+                        "sequence",
+                        "head_hash",
+                        "time",
+                        "signature"
+                      ]
+                    },
+                    "description": "Exported anchor bodies; time is the signing time in epoch milliseconds."
+                  }
+                },
+                "required": ["anchors"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orgs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "org_id": {
+                            "type": "string"
+                          },
+                          "result": {
+                            "type": "string",
+                            "enum": ["ok", "rolled_back", "mismatch"]
+                          },
+                          "anchors": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["org_id", "result", "anchors", "message"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["orgs"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/quotas": {
       "post": {
         "operationId": "set_quotas",

@@ -235,6 +235,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "create_org_token",
       "create_project",
       "db_backup",
+      "instance_audit_verify",
       "instance_doctor",
       "instance_get_setting",
       "instance_github_app_status",

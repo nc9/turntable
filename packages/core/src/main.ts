@@ -807,12 +807,14 @@ async function serve(args: string[]): Promise<void> {
   const auditStops: (() => void)[] = [];
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
+  let auditStore: SecretStore | undefined;
   let oidc: OidcHandler | undefined;
   let jobOidc: JobOidc | undefined;
   let outboundWebhooks: WebhookService | undefined;
   if (masterKeys) {
     const masterKey = masterKeys.key;
     const store = new SecretStore(db, masterKey);
+    auditStore = store;
     vault = new SecretVault({ db, masterKey });
     outboundWebhooks = new WebhookService({
       db,
@@ -1001,6 +1003,7 @@ async function serve(args: string[]): Promise<void> {
         // The `doctor` op is owner-member only (in-process) and `instance_doctor` is a `tti_` token's:
         // no org token reaches either, so a hosted instance serves it too.
         doctor: doctorRun,
+        auditStore,
         forwarded,
       })
     : undefined;

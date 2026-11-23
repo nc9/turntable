@@ -40,6 +40,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: the App's id, owner and unclaimed installations are the operator's",
   instance_doctor:
     "instance administrator ops are REST only: instance-wide readiness facts, never an agent's",
+  instance_audit_verify:
+    "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
   set_project_settings:
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",
