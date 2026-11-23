@@ -39,6 +39,12 @@ export function recordArtifact(
   if (!/^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/.test(input.name)) {
     return Promise.reject(new Error("artifact name must be 1 to 200 plain characters"));
   }
+  // The size counts against the org's stored-bytes quota, so it is never taken on trust blindly: a
+  // safe non-negative integer, and exactly the byte count when the control plane has the bytes.
+  if (!Number.isSafeInteger(input.size) || input.size < 0)
+    return Promise.reject(new Error("artifact size must be a non-negative integer"));
+  if (input.bytes && input.size !== input.bytes.length)
+    return Promise.reject(new ArtifactConflict("the size does not match the bytes"));
   let sha256 = input.sha256;
   let digestSource = "reported";
   if (input.bytes) {
