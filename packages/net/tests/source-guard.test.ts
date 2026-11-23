@@ -26,6 +26,7 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/release-compat.test.ts", // the release proxy, dialled on 127.0.0.1
   "packages/core/tests/proxy-e2e.test.ts", // the same proxy, dialled on 127.0.0.1 (CI only)
   "packages/core/tests/job-oidc.test.ts", // the same proxy, dialled on 127.0.0.1
+  "packages/core/tests/onepassword-vault.test.ts", // dials only its own loopback proxy (127.0.0.1)
   "packages/core/tests/vault-jwt-e2e.test.ts", // a Vault dev server in a container, on 127.0.0.1
 ]);
 

@@ -905,13 +905,24 @@ export const vaultSecrets = pgTable(
     trustClasses: text("trust_classes").notNull(),
     /** JSON array of host patterns a delivery may go to. Empty: deliverable nowhere. */
     destinations: text("destinations").notNull(),
+    /** 0 for an external reference (no sealed versions); 1 or more for a sealed secret. */
     currentVersion: bigint("current_version", { mode: "number" }).notNull(),
+    /** Where the value lives: `sealed` (here, in vault_secret_versions) or a backend name. */
+    source: text("source").notNull().default("sealed"),
+    /** The backend's reference (for 1Password, `op://vault/item/field`); null when sealed. */
+    externalRef: text("external_ref"),
     createdBy: text("created_by").notNull(),
     createdAt: createdAt(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull().default(nowMs),
     lastUsedAt: bigint("last_used_at", { mode: "number" }),
   },
   (t) => [
+    // A secret is sealed here (it has versions, so current_version >= 1, and no reference) or
+    // lives in a backend (a reference and no sealed versions). Never both, never neither.
+    check(
+      "vault_secrets_source_check",
+      sql`(${t.source} = 'sealed' and ${t.externalRef} is null and ${t.currentVersion} >= 1) or (${t.source} <> 'sealed' and ${t.externalRef} is not null and ${t.currentVersion} = 0)`,
+    ),
     unique("vault_secrets_scope_unique").on(t.orgId, t.name, t.scopeKey),
     unique("vault_secrets_id_org_unique").on(t.id, t.orgId),
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),

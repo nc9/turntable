@@ -7,6 +7,7 @@ import { type Db, ensureInstance, openDatabase } from "../db";
 import { getRunArtifactsByName } from "../db/repos";
 import { loadMasterKey } from "../secrets/crypto";
 import { SecretVault } from "../secrets/vault";
+import { loadOnePasswordConfig, OnePasswordBackend } from "../secrets/backends/onepassword";
 import { SigningService } from "../signing";
 import { releaseConfigFromEnv } from "../roles";
 import { AttestationStore } from "./attest";
@@ -78,7 +79,15 @@ export async function serveRelease(
   });
   // Publishing: the lane's own vault view (it alone can open release-class secrets) and its own
   // GitHub write credential. With no targets declared this does nothing.
-  const vault = new SecretVault({ db, masterKey, lane: "release" });
+  // The release lane's own 1Password accounts, from its own environment: the release account's
+  // token lives here and in no other process.
+  const op = loadOnePasswordConfig(env);
+  const vault = new SecretVault({
+    db,
+    masterKey,
+    lane: "release",
+    ...(op ? { backends: [new OnePasswordBackend({ config: op })] } : {}),
+  });
   const publish: PublishWiring = {
     credentials: {
       async secret(scope, name, destination, tag, requestId) {

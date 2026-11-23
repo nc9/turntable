@@ -27,7 +27,12 @@ const viewSchema = z.object({
   ref_pattern: z.string().nullable(),
   trust_classes: z.array(z.string()).describe("Classes allowed to use it. Never untrusted_pr."),
   destinations: z.array(z.string()).describe("Hosts a delivery may go to. Empty: nowhere."),
-  current_version: z.int(),
+  source: z.string().describe("sealed, or the store that holds the value (onepassword)."),
+  external_ref: z
+    .string()
+    .nullable()
+    .describe("The store's reference (vault, item and field names). Null when sealed."),
+  current_version: z.int().describe("0 for an external reference."),
   versions: z.array(
     z.object({
       version: z.int(),
@@ -233,6 +238,145 @@ export const listSecretsOp = defineOp({
     return {
       entries: page,
       next_cursor: rows.length > i.limit && last ? encodeCursor(last.id) : null,
+    };
+  },
+});
+
+const referenceField = z
+  .string()
+  .min(1)
+  .max(512)
+  .describe("A 1Password reference: op://<vault>/<item>/[section/]<field>. Names, never a value.");
+
+export const bindSecretReferenceOp = defineOp({
+  name: "bind_secret_reference",
+  summary: "Point a secret name at a 1Password reference instead of a sealed value.",
+  description:
+    "Makes the secret under that name and scope an external reference. The value is read from " +
+    "1Password at use time, through the same policy as a sealed secret (trust class, scope, " +
+    "destination), cached in memory for a short TTL, and delivered only by the secrets proxy. " +
+    "The reference must name a vault that an operator-configured service account serves, and " +
+    "that account must also be bound to the job's org or project and trust class, or every use " +
+    "is refused. Re-binding the same scope re-points it. A sealed secret of that scope is not " +
+    "converted: delete it first. Reads no value. Needs admin; audited by name, scope and reference.",
+  input: z.object({
+    name: nameField,
+    reference: referenceField,
+    environment: environmentField,
+    ref_pattern: refField,
+    trust_classes: z.array(z.string().max(32)).max(8).optional(),
+    destinations: z.array(z.string().max(253)).max(64).optional(),
+  }),
+  output: z.object({ created: z.boolean(), entry: viewSchema }),
+  effect: "write",
+  auth: { type: "token", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/secrets/references" },
+  async handler(ctx, i) {
+    const r = await guarded(() =>
+      vaultOf(ctx).bindReference(
+        ctx.scope.orgId,
+        actor(ctx),
+        scopeOf(ctx, i),
+        "onepassword",
+        i.reference,
+        { trustClasses: i.trust_classes, destinations: i.destinations },
+      ),
+    );
+    return { created: r.created, entry: r.secret };
+  },
+});
+
+export const unbindSecretReferenceOp = defineOp({
+  name: "unbind_secret_reference",
+  summary: "Remove a secret's 1Password reference.",
+  description:
+    "Deletes the external reference under that exact name and scope. Nothing in 1Password " +
+    "changes. A sealed secret is refused (use delete_secret). Needs admin; audited by name and " +
+    "scope.",
+  input: z.object({ name: nameField, environment: environmentField, ref_pattern: refField }),
+  output: z.object({ name: z.string(), external_ref: z.string().nullable() }),
+  effect: "destructive",
+  auth: { type: "token", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "DELETE", path: "/secrets/references" },
+  async handler(ctx, i) {
+    const r = await guarded(() => vaultOf(ctx).unbindReference(ctx.scope.orgId, scopeOf(ctx, i)));
+    if (!r) throw new OpError("not_found", "no secret with that name and scope");
+    return { name: r.name, external_ref: r.external_ref };
+  },
+});
+
+export const refreshSecretsOp = defineOp({
+  name: "refresh_secrets",
+  summary: "Drop the in-memory cache of external secret values.",
+  description:
+    "Forgets every cached 1Password value, so the next use reads the current one (after a " +
+    "rotation, say). Each distinct reference costs one read against the service account's rate " +
+    "limit, so use it when you need it. Does not touch sealed secrets. Needs admin; audited.",
+  input: z.object({}),
+  output: z.object({ dropped: z.int().describe("Cached values dropped.") }),
+  effect: "write",
+  auth: { type: "token", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/secrets/refresh" },
+  async handler(ctx) {
+    return { dropped: vaultOf(ctx).refreshBackends() };
+  },
+});
+
+export const doctorSecretsOp = defineOp({
+  name: "doctor_secrets",
+  summary: "Check the external secret stores: reachability of a canary reference, and quota.",
+  description:
+    "For each configured store, lists the service accounts (names and the vaults they serve, " +
+    "never a token), the reads made in the last hour and the remaining hourly quota when a " +
+    "limit is configured (the daily per-account limit is not tracked: see the 1Password " +
+    "account), and resolves the operator-named canary reference live to report " +
+    "whether the store is reachable. The canary's value is never returned. Needs admin. " +
+    "Read-only apart from that one read.",
+  input: z.object({}),
+  output: z.object({
+    backends: z.array(
+      z.object({
+        source: z.string(),
+        accounts: z.array(
+          z.object({
+            name: z.string(),
+            vaults: z.array(z.string()),
+            reads_last_hour: z.int(),
+            remaining_hourly: z.int().nullable(),
+            blocked_until: z.int().nullable(),
+          }),
+        ),
+        canary: z.object({
+          configured: z.boolean(),
+          account: z.string().nullable().optional(),
+          vault: z.string().optional(),
+          item: z.string().optional(),
+          field: z.string().optional(),
+          reachable: z.boolean().optional(),
+          error_kind: z.string().nullable().optional(),
+        }),
+      }),
+    ),
+  }),
+  effect: "read",
+  auth: { type: "token", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/secrets/doctor" },
+  async handler(ctx) {
+    const rows = await vaultOf(ctx).backendHealth();
+    return {
+      backends: rows.map((r) => ({
+        source: r.source,
+        accounts: r.health.accounts.map((a) => ({ ...a, vaults: [...a.vaults] })),
+        canary: r.health.canary,
+      })),
     };
   },
 });

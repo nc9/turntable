@@ -29,6 +29,17 @@ export interface NewVaultSecret {
   createdBy: string;
 }
 
+/** The ids of the projects that belong to the org. */
+export function listOrgProjectIds(db: Db, orgId: string): Promise<string[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ id: s.projects.id })
+      .from(s.projects)
+      .where(eq(s.projects.orgId, orgId));
+    return rows.map((r) => r.id);
+  });
+}
+
 export function findVaultSecret(
   db: Db,
   orgId: string,
@@ -168,6 +179,8 @@ export function insertVaultSecret(
       trustClasses: JSON.stringify(input.trustClasses),
       destinations: JSON.stringify(input.destinations),
       currentVersion: 1,
+      source: "sealed",
+      externalRef: null,
       createdBy: input.createdBy,
       createdAt: now,
       updatedAt: now,
@@ -183,6 +196,69 @@ export function insertVaultSecret(
       createdAt: now,
       validUntil: null,
     });
+    return row;
+  });
+}
+
+export interface NewExternalVaultSecret extends NewVaultSecret {
+  source: string;
+  externalRef: string;
+}
+
+/**
+ * Creates an external-reference secret (no sealed versions, current_version 0), or re-points the
+ * existing external one of that exact scope and replaces its policy. The caller has already
+ * refused a sealed row of that scope.
+ */
+export function upsertExternalVaultSecret(
+  db: Db,
+  orgId: string,
+  input: NewExternalVaultSecret,
+): Promise<VaultSecretRow> {
+  return db.transaction(async (tx) => {
+    const now = Date.now();
+    const scopeKey = scopeKeyOf(input.projectId, input.environment, input.refPattern);
+    const [existing] = await tx.orm
+      .select()
+      .from(s.vaultSecrets)
+      .where(
+        and(
+          eq(s.vaultSecrets.orgId, orgId),
+          eq(s.vaultSecrets.name, input.name),
+          eq(s.vaultSecrets.scopeKey, scopeKey),
+        ),
+      )
+      .limit(1);
+    const policy = {
+      trustClasses: JSON.stringify(input.trustClasses),
+      destinations: JSON.stringify(input.destinations),
+    };
+    if (existing) {
+      const [row] = await tx.orm
+        .update(s.vaultSecrets)
+        .set({ ...policy, source: input.source, externalRef: input.externalRef, updatedAt: now })
+        .where(and(eq(s.vaultSecrets.orgId, orgId), eq(s.vaultSecrets.id, existing.id)))
+        .returning();
+      return row!;
+    }
+    const row = {
+      id: ulid(),
+      orgId,
+      projectId: input.projectId,
+      name: input.name,
+      environment: input.environment,
+      refPattern: input.refPattern,
+      scopeKey,
+      ...policy,
+      currentVersion: 0,
+      source: input.source,
+      externalRef: input.externalRef,
+      createdBy: input.createdBy,
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: null,
+    };
+    await tx.orm.insert(s.vaultSecrets).values(row);
     return row;
   });
 }

@@ -422,5 +422,20 @@ export const migrations: Migration[] = [
       "ALTER TABLE `projects` ADD `sandbox_snapshot` text;",
       "ALTER TABLE `projects` ADD `max_concurrent` integer;"
     ]
+  },
+  {
+    "tag": "0036_external_secret_refs",
+    "when": 1795414088779,
+    "statements": [
+      "PRAGMA foreign_keys=OFF;",
+      "CREATE TABLE `__new_vault_secrets` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`name` text NOT NULL,\n\t`environment` text,\n\t`ref_pattern` text,\n\t`scope_key` text NOT NULL,\n\t`trust_classes` text NOT NULL,\n\t`destinations` text NOT NULL,\n\t`current_version` integer NOT NULL,\n\t`source` text DEFAULT 'sealed' NOT NULL,\n\t`external_ref` text,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"vault_secrets_source_check\" CHECK((\"__new_vault_secrets\".\"source\" = 'sealed' and \"__new_vault_secrets\".\"external_ref\" is null and \"__new_vault_secrets\".\"current_version\" >= 1) or (\"__new_vault_secrets\".\"source\" <> 'sealed' and \"__new_vault_secrets\".\"external_ref\" is not null and \"__new_vault_secrets\".\"current_version\" = 0))\n);",
+      "INSERT INTO `__new_vault_secrets`(\"id\", \"org_id\", \"project_id\", \"name\", \"environment\", \"ref_pattern\", \"scope_key\", \"trust_classes\", \"destinations\", \"current_version\", \"source\", \"external_ref\", \"created_by\", \"created_at\", \"updated_at\", \"last_used_at\") SELECT \"id\", \"org_id\", \"project_id\", \"name\", \"environment\", \"ref_pattern\", \"scope_key\", \"trust_classes\", \"destinations\", \"current_version\", \"source\", \"external_ref\", \"created_by\", \"created_at\", \"updated_at\", \"last_used_at\" FROM `vault_secrets`;",
+      "DROP TABLE `vault_secrets`;",
+      "ALTER TABLE `__new_vault_secrets` RENAME TO `vault_secrets`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE INDEX `vault_secrets_org_name_idx` ON `vault_secrets` (`org_id`,`name`);",
+      "CREATE UNIQUE INDEX `vault_secrets_scope_unique` ON `vault_secrets` (`org_id`,`name`,`scope_key`);",
+      "CREATE UNIQUE INDEX `vault_secrets_id_org_unique` ON `vault_secrets` (`id`,`org_id`);"
+    ]
   }
 ];

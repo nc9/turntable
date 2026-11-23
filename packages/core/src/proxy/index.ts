@@ -185,6 +185,8 @@ interface Live {
   redact: SecretRegistry;
   githubToken?: string | undefined;
   oidcMint?: (() => string) | undefined;
+  /** Set when a secret request failed because its store was unavailable (not a policy refusal). */
+  backendFault?: boolean | undefined;
 }
 
 const toRule = (r: ProxyRuleRow): Rule => ({
@@ -290,7 +292,10 @@ export class SecretsProxy {
       name: rule.secret,
       destination: scope.host,
     });
-    if (!r.ok) return { ok: false, reason: r.reason };
+    if (!r.ok) {
+      if (r.reason === "backend_unavailable") live.backendFault = true;
+      return { ok: false, reason: r.reason };
+    }
     // The log redactor learns the value before it can be echoed anywhere.
     live.redact.register(r.value);
     return { ok: true, value: r.value };
@@ -355,6 +360,9 @@ export class SecretsProxy {
     o: { passthroughHosts: readonly PassthroughEntry[]; ttlMs: number; vaultRules?: boolean },
   ): { access: ProxyAccess; redact: SecretRegistry } {
     const redact = new SecretRegistry();
+    // Every service-account token is known to the redactor from the start, though no job ever
+    // receives one: a token that leaked into any output is masked all the same.
+    for (const token of this.#o.vault.backendTokens()) redact.register(token);
     this.#live.set(ctx.attempt.id, { scope: ctx.scope, redact });
     const live = this.#live.get(ctx.attempt.id);
     const credential = this.#registry.register({
@@ -387,6 +395,11 @@ export class SecretsProxy {
       },
       redact,
     };
+  }
+
+  /** Whether a secret request of this attempt failed because its store was unavailable. */
+  backendFault(attemptId: string): boolean {
+    return this.#live.get(attemptId)?.backendFault === true;
   }
 
   /** Ends the attempt's credential and closes its tunnels. Idempotent. */
@@ -466,7 +479,16 @@ export function withSecretsProxy(
     const revoke = (): void => o.proxy.release(ctx.attempt.id);
     ctx.signal.addEventListener("abort", revoke, { once: true });
     try {
-      return await runner({ ...ctx, proxy: access, redact });
+      const result = await runner({ ...ctx, proxy: access, redact });
+      // A secrets store outage is an infra problem, not the job's: a job that failed after its
+      // secret request was refused for that reason reports infra_error, so it can be retried.
+      if (result.state === "failure" && o.proxy.backendFault(ctx.attempt.id)) {
+        return {
+          state: "infra_error",
+          reason: "a secret could not be read: the secrets store is unavailable",
+        };
+      }
+      return result;
     } finally {
       ctx.signal.removeEventListener("abort", revoke);
       revoke();

@@ -1,0 +1,3 @@
+ALTER TABLE "vault_secrets" ADD COLUMN "source" text DEFAULT 'sealed' NOT NULL;--> statement-breakpoint
+ALTER TABLE "vault_secrets" ADD COLUMN "external_ref" text;--> statement-breakpoint
+ALTER TABLE "vault_secrets" ADD CONSTRAINT "vault_secrets_source_check" CHECK (("vault_secrets"."source" = 'sealed' and "vault_secrets"."external_ref" is null and "vault_secrets"."current_version" >= 1) or ("vault_secrets"."source" <> 'sealed' and "vault_secrets"."external_ref" is not null and "vault_secrets"."current_version" = 0));
