@@ -1,6 +1,7 @@
 // The single enforcement point for operations. Authentication, scope, role, validation and audit
 // all happen here; adapters (REST, MCP, CLI) only translate transport and never decide access.
 import { auditFailure, systemOrgId } from "../audit/failures";
+import type { BackupConfig } from "../db/backup";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -13,6 +14,7 @@ import {
   touchApiToken,
   touchInstanceToken,
 } from "../db/repos";
+import type { DoctorReport } from "../doctor/types";
 import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
@@ -40,11 +42,15 @@ export type DispatchEnv = {
   allowInstance?: boolean | undefined;
   /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
+  /** The data dir and database file `db_backup` works on; `{ dialect: "pg" }` on Postgres. */
+  backup?: BackupConfig | undefined;
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party for human approvals (TURNTABLE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
+  /** The readiness checks, for the `doctor` operation. */
+  doctor?: (() => Promise<DoctorReport>) | undefined;
 };
 
 export type DispatchResult =
@@ -324,11 +330,39 @@ export async function dispatch(
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       instanceOrgCap: env.instanceOrgCap,
+      backup: env.backup,
       attestationAnchors: env.attestationAnchors,
+      doctor: env.doctor,
     });
     const target = op;
     if (!audited) {
       const output = validateOutput(target, await target.handler(ctx(env.db), input));
+      return { ok: true, op: target, output, untrusted: target.untrustedOutput };
+    }
+    if (target.outsideTransaction) {
+      // The handler runs without the write lock; the audit row gets its own short transaction.
+      let output: unknown;
+      try {
+        output = validateOutput(target, await target.handler(ctx(env.db), input));
+      } catch (err) {
+        const code = err instanceof OpError ? err.code : "internal";
+        await audit(`error:${code}`, input);
+        throw err;
+      }
+      const detail = target.auditDetail?.(output) ?? {};
+      await env.db.transaction(
+        async (tx) => {
+          await appendAudit(tx, scope, {
+            principalKind: principal.kind,
+            principalId: principal.id,
+            op: target.name,
+            effect: target.effect,
+            outcome: "ok",
+            input: { ...(redactInput(target, input) as object), ...detail },
+          });
+        },
+        { lock: `audit:${scope.orgId}` },
+      );
       return { ok: true, op: target, output, untrusted: target.untrustedOutput };
     }
     try {

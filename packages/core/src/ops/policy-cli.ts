@@ -46,7 +46,7 @@ export const POLICY_USAGE = `Usage:
   turntable policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
-      [--splits-json '<json>']   (run jobs as shards, e.g. [{"job":"tests","shards":[{"steps":["A"]},{"steps":["B"]}]}]; replaces the stored ones)
+      [--splits-json '<json>']   (run jobs as shards, e.g. [{"job":"tests","shards":[{"steps":["A"]},{"steps":["B"]}]}]; a shard may add "paths":["src/**"] to run only when they change; replaces the stored ones)
       [--var NAME=value ...]   (non-secret vars.* for workflows, e.g. TURNTABLE_CI=true; replaces the stored ones)
       [--merge-queue] [--data-dir ./data]
   turntable policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
