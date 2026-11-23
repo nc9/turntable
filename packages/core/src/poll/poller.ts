@@ -12,7 +12,7 @@ import {
 } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
 import { newTagCaches, pollRepo } from "./ingest";
-import { ingestStatus, type PollAuthMode, type RepoStatus } from "./status";
+import { ingestStatus, POLL_RESERVE, type PollAuthMode, type RepoStatus } from "./status";
 
 /** What the poller needs from the GitHub App: the one mint function (it caches until near expiry). */
 export interface InstallationMinter {
@@ -58,7 +58,7 @@ export type PollerOptions = {
 };
 
 /** Below this many requests left in the window the poller stops asking until it resets. */
-const RESERVE = 5;
+const RESERVE = POLL_RESERVE;
 /** The fewest ms between two polls of one repo that webhooks asked for. */
 export const MIN_NUDGE_GAP_MS = 5000;
 

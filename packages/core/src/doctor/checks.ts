@@ -1,6 +1,7 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
+import { ingestStatus, POLL_RESERVE } from "../poll/status";
 import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
 import { anchorKeyMessage } from "../secrets/master-key";
@@ -657,6 +658,38 @@ export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
     : pass("quotas", area, "no quotas are set: every org is unlimited (fine for one operator)");
 }
 
+/** The failures in a row at which a repo's polling is reported as unhealthy. */
+export const POLL_FAILURE_WARN = 3;
+
+/**
+ * Poll health from the in-process poller snapshot: fixed sentences, no repo names or error text.
+ * A process with no poller (or none polling yet) passes: there is nothing to be unhealthy.
+ */
+export function checkPollHealth(): DoctorCheck {
+  const area = "ingest";
+  const repos = [...ingestStatus.repos.values()];
+  const failing = repos.filter((r) => r.consecutiveFailures >= POLL_FAILURE_WARN).length;
+  const anonymousLow = repos.some(
+    (r) =>
+      r.authMode === "anonymous" &&
+      r.rateLimit?.remaining !== undefined &&
+      r.rateLimit.remaining <= POLL_RESERVE,
+  );
+  if (failing > 0 || anonymousLow) {
+    return warn(
+      "poll_health",
+      area,
+      failing > 0 && anonymousLow
+        ? "some repos keep failing to poll and the anonymous GitHub budget is nearly spent"
+        : failing > 0
+          ? "some repos have failed to poll several times in a row"
+          : "the anonymous GitHub budget is nearly spent",
+      "Run `instance_ingest_status` for each repo's error class and budget; set a poll token or install the GitHub App to raise the budget.",
+    );
+  }
+  return pass("poll_health", area, "no repo is failing to poll and the poll budget has room");
+}
+
 /** Every check, in a fixed order. A check that throws is reported as a fail, never as a crash. */
 export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
   const safe = async (
@@ -693,6 +726,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("https_redirect", "network", () => checkHttpsRedirect(i))),
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
+    ...(await safe("poll_health", "ingest", () => checkPollHealth())),
   ];
   return report(all);
 }

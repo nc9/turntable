@@ -9774,6 +9774,322 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/ingest-status": {
+      "get": {
+        "operationId": "instance_ingest_status",
+        "summary": "Poll health of every org's repos, for the instance administrator.",
+        "description": "Reports the GitHub poller's health across all orgs, with no org credential: per repo the org and project slug, the last poll time and outcome (ok, rate_limited or error), the error class (rate_limited, auth, not_found, github_4xx, github_5xx, network, stale_binding or unknown) and never the raw error text, consecutive failures, the next poll time, the auth mode (anonymous, token or installation) and that mode's last rate-limit budget (limit, remaining, reset). Also the last budget of each mode. It carries no token, commit message or run content. The view is the poller in the server process answering the call: it is empty when polling is off or runs in another process. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "running": {
+                      "type": "boolean",
+                      "description": "Whether the poller is running in this process."
+                    },
+                    "rate_limit_by_mode": {
+                      "type": "object",
+                      "properties": {
+                        "anonymous": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "limit": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "remaining": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "reset_at": {
+                                  "type": ["string", "null"]
+                                },
+                                "observed_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["limit", "remaining", "reset_at", "observed_at"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "poll_token": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "limit": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "remaining": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "reset_at": {
+                                  "type": ["string", "null"]
+                                },
+                                "observed_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["limit", "remaining", "reset_at", "observed_at"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "installation": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "limit": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "remaining": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "reset_at": {
+                                  "type": ["string", "null"]
+                                },
+                                "observed_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["limit", "remaining", "reset_at", "observed_at"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The installed repo with the least budget left."
+                        }
+                      },
+                      "required": ["anonymous", "poll_token", "installation"],
+                      "additionalProperties": false
+                    },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "project": {
+                            "type": "string"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "last_poll_at": {
+                            "type": ["string", "null"]
+                          },
+                          "last_outcome": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": ["ok", "rate_limited", "error"]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "error_class": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "rate_limited",
+                                  "auth",
+                                  "not_found",
+                                  "github_4xx",
+                                  "github_5xx",
+                                  "network",
+                                  "stale_binding",
+                                  "unknown"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "consecutive_failures": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "next_poll_at": {
+                            "type": ["string", "null"]
+                          },
+                          "auth_mode": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": ["anonymous", "token", "installation"]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "rate_limit": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "limit": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "remaining": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "reset_at": {
+                                    "type": ["string", "null"]
+                                  },
+                                  "observed_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["limit", "remaining", "reset_at", "observed_at"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The budget of that auth mode for this repo."
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "project",
+                          "repo",
+                          "last_poll_at",
+                          "last_outcome",
+                          "error_class",
+                          "consecutive_failures",
+                          "next_poll_at",
+                          "auth_mode",
+                          "rate_limit"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["running", "rate_limit_by_mode", "repos"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/audit-verify": {
       "post": {
         "operationId": "instance_audit_verify",

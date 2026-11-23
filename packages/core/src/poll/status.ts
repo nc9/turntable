@@ -44,3 +44,43 @@ export function resetIngestStatus(): void {
   ingestStatus.fallbackAuth = "anonymous";
   ingestStatus.repos.clear();
 }
+
+/** Requests left at or below which the poller waits for the reset instead of spending the rest. */
+export const POLL_RESERVE = 5;
+
+/** What a failed poll is reported as to an operator: a class, never the upstream text. */
+export type PollErrorClass =
+  | "rate_limited"
+  | "auth"
+  | "not_found"
+  | "github_4xx"
+  | "github_5xx"
+  | "network"
+  | "stale_binding"
+  | "unknown";
+
+/**
+ * Maps a repo's last failure to a class. `lastError` is short and token-free by construction, but
+ * the operator view never repeats it: it can carry a repo path or an upstream message.
+ */
+export function classifyPollError(
+  s: Pick<RepoStatus, "lastOutcome" | "lastError">,
+): PollErrorClass | null {
+  if (s.lastOutcome === null || s.lastOutcome === "ok") return null;
+  if (s.lastOutcome === "rate_limited") return "rate_limited";
+  const text = s.lastError ?? "";
+  const status = /^GitHub API (\d{3}) /.exec(text)?.[1];
+  if (status !== undefined) {
+    const n = Number(status);
+    if (n === 401 || n === 403) return "auth";
+    if (n === 404) return "not_found";
+    if (n === 429) return "rate_limited";
+    return n >= 500 ? "github_5xx" : "github_4xx";
+  }
+  if (/stale/.test(text)) return "stale_binding";
+  if (
+    /fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|socket|network|abort/i.test(text)
+  )
+    return "network";
+  return "unknown";
+}

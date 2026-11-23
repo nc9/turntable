@@ -74,7 +74,7 @@
     "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts",
     "test:tar": "bun test packages/act-runner/tests/fold-key.test.ts packages/act-runner/tests/tar.test.ts packages/act-runner/tests/tar-scan.test.ts",
     "test:checkout": "bun test packages/core/tests/checkout-child.test.ts packages/core/tests/checkout-trust.test.ts packages/core/tests/git-fetch.test.ts",
-    "test:quota-ops": "bun test packages/core/tests/org-quotas.test.ts packages/core/tests/quotas-cli.test.ts packages/core/tests/instance-admin.test.ts packages/core/tests/bootstrap-approver.test.ts",
+    "test:quota-ops": "bun test packages/core/tests/instance-ingest-status.test.ts packages/core/tests/org-quotas.test.ts packages/core/tests/quotas-cli.test.ts packages/core/tests/instance-admin.test.ts packages/core/tests/bootstrap-approver.test.ts",
     "test:events-stream": "bun test packages/core/tests/event-stream.test.ts packages/core/tests/outbound-webhooks.test.ts",
     "test:artifacts-core": "bun test packages/core/tests/artifact-provenance.test.ts packages/core/tests/artifacts-cli.test.ts",
     "test:security-misc": "bun test packages/core/tests/master-key-autoinit.test.ts packages/core/tests/master-key-rewrap.test.ts packages/core/tests/master-key-retire.test.ts packages/core/tests/keys-reseal-env.test.ts packages/core/tests/release-key.test.ts packages/core/tests/per-org-kek.test.ts packages/core/tests/provider-trust.test.ts packages/core/tests/sandbox-sweep.test.ts packages/core/tests/poll-unauthenticated.test.ts",
