@@ -221,6 +221,10 @@ jobs:
         env:
           TT_ACT_IMAGE: node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
         run: bun run test:cache-e2e
+      - name: Artifacts end to end (real act and the pinned artifact actions)
+        env:
+          TT_ACT_IMAGE: node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
+        run: bun run test:artifacts-e2e
       - name: Vault JWT auth against the per-org OIDC issuer
         env:
           # A Vault dev server on the host network; multi-arch index digest of hashicorp/vault 1.20.

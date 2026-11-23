@@ -5,18 +5,11 @@
 // pull requests stop colliding on one shared package.json line.
 //
 // Left out because they need Docker, a compiled binary or a live service, and have their own CI
-// jobs: the suites named in GATED. (`test:golden` is the release golden path: it is slower and
+// jobs: the suites named in GATED (scripts/test-groups.ts). (`test:golden` is the release golden path: it is slower and
 // runs as its own CI job.)
 // `test:pg-only` holds the PGlite-heavy files (one in-process Postgres each): they run in the
 // postgres job through `pg:test`, not in this SQLite aggregate.
-const GATED = new Set([
-  "test:docker",
-  "test:act-e2e",
-  "test:run-e2e",
-  "test:golden",
-  "test:vault-e2e",
-  "test:pg-only",
-]);
+import { GATED } from "./test-groups";
 
 const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
   scripts: Record<string, string>;
