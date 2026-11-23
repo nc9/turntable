@@ -34,11 +34,11 @@ const capture = async <T>(f: () => Promise<T>): Promise<{ result: T; out: string
   }
 };
 
-test("longshore secret: value from a file, never from argv; list shows no value; audited", async () => {
+test("turntable secret: value from a file, never from argv; list shows no value; audited", async () => {
   const dir = join(tmp, "data");
   const keyFile = join(tmp, "m.key");
   initMasterKey(keyFile);
-  const db = openDatabase(join(dir, "longshore.db"));
+  const db = openDatabase(join(dir, "turntable.db"));
   await ensureInstance(db);
   const org = await createOrg(db, { slug: "acme", name: "acme" });
   await createProject(db, { orgId: org.id }, { slug: "app", name: "App" });

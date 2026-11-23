@@ -1,8 +1,8 @@
 // Checks on what a release is about to publish, that need no account and no network:
 //
 //   bun run scripts/release-checks.ts sums dist                      SHA256SUMS is complete and true
-//   bun run scripts/release-checks.ts sbom dist/longshore-X.cdx.json  the SBOM is the lockfile's
-//   bun run scripts/release-checks.ts image-sbom longshore-image.cdx.json   a usable image SBOM
+//   bun run scripts/release-checks.ts sbom dist/turntable-X.cdx.json  the SBOM is the lockfile's
+//   bun run scripts/release-checks.ts image-sbom turntable-image.cdx.json   a usable image SBOM
 //
 // The release dry run runs all three, so a release whose checksums, SBOM or image SBOM are wrong
 // fails before a tag is ever pushed.
@@ -13,14 +13,14 @@ import { parseLock } from "./lockfile";
 import { purl, shippedPackages } from "./sbom";
 
 export const BINARIES = [
-  "longshore-linux-x64",
-  "longshore-linux-arm64",
-  "longshore-darwin-arm64",
+  "turntable-linux-x64",
+  "turntable-linux-arm64",
+  "turntable-darwin-arm64",
 ] as const;
-const SBOM_FILE = /^longshore-[0-9][^/]*\.cdx\.json$/;
+const SBOM_FILE = /^turntable-[0-9][^/]*\.cdx\.json$/;
 
 /**
- * `build.ts` deletes the output directory before it writes. A LONGSHORE_DIST that names `/`, the
+ * `build.ts` deletes the output directory before it writes. A TURNTABLE_DIST that names `/`, the
  * home directory, the repository or any directory above them would delete far more than a build's
  * output, so it is refused before anything is removed. Returns the resolved directory.
  */
@@ -46,11 +46,11 @@ export function assertSafeDist(dist: string, root: string, home: string | undefi
   const isAncestorOrSame = (a: string, b: string): boolean =>
     a === b || b.startsWith(a.endsWith(sep) ? a : a + sep);
   if (d === sep || /^[A-Za-z]:\\?$/.test(d))
-    throw new Error(`refusing LONGSHORE_DIST=${dist}: it is a filesystem root`);
+    throw new Error(`refusing TURNTABLE_DIST=${dist}: it is a filesystem root`);
   for (const p of protectedDirs) {
     if (isAncestorOrSame(d, p)) {
       throw new Error(
-        `refusing LONGSHORE_DIST=${dist}: it is, or contains, ${p} (the build deletes its output directory first)`,
+        `refusing TURNTABLE_DIST=${dist}: it is, or contains, ${p} (the build deletes its output directory first)`,
       );
     }
   }

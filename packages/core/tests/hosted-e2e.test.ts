@@ -6,8 +6,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { type CheckRunBody, type CheckRunsApi } from "../src/checks/client";
 import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
 import {

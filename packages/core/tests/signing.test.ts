@@ -9,7 +9,7 @@ import {
   verifyArtifact,
   verifyEnvelope,
   sha256Hex,
-} from "@longshore/signer";
+} from "@turntable/signer";
 import {
   ArtifactConflict,
   ArtifactScopeError,
@@ -152,7 +152,7 @@ async function releaseRun(
     await recordArtifact(db, (over.t ?? a).scope, {
       runId: run.id,
       attemptId: attempt.id,
-      name: "longshore-linux-x64",
+      name: "turntable-linux-x64",
       sha256: sha256Hex(BINARY),
       size: BINARY.length,
     });
@@ -170,8 +170,8 @@ async function releaseRun(
 const service = (
   approvals: ApprovalVerifier = approve,
   signers: ConstructorParameters<typeof SigningService>[0]["signers"] = { builtin: spy },
-) => new SigningService({ db, signers, approvals, builderId: "https://ci.example.test/longshore" });
-const req = (runId: string, artifacts = ["longshore-linux-x64"]) => ({
+) => new SigningService({ db, signers, approvals, builderId: "https://ci.example.test/turntable" });
+const req = (runId: string, artifacts = ["turntable-linux-x64"]) => ({
   runId,
   artifacts,
 });
@@ -194,7 +194,7 @@ describe("what is signed", () => {
     if (!v.ok) return;
     const p = v.statement.predicate;
     expect(v.statement.subject).toEqual([
-      { name: "longshore-linux-x64", digest: { sha256: sha256Hex(BINARY) } },
+      { name: "turntable-linux-x64", digest: { sha256: sha256Hex(BINARY) } },
     ]);
     expect(p.buildDefinition.externalParameters).toMatchObject({
       workflow: ".github/workflows/release.yml",
@@ -209,7 +209,7 @@ describe("what is signed", () => {
       ["actions/checkout@v4", "c"],
       ["oven-sh/setup-bun@v2", "b"],
     ]);
-    expect(p.runDetails.builder.id).toBe("https://ci.example.test/longshore");
+    expect(p.runDetails.builder.id).toBe("https://ci.example.test/turntable");
     expect(p.runDetails.metadata.invocationId).toBe(run.id);
     // The recorded artifact that was not asked for is a byproduct.
     expect(p.runDetails.byproducts).toEqual([
@@ -234,7 +234,7 @@ describe("what is signed", () => {
     const run = await releaseRun();
     const out = await service().signRelease(
       a.scope,
-      req(run.id, ["longshore-linux-x64", "not-recorded"]),
+      req(run.id, ["turntable-linux-x64", "not-recorded"]),
     );
     expect(out).toEqual({ ok: false, reason: "artifact_not_recorded", detail: "not-recorded" });
     expect(signCalls).toBe(0);
@@ -559,14 +559,14 @@ describe("a built-in key belongs to one org", () => {
       db,
       signers: { builtin: spy },
       approvals: approve,
-      builderId: "https://ci.example.test/longshore",
+      builderId: "https://ci.example.test/turntable",
     });
     await setProjectSigning(db, b.scope, { signingKey: "builtin:release" });
     // Org B has no key yet: it cannot sign, and in particular not with A's key of the same name.
     const bRun = await releaseRun({ t: b });
     const before = signCalls;
     const denied = await hostile
-      .signRelease(b.scope, { runId: bRun.id, artifacts: ["longshore-linux-x64"] })
+      .signRelease(b.scope, { runId: bRun.id, artifacts: ["turntable-linux-x64"] })
       .catch((e: unknown) => e);
     expect(
       denied instanceof Error ||
@@ -608,7 +608,7 @@ describe("a built-in key belongs to one org", () => {
       db,
       signers: { "aws-kms": kms },
       approvals: approve,
-      builderId: "https://ci.example.test/longshore",
+      builderId: "https://ci.example.test/turntable",
     });
     const run = await releaseRun();
     const out = await svc.signRelease(a.scope, req(run.id));

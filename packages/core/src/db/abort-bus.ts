@@ -25,7 +25,7 @@ export function announceCancelled(db: Db, attempts: readonly CancelledAttempt[])
       try {
         l(attempts);
       } catch (err) {
-        console.error("longshore: a cancel listener failed", err);
+        console.error("turntable: a cancel listener failed", err);
       }
     }
   });

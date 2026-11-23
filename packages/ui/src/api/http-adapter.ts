@@ -1,4 +1,4 @@
-import type { ApiCapabilities, LongshoreApi } from "./client";
+import type { ApiCapabilities, TurntableApi } from "./client";
 import { stepEvents } from "./step-events";
 import type {
   ApprovalChallenge,
@@ -223,7 +223,7 @@ function quotasOf(w: WireQuotas): OrgQuotas {
   };
 }
 
-export function createHttpApi(options: HttpApiOptions): LongshoreApi {
+export function createHttpApi(options: HttpApiOptions): TurntableApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const base = `${options.baseUrl ?? ""}/api/v1`;
   /** attemptId -> where to read its log, learned from get_run. */
@@ -280,7 +280,7 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
     return k;
   };
 
-  const api: LongshoreApi = {
+  const api: TurntableApi = {
     capabilities: {
       rerun: true,
       approve: true,

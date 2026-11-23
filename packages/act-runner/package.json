@@ -1,5 +1,5 @@
 {
-  "name": "@longshore/act-runner",
+  "name": "@turntable/act-runner",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,12 +10,12 @@
     "typecheck": "bun check"
   },
   "dependencies": {
-    "@longshore/net": "workspace:*",
-    "@longshore/provider-sdk": "workspace:*",
+    "@turntable/net": "workspace:*",
+    "@turntable/provider-sdk": "workspace:*",
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@longshore/provider-docker": "workspace:*",
+    "@turntable/provider-docker": "workspace:*",
     "@types/bun": "1.4.4"
   }
 }

@@ -32,7 +32,7 @@ The compiled binary must work from an empty directory, so never read runtime ass
 
 ## Web UI in the dev loop
 
-Run from source (`bun run packages/core/src/main.ts serve`), the server serves the built bundle in `packages/ui/dist` when it has an `index.html`: build it with `bun run --cwd packages/ui build` and reload the page (files are read per request, so a rebuild shows without a restart). To serve a bundle from elsewhere set `LONGSHORE_UI_DIR`. Without a build the server shows a placeholder that says how to build one. This is dev mode only: the compiled binary serves its embedded UI and never reads UI files from disk, and ignores `LONGSHORE_UI_DIR`. Only regular files inside the directory are served; a path that leaves it, or a symlink that does, is a 404.
+Run from source (`bun run packages/core/src/main.ts serve`), the server serves the built bundle in `packages/ui/dist` when it has an `index.html`: build it with `bun run --cwd packages/ui build` and reload the page (files are read per request, so a rebuild shows without a restart). To serve a bundle from elsewhere set `TURNTABLE_UI_DIR`. Without a build the server shows a placeholder that says how to build one. This is dev mode only: the compiled binary serves its embedded UI and never reads UI files from disk, and ignores `TURNTABLE_UI_DIR`. Only regular files inside the directory are served; a path that leaves it, or a symlink that does, is a 404.
 
 ## Docs
 

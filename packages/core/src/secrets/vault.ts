@@ -9,7 +9,7 @@
 //  - `untrusted_pr` can never be allowed: refused when a secret is written and again at use.
 //  - Policy never guesses: two equally specific matches, an unknown environment, an empty
 //    destination list and a failed decrypt are all denials.
-import { matchesPatterns } from "@longshore/act-runner";
+import { matchesPatterns } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
   listVaultCiphertexts,

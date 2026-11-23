@@ -17,7 +17,7 @@ It is pre-alpha and under active development. Interfaces will change without not
   - Per-job tokens, an OIDC issuer, and trust classes for pull requests, with egress denied by default.
   - Human approvals, an incident freeze, and per-org quotas and tenant isolation.
 - **Releases.** A separate release lane that re-checks a tag, builds with nothing a lower class could write, signs and publishes.
-- **Parity checks.** `longshore parity` compares a run with another CI's check runs for the same commit.
+- **Parity checks.** `turntable parity` compares a run with another CI's check runs for the same commit.
 
 ## Dogfooding
 
@@ -31,7 +31,7 @@ bun run dev                       # serve on 127.0.0.1:8080
 curl http://127.0.0.1:8080/healthz
 ```
 
-Build the binaries into `dist/` with `bun run build`. The server binds to `127.0.0.1` unless you pass `--host` or set `LONGSHORE_HOST`. Run one job of a workflow in a local Docker sandbox with `longshore run <workflow> -j <job>`. The [quickstart](docs/quickstart.mdx) covers polling a repository and the rest of the setup.
+Build the binaries into `dist/` with `bun run build`. The server binds to `127.0.0.1` unless you pass `--host` or set `TURNTABLE_HOST`. Run one job of a workflow in a local Docker sandbox with `turntable run <workflow> -j <job>`. The [quickstart](docs/quickstart.mdx) covers polling a repository and the rest of the setup.
 
 ## Development
 

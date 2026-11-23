@@ -70,7 +70,7 @@ describe("sbom", () => {
     expect(left.dependsOn).not.toContain(purl("nested", "2.0.0"));
     // The workspace util's dependency (shared) is reachable from the root.
     const root = sbom.dependencies[0]!;
-    expect(root.ref).toBe("pkg:generic/longshore@0.1.0-alpha.1");
+    expect(root.ref).toBe("pkg:generic/turntable@0.1.0-alpha.1");
     expect(root.dependsOn).toContain(purl("left", "1.0.0"));
   });
 

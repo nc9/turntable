@@ -1,4 +1,4 @@
-import type { LongshoreApi } from "../client";
+import type { TurntableApi } from "../client";
 import type {
   ChangeEvent,
   ConnectionStatus,
@@ -22,7 +22,7 @@ export type FixtureOptions = {
 };
 
 export type Fixture = {
-  api: LongshoreApi;
+  api: TurntableApi;
   realtime: Realtime;
   world: World;
   stop(): void;
@@ -70,7 +70,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     world.maybeSpawn();
   }, options.tickMs ?? 1000);
 
-  const api: LongshoreApi = {
+  const api: TurntableApi = {
     capabilities: { rerun: true, approve: true, humanApproval: true, simulatedCeremony: true },
     listOrgs: () => delay(() => world.orgs.map((o) => ({ ...o }))),
     listProjects: (orgId) =>

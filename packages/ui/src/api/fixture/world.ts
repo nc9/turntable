@@ -188,7 +188,7 @@ export type World = ReturnType<typeof createWorld>;
 
 export function createWorld(options: { now?: () => number; seed?: string } = {}) {
   const now = options.now ?? Date.now;
-  const rng = createRng(options.seed ?? "longshore-fixture");
+  const rng = createRng(options.seed ?? "turntable-fixture");
 
   const orgs: Org[] = [
     { id: "01FIXTURE0ORG0NORTHWIND0000", slug: "northwind", name: "Northwind" },

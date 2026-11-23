@@ -17,11 +17,11 @@ import {
   type SecretSource,
   startProxy,
   type RunningProxy,
-} from "@longshore/proxy";
-import { dockerBridgeGateway } from "@longshore/provider-docker";
-import type { ProxyEndpoint } from "@longshore/provider-sdk";
-import { SecretRegistry } from "@longshore/redact";
-import type { SafeFetch } from "@longshore/net";
+} from "@turntable/proxy";
+import { dockerBridgeGateway } from "@turntable/provider-docker";
+import type { ProxyEndpoint } from "@turntable/provider-sdk";
+import { SecretRegistry } from "@turntable/redact";
+import type { SafeFetch } from "@turntable/net";
 import type { Db } from "../db";
 import {
   appendAudit,

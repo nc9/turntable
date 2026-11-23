@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:tls";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InfraError, SpecError, type SandboxSpec } from "@longshore/provider-sdk";
+import { InfraError, SpecError, type SandboxSpec } from "@turntable/provider-sdk";
 import {
   DaytonaProvider,
   type DaytonaProviderOptions,
@@ -68,7 +68,7 @@ const make = (o: Partial<DaytonaProviderOptions> = {}) =>
 
 const spec = (proxy: NonNullable<SandboxSpec["network"]["proxy"]>): SandboxSpec => ({
   name: "job-1",
-  labels: { "longshore-run": "run-42" },
+  labels: { "turntable-run": "run-42" },
   ttlSeconds: 600,
   network: { egress: "deny-all-except-proxy", proxy },
 });

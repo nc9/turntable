@@ -98,7 +98,7 @@ describe("one check for the shards of a job", () => {
     expect(calls.filter((x) => x.op === "create")).toHaveLength(1);
     expect(runs.size).toBe(1);
     const [id, body] = [...runs][0]!;
-    expect(body).toMatchObject({ name: `longshore / ${NAME}`, status: "in_progress" });
+    expect(body).toMatchObject({ name: `turntable / ${NAME}`, status: "in_progress" });
     // every shard's attempt points at the one check
     for (const x of [a!, b!, c!])
       expect(await getAttemptCheckRunId(db, world.scope, x.attempt.id)).toBe(id);
@@ -199,7 +199,7 @@ describe("one check for the shards of a job", () => {
     await r.idle();
     const latest = [...runs.values()].at(-1)!;
     expect(latest).toMatchObject({
-      name: `longshore / ${NAME}`,
+      name: `turntable / ${NAME}`,
       status: "completed",
       conclusion: "success",
     });

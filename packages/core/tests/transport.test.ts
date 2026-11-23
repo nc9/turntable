@@ -134,18 +134,18 @@ describe("HSTS", () => {
     });
     expect(
       transportOptionsFromEnv({
-        LONGSHORE_TRUST_FORWARDED_PROTO: "1",
-        LONGSHORE_HSTS_MAX_AGE: "off",
-        LONGSHORE_HSTS_INCLUDE_SUBDOMAINS: "0",
+        TURNTABLE_TRUST_FORWARDED_PROTO: "1",
+        TURNTABLE_HSTS_MAX_AGE: "off",
+        TURNTABLE_HSTS_INCLUDE_SUBDOMAINS: "0",
       }),
     ).toEqual({
       trustForwardedProto: true,
       hstsMaxAge: 0,
       hstsIncludeSubDomains: false,
     });
-    expect(transportOptionsFromEnv({ LONGSHORE_HSTS_MAX_AGE: "600" }).hstsMaxAge).toBe(600);
-    expect(() => transportOptionsFromEnv({ LONGSHORE_HSTS_MAX_AGE: "soon" })).toThrow();
-    expect(() => transportOptionsFromEnv({ LONGSHORE_HSTS_MAX_AGE: "-1" })).toThrow();
+    expect(transportOptionsFromEnv({ TURNTABLE_HSTS_MAX_AGE: "600" }).hstsMaxAge).toBe(600);
+    expect(() => transportOptionsFromEnv({ TURNTABLE_HSTS_MAX_AGE: "soon" })).toThrow();
+    expect(() => transportOptionsFromEnv({ TURNTABLE_HSTS_MAX_AGE: "-1" })).toThrow();
   });
 });
 

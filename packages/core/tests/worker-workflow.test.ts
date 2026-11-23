@@ -4,9 +4,9 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import type { Provider } from "@longshore/provider-sdk";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   type Db,
   ensureLocalTenant,
@@ -76,7 +76,7 @@ case "$J" in
     sleep 1
     printf '%s' "$out" ;;
   forger)
-    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[longshore: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[turntable: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
 esac
 case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
@@ -1507,7 +1507,7 @@ jobs:
     expect(egressForRun('{"trust":"trusted_pr","egress":"open"}')).toBe("open");
   });
 
-  test("longshore policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
+  test("turntable policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
     await expect(setEgressPolicy(db, "local", undefined, "wide")).rejects.toThrow();
     await expect(setEgressPolicy(db, "local", "nope", "open")).rejects.toThrow();
     const changed = await setEgressPolicy(db, "local", "local", "open");
@@ -1664,7 +1664,7 @@ jobs:
       // A job that prints the old marker text gets ordinary text and no cut.
       const forger = await text("forger");
       expect(forger.job.state).toBe("success");
-      expect(forger.log).toContain("[longshore: 99999 bytes of output omitted]");
+      expect(forger.log).toContain("[turntable: 99999 bytes of output omitted]");
       const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
         job_id: forger.job.id,
         attempt: 1,

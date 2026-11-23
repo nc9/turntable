@@ -2,7 +2,7 @@
 // a tag resolved to a sha, and a sha is (not) reachable from its own repo. A restart, or a second
 // job in parallel, then does not ask GitHub again, which is what keeps a busy server under the
 // API rate limit. Failures are never remembered, only answers.
-import type { ActionRefResolver } from "@longshore/act-runner";
+import type { ActionRefResolver } from "@turntable/act-runner";
 import type { Db } from "../db";
 import { getVerdict, putVerdict, type Scope } from "../db/repos";
 import type { ReachabilityChecker } from "./reachability";

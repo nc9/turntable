@@ -428,7 +428,7 @@ export async function approvalWarnings(
   }
   if (people === 0)
     out.push(
-      "No approver is enrolled, so no protected job can be approved. Enrol the first one with longshore approvals bootstrap.",
+      "No approver is enrolled, so no protected job can be approved. Enrol the first one with turntable approvals bootstrap.",
     );
   else if (people < max)
     out.push(

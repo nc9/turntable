@@ -123,7 +123,7 @@ async function withSandbox(label: string, net: Net, f: (id: string) => Promise<v
   nextNet = net;
   const h = await provider.create({
     name: `spike-${label}`,
-    labels: { "longshore-spike": "1" },
+    labels: { "turntable-spike": "1" },
     ttlSeconds: 900,
     network: { egress: "open" },
   });

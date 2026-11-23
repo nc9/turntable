@@ -2,8 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import { InfraError, type Provider } from "@longshore/provider-sdk";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import { InfraError, type Provider } from "@turntable/provider-sdk";
 import { SHIM_NAMES } from "../src/step-env";
 import {
   drain,

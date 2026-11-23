@@ -1,4 +1,4 @@
-// Which parts of Longshore one process runs, and what each part may hold.
+// Which parts of Turntable one process runs, and what each part may hold.
 //
 //  web      the HTTP server: API, UI, webhooks, the OIDC issuer
 //  worker   the job scheduler and runner (what `--worker` starts)
@@ -15,7 +15,7 @@ export type Role = (typeof ROLES)[number];
 export const MAIN_ROLES: readonly Role[] = ["web", "worker", "poller"];
 
 /** Every environment variable that belongs to the release lane and to nothing else. */
-export const RELEASE_ENV_PREFIXES = ["LONGSHORE_RELEASE_"] as const;
+export const RELEASE_ENV_PREFIXES = ["TURNTABLE_RELEASE_", "LONGSHORE_RELEASE_"] as const; // rename-keep: the second is the pre-rename spelling
 
 /**
  * The roles for this process. `--roles` is explicit (`all` is web, worker and poller; `release`
@@ -109,23 +109,23 @@ function channelConfig(
   keyFile: string,
   need: (name: string) => string,
 ): NonNullable<ReleaseConfig["channel"]> {
-  const tcp = env.LONGSHORE_RELEASE_CHANNEL_TCP?.trim();
+  const tcp = env.TURNTABLE_RELEASE_CHANNEL_TCP?.trim();
   let parsed: NonNullable<ReleaseConfig["channel"]>["tcp"];
   if (tcp) {
     const m = /^(.+):(\d{1,5})$/.exec(tcp);
     if (!m || Number(m[2]) > 65535)
-      throw new Error("LONGSHORE_RELEASE_CHANNEL_TCP must be host:port");
+      throw new Error("TURNTABLE_RELEASE_CHANNEL_TCP must be host:port");
     parsed = {
       host: m[1]!,
       port: Number(m[2]),
-      certFile: need("LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE"),
-      keyFile: need("LONGSHORE_RELEASE_CHANNEL_TLS_KEY_FILE"),
-      caFile: need("LONGSHORE_RELEASE_CHANNEL_TLS_CA_FILE"),
+      certFile: need("TURNTABLE_RELEASE_CHANNEL_TLS_CERT_FILE"),
+      keyFile: need("TURNTABLE_RELEASE_CHANNEL_TLS_KEY_FILE"),
+      caFile: need("TURNTABLE_RELEASE_CHANNEL_TLS_CA_FILE"),
     };
   }
   return {
     keyFile,
-    socket: env.LONGSHORE_RELEASE_CHANNEL_SOCKET?.trim() || "",
+    socket: env.TURNTABLE_RELEASE_CHANNEL_SOCKET?.trim() || "",
     tcp: parsed,
   };
 }
@@ -140,47 +140,47 @@ export function releaseConfigFromEnv(env: Record<string, string | undefined>): R
     if (!v) throw new Error(`the release role needs ${name}`);
     return v;
   };
-  const pollMs = Number(env.LONGSHORE_RELEASE_POLL_MS ?? "5000");
+  const pollMs = Number(env.TURNTABLE_RELEASE_POLL_MS ?? "5000");
   if (!Number.isInteger(pollMs) || pollMs < 100) {
     throw new Error(
-      "LONGSHORE_RELEASE_POLL_MS must be a whole number of milliseconds, at least 100",
+      "TURNTABLE_RELEASE_POLL_MS must be a whole number of milliseconds, at least 100",
     );
   }
-  const channelKeyFile = env.LONGSHORE_RELEASE_CHANNEL_KEY_FILE?.trim();
-  if (channelKeyFile && !env.LONGSHORE_RELEASE_PROXY_PORT?.trim()) {
+  const channelKeyFile = env.TURNTABLE_RELEASE_CHANNEL_KEY_FILE?.trim();
+  if (channelKeyFile && !env.TURNTABLE_RELEASE_PROXY_PORT?.trim()) {
     throw new Error(
-      "LONGSHORE_RELEASE_CHANNEL_KEY_FILE needs the release proxy (LONGSHORE_RELEASE_PROXY_PORT)",
+      "TURNTABLE_RELEASE_CHANNEL_KEY_FILE needs the release proxy (TURNTABLE_RELEASE_PROXY_PORT)",
     );
   }
-  const proxyPort = env.LONGSHORE_RELEASE_PROXY_PORT?.trim();
+  const proxyPort = env.TURNTABLE_RELEASE_PROXY_PORT?.trim();
   if (proxyPort !== undefined && proxyPort !== "") {
     const n = Number(proxyPort);
     if (!Number.isInteger(n) || n < 0 || n > 65535)
-      throw new Error("LONGSHORE_RELEASE_PROXY_PORT must be a port number (0 for any free port)");
+      throw new Error("TURNTABLE_RELEASE_PROXY_PORT must be a port number (0 for any free port)");
   }
   return {
-    masterKeyFile: need("LONGSHORE_RELEASE_MASTER_KEY_FILE"),
-    dataDir: need("LONGSHORE_RELEASE_DATA_DIR"),
-    githubToken: need("LONGSHORE_RELEASE_GITHUB_TOKEN"),
-    artifactDir: need("LONGSHORE_RELEASE_ARTIFACT_DIR"),
-    builderId: need("LONGSHORE_RELEASE_BUILDER_ID"),
-    githubPublishToken: env.LONGSHORE_RELEASE_GITHUB_PUBLISH_TOKEN?.trim() || undefined,
+    masterKeyFile: need("TURNTABLE_RELEASE_MASTER_KEY_FILE"),
+    dataDir: need("TURNTABLE_RELEASE_DATA_DIR"),
+    githubToken: need("TURNTABLE_RELEASE_GITHUB_TOKEN"),
+    artifactDir: need("TURNTABLE_RELEASE_ARTIFACT_DIR"),
+    builderId: need("TURNTABLE_RELEASE_BUILDER_ID"),
+    githubPublishToken: env.TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN?.trim() || undefined,
     ...(proxyPort
       ? {
           proxy: {
-            bind: env.LONGSHORE_RELEASE_PROXY_BIND?.trim() || "127.0.0.1",
+            bind: env.TURNTABLE_RELEASE_PROXY_BIND?.trim() || "127.0.0.1",
             port: Number(proxyPort),
-            advertiseHost: env.LONGSHORE_RELEASE_PROXY_ADVERTISE_HOST?.trim() || undefined,
-            advertisePort: env.LONGSHORE_RELEASE_PROXY_ADVERTISE_PORT?.trim()
-              ? Number(env.LONGSHORE_RELEASE_PROXY_ADVERTISE_PORT.trim())
+            advertiseHost: env.TURNTABLE_RELEASE_PROXY_ADVERTISE_HOST?.trim() || undefined,
+            advertisePort: env.TURNTABLE_RELEASE_PROXY_ADVERTISE_PORT?.trim()
+              ? Number(env.TURNTABLE_RELEASE_PROXY_ADVERTISE_PORT.trim())
               : undefined,
-            advertiseAddresses: env.LONGSHORE_RELEASE_PROXY_ADVERTISE_ADDRESSES?.trim()
-              ? env.LONGSHORE_RELEASE_PROXY_ADVERTISE_ADDRESSES.split(",")
+            advertiseAddresses: env.TURNTABLE_RELEASE_PROXY_ADVERTISE_ADDRESSES?.trim()
+              ? env.TURNTABLE_RELEASE_PROXY_ADVERTISE_ADDRESSES.split(",")
                   .map((x) => x.trim())
                   .filter(Boolean)
               : undefined,
-            tlsCertFile: env.LONGSHORE_RELEASE_PROXY_TLS_CERT_FILE?.trim() || undefined,
-            tlsKeyFile: env.LONGSHORE_RELEASE_PROXY_TLS_KEY_FILE?.trim() || undefined,
+            tlsCertFile: env.TURNTABLE_RELEASE_PROXY_TLS_CERT_FILE?.trim() || undefined,
+            tlsKeyFile: env.TURNTABLE_RELEASE_PROXY_TLS_KEY_FILE?.trim() || undefined,
           },
         }
       : {}),

@@ -8,7 +8,7 @@
 // never `untrusted_pr` unless an operator widened it), the job asked with `id-token: write`, and
 // the run's attempt is behind the proxy. Otherwise it gets neither variable, and the log says why.
 import net from "node:net";
-import { wantsIdToken } from "@longshore/act-runner";
+import { wantsIdToken } from "@turntable/act-runner";
 import type { Db } from "../db";
 import { getOrgById } from "../db/repos";
 import { mintAttemptCredential } from "./attempt-credential";
@@ -21,7 +21,7 @@ import type { OidcIssuer } from "./issuer";
 export const OIDC_CREDENTIAL_MS = 2 * 60 * 1000;
 
 /** What the request token holds inside the sandbox. The proxy adds the real one. */
-export const OIDC_PLACEHOLDER_TOKEN = "longshore-oidc-credential-is-added-by-the-proxy";
+export const OIDC_PLACEHOLDER_TOKEN = "turntable-oidc-credential-is-added-by-the-proxy";
 
 export interface JobOidcRequest {
   orgId: string;

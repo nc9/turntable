@@ -2,10 +2,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PlanError, sha256Hex, tarDirectory } from "@longshore/act-runner";
-import { SecretRegistry } from "@longshore/redact";
-import { InfraError } from "@longshore/provider-sdk";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import { PlanError, sha256Hex, tarDirectory } from "@turntable/act-runner";
+import { SecretRegistry } from "@turntable/redact";
+import { InfraError } from "@turntable/provider-sdk";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import {
   type Db,
   ensureLocalTenant,
@@ -120,7 +120,7 @@ describe("runLocal", () => {
     expect(stored).toContain("▶ Say hello");
     expect(stored).toContain("hello from act");
     expect(stored).toContain("✓ Say hello");
-    expect(await provider.count({ labels: { "longshore.run": result.runId } })).toBe(0);
+    expect(await provider.count({ labels: { "turntable.run": result.runId } })).toBe(0);
     // Steps are stored in order, with act stages mapped and each pointing into the stored log.
     const steps = await listSteps(db, scope, result.attemptId);
     expect(steps.map((x) => [x.name, x.stage, x.result])).toEqual([
@@ -184,7 +184,7 @@ describe("runLocal", () => {
     expect(job?.state).toBe("cancelled");
     const [run] = await listRuns(db, scope);
     expect(run?.status).toBe("cancelled");
-    expect(await provider.count({ labels: { "longshore.run": result.runId } })).toBe(0);
+    expect(await provider.count({ labels: { "turntable.run": result.runId } })).toBe(0);
   }, 20_000);
 
   test("secrets are redacted before display and storage", async () => {

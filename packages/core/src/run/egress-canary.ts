@@ -1,4 +1,4 @@
-import type { Provider } from "@longshore/provider-sdk";
+import type { Provider } from "@turntable/provider-sdk";
 
 /**
  * Egress canary. When a job's policy is `none`, the sandbox must really have no way out. Before

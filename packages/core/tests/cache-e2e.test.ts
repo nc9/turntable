@@ -10,9 +10,9 @@ import {
   runJob,
   staticResolver,
   tarDirectory,
-} from "@longshore/act-runner";
-import { DockerProvider } from "@longshore/provider-docker";
-import { SecretRegistry, redactString } from "@longshore/redact";
+} from "@turntable/act-runner";
+import { DockerProvider } from "@turntable/provider-docker";
+import { SecretRegistry, redactString } from "@turntable/redact";
 import { CacheGrants } from "../src/cache/grants";
 import { jobCacheProvider } from "../src/cache/job";
 import { createCacheService } from "../src/cache/service";

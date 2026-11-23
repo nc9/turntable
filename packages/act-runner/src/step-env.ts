@@ -58,7 +58,7 @@ export function launcherArgv(shimDir: string, actArgv: readonly string[], envFil
  * make `command -v pwsh` succeed where GitHub's runner (and the image itself) says it is not
  * installed, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit
  * 0; fi`) would find the shim, run it, and fail the step with 127. Without a shim the probe
- * behaves exactly as it does without Longshore, and a step that names the missing tool as its
+ * behaves exactly as it does without Turntable, and a step that names the missing tool as its
  * `shell:` fails in act with its own "Cannot find: <tool> in PATH", which the log annotates.
  * One consequence: an interpreter installed after the job starts (a setup action that puts node on
  * PATH) is not shimmed, so a step that uses it as its `shell:` runs with act's pty.
@@ -92,14 +92,14 @@ done
  *  - the interpreter runs in its OWN process group (perl setpgrp, then exec: perl is in Debian's
  *    base set), with the signal dispositions the shell's `&` would have ignored put back;
  *  - TERM, INT and HUP sent to the shim go to that group, and KILL follows after a grace period
- *    (LONGSHORE_STEP_GRACE seconds, default 5);
+ *    (TURNTABLE_STEP_GRACE seconds, default 5);
  *  - SIGKILL of the shim cannot be trapped, so a tiny watcher polls the shim: when the shim is gone
  *    while the interpreter still runs, the group gets TERM and then KILL. When the interpreter
  *    ended normally (and left a daemon behind on purpose) the watcher does nothing.
  * Without perl the interpreter simply runs in the shim's own group, with no watchdog.
  */
 export const STEP_SHIM = `#!/bin/sh
-# Longshore step shim: runs the real interpreter with no terminal on stdin, stdout or stderr, as
+# Turntable step shim: runs the real interpreter with no terminal on stdin, stdout or stderr, as
 # on a GitHub hosted runner, and keeps it from outliving a killed step. See
 # packages/act-runner/src/step-env.ts.
 self=\${0##*/}
@@ -118,20 +118,20 @@ for d in $PATH; do
 done
 IFS=$oldifs
 if [ -z "$real" ]; then
-  echo "longshore: $self: command not found" >&2
+  echo "turntable: $self: command not found" >&2
   exit 127
 fi
 # Already inside a wrapped step: what it started inherits non-tty stdio, so just run it.
-if [ -n "\${LONGSHORE_STEP_IO:-}" ]; then exec "$real" "$@"; fi
+if [ -n "\${TURNTABLE_STEP_IO:-}" ]; then exec "$real" "$@"; fi
 fifo=$(mktemp -u "\${TMPDIR:-/tmp}/ls-step.XXXXXX" 2>/dev/null) && mkfifo -m 600 "$fifo" 2>/dev/null || exec "$real" "$@"
 cat <"$fifo" &
 cpid=$!
 trap 'rm -f "$fifo"' EXIT
 shim=$$
-grace=\${LONGSHORE_STEP_GRACE:-5}
+grace=\${TURNTABLE_STEP_GRACE:-5}
 if command -v perl >/dev/null 2>&1; then
   # Own process group; and undo what the shell does to an async command (ignore INT and QUIT).
-  LONGSHORE_STEP_IO=1 perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or exit 127' "$real" "$@" >"$fifo" 2>&1 </dev/null &
+  TURNTABLE_STEP_IO=1 perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; setpgrp(0,0); exec @ARGV or exit 127' "$real" "$@" >"$fifo" 2>&1 </dev/null &
   rpid=$!
   # Signal the interpreter's whole group through perl: the shell kill builtin with a negative pid is not portable across the
   # shells that stand in for sh (dash, the Linux default, failed it). Bare pid if the group is not
@@ -165,7 +165,7 @@ if command -v perl >/dev/null 2>&1; then
     if [ "$r" -ne 127 ]; then rc=$r; fi
   done
 else
-  LONGSHORE_STEP_IO=1 "$real" "$@" >"$fifo" 2>&1 </dev/null
+  TURNTABLE_STEP_IO=1 "$real" "$@" >"$fifo" 2>&1 </dev/null
   rc=$?
 fi
 # The forwarder ends at EOF. A step that leaves a background process holding the pipe must not

@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanTarGz, tarGzDirectoryToFile } from "@longshore/act-runner";
+import { scanTarGz, tarGzDirectoryToFile } from "@turntable/act-runner";
 import { readChildTarball, runCheckoutChild, sweepOldCheckouts } from "../src/run/checkout-child";
 import { makeCheckpoint } from "../src/run/fetch-source-cli";
 import { tarballReader } from "../src/run/tarball-reader";
@@ -411,7 +411,7 @@ process.kill(process.pid, "SIGKILL");`,
     process.env.HTTPS_PROXY = "http://proxy.internal:3128";
     process.env.NO_PROXY = "localhost";
     process.env.GITHUB_TOKEN = "ghp_nope";
-    process.env.LONGSHORE_X = "nope";
+    process.env.TURNTABLE_X = "nope";
     try {
       const f = join(tmp, "envout.json");
       const script = join(tmp, "env2.ts");
@@ -432,9 +432,9 @@ process.kill(process.pid, "SIGKILL");`,
       expect(env.HTTPS_PROXY).toBe("http://proxy.internal:3128");
       expect(env.NO_PROXY).toBe("localhost");
       expect(env.GITHUB_TOKEN).toBeUndefined();
-      expect(Object.keys(env).some((k) => k.startsWith("LONGSHORE_"))).toBe(false);
+      expect(Object.keys(env).some((k) => k.startsWith("TURNTABLE_"))).toBe(false);
     } finally {
-      for (const k of ["SSL_CERT_FILE", "HTTPS_PROXY", "NO_PROXY", "GITHUB_TOKEN", "LONGSHORE_X"]) {
+      for (const k of ["SSL_CERT_FILE", "HTTPS_PROXY", "NO_PROXY", "GITHUB_TOKEN", "TURNTABLE_X"]) {
         if (saved[k] === undefined) delete process.env[k];
         else process.env[k] = saved[k];
       }

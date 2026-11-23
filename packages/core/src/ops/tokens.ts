@@ -1,29 +1,32 @@
 import { createHash, randomBytes } from "node:crypto";
 
-/** Prefix of every Longshore API token, so scanners and humans can recognise one. */
-export const TOKEN_PREFIX = "ls_";
+/** Prefix of every Turntable API token, so scanners and humans can recognise one. */
+export const TOKEN_PREFIX = "tt_";
 
 /**
  * Prefix of an instance-administrator token. A different prefix from every org token, so the two
  * are told apart before any lookup, and a scanner or a human can tell what a leaked one is.
  */
-export const INSTANCE_TOKEN_PREFIX = "lsi_";
+export const INSTANCE_TOKEN_PREFIX = "tti_";
 
-/** A new instance token: `lsi_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
+/** Instance tokens minted before the rename (formerly Longshore). Still accepted: only hashes are stored. */
+const LEGACY_INSTANCE_TOKEN_PREFIX = "lsi_"; // rename-keep
+
+/** A new instance token: `tti_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
 export function generateInstanceToken(): string {
   return `${INSTANCE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 }
 
 export function looksLikeInstanceToken(value: string): boolean {
-  return (
-    value.startsWith(INSTANCE_TOKEN_PREFIX) && value.length === INSTANCE_TOKEN_PREFIX.length + 43
+  return [INSTANCE_TOKEN_PREFIX, LEGACY_INSTANCE_TOKEN_PREFIX].some(
+    (prefix) => value.startsWith(prefix) && value.length === prefix.length + 43,
   );
 }
 
-/** Tokens minted before the rename. Still accepted: they are stored as hashes, nothing else changes. */
-const LEGACY_TOKEN_PREFIX = "tt_";
+/** Org tokens minted before the rename (formerly Longshore). Still accepted, nothing else changes. */
+const LEGACY_TOKEN_PREFIX = "ls_"; // rename-keep
 
-/** A new random token: `ls_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
+/** A new random token: `tt_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
 export function generateToken(): string {
   return `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 }
@@ -35,12 +38,9 @@ export function hashToken(token: string): string {
 
 /** Cheap shape check before hitting the database. */
 export function looksLikeToken(value: string): boolean {
-  const prefix = value.startsWith(TOKEN_PREFIX)
-    ? TOKEN_PREFIX
-    : value.startsWith(LEGACY_TOKEN_PREFIX)
-      ? LEGACY_TOKEN_PREFIX
-      : undefined;
-  return prefix !== undefined && value.length === prefix.length + 43;
+  return [TOKEN_PREFIX, LEGACY_TOKEN_PREFIX].some(
+    (prefix) => value.startsWith(prefix) && value.length === prefix.length + 43,
+  );
 }
 
 import type { AgentRole } from "../db/schema";

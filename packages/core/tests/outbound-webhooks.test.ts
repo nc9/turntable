@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { createHttpClient } from "@longshore/net";
+import { createHttpClient } from "@turntable/net";
 import {
   appendEvent,
   latestSettledEventId,
@@ -33,7 +33,7 @@ let env: DispatchEnv;
 let sent: { url: string; headers: Headers; body: string }[];
 let respond: (n: number) => Response | Promise<Response>;
 
-const URL_OK = "https://hooks.example.test/longshore";
+const URL_OK = "https://hooks.example.test/turntable";
 
 beforeEach(async () => {
   ({ db, a, b } = await seedWorld());

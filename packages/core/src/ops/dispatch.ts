@@ -34,14 +34,14 @@ export type DispatchEnv = {
   vault?: SecretVault | undefined;
   claims?: InstallationClaims | undefined;
   /**
-   * Let an `lsi_` instance token authenticate. Set only by the REST adapter: MCP and the realtime
+   * Let a `tti_` instance token authenticate. Set only by the REST adapter: MCP and the realtime
    * socket leave it off, so an instance token is simply not a credential there.
    */
   allowInstance?: boolean | undefined;
   /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
   webhooks?: WebhookService | undefined;
-  /** WebAuthn relying party for human approvals (LONGSHORE_PUBLIC_URL or the WEBAUTHN vars). */
+  /** WebAuthn relying party for human approvals (TURNTABLE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
@@ -117,7 +117,7 @@ export async function authenticate(env: DispatchEnv, credential: Credential): Pr
 }
 
 /**
- * An `lsi_` token. Accepted only when the adapter allows it, from the instance_tokens table (never
+ * A `tti_` token. Accepted only when the adapter allows it, from the instance_tokens table (never
  * api_tokens), and the principal it gives holds no org grant. Failures look like any bad token.
  */
 async function authenticateInstance(env: DispatchEnv, token: string): Promise<Principal> {
@@ -204,7 +204,7 @@ function validateOutput(op: Op, output: unknown): unknown {
   if (!parsed.success) {
     // Never echo the offending value: it may be exactly what the schema exists to keep out.
     console.error(
-      `longshore: op ${op.name} returned output that violates its schema`,
+      `turntable: op ${op.name} returned output that violates its schema`,
       parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
     );
     throw new OpError("internal", "operation produced an invalid response");
@@ -355,7 +355,7 @@ export async function dispatch(
     }
   } catch (err) {
     if (err instanceof OpError) return { ok: false, error: err, ...(op ? { op } : {}) };
-    console.error("longshore: unexpected error in operation dispatch", err);
+    console.error("turntable: unexpected error in operation dispatch", err);
     return { ok: false, error: new OpError("internal", "internal error"), ...(op ? { op } : {}) };
   }
 }

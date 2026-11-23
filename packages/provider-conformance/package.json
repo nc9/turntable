@@ -1,5 +1,5 @@
 {
-  "name": "@longshore/provider-conformance",
+  "name": "@turntable/provider-conformance",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "typecheck": "bun check"
   },
   "dependencies": {
-    "@longshore/provider-sdk": "workspace:*"
+    "@turntable/provider-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "1.4.4"

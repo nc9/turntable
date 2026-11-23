@@ -506,14 +506,14 @@ describe("static export", () => {
 
   // The CLI opens the database on its own, as a second handle. A PGlite database lives in the
   // handle that made it, so it would see an empty one; a real server (or SQLite) shares it.
-  test.skipIf(process.env.LONGSHORE_TEST_DB === "pglite")(
-    "longshore oidc export writes discovery and a JWKS with no private parameters",
+  test.skipIf(process.env.TURNTABLE_TEST_DB === "pglite")(
+    "turntable oidc export writes discovery and a JWKS with no private parameters",
     async () => {
       const dir = join(tmp, "data");
       const keyFile = join(tmp, "m.key");
       initMasterKey(keyFile);
       const { openDatabase, createOrg, ensureInstance } = await import("../src/db");
-      const d = openDatabase(join(dir, "longshore.db"));
+      const d = openDatabase(join(dir, "turntable.db"));
       await ensureInstance(d);
       await createOrg(d, { slug: "acme", name: "acme" });
       d.close();

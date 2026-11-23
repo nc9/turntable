@@ -4,9 +4,9 @@ import {
   type ActTarball,
   type ActionFetcher,
   type ActionRefResolver,
-} from "@longshore/act-runner";
-import type { Provider } from "@longshore/provider-sdk";
-import { SecretRegistry } from "@longshore/redact";
+} from "@turntable/act-runner";
+import type { Provider } from "@turntable/provider-sdk";
+import { SecretRegistry } from "@turntable/redact";
 import { parse } from "yaml";
 import type { Db, Scope } from "../db";
 import { pinClassForEvent, resolvePlanActions } from "../pins";

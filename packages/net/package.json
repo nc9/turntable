@@ -1,5 +1,5 @@
 {
-  "name": "@longshore/net",
+  "name": "@turntable/net",
   "version": "0.0.0",
   "private": true,
   "type": "module",

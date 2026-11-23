@@ -106,7 +106,7 @@ export class JobCa {
     this.#key = ca.privateKey;
     this.#leafKeyPem = leaf.privateKey.export({ type: "pkcs8", format: "pem" }) as string;
     this.#leafSpki = leaf.publicKey.export({ type: "spki", format: "der" }) as Buffer;
-    this.#subject = `Longshore job CA ${o.label}`;
+    this.#subject = `Turntable job CA ${o.label}`;
     // A little before now (clock skew in the sandbox) and a little after the credential ends.
     this.#from = new Date(o.now - 5 * 60_000);
     this.#to = new Date(o.now + o.ttlMs + 5 * 60_000);

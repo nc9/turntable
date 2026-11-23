@@ -1,4 +1,4 @@
-// `longshore token create --instance`: mints an instance-administrator token on the host. Like the
+// `turntable token create --instance`: mints an instance-administrator token on the host. Like the
 // org token CLI, local access to the data directory is the trust root, so this writes through the
 // repos directly: no network, no principal, and no org or op can do it. The secret is shown once;
 // only its hash is kept. Audited in the system org's chain.

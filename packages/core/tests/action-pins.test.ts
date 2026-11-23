@@ -2,8 +2,8 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InfraError } from "@longshore/provider-sdk";
-import { PlanError, planJob, tarDirectory, type ActionRefResolver } from "@longshore/act-runner";
+import { InfraError } from "@turntable/provider-sdk";
+import { PlanError, planJob, tarDirectory, type ActionRefResolver } from "@turntable/act-runner";
 import { type Db, listActionPins, setActionPolicy, getActionPolicy, listAudit } from "../src/db";
 import { dispatch, registry, type DispatchEnv } from "../src/ops";
 import {

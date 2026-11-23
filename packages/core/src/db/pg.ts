@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import { drizzle as drizzleBunSql } from "drizzle-orm/bun-sql";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import { sqlState } from "./errors";
+import { migrateLegacyPgMigrationsTable } from "./legacy-names";
 import type { Db, Orm } from "./index";
 import { migrations } from "./migrations.pg.generated";
 import type { Migration } from "./migrate";
@@ -69,10 +70,11 @@ export async function applyPgMigrations(orm: PgOrm, list: Migration[]): Promise<
   const applied: string[] = [];
   await orm.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(${MIGRATION_LOCK})`);
+    await migrateLegacyPgMigrationsTable(tx);
     await tx.execute(
-      sql`create table if not exists __longshore_migrations (tag text primary key, applied_at bigint not null)`,
+      sql`create table if not exists __turntable_migrations (tag text primary key, applied_at bigint not null)`,
     );
-    const rows = (await tx.execute(sql`select tag from __longshore_migrations`)) as unknown as
+    const rows = (await tx.execute(sql`select tag from __turntable_migrations`)) as unknown as
       | { tag: string }[]
       | { rows: { tag: string }[] };
     const done = new Set((Array.isArray(rows) ? rows : rows.rows).map((r) => r.tag));
@@ -80,7 +82,7 @@ export async function applyPgMigrations(orm: PgOrm, list: Migration[]): Promise<
       if (done.has(m.tag)) continue;
       for (const statement of m.statements) await tx.execute(sql.raw(statement));
       await tx.execute(
-        sql`insert into __longshore_migrations (tag, applied_at) values (${m.tag}, ${Date.now()})`,
+        sql`insert into __turntable_migrations (tag, applied_at) values (${m.tag}, ${Date.now()})`,
       );
       applied.push(m.tag);
     }
@@ -248,7 +250,7 @@ export function openPostgres(target: PgTarget, opts: { fresh?: boolean } = {}): 
             try {
               hook();
             } catch (err) {
-              console.error("longshore: afterCommit hook failed", err);
+              console.error("turntable: afterCommit hook failed", err);
             }
           }
           return out;

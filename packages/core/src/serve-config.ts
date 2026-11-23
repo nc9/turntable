@@ -1,4 +1,4 @@
-// Everything `longshore serve` takes on the command line can also come from the environment, so a
+// Everything `turntable serve` takes on the command line can also come from the environment, so a
 // platform with no shell (Railway) configures the whole server, worker and provider included,
 // from variables alone. A flag, when given, wins over its variable.
 import { type PollConfig, loadPollConfig, parsePollConfig } from "./poll/config";
@@ -7,9 +7,9 @@ import { loadProviderConfig, parseProviderConfig } from "./scheduler/providers";
 type Env = Record<string, string | undefined>;
 
 /** The poll config comes from this variable when no file is named: a JSON document. */
-export const POLL_JSON_ENV = "LONGSHORE_POLL_JSON";
+export const POLL_JSON_ENV = "TURNTABLE_POLL_JSON";
 /** The provider config comes from this variable when no file is named: a JSON object. */
-export const PROVIDER_JSON_ENV = "LONGSHORE_PROVIDER_CONFIG_JSON";
+export const PROVIDER_JSON_ENV = "TURNTABLE_PROVIDER_CONFIG_JSON";
 /** Stands for "the config is in the environment" wherever a path would go. */
 export const ENV_POLL_SOURCE = `env:${POLL_JSON_ENV}`;
 export const ENV_PROVIDER_SOURCE = `env:${PROVIDER_JSON_ENV}`;
@@ -36,20 +36,20 @@ export function serveDefaults(env: Env): {
   const t = (n: string): string | undefined => env[n]?.trim() || undefined;
   return {
     port: t("PORT") ?? "8080",
-    host: env.LONGSHORE_HOST ?? "127.0.0.1",
-    dataDir: t("LONGSHORE_DATA_DIR") ?? "./data",
-    roles: t("LONGSHORE_ROLES"),
-    worker: flag(env.LONGSHORE_WORKER),
-    globalCap: t("LONGSHORE_GLOBAL_CAP") ?? "4",
-    orgCap: t("LONGSHORE_ORG_CAP") ?? "2",
-    leaseSeconds: t("LONGSHORE_LEASE_SECONDS") ?? "30",
-    image: t("LONGSHORE_IMAGE"),
-    poll: t("LONGSHORE_POLL") ?? (t(POLL_JSON_ENV) ? ENV_POLL_SOURCE : undefined),
-    provider: t("LONGSHORE_PROVIDER") ?? "docker",
+    host: env.TURNTABLE_HOST ?? "127.0.0.1",
+    dataDir: t("TURNTABLE_DATA_DIR") ?? "./data",
+    roles: t("TURNTABLE_ROLES"),
+    worker: flag(env.TURNTABLE_WORKER),
+    globalCap: t("TURNTABLE_GLOBAL_CAP") ?? "4",
+    orgCap: t("TURNTABLE_ORG_CAP") ?? "2",
+    leaseSeconds: t("TURNTABLE_LEASE_SECONDS") ?? "30",
+    image: t("TURNTABLE_IMAGE"),
+    poll: t("TURNTABLE_POLL") ?? (t(POLL_JSON_ENV) ? ENV_POLL_SOURCE : undefined),
+    provider: t("TURNTABLE_PROVIDER") ?? "docker",
     providerConfig:
-      t("LONGSHORE_PROVIDER_CONFIG") ?? (t(PROVIDER_JSON_ENV) ? ENV_PROVIDER_SOURCE : undefined),
-    hosted: flag(env.LONGSHORE_HOSTED),
-    isolationOverride: t("LONGSHORE_ISOLATION_OVERRIDE"),
+      t("TURNTABLE_PROVIDER_CONFIG") ?? (t(PROVIDER_JSON_ENV) ? ENV_PROVIDER_SOURCE : undefined),
+    hosted: flag(env.TURNTABLE_HOSTED),
+    isolationOverride: t("TURNTABLE_ISOLATION_OVERRIDE"),
   };
 }
 

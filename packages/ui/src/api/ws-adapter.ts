@@ -6,8 +6,8 @@ import {
   type ServerMessage,
   type WireCut,
   type WireNotice,
-} from "@longshore/core/realtime-protocol";
-import type { LongshoreApi } from "./client";
+} from "@turntable/core/realtime-protocol";
+import type { TurntableApi } from "./client";
 import { createSnapshotSource } from "./polling-realtime";
 import { stepEvents } from "./step-events";
 import {
@@ -30,7 +30,7 @@ import {
 export type WsRealtimeOptions = {
   url: string;
   token: () => string | null;
-  api: LongshoreApi;
+  api: TurntableApi;
   /** Used while the socket is unavailable. */
   fallback: Realtime;
   onUnauthenticated?: () => void;

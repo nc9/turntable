@@ -13,8 +13,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
-import { foldKey, HFS_IGNORABLE } from "@longshore/act-runner";
-import { safeFetch, type SafeFetch } from "@longshore/net";
+import { foldKey, HFS_IGNORABLE } from "@turntable/act-runner";
+import { safeFetch, type SafeFetch } from "@turntable/net";
 
 export class GitFetchError extends Error {
   constructor(message: string) {
@@ -166,7 +166,7 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
     return ms;
   };
   let base = o.url.replace(/\/+$/, "");
-  const common = { "git-protocol": "version=2", "user-agent": "git/2.39.0 (longshore)" };
+  const common = { "git-protocol": "version=2", "user-agent": "git/2.39.0 (turntable)" };
 
   // 1. Capabilities: the server must speak protocol v2 and offer `fetch`. A redirect is followed
   // only within the same origin (a repository that moved); never to another host, and the fetch
@@ -212,7 +212,7 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   // 2. One commit, depth 1.
   const body = concat([
     pkt(`command=${GIT_FETCH_COMMAND}\n`),
-    pkt("agent=longshore\n"),
+    pkt("agent=turntable\n"),
     pkt("object-format=sha1\n"),
     DELIM,
     pkt(`want ${o.sha}\n`),

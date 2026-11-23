@@ -19,14 +19,14 @@ Four database roles, each a separate login, none shared:
 
 | Role | Used by | Rights |
 | --- | --- | --- |
-| `longshore_owner` | migrations only, at start, then disconnected | owns the tables and policies; the only role that can change them. No request path ever connects as it. |
-| `longshore_tenant` | everything that serves an org: ops, REST, MCP, realtime, the UI | DML on the tenant tables, subject to RLS. Cannot change the schema or policies, cannot bypass RLS, no `CREATE` on the schema. |
-| `longshore_system` | the work that is cross-tenant by nature, see below | DML on the tables it needs, with its own explicit policies. Not `BYPASSRLS`: its access is written down as policies, so it shows up in review and in `pg_policies`. |
-| `longshore_release` | the release lane process, with its own URL | a small grant list, see below. |
+| `turntable_owner` | migrations only, at start, then disconnected | owns the tables and policies; the only role that can change them. No request path ever connects as it. |
+| `turntable_tenant` | everything that serves an org: ops, REST, MCP, realtime, the UI | DML on the tenant tables, subject to RLS. Cannot change the schema or policies, cannot bypass RLS, no `CREATE` on the schema. |
+| `turntable_system` | the work that is cross-tenant by nature, see below | DML on the tables it needs, with its own explicit policies. Not `BYPASSRLS`: its access is written down as policies, so it shows up in review and in `pg_policies`. |
+| `turntable_release` | the release lane process, with its own URL | a small grant list, see below. |
 
 `FORCE ROW LEVEL SECURITY` is set on every table, so even the owner is subject to the policies if some code connects as it by mistake. `PUBLIC` gets nothing on the schema.
 
-Configuration is one URL per role: `LONGSHORE_DATABASE_URL` for the tenant pool, `LONGSHORE_SYSTEM_DATABASE_URL`, `LONGSHORE_MIGRATE_DATABASE_URL`, `LONGSHORE_RELEASE_DATABASE_URL`. With only the first set, as today, Longshore runs as one role without RLS; RLS is on when the role URLs are given, and a boot check says which mode it is in.
+Configuration is one URL per role: `TURNTABLE_DATABASE_URL` for the tenant pool, `TURNTABLE_SYSTEM_DATABASE_URL`, `TURNTABLE_MIGRATE_DATABASE_URL`, `TURNTABLE_RELEASE_DATABASE_URL`. With only the first set, as today, Turntable runs as one role without RLS; RLS is on when the role URLs are given, and a boot check says which mode it is in.
 
 ## How the scope reaches the database
 
@@ -65,9 +65,9 @@ For every table with an `org_id` column (all but `instance`, `orgs`, `users`):
 alter table runs enable row level security;
 alter table runs force  row level security;
 
-create policy tenant_org on runs to longshore_tenant
+create policy tenant_org on runs to turntable_tenant
   using (org_id = app_org()) with check (org_id = app_org());
-create policy system_all on runs to longshore_system
+create policy system_all on runs to turntable_system
   using (true) with check (true);
 ```
 
@@ -76,7 +76,7 @@ create policy system_all on runs to longshore_system
 For tables that also have `project_id`, a restrictive policy narrows a project-scoped caller:
 
 ```sql
-create policy tenant_project on runs as restrictive to longshore_tenant
+create policy tenant_project on runs as restrictive to turntable_tenant
   using (app_project() is null or project_id = app_project());
 ```
 
@@ -94,7 +94,7 @@ The three tables without `org_id` need their own rule, decided here:
 
 The policies are generated from the schema, not written by hand. A script, `gen-pg-rls.ts`, reads the generated `schema.pg.ts`, finds every table and whether it has `org_id` and `project_id`, and writes the SQL above. A table with neither and not on its short list of named exceptions makes the script fail, so a new table cannot be added without deciding its policy. The SQL is idempotent (`drop policy if exists`, then `create`), embedded in a module like the migrations, and re-applied by the owner role at every start after the migrations, so a new table gets its policies with no migration of its own. CI regenerates it and fails on a difference.
 
-Two checks guard it at runtime. At start, as the owner, Longshore reads `pg_class` and `pg_policies` and refuses to start in RLS mode if any table in the schema lacks `relrowsecurity`, `relforcerowsecurity` or its tenant policy. And a test (below) does the same comparison against the generated list.
+Two checks guard it at runtime. At start, as the owner, Turntable reads `pg_class` and `pg_policies` and refuses to start in RLS mode if any table in the schema lacks `relrowsecurity`, `relforcerowsecurity` or its tenant policy. And a test (below) does the same comparison against the generated list.
 
 ## What a missed SET does
 
@@ -104,7 +104,7 @@ Deny by default, loudly:
 - A write fails with `42501` (new row violates row-level security policy). The error is logged with the stack and counted; the op returns `internal`.
 - A query on the tenant pool that has no scope is therefore a bug that shows up as "nothing found" in tests, not as a leak in production. The test suite makes such a bug fail on purpose: with RLS on, the tenant pool is used with no scope in a canary test and must see zero rows from every table.
 
-The setting is empty by default for the role (`alter role longshore_tenant set app.org_id = ''`), so a connection that never set it behaves the same as one that set it empty.
+The setting is empty by default for the role (`alter role turntable_tenant set app.org_id = ''`), so a connection that never set it behaves the same as one that set it empty.
 
 ## Who uses the system role, and who only needs a scope
 
@@ -121,7 +121,7 @@ Each caller that touches the database outside an ordinary request is listed with
 | Audit checkpointer and exporter; the failure audit for an unknown token (the `_system` org) | system | They walk every org's chain. |
 | Cache service grant lookups (#143) | scoped, by the grant's org | The credential names one attempt, so one org; the grant row is found under it. |
 | The secrets proxy's per-request `vault.use` | scoped, by the attempt's org | The proxy holds an attempt credential that fixes the org; the vault read and the `secret_use` audit write run under that org's scope. |
-| `longshore doctor` (lane-a3) | system, read-only | It checks the whole instance. A read-only transaction (`SET TRANSACTION READ ONLY`) makes writes impossible from this path, and its grants are `select` only. |
+| `turntable doctor` (lane-a3) | system, read-only | It checks the whole instance. A read-only transaction (`SET TRANSACTION READ ONLY`) makes writes impossible from this path, and its grants are `select` only. |
 | Release lane: channel attempt lookup (#183) and everything else it does | the release role, not system | A separate process with its own role and grant list, below. It never holds the system role. |
 | Boot: migrations, ensuring the instance row, the RLS boot check | owner, then system | The owner role runs the migrations and policies and disconnects. |
 
@@ -129,7 +129,7 @@ The rule: `db.system` appears only in an allowlisted set of files, enforced by a
 
 ## The release lane's own role
 
-The release lane is a separate process with its own database URL and role, `longshore_release`. It serves every org (it is the one place that signs), so it has no per-org policy; its limit is the grant list, which is short:
+The release lane is a separate process with its own database URL and role, `turntable_release`. It serves every org (it is the one place that signs), so it has no per-org policy; its limit is the grant list, which is short:
 
 - `select` on runs, jobs, job attempts (for the recorded trust class), artifacts, the projects' signing settings, the repo bindings, approvals, approvers, and `audit_log`;
 - `select` and `update` on `release_requests`; `insert` on `audit_log`;
@@ -142,7 +142,7 @@ The main process's tenant role can `insert` a release request only with `status 
 The suite from the tenant isolation PR (registry-generated, row fingerprints, REST, MCP, realtime, the vault, approvals, installations) is reused; RLS adds three layers of proof.
 
 1. **Nothing breaks.** The full suites run on a real Postgres with RLS on and the tenant, system and owner roles in use, as the existing Postgres job does without it. A legitimate path that forgot to set a scope fails here.
-2. **RLS holds alone.** A test-only switch (`LONGSHORE_TEST_SABOTAGE_SCOPE=1`) makes the repo layer's `scoped()` drop the org and project predicates, so every repo query is unscoped. The hostile suite then runs and must still find no leak and no change in org A, now because the database refuses. The same run with RLS off must fail, which proves the sabotage is real and the suite can see it (the same positive-control rule as the suite itself).
+2. **RLS holds alone.** A test-only switch (`TURNTABLE_TEST_SABOTAGE_SCOPE=1`) makes the repo layer's `scoped()` drop the org and project predicates, so every repo query is unscoped. The hostile suite then runs and must still find no leak and no change in org A, now because the database refuses. The same run with RLS off must fail, which proves the sabotage is real and the suite can see it (the same positive-control rule as the suite itself).
 3. **The policies are what the schema says.** Direct SQL as the tenant role, per table: with no scope it sees zero rows; with org A set it sees only A's; an insert naming org B under A's scope fails with `42501`; a project-scoped setting hides sibling projects. The same as the owner (`FORCE`). A comparison of `pg_policies` with the generated list, and a test that every table in the schema is covered. A lexical test for `db.system` as above.
 
 The release role gets its own: it can do its listed operations and nothing else (a `select` on `vault_secrets` is refused), and the tenant role cannot update a release request.

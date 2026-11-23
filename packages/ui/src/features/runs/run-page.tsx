@@ -178,7 +178,7 @@ export function RunPage() {
               ? "One attempt hit an infrastructure error"
               : `${infraAttempts.length} attempts hit infrastructure errors`}
             . The sandbox or provider failed, so those attempts say nothing about your code.
-            Longshore retries them automatically.
+            Turntable retries them automatically.
           </p>
         </div>
       ) : null}

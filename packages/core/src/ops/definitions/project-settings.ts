@@ -31,7 +31,7 @@ export const getProjectSettings = defineOp({
     "snapshot its sandboxes start from; it beats a size class's snapshot and the provider's " +
     "default) and `max_concurrent` (most of its attempts running at once; it can only lower the " +
     "org's and the instance's caps). Null means not set. Pass the project. Read-only. They are " +
-    "set by the instance operator (`set_project_settings`, or `longshore policy set` on the " +
+    "set by the instance operator (`set_project_settings`, or `turntable policy set` on the " +
     "host), never by the project's own tokens.",
   input: z.object({}),
   output: z.object({ project: z.string(), ...settingsShape.shape }),

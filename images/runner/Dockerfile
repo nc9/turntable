@@ -1,4 +1,4 @@
-# The Longshore runner image: the sandbox a job's steps run in. It is the pinned node image (bash,
+# The Turntable runner image: the sandbox a job's steps run in. It is the pinned node image (bash,
 # git, curl, node, python3, build tools) plus the few GitHub ubuntu-latest tools workflows commonly
 # assume and the base lacks. Every download is pinned by version and checked against a checksum.
 # docs/compatibility.mdx lists what is and is not in it, generated from the built image in CI.

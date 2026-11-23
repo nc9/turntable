@@ -81,11 +81,11 @@ export function formatEvent(o: {
   let conclusion: string | null = null;
 
   if (event.type === "approval.required") {
-    lines.push("Longshore: approval required.");
+    lines.push("Turntable: approval required.");
   } else {
     const status = state(typeof event.payload.status === "string" ? event.payload.status : null);
     conclusion = status;
-    lines.push(`Longshore: run finished, conclusion ${status}.`);
+    lines.push(`Turntable: run finished, conclusion ${status}.`);
   }
   if (project) lines.push(`project: ${quote(project, 40)}`);
   if (runId) {
@@ -140,7 +140,7 @@ function formatQuota(o: { event: FeedEvent; org: string }): Notification {
   const metric = word(typeof event.payload.metric === "string" ? event.payload.metric : null);
   const p = event.payload;
   const lines = [
-    `Longshore: quota ${reached ? "reached" : "warning"}${metric ? ` for ${metric}` : ""}.`,
+    `Turntable: quota ${reached ? "reached" : "warning"}${metric ? ` for ${metric}` : ""}.`,
     `used ${count(p.used)} of ${count(p.limit)}${typeof p.percent === "number" ? ` (${count(p.percent)}%)` : ""}${reached ? "; new work is held until the window moves or the limit is raised" : ""}`,
     FOOTER,
   ];
@@ -157,7 +157,7 @@ function formatQuota(o: { event: FeedEvent; org: string }): Notification {
 
 export function formatOverflow(count: number): Notification {
   return {
-    content: `Longshore: ${count} more events matched the filter and were not shown. List runs to see them.\n${FOOTER}`,
+    content: `Turntable: ${count} more events matched the filter and were not shown. List runs to see them.\n${FOOTER}`,
     meta: cleanMeta({ kind: "overflow", trust: "untrusted" }),
   };
 }
@@ -166,8 +166,8 @@ export function formatStopped(reason: "auth" | "protocol"): Notification {
   return {
     content:
       reason === "auth"
-        ? "Longshore channel stopped: the server rejected the token. Replace the token file and restart the session."
-        : "Longshore channel stopped: unexpected response from the server.",
+        ? "Turntable channel stopped: the server rejected the token. Replace the token file and restart the session."
+        : "Turntable channel stopped: unexpected response from the server.",
     meta: cleanMeta({ kind: "stopped", trust: "untrusted" }),
   };
 }

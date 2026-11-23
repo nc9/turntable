@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ExecLogs, ExecStatus, Provider } from "@longshore/provider-sdk";
+import type { ExecLogs, ExecStatus, Provider } from "@turntable/provider-sdk";
 import { drain, watchExec, type RunEvent } from "../src/index";
 
 const enc = new TextEncoder();
@@ -71,7 +71,7 @@ describe("a cut in the exec output (#56)", () => {
     const marker = line({
       jobID: "j",
       raw_output: true,
-      msg: "\n[longshore: 99999 bytes of output omitted]\n",
+      msg: "\n[turntable: 99999 bytes of output omitted]\n",
       step: "build",
       stepid: ["0"],
       time: "t",
@@ -84,6 +84,6 @@ describe("a cut in the exec output (#56)", () => {
     const outputs = events.flatMap((e) =>
       e.kind === "act" && e.event.type === "output" ? [e.event.text] : [],
     );
-    expect(outputs.join("")).toContain("[longshore: 99999 bytes of output omitted]");
+    expect(outputs.join("")).toContain("[turntable: 99999 bytes of output omitted]");
   });
 });

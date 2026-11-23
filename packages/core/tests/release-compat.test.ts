@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
-import { tarDirectory } from "@longshore/act-runner";
-import { controlPost, type SafeFetch } from "@longshore/net";
-import { checkBody, compileRules, matchRule } from "@longshore/proxy";
+import { tarDirectory } from "@turntable/act-runner";
+import { controlPost, type SafeFetch } from "@turntable/net";
+import { checkBody, compileRules, matchRule } from "@turntable/proxy";
 import { chainedAudit, createReleaseRequest, setFreeze, clearFreeze, type Db } from "../src/db";
 import * as s from "../src/db/schema";
 import { resetFailureThrottle } from "../src/audit/failures";
@@ -1371,7 +1371,7 @@ describe("the release channel", () => {
     };
 
     beforeEach(async () => {
-      const good = await authority("longshore test CA");
+      const good = await authority("turntable test CA");
       const other = await authority("someone else's CA");
       server = await leaf(good, "release lane", "serverAuth");
       client = await leaf(good, "worker", "clientAuth");
@@ -1512,42 +1512,42 @@ describe("the release channel", () => {
 
 describe("release proxy and channel configuration", () => {
   const base = {
-    LONGSHORE_RELEASE_MASTER_KEY_FILE: "/k",
-    LONGSHORE_RELEASE_DATA_DIR: "/d",
-    LONGSHORE_RELEASE_GITHUB_TOKEN: "t",
-    LONGSHORE_RELEASE_ARTIFACT_DIR: "/a",
-    LONGSHORE_RELEASE_BUILDER_ID: "https://ci.example.com",
+    TURNTABLE_RELEASE_MASTER_KEY_FILE: "/k",
+    TURNTABLE_RELEASE_DATA_DIR: "/d",
+    TURNTABLE_RELEASE_GITHUB_TOKEN: "t",
+    TURNTABLE_RELEASE_ARTIFACT_DIR: "/a",
+    TURNTABLE_RELEASE_BUILDER_ID: "https://ci.example.com",
   };
   test("off by default; the channel needs the proxy", () => {
     expect(releaseConfigFromEnv(base)).not.toHaveProperty("proxy");
     expect(releaseConfigFromEnv(base)).not.toHaveProperty("channel");
     expect(() =>
-      releaseConfigFromEnv({ ...base, LONGSHORE_RELEASE_CHANNEL_KEY_FILE: "/ck" }),
+      releaseConfigFromEnv({ ...base, TURNTABLE_RELEASE_CHANNEL_KEY_FILE: "/ck" }),
     ).toThrow("release proxy");
     expect(() =>
-      releaseConfigFromEnv({ ...base, LONGSHORE_RELEASE_PROXY_PORT: "70000" }),
+      releaseConfigFromEnv({ ...base, TURNTABLE_RELEASE_PROXY_PORT: "70000" }),
     ).toThrow();
   });
   test("a unix socket by default, TCP only with all three TLS files", () => {
     const withProxy = {
       ...base,
-      LONGSHORE_RELEASE_PROXY_PORT: "0",
-      LONGSHORE_RELEASE_CHANNEL_KEY_FILE: "/ck",
+      TURNTABLE_RELEASE_PROXY_PORT: "0",
+      TURNTABLE_RELEASE_CHANNEL_KEY_FILE: "/ck",
     };
     expect(releaseConfigFromEnv(withProxy)).toMatchObject({
       proxy: { bind: "127.0.0.1", port: 0 },
       channel: { keyFile: "/ck", tcp: undefined },
     });
-    const tcp = { ...withProxy, LONGSHORE_RELEASE_CHANNEL_TCP: "10.0.0.2:7443" };
-    expect(() => releaseConfigFromEnv(tcp)).toThrow("LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE");
+    const tcp = { ...withProxy, TURNTABLE_RELEASE_CHANNEL_TCP: "10.0.0.2:7443" };
+    expect(() => releaseConfigFromEnv(tcp)).toThrow("TURNTABLE_RELEASE_CHANNEL_TLS_CERT_FILE");
     expect(
       releaseConfigFromEnv({
         ...tcp,
-        LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE: "/c",
-        LONGSHORE_RELEASE_CHANNEL_TLS_KEY_FILE: "/k",
-        LONGSHORE_RELEASE_CHANNEL_TLS_CA_FILE: "/ca",
+        TURNTABLE_RELEASE_CHANNEL_TLS_CERT_FILE: "/c",
+        TURNTABLE_RELEASE_CHANNEL_TLS_KEY_FILE: "/k",
+        TURNTABLE_RELEASE_CHANNEL_TLS_CA_FILE: "/ca",
       }).channel?.tcp,
     ).toMatchObject({ host: "10.0.0.2", port: 7443 });
-    expect(() => releaseConfigFromEnv({ ...tcp, LONGSHORE_RELEASE_CHANNEL_TCP: "nope" })).toThrow();
+    expect(() => releaseConfigFromEnv({ ...tcp, TURNTABLE_RELEASE_CHANNEL_TCP: "nope" })).toThrow();
   });
 });

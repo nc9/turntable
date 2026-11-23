@@ -17,12 +17,15 @@ export const DOCKER_ENV_PASSTHROUGH = [
 ] as const;
 
 /** Names that can never be passed through, whoever asks. */
-const NEVER = /^LONGSHORE_|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|MASTER|API_?KEY|CREDENTIAL/i;
+// rename-keep-begin
+/** Both spellings: the product's settings used to be LONGSHORE_* (formerly Longshore). */
+const NEVER = /^(?:TURNTABLE|LONGSHORE)_|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|MASTER|API_?KEY|CREDENTIAL/i;
+// rename-keep-end
 
 /**
  * Builds a child environment: the base allowlist from `source`, then each name in `passthrough`
  * that is set in `source`, then `set` (explicit values win). Throws if `passthrough` or `set`
- * names a variable that looks like a credential or a Longshore setting.
+ * names a variable that looks like a credential or a Turntable setting.
  */
 export function scrubbedEnv(
   set: Record<string, string> = {},
@@ -33,7 +36,9 @@ export function scrubbedEnv(
     if (NEVER.test(name)) throw new Error(`refusing to pass ${name} to a child process`);
   }
   for (const name of Object.keys(set)) {
-    if (name.startsWith("LONGSHORE_"))
+    // rename-keep-begin
+    if (/^(?:TURNTABLE|LONGSHORE)_/.test(name))
+      // rename-keep-end
       throw new Error(`refusing to pass ${name} to a child process`);
   }
   const out: Record<string, string> = {};

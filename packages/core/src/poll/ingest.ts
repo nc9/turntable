@@ -6,7 +6,7 @@ import {
   workflowHeadCheckouts,
   type Value,
   type WorkflowEvent,
-} from "@longshore/act-runner";
+} from "@turntable/act-runner";
 import { createHash } from "node:crypto";
 import { parse } from "yaml";
 import type { Db } from "../db";
