@@ -470,5 +470,25 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `job_attempts` ADD `sandbox_ttl_seconds` integer;"
     ]
+  },
+  {
+    "tag": "0041_approval_policy_settings",
+    "when": 1795433995064,
+    "statements": [
+      "-- #345: approval_policy joins the event types, and the approval policies move onto the settings\n-- registry. The events table is rebuilt for its CHECK: keep the AUTOINCREMENT high-water mark, so\n-- a feed cursor never meets a reused id.\nPRAGMA foreign_keys=OFF;",
+      "CREATE TEMP TABLE `__events_seq` AS SELECT seq FROM sqlite_sequence WHERE name = 'events';",
+      "CREATE TABLE `__new_events` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`public_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`type` text NOT NULL,\n\t`run_id` text,\n\t`job_id` text,\n\t`attempt_id` text,\n\t`payload` text DEFAULT '{}' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"events_type_check\" CHECK(type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled', 'approval.policy_loosened'))\n);",
+      "INSERT INTO `__new_events`(\"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\") SELECT \"id\", \"public_id\", \"org_id\", \"project_id\", \"type\", \"run_id\", \"job_id\", \"attempt_id\", \"payload\", \"created_at\" FROM `events`;",
+      "DROP TABLE `events`;",
+      "ALTER TABLE `__new_events` RENAME TO `events`;",
+      "INSERT INTO sqlite_sequence (name, seq) SELECT 'events', coalesce((SELECT max(seq) FROM `__events_seq`), 0) WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events');",
+      "UPDATE sqlite_sequence SET seq = max(seq, coalesce((SELECT max(seq) FROM `__events_seq`), 0)) WHERE name = 'events';",
+      "DROP TABLE `__events_seq`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE INDEX `events_org_idx` ON `events` (`org_id`,`id`);",
+      "CREATE INDEX `events_org_project_idx` ON `events` (`org_id`,`project_id`,`id`);",
+      "CREATE UNIQUE INDEX `events_public_id_unique` ON `events` (`public_id`);",
+      "-- Every org's approval policies are copied into one `approval_policy` setting, so the resolver\n-- reads what the table held. The table stays (nothing reads or writes it any more), so rolling\n-- the binary back loses nothing but changes made after this ran.\nINSERT INTO `settings` (`scope_kind`, `scope_id`, `org_id`, `key`, `value`, `updated_by`, `updated_at`)\nSELECT 'org', `org_id`, `org_id`, 'approval_policy',\n\tjson_group_object(`environment`, json_object('required', min(max(`required`, 1), 10), 'allow_author_approval', json(CASE WHEN `allow_author_approval` = 1 THEN 'true' ELSE 'false' END), 'key_policy', 'any')),\n\t'migration', CAST(strftime('%s', 'now') AS integer) * 1000\nFROM `approval_policies`\nWHERE NOT EXISTS (\n\tSELECT 1 FROM `settings`\n\tWHERE `settings`.`scope_kind` = 'org' AND `settings`.`scope_id` = `approval_policies`.`org_id` AND `settings`.`key` = 'approval_policy'\n)\nGROUP BY `org_id`;"
+    ]
   }
 ];
