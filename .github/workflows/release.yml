@@ -156,7 +156,9 @@ jobs:
 
   image:
     # After the release exists, so the image SBOM can be attached to it.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Not under Turntable: qemu, buildx and the smoke run need Docker, which its sandboxes lack
+    # (the image is deferred for the first alpha).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.TURNTABLE_CI != 'true'
     needs: [binaries, github-release]
     # Publishes the image: gated by the same environment as the release it attaches to.
     environment: release
@@ -308,7 +310,8 @@ jobs:
           retention-days: 7
 
   image-dry-run:
-    if: github.event_name == 'workflow_dispatch'
+    # Not under Turntable, as for the image job: its sandboxes have no Docker.
+    if: github.event_name == 'workflow_dispatch' && vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
