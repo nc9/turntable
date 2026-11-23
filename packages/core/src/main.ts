@@ -39,6 +39,7 @@ import {
   type MasterKeys,
 } from "./secrets/master-key";
 import { rewrapMasterKey } from "./secrets/rewrap";
+import { RETIRE_FILE_ENV, retireMasterKeyFile } from "./secrets/retire-key-file";
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
 import { systemOrgId } from "./audit/failures";
@@ -158,6 +159,8 @@ Environment:
   TURNTABLE_MASTER_KEY  the master key itself, 32 bytes as base64 or hex, so it stays off the data volume; read once at
                     boot and removed from the environment. TURNTABLE_MASTER_KEY_PREVIOUS (or _FILE) re-wraps every sealed row
                     under the new key at that boot, in one transaction; remove it afterwards
+  TURNTABLE_MASTER_KEY_RETIRE_FILE  path of the old key file in the data dir; after the re-wrap is verified, with
+                    TURNTABLE_MASTER_KEY in use and the file equal to the previous key, it is deleted once; remove it afterwards
   TURNTABLE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
   TURNTABLE_AUDIT_WEBHOOK_URL  POST audit batches here (HMAC with TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE)
   TURNTABLE_OIDC_BASE_URL  base of the per-org OIDC issuers (default <public url>/oidc); an org's issuer
@@ -441,6 +444,7 @@ async function startBackground(
     poller = new Poller({
       db,
       config: pollConfig,
+      ...(extras.auth ? { auth: extras.auth } : {}),
       // Repos bound by an installation are ingested once their project has ingest settings.
       bindings: true,
       log,
@@ -640,6 +644,22 @@ async function serve(args: string[]): Promise<void> {
     console.warn(
       "[turntable] a previous master key is set: once the re-wrap is done and a new backup is taken, remove it",
     );
+  }
+  // One-shot: delete the old key file from the volume once everything above holds. A refusal only
+  // logs; it never stops the boot.
+  const retirePath = process.env[RETIRE_FILE_ENV]?.trim();
+  if (masterKeys && retirePath) {
+    await retireMasterKeyFile({
+      db,
+      path: retirePath,
+      dataDir,
+      keys: masterKeys,
+      anchorDir: auditStateDir(masterKeys, dataDir),
+      auditOrgId: await systemOrgId(db),
+      log: (m) => console.log(`[turntable] ${m}`),
+    });
+  } else if (retirePath) {
+    console.log(`[turntable] ${RETIRE_FILE_ENV}: refused, no master key is set`);
   }
   // A key changed without its previous one: say so now, with the fix, not as a bare AnchorCorrupt
   // from the checkpointer later. Not fatal: the checkpointer alerts on every pass either way.
@@ -971,8 +991,9 @@ async function serve(args: string[]): Promise<void> {
           : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
-        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`turntable doctor` on the host).
-        ...(hostedMode ? {} : { doctor: doctorRun }),
+        // The `doctor` op is owner-member only (in-process) and `instance_doctor` is a `tti_` token's:
+        // no org token reaches either, so a hosted instance serves it too.
+        doctor: doctorRun,
         forwarded,
       })
     : undefined;

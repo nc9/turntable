@@ -33,6 +33,10 @@ curl http://127.0.0.1:8080/healthz
 
 Build the binaries into `dist/` with `bun run build`. The server binds to `127.0.0.1` unless you pass `--host` or set `TURNTABLE_HOST`. Run one job of a workflow in a local Docker sandbox with `turntable run <workflow> -j <job>`. The [quickstart](docs/quickstart.mdx) covers polling a repository and the rest of the setup.
 
+## Setup skills
+
+Agent skills in [`skills/`](skills) walk an operator, or their coding agent, through self-hosting and the GitHub App. In Claude Code: `/plugin marketplace add nc9/turntable`, then `/plugin install turntable@turntable`. See [Setup skills](docs/skills.mdx).
+
 ## Development
 
 See [AGENTS.md](AGENTS.md) for conventions. Report security issues as described in [SECURITY.md](SECURITY.md).

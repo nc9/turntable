@@ -7,19 +7,27 @@ import {
   appendAudit,
   countActiveApiTokens,
   createOrg,
+  findRepoBindingByName,
+  getInstallation,
   getInstanceToken,
+  getOrgById,
   getOrgBySlug,
+  getProject,
+  getProjectBySlug,
   insertApiToken,
   listAllOrgs,
+  moveRepoBinding,
   setOrgQuotas,
 } from "../../db/repos";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
-import { AGENT_ROLES, TOKEN_KINDS } from "../../db/schema";
+import { AGENT_ROLES, FORGES, TOKEN_KINDS } from "../../db/schema";
+import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
+import { doctorForApi, doctorOutput } from "./doctor";
 import { quotaView, quotaViewSchema } from "./quotas";
 
 const DAY_MS = 86_400_000;
@@ -328,5 +336,145 @@ export const createOrgTokenOp = defineOp({
       expires_at: new Date(expiresAt).toISOString(),
       token: secret,
     };
+  },
+});
+
+const REFUSED = "that binding cannot be moved to that org and project";
+
+export const moveRepoBindingOp = defineOp({
+  name: "move_repo_binding",
+  summary: "Move a repo's binding to a project in another org (instance administrator only).",
+  description:
+    "Moves the one binding of a repo (`forge`, `owner`, `repo`) to `to_project` of `to_org`, in " +
+    "one transaction, and keeps its installation. A repo is bound to one project on the whole " +
+    "instance, so this is how a tenant's repo leaves the bootstrap org before its installation is " +
+    "claimed. Refused, with one message that names no other org, when the target project is not in " +
+    "the target org, when the binding's installation is not mapped to the target org, or when " +
+    "`forge_repo_id` is given and differs from the binding's. Run history stays with the old " +
+    "project, and its queued and running attempts finish there; only later ingest lands in the new " +
+    "project. The poller's seen markers of the repo are copied to the new project, so a poll at " +
+    "the same head creates no second run. A static poll entry still naming the old project is " +
+    "skipped by the poller (one warning per interval) until it is changed and the instance " +
+    "restarted: the response lists the entries of the running poll config that still name the " +
+    "old project. Audited in the system org's chain and in both orgs' chains, with the old and new " +
+    "ids. Only the instance administrator can call it. Not an MCP tool.",
+  input: z.object({
+    forge: z.enum(FORGES).default("github"),
+    owner: z.string().min(1).max(100),
+    repo: z.string().min(1).max(100),
+    forge_repo_id: z
+      .string()
+      .min(1)
+      .max(40)
+      .optional()
+      .describe("Forge's numeric repo id; refused if the binding holds a different one."),
+    to_org: z.string().min(1).max(64).describe("Slug of the target org."),
+    to_project: z.string().min(1).max(63).describe("Slug of the target project in that org."),
+  }),
+  output: z.object({
+    binding_id: z.string(),
+    repo: z.string(),
+    installation_id: z.string().nullable(),
+    from: z.object({ org: z.string(), project: z.string() }),
+    to: z.object({ org: z.string(), project: z.string() }),
+    poll_entries_to_update: z
+      .array(z.object({ repo: z.string(), org: z.string(), project: z.string() }))
+      .describe("Entries of the running poll config that still name the old project."),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/repo-bindings/move" },
+  mcp: false,
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.to_org);
+    const project =
+      org && org.slug !== SYSTEM_ORG_SLUG
+        ? await getProjectBySlug(ctx.db, { orgId: org.id }, i.to_project)
+        : undefined;
+    if (!org || !project) throw new OpError("not_found", "no such org or project");
+    const binding = await findRepoBindingByName(ctx.db, i);
+    if (!binding) throw new OpError("not_found", "no such binding");
+    if (
+      binding.forgeRepoId !== null &&
+      i.forge_repo_id &&
+      binding.forgeRepoId !== i.forge_repo_id
+    ) {
+      throw new OpError("conflict", REFUSED);
+    }
+    if (binding.installationId !== null) {
+      const inst = await getInstallation(ctx.db, binding.installationId);
+      if (!inst || inst.orgId !== org.id) throw new OpError("conflict", REFUSED);
+    }
+    if (binding.orgId === org.id && binding.projectId === project.id) {
+      throw new OpError("conflict", "the binding is already in that project");
+    }
+    const fromOrg = (await getOrgById(ctx.db, binding.orgId))!;
+    const fromProject = (await getProject(ctx.db, { orgId: binding.orgId }, binding.projectId))!;
+    if (!(await moveRepoBinding(ctx.db, binding.id, { orgId: org.id, projectId: project.id }))) {
+      throw new OpError("not_found", "no such binding");
+    }
+    const detail = {
+      binding_id: binding.id,
+      repo: `${binding.owner}/${binding.repo}`,
+      from_org_id: fromOrg.id,
+      from_project_id: fromProject.id,
+      to_org_id: org.id,
+      to_project_id: project.id,
+    };
+    const entry = {
+      principalKind: "instance" as const,
+      principalId: ctx.principal.id,
+      op: "move_repo_binding",
+      effect: "write" as const,
+      outcome: "ok" as const,
+      input: detail,
+    };
+    // The system chain gets the dispatcher's entry; each org's own chain says it too.
+    await appendAudit(ctx.db, { orgId: fromOrg.id, projectId: fromProject.id }, entry);
+    if (org.id !== fromOrg.id) {
+      await appendAudit(ctx.db, { orgId: org.id, projectId: project.id }, entry);
+    }
+    const key = `${binding.owner}/${binding.repo}`;
+    return {
+      binding_id: binding.id,
+      repo: key,
+      installation_id: binding.installationId,
+      from: { org: fromOrg.slug, project: fromProject.slug },
+      to: { org: org.slug, project: project.slug },
+      poll_entries_to_update: [...ingestStatus.repos.values()]
+        .filter(
+          (r) =>
+            r.repo.toLowerCase() === key &&
+            r.org === fromOrg.slug &&
+            r.project === fromProject.slug,
+        )
+        .map((r) => ({ repo: r.repo, org: r.org, project: r.project })),
+    };
+  },
+});
+
+export const instanceDoctorOp = defineOp({
+  name: "instance_doctor",
+  summary: "The instance's readiness report, for the instance administrator.",
+  description:
+    "Runs the same read-only readiness checks as `turntable doctor` (master key and audit " +
+    "anchor, database and migrations, GitHub App credentials, sandbox provider, proxy TLS, " +
+    "forwarded headers, release channel, quotas) and returns each check's id, area, status " +
+    "(pass, warn or fail), a fixed one-line summary and a fixed fix. It never returns raw error " +
+    "text or a secret value. Use it on a hosted instance with no shell, for example to confirm " +
+    "a master-key rotation before removing the previous key. Only the instance administrator " +
+    "can call it. Read-only. Not an MCP tool.",
+  input: z.object({}),
+  output: doctorOutput,
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/doctor" },
+  mcp: false,
+  async handler(ctx) {
+    return doctorForApi(ctx.doctor);
   },
 });

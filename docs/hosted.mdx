@@ -65,10 +65,11 @@ Rotation re-encrypts every sealed row at boot, so it needs only variables and a 
 2. Set `TURNTABLE_MASTER_KEY` to the new key and `TURNTABLE_MASTER_KEY_PREVIOUS` to the key in use now. To move off a key file, set the file's contents as the previous key (`TURNTABLE_MASTER_KEY_PREVIOUS_FILE=/data/master.key` works too) and remove `TURNTABLE_MASTER_KEY_FILE` and `TURNTABLE_MASTER_KEY_AUTOINIT`.
 3. Deploy. At boot, every sealed row is re-encrypted under the new key in one transaction: the secrets table (GitHub App credentials, audit signing keys, OIDC keys), vault versions and outbound webhook secrets. Each is opened again under the new key and compared before the commit, and the audit anchor state files are re-sealed with it. The system org's audit chain records `master_key_rewrap` with a count per table. If any row opens under neither key, nothing is changed and the server does not start; the log names the table and row, never a value. Fix the variables and deploy again.
 4. Take a new backup. It is the first one that holds nothing the old key opens.
-5. **Keep `TURNTABLE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed (`turntable doctor` green, no `AnchorCorrupt`, no "audit anchor ... previous master key" line in the log), and only then remove it.** Removing it earlier on a host that has not finished the re-wrap leaves rows the new key cannot open. If the old key was a file on the volume, delete the file. Leaving the previous key set is harmless (rows already under the new key are skipped), but it keeps the old key in the environment.
+5. **Keep `TURNTABLE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed (`turntable doctor` green, or `instance_doctor` with no shell, no `AnchorCorrupt`, no "audit anchor ... previous master key" line in the log), and only then remove it.** Removing it earlier on a host that has not finished the re-wrap leaves rows the new key cannot open. If the old key was a file on the volume, retire it (see below). Leaving the previous key set is harmless (rows already under the new key are skipped), but it keeps the old key in the environment.
 
 If you boot on a new key without the previous one, an audit anchor that does not open is reported at boot and by `doctor` as "not sealed under the current master key (most likely the previous one)", with the fix: set `TURNTABLE_MASTER_KEY_PREVIOUS` and restart.
 6. **Rotate the secrets themselves.** The old key and every backup taken before step 4 still open the values inside those backups. Rotate the GitHub App private key and the webhook secret (`turntable github-app rotate-webhook-secret`, or create the App again), and every vault secret, so what the old backups hold is dead. Deleting the old backups is your decision; the rotation is what makes them safe.
+7. **Retire the old key file (no shell).** If the old key was a file on the volume (`/data/master.key`), it still sits there and in every later backup. Set `TURNTABLE_MASTER_KEY_RETIRE_FILE=/data/master.key` together with `TURNTABLE_MASTER_KEY` and the previous key (`TURNTABLE_MASTER_KEY_PREVIOUS_FILE=/data/master.key`, or the same bytes in `TURNTABLE_MASTER_KEY_PREVIOUS`), and deploy. After the re-wrap, the boot deletes the file only if the process runs on `TURNTABLE_MASTER_KEY`, every sealed row opens under it (a read-only check), the file equals the previous key you gave, and the path is a regular file (not a symlink) inside the data directory. Otherwise one log line names the condition that failed and the file stays. A deletion is audited as `master_key_file_retired` with the path, never a key. A file that is already gone is logged once and is not an error. Then **remove `TURNTABLE_MASTER_KEY_RETIRE_FILE` and `TURNTABLE_MASTER_KEY_PREVIOUS[_FILE]`**. Backups taken before the rotation still hold the old file's key: step 6 is what makes them safe.
 
 Cache blobs are not re-wrapped: a cache entry sealed under the old key stops opening and is a miss. The release lane has its own key and is not touched by this; see below.
 
@@ -91,6 +92,16 @@ To call the [instance operations](/instance-admin) on a hosted instance, generat
 A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.
 
 Check runs post as `shadow / <job>`, always neutral, while the project's checks mode is `shadow`.
+
+## The API budget of the poller
+
+GitHub counts requests per credential. Polling with no token shares 60 requests an hour per address with every other unauthenticated call, including action resolution. The poll token has its own 5,000 an hour, shared by every repo that uses it.
+
+A repo bound through the GitHub App is polled with a token minted for that one repo instead, with `contents`, `metadata` and `pull_requests` read and nothing else. Each installation has its own 5,000 an hour, so the repos of one instance do not draw on each other's budget or on the fallback. The token is short-lived, held in memory only (the App's token cache, which an incident freeze clears), never logged and never returned by an operation. The ETag cache is kept across token renewals, and a `304` is not counted against the limit.
+
+The binding must be in the same org and project the repo is polled into. A repo with no installation, and any repo whose token cannot be minted, uses the poll token, or no token. A failed mint is logged once per poll interval and the poll goes ahead on the fallback.
+
+`ingest_status` shows the auth mode of each repo (`anonymous`, `token` or `installation`) and its budget, plus `rate_limit_by_mode`: the last seen budget of each mode, as `anonymous`, `poll_token` and `installation` (for `installation`, the repo with the least left).
 
 ## Creating the GitHub App on an instance with no shell
 
@@ -138,7 +149,7 @@ By default every installation of the App maps to the org that owns the App. On a
 
 1. A signed-in principal of the org calls `start_installation_claim`. It needs an org-level token with `release_operator` or admin; a project-scoped token is refused. It returns a link to this Turntable instance carrying a `state`: an HMAC over the org, who started it, a nonce and an expiry (15 minutes), with the nonce stored and single use. Optionally pass `github_login` to restrict the claim to one GitHub user.
 2. Opening the link shows a confirmation page that names the Turntable org that will receive the installation. The page sets a random token in a `Strict` cookie and puts an HMAC of it (with the claim's nonce) in the form. The confirming POST is accepted only if the browser says it came from this instance (`Sec-Fetch-Site: same-origin`, or an `Origin` equal to the instance origin; with neither header it is refused) and the cookie and form value match. It then sets a short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie holding the nonce and sends the browser to GitHub (`Lax`, not `Strict`, because the callback is a navigation that starts on github.com and a `Strict` cookie would not be sent). The callback needs that cookie, and clears both cookies once it has used it, so a link forwarded to another browser, or a flow another site's page tries to start, cannot be completed.
-3. The person installs the App, and GitHub sends the browser to the App's **setup URL**, `<public url>/api/v1/github/setup`, with `installation_id`, `state` and an authorization `code`. The App must have **Request user authorization (OAuth) during installation** enabled and that setup URL set (the manifest flow sets the setup URL; the OAuth option is on the App's settings page).
+3. The person installs the App, and GitHub sends the browser to the App's **setup URL**, `<public url>/api/v1/github/setup`, with `installation_id`, `state` and an authorization `code`. The App must have **Request user authorization (OAuth) during installation** enabled and that setup URL set. The manifest flow sets both (`request_oauth_on_install` and the setup URL) when claim mode is on. An App created without claim mode needs both set by hand in its settings.
 4. The state names the org but does not prove the installation id, which is only a query parameter, and access is not ownership (every member of an organization can see its installations). So the callback exchanges the code for the user's token and requires that the user can reach the installation **and owns it**: for an organization account, `GET /user/memberships/orgs/{org}` with the user's token must say `role: admin` and `state: active`; for a personal account, the account must be the user. If `github_login` was given, it must match. It then re-fetches the installation with the App's own credentials (it must be our App) and only then maps it, and its repositories as projects, to the org in the state, consuming the nonce. A failed attempt does not burn the link. Every outcome is written to the org's audit chain as `claim_installation`, with the GitHub user id and login who claimed it.
 5. An installation another org already holds is never taken. An installation nobody has claimed is ignored by the webhook handler (stored as ignored), not mapped to the App's org.
 
@@ -169,7 +180,26 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/orgs/tokens" \
   -d '{"target_org":"acme","name":"acme operator","role":"operator","expires_days":90}'
 ```
 
-Then add its projects as below. This is how a tenant is moved out of the bootstrap org before its GitHub App installation is claimed.
+Then add its projects as below. This is how a tenant is moved out of the bootstrap org before its GitHub App installation is claimed; the repo's binding moves with [`move_repo_binding`](#moving-a-polled-repo-to-another-org).
+
+## Moving a polled repo to another org
+
+A repo is bound to one project on the whole instance, so a repo polled in one org (the bootstrap org, say) cannot simply be pointed at a project in another. Pointing the poll entry at the new project alone is not enough: the repo stays bound to the old one. The instance administrator moves the binding with `move_repo_binding`:
+
+1. Create the target org, its project and its first token (`create_org`, `create_project`, `create_org_token`), as above.
+2. Move the binding. The response names the poll entries that still point at the old project:
+
+   ```bash
+   curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/repo-bindings/move" \
+     -H "Authorization: Bearer $TURNTABLE_INSTANCE_TOKEN" -H "Content-Type: application/json" \
+     -d '{"owner":"acme","repo":"web","to_org":"acme","to_project":"web"}'
+   ```
+
+3. Change the poll entry's `org` and `project` (`TURNTABLE_POLL_JSON`) to the new ones and restart. Until then the poller skips that repo and logs one warning per interval: it makes no GitHub call and tries no bind. The poller's record of seen shas follows the repo, so the first poll at the new project does not run the same head again, and a new sha creates exactly one run.
+4. Claim the installation into the new org (see [claiming an installation](#one-instance-several-orgs-claiming-an-installation)). The installation sync adopts the moved binding, so checks are posted from then on. If the binding already has an installation, the move is refused unless that installation is mapped to the target org.
+5. Pause the old project (`set_project_settings` with `max_concurrent` 0) once its queue has drained, or when it is no longer wanted.
+
+Run history stays with the old project and is readable only in the old org. Attempts queued or running there when the binding moves are not touched: they finish in the old project. Only runs ingested after the move land in the new one. The move is audited in the system org's chain and in both orgs' chains, with the old and new org and project ids.
 
 ## Moving a polled repo to the GitHub App
 
@@ -254,7 +284,7 @@ Before you start: an instance on a public https URL with `TURNTABLE_MASTER_KEY_F
 2. Press the button and approve on GitHub. Expect a redirect back to the loopback page that reports success.
 3. Run `turntable github-app status`. Expect the App listed with no secret in the output.
 4. On GitHub, open the App settings. Check these: the permissions are the four in [GitHub App](/github-app), the events are `push`, `pull_request` and `check_run`, the webhook URL is `<public url>/api/v1/webhooks/github`, and the setup URL is `<public url>/api/v1/github/setup`.
-5. Turn on **Request user authorization (OAuth) during installation**. The manifest cannot set it.
+5. With claim mode on, the manifest already turned on **Request user authorization (OAuth) during installation**. Check that it is on. Turn it on by hand only for an App created without claim mode.
 6. The loopback command always creates a private App. If other accounts will install it, choose **Make public** under **Advanced**.
 
 ### 2. Webhook delivery

@@ -19,11 +19,13 @@ import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
 import {
+  instanceDoctorOp,
   instanceListOrgs,
   instanceWhoami,
   rotateInstanceTokenOp,
   createOrgOp,
   createOrgTokenOp,
+  moveRepoBindingOp,
   setQuotas,
 } from "./definitions/instance";
 import { githubAppStatus, instanceGithubAppStatus } from "./definitions/github-app-status";
@@ -119,7 +121,9 @@ export const registry = createRegistry([
   rotateInstanceTokenOp,
   createOrgOp,
   createOrgTokenOp,
+  moveRepoBindingOp,
   instanceListOrgs,
+  instanceDoctorOp,
   setQuotas,
   dbBackupOp,
   acceptActionMoveOp,
