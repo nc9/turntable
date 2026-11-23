@@ -39,7 +39,7 @@ export const sandboxUsageOp = defineOp({
     "attempt's duration. Scoped to the org, or to one project when a project is given. This is " +
     'the number quotas limit. With `group_by: "project"` the answer also carries `projects`: the same ' +
     "per-day figures for each project that had a sandbox alive in the window (a project with no " +
-    "usage is left out); each day's project rows add up to that day's org row. A project-scoped " +
+    "usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart); each day's project rows add up to that day's org row. A project-scoped " +
     "token sees only its own project. Read-only.",
   input: z.object({
     days: z.int().min(1).max(92).default(7).describe("How many UTC days, ending today."),
@@ -56,6 +56,7 @@ export const sandboxUsageOp = defineOp({
           project_id: z.string(),
           project_slug: z.string(),
           project_name: z.string(),
+          scheduling_class: z.enum(["normal", "yield"]),
           days: z.array(dayShape),
           total_seconds: z.number(),
           total_minutes: z.number(),
@@ -63,6 +64,18 @@ export const sandboxUsageOp = defineOp({
       )
       .optional()
       .describe("Present only with `group_by: project`."),
+    classes: z
+      .array(
+        z.object({
+          scheduling_class: z.enum(["normal", "yield"]),
+          total_seconds: z.number(),
+          total_minutes: z.number(),
+        }),
+      )
+      .optional()
+      .describe(
+        "Present only with `group_by: project`: the totals per scheduling class, so yield usage is reported apart.",
+      ),
     total_seconds: z.number(),
     total_minutes: z.number(),
   }),
@@ -84,19 +97,24 @@ export const sandboxUsageOp = defineOp({
     };
     if (input.group_by !== "project") return base;
     const byProject = await sandboxUsageByProject(ctx.db, ctx.scope, { from, to, now });
-    return {
-      ...base,
-      projects: byProject.map((p) => {
-        const secs = round3(p.days.reduce((n, r) => n + r.seconds, 0));
-        return {
-          project_id: p.projectId,
-          project_slug: p.slug,
-          project_name: p.name,
-          days: p.days.map(mapDay),
-          total_seconds: secs,
-          total_minutes: round3(secs / 60),
-        };
-      }),
-    };
+    const projects = byProject.map((p) => {
+      const secs = round3(p.days.reduce((n, r) => n + r.seconds, 0));
+      return {
+        project_id: p.projectId,
+        project_slug: p.slug,
+        project_name: p.name,
+        scheduling_class: p.schedulingClass,
+        days: p.days.map(mapDay),
+        total_seconds: secs,
+        total_minutes: round3(secs / 60),
+      };
+    });
+    const classes = (["normal", "yield"] as const).map((c) => {
+      const secs = round3(
+        projects.filter((p) => p.scheduling_class === c).reduce((n, p) => n + p.total_seconds, 0),
+      );
+      return { scheduling_class: c, total_seconds: secs, total_minutes: round3(secs / 60) };
+    });
+    return { ...base, projects, classes };
   },
 });

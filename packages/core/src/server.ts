@@ -1,3 +1,4 @@
+import type { ArtifactService } from "./artifacts/service";
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
 import type { BackupConfig } from "./db/backup";
@@ -15,6 +16,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
+import type { GithubFacts } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { DoctorReport } from "./doctor/types";
@@ -91,6 +93,8 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /** GitHub API facts, for `resync_installation`. */
+  githubFacts?: GithubFacts;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
@@ -103,6 +107,8 @@ export type ServeOptions = {
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
+  /** The artifact service for jobs (the twirp API and `/_artifacts/...`), when a URL is configured. */
+  artifacts?: ArtifactService;
   /** Outbound webhook management ops, when a master key is configured. */
   outboundWebhooks?: WebhookService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
@@ -119,6 +125,7 @@ export function startServer(options: ServeOptions) {
     db: options.db,
     vault: options.vault,
     claims: options.claims?.starter,
+    githubFacts: options.githubFacts,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
@@ -164,6 +171,8 @@ export function startServer(options: ServeOptions) {
     if (idp) return idp;
     const cached = await options.cache?.handle(req);
     if (cached) return cached;
+    const artifact = await options.artifacts?.handle(req);
+    if (artifact) return artifact;
     const upgraded = await realtime.handle(req, srv);
     if (upgraded === "upgraded") return undefined;
     if (upgraded) return upgraded;

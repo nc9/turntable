@@ -92,6 +92,37 @@ export type QuotaUsage = {
   storedBytes: number;
 };
 
+/** Stored artifact and cache bytes of an org: what the `stored_bytes` quota is measured against. */
+export function orgStoredBytes(db: Db, orgId: string): Promise<number> {
+  return db.run((h) => storedBytesIn(h, orgId));
+}
+
+async function storedBytesIn(
+  h: Parameters<Parameters<Db["run"]>[0]>[0],
+  orgId: string,
+): Promise<number> {
+  // A size below zero (a row that predates the check in recordArtifact) never lowers the sum.
+  const [arts] = await h.orm
+    .select({
+      n: sql<number>`coalesce(sum(case when ${s.artifacts.size} > 0 then ${s.artifacts.size} else 0 end), 0)`.mapWith(
+        Number,
+      ),
+    })
+    .from(s.artifacts)
+    .where(eq(s.artifacts.orgId, orgId));
+  // The control-plane cache counts too: complete entries and live reservations (the cache has
+  // its own per-class shares inside this org; this is the org-wide figure).
+  const [cache] = await h.orm
+    .select({
+      n: sql<number>`coalesce(sum(case when ${s.cacheEntries.size} > 0 then ${s.cacheEntries.size} else 0 end), 0)`.mapWith(
+        Number,
+      ),
+    })
+    .from(s.cacheEntries)
+    .where(eq(s.cacheEntries.orgId, orgId));
+  return Number(arts?.n ?? 0) + Number(cache?.n ?? 0);
+}
+
 export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
   // The same exact figure the Usage page shows: provider create to confirmed destroy.
   const sandbox = await sandboxSeconds(
@@ -119,32 +150,14 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
       .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
       .from(s.logChunks)
       .where(eq(s.logChunks.orgId, orgId));
-    // A size below zero (a row that predates the check in recordArtifact) never lowers the sum.
-    const [arts] = await h.orm
-      .select({
-        n: sql<number>`coalesce(sum(case when ${s.artifacts.size} > 0 then ${s.artifacts.size} else 0 end), 0)`.mapWith(
-          Number,
-        ),
-      })
-      .from(s.artifacts)
-      .where(eq(s.artifacts.orgId, orgId));
-    // The control-plane cache counts too: complete entries and live reservations (the cache has
-    // its own per-class shares inside this org; this is the org-wide figure).
-    const [cache] = await h.orm
-      .select({
-        n: sql<number>`coalesce(sum(case when ${s.cacheEntries.size} > 0 then ${s.cacheEntries.size} else 0 end), 0)`.mapWith(
-          Number,
-        ),
-      })
-      .from(s.cacheEntries)
-      .where(eq(s.cacheEntries.orgId, orgId));
+    const stored = await storedBytesIn(h, orgId);
     return {
       concurrent: Number(conc?.n ?? 0),
       runsLastHour: Number(runs?.n ?? 0),
       sandboxMinutesLastDay: Math.floor(sandbox.seconds / 60),
       sandboxEstimated: sandbox.estimated,
       logBytes: Number(logs?.n ?? 0),
-      storedBytes: Number(arts?.n ?? 0) + Number(cache?.n ?? 0),
+      storedBytes: stored,
     };
   });
 }

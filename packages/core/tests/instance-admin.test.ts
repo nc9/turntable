@@ -203,7 +203,11 @@ describe("no org principal reaches an instance op, and the instance token reache
                   ? { key: "backup_keep", value: 1 }
                   : op.name === "create_project"
                     ? { target_org: "org-a", slug: "sneaky", name: "x" }
-                    : {};
+                    : op.name === "create_org"
+                      ? { slug: "sneaky-org", name: "x" }
+                      : op.name === "create_org_token"
+                        ? { target_org: "org-a", name: "x", role: "reader", expires_days: 1 }
+                        : {};
           const r = await dispatch(env, cred, op.name, input);
           expect(r.ok, `${label} on ${op.name}`).toBe(false);
           if (!r.ok) expect(r.error.code, `${label} on ${op.name}`).toBe("forbidden");
@@ -221,6 +225,8 @@ describe("no org principal reaches an instance op, and the instance token reache
         .map((o) => o.name)
         .toSorted(),
     ).toEqual([
+      "create_org",
+      "create_org_token",
       "create_project",
       "db_backup",
       "instance_get_setting",
