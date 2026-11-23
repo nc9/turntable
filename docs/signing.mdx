@@ -42,10 +42,81 @@ A project's signing key is `<backend>:<reference>`:
 | Backend | Reference | Notes |
 | --- | --- | --- |
 | `builtin` | A key name | An Ed25519 key sealed in the system secret domain. For self-hosters and tests. |
-| `aws-kms` | A key id, ARN or alias | An `ECC_NIST_EDWARDS25519` key; `Sign` with `ED25519_SHA_512`, request signed with SigV4 under temporary credentials. |
+| `aws-kms` | A key ARN | An `ECC_NIST_P256` key; `Sign` with `ECDSA_SHA_256` over the digest, authenticated by OIDC web identity (see [AWS KMS](#aws-kms)). The envelope carries the DER signature. |
 | `gcp-kms` | A full key version name | An `EC_SIGN_ED25519` key version; `asymmetricSign` with a short-lived OAuth token. |
 
 KMS requests go through the same guarded outbound client as everything else the control plane fetches. Exchanging the org's OIDC token for those temporary credentials is the issuer's job ([#43](https://github.com/nc9/turntable/issues/43)); the backends take a function that returns them.
+
+## AWS KMS
+
+The `aws-kms` backend signs with a non-exportable P-256 key and holds no cloud key of its own. For each signature the release lane:
+
+1. mints an OIDC token from the org's issuer with `sub` `turntable:release:<org>/<project>` (never a job or an attempt, so no job at any trust class can meet a trust policy pinned to it), the configured audience (default `sts.amazonaws.com`) and a life of at most 5 minutes;
+2. calls `sts:AssumeRoleWithWebIdentity` for the configured role with `DurationSeconds` 900 (an unsigned call; the token is the credential);
+3. calls `kms:GetPublicKey` (cached per key) and refuses the key unless its public key hashes to the pinned fingerprint (`key_mismatch`);
+4. calls `kms:Sign` with `MessageType` `DIGEST` and `ECDSA_SHA_256` over the SHA-256 of the DSSE pre-authentication encoding.
+
+The requests are signed with SigV4 by Turntable itself, with no AWS SDK. Credentials stay in memory, are reused until one minute before they expire, and are never logged or audited. The only hosts called are `sts.<region>.amazonaws.com` and `kms.<region>.amazonaws.com`, for the configured region. The audit row (`kms_sign`) records the key ARN and the digest, and on failure one of `sts_denied`, `kms_denied`, `kms_throttled`, `key_mismatch` or `network`.
+
+### Configuration
+
+The `aws_kms_keys` org setting maps a key ARN to its access, in the environment (`TURNTABLE_AWS_KMS_KEYS`, JSON) or `turntable.toml`. It holds no secret:
+
+```toml
+[orgs.acme.signing.aws_kms_keys."arn:aws:kms:us-east-1:111122223333:key/0123abcd-0123-4abc-8def-0123456789ab"]
+role_arn = "arn:aws:iam::111122223333:role/turntable-release"
+region = "us-east-1"
+audience = "sts.amazonaws.com"
+public_key_fingerprint = "<hex sha256 of the key's SPKI DER>"
+```
+
+Take the fingerprint from the key you created: `aws kms get-public-key --key-id <arn> --query PublicKey --output text | base64 -d | sha256sum`. Then set the project's key with `turntable policy set --signing-key aws-kms:<arn>`. If the project restricts OIDC audiences, allow the audience there too.
+
+### AWS setup
+
+Register the IAM OIDC provider for `<public url>/oidc/<org>` only after the final domain is live: the issuer URL is part of the trust and changes with the public URL. Use the audience as the client id.
+
+Trust policy of the role, pinned to the release subject and the audience:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Federated": "arn:aws:iam::111122223333:oidc-provider/ci.example.com/oidc/acme" },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "ci.example.com/oidc/acme:sub": "turntable:release:acme/app",
+        "ci.example.com/oidc/acme:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+```
+
+Key policy: the role may `kms:Sign` and `kms:GetPublicKey` and nothing else; a separate admin role manages the key and cannot sign; deletion has a 30-day window (`PendingWindowInDays` 30); CloudTrail records every `Sign`.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "Admin", "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::111122223333:role/kms-admin" },
+      "Action": ["kms:Create*", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*",
+                 "kms:Revoke*", "kms:Disable*", "kms:Get*", "kms:Delete*", "kms:TagResource",
+                 "kms:UntagResource", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"],
+      "Resource": "*" },
+    { "Sid": "Sign", "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::111122223333:role/turntable-release" },
+      "Action": ["kms:Sign", "kms:GetPublicKey"], "Resource": "*" }
+  ]
+}
+```
+
+### Rotation
+
+The KMS key is a day-to-day release key under an offline root: the root signs a delegation to the key's public key, and verifiers trust the root. To rotate, create a new key, have the root delegate to it, add its ARN and fingerprint to `aws_kms_keys`, point the project at it, then disable and schedule deletion of the old key. A key re-created under the same ARN is refused by the pinned fingerprint until an operator changes it.
 
 ## Configuration
 

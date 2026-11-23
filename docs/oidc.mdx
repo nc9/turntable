@@ -142,3 +142,7 @@ vault write auth/jwt/role/deploy role_type=jwt user_claim=sub \
   bound_subject="org:acme:project:web:repo:acme/web:ref:refs/heads/main:class:protected:env:none" \
   token_policies=deploy token_ttl=10m
 ```
+
+## Release lane token
+
+The release lane mints a second kind of token, for signing with a cloud KMS key ([AWS KMS](/signing#aws-kms)). Its `sub` is `turntable:release:<org>/<project>`, it has no job, run or attempt claims, and it lives at most 5 minutes. It is minted by the lane itself, never on request of a job, so no job can obtain a token a trust policy pinned to that subject would accept.

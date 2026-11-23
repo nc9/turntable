@@ -13,6 +13,7 @@ export {
 } from "./policy";
 export {
   type Backend,
+  type ScopedSigner,
   builtinKeyRef,
   parseKeyRef,
   type SignOutcome,
@@ -21,3 +22,4 @@ export {
   type SigningServiceOptions,
 } from "./service";
 export { secretStoreVault } from "./vault";
+export { AwsKmsBackend, type AwsKmsBackendOptions, type ReleaseTokenSource } from "./aws-kms";

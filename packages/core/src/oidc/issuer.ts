@@ -43,6 +43,14 @@ export type MintDenial =
   | "frozen"
   | "audience_not_allowed";
 
+/** The release lane's token is for one project's release signing and nothing else. */
+export const RELEASE_TOKEN_SECONDS = 300;
+export type ReleaseMintDenial =
+  "bad_audience" | "unknown_project" | "frozen" | "audience_not_allowed";
+export type ReleaseMintResult =
+  | { ok: true; token: string; expiresAt: number; jti: string }
+  | { ok: false; reason: ReleaseMintDenial };
+
 export type MintResult =
   | { ok: true; token: string; expiresAt: number; jti: string; kid: string }
   | { ok: false; reason: MintDenial };
@@ -256,5 +264,78 @@ export class OidcIssuer {
       },
     });
     return { ok: true, token, expiresAt: exp * 1000, jti, kid };
+  }
+
+  /**
+   * Mints the release lane's identity token for one project: `sub` is
+   * `turntable:release:<org slug>/<project slug>`, never a job's or an attempt's, so a cloud trust
+   * policy pinned to it cannot be met by a job at any trust class. The caller is the release lane
+   * itself (in process), not an attempt: nothing an attempt holds reaches this. At most five
+   * minutes, a unique jti, audited with the subject and never the token.
+   */
+  async mintRelease(req: {
+    orgId: string;
+    projectId: string;
+    audience: unknown;
+  }): Promise<ReleaseMintResult> {
+    const { db } = this.#o;
+    const now = this.#now();
+    const scope = { orgId: req.orgId, projectId: req.projectId };
+    const deny = async (reason: ReleaseMintDenial): Promise<ReleaseMintResult> => {
+      await auditFailure(
+        db,
+        {
+          orgId: req.orgId,
+          principalKind: "system",
+          principalId: "release-lane",
+          source: req.projectId,
+          kind: `oidc_denied:${reason}`,
+          op: "oidc_mint_release",
+          outcome: `error:${reason}`,
+          detail: {
+            project_id: req.projectId,
+            ...(validAudience(req.audience) ? { aud: req.audience } : {}),
+          },
+        },
+        () => now,
+      );
+      return { ok: false, reason };
+    };
+    if (!validAudience(req.audience)) return deny("bad_audience");
+    const aud = req.audience;
+    const project = await getProject(db, { orgId: req.orgId }, req.projectId);
+    const org = await getOrgById(db, req.orgId);
+    if (!project || !org) return deny("unknown_project");
+    if ((await getFreeze(db, scope)).frozen) return deny("frozen");
+    const allowedAud = await getProjectOidcAudiences(db, scope);
+    if (allowedAud !== null && !allowedAud.includes(aud)) return deny("audience_not_allowed");
+
+    const iat = Math.floor(now / 1000);
+    const exp = iat + Math.min(RELEASE_TOKEN_SECONDS, MAX_TOKEN_SECONDS);
+    const jti = randomUUID();
+    const claims = {
+      iss: this.issuerUrl(org.slug),
+      aud,
+      sub: `turntable:release:${seg(org.slug)}/${seg(project.slug)}`,
+      iat,
+      nbf: iat - NBF_LEEWAY_SECONDS,
+      exp,
+      jti,
+      org: org.slug,
+      org_id: org.id,
+      project: project.slug,
+      project_id: project.id,
+      trust_class: "release",
+    };
+    const { token, kid } = await this.keys.signJwt(org.id, claims, now);
+    await appendAudit(db, scope, {
+      principalKind: "system",
+      principalId: "release-lane",
+      op: "oidc_mint_release",
+      effect: "use",
+      outcome: "ok",
+      input: { aud, kid, jti, sub: claims.sub, exp },
+    });
+    return { ok: true, token, expiresAt: exp * 1000, jti };
   }
 }

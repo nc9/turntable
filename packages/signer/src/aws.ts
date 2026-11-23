@@ -2,16 +2,10 @@
 // signed with SigV4 using TEMPORARY credentials the caller provides (from the org's OIDC issuer
 // through STS, never a static key). The key must be an Ed25519 key (ECC_NIST_EDWARDS25519,
 // algorithm ED25519_SHA_512); the private key never leaves KMS.
-import crypto from "node:crypto";
 import { type SafeFetch, safeFetch } from "@turntable/net";
 import { publicKeyFromSpki } from "./keys";
+import { type AwsCredentials, signV4 } from "./sigv4";
 import { type PublicKey, type Signer, SignerError } from "./types";
-
-export interface AwsCredentials {
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken: string;
-}
 
 export interface AwsKmsOptions {
   region: string;
@@ -25,11 +19,6 @@ export interface AwsKmsOptions {
 
 const KEY_ID =
   /^(arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:(key\/[0-9a-f-]{36}|alias\/[\w/-]{1,250})|[0-9a-f-]{36}|alias\/[\w/-]{1,250})$/;
-const hmac = (key: Buffer | string, data: string): Buffer =>
-  crypto.createHmac("sha256", key).update(data).digest();
-const sha256 = (data: string | Buffer): string =>
-  crypto.createHash("sha256").update(data).digest("hex");
-
 /** SigV4 for a JSON POST to `/`. Exported for the request-shape tests. */
 export function sigV4(o: {
   region: string;
@@ -39,35 +28,19 @@ export function sigV4(o: {
   credentials: AwsCredentials;
   amzDate: string;
 }): Record<string, string> {
-  const date = o.amzDate.slice(0, 8);
-  const headers: Record<string, string> = {
-    "content-type": "application/x-amz-json-1.1",
-    host: o.host,
-    "x-amz-date": o.amzDate,
-    "x-amz-security-token": o.credentials.sessionToken,
-    "x-amz-target": o.target,
-  };
-  const names = Object.keys(headers).sort();
-  const canonical = [
-    "POST",
-    "/",
-    "",
-    ...names.map((n) => `${n}:${headers[n]}`),
-    "",
-    names.join(";"),
-    sha256(o.body),
-  ].join("\n");
-  const scope = `${date}/${o.region}/kms/aws4_request`;
-  const toSign = ["AWS4-HMAC-SHA256", o.amzDate, scope, sha256(canonical)].join("\n");
-  const key = hmac(
-    hmac(hmac(hmac(`AWS4${o.credentials.secretAccessKey}`, date), o.region), "kms"),
-    "aws4_request",
-  );
-  const signature = crypto.createHmac("sha256", key).update(toSign).digest("hex");
-  return {
-    ...headers,
-    authorization: `AWS4-HMAC-SHA256 Credential=${o.credentials.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}`,
-  };
+  return signV4({
+    method: "POST",
+    headers: {
+      "content-type": "application/x-amz-json-1.1",
+      host: o.host,
+      "x-amz-target": o.target,
+    },
+    body: o.body,
+    region: o.region,
+    service: "kms",
+    credentials: o.credentials,
+    amzDate: o.amzDate,
+  });
 }
 
 export class AwsKmsSigner implements Signer {

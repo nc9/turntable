@@ -2,3 +2,6 @@ packages/signer/tests/signer.test.ts
 packages/signer/tests/kms.test.ts
 packages/core/tests/signing.test.ts
 packages/core/tests/verify-cli.test.ts
+packages/signer/tests/sigv4.test.ts
+packages/signer/tests/aws-p256.test.ts
+packages/core/tests/aws-kms-signer.test.ts

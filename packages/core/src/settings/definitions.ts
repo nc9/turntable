@@ -7,6 +7,7 @@ import {
   approvalPolicyMap,
   MAX_REQUIRED_APPROVALS,
 } from "../approvals/policy-setting";
+import { awsKmsKeyMap, awsKmsKeysLoosening } from "../signing/aws-kms-setting";
 import { createSettingsRegistry, defineSetting } from "./define";
 
 /** How many backups `db_backup` keeps when nothing says otherwise. */
@@ -178,6 +179,37 @@ export const approvalPolicySetting = defineSetting({
   toml: "approval_policy",
 });
 
+/**
+ * The `aws-kms` signing backend's per-key configuration: how the release lane reaches each KMS
+ * key. A map keyed by key ARN because a project names its key as `aws-kms:<arn>`. No secret is
+ * kept in it: authentication is the OIDC web identity token, never an access key.
+ */
+export const awsKmsKeysSetting = defineSetting({
+  key: "aws_kms_keys",
+  scope: "org",
+  type: awsKmsKeyMap,
+  default: {},
+  role: "owner",
+  // Repointing the role or the pinned key changes who may sign a release.
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides which cloud role and key sign a release, so only a person changes it",
+  description:
+    "How the `aws-kms` signing backend reaches each KMS key, a map from key ARN to `role_arn` (assumed with the release lane's OIDC token), `region` (the key's), `audience` (default `sts.amazonaws.com`) and `public_key_fingerprint` (hex sha256 of the key's public key; any other key is refused). Only the STS and KMS endpoints of that region are called. No access key or secret is kept here.",
+  warning:
+    "Changing the role, the audience or the fingerprint changes which cloud identity signs releases and which key is trusted.",
+  loosens: awsKmsKeysLoosening,
+  env: ["TURNTABLE_AWS_KMS_KEYS"],
+  envParse: (raw) => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  },
+  toml: "signing.aws_kms_keys",
+});
+
 /** The scheduling classes of a project: `yield` work gives way to `normal` work (see the scheduler). */
 export const SCHEDULING_CLASSES = ["normal", "yield"] as const;
 export type SchedulingClass = (typeof SCHEDULING_CLASSES)[number];
@@ -247,6 +279,7 @@ export const settingsRegistry = createSettingsRegistry([
   auditAnchorExportIntervalSetting,
   untrustedRunApprovalSetting,
   approvalPolicySetting,
+  awsKmsKeysSetting,
   schedulingClassSetting,
   preemptMaxPerJobSetting,
   preemptWindowMinutesSetting,

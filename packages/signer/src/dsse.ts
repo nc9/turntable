@@ -43,10 +43,12 @@ export async function signEnvelope(
 
 function verifyRaw(publicKeyPem: string, message: Uint8Array, sig: Uint8Array): boolean {
   try {
+    const key = crypto.createPublicKey(publicKeyPem);
+    // Ed25519 signs the message; P-256 signs its SHA-256 (DER signature), as KMS does.
     return crypto.verify(
-      null,
+      key.asymmetricKeyType === "ed25519" ? null : "sha256",
       Buffer.from(message),
-      crypto.createPublicKey(publicKeyPem),
+      key,
       Buffer.from(sig),
     );
   } catch {

@@ -28,10 +28,15 @@ import { decideSigning, type SigningDenial } from "./policy";
 
 export type Backend = "builtin" | "aws-kms" | "gcp-kms";
 
+/** A backend that needs to know whose run it signs for (its credentials depend on the project). */
+export interface ScopedSigner {
+  forScope(scope: Required<Scope>): Signer;
+}
+
 export interface SigningServiceOptions {
   db: Db;
   /** The backends this instance has. A project's key names one of them. */
-  signers: Partial<Record<Backend, Signer>>;
+  signers: Partial<Record<Backend, Signer | ScopedSigner>>;
   approvals: ApprovalVerifier;
   /** The Turntable instance, as a URL: the provenance's builder id. */
   builderId: string;
@@ -189,8 +194,9 @@ export class SigningService {
     }
 
     const key = parseKeyRef(project.signingKey!);
-    const signer = key ? this.#o.signers[key.backend] : undefined;
-    if (!key || !signer) return deny("no_backend");
+    const backend = key ? this.#o.signers[key.backend] : undefined;
+    if (!key || !backend) return deny("no_backend");
+    const signer = "forScope" in backend ? backend.forScope(scope) : backend;
     // A key named outside the org namespace (a KMS key) must belong to this org alone.
     if (
       key.backend !== "builtin" &&
