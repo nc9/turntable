@@ -37,6 +37,10 @@ const MCP_OFF: Record<string, string> = {
   instance_list_orgs:
     "instance administrator ops are REST only: that token is never given to an agent",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
+  set_project_settings:
+    "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",
+  create_project:
+    "instance administrator ops are REST only: projects are made by the operator, never an agent",
 };
 
 describe("the operations table", () => {
