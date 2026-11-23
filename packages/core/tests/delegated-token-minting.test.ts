@@ -318,4 +318,28 @@ describe("rotation and cascade", () => {
     expect(text).toContain(pt!.id);
     expect(text).toContain(k1.id);
   });
+
+  test("fan-out reset attack: self-revoking the parent does not reset the lineage cap", async () => {
+    const root = await orgWide("operator");
+    await orgWide("reader");
+    const kids: { token: string; id: string }[] = [];
+    for (let i = 0; i < 20; i++) kids.push(await mint(root.secret, { role: "operator" }));
+    expect((await revoke(root.secret, { token_id: root.id })).ok).toBe(true);
+    // 20 live now. Each child mints; the stored lineage stops at exactly 50 live tokens.
+    let made = 0;
+    let refused: string | undefined;
+    for (const k of kids) {
+      for (let i = 0; i < 20; i++) {
+        const r = await as(k.token, { name: "x", role: "reader" });
+        if (r.ok) made += 1;
+        else {
+          refused = r.error.code;
+          break;
+        }
+      }
+      if (refused) break;
+    }
+    expect(made).toBe(30);
+    expect(refused).toBe("conflict");
+  });
 });
