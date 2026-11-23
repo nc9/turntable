@@ -11,6 +11,7 @@ import {
   type OurJob,
   type TheirCheck,
 } from "../src/parity/compare";
+import { fetchOurRun } from "../src/parity/api";
 import { parityCommand } from "../src/parity/cli";
 
 const SHA = "1e179448b7b7f4976726df1abdb50178ae46f67e";
@@ -412,5 +413,86 @@ describe("the command", () => {
       expect(text).toBe("no runs");
       expect(code).toBe(0);
     });
+  });
+});
+
+describe("the shards of a split job are one job", () => {
+  const shard = (i: number, state: string, start: string | null, end: string | null) => ({
+    id: `s${i}`,
+    name: "CLI tests (rules, engine and the rest)",
+    state,
+    duration_ms: start && end ? Date.parse(end) - Date.parse(start) : null,
+    started_at: start,
+    finished_at: end,
+    shard: { job: "tests", index: i, total: 3 },
+  });
+  const runWith = (jobs: unknown[]) => async (input: string | URL | Request) => {
+    const u = new URL(String(input));
+    if (u.pathname === "/api/v1/runs/r1") {
+      return new Response(JSON.stringify({ id: "r1", sha: SHA, jobs }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.pathname.endsWith("/log"))
+      return new Response(JSON.stringify({ text: "skipped: if: false is false\n" }), {
+        headers: { "content-type": "application/json" },
+      });
+    return new Response("{}", { status: 404 });
+  };
+  const get = (jobs: unknown[]) =>
+    fetchOurRun({
+      baseUrl: new URL("http://127.0.0.1:1"),
+      org: "acme",
+      token: "ls_reader_example_token_value",
+      runId: "r1",
+      fetch: runWith(jobs) as never,
+    });
+
+  test("three shards report as one job: the fold of their states and the wall time, not the sum", async () => {
+    const r = await get([
+      { id: "j0", name: "Format", state: "success", duration_ms: 1000, shard: null },
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "success", "2026-11-23T10:00:10Z", "2026-11-23T10:03:00Z"),
+      shard(2, "success", "2026-11-23T10:00:05Z", "2026-11-23T10:02:00Z"),
+    ]);
+    expect(r.jobs.map((j) => j.name)).toEqual(["Format", "CLI tests (rules, engine and the rest)"]);
+    expect(r.jobs[1]).toMatchObject({ state: "success", durationMs: 6 * 60_000 });
+  });
+
+  test("any failed shard fails the job; a shard still running leaves it running with no duration", async () => {
+    const failed = await get([
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "failure", "2026-11-23T10:00:00Z", "2026-11-23T10:01:00Z"),
+      shard(2, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:02:00Z"),
+    ]);
+    expect(failed.jobs).toHaveLength(1);
+    expect(failed.jobs[0]!.state).toBe("failure");
+    const running = await get([
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "running", "2026-11-23T10:00:00Z", null),
+    ]);
+    expect(running.jobs[0]).toMatchObject({ state: "running", durationMs: null });
+  });
+
+  test("a split job compares against the one check of that name", async () => {
+    const r = await get([
+      shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),
+      shard(1, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:03:00Z"),
+    ]);
+    const rep = compareParity(r.jobs, [
+      done("CLI tests (rules, engine and the rest)", "success", 400_000),
+    ]);
+    expect(rep.rows).toHaveLength(1);
+    expect(rep.rows[0]).toMatchObject({ verdict: "MATCH", oursDurationMs: 360_000 });
+    expect(rep.notReported).toEqual([]);
+  });
+
+  test("all shards skipped by an if: is one skipped job with that reason", async () => {
+    const r = await get([
+      { ...shard(0, "skipped", null, null) },
+      { ...shard(1, "skipped", null, null) },
+    ]);
+    expect(r.jobs).toHaveLength(1);
+    expect(r.jobs[0]).toMatchObject({ state: "skipped", skipReason: "if: false is false" });
   });
 });

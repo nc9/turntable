@@ -2,7 +2,7 @@
 // confirmed (`job_attempts.sandbox_created_at` and `sandbox_destroyed_at`). An attempt's own
 // duration also covers waiting for provider capacity, so it is not used. Quotas read the same
 // numbers, so what is shown and what is limited cannot differ.
-import { gt, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { type Scope, scoped } from "./scope";
@@ -28,7 +28,17 @@ export interface SandboxUsageWindow {
   to: number;
   /** The clock: where a sandbox still alive ends. */
   now: number;
+  /**
+   * For a limit, where an attempt that finished with no confirmed destroy ends: its finish plus
+   * this long, never past `now`. A sandbox the provider never confirmed destroying may still be
+   * alive (and billing) until its TTL, so a quota counts to there. Absent (the Usage page): the
+   * attempt's finish.
+   */
+  graceMs?: number;
 }
+
+/** The provider TTL a sandbox may outlive its attempt by when no destroy was confirmed. */
+export const DEFAULT_SANDBOX_GRACE_MS = 30 * 60_000;
 
 /** The start of the UTC day containing `ms`. */
 export const utcDayStart = (ms: number): number => Math.floor(ms / DAY_MS) * DAY_MS;
@@ -43,10 +53,16 @@ interface Span {
 
 /** The sandbox lives of an org's (or project's) attempts that overlap the window. */
 async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[]> {
+  // A NULL create time (an attempt that never recorded it, a row from before the column existed,
+  // a crash between create and record) falls back to when the attempt started: it holds or held
+  // a sandbox, and counting it from the start over-counts rather than counting nothing.
+  const start = sql<number>`coalesce(${s.jobAttempts.sandboxCreatedAt}, ${s.jobAttempts.startedAt})`;
+  const grace = w.graceMs ?? 0;
   const rows = await db.run((h) =>
     h.orm
       .select({
         created: s.jobAttempts.sandboxCreatedAt,
+        started: s.jobAttempts.startedAt,
         destroyed: s.jobAttempts.sandboxDestroyedAt,
         finished: s.jobAttempts.finishedAt,
       })
@@ -55,21 +71,31 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
         scoped(
           scope,
           { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
-          isNotNull(s.jobAttempts.sandboxCreatedAt),
-          lt(s.jobAttempts.sandboxCreatedAt, w.to),
-          // Alive during the window: no confirmed destroy yet, or one after its start.
+          or(isNotNull(s.jobAttempts.sandboxCreatedAt), isNotNull(s.jobAttempts.startedAt)),
+          lt(start, w.to),
+          // Alive during the window: a destroy after its start; or no confirmed destroy and a
+          // finish (plus the grace) after it; or neither (still running, or lost).
           or(
-            isNull(s.jobAttempts.sandboxDestroyedAt),
             gt(s.jobAttempts.sandboxDestroyedAt, w.from),
+            and(
+              isNull(s.jobAttempts.sandboxDestroyedAt),
+              isNotNull(s.jobAttempts.finishedAt),
+              gt(s.jobAttempts.finishedAt, w.from - grace),
+            ),
+            and(isNull(s.jobAttempts.sandboxDestroyedAt), isNull(s.jobAttempts.finishedAt)),
           ),
         ),
       ),
   );
   return rows.flatMap((r) => {
-    const start = r.created as number;
-    // Confirmed destroy; else the attempt's finish; else (still running) now. Never before the start.
-    const end = Math.max(start, r.destroyed ?? r.finished ?? w.now);
-    return [{ start, end, confirmed: r.destroyed !== null }];
+    const begin = (r.created ?? r.started) as number;
+    // Confirmed destroy; else the attempt's finish (plus the grace for a limit, never past now);
+    // else (still running) now. Never before the start.
+    const unconfirmedEnd =
+      r.finished === null ? w.now : grace > 0 ? Math.min(w.now, r.finished + grace) : r.finished;
+    const end = Math.max(begin, r.destroyed ?? unconfirmedEnd);
+    // Estimated: no confirmed destroy, or no recorded create time.
+    return [{ start: begin, end, confirmed: r.destroyed !== null && r.created !== null }];
   });
 }
 

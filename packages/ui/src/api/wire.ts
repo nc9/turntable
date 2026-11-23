@@ -43,6 +43,21 @@ export type WireAttempt = {
   started_at: string | null;
   finished_at: string | null;
   duration_ms: number | null;
+  sandbox_created_at: string | null;
+  sandbox_destroyed_at: string | null;
+  sandbox_seconds: number | null;
+};
+
+export type WireSandboxUsage = {
+  days: {
+    day: string;
+    sandbox_seconds: number;
+    sandbox_minutes: number;
+    attempts: number;
+    estimated_attempts: number;
+  }[];
+  total_seconds: number;
+  total_minutes: number;
 };
 
 export type WireJob = {
@@ -134,6 +149,7 @@ export type WireCuts = {
   job_id: string;
   attempt: number | null;
   cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+  notices: { at_offset: number; source: string; text: string }[];
 };
 
 export type WireDigest = {

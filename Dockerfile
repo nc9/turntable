@@ -31,6 +31,9 @@ RUN case "${TARGETARCH}" in \
 
 # distroless cc-debian12 nonroot (multi-arch index digest). The compiled binary is a
 # dynamically linked glibc executable; this image ships glibc, libgcc and libstdc++, and no shell.
+# The control plane runs no other program: a run's commit is fetched and packed in process (git's
+# smart-HTTP protocol and a tar writer inside the binary), so the image needs no git and no tar.
+# `scripts/smoke-image.sh` proves it with a real checkout (`longshore fetch-source`).
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 COPY --from=build --chmod=0755 /longshore /longshore
 COPY --from=build --chown=nonroot:nonroot /data /data

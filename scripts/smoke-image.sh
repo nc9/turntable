@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs the built (distroless) image and proves it works at runtime: libc fit, healthz, the UI
-# and its CSP, PORT as the default port, and first-boot access via a bootstrap token hash.
+# and its CSP, PORT as the default port, first-boot access via a bootstrap token hash, and a real
+# worker checkout of a commit over https.
 # Usage: scripts/smoke-image.sh longshore:smoke
 set -euo pipefail
 image="$1"
@@ -112,3 +113,16 @@ wait_healthy "$port"
 assert_uid "$cid" 0
 remove_container "$cid"
 echo "image: root refused unless allowed ok"
+
+# 5. A real worker checkout. The control plane fetches a run's commit before any sandbox exists
+# (gitRepoSource). It does it in process (no git, no tar in this image), so this runs the very code
+# path the worker uses, as the unprivileged user, against a small public repository at a fixed
+# commit: a depth-1 fetch over https with every object verified, the tree and .git written, packed.
+# `fetch-source` prints one line and exits 0 only when all of that worked. An image whose worker
+# cannot check out a commit fails every job, which none of the checks above would notice.
+out=$(docker run --rm --user 65532:65532 --entrypoint /longshore "$image" \
+  fetch-source octocat/Hello-World 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d --file README 2>&1) \
+  || { echo "worker checkout failed in the image:"; echo "$out"; exit 1; }
+echo "$out" | grep -Eq '^ok 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d files=[1-9][0-9]* tarball=[1-9][0-9]* file=README:[1-9][0-9]*$' \
+  || { echo "unexpected checkout output: $out"; exit 1; }
+echo "image: worker checkout (in-process git fetch by sha over https) ok: $out"

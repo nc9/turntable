@@ -49,6 +49,7 @@ import { createRealtime, type WsData } from "../src/realtime/server";
 import type { ServerMessage } from "../src/realtime/protocol";
 import { handleRequest } from "../src/server";
 import { SecretVault } from "../src/secrets/vault";
+import { WebhookService } from "../src/webhooks/service";
 import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
 
 // Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
@@ -71,6 +72,7 @@ type World = {
     registry: typeof registry;
     db: Db;
     vault: SecretVault;
+    webhooks: WebhookService;
     webauthn: { rpId: string; origins: string[] };
   };
   a: Tenant;
@@ -93,10 +95,13 @@ type World = {
 async function buildWorld(): Promise<World> {
   const db = openDatabase(":memory:");
   const vault = new SecretVault({ db, masterKey: randomBytes(32) });
+  const masterKey = randomBytes(32);
+  const webhooks = new WebhookService({ db, masterKey });
   const env = {
     registry,
     db,
     vault,
+    webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
   };
   const a = await seedTenant(db, "org-a");
@@ -270,7 +275,18 @@ async function buildWorld(): Promise<World> {
     artifacts: ["a-only-artifact.tgz"],
   });
   const releaseId = rel.ok ? (rel.output as { id: string }).id : "";
+  const hook = await webhooks.createEndpoint(
+    { orgId: a.orgId },
+    {
+      url: "https://a-only-hook.example.test/x",
+      description: "a-only-webhook",
+      eventTypes: null,
+      createdBy: "test:setup",
+      fromStart: false,
+    },
+  );
   const fx: Record<string, string> = {
+    webhookId: hook.id,
     heldRunId,
     heldSha,
     envRunId,
@@ -357,6 +373,8 @@ async function buildWorld(): Promise<World> {
       A_SECRET,
       A_RULE,
       "a-only-artifact",
+      "a-only-hook.example.test",
+      "a-only-webhook",
     ],
     aWho: await who(a, "A"),
     bWho: await who(b, "B"),
@@ -388,6 +406,7 @@ const FIELD: Record<string, (w: World) => unknown> = {
   pattern: () => "a-only",
   artifacts: () => ["a-only-artifact.tgz"],
   id: (w) => w.aOnly.runId,
+  webhook_id: (w) => w.fx.webhookId!,
   enrolment_id: (w) => w.aOnly.runId,
 };
 /** Fields handled by the variant, not here. */
@@ -484,6 +503,7 @@ const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => voi
       forge_login: "mallory-gh",
       ed25519_public_key: generateEd25519().publicSpki,
     }),
+  create_webhook: (_w, i) => void (i.url = "https://hooks.example.test/x"),
   get_release_request: (w, i) => Object.assign(i, { id: w.fx.releaseId }),
   submit_approval: (w, i) =>
     Object.assign(i, {
@@ -707,6 +727,23 @@ describe("generated from the registry: every op, every B principal, A's ids and 
     ];
     expect(mustSee.filter((n) => !seen.has(n))).toEqual([]);
     expect(["set_secret", "set_proxy_rule"].filter((n) => !wrote.has(n))).toEqual([]);
+  });
+
+  test("no org principal of any role reaches an instance op (the instance administrator is not an org)", async () => {
+    const before = await fingerprint(hostile, hostile.a.orgId);
+    const ops = registry.instanceOps();
+    expect(ops.length).toBeGreaterThan(0);
+    for (const who of [...hostile.aWho, ...hostile.bWho]) {
+      for (const op of ops) {
+        const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+        const out = await call(hostile, who, op, input);
+        expect(out.ok, `${who.label} on ${op.name}`).toBe(false);
+        expect(out.code, `${who.label} on ${op.name}`).toBe("forbidden");
+      }
+    }
+    // and none of it changed org A
+    const after = await fingerprint(hostile, hostile.a.orgId);
+    expect(Object.keys(after).filter((t) => after[t] !== before[t])).toEqual([]);
   });
 
   test("signature ops cannot be called with a token at all", async () => {

@@ -2,7 +2,7 @@
 // and finding abandoned work. Claim and reconcile are instance-level (a worker has no tenant
 // until it has claimed something), so they are intentionally unscoped; everything they return
 // carries the tenant scope the caller then uses.
-import { and, asc, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
@@ -541,6 +541,21 @@ export function listExpiredLeases(db: Db, now: number): Promise<JobAttempt[]> {
       .from(s.jobAttempts)
       .where(and(eq(s.jobAttempts.state, "running"), lt(s.jobAttempts.leaseExpiresAt, now)))
       .orderBy(asc(s.jobAttempts.id)),
+  );
+}
+
+/**
+ * Attempts that recorded a sandbox and no confirmed destroy, across every org (system work, for
+ * the provider's own-fleet count and the sweep). Newest first, bounded.
+ */
+export function listUndestroyedSandboxes(db: Db, limit = 2000): Promise<JobAttempt[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(and(isNotNull(s.jobAttempts.sandboxId), isNull(s.jobAttempts.sandboxDestroyedAt)))
+      .orderBy(desc(s.jobAttempts.id))
+      .limit(limit),
   );
 }
 

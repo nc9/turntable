@@ -211,6 +211,13 @@ export interface Provider {
   destroyByLabels(labels: Labels): Promise<number>;
   list(filter: { labels?: Labels }): Promise<SandboxInfo[]>;
   count(filter: { labels?: Labels }): Promise<number>;
+  /**
+   * Tells a provider about sandboxes this controller created before it started (read from the
+   * attempts that recorded a sandbox and no confirmed destroy), so it counts and cleans them up
+   * by id. For a provider whose listings cannot be trusted; others need not implement it. Nothing
+   * about the ids is trusted: the provider confirms each before acting on it.
+   */
+  adopt?(sandboxIds: readonly string[]): void;
   exec: ProviderExec;
   files: ProviderFiles;
 }

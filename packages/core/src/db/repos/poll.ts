@@ -368,6 +368,44 @@ export function setProjectChecksMode(db: Db, scope: Scope, mode: ChecksMode): Pr
   });
 }
 
+/** The audiences the project's jobs may mint OIDC tokens for, or null when any audience is allowed. */
+export function getProjectOidcAudiences(db: Db, scope: Scope): Promise<string[] | null> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ a: s.projects.oidcAudiences })
+      .from(s.projects)
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .limit(1);
+    if (!row?.a) return null;
+    try {
+      const v: unknown = JSON.parse(row.a);
+      // A stored value that is not a list of strings is treated as a list that allows nothing,
+      // never as "any audience": a damaged restriction must not widen access.
+      return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Sets the allowed audiences, or clears the restriction with null. Returns false for no such project. */
+export function setProjectOidcAudiences(
+  db: Db,
+  scope: Scope,
+  audiences: readonly string[] | null,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const rows = await h.orm
+      .update(s.projects)
+      .set({ oidcAudiences: audiences === null ? null : JSON.stringify([...audiences]) })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)))
+      .returning({ id: s.projects.id });
+    return rows.length > 0;
+  });
+}
+
 /** The forge check run stored on an attempt, if one was created. */
 export function getAttemptCheckRunId(
   db: Db,

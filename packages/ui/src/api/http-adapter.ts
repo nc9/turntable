@@ -5,12 +5,14 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
   PolicyStatement,
   ApproveResult,
   EnrolStatement,
   EnvironmentApprovalResult,
   CheckSummary,
   CutRecord,
+  LogNotice,
   GrepHit,
   GrepResult,
   IncidentStatus,
@@ -32,6 +34,7 @@ import type {
   OrgQuotas,
 } from "./types";
 import type {
+  WireSandboxUsage,
   WireApprovalStatus,
   WireApprovers,
   WireChallenge,
@@ -175,6 +178,9 @@ function mapAttempt(a: WireAttempt, job: WireJob, run: WireRun, org: string): Jo
     createdAt: ms(a.started_at) ?? ms(run.created_at) ?? 0,
     startedAt: ms(a.started_at),
     finishedAt: ms(a.finished_at),
+    sandboxCreatedAt: ms(a.sandbox_created_at),
+    sandboxDestroyedAt: ms(a.sandbox_destroyed_at),
+    sandboxSeconds: a.sandbox_seconds,
   };
 }
 
@@ -395,6 +401,21 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
       }));
     },
 
+    async jobNotices({ attemptId }): Promise<LogNotice[]> {
+      const k = known(attemptId);
+      const w = await call<WireCuts>("GET", `/jobs/${encodeURIComponent(k.jobId)}/cuts`, {
+        org: org(),
+        attempt: k.attempt,
+      });
+      return w.notices.map((n) => ({
+        attemptId,
+        kind: "notice" as const,
+        atOffset: n.at_offset,
+        source: n.source,
+        text: n.text,
+      }));
+    },
+
     async checksForSha({ projectId, sha }): Promise<CheckSummary> {
       const w = await call<WireChecks>("GET", `/checks/${encodeURIComponent(sha)}`, {
         org: org(),
@@ -602,6 +623,33 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
 
     async getQuotas(): Promise<OrgQuotas> {
       return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
+    },
+
+    async sandboxUsage({ days }): Promise<SandboxUsage> {
+      const w = await call<WireSandboxUsage>("GET", "/usage/sandbox", { org: org(), days });
+      let limit: number | null = null;
+      try {
+        // The quota limit is optional context: a token that cannot read quotas still gets the chart.
+        const q = await call<{ limits: { max_sandbox_minutes_per_day: number | null } }>(
+          "GET",
+          "/quotas",
+          { org: org() },
+        );
+        limit = q.limits.max_sandbox_minutes_per_day;
+      } catch {
+        limit = null;
+      }
+      return {
+        days: w.days.map((d) => ({
+          day: d.day,
+          seconds: d.sandbox_seconds,
+          minutes: d.sandbox_minutes,
+          attempts: d.attempts,
+          estimatedAttempts: d.estimated_attempts,
+        })),
+        totalMinutes: w.total_minutes,
+        limitMinutesPerDay: limit,
+      };
     },
 
     async approversOverview(): Promise<ApproversOverview> {

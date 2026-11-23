@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type {
   WireApprovalStatus,
   WireArtifacts,
+  WireSandboxUsage,
   WireConsumption,
   WireQuotas,
   WireApprovers,
@@ -137,6 +138,9 @@ test("get_run: run, job and attempt fields", () => {
       started_at: true,
       finished_at: true,
       duration_ms: true,
+      sandbox_created_at: true,
+      sandbox_destroyed_at: true,
+      sandbox_seconds: true,
     }),
   );
 });
@@ -246,8 +250,9 @@ test("job_steps and job_cuts", () => {
     }),
   );
   const cuts = ok(op("/jobs/{job_id}/cuts", "get"));
-  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true }));
+  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true, notices: true }));
   expectKeys(cuts.properties!.cuts!.items!, ["at_offset", "omitted_bytes", "reason"]);
+  expectKeys(cuts.properties!.notices!.items!, ["at_offset", "source", "text"]);
 });
 
 test("failure_digest", () => {
@@ -582,5 +587,22 @@ test("incident_status", () => {
     "reason",
     "flagged_by",
     "flagged_at",
+  ]);
+});
+
+test("sandbox_usage: the days and totals the Usage page reads", () => {
+  const o = op("/usage/sandbox", "get");
+  expect((o.parameters ?? []).map((p) => p.name)).toContain("days");
+  const out = ok(o);
+  expectKeys(
+    out,
+    keysOf<WireSandboxUsage>({ days: true, total_seconds: true, total_minutes: true }),
+  );
+  expectKeys(out.properties!.days!.items!, [
+    "day",
+    "sandbox_seconds",
+    "sandbox_minutes",
+    "attempts",
+    "estimated_attempts",
   ]);
 });

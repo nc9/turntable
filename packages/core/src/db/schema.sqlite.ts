@@ -40,6 +40,9 @@ export const EVENT_TYPES = [
   "attempt.cut",
   "approval.required",
   "infra.error",
+  "quota.warning",
+  "quota.reached",
+  "webhook.disabled",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -146,6 +149,12 @@ export const projects = sqliteTable(
      * Default 0: a release job restores nothing (it consumes nothing a lower class could write).
      */
     cacheReleaseRestore: integer("cache_release_restore").notNull().default(0),
+    /**
+     * The audiences a job of this project may ask the org's OIDC issuer for (JSON array text).
+     * Null (default): any audience, as before. Set, a mint for another audience is refused and
+     * audited.
+     */
+    oidcAudiences: text("oidc_audiences"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -423,6 +432,26 @@ export const apiTokens = sqliteTable(
   ],
 );
 
+/**
+ * Instance-administrator tokens (#205). Not tenant-owned: no org_id, no role, no project. They
+ * hold no org grant at all; the one thing they can call is an `instance` op. Minted only by the
+ * host CLI (`longshore token create --instance`), stored as a hash, prefix `lsi_`.
+ */
+export const instanceTokens = sqliteTable(
+  "instance_tokens",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: integer("last_used_at", { mode: "number" }),
+    expiresAt: integer("expires_at", { mode: "number" }),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [unique("instance_tokens_hash_unique").on(t.tokenHash)],
+);
+
 /** Append-only record of write and destructive operations, including denied attempts. */
 export const auditLog = sqliteTable(
   "audit_log",
@@ -568,6 +597,33 @@ export const logCuts = sqliteTable(
       columns: [t.attemptId, t.orgId, t.projectId],
       foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
     }),
+  ],
+);
+
+/**
+ * System notices on an attempt's log: lines the control plane wants a reader to see next to the
+ * log (the cache dropped entries, a hold reason), recorded apart from the log text like cuts, so
+ * the job's output can never forge one. `at_offset` is the stored log length when it was added.
+ */
+export const logNotices = sqliteTable(
+  "log_notices",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    atOffset: integer("at_offset").notNull(),
+    /** Short machine-readable source, for example `cache`. */
+    source: text("source").notNull(),
+    text: text("text").notNull(),
+    createdAt: integer("created_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+    index("log_notices_attempt_idx").on(t.attemptId, t.atOffset),
   ],
 );
 
@@ -1241,4 +1297,99 @@ export const quotaNotices = sqliteTable(
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.orgId, t.metric, t.level, t.window] })],
+);
+
+// ---- outbound webhooks (#25) ----
+
+export const WEBHOOK_STATES = ["active", "disabled"] as const;
+export type WebhookState = (typeof WEBHOOK_STATES)[number];
+
+export const WEBHOOK_DELIVERY_STATES = ["pending", "delivered", "abandoned"] as const;
+export type OutboundDeliveryState = (typeof WEBHOOK_DELIVERY_STATES)[number];
+
+/**
+ * Where an org's events are sent. `cursor` is the last event id fanned out into `webhook_deliveries`
+ * for this endpoint: it moves in the same transaction that inserts the rows, so a restart neither
+ * loses nor repeats an event. A new endpoint starts at the tip of the feed.
+ */
+export const outboundEndpoints = sqliteTable(
+  "outbound_webhook_endpoints",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    /** Narrows the endpoint to one project's events (and no org-level ones). */
+    projectId: text("project_id"),
+    url: text("url").notNull(),
+    description: text("description").notNull().default(""),
+    /** JSON array of event types, or null for all. */
+    eventTypes: text("event_types"),
+    state: text("state").notNull().default("active"),
+    /** Why it was disabled (`manual` or `auto: <n> consecutive failures`). */
+    disabledReason: text("disabled_reason"),
+    consecutiveFailures: integer("consecutive_failures", { mode: "number" }).notNull().default(0),
+    cursor: integer("cursor", { mode: "number" }).notNull().default(0),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    check("outbound_webhook_endpoints_state_check", inList("state", WEBHOOK_STATES)),
+    index("outbound_webhook_endpoints_org_idx").on(t.orgId, t.state),
+  ],
+);
+
+/**
+ * The org's signing secret, one row per version, sealed in the `webhook` key domain under the
+ * org's own key. The newest signs; a retired one keeps signing until `expires_at` (the rotation
+ * overlap), so a receiver can switch without a missed delivery.
+ */
+export const outboundSecrets = sqliteTable(
+  "outbound_webhook_secrets",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    version: integer("version", { mode: "number" }).notNull(),
+    sealed: text("sealed").notNull(),
+    createdAt: createdAt(),
+    /** Set when a newer version replaced this one: it stops signing at this time. */
+    expiresAt: integer("expires_at", { mode: "number" }),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.version] })],
+);
+
+/** One row per (endpoint, event): the outbox and the delivery log. */
+export const outboundDeliveries = sqliteTable(
+  "outbound_webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    endpointId: text("endpoint_id")
+      .notNull()
+      .references(() => outboundEndpoints.id),
+    /** `events.id`, plain integer (the feed is never rewritten). */
+    eventId: integer("event_id", { mode: "number" }).notNull(),
+    state: text("state").notNull().default("pending"),
+    attempts: integer("attempts", { mode: "number" }).notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at", { mode: "number" }).notNull(),
+    /** A worker holds the row until then; another may take it after. */
+    leaseUntil: integer("lease_until", { mode: "number" }),
+    lastStatus: integer("last_status", { mode: "number" }),
+    lastError: text("last_error"),
+    /** The start of the receiver's answer, capped, for debugging. Untrusted text. */
+    lastResponse: text("last_response"),
+    createdAt: createdAt(),
+    deliveredAt: integer("delivered_at", { mode: "number" }),
+  },
+  (t) => [
+    unique("outbound_webhook_deliveries_endpoint_event_unique").on(t.endpointId, t.eventId),
+    check("outbound_webhook_deliveries_state_check", inList("state", WEBHOOK_DELIVERY_STATES)),
+    index("outbound_webhook_deliveries_due_idx").on(t.state, t.nextAttemptAt),
+    index("outbound_webhook_deliveries_endpoint_idx").on(t.orgId, t.endpointId, t.createdAt),
+  ],
 );

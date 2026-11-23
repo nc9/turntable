@@ -2,7 +2,7 @@ import { parse, stringify } from "yaml";
 import { interpolate, type ExprContext, type Value } from "./expr";
 import { layoutFor } from "./layout";
 import { PlanError } from "./plan";
-import type { PlannedJob } from "./workflow-plan";
+import { stepMatches, type PlannedJob } from "./workflow-plan";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -70,6 +70,15 @@ export function splitJob(
     target.strategy = {
       matrix: Object.fromEntries(Object.entries(job.matrix).map(([k, v]) => [k, [v]])),
     };
+  }
+  // A leg of an operator's split: the steps another shard owns are turned off. Nothing else is
+  // touched and no step is added, so the repository's workflow stays the only source of commands.
+  if (job.shard && Array.isArray(target.steps)) {
+    const mine = job.shard.index;
+    const others = job.shard.partition.flatMap((names, i) => (i === mine ? [] : names));
+    target.steps = (target.steps as unknown[]).map((s, i) =>
+      isObj(s) && others.some((n) => stepMatches(s, i, n)) ? { ...s, if: false } : s,
+    );
   }
   const stubs: Obj = {};
   for (const id of job.needsIds) {
