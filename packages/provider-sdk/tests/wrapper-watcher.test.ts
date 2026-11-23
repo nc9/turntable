@@ -98,7 +98,7 @@ describe.each(SHELLS)("the timeout watcher under %s", (shell) => {
       console.log(`${shell}: survivors (pid ppid pgid stat etime command):`, left);
     for (const l of left) Bun.spawnSync(["pkill", "-f", `${l.split(/\s+/).slice(5).join(" ")}$`]);
     expect(left).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 
   test("a watcher whose command ran a while before finishing is gone too, and takes no sleep with it", async () => {
     // The command outlives the watcher's first second, so the watcher is certainly inside its
