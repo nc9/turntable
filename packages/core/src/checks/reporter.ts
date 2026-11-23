@@ -84,6 +84,8 @@ export class CheckReporter {
   readonly #o: CheckReporterOptions;
   readonly #chains = new Map<string, Promise<void>>();
   #sweeping = false;
+  /** A tick arrived during a sweep, which may have listed the skips before it: sweep again. */
+  #resweep = false;
   /** Skipped attempts this process found nothing to post for (checks off, no repo or App). */
   readonly #dismissed = new Set<string>();
 
@@ -103,13 +105,25 @@ export class CheckReporter {
 
   /**
    * Called at the end of every scheduler claim pass: posts a `skipped` check for each job the
-   * scheduler resolved as skipped without an attempt. Does nothing while a sweep is running.
+   * scheduler resolved as skipped without an attempt. A tick during a sweep is not lost: the sweep runs once more when it ends.
    */
   tick(): void {
-    if (this.#sweeping) return;
+    if (this.#sweeping) {
+      this.#resweep = true;
+      return;
+    }
     this.#sweeping = true;
-    this.#enqueue("sweep:skipped", () => this.sweepSkipped()).finally(() => {
-      this.#sweeping = false;
+    // The re-sweep loop is inside the one queued job, so idle() cannot see the chain empty
+    // between the sweep that missed a skip and the one that posts it.
+    void this.#enqueue("sweep:skipped", async () => {
+      try {
+        do {
+          this.#resweep = false;
+          await this.sweepSkipped();
+        } while (this.#resweep);
+      } finally {
+        this.#sweeping = false;
+      }
     });
   }
 

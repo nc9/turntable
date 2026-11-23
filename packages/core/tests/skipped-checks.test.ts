@@ -221,6 +221,47 @@ describe("a skipped job with no attempt", () => {
     }
   });
 
+  test("a skip resolved while a sweep is posting is not lost (the tick is not dropped)", async () => {
+    await setProjectChecksMode(db, world.scope, "live");
+    const run = await makeRun();
+    await addJob(run.id, "first", plan("first", { ifExpr: "false" }));
+    const { api, runs } = fakeApi();
+    // The first sweep has listed `first` and is held inside its create call.
+    let entered!: () => void;
+    const inCreate = new Promise<void>((r) => (entered = r));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const create = api.create;
+    let held = false;
+    api.create = async (...a) => {
+      if (!held) {
+        held = true;
+        entered();
+        await gate;
+      }
+      return create(...a);
+    };
+    const reporter = rep(api);
+    const sched = new Scheduler({
+      db,
+      providers: () => ({}) as never,
+      runner: async () => ({ state: "success", exitCode: 0, reason: "ok" }),
+      observer: reporter,
+      pollMs: 10,
+    });
+    await sched.tick();
+    await inCreate;
+    // A second job is skipped by the cascade now; its tick arrives mid-sweep.
+    await addJob(run.id, "second", plan("second", { ifExpr: "false" }));
+    await sched.tick();
+    release();
+    await sched.idle();
+    await reporter.idle();
+    expect(byName(runs, "turntable / first")).toHaveLength(1);
+    expect(byName(runs, "turntable / second")).toHaveLength(1);
+    expect(runs.size).toBe(2);
+  });
+
   test("checks off posts nothing", async () => {
     const run = await makeRun();
     await addJob(run.id, "gated", plan("gated", { ifExpr: "false" }));
