@@ -4,6 +4,7 @@ import type {
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  SandboxUsage,
   PolicyStatement,
   EnrolStatement,
   EnvironmentApprovalResult,
@@ -17,6 +18,7 @@ import type {
   RunFilter,
   StepEvent,
   CutRecord,
+  LogNotice,
   ApproveResult,
   GrepResult,
   IncidentStatus,
@@ -46,7 +48,7 @@ export type ApiCapabilities = {
   approve: boolean;
 };
 
-export interface LongshoreApi {
+export interface TurntableApi {
   readonly capabilities: ApiCapabilities;
   listOrgs(): Promise<Org[]>;
   listProjects(orgId: string): Promise<Project[]>;
@@ -58,6 +60,8 @@ export interface LongshoreApi {
   jobSteps(args: { attemptId: string }): Promise<StepEvent[]>;
   /** Output-cap cuts for an attempt, as metadata (never text in the log). */
   jobCuts(args: { attemptId: string }): Promise<CutRecord[]>;
+  /** System notices for an attempt (never text in the log). */
+  jobNotices(args: { attemptId: string }): Promise<LogNotice[]>;
   checksForSha(args: { projectId: string; sha: string }): Promise<CheckSummary>;
   /** Reruns jobs of a run (by job key; omit for the failed ones) with a reason that is audited. */
   rerun(args: { runId: string; jobKeys?: string[]; reason: string }): Promise<RerunResult>;
@@ -89,6 +93,8 @@ export interface LongshoreApi {
   /** Environments of a run waiting on a human, the policy and who approved so far. */
   approvalStatus(args: { runId: string }): Promise<ApprovalStatus>;
   approversOverview(): Promise<ApproversOverview>;
+  /** Sandbox minutes per UTC day for the last `days` days, with the quota limit if one is set. */
+  sandboxUsage(args: { days: number; byProject?: boolean }): Promise<SandboxUsage>;
   /** The statement to sign for a run and environment, with its single-use challenge. */
   approvalChallenge(args: {
     runId: string;

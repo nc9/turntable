@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { DOCKER_ENV_PASSTHROUGH, scrubbedEnv } from "@longshore/provider-sdk";
+import { DOCKER_ENV_PASSTHROUGH, scrubbedEnv } from "@turntable/provider-sdk";
 
 const source = {
   PATH: "/usr/bin",
   HOME: "/home/x",
   LANG: "C",
-  LONGSHORE_MASTER_KEY_FILE: "/secret/master.key",
-  LONGSHORE_BOOTSTRAP_TOKEN_SHA256: "abc",
+  TURNTABLE_MASTER_KEY_FILE: "/secret/master.key",
+  TURNTABLE_BOOTSTRAP_TOKEN_SHA256: "abc",
   GITHUB_TOKEN: "ghs_x",
   AWS_SECRET_ACCESS_KEY: "k",
   DAYTONA_API_KEY: "d",
@@ -21,20 +21,20 @@ test("a child gets the allowlist and nothing else", () => {
   expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/x", LANG: "C" });
 });
 
-test("named extras pass; explicit values win; credentials and Longshore settings are refused", () => {
+test("named extras pass; explicit values win; credentials and Turntable settings are refused", () => {
   expect(scrubbedEnv({}, DOCKER_ENV_PASSTHROUGH, source).DOCKER_HOST).toBe(
     "unix:///var/run/docker.sock",
   );
   expect(scrubbedEnv({ HOME: "/work" }, [], source).HOME).toBe("/work");
   for (const name of [
-    "LONGSHORE_MASTER_KEY_FILE",
+    "TURNTABLE_MASTER_KEY_FILE",
     "GITHUB_TOKEN",
     "AWS_SECRET_ACCESS_KEY",
     "DAYTONA_API_KEY",
   ]) {
     expect(() => scrubbedEnv({}, [name], source)).toThrow(/refusing/);
   }
-  expect(() => scrubbedEnv({ LONGSHORE_X: "1" }, [], source)).toThrow(/refusing/);
+  expect(() => scrubbedEnv({ TURNTABLE_X: "1" }, [], source)).toThrow(/refusing/);
 });
 
 /**

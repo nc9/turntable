@@ -69,7 +69,7 @@ export function IngestPage() {
     <div className="mx-auto w-full max-w-5xl px-4 pb-16 pt-6 sm:px-5">
       <h1 className="text-xl font-semibold tracking-tight">Ingest status</h1>
       <p className="mt-0.5 text-sm text-dim">
-        How Longshore picks up runs from GitHub.{" "}
+        How Turntable picks up runs from GitHub.{" "}
         {data.running ? "The poller is running." : "The poller is not running."}
       </p>
 

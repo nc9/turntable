@@ -1,5 +1,5 @@
-import { SsrfError, safeFetch } from "@longshore/net";
-import { InfraError } from "@longshore/provider-sdk";
+import { SsrfError, safeFetch } from "@turntable/net";
+import { InfraError } from "@turntable/provider-sdk";
 import { PlanError } from "./plan";
 
 /** nektos/act (MIT). Bump version and both hashes together, from the release's checksums.txt. */

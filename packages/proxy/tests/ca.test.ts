@@ -10,7 +10,7 @@ describe("the per-job CA", () => {
   test("the CA certificate is a self-signed CA", () => {
     expect(caCert.ca).toBe(true);
     expect(caCert.verify(caCert.publicKey)).toBe(true);
-    expect(caCert.subject).toContain("Longshore job CA att1");
+    expect(caCert.subject).toContain("Turntable job CA att1");
   });
 
   test("a leaf is signed by the CA, names exactly one host, and is not a CA", () => {

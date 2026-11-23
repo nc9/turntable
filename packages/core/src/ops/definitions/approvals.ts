@@ -67,7 +67,7 @@ const rp = (ctx: OpContext) => {
   if (!ctx.webauthn)
     throw new OpError(
       "unavailable",
-      "WebAuthn is not configured: set LONGSHORE_PUBLIC_URL (or LONGSHORE_WEBAUTHN_RP_ID and LONGSHORE_WEBAUTHN_ORIGINS)",
+      "WebAuthn is not configured: set TURNTABLE_PUBLIC_URL (or TURNTABLE_WEBAUTHN_RP_ID and TURNTABLE_WEBAUTHN_ORIGINS)",
     );
   return ctx.webauthn;
 };
@@ -623,7 +623,7 @@ export const requestEnrolment = defineOp({
     if ((await listApprovers(ctx.db, orgId)).length === 0) {
       throw new OpError(
         "conflict",
-        "no approver is enrolled yet: the first approver is enrolled from the server CLI (longshore approvals bootstrap)",
+        "no approver is enrolled yet: the first approver is enrolled from the server CLI (turntable approvals bootstrap)",
       );
     }
     const keyPolicy = await getKeyPolicy(ctx.db, orgId);

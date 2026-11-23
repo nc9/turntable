@@ -5,7 +5,7 @@
 import type { ForgePermission } from "../trust";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-import { safeFetch } from "@longshore/net";
+import { safeFetch } from "@turntable/net";
 
 /** What GitHub last said about the rate limit, from the `x-ratelimit-*` headers. */
 export type RateLimitInfo = {
@@ -131,7 +131,7 @@ export class GithubClient {
     const headers: Record<string, string> = {
       accept,
       "x-github-api-version": "2022-11-28",
-      "user-agent": "longshore-poller",
+      "user-agent": "turntable-poller",
       ...(this.#token ? { authorization: `Bearer ${this.#token}` } : {}),
       ...(cached ? { "if-none-match": cached.etag } : {}),
     };
@@ -189,13 +189,88 @@ export class GithubClient {
    * the commit's author, or null when it links none (an email that matches no account). Commits
    * are immutable, so the ETag cache makes repeats free.
    */
-  async commitInfo(repo: string, sha: string): Promise<{ author: string | null; message: string }> {
+  async commitInfo(
+    repo: string,
+    sha: string,
+  ): Promise<{ author: string | null; message: string; parents: string[] }> {
     if (!/^[0-9a-f]{40,64}$/i.test(sha)) throw new GithubError(400, "/commits/<invalid sha>");
     const body = (await this.#get(`/repos/${repo}/commits/${sha.toLowerCase()}`)) as {
       commit?: { message?: string };
       author?: { login?: string } | null;
+      parents?: { sha?: string }[];
     };
-    return { author: body.author?.login ?? null, message: body.commit?.message ?? "" };
+    return {
+      author: body.author?.login ?? null,
+      message: body.commit?.message ?? "",
+      parents: (body.parents ?? []).flatMap((p) =>
+        typeof p.sha === "string" && /^[0-9a-f]{40,64}$/i.test(p.sha) ? [p.sha.toLowerCase()] : [],
+      ),
+    };
+  }
+
+  /**
+   * The repo's recent push events (the events API: the last few hundred events, delayed by up to
+   * minutes), with the ref, the sha pushed and the sha the ref was at before: GitHub's own
+   * `before` for each push. Empty when the API says no. Conditional like every read.
+   */
+  async pushEvents(repo: string): Promise<{ ref: string; head: string; before: string }[]> {
+    let body: unknown;
+    try {
+      body = await this.#get(`/repos/${repo}/events?per_page=100`);
+    } catch (err) {
+      if (err instanceof RateLimited) throw err;
+      return [];
+    }
+    if (!Array.isArray(body)) return [];
+    return body.flatMap(
+      (e: { type?: string; payload?: { ref?: string; head?: string; before?: string } }) => {
+        const p = e.payload;
+        return e.type === "PushEvent" &&
+          typeof p?.ref === "string" &&
+          typeof p.head === "string" &&
+          typeof p.before === "string" &&
+          /^[0-9a-f]{40,64}$/i.test(p.head) &&
+          /^[0-9a-f]{40,64}$/i.test(p.before)
+          ? [{ ref: p.ref, head: p.head.toLowerCase(), before: p.before.toLowerCase() }]
+          : [];
+      },
+    );
+  }
+
+  /**
+   * The first-parent commits from `head` back to, not including, `stop`, newest first, at most
+   * `limit` of them. `reached` says whether `stop` was met (the gap is exactly these commits), so
+   * an unrelated `stop` (a force push) gives `reached: false`.
+   */
+  async firstParentsSince(
+    repo: string,
+    head: string,
+    stop: string,
+    limit: number,
+  ): Promise<{ shas: string[]; reached: boolean } | undefined> {
+    if (!/^[0-9a-f]{40,64}$/i.test(head)) return undefined;
+    const parents = new Map<string, string | undefined>();
+    let body: { sha?: string; parents?: { sha?: string }[] }[];
+    try {
+      const got = await this.#get(`/repos/${repo}/commits?sha=${head.toLowerCase()}&per_page=100`);
+      body = Array.isArray(got) ? got : [];
+    } catch (err) {
+      if (err instanceof RateLimited) throw err;
+      return undefined;
+    }
+    for (const c of body) {
+      if (typeof c.sha === "string")
+        parents.set(c.sha.toLowerCase(), c.parents?.[0]?.sha?.toLowerCase());
+    }
+    const shas: string[] = [];
+    let cur: string | undefined = head.toLowerCase();
+    const want = stop.toLowerCase();
+    while (cur !== undefined && parents.has(cur)) {
+      if (cur === want) return { shas: shas.slice(0, limit), reached: true };
+      shas.push(cur);
+      cur = parents.get(cur);
+    }
+    return { shas: shas.slice(0, limit), reached: false };
   }
 
   /**

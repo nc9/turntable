@@ -1,0 +1,119 @@
+// Every test file must be named in some package.json script, or CI never runs it. `bun run test`
+// runs only the `test:*` scripts, each an explicit file list, so a test file added without a script
+// entry passes review and goes green while testing nothing. This guard fails the build for it.
+// A file that must not run in CI goes in ALLOWED below, with the reason.
+import { describe, expect, test } from "bun:test";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+const root = join(import.meta.dir, "..");
+
+/** Test files that are on purpose in no script, with why. Keep this list short. */
+export const ALLOWED: Record<string, string> = {
+  "packages/provider-daytona/tests/conformance.test.ts":
+    "live-gated: needs a real Daytona account (TT_DAYTONA_CONFORMANCE=1), run by packages/provider-daytona/scripts/live-check.ts",
+};
+
+const TEST_FILE = /\.test\.ts$/;
+
+function walk(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    if (name === "node_modules" || name.startsWith(".")) continue;
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) walk(full, out);
+    else if (TEST_FILE.test(name)) out.push(full);
+  }
+  return out;
+}
+
+/** Test files of the repo, root-relative with forward slashes: each package's tests/, and scripts/. */
+export function testFiles(repo: string = root): string[] {
+  const dirs = [join(repo, "scripts")];
+  for (const p of readdirSync(join(repo, "packages"))) {
+    const t = join(repo, "packages", p, "tests");
+    if (existsSync(t)) dirs.push(t);
+  }
+  return dirs
+    .filter(existsSync)
+    .flatMap((d) => walk(d))
+    .map((f) => f.slice(repo.length + 1))
+    .toSorted();
+}
+
+/** Every path-like word in every script of the root and package package.json files, root-relative. */
+export function scriptPaths(repo: string = root): Set<string> {
+  const out = new Set<string>();
+  const add = (pkgFile: string, base: string): void => {
+    if (!existsSync(pkgFile)) return;
+    const scripts = (
+      JSON.parse(readFileSync(pkgFile, "utf8")) as { scripts?: Record<string, string> }
+    ).scripts;
+    for (const cmd of Object.values(scripts ?? {}))
+      for (const w of cmd.split(/\s+/)) {
+        const word = w.replace(/^["']|["']$/g, "").replace(/^\.\//, "");
+        if (TEST_FILE.test(word)) out.add(base === "" ? word : `${base}/${word}`);
+      }
+  };
+  add(join(repo, "package.json"), "");
+  for (const p of readdirSync(join(repo, "packages")))
+    add(join(repo, "packages", p, "package.json"), `packages/${p}`);
+  return out;
+}
+
+/** The test files no script names and the allowlist does not excuse, plus stale allowlist entries. */
+export function problems(
+  files: readonly string[],
+  named: ReadonlySet<string>,
+  allowed: Readonly<Record<string, string>>,
+): string[] {
+  const out: string[] = [];
+  for (const f of files)
+    if (!named.has(f) && !(f in allowed))
+      out.push(`${f} is named in no package.json script, so CI never runs it`);
+  for (const [f, why] of Object.entries(allowed)) {
+    if (!files.includes(f)) out.push(`allowlist entry ${f} is not a test file (stale)`);
+    else if (named.has(f))
+      out.push(`allowlist entry ${f} is in a script now: remove it from the list`);
+    if (why.trim() === "") out.push(`allowlist entry ${f} has no reason`);
+  }
+  return out;
+}
+
+describe("every test file runs in CI", () => {
+  test("each packages/*/tests and scripts test file is in a package.json script, or allowed with a reason", () => {
+    expect(problems(testFiles(), scriptPaths(), ALLOWED)).toEqual([]);
+  });
+
+  test("the guard finds the files (not an empty pass)", () => {
+    const files = testFiles();
+    expect(files.length).toBeGreaterThan(100);
+    expect(files).toContain("scripts/test-wiring.test.ts");
+    expect(scriptPaths().has("scripts/test-wiring.test.ts")).toBe(true);
+  });
+});
+
+describe("the check itself", () => {
+  const files = ["packages/a/tests/x.test.ts", "packages/a/tests/y.test.ts"];
+  test("a test file in no script is reported; a listed one is not", () => {
+    expect(problems(files, new Set(["packages/a/tests/x.test.ts"]), {})).toEqual([
+      "packages/a/tests/y.test.ts is named in no package.json script, so CI never runs it",
+    ]);
+  });
+  test("a longer path that merely contains a name does not count as naming it", () => {
+    const named = new Set(["packages/a/tests/xx.test.ts", "packages/a/tests/y.test.ts"]);
+    expect(problems(files, named, {})).toHaveLength(1);
+  });
+  test("the allowlist excuses a file, but a stale, redundant or reasonless entry is itself a problem", () => {
+    const named = new Set(["packages/a/tests/x.test.ts"]);
+    expect(problems(files, named, { "packages/a/tests/y.test.ts": "live-gated" })).toEqual([]);
+    expect(
+      problems(files, new Set(files), { "packages/a/tests/gone.test.ts": "x" }).join("\n"),
+    ).toContain("stale");
+    expect(problems(files, new Set(files), { "packages/a/tests/y.test.ts": "x" })[0]).toContain(
+      "remove it",
+    );
+    expect(problems(files, named, { "packages/a/tests/y.test.ts": " " }).join("\n")).toContain(
+      "no reason",
+    );
+  });
+});

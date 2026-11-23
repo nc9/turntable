@@ -16,11 +16,7 @@ export type Labels = Readonly<Record<string, string>>;
  * possible (no stable address).
  */
 export type EgressPolicy =
-  | "none"
-  | "open"
-  | "allowlist"
-  | "deny-all-except-proxy"
-  | "proxy-domain-filtered";
+  "none" | "open" | "allowlist" | "deny-all-except-proxy" | "proxy-domain-filtered";
 
 /**
  * How strongly a sandbox is separated from the host and from other sandboxes, weakest first.
@@ -175,8 +171,24 @@ export interface ExecLogsOptions {
   maxBytes: number;
 }
 
+/**
+ * A region of output the sandbox dropped (the head and tail caps). It is data, never bytes: the
+ * output a job prints can contain any text, so a marker inside the stream could be forged.
+ */
+export interface ExecCut {
+  /** How many bytes of the full output were dropped. */
+  omittedBytes: number;
+}
+
 export interface ExecLogs {
+  /** Output bytes. Empty when this reply is a cut. Never contains a marker for omitted output. */
   bytes: Uint8Array;
+  /**
+   * Set when the output between `fromOffset` and `nextOffset` was dropped: `nextOffset` is then
+   * `fromOffset + omittedBytes`, and the caller records the cut at the position it has reached
+   * in what it stored. A reply is either bytes or a cut, never both.
+   */
+  cut?: ExecCut;
   /** Pass as `fromOffset` next time. Offsets are logical positions in the full output. */
   nextOffset: number;
   /** The command has finished and nextOffset is the end of its output. */
@@ -211,6 +223,13 @@ export interface Provider {
   destroyByLabels(labels: Labels): Promise<number>;
   list(filter: { labels?: Labels }): Promise<SandboxInfo[]>;
   count(filter: { labels?: Labels }): Promise<number>;
+  /**
+   * Tells a provider about sandboxes this controller created before it started (read from the
+   * attempts that recorded a sandbox and no confirmed destroy), so it counts and cleans them up
+   * by id. For a provider whose listings cannot be trusted; others need not implement it. Nothing
+   * about the ids is trusted: the provider confirms each before acting on it.
+   */
+  adopt?(sandboxIds: readonly string[]): void;
   exec: ProviderExec;
   files: ProviderFiles;
 }

@@ -7,8 +7,12 @@ import {
   POLICY_USAGE,
   setCacheReleaseRestorePolicy,
   setChecksModePolicy,
+  setOidcAudiencesPolicy,
+  showOidcAudiences,
   setIngestPolicy,
+  setSandboxPolicy,
   showIngest,
+  showSandbox,
   setSigningPolicy,
   showChecksMode,
   showSigning,
@@ -18,6 +22,30 @@ import {
   showPolicy,
 } from "./policy-cli";
 
+/** `--var NAME=value` (repeatable) into a record; a repeat of a name or a missing `=` is an error. */
+function parseVars(raw: string[] | undefined): Record<string, string> | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const item of raw) {
+    const eq = item.indexOf("=");
+    if (eq <= 0) throw new Error(`--var wants NAME=value, got ${JSON.stringify(item)}`);
+    const name = item.slice(0, eq);
+    if (Object.hasOwn(out, name)) throw new Error(`--var ${name} is given twice`);
+    out[name] = item.slice(eq + 1);
+  }
+  return out;
+}
+
+/** `--splits-json '<json>'` into the value the settings schema validates; bad JSON is an error. */
+function parseSplits(raw: string | undefined): unknown {
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("--splits-json is not valid JSON");
+  }
+}
+
 async function ownPolicy(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -25,15 +53,21 @@ async function ownPolicy(args: string[]): Promise<void> {
       org: { type: "string", default: "local" },
       project: { type: "string" },
       egress: { type: "string" },
+      "sandbox-snapshot": { type: "string" },
+      "max-concurrent": { type: "string" },
       "checks-mode": { type: "string" },
+      "oidc-audiences": { type: "string" },
       ingest: { type: "string" },
       workflow: { type: "string" },
       "default-branch": { type: "string" },
       "pr-mode": { type: "string" },
       authors: { type: "string" },
       "merge-queue": { type: "boolean", default: false },
+      "every-push": { type: "boolean", default: false },
       "cache-release-restore": { type: "string" },
       "tag-refs": { type: "string" },
+      var: { type: "string", multiple: true },
+      "splits-json": { type: "string" },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -47,7 +81,7 @@ async function ownPolicy(args: string[]): Promise<void> {
     console.error(POLICY_USAGE);
     process.exit(2);
   }
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     if (sub === "show") {
       const p = await showPolicy(db, values.org);
@@ -59,11 +93,19 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${x.project}: release refs ${x.releaseRefs.join(", ")}; key ${x.signingKey ?? "(none)"}; approval environment ${x.environment}`,
         );
       }
+      for (const x of await showSandbox(db, values.org))
+        console.log(
+          `sandbox ${x.project}: snapshot ${x.settings.sandboxSnapshot ?? "(default)"}; max concurrent ${x.settings.maxConcurrent ?? "(no project limit)"}`,
+        );
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
+      for (const o of await showOidcAudiences(db, values.org))
+        console.log(
+          `oidc-audiences ${o.project}: ${o.audiences ? o.audiences.join(", ") || "(none allowed)" : "any"}`,
+        );
       for (const i of await showIngest(db, values.org)) {
         console.log(
-          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"})` : "off"}`,
+          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"}, vars ${Object.keys(i.ingest.vars ?? {}).join(",") || "(none)"}, splits ${(i.ingest.splits ?? []).map((s) => `${s.job}x${s.shards.length}`).join(",") || "(none)"})` : "off"}`,
         );
       }
     } else if (
@@ -87,6 +129,14 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${r.project}: release refs ${r.releaseRefs.join(", ")}; key ${r.signingKey ?? "(none)"}; approval environment ${r.environment}`,
         );
       }
+    } else if (values["sandbox-snapshot"] !== undefined || values["max-concurrent"] !== undefined) {
+      const r = await setSandboxPolicy(db, values.org, values.project, {
+        sandboxSnapshot: values["sandbox-snapshot"],
+        maxConcurrent: values["max-concurrent"],
+      });
+      console.error(
+        `sandbox ${r.project}: snapshot ${r.from.sandboxSnapshot ?? "(default)"} -> ${r.to.sandboxSnapshot ?? "(default)"}; max concurrent ${r.from.maxConcurrent ?? "none"} -> ${r.to.maxConcurrent ?? "none"}`,
+      );
     } else if (values.ingest !== undefined) {
       const r = await setIngestPolicy(db, values.org, values.project, values.ingest, {
         workflow: values.workflow,
@@ -97,15 +147,18 @@ async function ownPolicy(args: string[]): Promise<void> {
           .map((x) => x.trim())
           .filter(Boolean),
         mergeQueue: values["merge-queue"],
+        vars: parseVars(values.var),
+        splits: parseSplits(values["splits-json"]),
         tagRefs: values["tag-refs"]
           ?.split(",")
           .map((x) => x.trim())
           .filter(Boolean),
+        everyPush: values["every-push"],
         // Asked once, now; the token (optional, for private repos) comes from the environment.
         resolveDefaultBranch: (repo) =>
           new GithubClient({
             baseUrl: "https://api.github.com",
-            token: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+            token: process.env.TURNTABLE_GITHUB_TOKEN?.trim() || undefined,
           }).repoDefaultBranch(repo),
       });
       console.error(`ingest ${r.project}: ${r.from ? "on" : "off"} -> ${r.to ? "on" : "off"}`);
@@ -117,6 +170,17 @@ async function ownPolicy(args: string[]): Promise<void> {
         values["cache-release-restore"],
       )) {
         console.error(`cache-release-restore ${r.project}: ${r.from} -> ${r.to}`);
+      }
+    } else if (values["oidc-audiences"] !== undefined) {
+      for (const r of await setOidcAudiencesPolicy(
+        db,
+        values.org,
+        values.project,
+        values["oidc-audiences"],
+      )) {
+        console.error(
+          `oidc-audiences ${r.project}: ${r.from ? r.from.join(",") : "any"} -> ${r.to ? r.to.join(",") : "any"}`,
+        );
       }
     } else if (values["checks-mode"] !== undefined) {
       for (const r of await setChecksModePolicy(
@@ -142,7 +206,7 @@ async function ownPolicy(args: string[]): Promise<void> {
 }
 
 /**
- * `longshore policy`: one command for every per-org and per-project policy. Action pinning
+ * `turntable policy`: one command for every per-org and per-project policy. Action pinning
  * (`--require-sha-pins`, `--allow-owners`) is handled by the pins module; `approve-run-min-role`
  * and `--egress` here. `show` prints both.
  */
@@ -151,7 +215,7 @@ export async function policyCommand(args: string[]): Promise<void> {
   const ours =
     rest.includes("approve-run-min-role") ||
     rest.some((a) =>
-      /^--(egress|checks-mode|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
+      /^--(egress|sandbox-snapshot|max-concurrent|checks-mode|oidc-audiences|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
         a,
       ),
     );

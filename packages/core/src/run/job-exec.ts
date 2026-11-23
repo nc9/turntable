@@ -1,4 +1,4 @@
-import type { AttemptCredential } from "@longshore/proxy";
+import type { AttemptCredential } from "@turntable/proxy";
 import { probeEgress, probeProxy } from "./egress-canary";
 import {
   EXPORT_STEP_NAME,
@@ -10,9 +10,9 @@ import {
   type ActTarball,
   type ActionFetcher,
   type JobPlan,
-} from "@longshore/act-runner";
-import type { Provider, ProxyEndpoint } from "@longshore/provider-sdk";
-import { Redactor, SecretRegistry, redactString } from "@longshore/redact";
+} from "@turntable/act-runner";
+import type { Provider, ProxyEndpoint } from "@turntable/provider-sdk";
+import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
 
@@ -41,6 +41,11 @@ export interface JobEnv {
   image?: string;
   /** Not needed to resume. */
   repoTarball?: Uint8Array;
+  /**
+   * The provider snapshot to start the sandbox from: the project's, which beats a size class's
+   * and the provider config's. Unset: the provider's own choice.
+   */
+  snapshot?: string;
   /** Sink for the (redacted) log text. */
   out: (text: string) => void;
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
@@ -75,6 +80,8 @@ export interface JobEnv {
    * attaches the real one.
    */
   githubToken?: string;
+  /** GitHub's OIDC request variables for the steps; the token is a placeholder (see oidc/job-delivery). */
+  oidc?: { requestUrl: string; requestToken: string };
 }
 
 export interface JobOutcome {
@@ -235,8 +242,9 @@ export async function executeJob(
       }
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
-        labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
+        labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
         image: env.image,
+        ...(env.snapshot ? { snapshot: env.snapshot } : {}),
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
         network:
           proxied && pick
@@ -324,7 +332,7 @@ export async function executeJob(
             );
           }
           log.push(
-            `[longshore] egress canary could not run (${v.why}); egress none is unverified\n`,
+            `[turntable] egress canary could not run (${v.why}); egress none is unverified\n`,
           );
         }
       }
@@ -338,6 +346,7 @@ export async function executeJob(
             ? { proxy: { url: proxyUrl, caPem: proxied.credential.caPem } }
             : {}),
           ...(env.githubToken !== undefined ? { githubToken: env.githubToken } : {}),
+          ...(env.oidc ? { oidc: env.oidc } : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },
@@ -360,6 +369,7 @@ export async function executeJob(
         return await settle(r.state, r.reason, r.exitCode, r.outputs);
       }
       if (next.value.kind === "act") onAct(next.value.event);
+      else if (next.value.kind === "cut") log.cut(next.value.omittedBytes);
     }
   } catch (e) {
     if (cancelled) return await settle("cancelled", "cancelled by user");
@@ -382,7 +392,7 @@ export async function executeJob(
 /** Redacts text, shows it, and stores it in order with byte offsets (offsets of what is stored). */
 export class LogPipe {
   stored = 0;
-  readonly #redactor: Redactor;
+  #redactor: Redactor;
   readonly #env: JobEnv;
   readonly #attemptId: string;
   #lastPush = Date.now();
@@ -405,6 +415,26 @@ export class LogPipe {
 
   chain(fn: () => Promise<void>): void {
     this.#writes = this.#writes.then(fn);
+  }
+
+  /**
+   * Records, as metadata at the current position of the stored log, that `omittedBytes` of output
+   * were dropped. Nothing is written into the log text. What was held for redaction is flushed
+   * first and redaction starts afresh after the cut, so text from either side of the gap is
+   * never joined.
+   */
+  cut(omittedBytes: number): void {
+    this.#emit(this.#redactor.end());
+    this.#redactor = new Redactor({ registry: this.#env.registry });
+    const atOffset = this.stored;
+    this.chain(
+      () =>
+        this.#env.store.addCut?.(this.#attemptId, {
+          atOffset,
+          omittedBytes,
+          reason: "output cap",
+        }) ?? Promise.resolve(),
+    );
   }
 
   /** Flushes the held tail and waits for every pending write. */

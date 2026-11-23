@@ -1,14 +1,14 @@
-// `longshore artifacts list|check`: a REST client for get_artifacts and check_artifact_consumption.
+// `turntable artifacts list|check`: a REST client for get_artifacts and check_artifact_consumption.
 // A reader token is enough; it is read from a file, never the command line. This command never
 // opens the database.
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { parseArgs } from "node:util";
 import { baseString, parseBaseUrl } from "../channel/api";
 import { readTokenFile } from "../mcp/stdio";
 
-export const ARTIFACTS_USAGE = `Usage: longshore artifacts list --run <run id> --project <slug> --url <https://host> --org <slug>
+export const ARTIFACTS_USAGE = `Usage: turntable artifacts list --run <run id> --project <slug> --url <https://host> --org <slug>
                               [--token-file <path>] [--json]
-       longshore artifacts check (--consumer <run id> | --consumer-class <class>)
+       turntable artifacts check (--consumer <run id> | --consumer-class <class>)
                               --source <run id>:<name> [--source ...]
                               [--quarantine <run id>:<name> ...] --project <slug> --url <https://host>
                               --org <slug> [--token-file <path>] [--json]
@@ -17,8 +17,8 @@ list shows each artifact a run recorded: its trust class, digest (and whether th
 computed it), commit and size. check says, per source artifact, whether the consumer run may take
 it: allow, quarantine (a lower class that you named with --quarantine) or deny. The consumer is a
 run, or a class by name ("may a release build take this?"). A release consumer is denied anything
-below the release class. The token is read from --token-file or LONGSHORE_TOKEN_FILE
-(mode 0600); --url and --org also read LONGSHORE_URL and LONGSHORE_ORG.`;
+below the release class. The token is read from --token-file or TURNTABLE_TOKEN_FILE
+(mode 0600); --url and --org also read TURNTABLE_URL and TURNTABLE_ORG.`;
 
 export type ArtifactRow = {
   name: string;
@@ -130,14 +130,14 @@ export async function artifactsCommand(args: string[], fetchImpl?: SafeFetch): P
     }));
   } catch (e) {
     console.error(
-      `longshore artifacts: ${e instanceof Error ? e.message : "bad arguments"}\n\n${ARTIFACTS_USAGE}`,
+      `turntable artifacts: ${e instanceof Error ? e.message : "bad arguments"}\n\n${ARTIFACTS_USAGE}`,
     );
     return 2;
   }
   try {
-    const url = values.url ?? env("LONGSHORE_URL");
-    const org = values.org ?? env("LONGSHORE_ORG");
-    const tokenFile = values["token-file"] ?? env("LONGSHORE_TOKEN_FILE");
+    const url = values.url ?? env("TURNTABLE_URL");
+    const org = values.org ?? env("TURNTABLE_ORG");
+    const tokenFile = values["token-file"] ?? env("TURNTABLE_TOKEN_FILE");
     if (!url || !org || !tokenFile || !values.project)
       throw new Error("--url, --org, --project and a token file are required");
     const baseUrl = parseBaseUrl(url, values["allow-insecure"]);
@@ -174,7 +174,7 @@ export async function artifactsCommand(args: string[], fetchImpl?: SafeFetch): P
     // A denied source is a non-zero exit, so a script can gate on it.
     return r.results.some((x) => x.decision === "deny") ? 3 : 0;
   } catch (e) {
-    console.error(`longshore artifacts: ${e instanceof Error ? e.message : "failed"}`);
+    console.error(`turntable artifacts: ${e instanceof Error ? e.message : "failed"}`);
     return 1;
   }
 }

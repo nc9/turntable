@@ -1,11 +1,17 @@
-// GitHub App manifest flow: `longshore github-app create` serves a loopback page whose form POSTs
+// GitHub App manifest flow: `turntable github-app create` serves a loopback page whose form POSTs
 // the App manifest to GitHub. GitHub redirects back to a loopback callback with a one-time code,
 // which is exchanged for the App's credentials. Those go straight into the encrypted store and
 // are never printed.
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db";
-import { appendAudit, setGithubApp } from "../db/repos";
+import {
+  appendAudit,
+  getGithubApp,
+  removeOtherGithubApps,
+  retireAppInstallations,
+  setGithubApp,
+} from "../db/repos";
 import type { SecretStore } from "../secrets/store";
 import { SECRET_APP_ID, SECRET_CLIENT, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "./app-auth";
 import { WEBHOOK_PATH } from "./webhook";
@@ -15,6 +21,11 @@ export interface ManifestOptions {
   /** Public base URL of this instance. */
   url: string;
   redirectUrl: string;
+  /**
+   * The hosted claim flow is on: GitHub sends the installer to our setup URL with a user
+   * authorization code, which is how an org proves it owns the installation it claims.
+   */
+  claimFlow?: boolean;
 }
 
 /**
@@ -37,6 +48,13 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
       pull_requests: "read",
     },
     default_events: ["push", "pull_request", "check_run"],
+    ...(o.claimFlow
+      ? {
+          setup_url: `${base}/api/v1/github/setup`,
+          request_oauth_on_install: true,
+          callback_urls: [`${base}/api/v1/github/setup`],
+        }
+      : {}),
   };
 }
 
@@ -57,9 +75,9 @@ export function manifestPage(
     ? `https://github.com/organizations/${encodeURIComponent(ghOrg)}/settings/apps/new`
     : "https://github.com/settings/apps/new";
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Create the Longshore GitHub App</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>Create the Turntable GitHub App</title></head>
 <body>
-<h1>Create the Longshore GitHub App</h1>
+<h1>Create the Turntable GitHub App</h1>
 <p>This sends the App manifest below to GitHub. You approve it there; GitHub then returns here.</p>
 <form method="post" action="${escapeHtml(action)}?state=${encodeURIComponent(state)}">
 <input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">
@@ -91,7 +109,7 @@ export async function convertManifest(
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(code)) throw new Error("malformed manifest code");
   const res = await fetchImpl(`${apiBase}/app-manifests/${code}/conversions`, {
     method: "POST",
-    headers: { accept: "application/vnd.github+json", "user-agent": "longshore" },
+    headers: { accept: "application/vnd.github+json", "user-agent": "turntable" },
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`manifest conversion failed: HTTP ${res.status}`);
@@ -112,48 +130,98 @@ export async function convertManifest(
   return j as ManifestConversion;
 }
 
-/** Stores the App record and its four secrets. Nothing returned here contains a secret. */
+/** Why storeApp refused to write: an App is there that this call may not touch. */
+export class AppStateError extends Error {
+  readonly reason: "app_exists" | "other_org";
+  constructor(reason: "app_exists" | "other_org") {
+    super(
+      reason === "app_exists" ? "an App already exists" : "the existing App belongs to another org",
+    );
+    this.reason = reason;
+  }
+}
+
+/**
+ * Stores the App record and its four secrets, in ONE transaction: concurrent writers cannot mix
+ * one App's key with another's id, and a failure leaves what was there. Nothing returned here
+ * contains a secret. `existing` is re-checked inside the transaction (the caller's earlier check
+ * may be stale): "refuse" throws when any App exists; "replace" accepts none or one owned by the
+ * same org, and drops it (and retires its installations). Omitted: no check (the local CLI).
+ */
 export async function storeApp(
   db: Db,
   store: SecretStore,
   orgId: string,
   c: ManifestConversion,
-): Promise<{ appId: string; slug: string; htmlUrl: string }> {
-  await store.set(orgId, SECRET_APP_ID, String(c.id));
-  await store.set(orgId, SECRET_PRIVATE_KEY, c.pem);
-  await store.set(orgId, SECRET_WEBHOOK, c.webhook_secret);
-  await store.set(orgId, SECRET_CLIENT, c.client_secret);
-  await setGithubApp(
-    db,
-    { orgId },
-    {
-      appId: String(c.id),
-      slug: c.slug,
-      name: c.name,
-      ownerLogin: c.owner.login,
-      htmlUrl: c.html_url,
-      clientId: c.client_id,
-    },
-  );
-  await appendAudit(
-    db,
-    { orgId },
-    {
-      principalKind: "cli",
-      principalId: "local",
-      op: "github_app_create",
-      effect: "write",
-      outcome: "ok",
-      input: { app_id: String(c.id), slug: c.slug, owner: c.owner.login },
-    },
-  );
-  return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url };
+  o: {
+    /** Who is recorded in the audit entry. Default: the local CLI. */
+    principal?: { kind: string; id: string };
+    existing?: "refuse" | "replace";
+  } = {},
+): Promise<{
+  appId: string;
+  slug: string;
+  htmlUrl: string;
+  replaced: string[];
+  retired: { installations: number; repos: number };
+}> {
+  return db.transaction(async (tx) => {
+    if (o.existing) {
+      const there = await getGithubApp(tx);
+      if (there && o.existing === "refuse") throw new AppStateError("app_exists");
+      if (there && there.orgId !== orgId) throw new AppStateError("other_org");
+    }
+    // The store writes through the root handle, which joins this transaction.
+    await store.set(orgId, SECRET_APP_ID, String(c.id));
+    await store.set(orgId, SECRET_PRIVATE_KEY, c.pem);
+    await store.set(orgId, SECRET_WEBHOOK, c.webhook_secret);
+    await store.set(orgId, SECRET_CLIENT, c.client_secret);
+    await setGithubApp(
+      tx,
+      { orgId },
+      {
+        appId: String(c.id),
+        slug: c.slug,
+        name: c.name,
+        ownerLogin: c.owner.login,
+        htmlUrl: c.html_url,
+        clientId: c.client_id,
+      },
+    );
+    const replaced =
+      o.existing === "replace" ? await removeOtherGithubApps(tx, { orgId }, String(c.id)) : [];
+    const retired = await retireAppInstallations(tx, replaced);
+    await appendAudit(
+      tx,
+      { orgId },
+      {
+        principalKind: o.principal?.kind ?? "cli",
+        principalId: o.principal?.id ?? "local",
+        op: replaced.length > 0 ? "github_app_replace" : "github_app_create",
+        effect: "write",
+        outcome: "ok",
+        input: {
+          app_id: String(c.id),
+          slug: c.slug,
+          owner: c.owner.login,
+          ...(replaced.length > 0
+            ? {
+                replaced_app_ids: replaced,
+                retired_installations: retired.installations,
+                unbound_repositories: retired.repos,
+              }
+            : {}),
+        },
+      },
+    );
+    return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url, replaced, retired };
+  });
 }
 
 export interface ManifestFlowOptions {
   db: Db;
   store: SecretStore;
-  /** The Longshore org that will own the App and its installations. */
+  /** The Turntable org that will own the App and its installations. */
   orgId: string;
   name: string;
   url: string;
@@ -222,7 +290,7 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
         if (used || given.length !== want.length || !timingSafeEqual(given, want)) {
           return html(
             400,
-            "<p>Invalid or reused state. Start again with longshore github-app create.</p>",
+            "<p>Invalid or reused state. Start again with turntable github-app create.</p>",
           );
         }
         used = true;
@@ -233,7 +301,7 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
             o.apiBase,
           );
           const app = await storeApp(o.db, o.store, o.orgId, conv);
-          resolveDone(app);
+          resolveDone({ appId: app.appId, slug: app.slug, htmlUrl: app.htmlUrl });
           return html(
             200,
             `<p>The App <b>${escapeHtml(app.slug)}</b> was created and its credentials were stored. You can close this tab.</p>`,

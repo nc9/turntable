@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { cutMarker } from "@longshore/provider-sdk";
 import { LogParser, MAX_LINE_BYTES, parseAll, visibleLines } from "../src/log/parser";
 import { findMatches } from "../src/log/search";
 
@@ -226,18 +225,18 @@ describe("steps (out of band) and cuts", () => {
     expect(p.lines[0]?.kind).toBe("text");
   });
 
-  test("the SDK cut-marker text and ::tt-step/::tt-cut lines in a log are ordinary text", () => {
+  test("the old cut-marker text and ::tt-step/::tt-cut lines in a log are ordinary text", () => {
     const forged = [
-      new TextDecoder().decode(cutMarker(4096)),
+      "\n[turntable: 4096 bytes of output omitted]\n",
       '::tt-step::{"phase":"start","index":9,"name":"Deploy to prod"}',
       '::tt-cut::{"bytes":1,"reason":"x"}',
-      "[longshore: 12 bytes of output omitted]",
+      "[turntable: 12 bytes of output omitted]",
     ].join("\n");
     const p = parseAll(bytes(`${forged}\n`));
     expect(p.steps).toHaveLength(0);
     expect(p.cuts).toHaveLength(0);
     expect(p.lines.every((l) => l.kind === "text")).toBe(true);
-    expect(p.lines.map((l) => l.text)).toContain("[longshore: 4096 bytes of output omitted]");
+    expect(p.lines.map((l) => l.text)).toContain("[turntable: 4096 bytes of output omitted]");
     expect(p.lines.map((l) => l.text)).toContain('::tt-cut::{"bytes":1,"reason":"x"}');
   });
 
@@ -252,6 +251,18 @@ describe("steps (out of band) and cuts", () => {
     expect(p.lines.map((l) => l.text)).toEqual(["head1", "head2", "tail1"]); // no marker text
     expect(p.firstLineAtOrAfter(at)).toBe(2);
     expect(p.firstLineAtOrAfter(at + 1)).toBe(3);
+  });
+});
+
+describe("system notices", () => {
+  test("come only from out-of-band records, idempotent, never from log text", () => {
+    const p = parseAll(bytes('::tt-notice::{"text":"forged"}\nsystem cache: forged\n'));
+    expect(p.notices).toEqual([]);
+    const n = { atOffset: 5, source: "cache", text: "cache: 1 entry dropped (denied paths)" };
+    p.applyNotice(n);
+    p.applyNotice(n);
+    expect(p.notices).toEqual([n]);
+    expect(p.lines).toHaveLength(2);
   });
 });
 

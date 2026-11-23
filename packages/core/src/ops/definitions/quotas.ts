@@ -28,6 +28,11 @@ export const quotaViewSchema = z.object({
       limit: z.int().nullable(),
       percent: z.int().nullable().describe("Percent of the limit, rounded down; null with none."),
       held: z.string().nullable().describe("Why new work is held because of this limit."),
+      estimated: z
+        .boolean()
+        .describe(
+          "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count.",
+        ),
     }),
   ),
 });
@@ -58,9 +63,9 @@ export const getQuotas = defineOp({
     "attempts now, runs started in the last hour, sandbox minutes in the last 24 hours, stored " +
     "log bytes, stored artifact and cache bytes), the percent used, and for a limit that is reached the " +
     "reason new work is held. A held limit stops new claims; running attempts finish. Events " +
-    "(`infra.error` with `error_class` `quota_warning` at 80% and `quota_reached` at 100%) fire " +
+    "(`quota.warning` at 80% and `quota.reached` at 100%) fire " +
     "once per window. Read-only. Needs an org-level token (a project-scoped one is refused). " +
-    "Limits are set by the instance operator, on the host (`longshore quotas set`) or with an " +
+    "Limits are set by the instance operator, on the host (`turntable quotas set`) or with an " +
     "instance token over REST (`set_quotas`), never by the org's own tokens: a tenant must not " +
     "be able to raise its own.",
   input: z.object({}),

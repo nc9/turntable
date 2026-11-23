@@ -1,11 +1,11 @@
-// Release dry run: exercises Longshore's own provenance path on the built binaries, without
+// Release dry run: exercises Turntable's own provenance path on the built binaries, without
 // publishing anything and without GitHub's attestation (which writes to a public log).
 //
 //   bun run scripts/dry-run-provenance.ts --dist dist --version v0.1.0-alpha.1 \
 //     --repo nc9/turntable --sha <commit> --ref refs/tags/v0.1.0-alpha.1 --out dist-dry
 //
 // It builds an SLSA v1 statement for every binary in SHA256SUMS, signs it with a key made for this
-// run and thrown away, then verifies every binary against it with the same code `longshore verify`
+// run and thrown away, then verifies every binary against it with the same code `turntable verify`
 // uses. A negative control (a changed copy of a binary must NOT verify) proves the check can fail.
 // The signature proves the format and the digests, not an identity: it is a dry-run check, and the
 // published release carries GitHub's attestation instead.
@@ -27,7 +27,7 @@ import {
 export function binariesIn(sums: string): Artifact[] {
   return sums
     .split("\n")
-    .map((l) => /^([0-9a-f]{64})\s+\*?(longshore-(?:linux|darwin)-[A-Za-z0-9_]+)$/.exec(l.trim()))
+    .map((l) => /^([0-9a-f]{64})\s+\*?(turntable-(?:linux|darwin)-[A-Za-z0-9_]+)$/.exec(l.trim()))
     .filter((m): m is RegExpExecArray => m !== null)
     .map((m) => ({ sha256: m[1]!, name: m[2]! }));
 }

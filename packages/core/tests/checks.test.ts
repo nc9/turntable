@@ -110,7 +110,7 @@ describe("mapping", () => {
     // A name that already carries the leg is not doubled; markup characters are stripped.
     expect(
       checkName("live", { name: "test (linux)", matrix: JSON.stringify({ os: "linux" }) }),
-    ).toBe("longshore / test (linux)");
+    ).toBe("turntable / test (linux)");
     expect(checkName("shadow", { name: "a`b\nc", matrix: null })).toBe("shadow / a b c");
   });
 
@@ -165,11 +165,11 @@ describe("reporter", () => {
   test("live maps success, failure, cancelled, skipped and infra_error", async () => {
     await setProjectChecksMode(db, world.scope, "live");
     const cases = [
-      ["success", "success", "Longshore: success"],
-      ["failure", "failure", "Longshore: failure"],
-      ["cancelled", "cancelled", "Longshore: cancelled"],
-      ["skipped", "skipped", "Longshore: skipped"],
-      ["infra_error", "failure", "Longshore: infrastructure error"],
+      ["success", "success", "Turntable: success"],
+      ["failure", "failure", "Turntable: failure"],
+      ["cancelled", "cancelled", "Turntable: cancelled"],
+      ["skipped", "skipped", "Turntable: skipped"],
+      ["infra_error", "failure", "Turntable: infrastructure error"],
     ] as const;
     for (const [state, conclusion, title] of cases) {
       const c = await claim();
@@ -179,12 +179,12 @@ describe("reporter", () => {
       rep.finished(c, { state, reason: "cannot prepare sandbox: the sandbox did not start" });
       await rep.idle();
       const run = [...runs.values()][0]!;
-      expect(run.name).toBe("longshore / build");
+      expect(run.name).toBe("turntable / build");
       expect(run).toMatchObject({ status: "completed", conclusion, output: { title } });
       if (state === "infra_error") {
         expect(run.output!.summary).toContain("Infrastructure error");
         expect(run.output!.summary).toContain("Reason: sandbox_create_failed.");
-        expect(run.output!.summary).toContain("See the Longshore run for details.");
+        expect(run.output!.summary).toContain("See the Turntable run for details.");
         expect(run.output!.summary).not.toContain("the sandbox did not start");
       }
     }
@@ -234,7 +234,7 @@ describe("reporter", () => {
         expect(payload).not.toContain(leak);
       }
       expect(payload).toContain("Reason: provider_unavailable.");
-      expect(payload).toContain("See the Longshore run for details.");
+      expect(payload).toContain("See the Turntable run for details.");
     }
   });
 

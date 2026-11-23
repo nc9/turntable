@@ -4,8 +4,8 @@
 // response scrubbed of every injected value before it is returned.
 import net from "node:net";
 import tls from "node:tls";
-import { type SafeFetch, createHttpClient } from "@longshore/net";
-import { SecretRegistry } from "@longshore/redact";
+import { type SafeFetch, createHttpClient } from "@turntable/net";
+import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_LIMITS, type Limits, RequestReader } from "./http";
 import type { Attempt, AttemptRegistry } from "./registry";
 import {
@@ -185,7 +185,7 @@ const text = (status: number, reason: string, extra: string[] = [], body = ""): 
 
 /** The same 407 for unknown, wrong and expired credentials. */
 const AUTH_REQUIRED = text(407, "Proxy Authentication Required", [
-  'proxy-authenticate: Basic realm="longshore"',
+  'proxy-authenticate: Basic realm="turntable"',
 ]);
 
 export async function startProxy(o: ProxyOptions): Promise<RunningProxy> {

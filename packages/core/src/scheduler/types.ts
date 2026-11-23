@@ -1,5 +1,5 @@
-import type { Provider } from "@longshore/provider-sdk";
-import type { SecretRegistry } from "@longshore/redact";
+import type { Provider } from "@turntable/provider-sdk";
+import type { SecretRegistry } from "@turntable/redact";
 import type { ProxyAccess } from "../proxy";
 import type { Claim, Job, JobAttempt, Run, Scope } from "../db/repos";
 import type { StepInput } from "../db/repos";
@@ -80,4 +80,6 @@ export type ProviderResolver = (name: string) => Provider | undefined;
 export interface AttemptObserver {
   started(claim: Claim): void;
   finished(claim: Claim, outcome: AttemptOutcome): void;
+  /** Called at the end of every claim pass, for work that has no attempt to hang off (not awaited). */
+  tick?(): void;
 }

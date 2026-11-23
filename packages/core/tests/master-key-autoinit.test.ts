@@ -100,9 +100,9 @@ describe("autoInitMasterKey", () => {
 
   test("the opt-in is the variable or the flag, and nothing else", () => {
     expect(autoInitRequested({}, undefined)).toBe(false);
-    expect(autoInitRequested({ LONGSHORE_MASTER_KEY_AUTOINIT: "0" }, false)).toBe(false);
-    expect(autoInitRequested({ LONGSHORE_MASTER_KEY_AUTOINIT: "true" }, false)).toBe(false);
-    expect(autoInitRequested({ LONGSHORE_MASTER_KEY_AUTOINIT: "1" }, false)).toBe(true);
+    expect(autoInitRequested({ TURNTABLE_MASTER_KEY_AUTOINIT: "0" }, false)).toBe(false);
+    expect(autoInitRequested({ TURNTABLE_MASTER_KEY_AUTOINIT: "true" }, false)).toBe(false);
+    expect(autoInitRequested({ TURNTABLE_MASTER_KEY_AUTOINIT: "1" }, false)).toBe(true);
     expect(autoInitRequested({}, true)).toBe(true);
   });
 });
@@ -142,7 +142,7 @@ async function boot(
 describe("serve with a missing master key file", () => {
   test("without the opt-in it fails as before and creates nothing", async () => {
     const { data, key } = fresh();
-    const r = await boot(["--data-dir", data], { LONGSHORE_MASTER_KEY_FILE: key });
+    const r = await boot(["--data-dir", data], { TURNTABLE_MASTER_KEY_FILE: key });
     expect(r.listening).toBe(false);
     expect(r.out).toContain("master key file not found");
     expect(existsSync(key)).toBe(false);
@@ -151,8 +151,8 @@ describe("serve with a missing master key file", () => {
   test("with the opt-in it creates the key once, audits it in the system org, and the key is the one used", async () => {
     const { data, key } = fresh();
     const r = await boot(["--data-dir", data], {
-      LONGSHORE_MASTER_KEY_FILE: key,
-      LONGSHORE_MASTER_KEY_AUTOINIT: "1",
+      TURNTABLE_MASTER_KEY_FILE: key,
+      TURNTABLE_MASTER_KEY_AUTOINIT: "1",
     });
     expect(r.listening).toBe(true);
     const bytes = readFileSync(key);
@@ -160,19 +160,19 @@ describe("serve with a missing master key file", () => {
     expect(statSync(key).mode & 0o777).toBe(0o600);
     expect(r.out).toContain(key);
     expect(r.out).not.toContain(bytes.toString("hex"));
-    const db = openDatabase(join(data, "longshore.db"));
+    const db = openDatabase(join(data, "turntable.db"));
     const rows = await listAudit(db, { orgId: await systemOrgId(db) });
     expect(rows.filter((a) => a.op === "master_key_created")).toHaveLength(1);
     expect(JSON.stringify(rows)).not.toContain(bytes.toString("hex"));
     db.close();
     // A second boot with the flag still on uses the same file and audits nothing more.
     const again = await boot(["--data-dir", data], {
-      LONGSHORE_MASTER_KEY_FILE: key,
-      LONGSHORE_MASTER_KEY_AUTOINIT: "1",
+      TURNTABLE_MASTER_KEY_FILE: key,
+      TURNTABLE_MASTER_KEY_AUTOINIT: "1",
     });
     expect(again.listening).toBe(true);
     expect(readFileSync(key).equals(bytes)).toBe(true);
-    const db2 = openDatabase(join(data, "longshore.db"));
+    const db2 = openDatabase(join(data, "turntable.db"));
     expect(
       (await listAudit(db2, { orgId: await systemOrgId(db2) })).filter(
         (a) => a.op === "master_key_created",
@@ -185,7 +185,7 @@ describe("serve with a missing master key file", () => {
     const { data, key } = fresh();
     writeFileSync(key, Buffer.alloc(32, 9), { mode: 0o600 });
     const r = await boot(["--data-dir", data, "--init-master-key"], {
-      LONGSHORE_MASTER_KEY_FILE: key,
+      TURNTABLE_MASTER_KEY_FILE: key,
     });
     expect(r.listening).toBe(true);
     expect([...readFileSync(key)]).toEqual(Array.from({ length: 32 }, () => 9));
@@ -193,8 +193,8 @@ describe("serve with a missing master key file", () => {
 
   test("the opt-in without a key path is an error", async () => {
     const { data } = fresh();
-    const r = await boot(["--data-dir", data], { LONGSHORE_MASTER_KEY_AUTOINIT: "1" });
+    const r = await boot(["--data-dir", data], { TURNTABLE_MASTER_KEY_AUTOINIT: "1" });
     expect(r.listening).toBe(false);
-    expect(r.out).toContain("needs LONGSHORE_MASTER_KEY_FILE");
+    expect(r.out).toContain("needs TURNTABLE_MASTER_KEY_FILE");
   });
 });

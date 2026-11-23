@@ -16,6 +16,15 @@ export const API_HEADERS = {
   "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
 } as const;
 
+/**
+ * The untrusted-content marker. `x-longshore-untrusted-content` is the pre-rename name, still sent
+ * with the same value because a client may key on it; it is deprecated and goes in a later release.
+ */
+export const UNTRUSTED_HEADER = "x-turntable-untrusted-content";
+export const DEPRECATED_UNTRUSTED_HEADER = "x-longshore-untrusted-content"; // rename-keep
+
+const UNTRUSTED_HEADERS = { [UNTRUSTED_HEADER]: "true", [DEPRECATED_UNTRUSTED_HEADER]: "true" };
+
 type Route = {
   op: Op;
   pattern: RegExp;
@@ -95,7 +104,7 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
  * can fall through. Only `auth.type === "token"` ops get routes.
  */
 export type RestOptions = {
-  /** Trust `x-forwarded-proto` from a proxy you control (LONGSHORE_TRUST_FORWARDED_PROTO=1). */
+  /** Trust `x-forwarded-proto` from a proxy you control (TURNTABLE_TRUST_FORWARDED_PROTO=1). */
   trustForwardedProto?: boolean;
 };
 
@@ -176,7 +185,7 @@ export function createRestApi(
       }
       if (!bearer) {
         return failure(new OpError("unauthenticated", "missing bearer token"), {
-          "www-authenticate": 'Bearer realm="longshore"',
+          "www-authenticate": 'Bearer realm="turntable"',
         });
       }
       if (route.op.secretInputFields.length > 0 && !secureTransport(req, opts, peer)) {
@@ -195,18 +204,14 @@ export function createRestApi(
         return failure(
           result.error,
           result.error.code === "unauthenticated"
-            ? { "www-authenticate": 'Bearer realm="longshore"' }
+            ? { "www-authenticate": 'Bearer realm="turntable"' }
             : {},
         );
       }
-      return json(
-        result.output,
-        200,
-        result.untrusted ? { "x-longshore-untrusted-content": "true" } : {},
-      );
+      return json(result.output, 200, result.untrusted ? UNTRUSTED_HEADERS : {});
     } catch (err) {
       if (err instanceof OpError) return failure(err);
-      console.error("longshore: REST adapter error", err);
+      console.error("turntable: REST adapter error", err);
       return failure(new OpError("internal", "internal error"));
     }
   };

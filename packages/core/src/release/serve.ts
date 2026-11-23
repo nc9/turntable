@@ -1,7 +1,7 @@
-// `longshore serve --roles release`: the release lane as its own process.
+// `turntable serve --roles release`: the release lane as its own process.
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { LocalSigner } from "@longshore/signer";
+import { LocalSigner } from "@turntable/signer";
 import { createApprovalVerifier } from "../approvals/verifier";
 import { type Db, ensureInstance, openDatabase } from "../db";
 import { getRunArtifactsByName } from "../db/repos";
@@ -51,7 +51,7 @@ export const signingWiring: WiringFactory = ({ db, masterKey, dataDir, builderId
     records: {
       async recorded(scope, runId, names) {
         const rows = await getRunArtifactsByName(db, scope, runId, names);
-        return rows.map((a) => ({ name: a.name, sha256: a.sha256 }));
+        return rows.map((a) => ({ name: a.name, sha256: a.sha256, size: a.size }));
       },
     },
   };
@@ -65,9 +65,9 @@ export async function serveRelease(
   const cfg = releaseConfigFromEnv(env);
   // The lane's own master key, in its own file: the main process neither has nor can read it.
   const masterKey = loadMasterKey(cfg.masterKeyFile);
-  const log = (m: string) => console.log(`[longshore release] ${m}`);
+  const log = (m: string) => console.log(`[turntable release] ${m}`);
   // Requests come from the main database; everything the lane itself holds is in its own files.
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   await ensureInstance(db);
   const attest = new AttestationStore(join(resolve(cfg.dataDir), "attested.db"));
   const { signer, records } = await wiring({

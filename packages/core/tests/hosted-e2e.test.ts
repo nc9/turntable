@@ -6,8 +6,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { type CheckRunBody, type CheckRunsApi } from "../src/checks/client";
 import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
 import {
@@ -41,6 +41,16 @@ import {
   sign,
 } from "./github-helpers";
 import { SHA, makeGithub } from "./github-stub";
+
+/** Polls `cond` every 50 ms until it holds or `ms` pass (default 20 s). Returns whether it held. */
+async function until(cond: () => Promise<boolean>, ms = 20_000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (await cond()) return true;
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(50);
+  }
+}
 
 const tmp = mkdtempSync(join(tmpdir(), "ls-hosted-e2e-"));
 const world = new FakeWorld({ hostPaths: [tmp], exec: { tickSeconds: 1 } });
@@ -194,7 +204,8 @@ describe("hosted shadow, end to end", () => {
       onRepoEvent: (r) => void poller.nudge(r),
     });
     poller.start();
-    await Bun.sleep(150); // the first poll: the push at sha a
+    // the first poll: the push at sha a (waited for, not slept: Postgres commits more slowly)
+    await until(async () => (await listRuns(db, scope)).some((r) => r.sha === SHA("a")));
 
     // --- new commits land on GitHub, and GitHub says so, signed
     gh.state.head = { sha: SHA("b"), message: "feat: second", login: "octocat" };
@@ -216,11 +227,16 @@ describe("hosted shadow, end to end", () => {
     expect(res?.status).toBe(202);
 
     // the nudge polls the repo again (not sooner than the minimum gap), through the trust decision
+    // Both runs come from the same poll but are separate commits: wait for the push run AND the
+    // pull request run, each by its own condition, with one deadline.
     let runs = await listRuns(db, scope);
-    for (let i = 0; i < 80 && !runs.some((r) => r.sha === SHA("b")); i++) {
-      await Bun.sleep(100);
+    await until(async () => {
       runs = await listRuns(db, scope);
-    }
+      return (
+        runs.some((r) => r.sha === SHA("b") && r.event === "push") &&
+        runs.some((r) => r.event === "pull_request")
+      );
+    });
     poller.stop();
     const push = runs.find((r) => r.sha === SHA("b") && r.event === "push");
     const pr = runs.find((r) => r.event === "pull_request");

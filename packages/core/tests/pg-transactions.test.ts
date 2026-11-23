@@ -1,6 +1,6 @@
 // What the Postgres Db does that the SQLite one gets from its single exclusive connection.
 // Runs on whichever Postgres the suite is pointed at (PGlite by default; a real server with
-// LONGSHORE_TEST_DB=postgres://... exercises the real concurrency and the retry).
+// TURNTABLE_TEST_DB=postgres://... exercises the real concurrency and the retry).
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { createOrg, createProject, type Db, listAudit, listProjects } from "../src/db";
 import { appendAudit } from "../src/db/repos";

@@ -4,9 +4,9 @@ import {
   HARD_MAX_LIVE,
   type OwnerCiPreflight,
   parseFleetName,
-} from "@longshore/provider-daytona";
-import { DockerProvider } from "@longshore/provider-docker";
-import type { Provider } from "@longshore/provider-sdk";
+} from "@turntable/provider-daytona";
+import { DockerProvider } from "@turntable/provider-docker";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   BUILTIN_CEILINGS,
   checkProviderInfo,
@@ -71,7 +71,7 @@ export function createProvider(
     // Not built in: gated by hosted mode and a digest pin, and no external loader exists yet.
     const path = verifyExternalPlugin(name, {
       hosted: opts.hosted === true,
-      pins: opts.pins ?? parsePluginPins(process.env.LONGSHORE_PROVIDER_PLUGINS),
+      pins: opts.pins ?? parsePluginPins(process.env.TURNTABLE_PROVIDER_PLUGINS),
     });
     throw new ProviderTrustError(
       `plugin ${name} (${path}) matches its pinned digest, but this build has no external provider loader; use one of: ${PROVIDER_NAMES.join(", ")}`,
@@ -176,11 +176,13 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
   if (v === false) return false;
   if (typeof v !== "object" || v === null || Array.isArray(v)) {
     throw new Error(
-      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, region, sandboxClass }",
+      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, diskLimitGiB, memLimitGiB, region, sandboxClass }",
     );
   }
   const o = v as Record<string, unknown>;
-  const unknown = Object.keys(o).filter((k) => !["cpuLimit", "region", "sandboxClass"].includes(k));
+  const unknown = Object.keys(o).filter(
+    (k) => !["cpuLimit", "region", "sandboxClass", "diskLimitGiB", "memLimitGiB"].includes(k),
+  );
   if (unknown.length > 0) {
     throw new Error(`unknown ownerCiPreflight option(s): ${unknown.join(", ")}`);
   }
@@ -196,6 +198,14 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
     }
     out.cpuLimit = o.cpuLimit;
   }
+  for (const k of ["diskLimitGiB", "memLimitGiB"] as const) {
+    const x = o[k];
+    if (x === undefined) continue;
+    if (typeof x !== "number" || !Number.isInteger(x) || x < 1 || x > 1_000_000) {
+      throw new Error(`ownerCiPreflight.${k} must be an integer from 1 to 1000000`);
+    }
+    out[k] = x;
+  }
   for (const k of ["region", "sandboxClass"] as const) {
     const x = o[k];
     if (x === undefined) continue;
@@ -210,7 +220,7 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
 /**
  * Daytona, for a shared account. The key is never in the config: `apiKeyFile` names a file that
  * holds it (or `apiKeyEnv` an environment variable; default `DAYTONA_API_KEY`). The label and name
- * prefix come from `fleet` (default `longshore-dev`), the 30 minute backstops, the owner-CI preflight and the ceiling of 5 live
+ * prefix come from `fleet` (default `longshore-dev`), the 30 minute backstops, the owner-CI preflight and the ceiling of 10 live
  * sandboxes (the default is 2) are fixed in the provider and cannot be configured away.
  */
 function createDaytona(config: Record<string, unknown>): Provider {

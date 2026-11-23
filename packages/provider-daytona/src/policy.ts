@@ -5,13 +5,13 @@
 export const OWN_LABEL = "longshore-dev";
 export const OWN_LABEL_VALUE = "1";
 /** Label naming the run a sandbox belongs to. */
-export const RUN_LABEL = "longshore-run";
+export const RUN_LABEL = "turntable-run";
 /** Every sandbox we create is named with this prefix. */
 export const NAME_PREFIX = "longshore-dev-";
 
 /** Live sandboxes of ours at once. The default is 2; options can lower it, never past the ceiling. */
 export const DEFAULT_MAX_LIVE = 2;
-export const HARD_MAX_LIVE = 5;
+export const HARD_MAX_LIVE = 10;
 
 /** Auto-stop, auto-delete and the hard TTL are never longer than this. */
 export const MAX_TTL_SECONDS = 30 * 60;
@@ -99,14 +99,17 @@ export interface Fleet {
   isOwn(s: { name?: string | undefined; labels?: Record<string, string> | undefined }): boolean;
 }
 
-const FLEET_NAME = /^longshore-[a-z0-9]+(-[a-z0-9]+)*$/;
+// rename-keep-begin
+/** A fleet name starts with the product's name, or with its name before the rename (`longshore-`). */
+const FLEET_NAME = /^(?:turntable|longshore)-[a-z0-9]+(-[a-z0-9]+)*$/;
+// rename-keep-end
 
-/** A fleet name: lower case, `longshore-` first, letters digits and single hyphens, at most 30 characters. */
+/** A fleet name: lower case, `turntable-` (or `longshore-`) first, letters digits and single hyphens, at most 30 characters. */ // rename-keep
 export function parseFleetName(name: string): string {
   if (name.length > 30) throw new RangeError("fleet must be at most 30 characters");
   if (!FLEET_NAME.test(name)) {
     throw new RangeError(
-      "fleet must be lower case, start with longshore-, and use only letters, digits and single hyphens (for example longshore-shadow)",
+      "fleet must be lower case, start with turntable- (or longshore-), and use only letters, digits and single hyphens (for example turntable-shadow)", // rename-keep
     );
   }
   return name;
@@ -174,6 +177,13 @@ export interface OwnerCiPreflight {
   region?: string;
   /** Default `container`. */
   sandboxClass?: string;
+  /**
+   * Wait while disk in use plus this sandbox's disk is above this, in GiB. Default: the quota the
+   * usage reply reports for the region and class; with neither, disk is not checked.
+   */
+  diskLimitGiB?: number;
+  /** The same for memory, in GiB. */
+  memLimitGiB?: number;
 }
 
 export const DEFAULT_ORG_CPU_LIMIT = 200;
@@ -185,6 +195,54 @@ export interface RegionUsageRow {
   regionId?: string;
   sandboxClass?: string;
   currentCpuUsage?: number;
+  currentMemoryUsage?: number;
+  currentDiskUsage?: number;
+  totalCpuQuota?: number;
+  totalMemoryQuota?: number;
+  totalDiskQuota?: number;
+}
+
+/** What a sandbox takes when its spec does not say: Daytona's default size (1 vCPU, 1 GiB, 3 GiB). */
+export const DEFAULT_SANDBOX_MEM_GIB = 1;
+export const DEFAULT_SANDBOX_DISK_GIB = 3;
+
+export interface OrgUsage {
+  cpu: number | undefined;
+  /** In GiB. */
+  mem: number | undefined;
+  disk: number | undefined;
+  /** The quotas the reply itself reports, when it does. */
+  quota: { cpu?: number; mem?: number; disk?: number };
+}
+
+const num = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+
+/**
+ * Every reading the usage reply has for the region and class. No row means nothing is running
+ * there (0 of each). A field without a number is not a reading: undefined, so it is skipped (cpu
+ * stays an error for the caller, as before) rather than taken for room.
+ */
+export function orgUsage(
+  rows: readonly RegionUsageRow[] | undefined,
+  region: string,
+  sandboxClass: string,
+): OrgUsage {
+  const row = rows?.find((r) => r.regionId === region && r.sandboxClass === sandboxClass);
+  if (row === undefined) return { cpu: 0, mem: 0, disk: 0, quota: {} };
+  const q = {
+    ...(num(row.totalCpuQuota) !== undefined ? { cpu: num(row.totalCpuQuota) as number } : {}),
+    ...(num(row.totalMemoryQuota) !== undefined
+      ? { mem: num(row.totalMemoryQuota) as number }
+      : {}),
+    ...(num(row.totalDiskQuota) !== undefined ? { disk: num(row.totalDiskQuota) as number } : {}),
+  };
+  return {
+    cpu: num(row.currentCpuUsage),
+    mem: num(row.currentMemoryUsage),
+    disk: num(row.currentDiskUsage),
+    quota: q,
+  };
 }
 
 /**

@@ -1,4 +1,4 @@
-/* oxlint-disable no-control-regex -- this file exists to match terminal control sequences */
+// this file exists to match terminal control sequences
 // Incremental log parser. Feed it ordered byte chunks (by byte offset); it keeps only the
 // unfinished tail line between pushes, so a new chunk never reparses earlier lines.
 //
@@ -87,6 +87,9 @@ export type StepInfo = {
   result: StepResult | null;
 };
 
+/** An out-of-band system notice (see `LogNotice` in api/types). Never read from log text. */
+export type NoticeInfo = { atOffset: number; source: string; text: string };
+
 /** An out-of-band cut record (see `CutRecord` in api/types). */
 export type CutInfo = { atOffset: number; omittedBytes: number; reason: string };
 
@@ -167,6 +170,7 @@ export class LogParser {
   ];
   readonly steps: StepInfo[] = [];
   readonly cuts: CutInfo[] = [];
+  readonly notices: NoticeInfo[] = [];
   readonly annotations: Annotation[] = [];
   readonly styles: StyleDef[] = [{ cls: "", color: null, background: null }];
   /** Longest line in characters, for sizing the horizontal scroller. */
@@ -236,6 +240,19 @@ export class LogParser {
     if (this.cuts.some((x) => x.atOffset === c.atOffset)) return;
     this.cuts.push({ atOffset: c.atOffset, omittedBytes: c.omittedBytes, reason: c.reason });
     this.cuts.sort((a, b) => a.atOffset - b.atOffset);
+    this.version += 1;
+  }
+
+  /** Apply an out-of-band system notice. Idempotent per offset, source and text. */
+  applyNotice(n: NoticeInfo): void {
+    if (
+      this.notices.some(
+        (x) => x.atOffset === n.atOffset && x.source === n.source && x.text === n.text,
+      )
+    )
+      return;
+    this.notices.push({ atOffset: n.atOffset, source: n.source, text: n.text });
+    this.notices.sort((a, b) => a.atOffset - b.atOffset);
     this.version += 1;
   }
 

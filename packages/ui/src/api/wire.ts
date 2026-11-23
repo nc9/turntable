@@ -43,6 +43,36 @@ export type WireAttempt = {
   started_at: string | null;
   finished_at: string | null;
   duration_ms: number | null;
+  sandbox_created_at: string | null;
+  sandbox_destroyed_at: string | null;
+  sandbox_seconds: number | null;
+};
+
+export type WireSandboxUsage = {
+  days: {
+    day: string;
+    sandbox_seconds: number;
+    sandbox_minutes: number;
+    attempts: number;
+    estimated_attempts: number;
+  }[];
+  total_seconds: number;
+  total_minutes: number;
+  /** Present with `group_by=project`: each project that had a sandbox alive in the window. */
+  projects?: {
+    project_id: string;
+    project_slug: string;
+    project_name: string;
+    days: {
+      day: string;
+      sandbox_seconds: number;
+      sandbox_minutes: number;
+      attempts: number;
+      estimated_attempts: number;
+    }[];
+    total_seconds: number;
+    total_minutes: number;
+  }[];
 };
 
 export type WireJob = {
@@ -52,6 +82,8 @@ export type WireJob = {
   state: JobState;
   needs: string[];
   matrix: Record<string, unknown> | null;
+  /** Set on one shard of a job the operator splits across sandboxes; null otherwise. */
+  shard: { job: string; index: number; total: number; steps: string[] } | null;
   approval_kind: "untrusted_author" | "environment" | null;
   exit_code: number | null;
   started_at: string | null;
@@ -134,6 +166,7 @@ export type WireCuts = {
   job_id: string;
   attempt: number | null;
   cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+  notices: { at_offset: number; source: string; text: string }[];
 };
 
 export type WireDigest = {

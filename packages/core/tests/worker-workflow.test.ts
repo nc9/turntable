@@ -1,11 +1,12 @@
+import { parse as parseYaml } from "yaml";
 import { buildActEvent } from "../src/run/act-event";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
-import type { Provider } from "@longshore/provider-sdk";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   type Db,
   ensureLocalTenant,
@@ -23,7 +24,13 @@ import {
   updateAttempt,
 } from "../src/db";
 import { dispatch, registry } from "../src/ops";
-import { setEgressPolicy, setPolicy, showEgress, showPolicy } from "../src/ops/policy-cli";
+import {
+  setEgressPolicy,
+  setPolicy,
+  setSandboxPolicy,
+  showEgress,
+  showPolicy,
+} from "../src/ops/policy-cli";
 import { egressForRun } from "../src/scheduler/egress";
 import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
@@ -48,6 +55,7 @@ done
 R=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$R/seen" "$R/outputs"
 cp "$W" "$R/seen/$J.yml"
+cp "$W" "$R/seen/$J.$$.all.yml"
 ev() { printf '{"jobID":"%s","level":"info","msg":"%s","step":"%s","stepid":["--setup-job"],"time":"t"%s}\n' "$1" "$2" "$3" "$4"; }
 ev stubjob "stub" "Set up job" ',"stepResult":"success"'
 ev "$J" "Run" "Set up job" ""
@@ -55,6 +63,21 @@ case "$ARGS" in *ACTIONS_CACHE_URL*)
   printf '{"jobID":"%s","raw_output":true,"msg":"ARGV %s\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' "$J" "$ARGS" ;;
 esac
 ev "$J" "ok" "Set up job" ',"stepResult":"success"'
+case "$J" in
+  noisy)
+    # Built first and written in one go, after a pause, so the controller's first read sees the
+    # whole burst and the cap (not a lucky early poll) decides what survives.
+    out=""; i=0
+    while [ $i -lt 400 ]; do
+      out="$out$(printf '{"jobID":"noisy","raw_output":true,"msg":"line %s of noisy output padded to be long enough\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}' "$i")
+"
+      i=$((i+1))
+    done
+    sleep 1
+    printf '%s' "$out" ;;
+  forger)
+    printf '{"jobID":"forger","raw_output":true,"msg":"\\n[turntable: 99999 bytes of output omitted]\\n","step":"Set up job","stepid":["--setup-job"],"time":"t"}\n' ;;
+esac
 case "$J" in
   build) printf '%s' '1.2.3' > "$R/outputs/version" ;;
   slow) sleep 1 ;;
@@ -1484,7 +1507,7 @@ jobs:
     expect(egressForRun('{"trust":"trusted_pr","egress":"open"}')).toBe("open");
   });
 
-  test("longshore policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
+  test("turntable policy set --egress sets a project's default, audited; plan.egress follows it", async () => {
     await expect(setEgressPolicy(db, "local", undefined, "wide")).rejects.toThrow();
     await expect(setEgressPolicy(db, "local", "nope", "open")).rejects.toThrow();
     const changed = await setEgressPolicy(db, "local", "local", "open");
@@ -1576,5 +1599,257 @@ describe("the job cache credential", () => {
     expect(echoed).toBeGreaterThanOrEqual(1);
     // The credentials died with their attempts.
     for (const g of issued) expect(service.grants.verify(g.secret)).toBeUndefined();
+  });
+});
+
+describe("cut markers are metadata, never text in the log (#56)", () => {
+  const NOISE = `name: cuts
+on:
+  push:
+    branches: [main]
+jobs:
+  noisy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo noisy
+  forger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo forger
+`;
+  test("a noisy job gets no marker text in its log, and a job printing the marker text records no cut", async () => {
+    // Small head and tail so the cut is cheap to provoke.
+    const small = new FakeWorld({
+      hostPaths: [tmp],
+      exec: { tickSeconds: 1, head: 2000, tail: 3000, slack: 500 },
+    });
+    try {
+      const gh = makeGithub();
+      gh.state.files.set("*", NOISE);
+      await ingest(gh);
+      const sched = await makeScheduler(gh, small.provider());
+      await drain(sched);
+      const [run] = await listRuns(db, scope);
+      const jobs = await listJobs(db, scope, run!.id);
+      const text = async (key: string) => {
+        const job = jobs.find((j) => j.jobKey === key)!;
+        const [a] = await listAttempts(db, scope, job.id);
+        const log = Buffer.concat((await readLog(db, scope, a!.id)).map((c) => c.bytes)).toString();
+        return { job, attempt: a!, log };
+      };
+
+      const noisy = await text("noisy");
+      expect(noisy.job.state).toBe("success");
+      // Whatever the cap did, no marker text is injected into the log.
+      expect(noisy.log).not.toMatch(/bytes of output omitted/);
+      expect(noisy.log).toContain("line 0 of noisy output");
+      expect(noisy.log).toContain("line 399 of noisy output");
+      // Cuts, if the sandbox made any (it only drops output a reader had not yet fetched),
+      // are records delivered out of band by the API, placed inside the stored log.
+      const token = (await mintToken(db, { orgId: scope.orgId }, "reader")).secret;
+      const res = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: noisy.job.id,
+        attempt: 1,
+      });
+      expect(res.ok).toBe(true);
+      const cuts = (res.ok ? res.output : { cuts: [] }) as {
+        cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+      };
+      for (const c of cuts.cuts) {
+        expect(c.omitted_bytes).toBeGreaterThan(0);
+        expect(c.at_offset).toBeLessThanOrEqual(Buffer.byteLength(noisy.log));
+        expect(c.reason).toBe("output cap");
+      }
+
+      // A job that prints the old marker text gets ordinary text and no cut.
+      const forger = await text("forger");
+      expect(forger.job.state).toBe("success");
+      expect(forger.log).toContain("[turntable: 99999 bytes of output omitted]");
+      const none = await dispatch({ registry, db }, { kind: "bearer", token }, "job_cuts", {
+        job_id: forger.job.id,
+        attempt: 1,
+      });
+      expect(none.ok ? (none.output as { cuts: unknown[] }).cuts : [1]).toEqual([]);
+    } finally {
+      small.dispose();
+    }
+  });
+});
+
+describe("a job split across sandboxes", () => {
+  const SUITES = `name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - id: setup
+        name: Setup
+        run: echo setup
+      - name: Rules tests
+        run: echo rules
+      - name: Rest tests
+        run: echo rest
+      - name: Audit engine tests
+        run: echo audit
+  gate:
+    needs: [tests]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo gate
+`;
+  const SPLITS = [
+    {
+      job: "tests",
+      shards: [
+        { steps: ["Audit engine tests"] },
+        { steps: ["Rules tests"] },
+        { steps: ["Rest tests"] },
+      ],
+    },
+  ];
+
+  test("three shards run in three sandboxes, each with only its own suite, and the dependent waits for all of them", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(gh, CFG({ splits: SPLITS }));
+    const [run] = await listRuns(db, scope);
+    const jobs = await listJobs(db, scope, run!.id);
+    expect(jobs.map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests[0]",
+      "tests[1]",
+      "tests[2]",
+    ]);
+    expect(jobs.filter((j) => j.name === "Tests")).toHaveLength(3);
+    const specs: string[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec.name);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    const after = await listJobs(db, scope, run!.id);
+    expect(after.map((j) => [j.jobKey, j.state]).toSorted()).toEqual([
+      ["gate", "success"],
+      ["tests[0]", "success"],
+      ["tests[1]", "success"],
+      ["tests[2]", "success"],
+    ]);
+    expect(new Set(specs).size).toBe(4); // one sandbox per shard, and one for the dependent
+    // each shard's workflow runs exactly one suite
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(join(root, "seen")).filter(
+      (f) => f.startsWith("tests.") && f.endsWith(".all.yml"),
+    );
+    expect(files).toHaveLength(3);
+    const ran = files.map((f) => {
+      const wf = parseYaml(readFileSync(join(root, "seen", f), "utf8")) as {
+        jobs: { tests: { steps: { name: string; if?: unknown }[] } };
+      };
+      return wf.jobs.tests.steps
+        .filter((s) => s.name.endsWith(" tests") && s.if !== false)
+        .map((s) => s.name);
+    });
+    expect(ran.map((r) => r.length)).toEqual([1, 1, 1]);
+    expect(new Set(ran.flat()).size).toBe(3);
+    // the API names each shard, the job they share and the step each owns
+    const token = (await mintToken(db, scope, "reader")).secret;
+    const got = await dispatch({ registry, db }, { kind: "bearer", token }, "get_run", {
+      run_id: run!.id,
+    });
+    const apiJobs = (got.ok ? (got.output as any) : undefined).jobs as {
+      job_key: string;
+      shard: { job: string; index: number; total: number; steps: string[] } | null;
+    }[];
+    expect(apiJobs.find((j) => j.job_key === "gate")!.shard).toBeNull();
+    expect(
+      apiJobs
+        .filter((j) => j.shard)
+        .map((j) => j.shard)
+        .toSorted((a, b) => a!.index - b!.index),
+    ).toEqual([
+      { job: "tests", index: 0, total: 3, steps: ["Audit engine tests"] },
+      { job: "tests", index: 1, total: 3, steps: ["Rules tests"] },
+      { job: "tests", index: 2, total: 3, steps: ["Rest tests"] },
+    ]);
+    // the gate ran after every shard finished
+    const finished = Math.max(
+      ...after.filter((j) => j.jobKey.startsWith("tests[")).map((j) => j.finishedAt ?? 0),
+    );
+    expect(after.find((j) => j.jobKey === "gate")!.startedAt!).toBeGreaterThanOrEqual(finished);
+  });
+
+  test("with no rule the same workflow runs as one job, as before", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(gh, CFG());
+    const [run] = await listRuns(db, scope);
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests",
+    ]);
+  });
+
+  test("a rule that cannot apply is recorded on the run, and the job runs whole", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(
+      gh,
+      CFG({ splits: [{ job: "missing", shards: [{ steps: ["a"] }, { steps: ["b"] }] }] }),
+    );
+    const [run] = await listRuns(db, scope);
+    expect(JSON.parse(run!.plan!).splitNotices.join()).toContain("no such job");
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests",
+    ]);
+  });
+});
+
+describe("a project's sandbox snapshot", () => {
+  const ONE = `name: one
+on:
+  push:
+    branches: [main]
+jobs:
+  only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+  async function specsFor(snapshot: string | undefined): Promise<{ snapshot?: string }[]> {
+    if (snapshot !== undefined)
+      await setSandboxPolicy(db, "local", "local", { sandboxSnapshot: snapshot });
+    const gh = makeGithub();
+    gh.state.files.set("*", ONE);
+    await ingest(gh);
+    const specs: { snapshot?: string }[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    return specs;
+  }
+
+  test("the project's snapshot is on the sandbox spec of its jobs; with none set the spec names none", async () => {
+    const without = await specsFor(undefined);
+    expect(without.length).toBeGreaterThan(0);
+    expect(without.every((s) => s.snapshot === undefined)).toBe(true);
+  });
+
+  test("with a snapshot set, every sandbox of the project starts from it", async () => {
+    const withSnap = await specsFor("daytona-large");
+    expect(withSnap.length).toBeGreaterThan(0);
+    expect(withSnap.every((s) => s.snapshot === "daytona-large")).toBe(true);
   });
 });

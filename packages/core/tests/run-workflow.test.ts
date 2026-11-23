@@ -2,10 +2,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import type { SafeFetch } from "@longshore/net";
-import { InfraError } from "@longshore/provider-sdk";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import type { SafeFetch } from "@turntable/net";
+import { InfraError } from "@turntable/provider-sdk";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import {
   claimNextAttempt,
   createLocalRun,
@@ -225,7 +225,7 @@ jobs:
     const jobs = await listJobs(b.db, b.scope, b.result.runId as string);
     expect(jobs.map((j) => JSON.parse(j.matrix ?? "null"))).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
     // each leg's generated workflow has just its own literal leg
-    expect(existsSync(join(b.root, "repo/.longshore/jobs/mfail_2_.yml"))).toBe(true);
+    expect(existsSync(join(b.root, "repo/.turntable/jobs/mfail_2_.yml"))).toBe(true);
   });
 
   test("continue-on-error: a failed job still counts as success for dependents and the run", async () => {
@@ -409,8 +409,8 @@ jobs:
 
     test("without a token nothing is authenticated, and the run still works for public actions", async () => {
       const gh = github([]);
-      const saved = process.env.LONGSHORE_GITHUB_TOKEN;
-      delete process.env.LONGSHORE_GITHUB_TOKEN;
+      const saved = process.env.TURNTABLE_GITHUB_TOKEN;
+      delete process.env.TURNTABLE_GITHUB_TOKEN;
       try {
         const { result } = await go(
           wf("stranger/tool@v1"),
@@ -421,7 +421,7 @@ jobs:
         expect(result.jobs[0]?.state).toBe("success");
         for (const c of gh.calls) expect(c.auth).toBeNull();
       } finally {
-        if (saved !== undefined) process.env.LONGSHORE_GITHUB_TOKEN = saved;
+        if (saved !== undefined) process.env.TURNTABLE_GITHUB_TOKEN = saved;
       }
     });
   });

@@ -1,9 +1,16 @@
-// The instance administrator (#205): an `lsi_` token minted on the host, accepted over REST only,
+// The instance administrator (#205): a `tti_` token minted on the host, accepted over REST only,
 // able to call the instance operations and nothing else, and unreachable by any org token.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { systemOrgId } from "../src/audit/failures";
-import { type Db, getOrgQuotas, insertApiToken, listAudit } from "../src/db";
+import {
+  type Db,
+  getOrgQuotas,
+  getProjectSandboxSettings,
+  insertApiToken,
+  listAudit,
+  listProjects,
+} from "../src/db";
 import { AGENT_ROLES } from "../src/db/schema";
 import { findInstanceTokenByHash } from "../src/db/repos";
 import { mcpTools } from "../src/ops/mcp";
@@ -57,8 +64,8 @@ const orgCreds = async (t: Tenant): Promise<{ label: string; cred: Credential }[
 };
 
 describe("minting is host-only and the token is stored hashed", () => {
-  test("lsi_ prefix, hash only in the database, audited in the system org's chain, no org op mints one", async () => {
-    expect(secret.startsWith("lsi_")).toBe(true);
+  test("tti_ prefix, hash only in the database, audited in the system org's chain, no org op mints one", async () => {
+    expect(secret.startsWith("tti_")).toBe(true);
     expect(secret.length).toBe(4 + 43);
     const row = await findInstanceTokenByHash(db, hashToken(secret));
     expect(row?.id).toBe(tokenId);
@@ -184,7 +191,14 @@ describe("no org principal reaches an instance op, and the instance token reache
     for (const t of [a, b]) {
       for (const { label, cred } of await orgCreds(t)) {
         for (const op of registry.instanceOps()) {
-          const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+          const input =
+            op.name === "set_quotas"
+              ? { target_org: "org-a", max_log_bytes: 1 }
+              : op.name === "set_project_settings"
+                ? { target_org: "org-a", target_project: "app", max_concurrent: 1 }
+                : op.name === "create_project"
+                  ? { target_org: "org-a", slug: "sneaky", name: "x" }
+                  : {};
           const r = await dispatch(env, cred, op.name, input);
           expect(r.ok, `${label} on ${op.name}`).toBe(false);
           if (!r.ok) expect(r.error.code, `${label} on ${op.name}`).toBe("forbidden");
@@ -192,12 +206,23 @@ describe("no org principal reaches an instance op, and the instance token reache
       }
     }
     expect(JSON.stringify(await getOrgQuotas(db, a.orgId))).toBe(before);
+    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+      sandboxSnapshot: null,
+      maxConcurrent: null,
+    });
     expect(
       registry
         .instanceOps()
         .map((o) => o.name)
         .toSorted(),
-    ).toEqual(["instance_list_orgs", "instance_whoami", "set_quotas"]);
+    ).toEqual([
+      "create_project",
+      "instance_list_orgs",
+      "instance_whoami",
+      "set_project_settings",
+      "set_quotas",
+    ]);
+    expect((await listProjects(db, { orgId: a.orgId })).map((p) => p.slug)).toEqual(["app"]);
   });
 
   test("the instance token on every other op: forbidden (it holds no org grant), even with an org named", async () => {
@@ -208,8 +233,8 @@ describe("no org principal reaches an instance op, and the instance token reache
     }
   });
 
-  test("an lsi_-shaped string is never an org token, even if its hash is in api_tokens", async () => {
-    const fake = `lsi_${"A".repeat(43)}`;
+  test("a tti_-shaped string is never an org token, even if its hash is in api_tokens", async () => {
+    const fake = `tti_${"A".repeat(43)}`;
     await insertApiToken(
       db,
       { orgId: a.orgId },
@@ -291,12 +316,12 @@ describe("REST only", () => {
     ).rejects.toMatchObject({ code: "unauthenticated" });
   });
 
-  test("a bad, expired or unknown lsi_ token fails like any bad token, and is audited in the system chain", async () => {
-    const unknown = `lsi_${"B".repeat(43)}`;
+  test("a bad, expired or unknown tti_ token fails like any bad token, and is audited in the system chain", async () => {
+    const unknown = `tti_${"B".repeat(43)}`;
     const r = await dispatch(env, { kind: "bearer", token: unknown }, "instance_whoami", {});
     expect(!r.ok && r.error.code).toBe("unauthenticated");
     expect(!r.ok && r.error.message).toBe(
-      await dispatch(env, { kind: "bearer", token: `ls_${"B".repeat(43)}` }, "list_runs", {}).then(
+      await dispatch(env, { kind: "bearer", token: `tt_${"B".repeat(43)}` }, "list_runs", {}).then(
         (x) => (!x.ok ? x.error.message : ""),
       ),
     );

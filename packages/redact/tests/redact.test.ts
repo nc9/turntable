@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { MAX_OPEN_PEM, MAX_PATTERN_LENGTH, Redactor, redactString, SecretRegistry } from "../src";
 
 // Secret-shaped fixtures are assembled at runtime: SPLIT breaks each literal so secret scanners
@@ -72,6 +73,84 @@ describe("patterns", () => {
 
   test("two PEM blocks and text between are handled", () => {
     expect(redactString(`${PEM}\nmid\n${PEM}`)).toBe(`${R}\nmid\n${R}`);
+  });
+});
+
+describe("Turntable's own tokens are redacted by pattern alone", () => {
+  // Minted the way core/src/ops/tokens.ts does it (prefix + 32 random bytes as base64url), built here
+  // so no scanner-shaped literal sits in the repo.
+  const body = (): string => randomBytes(32).toString("base64url");
+  const org = () => `t${SPLIT}t_${body()}`;
+  const instance = () => `tt${SPLIT}i_${body()}`;
+  // Minted before the rename (formerly Longshore): still accepted, so still redacted.
+  const legacyOrg = () => `l${SPLIT}s_${body()}`;
+  const legacyInstance = () => `ls${SPLIT}i_${body()}`;
+
+  test("an org token, an instance token and their pre-rename forms, in prose, headers, env and JSON", () => {
+    for (const make of [org, instance, legacyOrg, legacyInstance]) {
+      const tok = make();
+      expect(tok.length).toBe(make === instance || make === legacyInstance ? 47 : 46);
+      for (const [text, expected] of [
+        [tok, R],
+        [`token ${tok} end`, `token ${R} end`],
+        [`TURNTABLE_TOKEN=${tok}`, `TURNTABLE_TOKEN=${R}`],
+        [`{"token":"${tok}"}`, `{"token":"${R}"}`],
+        [`curl -H 'x: ${tok}'`, `curl -H 'x: ${R}'`],
+        [`${tok}\n${tok}`, `${R}\n${R}`],
+        [`${tok}.json`, `${R}.json`],
+      ] as const) {
+        expect(redactString(text)).toBe(expected);
+      }
+    }
+  });
+
+  test("a token split across chunks at every position is still redacted", () => {
+    for (const make of [org, instance]) {
+      const tok = make();
+      splitEverywhere(`before ${tok} after`, `before ${R} after`);
+    }
+  });
+
+  test("a token glued to other text is still redacted: it fails closed", () => {
+    for (const make of [org, instance, legacyOrg, legacyInstance]) {
+      const tok = make();
+      for (const [text, expected] of [
+        [`x${tok}`, `x${R}`],
+        [`my_${tok}`, `my_${R}`],
+        [`${tok}abc`, R], // the run that keeps going is redacted through
+        [`${tok}_more-stuff`, R],
+        [`id=${tok}X`, `id=${R}`],
+        [`<${tok}>`, `<${R}>`],
+        [`a${tok}b c`, `a${R} c`],
+      ] as const) {
+        expect(redactString(text)).toBe(expected);
+      }
+    }
+  });
+
+  test("glued tokens are redacted when a chunk boundary falls anywhere", () => {
+    const tok = org();
+    splitEverywhere(`id=x${tok}tail rest`, `id=x${R} rest`);
+  });
+
+  test("not tokens: words, a bare prefix, anything short of 43 characters, other prefixes", () => {
+    const b = body();
+    for (const text of [
+      "export LS_COLORS=ls_colors",
+      "ls_colors",
+      "tt_",
+      "tti_",
+      "tt_short",
+      `tt_${b.slice(0, 42)}`, // one short
+      `tti_${b.slice(0, 42)}`,
+      `ls_${b.slice(0, 42)}`,
+      `lsi_${b.slice(0, 42)}`,
+      `lsx_${b}`,
+      `ls-${b}`,
+      `ls ${b}`,
+    ]) {
+      expect(redactString(text)).toBe(text);
+    }
   });
 });
 

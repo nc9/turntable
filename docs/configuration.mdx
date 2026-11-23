@@ -3,26 +3,46 @@ title: Configuration
 description: Flags and environment variables supported today.
 ---
 
+{/* rename-keep-begin */}
+## Formerly Longshore
+
+For a few days this project was called Longshore. Nothing that ran under that name needs to change at once. Each old name still works, and most of them warn once at boot:
+
+| Was | Now | What happens |
+| --- | --- | --- |
+| `LONGSHORE_*` environment variables | `TURNTABLE_*` | Read as the new name, with one warning per variable. If both are set, `TURNTABLE_*` wins and a warning says so. A value that the image sets itself (`TURNTABLE_HOST`, `TURNTABLE_DROP_PRIVILEGES`) therefore beats an old `LONGSHORE_HOST` or `LONGSHORE_DROP_PRIVILEGES` you set: rename those two. |
+| `longshore.db` in the data directory | `turntable.db` | Renamed on first start (with its `-wal` and `-shm` files) when `turntable.db` does not exist. Back up the volume before the first start of a new version. |
+| `__longshore_migrations` table | `__turntable_migrations` | Renamed in place (SQLite and Postgres), so no migration runs twice. A database with both tables is refused at boot with an error that names them. |
+| `ls_` and `lsi_` tokens | `tt_` and `tti_` | Both prefixes are accepted. New tokens use the new ones. Only hashes are stored, so no token changes. |
+| `longshore.v1` WebSocket subprotocol | `turntable.v1` | The server accepts both and echoes the one the client offered. |
+| `longshore://runs/...` MCP resource URIs | `turntable://runs/...` | Both resolve. |
+| `longshore.*` container labels, `longshore-run` sandbox label | `turntable.*`, `turntable-run` | New sandboxes get the new labels. Every list, count, reap and destroy path reads both, so sandboxes started before the upgrade are still found and cleaned up. |
+| `--longshore-org` flag of `github-app create` | `--turntable-org` | Both work. |
+| `longshore /` check run prefix | `turntable /` | New check runs use the new prefix. |
+
+Fleet names such as `longshore-shadow` are configuration and stay as you wrote them. A fleet name may start with `turntable-` or `longshore-`. Signed or derived values never change with the name: webhook headers (`longshore-signature`, `longshore-event`, `longshore-delivery`, `longshore-cursor`), approval statement types (`longshore.approve_*.v1`), key-derivation and AAD contexts, and the provenance build type keep their original spelling, because existing secrets, approvals, signatures and receivers depend on it.
+{/* rename-keep-end */}
+
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `longshore serve` | Start the server. |
-| `longshore token generate` | Print a new token (stdout) and its sha256 (stderr). Touches no database. |
-| `longshore token create \| list \| revoke` | Manage tokens in a data directory. See the quickstart. |
-| `longshore policy show \| set` | Per-project action policy: `--require-sha-pins`, `--allow-owners` / `--clear-allowlist`. See [Security](/security). |
-| `longshore keys init` | Create the master key file for the encrypted secret store. |
-| `longshore github-app create \| rotate-webhook-secret \| status` | Create and manage the GitHub App. See [GitHub App](/github-app). |
-| `longshore version` | Print the version. `--version` also works. |
-| `longshore help` | Print usage. |
+| `turntable serve` | Start the server. |
+| `turntable token generate` | Print a new token (stdout) and its sha256 (stderr). Touches no database. |
+| `turntable token create \| list \| revoke` | Manage tokens in a data directory. See the quickstart. |
+| `turntable policy show \| set` | Per-project action policy: `--require-sha-pins`, `--allow-owners` / `--clear-allowlist`. See [Security](/security). |
+| `turntable keys init` | Create the master key file for the encrypted secret store. |
+| `turntable github-app create \| rotate-webhook-secret \| status` | Create and manage the GitHub App. See [GitHub App](/github-app). |
+| `turntable version` | Print the version. `--version` also works. |
+| `turntable help` | Print usage. |
 
 ## `serve` flags
 
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--port` | `8080` | TCP port, 0 to 65535. Defaults to the `PORT` environment variable when set. |
-| `--host` | `127.0.0.1` | Interface to bind. Defaults to `LONGSHORE_HOST` when set. |
-| `--data-dir` | `./data` | Directory that holds `longshore.db`. |
+| `--host` | `127.0.0.1` | Interface to bind. Defaults to `TURNTABLE_HOST` when set. |
+| `--data-dir` | `./data` | Directory that holds `turntable.db`. |
 | `--allowed-origin` | none | An extra origin allowed to open the realtime WebSocket. Repeatable. The page's own origin is always allowed. |
 
 ## Worker and provider flags
@@ -36,7 +56,7 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `--provider-config` | none | A JSON file of provider options. Secrets never go in it. |
 | `--global-cap`, `--org-cap` | `4`, `2` | Most jobs at once, in total and per org. |
 | `--image` | built in | The image jobs run in (Docker). |
-| `--hosted` | off | This is a hosted, multi-tenant instance: every job needs a `microvm` or `vm` provider. Also set by `LONGSHORE_HOSTED=1`. |
+| `--hosted` | off | This is a hosted, multi-tenant instance: every job needs a `microvm` or `vm` provider. Also set by `TURNTABLE_HOSTED=1`. |
 | `--isolation-override` | none | A reason. Lets jobs run on a provider weaker than their trust class requires. Audited and shown at the top of each affected job's log. |
 
 ### Daytona options
@@ -57,23 +77,23 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `apiKeyFile` | none | Path of a file holding the API key. The key is read when first needed and never logged. |
 | `apiKeyEnv` | `DAYTONA_API_KEY` | An environment variable holding the key, used when `apiKeyFile` is not set. Set only one of the two. |
 | `baseUrl` | Daytona cloud | The API URL. |
-| `snapshot` | account default | An existing snapshot to start sandboxes from. Used even when the job names an image. Longshore never creates snapshots. |
+| `snapshot` | account default | An existing snapshot to start sandboxes from. Used even when the job names an image. Turntable never creates snapshots. |
 | `target` | account default | The Daytona region. |
-| `maxLive` | `2` | Live sandboxes of ours at once. At most `5`. |
+| `maxLive` | `2` | Live sandboxes of ours at once. At most `10`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
 | `quotaMode` | `"org-usage"` | `"org-usage"` reads the org's CPU in use (see `ownerCiPreflight`); if Daytona answers that read with 403 (a key scoped to sandbox write and delete) it falls back to `"own-fleet"` and logs it once. `"own-fleet"` never reads the org: it counts our own live sandboxes by our label and waits while that is `maxLive` or more. Only a 403 falls back. |
-| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
+| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, diskLimitGiB, memLimitGiB, region, sandboxClass }`. Disk and memory are judged against the quotas the usage reply reports unless you set a limit; with neither they are not checked. |
 | `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
 | `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
-The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
+The auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. Our own sandboxes are those with the fleet's label and name prefix, `longshore-dev` unless you set `fleet`. See [Providers](/providers#daytona).
 
 ### Egress
 
 Egress is deny by default, for every trust class. A job's sandbox has no network unless its run says otherwise: `none` unless the run's plan records `"egress": "open"` (or `"allowlist"`) from the project's configuration. Anything else is treated as `none`.
 
-With `--worker` and with `longshore run`:
+With `--worker` and with `turntable run`:
 
 - A job is refused (as `infra_error`, naming the provider) when its provider cannot enforce the policy it asks for. That includes `none`: a provider that cannot cut the network is not trusted to. Docker and Daytona enforce `none` and `open`; neither enforces `allowlist` yet.
 - A job that holds secrets is never run on `open` egress.
@@ -84,27 +104,28 @@ With `--worker` and with `longshore run`:
 | Variable | Description |
 | --- | --- |
 | `PORT` | Default for `--port`. Hosts such as Railway set it. An invalid value is refused at startup. |
-| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | sha256 (64 hex characters) of a token made by `longshore token generate`. On boot, if the bootstrap org has no tokens, one operator token with this hash is created (365 days). The token itself is never in the environment or the logs. |
-| `LONGSHORE_BOOTSTRAP_ORG` | Org slug for the bootstrap token. Default `local`. The org is created when missing. |
-| `LONGSHORE_MASTER_KEY_FILE` | Path to the 32-byte master key file (`longshore keys init`). Required for the GitHub App and the webhook endpoint `POST /api/v1/webhooks/github`. |
-| `LONGSHORE_REQUIRE_ORG_KEYS` | Set to `1` after `longshore keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused. See [Secrets vault](/secrets-vault). |
-| `LONGSHORE_AUDIT_EXPORT_DIR` | Directory for rotating JSONL export of audit entries and checkpoints. Needs no master key; checkpoints do (`LONGSHORE_MASTER_KEY_FILE`). See [Security](/security). |
-| `LONGSHORE_AUDIT_WEBHOOK_URL` | URL that receives audit batches as signed JSON posts. Subject to the outbound address rules. |
-| `LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE` | File holding the HMAC secret for the audit webhook (never put the secret in the environment). |
-| `LONGSHORE_OIDC_BASE_URL` | Base of the per-org OIDC issuers. An org's issuer URL is `<base>/<org slug>`. Default `<public url>/oidc`; must be https (localhost excepted). Needs `LONGSHORE_MASTER_KEY_FILE`. See [OIDC](/oidc). |
-| `LONGSHORE_OIDC_ALLOW_CLASSES` | Trust classes that may get an OIDC token. Default `protected,release`. `untrusted_pr` is refused unless you list it, which you should not. |
-| `LONGSHORE_TRUST_FORWARDED_PROTO` | Set to `1` only behind a TLS-terminating proxy you control. A request the proxy forwards with `x-forwarded-proto: http` gets a 301 to the https URL (GET and HEAD) or a 400 (any other method); `x-forwarded-proto: https` marks the response secure, so it carries HSTS. Without it, forwarded headers are ignored. Loopback dev, which sends no such header, is untouched. It also lets requests that carry a secret value (`set_secret`, `rotate_secret`) in over `x-forwarded-proto: https`. |
-| `LONGSHORE_HSTS_MAX_AGE` | `Strict-Transport-Security` max-age in seconds on https responses. Default `31536000` (one year). `0` or `off` turns the header off. `LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0` drops `includeSubDomains`. |
-| `LONGSHORE_TRUSTED_PROXIES` | Comma-separated addresses and CIDR ranges of the proxies in front of the server. The webhook failure limiter keys on the right-most `X-Forwarded-For` hop that is not one of them, and reads the header only when the socket peer is itself trusted; with none set it keys on the peer. Replaces `LONGSHORE_TRUST_FORWARDED_FOR`, which is no longer read. See [Hosted deployment](/hosted). |
-| `LONGSHORE_CLAIM_INSTALLATIONS` | Set to `1` on a hosted instance: an org claims its own GitHub App installation (`start_installation_claim`, then the setup URL `/api/v1/github/setup`), and an unclaimed installation is not mapped to the App's org. |
-| `LONGSHORE_WORKER`, `LONGSHORE_PROVIDER`, `LONGSHORE_PROVIDER_CONFIG`, `LONGSHORE_POLL`, `LONGSHORE_IMAGE`, `LONGSHORE_GLOBAL_CAP`, `LONGSHORE_ORG_CAP`, `LONGSHORE_LEASE_SECONDS`, `LONGSHORE_ISOLATION_OVERRIDE`, `LONGSHORE_DATA_DIR` | The environment equivalent of each `serve` flag. A flag wins. See [Hosted deployment](/hosted). |
-| `LONGSHORE_POLL_JSON`, `LONGSHORE_PROVIDER_CONFIG_JSON` | The poll and provider configs as JSON, for hosts with no files. |
-| `LONGSHORE_NET_ALLOW_HOSTS` | Comma-separated hostnames or IP literals that the control plane may contact even though they resolve to a private or loopback address (and over plain http): for example a self-hosted Daytona on your network. Nothing else on a private range is reachable. See [Security](/security). |
-| `LONGSHORE_DROP_PRIVILEGES` | `<uid>:<gid>`, never root. When the server starts as root, it chowns the data directory to this user and drops to it before opening anything. The image sets `65532:65532`. Ignored when not root. See [Quickstart](/quickstart). |
-| `LONGSHORE_ALLOW_ROOT` | Set to `1` to let the server keep running as root. Without it, a root server with no `LONGSHORE_DROP_PRIVILEGES` refuses to start. |
-| `LONGSHORE_RELEASE_MASTER_KEY_FILE`, `LONGSHORE_RELEASE_DATA_DIR`, `LONGSHORE_RELEASE_GITHUB_TOKEN`, `LONGSHORE_RELEASE_ARTIFACT_DIR`, `LONGSHORE_RELEASE_BUILDER_ID`, `LONGSHORE_RELEASE_POLL_MS` | Configuration of `serve --roles release`, the release lane. Set on that process only; every other role ignores them. See [Release lane](/release-lane). |
-| `LONGSHORE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
-| `LONGSHORE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
+| `TURNTABLE_BOOTSTRAP_TOKEN_SHA256` | sha256 (64 hex characters) of a token made by `turntable token generate`. On boot, if the bootstrap org has no tokens, one operator token with this hash is created (365 days). The token itself is never in the environment or the logs. |
+| `TURNTABLE_BOOTSTRAP_ORG` | Org slug for the bootstrap token. Default `local`. The org is created when missing. |
+| `TURNTABLE_MASTER_KEY_FILE` | Path to the 32-byte master key file (`turntable keys init`). Required for the GitHub App and the webhook endpoint `POST /api/v1/webhooks/github`. |
+| `TURNTABLE_REQUIRE_ORG_KEYS` | Set to `1` after `turntable keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused. See [Secrets vault](/secrets-vault). |
+| `TURNTABLE_AUDIT_EXPORT_DIR` | Directory for rotating JSONL export of audit entries and checkpoints. Needs no master key; checkpoints do (`TURNTABLE_MASTER_KEY_FILE`). See [Security](/security). |
+| `TURNTABLE_AUDIT_WEBHOOK_URL` | URL that receives audit batches as signed JSON posts. Subject to the outbound address rules. |
+| `TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE` | File holding the HMAC secret for the audit webhook (never put the secret in the environment). |
+| `TURNTABLE_OIDC_BASE_URL` | Base of the per-org OIDC issuers. An org's issuer URL is `<base>/<org slug>`. Default `<public url>/oidc`; must be https (localhost excepted). Needs `TURNTABLE_MASTER_KEY_FILE`. See [OIDC](/oidc). |
+| `TURNTABLE_OIDC_ALLOW_CLASSES` | Trust classes that may get an OIDC token. Default `protected,release`. `untrusted_pr` is refused unless you list it, which you should not. |
+| `TURNTABLE_TRUST_FORWARDED_PROTO` | Set to `1` only behind a TLS-terminating proxy you control. A request the proxy forwards with `x-forwarded-proto: http` gets a 301 to the https URL (GET and HEAD) or a 400 (any other method); `x-forwarded-proto: https` marks the response secure, so it carries HSTS. Without it, forwarded headers are ignored. Loopback dev, which sends no such header, is untouched. It also lets requests that carry a secret value (`set_secret`, `rotate_secret`) in over `x-forwarded-proto: https`. |
+| `TURNTABLE_HSTS_MAX_AGE` | `Strict-Transport-Security` max-age in seconds on https responses. Default `31536000` (one year). `0` or `off` turns the header off. `TURNTABLE_HSTS_INCLUDE_SUBDOMAINS=0` drops `includeSubDomains`. |
+| `TURNTABLE_TRUSTED_PROXIES` | Comma-separated addresses and CIDR ranges of the proxies in front of the server. The webhook failure limiter keys on the right-most `X-Forwarded-For` hop that is not one of them, and reads the header only when the socket peer is itself trusted; with none set it keys on the peer. Replaces `TURNTABLE_TRUST_FORWARDED_FOR`, which is no longer read. See [Hosted deployment](/hosted). |
+| `TURNTABLE_CLAIM_INSTALLATIONS` | Set to `1` on a hosted instance: an org claims its own GitHub App installation (`start_installation_claim`, then the setup URL `/api/v1/github/setup`), and an unclaimed installation is not mapped to the App's org. |
+| `TURNTABLE_WORKER`, `TURNTABLE_PROVIDER`, `TURNTABLE_PROVIDER_CONFIG`, `TURNTABLE_POLL`, `TURNTABLE_IMAGE`, `TURNTABLE_GLOBAL_CAP`, `TURNTABLE_ORG_CAP`, `TURNTABLE_LEASE_SECONDS`, `TURNTABLE_ISOLATION_OVERRIDE`, `TURNTABLE_DATA_DIR` | The environment equivalent of each `serve` flag. A flag wins. See [Hosted deployment](/hosted). |
+| `TURNTABLE_POLL_JSON`, `TURNTABLE_PROVIDER_CONFIG_JSON` | The poll and provider configs as JSON, for hosts with no files. |
+| `TURNTABLE_CHECKOUT_TIMEOUT_SECONDS`, `TURNTABLE_CHECKOUT_MAX_MEMORY_MIB`, `TURNTABLE_CHECKOUT_CONCURRENCY`, `TURNTABLE_CHECKOUT_MAX_PACK_MIB`, `TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB`, `TURNTABLE_CHECKOUT_MAX_TARBALL_MIB` | How a run's commit is fetched, in a child process of the server: its deadline (default 300 s), resident-memory ceiling in MiB (default 1536, Linux only, 0 turns it off), how many run at once (default 2), and the caps on the packfile (128), everything unpacked (512) and the tarball (256), in MiB. See [Security](/security). |
+| `TURNTABLE_NET_ALLOW_HOSTS` | Comma-separated hostnames or IP literals that the control plane may contact even though they resolve to a private or loopback address (and over plain http): for example a self-hosted Daytona on your network. Nothing else on a private range is reachable. See [Security](/security). |
+| `TURNTABLE_DROP_PRIVILEGES` | `<uid>:<gid>`, never root. When the server starts as root, it chowns the data directory to this user and drops to it before opening anything. The image sets `65532:65532`. Ignored when not root. See [Quickstart](/quickstart). |
+| `TURNTABLE_ALLOW_ROOT` | Set to `1` to let the server keep running as root. Without it, a root server with no `TURNTABLE_DROP_PRIVILEGES` refuses to start. |
+| `TURNTABLE_RELEASE_MASTER_KEY_FILE`, `TURNTABLE_RELEASE_DATA_DIR`, `TURNTABLE_RELEASE_GITHUB_TOKEN`, `TURNTABLE_RELEASE_ARTIFACT_DIR`, `TURNTABLE_RELEASE_BUILDER_ID`, `TURNTABLE_RELEASE_POLL_MS` | Configuration of `serve --roles release`, the release lane. Set on that process only; every other role ignores them. See [Release lane](/release-lane). |
+| `TURNTABLE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
+| `TURNTABLE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
 
 ## Endpoints
 
@@ -122,14 +143,14 @@ Responses carry a strict content security policy. Every API call needs a bearer 
 
 ## Per-org quotas
 
-An org can live under limits. Quotas limit tenants, so the **instance operator** sets them, on the host or with an [instance token](/instance-admin) over REST: `longshore quotas set --org <slug> --max-concurrent 3 ... [--data-dir ./data]` (`none` removes a limit; `longshore quotas show --org <slug>` prints them with usage). The only API operation that sets them is `set_quotas`, which takes the instance token and no org token, so an org's own tokens, operators and agents cannot raise their limits. They are read with `get_quotas` (REST and MCP, an org-level token; a project-scoped token is refused), which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
+An org can live under limits. Quotas limit tenants, so the **instance operator** sets them, on the host or with an [instance token](/instance-admin) over REST: `turntable quotas set --org <slug> --max-concurrent 3 ... [--data-dir ./data]` (`none` removes a limit; `turntable quotas show --org <slug>` prints them with usage). The only API operation that sets them is `set_quotas`, which takes the instance token and no org token, so an org's own tokens, operators and agents cannot raise their limits. They are read with `get_quotas` (REST and MCP, an org-level token; a project-scoped token is refused), which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
 
 - `max_concurrent`: attempts running at once. It can only lower this org's cap: the effective cap is the smaller of it and the instance's per-org cap (`--org-cap`), whatever a stored row says. Raise `--org-cap` to raise everyone's.
 - `max_runs_per_hour`: runs that start in a rolling hour. A run that has already started finishes its jobs; new runs wait.
-- `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, from attempt start and finish times (a running attempt counts up to now).
+- `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, counted from the provider's create to its confirmed destroy. It never counts less than what ran. An attempt with no confirmed destroy counts to its finish plus 30 minutes (the provider's TTL), never past now, because a leaked sandbox still bills; one with no recorded create time (older rows, or a crash between create and record) counts from when it started. Those figures are marked `estimated` in the quota status and can over-count. The Usage page counts an unconfirmed attempt to its finish. The cap is checked when a claim is made, so it can overshoot by up to `max_concurrent` times a sandbox's lifetime (the attempts already past the check).
 - `max_log_bytes`: stored job log bytes.
 - `max_stored_bytes`: recorded artifact bytes plus control-plane cache bytes. (The cache also keeps its own per-class shares inside the org's cache quota; this is the org-wide total.)
 
-`longshore quotas get --url <https://host> --org <slug> --token-file <file>` reads them remotely over the API (an org-level reader token), and the Quotas page of the UI shows each limit, its usage and percent, and why new work is held, refreshing as runs change. Both are read-only.
+`turntable quotas get --url <https://host> --org <slug> --token-file <file>` reads them remotely over the API (an org-level reader token), and the Quotas page of the UI shows each limit, its usage and percent, and why new work is held, refreshing as runs change. Both are read-only.
 
-A reached limit holds new claims only: running attempts finish, queued ones wait until the window moves or the limit is raised. Null means no limit. Each metric emits an event when it first crosses 80% and when it is reached, once per window: an `infra.error` event whose `error_class` is `quota_warning` or `quota_reached`, with the metric, used and limit. (The event type list is a database constraint, so a dedicated type needs a table rebuild migration; this reuses the existing type.)
+A reached limit holds new claims only: running attempts finish, queued ones wait until the window moves or the limit is raised. Null means no limit. Each metric emits an event when it first crosses 80% and when it is reached, once per window: a `quota.warning` or `quota.reached` event (org-level, not an `infra.error`), with the metric, used and limit.

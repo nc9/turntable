@@ -4,12 +4,11 @@ import {
   OUTPUT_SLACK_BYTES,
   OUTPUT_TAIL_BYTES,
   SpecError,
-  cutMarker,
   type ExecStatus,
   type Labels,
   type Provider,
   type SandboxSpec,
-} from "@longshore/provider-sdk";
+} from "@turntable/provider-sdk";
 
 export interface ConformanceOptions {
   /** Suite name shown in test output. */
@@ -48,16 +47,29 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
   return out;
 };
 
-/** Reads everything via offsets, in chunks of `chunk` bytes. */
+/**
+ * Reads everything via offsets, in chunks of `chunk` bytes. Cut regions come back as data:
+ * `cuts` holds each one with the position in the returned bytes where it belongs.
+ */
 const readAll = async (p: Provider, id: string, execId: string, chunk = 1 << 20) => {
   const parts: Uint8Array[] = [];
+  const cuts: { atOffset: number; omittedBytes: number }[] = [];
+  let stored = 0;
   let off = 0;
   for (let i = 0; i < 1_000_000; i += 1) {
     const r = await p.exec.logs(id, execId, { fromOffset: off, maxBytes: chunk });
     expect(r.nextOffset).toBeGreaterThanOrEqual(off);
+    if (r.cut) {
+      // A reply is bytes or a cut, never both, and the cut advances the logical offset by
+      // exactly what it omitted.
+      expect(r.bytes.length).toBe(0);
+      expect(r.nextOffset - off).toBe(r.cut.omittedBytes);
+      cuts.push({ atOffset: stored, omittedBytes: r.cut.omittedBytes });
+    }
     parts.push(r.bytes);
+    stored += r.bytes.length;
     off = r.nextOffset;
-    if (r.eof) return { bytes: concat(parts), offset: off };
+    if (r.eof) return { bytes: concat(parts), offset: off, cuts };
   }
   throw new Error("logs did not reach eof");
 };
@@ -302,28 +314,32 @@ export function runConformance(
       expect(got.offset).toBe(enc.encode(expected).length);
     });
 
-    t("output beyond head + tail + slack is cut with a marker, offsets stay logical", async () => {
-      const id = await sandbox(p);
-      const total = cap.head + cap.tail + cap.slack + 1000;
-      const pat = "0123456789abcdef\n";
-      const { execId, status } = await run(p, id, [
-        "sh",
-        "-c",
-        `yes 0123456789abcdef | head -c ${total}`,
-      ]);
-      expect(status.exitCode).toBe(0);
-      const at = (n: number, len: number): Uint8Array =>
-        enc.encode(Array.from({ length: len }, (_, i) => pat[(n + i) % pat.length]).join(""));
-      const got = await readAll(p, id, execId, 256 * 1024);
-      const expected = concat([
-        at(0, cap.head),
-        cutMarker(total - cap.head - cap.tail),
-        at(total - cap.tail, cap.tail),
-      ]);
-      expect(got.bytes.length).toBe(expected.length);
-      expect(Buffer.from(got.bytes).equals(Buffer.from(expected))).toBe(true);
-      expect(got.offset).toBe(total);
-    });
+    t(
+      "output beyond head + tail + slack is cut and reported as data, offsets stay logical",
+      async () => {
+        const id = await sandbox(p);
+        const total = cap.head + cap.tail + cap.slack + 1000;
+        const pat = "0123456789abcdef\n";
+        const { execId, status } = await run(p, id, [
+          "sh",
+          "-c",
+          `yes 0123456789abcdef | head -c ${total}`,
+        ]);
+        expect(status.exitCode).toBe(0);
+        const at = (n: number, len: number): Uint8Array =>
+          enc.encode(Array.from({ length: len }, (_, i) => pat[(n + i) % pat.length]).join(""));
+        const got = await readAll(p, id, execId, 256 * 1024);
+        // The bytes are the head and the tail and nothing else: no marker text is injected.
+        const expected = concat([at(0, cap.head), at(total - cap.tail, cap.tail)]);
+        expect(got.bytes.length).toBe(expected.length);
+        expect(Buffer.from(got.bytes).equals(Buffer.from(expected))).toBe(true);
+        // The cut is a record: where in the bytes, and how much was dropped.
+        expect(got.cuts).toEqual([
+          { atOffset: cap.head, omittedBytes: total - cap.head - cap.tail },
+        ]);
+        expect(got.offset).toBe(total);
+      },
+    );
 
     t("files: binary round trip and byte caps", async () => {
       const id = await sandbox(p);

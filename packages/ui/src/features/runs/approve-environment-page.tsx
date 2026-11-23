@@ -218,7 +218,7 @@ export function ApproveEnvironmentPage() {
           {approvers.data.approvers.length === 0 ? (
             <p className="mt-2 text-sm text-dim">
               No approvers are enrolled. The first one is enrolled from the server with{" "}
-              <code className="font-mono text-xs">longshore approvals bootstrap</code>.
+              <code className="font-mono text-xs">turntable approvals bootstrap</code>.
             </p>
           ) : (
             <ul className="mt-2 divide-y divide-line overflow-hidden rounded-xl border border-line">
@@ -294,7 +294,7 @@ export function ApproveEnvironmentPage() {
             On the machine that holds your key, sign its{" "}
             <code className="font-mono text-xs">canonical</code> text:{" "}
             <code className="font-mono text-xs">
-              longshore approvals sign --key key.pem --statement response.json
+              turntable approvals sign --key key.pem --statement response.json
             </code>
             .
           </li>

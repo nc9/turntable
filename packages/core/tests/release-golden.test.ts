@@ -1,7 +1,7 @@
 // The release golden path, end to end and in process: a tag push becomes a release-class run, its
 // artifacts are recorded, a release is requested, the release lane re-checks the tag and the
 // bytes, the approval quorum is verified from an enrolled key's signature, the lane signs, and
-// the release is published to a fake npm registry and a fake GitHub. `longshore verify` then
+// the release is published to a fake npm registry and a fake GitHub. `turntable verify` then
 // passes on the downloaded asset and fails on a tampered one. One negative per gate follows, and
 // each proves that nothing was signed and nothing reached either fake.
 //
@@ -14,9 +14,9 @@ import { eq } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tarDirectory } from "@longshore/act-runner";
-import type { SafeFetch } from "@longshore/net";
-import { LocalSigner, sha256Hex } from "@longshore/signer";
+import { tarDirectory } from "@turntable/act-runner";
+import type { SafeFetch } from "@turntable/net";
+import { LocalSigner, sha256Hex } from "@turntable/signer";
 import { generateEd25519, signEd25519 } from "../src/approvals/keys";
 import {
   clearFreeze,
@@ -64,7 +64,7 @@ const TAG = "v1.0.0";
 const WF_HASH = "ab".repeat(32);
 const NPM_TOKEN = ["npm", "publish", "token", "9c2e17"].join("_");
 const GH_TOKEN = ["gh", "lane", "write", "token", "4b6d"].join("_");
-const BUILDER = "https://ci.example.test/longshore";
+const BUILDER = "https://ci.example.test/turntable";
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 const tmp = mkdtempSync(join(tmpdir(), "ls-golden-"));
@@ -284,8 +284,8 @@ async function ingestTag(
     { orgId },
     {
       appId: "42",
-      slug: "longshore-test",
-      name: "Longshore",
+      slug: "turntable-test",
+      name: "Turntable",
       ownerLogin: "acme",
       htmlUrl: "https://github.com/apps/x",
       clientId: "Iv1.abc",
@@ -672,7 +672,7 @@ afterEach(() => {
   w?.attest.close();
 });
 
-/** Runs `longshore verify` and returns its exit code with what it printed. */
+/** Runs `turntable verify` and returns its exit code with what it printed. */
 async function verify(
   artifact: string,
   provenance: string,
@@ -918,8 +918,8 @@ describe("the same path, from a signed tag push webhook through the poller", () 
       { orgId: org.id },
       {
         appId: "42",
-        slug: "longshore-test",
-        name: "Longshore",
+        slug: "turntable-test",
+        name: "Turntable",
         ownerLogin: "acme",
         htmlUrl: "https://github.com/apps/x",
         clientId: "Iv1.abc",

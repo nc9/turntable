@@ -2,9 +2,9 @@
 // and gives the job that instead of the worker's own proxy. The worker holds the request key
 // only. What comes back is an endpoint and an attempt-scoped proxy credential, never a publish
 // credential.
-import { controlPost, type ControlTarget } from "@longshore/net";
-import type { AttemptCredential } from "@longshore/proxy";
-import type { ProxyEndpoint } from "@longshore/provider-sdk";
+import { controlPost, type ControlTarget } from "@turntable/net";
+import type { AttemptCredential } from "@turntable/proxy";
+import type { ProxyEndpoint } from "@turntable/provider-sdk";
 import { parseTrust } from "../db/repos/approve";
 import type { ProxyAccess } from "../proxy";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "../scheduler/types";
@@ -71,6 +71,7 @@ export function createChannelClient(o: {
           // The job holds publish rights through this proxy: it must run with no other route.
           vaultRules: true,
           setGithubToken: () => {},
+          setOidcMinter: () => {},
         },
       };
     },

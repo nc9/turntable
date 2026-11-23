@@ -9,7 +9,7 @@
 // docs/providers.mdx states what such a process may see.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { ISOLATION_ORDER, type IsolationClass, type ProviderInfo } from "@longshore/provider-sdk";
+import { ISOLATION_ORDER, type IsolationClass, type ProviderInfo } from "@turntable/provider-sdk";
 
 /** What a built-in may claim at most. A declaration above the ceiling is a bug or a lie. */
 export type BuiltinCeiling = {
@@ -69,17 +69,17 @@ export function checkProviderInfo(
 
 export type PluginPin = { name: string; path: string; sha256: string };
 
-/** Parses `LONGSHORE_PROVIDER_PLUGINS`: a JSON array of `{name, path, sha256}`. */
+/** Parses `TURNTABLE_PROVIDER_PLUGINS`: a JSON array of `{name, path, sha256}`. */
 export function parsePluginPins(text: string | undefined): PluginPin[] {
   if (!text?.trim()) return [];
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
-    throw new ProviderTrustError("LONGSHORE_PROVIDER_PLUGINS is not valid JSON");
+    throw new ProviderTrustError("TURNTABLE_PROVIDER_PLUGINS is not valid JSON");
   }
   if (!Array.isArray(raw))
-    throw new ProviderTrustError("LONGSHORE_PROVIDER_PLUGINS must be an array");
+    throw new ProviderTrustError("TURNTABLE_PROVIDER_PLUGINS must be an array");
   return raw.map((e, i) => {
     const o = e as Record<string, unknown>;
     if (
@@ -90,7 +90,7 @@ export function parsePluginPins(text: string | undefined): PluginPin[] {
       !/^[0-9a-f]{64}$/.test(o.sha256)
     )
       throw new ProviderTrustError(
-        `LONGSHORE_PROVIDER_PLUGINS[${i}] needs a lower-case name, a path and a 64-hex sha256`,
+        `TURNTABLE_PROVIDER_PLUGINS[${i}] needs a lower-case name, a path and a 64-hex sha256`,
       );
     return { name: o.name, path: o.path, sha256: o.sha256 };
   });
@@ -112,7 +112,7 @@ export function verifyExternalPlugin(
   const pin = o.pins.find((p) => p.name === name);
   if (!pin)
     throw new ProviderTrustError(
-      `unknown provider ${name}: an external plugin runs only when it is named and pinned by sha256 in LONGSHORE_PROVIDER_PLUGINS`,
+      `unknown provider ${name}: an external plugin runs only when it is named and pinned by sha256 in TURNTABLE_PROVIDER_PLUGINS`,
     );
   let bytes: Uint8Array;
   try {

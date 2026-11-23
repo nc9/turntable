@@ -63,6 +63,8 @@ export type Run = {
   finishedAt: number | null;
 };
 
+export type JobShard = { job: string; index: number; total: number; steps: string[] };
+
 export type Job = {
   id: string;
   orgId: string;
@@ -76,6 +78,12 @@ export type Job = {
   /** Matrix leg values, or null for a plain job. Legs of one matrix share `matrixGroup`. */
   matrix: Record<string, string> | null;
   matrixGroup: string | null;
+  /**
+   * Set when this row is one shard of a job the operator splits across sandboxes. `job` is the
+   * workflow job id the shards share (they also share a name and one forge check), `index` counts
+   * from 0, `steps` are the steps only this shard runs. Null for a job that is not split.
+   */
+  shard: JobShard | null;
   /**
    * Why the job is waiting when `state` is awaiting_approval: an untrusted-author gate
    * (an operator approves) or a release/environment gate (a human approves with a security key).
@@ -102,6 +110,40 @@ export type JobAttempt = {
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
+  /** When the provider's create returned (billing starts). Null if no sandbox was made. */
+  sandboxCreatedAt: number | null;
+  /** When the provider confirmed the destroy. Null if never confirmed: the time is an estimate. */
+  sandboxDestroyedAt: number | null;
+  /** Exact sandbox time, create to confirmed destroy. Null until both are known. */
+  sandboxSeconds: number | null;
+};
+
+/** Sandbox time for one UTC day, from the `sandbox_usage` op. */
+export type SandboxUsageDay = {
+  day: string;
+  seconds: number;
+  minutes: number;
+  attempts: number;
+  /** Attempts of the day with no confirmed destroy, whose time is an estimate. */
+  estimatedAttempts: number;
+};
+
+/** One project's sandbox time, from `sandbox_usage` with `group_by=project`. */
+export type SandboxUsageProject = {
+  id: string;
+  slug: string;
+  name: string;
+  days: SandboxUsageDay[];
+  totalMinutes: number;
+};
+
+export type SandboxUsage = {
+  days: SandboxUsageDay[];
+  totalMinutes: number;
+  /** Per project, for the projects with usage in the window. Empty when the server gives none. */
+  projects: SandboxUsageProject[];
+  /** The org's sandbox-minutes-per-day quota, or null when none is set (or unreadable). */
+  limitMinutesPerDay: number | null;
 };
 
 /**
@@ -129,6 +171,19 @@ export type CutRecord = {
   atOffset: number;
   omittedBytes: number;
   reason: string;
+};
+
+/**
+ * A system notice the control plane put on an attempt's log (the cache dropped entries, a hold
+ * reason). Recorded apart from the log text, so a job's output cannot forge one. `atOffset` is
+ * where the stored log ended when it was added.
+ */
+export type LogNotice = {
+  attemptId: string;
+  kind: "notice";
+  atOffset: number;
+  source: string;
+  text: string;
 };
 
 /** The caller, from `whoami`. */
@@ -416,11 +471,7 @@ export type QuotaLimits = {
 };
 
 export type QuotaMetric =
-  | "concurrent"
-  | "runs_per_hour"
-  | "sandbox_minutes"
-  | "log_bytes"
-  | "stored_bytes";
+  "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
 
 export type QuotaUsage = {
   metric: QuotaMetric;

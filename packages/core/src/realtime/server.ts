@@ -1,4 +1,4 @@
-/* oxlint-disable unicorn/no-useless-spread -- sockets and subscriptions are removed while iterating, so copy first */
+// sockets and subscriptions are removed while iterating, so copy first
 // Realtime WebSocket server (#30). It adds no access rules of its own: authentication and scope
 // come from the operations dispatcher, and every piece of data is read by dispatching the same
 // read operation a REST caller would use (events, get_run, job_log, job_steps, job_cuts), as the
@@ -12,11 +12,13 @@ import {
   CLOSE,
   MAX_MESSAGE_BYTES,
   REALTIME_PATH,
+  LEGACY_SUBPROTOCOL,
   SUBPROTOCOL,
   type ClientMessage,
   type ServerMessage,
   type Topic,
   type WireCut,
+  type WireNotice,
   type WireEvent,
   type WireStep,
   parseClientMessage,
@@ -110,13 +112,18 @@ function originAllowed(req: Request, allow: readonly string[]): boolean {
   }
 }
 
-/** Reads the offered subprotocols: returns the bearer token if `longshore.v1` is offered too. */
-function tokenFromProtocols(header: string | null): string | null {
+/**
+ * Reads the offered subprotocols: returns the bearer token and the protocol to echo, if
+ * `turntable.v1` (or the pre-rename name, so an older client or cached UI still connects) is
+ * offered too.
+ */
+function tokenFromProtocols(header: string | null): { token: string; protocol: string } | null {
   if (!header) return null;
   const offered = header.split(",").map((p) => p.trim());
-  if (!offered.includes(SUBPROTOCOL)) return null;
+  const protocol = [SUBPROTOCOL, LEGACY_SUBPROTOCOL].find((p) => offered.includes(p));
+  if (protocol === undefined) return null;
   const bearer = offered.find((p) => p.startsWith(BEARER_PREFIX));
-  return bearer ? bearer.slice(BEARER_PREFIX.length) : null;
+  return bearer ? { token: bearer.slice(BEARER_PREFIX.length), protocol } : null;
 }
 
 export function createRealtime(options: RealtimeOptions) {
@@ -182,7 +189,7 @@ export function createRealtime(options: RealtimeOptions) {
       send(ws, { type: "error", ...(id ? { id } : {}), code: err.code, message: err.message });
       return;
     }
-    console.error("longshore: realtime error", err);
+    console.error("turntable: realtime error", err);
     send(ws, { type: "error", ...(id ? { id } : {}), code: "internal", message: "internal error" });
   }
 
@@ -248,15 +255,29 @@ export function createRealtime(options: RealtimeOptions) {
         if (sub.done || ws.data.closed) return;
         const [steps, cuts] = await Promise.all([
           op<{ steps: WireStep[] }>(ws, "job_steps", { job_id: sub.jobId, attempt: sub.attemptNo }),
-          op<{ cuts: WireCut[] }>(ws, "job_cuts", { job_id: sub.jobId, attempt: sub.attemptNo }),
+          op<{ cuts: WireCut[]; notices: WireNotice[] }>(ws, "job_cuts", {
+            job_id: sub.jobId,
+            attempt: sub.attemptNo,
+          }),
         ]);
-        const sig = JSON.stringify([steps.steps, cuts.cuts]);
+        const sig = JSON.stringify([steps.steps, cuts.cuts, cuts.notices]);
         if (sig !== sub.sig) {
           sub.sig = sig;
           if (sub.topic.kind === "attempt-steps") {
-            if (!send(ws, { type: "steps", id: sub.id, steps: steps.steps, cuts: cuts.cuts }))
+            if (
+              !send(ws, {
+                type: "steps",
+                id: sub.id,
+                steps: steps.steps,
+                cuts: cuts.cuts,
+                notices: cuts.notices,
+              })
+            )
               return;
-          } else if (!send(ws, { type: "cuts", id: sub.id, cuts: cuts.cuts })) return;
+          } else if (
+            !send(ws, { type: "cuts", id: sub.id, cuts: cuts.cuts, notices: cuts.notices })
+          )
+            return;
         }
       } while (sub.stepsDirty);
     } catch (err) {
@@ -541,19 +562,20 @@ export function createRealtime(options: RealtimeOptions) {
     // A token in the URL would end up in logs and history. Refuse it outright.
     if (url.search !== "") return refuse(400, "no query string: send the token as a subprotocol");
     if (!originAllowed(req, allowed)) return refuse(403, "origin not allowed");
-    const token = tokenFromProtocols(req.headers.get("sec-websocket-protocol"));
-    if (token === null) {
-      return refuse(401, "offer subprotocols longshore.v1 and bearer.<token>", {
-        "www-authenticate": 'Bearer realm="longshore"',
+    const offer = tokenFromProtocols(req.headers.get("sec-websocket-protocol"));
+    if (offer === null) {
+      return refuse(401, "offer subprotocols turntable.v1 and bearer.<token>", {
+        "www-authenticate": 'Bearer realm="turntable"',
       });
     }
+    const { token, protocol } = offer;
     let orgId: string;
     try {
       const principal = await authenticate(env, { kind: "bearer", token });
       orgId = principal.orgId;
     } catch {
       return refuse(401, "invalid, expired or revoked token", {
-        "www-authenticate": 'Bearer realm="longshore"',
+        "www-authenticate": 'Bearer realm="turntable"',
       });
     }
     // Check and reserve with no await in between, so concurrent upgrades cannot all pass.
@@ -565,7 +587,7 @@ export function createRealtime(options: RealtimeOptions) {
     try {
       ok = server.upgrade(req, {
         // Echo only the protocol name, never the token.
-        headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL },
+        headers: { "Sec-WebSocket-Protocol": protocol },
         data: {
           token,
           orgId,

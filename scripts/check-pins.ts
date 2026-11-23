@@ -1,4 +1,4 @@
-// Supply-chain pin check (#51): everything Longshore fetches at build or run time is pinned by an
+// Supply-chain pin check (#51): everything Turntable fetches at build or run time is pinned by an
 // immutable reference. A GitHub Action is pinned by commit SHA, a container image by sha256
 // digest, and a binary downloaded in a Dockerfile or in code by a checksum. A tag or a branch can
 // be moved by whoever controls the upstream; a digest cannot.

@@ -3,7 +3,7 @@
 // nor the key.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { KeyVault } from "@longshore/signer";
+import type { KeyVault } from "@turntable/signer";
 import { open, seal } from "../secrets/crypto";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;

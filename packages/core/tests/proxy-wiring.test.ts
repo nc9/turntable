@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { type Db } from "../src/db";
 import { getAttempt, getJob, getRun, listAudit, setProxyRule } from "../src/db/repos";
 import * as s from "../src/db/schema";
-import { SecretRegistry } from "@longshore/redact";
+import { SecretRegistry } from "@turntable/redact";
 import { withEgressPolicy } from "../src/scheduler/egress";
 import { setPassthroughHost } from "../src/db/repos";
 import { defaultBindHost, SecretsProxy, withSecretsProxy } from "../src/proxy";
@@ -199,7 +199,7 @@ describe("a request through the proxy", () => {
         const text = Buffer.concat(chunks).toString();
         status = Number(/^HTTP\/1\.1 (\d+)/.exec(text)?.[1]);
         body = text.split("\r\n\r\n")[1] ?? "";
-        const { redactString } = await import("@longshore/redact");
+        const { redactString } = await import("@turntable/redact");
         redacted = redactString(`log: ${VALUE}`, c.redact!);
         return done;
       },
@@ -356,7 +356,7 @@ describe("passthrough and secret-bearing egress", () => {
 
 describe("a public TLS listener for sandboxes in another provider's network", () => {
   test("the endpoint handed to a provider carries its public name, port and addresses", async () => {
-    const ca = new (await import("@longshore/proxy")).JobCa({
+    const ca = new (await import("@turntable/proxy")).JobCa({
       label: "t",
       now: Date.now(),
       ttlMs: 60_000,

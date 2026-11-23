@@ -1,4 +1,4 @@
-// `longshore token create`: mints an agent token from the command line. Local access to the data
+// `turntable token create`: mints an agent token from the command line. Local access to the data
 // directory is the trust root, so this writes through the repos directly (no network, no
 // principal). The secret goes to stdout once; everything else goes to stderr.
 import type { Db } from "../db";

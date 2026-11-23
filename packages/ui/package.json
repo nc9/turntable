@@ -1,11 +1,11 @@
 {
-  "name": "@longshore/ui",
+  "name": "@turntable/ui",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsgo --noEmit -p tsconfig.json",
-    "dev": "LONGSHORE_UI_BACKEND=fixture bun run src/dev.ts",
+    "typecheck": "bun check",
+    "dev": "TURNTABLE_UI_BACKEND=fixture bun run src/dev.ts",
     "build": "bun run scripts/build-bundle.ts"
   },
   "dependencies": {
@@ -24,8 +24,8 @@
     "tailwind-merge": "3.7.0"
   },
   "devDependencies": {
-    "@longshore/core": "workspace:*",
-    "@longshore/provider-sdk": "workspace:*",
+    "@turntable/core": "workspace:*",
+    "@turntable/provider-sdk": "workspace:*",
     "@tailwindcss/postcss": "4.3.5",
     "@types/bun": "1.4.4",
     "@types/react": "19.3.0",

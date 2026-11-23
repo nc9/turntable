@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { compileRule, type Inject, RuleError } from "@longshore/proxy";
+import { compileRule, type Inject, RuleError } from "@turntable/proxy";
 import {
   setPassthroughHost,
   deletePassthroughHost,

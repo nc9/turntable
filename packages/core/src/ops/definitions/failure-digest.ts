@@ -1,4 +1,4 @@
-import { redactString } from "@longshore/redact";
+import { redactString } from "@turntable/redact";
 import { z } from "zod";
 import {
   getJob,

@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Gate } from "./gate";
+import { BUSY_TIMEOUT_MS, enableWal } from "./sqlite-wal";
 import { migrateLegacyDbFiles } from "./legacy-names";
 import { applyMigrations } from "./migrate";
 import { migrations } from "./migrations.generated";
@@ -60,8 +61,8 @@ const ended = () => new Error("transaction handle used after it ended");
 
 /**
  * Opens the database. A `postgres://` URL (or, when set, the process's `--database-url` /
- * LONGSHORE_DATABASE_URL) selects Postgres; anything else is a SQLite file path or `:memory:`.
- * The test harness can send `:memory:` to Postgres too (LONGSHORE_TEST_DB), so the same suites
+ * TURNTABLE_DATABASE_URL) selects Postgres; anything else is a SQLite file path or `:memory:`.
+ * The test harness can send `:memory:` to Postgres too (TURNTABLE_TEST_DB), so the same suites
  * run on both. The dialect of the schema modules was fixed at import (dialect.ts), so a URL is
  * only valid in a process that started as Postgres.
  */
@@ -119,7 +120,7 @@ export function openDatabase(path: string): Db {
         t === "pglite"
           ? {
               pglite: true,
-              ...(process.env.LONGSHORE_TEST_PGLITE_ISOLATED === "1"
+              ...(process.env.TURNTABLE_TEST_PGLITE_ISOLATED === "1"
                 ? { isolated: true as const }
                 : {}),
             }
@@ -134,9 +135,12 @@ export function openDatabase(path: string): Db {
   migrateLegacyDbFiles(path);
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new Database(path, { create: true, strict: true });
-  sqlite.run("PRAGMA journal_mode = WAL");
+  // First, before anything that takes a lock, so every later statement waits for another
+  // connection's lock instead of failing at once (the CLI runs next to a server, or next to a
+  // test's own handle).
+  sqlite.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  enableWal(sqlite);
   sqlite.run("PRAGMA foreign_keys = ON");
-  sqlite.run("PRAGMA busy_timeout = 5000");
   applyMigrations(sqlite, migrations);
   const orm = drizzle(sqlite, { schema });
   const gate = new Gate();
@@ -214,7 +218,7 @@ export function openDatabase(path: string): Db {
             try {
               hook();
             } catch (err) {
-              console.error("longshore: afterCommit hook failed", err);
+              console.error("turntable: afterCommit hook failed", err);
             }
           }
           return out;

@@ -4,8 +4,8 @@
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
-import { asBigint, greatestOf, leastOf } from "../sql-dialect";
 import { appendEvent } from "./events";
+import { DEFAULT_SANDBOX_GRACE_MS, sandboxSeconds } from "./usage";
 
 export type OrgQuotas = {
   maxConcurrent: number | null;
@@ -84,13 +84,21 @@ export type QuotaUsage = {
   concurrent: number;
   /** Distinct runs with an attempt started in the last hour. */
   runsLastHour: number;
-  /** Sandbox time in the last 24 hours, in whole minutes, running attempts counted to now. */
+  /** Sandbox time in the last 24 hours, in whole minutes: create to confirmed destroy, a live or unconfirmed sandbox counted to the attempt's end or now. */
   sandboxMinutesLastDay: number;
+  /** Attempts in that figure with no confirmed destroy or no recorded create time (an estimate). */
+  sandboxEstimated: number;
   logBytes: number;
   storedBytes: number;
 };
 
 export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
+  // The same exact figure the Usage page shows: provider create to confirmed destroy.
+  const sandbox = await sandboxSeconds(
+    db,
+    { orgId },
+    { from: now - DAY_MS, to: now, now, graceMs: DEFAULT_SANDBOX_GRACE_MS },
+  );
   return db.run(async (h) => {
     const [conc] = await h.orm
       .select({ n: sql<number>`count(*)`.mapWith(Number) })
@@ -107,41 +115,34 @@ export async function quotaUsage(db: Db, orgId: string, now: number): Promise<Qu
           gte(s.jobAttempts.startedAt, now - HOUR_MS),
         ),
       );
-    // Overlap of [started, finished or now] with the last 24 hours.
-    const dayStart = now - DAY_MS;
-    const [ms] = await h.orm
-      .select({
-        n: sql<number>`coalesce(sum(
-          ${leastOf(sql`coalesce(${s.jobAttempts.finishedAt}, ${asBigint(now)})`, asBigint(now))} -
-          ${greatestOf(sql`${s.jobAttempts.startedAt}`, asBigint(dayStart))}
-        ), 0)`.mapWith(Number),
-      })
-      .from(s.jobAttempts)
-      .where(
-        and(
-          eq(s.jobAttempts.orgId, orgId),
-          isNotNull(s.jobAttempts.startedAt),
-          sql`coalesce(${s.jobAttempts.finishedAt}, ${asBigint(now)}) > ${asBigint(dayStart)}`,
-        ),
-      );
     const [logs] = await h.orm
       .select({ n: sql<number>`coalesce(sum(length(${s.logChunks.bytes})), 0)`.mapWith(Number) })
       .from(s.logChunks)
       .where(eq(s.logChunks.orgId, orgId));
+    // A size below zero (a row that predates the check in recordArtifact) never lowers the sum.
     const [arts] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.artifacts.size}), 0)`.mapWith(Number) })
+      .select({
+        n: sql<number>`coalesce(sum(case when ${s.artifacts.size} > 0 then ${s.artifacts.size} else 0 end), 0)`.mapWith(
+          Number,
+        ),
+      })
       .from(s.artifacts)
       .where(eq(s.artifacts.orgId, orgId));
     // The control-plane cache counts too: complete entries and live reservations (the cache has
     // its own per-class shares inside this org; this is the org-wide figure).
     const [cache] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)`.mapWith(Number) })
+      .select({
+        n: sql<number>`coalesce(sum(case when ${s.cacheEntries.size} > 0 then ${s.cacheEntries.size} else 0 end), 0)`.mapWith(
+          Number,
+        ),
+      })
       .from(s.cacheEntries)
       .where(eq(s.cacheEntries.orgId, orgId));
     return {
       concurrent: Number(conc?.n ?? 0),
       runsLastHour: Number(runs?.n ?? 0),
-      sandboxMinutesLastDay: Math.floor(Number(ms?.n ?? 0) / 60_000),
+      sandboxMinutesLastDay: Math.floor(sandbox.seconds / 60),
+      sandboxEstimated: sandbox.estimated,
       logBytes: Number(logs?.n ?? 0),
       storedBytes: Number(arts?.n ?? 0) + Number(cache?.n ?? 0),
     };
@@ -158,6 +159,12 @@ export type QuotaStatus = {
   percent: number | null;
   /** Set when a new claim is held because of this limit. */
   held: string | null;
+  /**
+   * The figure includes an estimate (sandbox minutes only): an attempt with no confirmed destroy
+   * counts to its finish plus the provider TTL, and one with no recorded create time counts from
+   * its start. It can over-count; it never under-counts.
+   */
+  estimated: boolean;
 };
 
 /** Each limit against its usage, with the reason new claims are held when one is reached. */
@@ -167,9 +174,11 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
     used: number,
     limit: number | null,
     what: string,
+    estimated = false,
   ): QuotaStatus => ({
     metric,
     used,
+    estimated,
     limit,
     percent: limit === null || limit === 0 ? null : Math.floor((used / limit) * 100),
     held:
@@ -185,6 +194,7 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
       u.sandboxMinutesLastDay,
       q.maxSandboxMinutesPerDay,
       "sandbox minutes in the last 24 hours",
+      u.sandboxEstimated > 0,
     ),
     mk("log_bytes", u.logBytes, q.maxLogBytes, "stored log bytes"),
     mk("stored_bytes", u.storedBytes, q.maxStoredBytes, "stored artifact and cache bytes"),
@@ -194,8 +204,7 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
 /**
  * Emits one event when a limit first crosses 80% and one when it is reached, per window (hourly
  * and daily metrics re-arm each window; byte gauges re-arm when they fall back under 80%). The
- * event is an `infra.error` with `error_class` `quota_warning` or `quota_reached`: the event type
- * list is a CHECK constraint, and changing it means a table rebuild migration.
+ * event is `quota.warning` or `quota.reached`, scoped to the org (no project, no run).
  */
 export async function emitQuotaNotices(
   db: Db,
@@ -238,9 +247,8 @@ export async function emitQuotaNotices(
           db,
           { orgId },
           {
-            type: "infra.error",
+            type: level === "warning" ? "quota.warning" : "quota.reached",
             payload: {
-              error_class: `quota_${level === "warning" ? "warning" : "reached"}`,
               metric: st.metric,
               used: st.used,
               limit: st.limit,

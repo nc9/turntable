@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,7 +64,13 @@ async function usedMinutes(t: Tenant, minutes: number, agoMs = 0) {
   await db.run(async (h) => {
     await h.orm
       .update(s.jobAttempts)
-      .set({ state: "success", startedAt: NOW - agoMs - minutes * MIN, finishedAt: NOW - agoMs })
+      .set({
+        state: "success",
+        startedAt: NOW - agoMs - minutes * MIN,
+        finishedAt: NOW - agoMs,
+        sandboxCreatedAt: NOW - agoMs - minutes * MIN,
+        sandboxDestroyedAt: NOW - agoMs,
+      })
       .where(eq(s.jobAttempts.id, x.attempt.id));
     await h.orm.update(s.jobs).set({ state: "success" }).where(eq(s.jobs.id, x.job.id));
   });
@@ -127,10 +134,128 @@ describe("quota enforcement at claim", () => {
     await db.run(async (h) => {
       await h.orm
         .update(s.jobAttempts)
-        .set({ state: "running", startedAt: NOW - 45 * MIN })
+        .set({ state: "running", startedAt: NOW - 45 * MIN, sandboxCreatedAt: NOW - 45 * MIN })
         .where(eq(s.jobAttempts.id, x.attempt.id));
     });
     expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(45);
+  });
+
+  test("sandbox minutes are create to confirmed destroy: waiting for capacity does not count", async () => {
+    const x = await queued(a, "wait");
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.jobAttempts)
+        .set({
+          state: "success",
+          startedAt: NOW - 90 * MIN, // 60 minutes waiting for the provider
+          finishedAt: NOW - 20 * MIN,
+          sandboxCreatedAt: NOW - 30 * MIN,
+          sandboxDestroyedAt: NOW - 20 * MIN,
+        })
+        .where(eq(s.jobAttempts.id, x.attempt.id));
+    });
+    expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(10);
+  });
+
+  describe("sandbox minutes are never under-counted", () => {
+    const setup = async (label: string, patch: Partial<typeof s.jobAttempts.$inferInsert>) => {
+      const x = await queued(a, label);
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.jobAttempts)
+          .set({ state: "success", ...patch })
+          .where(eq(s.jobAttempts.id, x.attempt.id));
+      });
+    };
+    const used = async () => {
+      const u = await quotaUsage(db, a.orgId, NOW);
+      return [u.sandboxMinutesLastDay, u.sandboxEstimated] as const;
+    };
+
+    test("no confirmed destroy: counted to the finish plus the provider TTL, and marked estimated", async () => {
+      await setup("unconfirmed", {
+        startedAt: NOW - 70 * MIN,
+        finishedAt: NOW - 50 * MIN,
+        sandboxCreatedAt: NOW - 60 * MIN,
+      });
+      // 60 minutes ago to (50 minutes ago + 30) = 20 minutes ago: 40 minutes.
+      expect(await used()).toEqual([40, 1]);
+    });
+
+    test("the TTL grace never runs past now", async () => {
+      await setup("recent", {
+        startedAt: NOW - 20 * MIN,
+        finishedAt: NOW - 5 * MIN,
+        sandboxCreatedAt: NOW - 15 * MIN,
+      });
+      expect(await used()).toEqual([15, 1]);
+    });
+
+    test("a confirmed destroy is exact and not estimated", async () => {
+      await setup("confirmed", {
+        startedAt: NOW - 70 * MIN,
+        finishedAt: NOW - 50 * MIN,
+        sandboxCreatedAt: NOW - 60 * MIN,
+        sandboxDestroyedAt: NOW - 50 * MIN,
+      });
+      expect(await used()).toEqual([10, 0]);
+    });
+
+    test("no recorded create time: counted from when the attempt started, marked estimated", async () => {
+      // A row from before the column existed, or a crash between create and record.
+      await setup("legacy", {
+        startedAt: NOW - 50 * MIN,
+        finishedAt: NOW - 40 * MIN,
+        sandboxCreatedAt: null,
+        sandboxDestroyedAt: null,
+      });
+      expect(await used()).toEqual([40, 1]);
+      // Still running with no create time: to now.
+      const x = await queued(a, "live-legacy");
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.jobAttempts)
+          .set({ state: "running", startedAt: NOW - 12 * MIN })
+          .where(eq(s.jobAttempts.id, x.attempt.id));
+      });
+      expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(52);
+    });
+
+    test("an attempt that never started and has no sandbox counts nothing", async () => {
+      await queued(a, "never");
+      expect(await used()).toEqual([0, 0]);
+    });
+
+    test("a sandbox straddling the 24 hour boundary counts only the part inside the window", async () => {
+      await setup("straddle", {
+        startedAt: NOW - 25 * 60 * MIN,
+        finishedAt: NOW - 23 * 60 * MIN,
+        sandboxCreatedAt: NOW - 25 * 60 * MIN,
+        sandboxDestroyedAt: NOW - 23 * 60 * MIN,
+      });
+      expect(await used()).toEqual([60, 0]);
+    });
+
+    test("an unconfirmed attempt whose grace reaches into the window still counts", async () => {
+      // Finished 24h10m ago: its sandbox may have lived to 23h40m ago, 20 minutes inside.
+      await setup("grace-edge", {
+        startedAt: NOW - (24 * 60 + 40) * MIN,
+        finishedAt: NOW - (24 * 60 + 10) * MIN,
+        sandboxCreatedAt: NOW - (24 * 60 + 30) * MIN,
+      });
+      expect(await used()).toEqual([20, 1]);
+    });
+
+    test("the status says the figure is an estimate only when it includes one", async () => {
+      const st = async () => (await statuses(a)).find((x) => x.metric === "sandbox_minutes")!;
+      expect((await st()).estimated).toBe(false);
+      await setup("est", {
+        startedAt: NOW - 20 * MIN,
+        finishedAt: NOW - 10 * MIN,
+        sandboxCreatedAt: NOW - 20 * MIN,
+      });
+      expect((await st()).estimated).toBe(true);
+    });
   });
 
   test("runs per hour: new runs wait, a run that already started finishes its jobs", async () => {
@@ -203,35 +328,122 @@ describe("quota enforcement at claim", () => {
   });
 });
 
+describe("artifact sizes cannot be used to dodge the stored-bytes quota", () => {
+  const rec = async (name: string, size: number, bytes?: Uint8Array) => {
+    const y = await queued(a, name);
+    return recordArtifact(db, a.scope, {
+      runId: y.run.id,
+      attemptId: y.attempt.id,
+      name,
+      sha256: bytes ? createHash("sha256").update(bytes).digest("hex") : "a".repeat(64),
+      size,
+      ...(bytes ? { bytes } : {}),
+    });
+  };
+  const stored = async () => (await quotaUsage(db, a.orgId, NOW)).storedBytes;
+
+  test("a negative, NaN, infinite, fractional or unsafe size is refused, and nothing is recorded", async () => {
+    for (const size of [-1, -1_000_000, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 60]) {
+      await expect(rec(`bad-${String(size)}`, size)).rejects.toThrow("non-negative integer");
+    }
+    expect(await stored()).toBe(0);
+  });
+
+  test("with the bytes in hand the size must be exactly their length", async () => {
+    const bytes = new Uint8Array(10).fill(7);
+    await expect(rec("short", 3, bytes)).rejects.toThrow("size does not match");
+    await expect(rec("long", 11, bytes)).rejects.toThrow("size does not match");
+    expect(await stored()).toBe(0);
+    const ok = await rec("exact", 10, bytes);
+    expect(ok.size).toBe(10);
+    expect(await stored()).toBe(10);
+  });
+
+  test("zero and a reported size without bytes are fine", async () => {
+    expect((await rec("empty", 0)).size).toBe(0);
+    expect((await rec("reported", 40)).size).toBe(40);
+    expect(await stored()).toBe(40);
+  });
+
+  test("the sum itself ignores a negative size already in the table", async () => {
+    await rec("honest", 40);
+    // A row from before the check (or written around it): it must not subtract from the total.
+    await rec("sneaky", 5);
+    await db.run(async (h) => {
+      await h.orm
+        .update(s.artifacts)
+        .set({ size: -1_000_000 })
+        .where(eq(s.artifacts.name, "sneaky"));
+      await h.orm.insert(s.cacheEntries).values({
+        orgId: a.orgId,
+        projectId: a.projectId,
+        klass: "protected",
+        refScope: "-",
+        key: "neg",
+        version: "v",
+        size: -500,
+        complete: 1,
+        createdAt: NOW,
+        usedAt: NOW,
+      });
+    });
+    expect(await stored()).toBe(40);
+  });
+});
+
 describe("notices", () => {
-  test("80% and 100% each fire once per window, as events, and re-arm for the next window", async () => {
+  const quotaEvents = async (orgId: string) =>
+    (await listEvents(db, { orgId }, { after: 0, limit: 100 })).filter((e) =>
+      e.type.startsWith("quota."),
+    );
+
+  test("80% and 100% each fire once per window, as quota.* events, and re-arm for the next window", async () => {
     await set(a, { maxSandboxMinutesPerDay: 100 });
     await usedMinutes(a, 85);
     await queued(a, "q");
     await claim();
     await claim();
-    let ev = (await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 })).filter((e) =>
-      e.payload.includes("quota_"),
-    );
-    expect(ev.map((e) => JSON.parse(e.payload).error_class)).toEqual(["quota_warning"]);
+    let ev = await quotaEvents(a.orgId);
+    expect(ev.map((e) => e.type)).toEqual(["quota.warning"]);
     await usedMinutes(a, 20, 10 * MIN);
     await queued(a, "q2");
     await claim();
     await claim();
-    ev = (await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 })).filter((e) =>
-      e.payload.includes("quota_"),
-    );
-    expect(ev.map((e) => JSON.parse(e.payload).error_class)).toEqual([
-      "quota_warning",
-      "quota_reached",
-    ]);
+    ev = await quotaEvents(a.orgId);
+    expect(ev.map((e) => e.type)).toEqual(["quota.warning", "quota.reached"]);
     expect(JSON.parse(ev[1]!.payload)).toMatchObject({ metric: "sandbox_minutes", limit: 100 });
-    // Only a's events, never b's.
+    // org-level: no project, no run; and not an infra fault
+    expect(ev.every((e) => e.projectId === null && e.runId === null)).toBe(true);
     expect(
-      (await listEvents(db, { orgId: b.orgId }, { after: 0, limit: 100 })).filter((e) =>
-        e.payload.includes("quota_"),
+      (await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 })).filter(
+        (e) => e.type === "infra.error" && e.payload.includes("quota"),
       ),
     ).toEqual([]);
+    // Only a's events, never b's: not through the repo, and not through the events operation.
+    expect(await quotaEvents(b.orgId)).toEqual([]);
+    const tokenB = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
+    const seenByB = await dispatch({ registry, db }, { kind: "bearer", token: tokenB }, "events", {
+      types: ["quota.warning", "quota.reached"],
+    });
+    expect(seenByB.ok && (seenByB.output as { events: unknown[] }).events).toEqual([]);
+    const tokenA = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const seenByA = await dispatch({ registry, db }, { kind: "bearer", token: tokenA }, "events", {
+      types: ["quota.reached"],
+    });
+    expect(
+      seenByA.ok && (seenByA.output as { events: { type: string }[] }).events.map((e) => e.type),
+    ).toEqual(["quota.reached"]);
+    // a project-scoped token of the same org sees org-level notices no more than another org does
+    const tokenAp = (await mintToken(db, a.scope, "reader")).secret;
+    const seenByAp = await dispatch(
+      { registry, db },
+      { kind: "bearer", token: tokenAp },
+      "events",
+      {
+        types: ["quota.warning", "quota.reached"],
+      },
+    );
+    expect(seenByAp.ok && (seenByAp.output as { events: unknown[] }).events).toEqual([]);
   });
 });
 
@@ -278,10 +490,10 @@ describe("who can read and set quotas", () => {
 });
 
 describe("the host command sets them", () => {
-  test("longshore quotas set changes only the named limits, none removes one, and show prints usage", async () => {
+  test("turntable quotas set changes only the named limits, none removes one, and show prints usage", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ls-quotas-host-"));
     try {
-      const file = openDatabase(join(dir, "longshore.db"));
+      const file = openDatabase(join(dir, "turntable.db"));
       await createOrg(file, { slug: "acme", name: "Acme" });
       file.close();
       const logs: string[] = [];
@@ -312,7 +524,7 @@ describe("the host command sets them", () => {
         console.log = log;
         console.error = err;
       }
-      const check = openDatabase(join(dir, "longshore.db"));
+      const check = openDatabase(join(dir, "turntable.db"));
       const org = (await getOrgBySlug(check, "acme"))!;
       expect(await getOrgQuotas(check, org.id)).toMatchObject({
         maxConcurrent: 3,

@@ -9,12 +9,11 @@ export type Notification = { content: string; meta: Record<string, string> };
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_WORD = /^[a-z0-9_.]{1,40}$/;
 // C0, DEL, C1, zero-width, bidi marks and overrides, BOM.
-/* oxlint-disable eslint/no-control-regex -- stripping control characters is the point */
+// stripping control characters is the point
 const UNSAFE_CHARS = new RegExp(
   "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]",
   "g",
 );
-/* oxlint-enable eslint/no-control-regex */
 const KNOWN_STATES = new Set([
   "queued",
   "running",
@@ -74,6 +73,7 @@ export function formatEvent(o: {
   org: string;
 }): Notification {
   const { event, run, steps } = o;
+  if (event.type === "quota.warning" || event.type === "quota.reached") return formatQuota(o);
   const project = event.project ?? run?.project ?? null;
   const runId = id(event.run_id);
   const link = runLink(o.baseUrl, o.org, project, runId);
@@ -81,11 +81,11 @@ export function formatEvent(o: {
   let conclusion: string | null = null;
 
   if (event.type === "approval.required") {
-    lines.push("Longshore: approval required.");
+    lines.push("Turntable: approval required.");
   } else {
     const status = state(typeof event.payload.status === "string" ? event.payload.status : null);
     conclusion = status;
-    lines.push(`Longshore: run finished, conclusion ${status}.`);
+    lines.push(`Turntable: run finished, conclusion ${status}.`);
   }
   if (project) lines.push(`project: ${quote(project, 40)}`);
   if (runId) {
@@ -130,9 +130,34 @@ export function formatEvent(o: {
   };
 }
 
+const count = (v: unknown): string =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? String(Math.round(v)) : "?";
+
+/** A quota notice: the metric and how much of the limit is used. Org-level, so no run or link. */
+function formatQuota(o: { event: FeedEvent; org: string }): Notification {
+  const { event } = o;
+  const reached = event.type === "quota.reached";
+  const metric = word(typeof event.payload.metric === "string" ? event.payload.metric : null);
+  const p = event.payload;
+  const lines = [
+    `Turntable: quota ${reached ? "reached" : "warning"}${metric ? ` for ${metric}` : ""}.`,
+    `used ${count(p.used)} of ${count(p.limit)}${typeof p.percent === "number" ? ` (${count(p.percent)}%)` : ""}${reached ? "; new work is held until the window moves or the limit is raised" : ""}`,
+    FOOTER,
+  ];
+  return {
+    content: lines.join("\n"),
+    meta: cleanMeta({
+      kind: reached ? "quota_reached" : "quota_warning",
+      trust: "untrusted",
+      org: id(o.org),
+      metric,
+    }),
+  };
+}
+
 export function formatOverflow(count: number): Notification {
   return {
-    content: `Longshore: ${count} more events matched the filter and were not shown. List runs to see them.\n${FOOTER}`,
+    content: `Turntable: ${count} more events matched the filter and were not shown. List runs to see them.\n${FOOTER}`,
     meta: cleanMeta({ kind: "overflow", trust: "untrusted" }),
   };
 }
@@ -141,8 +166,8 @@ export function formatStopped(reason: "auth" | "protocol"): Notification {
   return {
     content:
       reason === "auth"
-        ? "Longshore channel stopped: the server rejected the token. Replace the token file and restart the session."
-        : "Longshore channel stopped: unexpected response from the server.",
+        ? "Turntable channel stopped: the server rejected the token. Replace the token file and restart the session."
+        : "Turntable channel stopped: unexpected response from the server.",
     meta: cleanMeta({ kind: "stopped", trust: "untrusted" }),
   };
 }

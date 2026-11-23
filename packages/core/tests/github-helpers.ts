@@ -21,10 +21,10 @@ export async function setup(appId = "42") {
     { orgId: org.id },
     {
       appId,
-      slug: "longshore-test",
-      name: "Longshore",
+      slug: "turntable-test",
+      name: "Turntable",
       ownerLogin: "acme",
-      htmlUrl: "https://github.com/apps/longshore-test",
+      htmlUrl: "https://github.com/apps/turntable-test",
       clientId: "Iv1.abc",
     },
   );

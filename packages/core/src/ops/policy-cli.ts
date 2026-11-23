@@ -1,11 +1,14 @@
-// `longshore policy`: per-org settings that change what agents may do. Local access to the data
-// directory is the trust root (like `longshore token`), so this writes through the repos directly
+// `turntable policy`: per-org settings that change what agents may do. Local access to the data
+// directory is the trust root (like `turntable token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { validAudience } from "../oidc/issuer";
 import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
   getProjectCacheReleaseRestore,
+  getProjectOidcAudiences,
   setProjectCacheReleaseRestore,
+  setProjectOidcAudiences,
   APPROVE_RUN_ROLES,
   appendAudit,
   type ApproveRunRole,
@@ -21,6 +24,10 @@ import {
   setProjectSigning,
   signingKeyUsedByOtherOrg,
   getProjectEgress,
+  getProjectSandboxSettings,
+  setProjectSandboxSettings,
+  SNAPSHOT_NAME,
+  type ProjectSandboxSettings,
   listProjects,
   setApproveRunMinRole,
   setProjectEgress,
@@ -30,15 +37,21 @@ import {
 } from "../db/repos";
 
 export const POLICY_USAGE = `Usage:
-  longshore policy show --org <slug> [--data-dir ./data]
-  longshore policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
-  longshore policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
-  longshore policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
-  longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
+  turntable policy show --org <slug> [--data-dir ./data]
+  turntable policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
+  turntable policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --org <slug> --project <slug> [--sandbox-snapshot <name|none>]
+      [--max-concurrent <n|none>] [--data-dir ./data]
+  turntable policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
+      [--splits-json '<json>']   (run jobs as shards, e.g. [{"job":"tests","shards":[{"steps":["A"]},{"steps":["B"]}]}]; replaces the stored ones)
+      [--var NAME=value ...]   (non-secret vars.* for workflows, e.g. TURNTABLE_CI=true; replaces the stored ones)
       [--merge-queue] [--data-dir ./data]
-  longshore policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --oidc-audiences <aud,aud,...|any> --org <slug> [--project <slug>] [--data-dir ./data]
+      (the audiences a project's jobs may mint OIDC tokens for; "any" lifts the limit)
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
 Default release_operator. operator lets any operator token approve, including an agent that has
@@ -153,6 +166,11 @@ export async function setIngestPolicy(
     mergeQueue?: boolean | undefined;
     /** Tag ref patterns to ingest as release runs (refs/tags/v*). Unset: tags are not ingested. */
     tagRefs?: string[] | undefined;
+    /** Non-secret `vars.*` for the workflows. Replaces the stored ones. */
+    vars?: Record<string, string> | undefined;
+    /** Job split rules (see splitsSchema). Replaces the stored ones. */
+    splits?: unknown;
+    everyPush?: boolean | undefined;
     /** Asks GitHub for a repo's default branch, once, when `defaultBranch` is not given. */
     resolveDefaultBranch?: ((repo: string) => Promise<string>) | undefined;
   } = {},
@@ -186,6 +204,9 @@ export async function setIngestPolicy(
       ...(opts.authors ? { authors: opts.authors } : {}),
       ...(opts.mergeQueue ? { mergeQueue: true } : {}),
       ...(opts.tagRefs ? { tagRefs: opts.tagRefs } : {}),
+      ...(opts.vars && Object.keys(opts.vars).length > 0 ? { vars: opts.vars } : {}),
+      ...(opts.splits !== undefined ? { splits: opts.splits } : {}),
+      ...(opts.everyPush ? { everyPush: true } : {}),
     });
     if (!parsed.success) {
       throw new Error(
@@ -353,7 +374,7 @@ export async function setSigningPolicy(
   }[] = [];
   // A builtin key is looked up inside the org (its id is part of the stored name), so the same
   // `builtin:<name>` in two orgs is two keys. Any other reference (a KMS key) names one key
-  // outside Longshore: an org may not name one that another org already does.
+  // outside Turntable: an org may not name one that another org already does.
   if (
     patch.signingKey &&
     !patch.signingKey.startsWith("builtin:") &&
@@ -450,6 +471,147 @@ export async function setCacheReleaseRestorePolicy(
       });
     });
     out.push({ project: p!.slug, from, to: value === "on" });
+  }
+  return out;
+}
+
+/**
+ * Limits the audiences a project's jobs may ask the org's OIDC issuer for, or lifts the limit
+ * (`any`). Audited like the other policy settings.
+ */
+export async function setOidcAudiencesPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  value: string,
+): Promise<{ project: string; from: string[] | null; to: string[] | null }[]> {
+  const to =
+    value.trim() === "any"
+      ? null
+      : [
+          ...new Set(
+            value
+              .split(",")
+              .map((x) => x.trim())
+              .filter(Boolean),
+          ),
+        ];
+  if (to !== null) {
+    if (to.length === 0 || to.length > 20)
+      throw new Error("--oidc-audiences takes 1 to 20 values, or any");
+    for (const a of to) {
+      if (!validAudience(a)) {
+        throw new Error(
+          `not an audience (one printable string, no spaces, up to 256 characters): ${a}`,
+        );
+      }
+    }
+  }
+  const org = await orgOf(db, orgSlug);
+  const projects = projectSlug
+    ? [await getProjectBySlug(db, { orgId: org.id }, projectSlug)]
+    : await listProjects(db, { orgId: org.id });
+  if (projects.length === 0 || projects.some((p) => p === undefined)) {
+    throw new Error(
+      projectSlug ? `no project ${projectSlug} in org ${orgSlug}` : "org has no projects",
+    );
+  }
+  const out: { project: string; from: string[] | null; to: string[] | null }[] = [];
+  for (const p of projects) {
+    const scope = { orgId: org.id, projectId: p!.id };
+    const from = await getProjectOidcAudiences(db, scope);
+    await db.transaction(async (tx) => {
+      await setProjectOidcAudiences(tx, scope, to);
+      await appendAudit(tx, scope, {
+        principalKind: "cli",
+        principalId: "local",
+        op: "policy_set",
+        effect: "write",
+        outcome: "ok",
+        input: { key: "oidc_audiences", project: p!.slug, from, to },
+      });
+    });
+    out.push({ project: p!.slug, from, to });
+  }
+  return out;
+}
+
+export async function showOidcAudiences(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; audiences: string[] | null }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; audiences: string[] | null }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    out.push({
+      project: p.slug,
+      audiences: await getProjectOidcAudiences(db, { orgId: org.id, projectId: p.id }),
+    });
+  }
+  return out;
+}
+
+/**
+ * Sets the sandbox snapshot and/or the concurrency cap of one project (the instance operator's:
+ * a tenant must not choose its own image or lift its own cap). `none` removes a setting. Audited
+ * in the project's org chain. The cap can only lower the instance's per-org cap, which the
+ * scheduler applies whatever is stored.
+ */
+export async function setSandboxPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  opts: { sandboxSnapshot?: string | undefined; maxConcurrent?: string | undefined },
+): Promise<{ project: string; from: ProjectSandboxSettings; to: ProjectSandboxSettings }> {
+  if (!projectSlug) throw new Error("--sandbox-snapshot and --max-concurrent need --project");
+  const patch: Partial<ProjectSandboxSettings> = {};
+  if (opts.sandboxSnapshot !== undefined) {
+    if (opts.sandboxSnapshot !== "none" && !SNAPSHOT_NAME.test(opts.sandboxSnapshot))
+      throw new Error(
+        '--sandbox-snapshot is a snapshot name (letters, digits, . _ -, up to 128) or "none"',
+      );
+    patch.sandboxSnapshot = opts.sandboxSnapshot === "none" ? null : opts.sandboxSnapshot;
+  }
+  if (opts.maxConcurrent !== undefined) {
+    if (opts.maxConcurrent !== "none" && !/^\d{1,15}$/.test(opts.maxConcurrent))
+      throw new Error('--max-concurrent must be a whole number or "none"');
+    patch.maxConcurrent = opts.maxConcurrent === "none" ? null : Number(opts.maxConcurrent);
+  }
+  if (Object.keys(patch).length === 0)
+    throw new Error("name --sandbox-snapshot or --max-concurrent");
+  const org = await orgOf(db, orgSlug);
+  const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
+  if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+  const scope = { orgId: org.id, projectId: project.id };
+  const from = await getProjectSandboxSettings(db, scope);
+  const to = await db.transaction(async (tx) => {
+    const after = await setProjectSandboxSettings(tx, scope, patch);
+    if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+    await appendAudit(tx, scope, {
+      principalKind: "cli",
+      principalId: "local",
+      op: "policy_set",
+      effect: "write",
+      outcome: "ok",
+      input: { key: "sandbox", project: project.slug, from, to: after },
+    });
+    return after;
+  });
+  return { project: project.slug, from, to };
+}
+
+/** Each project's sandbox snapshot and cap, for `policy show`. */
+export async function showSandbox(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; settings: ProjectSandboxSettings }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; settings: ProjectSandboxSettings }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    out.push({
+      project: p.slug,
+      settings: await getProjectSandboxSettings(db, { orgId: org.id, projectId: p.id }),
+    });
   }
   return out;
 }

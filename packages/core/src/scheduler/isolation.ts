@@ -1,4 +1,4 @@
-import { type IsolationClass, isolationAtLeast } from "@longshore/provider-sdk";
+import { type IsolationClass, isolationAtLeast } from "@turntable/provider-sdk";
 import { appendAudit, type Scope } from "../db/repos";
 import type { Db } from "../db";
 import { isolationTrust } from "../trust";
@@ -76,7 +76,7 @@ export function withIsolationPolicy(runner: AttemptRunner, policy: IsolationPoli
         reason: policy.override.reason,
       },
     });
-    const notice = `[longshore] isolation override: this job ran on ${have} isolation where ${need} was required (${trust}${policy.hosted ? ", hosted" : ""}). Reason: ${policy.override.reason}`;
+    const notice = `[turntable] isolation override: this job ran on ${have} isolation where ${need} was required (${trust}${policy.hosted ? ", hosted" : ""}). Reason: ${policy.override.reason}`;
     return runner({ ...ctx, notices: [...(ctx.notices ?? []), notice] });
   };
 }

@@ -8,4 +8,12 @@ import { buildOpenApi } from "../src/ops/openapi";
 const out = join(import.meta.dir, "../../../docs/openapi.json");
 // A fixed version: the committed document must not change with each build.
 writeFileSync(out, `${JSON.stringify(buildOpenApi(registry, "0.0.0-dev"), null, 2)}\n`);
+// The committed file must pass `bun run format:check`, so format what was just written.
+const root = join(import.meta.dir, "../../..");
+const fmt = Bun.spawnSync(["bun", "fmt", out], {
+  cwd: root,
+  stdout: "inherit",
+  stderr: "inherit",
+});
+if (fmt.exitCode !== 0) throw new Error(`bun fmt failed with exit ${fmt.exitCode}`);
 console.log(`wrote ${out}`);

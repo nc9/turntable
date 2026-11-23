@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   createAttempt,
+  createJob,
+  createProject,
+  createRun,
   type Db,
   getAttempt,
   recordExec,
@@ -224,5 +227,110 @@ describe("the operation", () => {
       expect(bad.ok).toBe(false);
     }
     expect(registry.get("sandbox_usage")).toMatchObject({ effect: "read", mcp: true });
+  });
+});
+
+describe("an attempt with no recorded create time", () => {
+  test("is counted from when it started, per day and for a limit, and marked estimated", async () => {
+    const id = await life(a, null, null, at(0, 10, 30));
+    await db.orm
+      .update(s.jobAttempts)
+      .set({ startedAt: at(0, 10, 0) })
+      .where(eq(s.jobAttempts.id, id));
+    const [d] = await sandboxUsage(db, a.scope, win(0, 1));
+    expect(d).toMatchObject({ seconds: 1800, attempts: 1, estimated: 1 });
+    // The same fallback for a limit, which also adds the provider TTL for the missing destroy.
+    const lim = await sandboxSeconds(db, a.scope, {
+      from: at(0, 0),
+      to: at(1, 0),
+      now: at(1, 0),
+      graceMs: 30 * 60_000,
+    });
+    expect(lim).toEqual({ seconds: 3600, estimated: 1 });
+  });
+
+  test("one that never started and has no sandbox is not counted", async () => {
+    await life(a, null, null);
+    const [d] = await sandboxUsage(db, a.scope, win(0, 1));
+    expect(d).toMatchObject({ seconds: 0, attempts: 0, estimated: 0 });
+  });
+});
+
+describe("group_by project", () => {
+  /** A second project in tenant a, with its own job, so its attempts are a different project's. */
+  async function secondProject(): Promise<Tenant> {
+    const project = await createProject(db, { orgId: a.orgId }, { slug: "site", name: "Site" });
+    const scope = { orgId: a.orgId, projectId: project.id };
+    const run = await createRun(db, scope, {
+      workflowPath: ".github/workflows/ci.yml",
+      event: "push",
+      ref: "refs/heads/main",
+      sha: "b".repeat(40),
+    });
+    const job = (await createJob(db, scope, { runId: run.id, jobKey: "build", name: "build" }))!;
+    return {
+      ...a,
+      projectId: project.id,
+      projectSlug: "site",
+      runId: run.id,
+      jobId: job.id,
+      scope,
+    };
+  }
+  const env = () => ({ registry, db, now: () => NOW });
+  const call = (tok: string, input: Record<string, unknown>) =>
+    dispatch(env(), { kind: "bearer", token: tok }, "sandbox_usage", input);
+
+  test("the projects add up to the org total, day by day", async () => {
+    const p2 = await secondProject();
+    await life(a, at(2, 9), at(2, 9, 30)); // app, 1800 s today
+    await life(p2, at(2, 10), at(2, 10, 20)); // site, 1200 s today
+    await life(p2, at(1, 23, 30), at(2, 0, 30)); // site, across yesterday and today
+    await life(p2, at(2, 11), null); // site, no confirmed destroy: estimated (finish unset, so now)
+    await life(b, at(2, 9), at(2, 11)); // another org, never counted
+    const tok = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const r = await call(tok, { days: 3, group_by: "project" });
+    const out = (r as { output: any }).output;
+    expect(out.projects.map((p: any) => p.project_slug)).toEqual(["app", "site"]);
+    for (let i = 0; i < out.days.length; i++) {
+      const sum = out.projects.reduce((n: number, p: any) => n + p.days[i].sandbox_seconds, 0);
+      expect(sum).toBe(out.days[i].sandbox_seconds);
+      const att = out.projects.reduce((n: number, p: any) => n + p.days[i].attempts, 0);
+      expect(att).toBe(out.days[i].attempts);
+      const est = out.projects.reduce((n: number, p: any) => n + p.days[i].estimated_attempts, 0);
+      expect(est).toBe(out.days[i].estimated_attempts);
+    }
+    expect(out.projects.reduce((n: number, p: any) => n + p.total_seconds, 0)).toBe(
+      out.total_seconds,
+    );
+    const site = out.projects.find((p: any) => p.project_slug === "site");
+    expect(site.days[2].estimated_attempts).toBe(1);
+    expect(site.project_name).toBe("Site");
+  });
+
+  test("without group_by there is no projects key", async () => {
+    await life(a, at(2, 9), at(2, 9, 30));
+    const tok = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const out = ((await call(tok, { days: 1 })) as { output: any }).output;
+    expect("projects" in out).toBe(false);
+  });
+
+  test("a project token sees only its own project, and another org's token sees nothing of it", async () => {
+    const p2 = await secondProject();
+    await life(a, at(2, 9), at(2, 9, 30));
+    await life(p2, at(2, 10), at(2, 10, 20));
+    const own = (await mintToken(db, p2.scope, "reader")).secret;
+    const out = ((await call(own, { days: 1, group_by: "project" })) as { output: any }).output;
+    expect(out.projects.map((p: any) => p.project_slug)).toEqual(["site"]);
+    expect(out.total_seconds).toBe(1200);
+    const other = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
+    const o = ((await call(other, { days: 1, group_by: "project" })) as { output: any }).output;
+    expect(o.projects).toEqual([]);
+    expect(o.total_seconds).toBe(0);
+  });
+
+  test("an unknown group_by is refused", async () => {
+    const tok = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    expect((await call(tok, { group_by: "org" })).ok).toBe(false);
   });
 });
