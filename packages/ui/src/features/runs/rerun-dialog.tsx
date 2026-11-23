@@ -111,6 +111,7 @@ function RerunDialog({
               {jobs.map((j) => (
                 <option key={j.id} value={j.jobKey}>
                   Only {j.name}
+                  {j.shard ? ` (shard ${j.shard.index + 1} of ${j.shard.total})` : ""}
                 </option>
               ))}
             </select>

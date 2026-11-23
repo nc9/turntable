@@ -43,6 +43,13 @@
       "when": 1795401790162,
       "tag": "0005_oidc_audiences",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795402135242,
+      "tag": "0006_project_sandbox_settings",
+      "breakpoints": true
     }
   ]
 }

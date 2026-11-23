@@ -41,6 +41,11 @@ export interface JobEnv {
   image?: string;
   /** Not needed to resume. */
   repoTarball?: Uint8Array;
+  /**
+   * The provider snapshot to start the sandbox from: the project's, which beats a size class's
+   * and the provider config's. Unset: the provider's own choice.
+   */
+  snapshot?: string;
   /** Sink for the (redacted) log text. */
   out: (text: string) => void;
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
@@ -239,6 +244,7 @@ export async function executeJob(
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
         labels: { "longshore.run": ids.runId, "longshore.job": ids.jobId },
         image: env.image,
+        ...(env.snapshot ? { snapshot: env.snapshot } : {}),
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
         network:
           proxied && pick

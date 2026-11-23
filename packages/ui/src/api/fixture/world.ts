@@ -43,6 +43,8 @@ type JobTemplate = {
   kind: LogKind;
   matrix?: Record<string, string>;
   matrixGroup?: string;
+  /** One shard of a job the operator splits across sandboxes. */
+  shard?: { job: string; index: number; total: number; steps: string[] };
   /** Baseline duration in ms before jitter. */
   base: number;
   /** Release/environment gate: approved by a human with a security key. */
@@ -74,6 +76,21 @@ const matrixLegs = (): JobTemplate[] => {
   return legs;
 };
 
+/** A job split into three shards, one suite each, as an operator's split rule makes them. */
+const shardedTests = (): JobTemplate[] =>
+  [
+    ["Audit engine tests", 120_000],
+    ["Rules tests", 60_000],
+    ["Remaining package and script tests", 50_000],
+  ].map(([step, base], index) => ({
+    key: `cli-tests[${index}]`,
+    name: "CLI tests",
+    needs: [],
+    kind: "test" as LogKind,
+    shard: { job: "cli-tests", index, total: 3, steps: [step as string] },
+    base: base as number,
+  }));
+
 const WORKFLOWS: WorkflowTemplate[] = [
   {
     path: ".github/workflows/ci.yml",
@@ -83,12 +100,16 @@ const WORKFLOWS: WorkflowTemplate[] = [
       { key: "lint", name: "lint", needs: [], kind: "lint", base: 25_000 },
       { key: "typecheck", name: "typecheck", needs: [], kind: "typecheck", base: 40_000 },
       ...matrixLegs(),
+      ...shardedTests(),
       {
         key: "build",
         name: "build",
         needs: [
           "lint",
           "typecheck",
+          "cli-tests[0]",
+          "cli-tests[1]",
+          "cli-tests[2]",
           "test-ubuntu-22.04-20",
           "test-ubuntu-22.04-22",
           "test-ubuntu-24.04-20",
@@ -291,6 +312,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       needs: t.needs,
       matrix: t.matrix ?? null,
       matrixGroup: t.matrixGroup ?? null,
+      shard: t.shard ?? null,
       approval: null,
       exitCode: null,
       createdAt: run.createdAt,

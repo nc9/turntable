@@ -101,6 +101,13 @@ These were checked by running the conformance suite and a short capability test 
 - Sandboxes are Linux x86_64 containers (`sandboxClass: container`) running as user `daytona`, with 1 vCPU, 1 GB memory and 3 GB disk by default.
 - Exit codes, signal deaths, offset logs across silent gaps, output caps, binary file round trips and the absence of controller environment variables all pass the shared conformance suite.
 
+### Per-project snapshot and concurrency cap
+
+Two settings belong to the instance operator, one project at a time. A tenant must not choose its own image or lift its own cap, so they are set with `longshore policy set --org <slug> --project <slug> --sandbox-snapshot <name|none> --max-concurrent <n|none>` on the host, or with `set_project_settings` over REST with an instance token (not an MCP tool, audited in the system chain and the org's). `get_project_settings` (reader, project-scoped) and `longshore policy show` read them.
+
+- **`sandboxSnapshot`** names an existing provider snapshot (Daytona) that the project's sandboxes start from. Order: the project's snapshot, then a size class's snapshot, then the provider config's `snapshot`, then the provider's default. The project's wins because it carries that project's tools; an instance-wide size class must not replace it. A size class's cpus, memory and disk still apply on top, for a provider that honours them.
+- **`maxConcurrent`** caps the project's running attempts. Like an org quota it can only lower the instance's per-org cap (`--org-cap`), never lift it: with the default per-org cap of 2 a project cap of 4 does nothing, so raise `--org-cap` and `--global-cap` first. The org's own cap still applies. A project at its cap holds new work (running attempts finish) while the org's other projects keep running. `0` holds the project completely.
+
 ### Not declared, and why
 
 - `allowlist` egress: the API has `domainAllowList` and `networkAllowList`, but they have not been exercised, so the provider does not claim them.
