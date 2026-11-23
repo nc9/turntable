@@ -27,6 +27,9 @@ import type {
   Run,
   RunDetail,
   StepEvent,
+  Artifact,
+  ConsumeResult,
+  OrgQuotas,
 } from "./types";
 import type {
   WireApprovalStatus,
@@ -36,6 +39,9 @@ import type {
   WireEnrolmentRequest,
   WireEnvironmentApproval,
   WireRegisterChallenge,
+  WireArtifacts,
+  WireConsumption,
+  WireQuotas,
   WireAttempt,
   WireChecks,
   WireApprove,
@@ -196,6 +202,19 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
 }
 
 const FINISHED: readonly JobState[] = ["success", "failure", "infra_error", "cancelled", "skipped"];
+
+function quotasOf(w: WireQuotas): OrgQuotas {
+  return {
+    limits: {
+      maxConcurrent: w.limits.max_concurrent,
+      maxRunsPerHour: w.limits.max_runs_per_hour,
+      maxSandboxMinutesPerDay: w.limits.max_sandbox_minutes_per_day,
+      maxLogBytes: w.limits.max_log_bytes,
+      maxStoredBytes: w.limits.max_stored_bytes,
+    },
+    usage: w.usage,
+  };
+}
 
 export function createHttpApi(options: HttpApiOptions): LongshoreApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -531,6 +550,58 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
           })),
         })),
       };
+    },
+
+    async getArtifacts({ runId, project }): Promise<Artifact[]> {
+      const w = await call<WireArtifacts>("GET", `/runs/${encodeURIComponent(runId)}/artifacts`, {
+        org: org(),
+        project,
+      });
+      return w.artifacts.map((a) => ({
+        name: a.name,
+        size: a.size,
+        sha256: a.sha256,
+        digestSource: a.digest_source,
+        trustClass: a.trust_class,
+        runSha: a.run_sha,
+        attemptId: a.attempt_id,
+        createdAt: ms(a.created_at) ?? 0,
+      }));
+    },
+
+    async checkArtifactConsumption({
+      project,
+      consumer,
+      sources,
+      quarantine,
+    }): Promise<ConsumeResult[]> {
+      const pair = (x: { runId: string; name: string }) => ({ run_id: x.runId, name: x.name });
+      const w = await call<WireConsumption>(
+        "POST",
+        "/artifacts/check-consumption",
+        {},
+        {
+          org: org(),
+          project,
+          ...("klass" in consumer
+            ? { consumer_class: consumer.klass }
+            : { consumer_run_id: consumer.runId }),
+          sources: sources.map(pair),
+          ...(quarantine ? { quarantine: quarantine.map(pair) } : {}),
+        },
+      );
+      return w.results.map((r) => ({
+        runId: r.run_id,
+        name: r.name,
+        decision: r.decision,
+        reason: r.reason,
+        trustClass: r.trust_class,
+        sha256: r.sha256,
+      }));
+    },
+
+    async getQuotas(): Promise<OrgQuotas> {
+      return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
     },
 
     async approversOverview(): Promise<ApproversOverview> {

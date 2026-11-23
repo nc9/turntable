@@ -297,3 +297,44 @@ export type WireIncident = {
   rotation_required_count: number;
   rotation_required: { name: string; reason: string; flagged_by: string; flagged_at: number }[];
 };
+
+export type WireArtifacts = {
+  artifacts: {
+    name: string;
+    size: number;
+    sha256: string;
+    digest_source: "reported" | "computed";
+    trust_class: string;
+    run_sha: string | null;
+    attempt_id: string;
+    created_at: string;
+  }[];
+};
+
+export type WireConsumption = {
+  results: {
+    run_id: string;
+    name: string;
+    decision: "allow" | "quarantine" | "deny";
+    reason: string | null;
+    trust_class: string | null;
+    sha256: string | null;
+  }[];
+};
+
+export type WireQuotas = {
+  limits: {
+    max_concurrent: number | null;
+    max_runs_per_hour: number | null;
+    max_sandbox_minutes_per_day: number | null;
+    max_log_bytes: number | null;
+    max_stored_bytes: number | null;
+  };
+  usage: {
+    metric: "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
+    used: number;
+    limit: number | null;
+    percent: number | null;
+    held: string | null;
+  }[];
+};

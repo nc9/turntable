@@ -110,11 +110,14 @@ With `--worker` and with `longshore run`:
 | Path | Description |
 | --- | --- |
 | `GET /healthz` | JSON `{ "ok": true, "version": "..." }`. |
-| `GET /` | Placeholder page. The web UI is planned. |
+| `GET /openapi.json` | The OpenAPI 3.1 document for the REST API. |
+| `/api/v1/...` | The REST API, one route per [operation](/agent-interface). Webhooks arrive at `/api/v1/webhooks/github`. |
+| `/mcp` | MCP over HTTP. |
+| `/api/v1/realtime` | The WebSocket feed of events, log bytes and steps. |
+| `/oidc/<org>/...` | Each org's OIDC issuer, see [OIDC](/oidc). |
+| `GET /` | The web UI. |
 
-Only `GET` and `HEAD` are accepted today. Responses carry a strict content security policy.
-
-More settings arrive with each feature, and this page ships with them.
+Responses carry a strict content security policy. Every API call needs a bearer token, except the signature operations and webhooks, which carry their own proof.
 
 ## Per-org quotas
 
@@ -125,5 +128,7 @@ An org can live under limits. Quotas limit tenants, so the **instance operator**
 - `max_sandbox_minutes_per_day`: sandbox time in the last 24 hours, from attempt start and finish times (a running attempt counts up to now).
 - `max_log_bytes`: stored job log bytes.
 - `max_stored_bytes`: recorded artifact bytes plus control-plane cache bytes. (The cache also keeps its own per-class shares inside the org's cache quota; this is the org-wide total.)
+
+`longshore quotas get --url <https://host> --org <slug> --token-file <file>` reads them remotely over the API (an org-level reader token), and the Quotas page of the UI shows each limit, its usage and percent, and why new work is held, refreshing as runs change. Both are read-only.
 
 A reached limit holds new claims only: running attempts finish, queued ones wait until the window moves or the limit is raised. Null means no limit. Each metric emits an event when it first crosses 80% and when it is reached, once per window: an `infra.error` event whose `error_class` is `quota_warning` or `quota_reached`, with the metric, used and limit. (The event type list is a database constraint, so a dedicated type needs a table rebuild migration; this reuses the existing type.)

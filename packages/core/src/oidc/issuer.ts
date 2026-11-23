@@ -199,7 +199,8 @@ export class OidcIssuer {
       attempt_id: attempt.id,
       trust_class: klass,
       event_name: run.event,
-      actor: run.actor ?? null,
+      // An unknown actor (a tag run has none) is left out, never claimed as null or a guess.
+      ...(run.actor ? { actor: run.actor } : {}),
       environment,
     };
     const { token, kid } = await this.keys.signJwt(org.id, claims, now);

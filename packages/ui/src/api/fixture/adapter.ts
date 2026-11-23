@@ -154,6 +154,9 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     ingestStatus: () => delay(() => world.ingestStatus()),
     approvalStatus: ({ runId }) => delay(() => world.approvalStatus(runId)),
     approversOverview: () => delay(() => world.approversOverview()),
+    getArtifacts: ({ runId }) => delay(() => world.getArtifacts(runId)),
+    checkArtifactConsumption: (a) => delay(() => world.checkArtifactConsumption(a)),
+    getQuotas: () => delay(() => world.getQuotas()),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
     approveEnvironment: ({ statement, signature }) =>

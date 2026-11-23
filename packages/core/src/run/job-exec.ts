@@ -244,7 +244,7 @@ export async function executeJob(
             : { egress: env.egress ?? "none" },
       });
       sandboxId = sb.id;
-      await env.store.setSandbox(ids.attemptId, sb.id);
+      await env.store.setSandbox(ids.attemptId, sb.id, Date.now());
       let proxyUrl: string | undefined;
       if (proxied) {
         if (!sb.proxy) {
@@ -369,6 +369,9 @@ export async function executeJob(
     if (sandboxId) {
       try {
         await env.provider.destroy(sandboxId);
+        // Confirmed gone: the sandbox's billed life ends here. A destroy that failed records
+        // nothing, so the time is never guessed (the provider's TTL ended it).
+        await env.store.setSandboxDestroyed?.(ids.attemptId, Date.now());
       } catch (e) {
         env.out(`warning: could not destroy sandbox ${sandboxId}: ${String(e)}\n`);
       }

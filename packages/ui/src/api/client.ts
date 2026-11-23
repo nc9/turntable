@@ -21,7 +21,10 @@ import type {
   GrepResult,
   IncidentStatus,
   IngestStatus,
+  Artifact,
+  ConsumeResult,
   JobDigest,
+  OrgQuotas,
   RerunResult,
   Whoami,
 } from "./types";
@@ -128,6 +131,18 @@ export interface LongshoreApi {
     statement: EnrolStatement;
     signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
   }): Promise<{ enrolmentId: string; approvals: number; required: number; activated: boolean }>;
+  /** The artifacts a run recorded, with provenance (`get_artifacts`). */
+  getArtifacts(args: { runId: string; project: string }): Promise<Artifact[]>;
+  /** Whether a consumer run may take artifacts of other runs, and as what (`check_artifact_consumption`). */
+  checkArtifactConsumption(args: {
+    project: string;
+    /** A run (its stored class), or a class by name: "may a build of this class take it?". */
+    consumer: { runId: string } | { klass: string };
+    sources: { runId: string; name: string }[];
+    quarantine?: { runId: string; name: string }[];
+  }): Promise<ConsumeResult[]>;
+  /** The org's quotas, usage against each, and why work is held (`get_quotas`). */
+  getQuotas(): Promise<OrgQuotas>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

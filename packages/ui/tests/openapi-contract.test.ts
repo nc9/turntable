@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type {
   WireApprovalStatus,
+  WireArtifacts,
+  WireConsumption,
+  WireQuotas,
   WireApprovers,
   WireChallenge,
   WireEnrolmentApproval,
@@ -367,6 +370,55 @@ test("run and job metadata from #66 are in the spec", () => {
   }
   const jobs = (run.jobs as { items: { properties: Record<string, unknown> } }).items.properties;
   for (const key of ["needs", "matrix", "approval_kind"]) expect(jobs).toHaveProperty(key);
+});
+
+test("artifacts: provenance and consumption shapes the adapter reads", () => {
+  const arts = ok(op("/runs/{run_id}/artifacts", "get"));
+  expectKeys(arts, keysOf<WireArtifacts>({ artifacts: true }));
+  expectKeys(arts.properties!.artifacts!.items!, [
+    "name",
+    "size",
+    "sha256",
+    "digest_source",
+    "trust_class",
+    "run_sha",
+    "attempt_id",
+    "created_at",
+  ]);
+  const chk = ok(op("/artifacts/check-consumption", "post"));
+  expectKeys(chk, keysOf<WireConsumption>({ results: true }));
+  // The request takes a consumer run or a class: the adapter sends one of the two.
+  expect(
+    Object.keys(
+      op("/artifacts/check-consumption", "post").requestBody!.content["application/json"].schema
+        .properties!,
+    ),
+  ).toEqual(expect.arrayContaining(["consumer_run_id", "consumer_class", "sources", "quarantine"]));
+  expectKeys(chk.properties!.results!.items!, [
+    "run_id",
+    "name",
+    "decision",
+    "reason",
+    "trust_class",
+    "sha256",
+  ]);
+});
+
+test("quotas: get and set return the shape the adapter reads", () => {
+  // Read only: there is no API operation that sets quotas.
+  expect(Object.keys(spec.paths["/quotas"] ?? {})).toEqual(["get"]);
+  for (const [path, method] of [["/quotas", "get"]] as const) {
+    const out = ok(op(path, method));
+    expectKeys(out, keysOf<WireQuotas>({ limits: true, usage: true }));
+    expectKeys(out.properties!.limits!, [
+      "max_concurrent",
+      "max_runs_per_hour",
+      "max_sandbox_minutes_per_day",
+      "max_log_bytes",
+      "max_stored_bytes",
+    ]);
+    expectKeys(out.properties!.usage!.items!, ["metric", "used", "limit", "percent", "held"]);
+  }
 });
 
 test("human approvals: status, approvers, challenges, enrolment and the signature routes", () => {

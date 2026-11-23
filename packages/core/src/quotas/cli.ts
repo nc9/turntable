@@ -8,6 +8,8 @@ import { openDatabase } from "../db";
 import { getOrgBySlug, getOrgQuotas, quotaStatuses, quotaUsage, setOrgQuotas } from "../db/repos";
 
 export const QUOTAS_USAGE = `Usage: longshore quotas show --org <slug> [--data-dir ./data]
+       longshore quotas get --url <https://host> --org <slug> [--token-file <path>]
+                            (remote read over REST with an org-level reader token)
        longshore quotas set --org <slug> [--data-dir ./data]
                             [--max-concurrent <n|none>] [--max-runs-per-hour <n|none>]
                             [--max-sandbox-minutes-per-day <n|none>] [--max-log-bytes <n|none>]
@@ -34,6 +36,7 @@ export function parseLimit(flag: string, v: string): number | null {
 
 export async function quotasCommand(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
+  if (sub === "get") return (await import("./remote")).quotasGet(rest);
   if (sub !== "show" && sub !== "set") {
     console.error(QUOTAS_USAGE);
     return 2;

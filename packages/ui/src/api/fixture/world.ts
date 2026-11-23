@@ -1,9 +1,15 @@
+import { fixtureDecision } from "./artifact-rule";
 import type { ChangeEvent } from "../realtime";
 import type {
   ApprovalChallenge,
   ApprovalStatement,
   ApprovalStatus,
   ApproversOverview,
+  Artifact,
+  ConsumeResult,
+  OrgQuotas,
+  QuotaLimits,
+  QuotaMetric,
   KeyPolicy,
   PolicyStatement,
   EnrolStatement,
@@ -894,6 +900,128 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     return { approvals: 2, required: 2, applied: true };
   }
 
+  // Artifacts: derived from the run so the fixture shows provenance, a lower-class artifact and
+  // a digest the control plane computed.
+  function getArtifacts(runId: string): Artifact[] {
+    const run = runs.get(runId);
+    if (!run || (run.status !== "success" && run.status !== "failure")) return [];
+    const klass = run.trustClass ?? "protected";
+    const hex = (seed: string) =>
+      Array.from(
+        { length: 64 },
+        (_, i) => "0123456789abcdef"[(seed.charCodeAt(i % seed.length) + i * 7) % 16],
+      ).join("");
+    const at = run.finishedAt ?? run.createdAt;
+    const base = { runSha: run.sha, attemptId: `att_${runId.slice(-6)}`, createdAt: at };
+    const out: Artifact[] = [
+      {
+        ...base,
+        name: "build.tar.gz",
+        size: 18_400_000,
+        sha256: hex(`${runId}build`),
+        digestSource: "computed",
+        trustClass: klass,
+      },
+      {
+        ...base,
+        name: "sbom.json",
+        size: 52_113,
+        sha256: hex(`${runId}sbom`),
+        digestSource: "reported",
+        trustClass: klass,
+      },
+    ];
+    if (klass === "release" || klass === "protected")
+      out.push({
+        ...base,
+        name: "pr-preview.zip",
+        size: 3_100_000,
+        sha256: hex(`${runId}pr`),
+        digestSource: "reported",
+        trustClass: "untrusted_pr",
+      });
+    return out;
+  }
+  function checkArtifactConsumption(a: {
+    consumer: { runId: string } | { klass: string };
+    sources: { runId: string; name: string }[];
+    quarantine?: { runId: string; name: string }[];
+  }): ConsumeResult[] {
+    const consumer =
+      "klass" in a.consumer
+        ? a.consumer.klass
+        : (runs.get(a.consumer.runId)?.trustClass ?? "untrusted_pr");
+    const asked = new Set((a.quarantine ?? []).map((q) => `${q.runId}\n${q.name}`));
+    return a.sources.map((s) => {
+      const art = getArtifacts(s.runId).find((x) => x.name === s.name);
+      if (!art)
+        return {
+          runId: s.runId,
+          name: s.name,
+          decision: "deny",
+          reason: "no such recorded artifact",
+          trustClass: null,
+          sha256: null,
+        };
+      const d = fixtureDecision({
+        consumer,
+        producer: art.trustClass,
+        explicit: asked.has(`${s.runId}\n${s.name}`),
+      });
+      return { runId: s.runId, name: s.name, ...d, trustClass: art.trustClass, sha256: art.sha256 };
+    });
+  }
+
+  // Quotas: a few limits and usage that moves with the fixture's running attempts.
+  const quotaLimits: QuotaLimits = {
+    maxConcurrent: 4,
+    maxRunsPerHour: 30,
+    maxSandboxMinutesPerDay: 600,
+    maxLogBytes: null,
+    maxStoredBytes: 5_000_000_000,
+  };
+  function getQuotas(): OrgQuotas {
+    const running = [...attempts.values()].filter((a) => a.state === "running").length;
+    const used: Record<QuotaMetric, number> = {
+      concurrent: running,
+      runs_per_hour: 12,
+      sandbox_minutes: 522,
+      log_bytes: 48_000_000,
+      stored_bytes: 1_200_000_000,
+    };
+    const limitOf: Record<QuotaMetric, number | null> = {
+      concurrent: quotaLimits.maxConcurrent,
+      runs_per_hour: quotaLimits.maxRunsPerHour,
+      sandbox_minutes: quotaLimits.maxSandboxMinutesPerDay,
+      log_bytes: quotaLimits.maxLogBytes,
+      stored_bytes: quotaLimits.maxStoredBytes,
+    };
+    const what: Record<QuotaMetric, string> = {
+      concurrent: "concurrent attempts",
+      runs_per_hour: "runs started in the last hour",
+      sandbox_minutes: "sandbox minutes in the last 24 hours",
+      log_bytes: "stored log bytes",
+      stored_bytes: "stored artifact bytes",
+    };
+    return {
+      limits: { ...quotaLimits },
+      usage: (Object.keys(used) as QuotaMetric[]).map((metric) => {
+        const limit = limitOf[metric];
+        const u = used[metric];
+        return {
+          metric,
+          used: u,
+          limit,
+          percent: limit === null || limit === 0 ? null : Math.floor((u / limit) * 100),
+          held:
+            limit !== null && u >= limit
+              ? `new work is held: ${what[metric]} reached its limit (${u} of ${limit})`
+              : null,
+        };
+      }),
+    };
+  }
+
   function approversOverview(): ApproversOverview {
     return {
       keyPolicy: {
@@ -1150,6 +1278,9 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     ingestStatus,
     approvalStatus,
     approversOverview,
+    getArtifacts,
+    checkArtifactConsumption,
+    getQuotas,
     keyPolicyChallenge,
     approveKeyPolicy,
     approvalChallenge,
