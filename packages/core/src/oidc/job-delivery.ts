@@ -8,7 +8,7 @@
 // never `untrusted_pr` unless an operator widened it), the job asked with `id-token: write`, and
 // the run's attempt is behind the proxy. Otherwise it gets neither variable, and the log says why.
 import net from "node:net";
-import { wantsIdToken } from "@turntable/act-runner";
+import { plannedIdToken } from "@turntable/act-runner";
 import type { Db } from "../db";
 import { getOrgById } from "../db/repos";
 import { mintAttemptCredential } from "./attempt-credential";
@@ -27,8 +27,8 @@ export interface JobOidcRequest {
   orgId: string;
   attemptId: string;
   klass: string;
-  workflowYaml: string;
-  jobId: string;
+  /** The job's stored plan (`jobs.planned`). Whether it asked for a token is read from here only. */
+  planned: string | null | undefined;
 }
 
 export interface IssuedJobOidc {
@@ -95,7 +95,7 @@ export class JobOidc {
   }
 
   async issue(r: JobOidcRequest): Promise<IssuedJobOidc | NoJobOidc> {
-    if (!wantsIdToken(r.workflowYaml, r.jobId)) return { none: "the job did not ask for it" };
+    if (!plannedIdToken(r.planned)) return { none: "the job did not ask for it" };
     if (!this.allows(r.klass)) return { none: `a ${r.klass} run may not mint an identity token` };
     const mint = await this.mintTarget(r.orgId);
     if (!mint) return { none: "the issuer URL is not an https host name" };
