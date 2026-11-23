@@ -28,6 +28,33 @@ async function getJson(
   return res.json();
 }
 
+export type OurRunRef = { id: string; sha: string | null; state: string };
+
+/** The newest runs matching a branch and event, newest first (one page, at most 100). */
+export async function listOurRuns(o: {
+  baseUrl: URL;
+  org: string;
+  token: string;
+  branch?: string | undefined;
+  event?: string | undefined;
+  limit: number;
+  fetch?: SafeFetch;
+}): Promise<OurRunRef[]> {
+  const f = o.fetch ?? createHttpClient({ allowHosts: [o.baseUrl.hostname] }).fetch;
+  const u = new URL(`${baseString(o.baseUrl)}/api/v1/runs`);
+  u.searchParams.set("org", o.org);
+  u.searchParams.set("limit", String(Math.min(100, Math.max(1, o.limit))));
+  if (o.branch) u.searchParams.set("branch", o.branch);
+  if (o.event) u.searchParams.set("event", o.event);
+  const body = (await getJson(
+    f,
+    u,
+    { authorization: `Bearer ${o.token}`, accept: "application/json" },
+    "our runs",
+  )) as { runs?: { id: string; sha: string | null; state: string }[] };
+  return (body.runs ?? []).map((r) => ({ id: r.id, sha: r.sha, state: r.state }));
+}
+
 export type OurRun = { id: string; sha: string | null; jobs: OurJob[] };
 
 /** Our run's jobs, with the stored reason for each skipped job (its log's first line). */

@@ -280,4 +280,137 @@ describe("the command", () => {
     });
     expect(code).toBe(2);
   });
+
+  describe("--last: one line per sha", () => {
+    const S = (c: string) => c.repeat(40);
+    // newest first: S(a) twice (a rerun), S(b), S(c), S(d)
+    const listed = [
+      { id: "ra2", sha: S("a"), state: "success" },
+      { id: "ra1", sha: S("a"), state: "failure" },
+      { id: "rb", sha: S("b"), state: "success" },
+      { id: "rc", sha: S("c"), state: "running" },
+      { id: "rd", sha: S("d"), state: "success" },
+    ];
+    const jobsOf: Record<string, { state: string }> = {
+      ra2: { state: "success" },
+      rb: { state: "success" },
+      rc: { state: "running" },
+      rd: { state: "success" },
+    };
+    // theirs: a ok, b failed (diverges with our success), c ok (ours is still running), d none
+    const theirsBySha: Record<string, string | undefined> = {
+      [S("a")]: "success",
+      [S("b")]: "failure",
+      [S("c")]: "success",
+    };
+    const calls: string[] = [];
+    const lastOurs = async (input: string | URL | Request) => {
+      const u = new URL(String(input));
+      calls.push(u.pathname + u.search);
+      if (u.pathname === "/api/v1/runs") return json({ runs: listed });
+      const m = /^\/api\/v1\/runs\/(\w+)$/.exec(u.pathname);
+      if (m) {
+        const id = m[1] as string;
+        const r = listed.find((x) => x.id === id)!;
+        return json({
+          id,
+          sha: r.sha,
+          jobs: [
+            { id: `${id}-j`, name: "build", state: jobsOf[id]?.state ?? "success", duration_ms: 5 },
+          ],
+        });
+      }
+      return new Response("{}", { status: 404 });
+    };
+    const lastGithub = async (input: string | URL | Request) => {
+      const u = new URL(String(input));
+      const sha = /commits\/(\w{40})\/check-runs/.exec(u.pathname)?.[1] ?? "";
+      const conclusion = theirsBySha[sha];
+      return json({
+        check_runs: conclusion
+          ? [{ name: "build", status: "completed", conclusion, app: { id: 4242 } }]
+          : [],
+      });
+    };
+    const lastArgs = (n: string, ...more: string[]) => [
+      "--last",
+      n,
+      "--branch",
+      "main",
+      "--event",
+      "push",
+      "--repo",
+      "acme/web",
+      "--app-id",
+      "4242",
+      "--url",
+      "http://127.0.0.1:1",
+      "--org",
+      "acme",
+      "--token-file",
+      tokenFile,
+      ...more,
+    ];
+
+    test("lists the newest runs with the branch and event, dedupes by sha, and prints a verdict per sha", async () => {
+      calls.length = 0;
+      let text = "";
+      const code = await parityCommand(lastArgs("4"), {
+        ours: lastOurs,
+        github: lastGithub,
+        out: (s) => (text = s),
+      });
+      const lines = text.split("\n");
+      expect(lines).toHaveLength(4);
+      // newest first, the newest run of a sha only (ra2, not its rerun ra1)
+      expect(lines[0]).toStartWith(`${S("a").slice(0, 12)}  match  `);
+      expect(lines[0]).toContain("run ra2");
+      expect(lines[1]).toStartWith(`${S("b").slice(0, 12)}  1 diverge  `);
+      expect(lines[2]).toStartWith(`${S("c").slice(0, 12)}  pending  `);
+      // no check from them at all for d: nothing paired yet, so pending, not a divergence
+      expect(lines[3]).toStartWith(`${S("d").slice(0, 12)}  pending  `);
+      expect(code).toBe(1);
+      const list = calls.find((c) => c.startsWith("/api/v1/runs?"))!;
+      expect(list).toContain("branch=main");
+      expect(list).toContain("event=push");
+      expect(list).toContain("limit=12");
+      // each sha's run is read once; the rerun ra1 was never fetched
+      expect(calls.some((c) => c.endsWith("/runs/ra1"))).toBe(false);
+    });
+
+    test("N cuts the list, --json is an array, and no divergence exits 0", async () => {
+      let text = "";
+      const code = await parityCommand(lastArgs("1", "--json"), {
+        ours: lastOurs,
+        github: lastGithub,
+        out: (s) => (text = s),
+      });
+      const arr = JSON.parse(text);
+      expect(Array.isArray(arr)).toBe(true);
+      expect(arr).toHaveLength(1);
+      expect(arr[0]).toMatchObject({ run: "ra2", sha: S("a"), verdict: "match", summary: "match" });
+      expect(arr[0].totals).toMatchObject({ match: 1, diverge: 0 });
+      expect(code).toBe(0);
+    });
+
+    test("usage errors: both --run and --last, neither, a bad N, filters without --last", async () => {
+      const quiet = { out: () => {}, ours: lastOurs, github: lastGithub };
+      expect(await parityCommand([...lastArgs("2"), "--run", "r"], quiet)).toBe(2);
+      expect(await parityCommand(lastArgs("0"), quiet)).toBe(2);
+      expect(await parityCommand(lastArgs("51"), quiet)).toBe(2);
+      expect(await parityCommand(lastArgs("x"), quiet)).toBe(2);
+      expect(await parityCommand([...base(), "--branch", "main"], quiet)).toBe(2);
+    });
+
+    test("no runs matching prints that, and is not a failure", async () => {
+      let text = "";
+      const code = await parityCommand(lastArgs("3"), {
+        ours: async () => json({ runs: [] }),
+        github: lastGithub,
+        out: (s) => (text = s),
+      });
+      expect(text).toBe("no runs");
+      expect(code).toBe(0);
+    });
+  });
 });
