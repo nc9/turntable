@@ -8482,9 +8482,9 @@
             "bearerAuth": []
           }
         ],
-        "x-longshore-effect": "write",
-        "x-longshore-instance-only": true,
-        "x-longshore-untrusted-output": false
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/project-settings": {

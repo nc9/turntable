@@ -208,7 +208,7 @@ export function pendingMigrations(dbPath: string): string[] {
     db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     const tables = db
       .query<{ name: string }, []>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('__turntable_migrations', '__longshore_migrations')",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('__turntable_migrations', '__longshore_migrations')", // rename-keep: the legacy table name
       )
       .all()
       .map((r) => r.name);
