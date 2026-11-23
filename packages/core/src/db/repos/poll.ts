@@ -166,6 +166,11 @@ export function createPolledRun(
     cancelInProgress?: boolean | undefined;
     /** Hold every job for approval (an untrusted class): nothing can start until approved. */
     hold?: boolean | undefined;
+    /**
+     * What the dedupe marker is keyed on instead of the run's event: a tag run is keyed
+     * `tag:<name>` so a tag at the same commit as the default branch head is still its own run.
+     */
+    seenEvent?: string | undefined;
   },
 ): Promise<{ run: Run; superseded: Superseded } | undefined> {
   const invalid = validateJobGraph(input.jobs);
@@ -176,7 +181,7 @@ export function createPolledRun(
       projectId,
       repo: input.repo.toLowerCase(),
       workflowPath: input.run.workflowPath,
-      event: input.run.event,
+      event: input.seenEvent ?? input.run.event,
       sha: input.run.sha,
     };
     const [seen] = await tx.orm
@@ -493,6 +498,54 @@ export function markPollSkipped(
       .onConflictDoNothing()
       .returning({ sha: s.pollSeen.sha });
     return rows.length > 0;
+  });
+}
+
+/** When a marker was first written (epoch ms), or undefined when there is none. */
+export function pollMarkedAt(
+  db: Db,
+  scope: Scope,
+  input: { repo: string; workflowPath: string; event: string; sha: string },
+): Promise<number | undefined> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    const [row] = await h.orm
+      .select({ at: s.pollSeen.createdAt })
+      .from(s.pollSeen)
+      .where(
+        and(
+          eq(s.pollSeen.projectId, projectId),
+          eq(s.pollSeen.repo, input.repo.toLowerCase()),
+          eq(s.pollSeen.workflowPath, input.workflowPath),
+          eq(s.pollSeen.event, input.event),
+          eq(s.pollSeen.sha, input.sha),
+        ),
+      )
+      .limit(1);
+    return row?.at;
+  });
+}
+
+/** Removes a marker written by `markPollSkipped` (only ones that are state, never ones that made a run). */
+export function clearPollMarker(
+  db: Db,
+  scope: Scope,
+  input: { repo: string; workflowPath: string; event: string; sha: string },
+): Promise<void> {
+  return db.run(async (h) => {
+    const { projectId } = requireProject(scope);
+    await h.orm
+      .delete(s.pollSeen)
+      .where(
+        and(
+          eq(s.pollSeen.projectId, projectId),
+          eq(s.pollSeen.repo, input.repo.toLowerCase()),
+          eq(s.pollSeen.workflowPath, input.workflowPath),
+          eq(s.pollSeen.event, input.event),
+          eq(s.pollSeen.sha, input.sha),
+          eq(s.pollSeen.runId, "skipped"),
+        ),
+      );
   });
 }
 

@@ -38,12 +38,39 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       committerEmail?: string;
       message?: string;
     }[],
-    calls: [] as { path: string; method: string | undefined }[],
+    /** Tags by name: the commit, or (annotated) the tag object that points at it. */
+    tags: new Map<string, { sha: string; annotatedAs?: string; tagger?: string }>(),
+    /** The default branch's commits, newest first, as the commit listing reports them. */
+    history: [] as { sha: string; parents: string[] }[],
+    /** Tag rulesets, as the rulesets API would report them. */
+    rulesets: [] as {
+      id: number;
+      target?: string;
+      enforcement?: string;
+      include: string[];
+      exclude?: string[];
+      rules?: string[];
+      bypass?: { actor_type: string; actor_id: number | null }[];
+      /** Leave `bypass_actors` out of the detail, as the API does without admin read access. */
+      omitBypass?: boolean;
+      /** ISO time the ruleset was last changed, if the API says. */
+      updatedAt?: string;
+    }[],
+    /** Answer the rulesets endpoints with this status instead (403: the token cannot read them). */
+    rulesetsStatus: undefined as number | undefined,
+    /** Author login (null: no linked account) and message of a commit, by sha. */
+    commits: new Map<string, { login: string | null; message: string }>(),
+    calls: [] as { path: string; method: string | undefined; ifNoneMatch?: string }[],
   };
   const fetchStub = async (url: string, init?: RequestInit): Promise<Response> => {
     const u = new URL(url);
     const path = decodeURIComponent(u.pathname);
-    state.calls.push({ path: path + u.search, method: init?.method });
+    const inm = new Headers(init?.headers).get("if-none-match") ?? undefined;
+    state.calls.push({
+      path: path + u.search,
+      method: init?.method,
+      ...(inm ? { ifNoneMatch: inm } : {}),
+    });
     const json = (body: unknown): Response =>
       new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
     if (path === `/repos/${repo}`) return json({ default_branch: state.defaultBranch });
@@ -70,6 +97,71 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
               : "read";
       return json({ permission: legacy, role_name: role });
     }
+    const tagList = new RegExp(`^/repos/${repo}/git/matching-refs/tags/(.*)$`).exec(path);
+    if (tagList) {
+      const body = [...state.tags]
+        .filter(([name]) => name.startsWith(tagList[1] as string))
+        .map(([name, v]) => ({
+          ref: `refs/tags/${name}`,
+          object: v.annotatedAs
+            ? { type: "tag", sha: v.annotatedAs }
+            : { type: "commit", sha: v.sha },
+        }));
+      const text = JSON.stringify(body);
+      const etag = `"tags-${new Bun.CryptoHasher("sha1").update(text).digest("hex")}"`;
+      if (inm === etag) return new Response(null, { status: 304 });
+      return new Response(text, { headers: { "content-type": "application/json", etag } });
+    }
+    const tagObj = new RegExp(`^/repos/${repo}/git/tags/([0-9a-f]{40})$`).exec(path);
+    if (tagObj) {
+      const hit = [...state.tags.values()].find((v) => v.annotatedAs === tagObj[1]);
+      return hit
+        ? json({
+            tagger: hit.tagger === undefined ? null : { name: hit.tagger },
+            object: { type: "commit", sha: hit.sha },
+          })
+        : new Response("not found", { status: 404 });
+    }
+    if (path === `/repos/${repo}/commits` && u.searchParams.has("sha")) {
+      const page = Number(u.searchParams.get("page") ?? "1");
+      const per = Number(u.searchParams.get("per_page") ?? "30");
+      return json(
+        state.history.slice((page - 1) * per, page * per).map((c) => ({
+          sha: c.sha,
+          parents: c.parents.map((sha) => ({ sha })),
+        })),
+      );
+    }
+    if (path === `/repos/${repo}/rulesets`) {
+      if (state.rulesetsStatus) return new Response("no", { status: state.rulesetsStatus });
+      return json(
+        state.rulesets.map((r) => ({
+          id: r.id,
+          target: r.target ?? "tag",
+          enforcement: r.enforcement ?? "active",
+        })),
+      );
+    }
+    const rs = new RegExp(`^/repos/${repo}/rulesets/(\\d+)$`).exec(path);
+    if (rs) {
+      if (state.rulesetsStatus) return new Response("no", { status: state.rulesetsStatus });
+      const r = state.rulesets.find((x) => x.id === Number(rs[1]));
+      return r
+        ? json({
+            id: r.id,
+            target: r.target ?? "tag",
+            enforcement: r.enforcement ?? "active",
+            conditions: { ref_name: { include: r.include, exclude: r.exclude ?? [] } },
+            rules: (r.rules ?? ["creation", "update", "deletion", "non_fast_forward"]).map(
+              (type) => ({
+                type,
+              }),
+            ),
+            ...(r.omitBypass ? {} : { bypass_actors: r.bypass ?? [] }),
+            ...(r.updatedAt ? { updated_at: r.updatedAt } : {}),
+          })
+        : new Response("not found", { status: 404 });
+    }
     if (path === `/repos/${repo}/git/matching-refs/heads/gh-readonly-queue/main/`) {
       return json(state.queue.map((q) => ({ ref: q.ref, object: { sha: q.sha } })));
     }
@@ -87,6 +179,14 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       });
     }
     const commit = new RegExp(`^/repos/${repo}/commits/([0-9a-f]{40})$`).exec(path);
+    const known = commit ? state.commits.get(commit[1] as string) : undefined;
+    if (commit && known) {
+      return json({
+        sha: commit[1],
+        commit: { message: known.message },
+        author: known.login === null ? null : { login: known.login },
+      });
+    }
     if (commit) {
       const pull = state.pulls.find((p) => p.headSha === commit[1]);
       return json({

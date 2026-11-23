@@ -33,6 +33,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       authors: { type: "string" },
       "merge-queue": { type: "boolean", default: false },
       "cache-release-restore": { type: "string" },
+      "tag-refs": { type: "string" },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -62,7 +63,7 @@ async function ownPolicy(args: string[]): Promise<void> {
         console.log(`checks-mode ${c.project}: ${c.mode}`);
       for (const i of await showIngest(db, values.org)) {
         console.log(
-          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue})` : "off"}`,
+          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"})` : "off"}`,
         );
       }
     } else if (
@@ -96,6 +97,10 @@ async function ownPolicy(args: string[]): Promise<void> {
           .map((x) => x.trim())
           .filter(Boolean),
         mergeQueue: values["merge-queue"],
+        tagRefs: values["tag-refs"]
+          ?.split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
         // Asked once, now; the token (optional, for private repos) comes from the environment.
         resolveDefaultBranch: (repo) =>
           new GithubClient({
@@ -146,7 +151,9 @@ export async function policyCommand(args: string[]): Promise<void> {
   const ours =
     rest.includes("approve-run-min-role") ||
     rest.some((a) =>
-      /^--(egress|checks-mode|ingest|release-refs|signing-key|signing-environment)(=|$)/.test(a),
+      /^--(egress|checks-mode|ingest|release-refs|signing-key|signing-environment|tag-refs)(=|$)/.test(
+        a,
+      ),
     );
   if (sub === "set" && ours) return ownPolicy(args);
   if (sub === "show") {

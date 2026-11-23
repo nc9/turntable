@@ -8,7 +8,7 @@ import {
   readPollToken,
 } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
-import { pollRepo } from "./ingest";
+import { newTagCaches, pollRepo } from "./ingest";
 import { ingestStatus, type RepoStatus } from "./status";
 
 export type PollerOptions = {
@@ -51,6 +51,7 @@ export class Poller {
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #failures = new Map<string, number>();
   readonly #overCap = new Set<string>();
+  readonly #tagCaches = newTagCaches();
   readonly #busy = new Set<string>();
   readonly #again = new Set<string>();
   readonly #lastStart = new Map<string, number>();
@@ -252,6 +253,7 @@ export class Poller {
           github: this.#github,
           provider: this.#o.config.provider,
           overCap: this.#overCap,
+          tagCaches: this.#tagCaches,
           ...(this.#o.now ? { now: this.#o.now } : {}),
           log,
         },

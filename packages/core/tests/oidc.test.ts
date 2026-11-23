@@ -176,6 +176,16 @@ describe("discovery and JWKS", () => {
 });
 
 describe("minting", () => {
+  test("a run with no known actor (a tag run has none) gets a token with NO actor claim", async () => {
+    await db.orm.update(s.runs).set({ actor: null }).where(eq(s.runs.id, a.runId));
+    const { res, body } = await mint(a);
+    expect(res.status).toBe(200);
+    const rp = await relyingParty(body.value!, "org-a", "sts.amazonaws.com");
+    expect(rp).toMatchObject({ ok: true });
+    expect(Object.hasOwn(rp.claims, "actor")).toBe(false);
+    expect(rp.claims).toMatchObject({ event_name: "push", trust_class: "protected" });
+  });
+
   test("a protected attempt gets a verifiable token with the documented claims", async () => {
     const { res, body } = await mint(a);
     expect(res.status).toBe(200);
