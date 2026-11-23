@@ -1,0 +1,3 @@
+packages/core/tests/merge-queue.test.ts
+packages/core/tests/oidc-audiences.test.ts
+packages/core/tests/parity.test.ts

@@ -1,0 +1,11 @@
+packages/core/tests/events.test.ts
+packages/core/tests/event-types.test.ts
+packages/core/tests/events-check-drop-migration.test.ts
+packages/core/tests/migration-rebuild.test.ts
+packages/core/tests/events-quota-migration.test.ts
+packages/core/tests/migration-sequence-guard.test.ts
+packages/core/tests/migration-sha.test.ts
+packages/core/tests/migration-shas-golden.test.ts
+packages/core/tests/migration-concurrent.test.ts
+packages/core/tests/untrusted-run-approval-migration.test.ts
+packages/core/tests/approval-policy-migration.test.ts

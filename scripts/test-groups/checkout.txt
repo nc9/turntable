@@ -1,0 +1,3 @@
+packages/core/tests/checkout-child.test.ts
+packages/core/tests/checkout-trust.test.ts
+packages/core/tests/git-fetch.test.ts

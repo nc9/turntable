@@ -1,0 +1,4 @@
+packages/core/tests/pg-parity.test.ts
+packages/core/tests/events-quota-migration-pg.test.ts
+packages/core/tests/migration-sequence-pg.test.ts
+packages/core/tests/migration-sha-pg.test.ts

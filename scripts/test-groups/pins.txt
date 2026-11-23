@@ -1,0 +1,3 @@
+packages/core/tests/action-pins.test.ts
+packages/core/tests/cache.test.ts
+packages/core/tests/forge-token.test.ts

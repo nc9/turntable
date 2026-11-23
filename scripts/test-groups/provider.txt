@@ -1,0 +1,8 @@
+packages/provider-sdk/tests/sdk.test.ts
+packages/provider-sdk/tests/read-capped.test.ts
+packages/provider-sdk/tests/wrapper-watcher.test.ts
+packages/provider-sdk/tests/legacy-env.test.ts
+packages/provider-conformance/tests/fake.test.ts
+packages/provider-conformance/tests/fake-faults.test.ts
+packages/provider-docker/tests/commands.test.ts
+packages/provider-docker/tests/legacy-labels.test.ts

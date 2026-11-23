@@ -1,0 +1,1 @@
+packages/core/tests/vault-jwt-e2e.test.ts

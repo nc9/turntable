@@ -1,0 +1,4 @@
+packages/signer/tests/signer.test.ts
+packages/signer/tests/kms.test.ts
+packages/core/tests/signing.test.ts
+packages/core/tests/verify-cli.test.ts

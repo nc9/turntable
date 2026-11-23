@@ -1,0 +1,4 @@
+packages/core/tests/vault.test.ts
+packages/core/tests/vault-ops.test.ts
+packages/core/tests/vault-cli.test.ts
+packages/core/tests/env-scrub.test.ts

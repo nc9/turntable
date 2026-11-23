@@ -1,0 +1,2 @@
+packages/core/tests/pr-event-parity.test.ts
+packages/core/tests/parity.test.ts

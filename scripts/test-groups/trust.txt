@@ -1,0 +1,2 @@
+packages/core/tests/trust.test.ts
+packages/core/tests/workflow-taint.test.ts

@@ -1,7 +1,8 @@
 // Runs every `test:*` suite script in package.json, one after another (a suite is a handful of
 // explicit test files; running them in parallel or as a bare `bun test` exhausts memory).
-// A new suite is just a new `test:<name>` script: nothing else lists it, so pull requests that
-// add suites stop colliding on one shared line.
+// A new suite is a new `test:<name>` script (`bun scripts/run-test-group.ts <name>`) plus a
+// scripts/test-groups/<name>.txt file; a new test file is one line in an existing group file, so
+// pull requests stop colliding on one shared package.json line.
 //
 // Left out because they need Docker, a compiled binary or a live service, and have their own CI
 // jobs: the suites named in GATED. (`test:golden` is the release golden path: it is slower and
