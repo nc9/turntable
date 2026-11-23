@@ -375,6 +375,63 @@ test("a failing write rolls back and is audited; a project op needs a project", 
   void getOrgById;
 });
 
+test("an op's auditDetail can never un-redact a secret or omitted input field", async () => {
+  const value = `v-${crypto.randomUUID()}`;
+  const make = (name: string, outside: boolean, field: "secretInputFields" | "logOmitFields") =>
+    defineOp({
+      name,
+      summary: "Echoes a colliding detail key.",
+      description: "Test op whose auditDetail reuses the name of a redacted input field.",
+      input: z.object({ token: z.string() }),
+      output: z.object({}),
+      effect: "write",
+      auth: { type: "token", minRole: "operator" },
+      untrustedOutput: false,
+      scope: "org",
+      http: { method: "POST", path: `/${name}` },
+      [field]: ["token"],
+      ...(outside ? { outsideTransaction: true } : {}),
+      auditDetail: () => ({ token: value, extra: "kept" }),
+      async handler() {
+        return {};
+      },
+    });
+  const ops = [
+    make("leak_secret_tx", false, "secretInputFields"),
+    make("leak_secret_out", true, "secretInputFields"),
+    make("leak_omit_tx", false, "logOmitFields"),
+    make("leak_omit_out", true, "logOmitFields"),
+  ];
+  const e = { registry: createRegistry(ops), db, now: () => NOW };
+  const { secret } = await mintToken(db, { orgId: a.orgId }, "operator");
+  const warn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (m: string) => void warnings.push(m);
+  try {
+    for (const op of ops) {
+      const res = await dispatch(e, { kind: "bearer", token: secret }, op.name, {
+        token: "input-secret",
+      });
+      expect(res.ok).toBe(true);
+    }
+  } finally {
+    console.warn = warn;
+  }
+  const rows = await listAudit(db, { orgId: a.orgId });
+  const text = JSON.stringify(rows);
+  expect(text).not.toContain(value);
+  expect(text).not.toContain("input-secret");
+  for (const op of ops) {
+    const row = rows.find((r) => r.op === op.name)!;
+    const input = JSON.parse(row.input as string);
+    expect(input.token).toBe(op.name.includes("secret") ? "[redacted]" : "[omitted]");
+    expect(input.extra).toBe("kept");
+  }
+  expect(warnings.length).toBe(4);
+  expect(warnings.join("\n")).toContain('"token"');
+  expect(warnings.join("\n")).not.toContain(value);
+});
+
 test("sign_release is a signature op: no token of any role can reach it, over any adapter", async () => {
   const input = { run_id: a.runId, artifacts: ["x.bin"], environment: "production" };
   for (const role of ["reader", "operator", "release_operator"] as const) {

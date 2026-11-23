@@ -102,6 +102,28 @@ export function redactInput(op: Op, input: unknown): unknown {
   return out;
 }
 
+/**
+ * The audited input of a successful call: the redacted input, plus the op's own detail. The
+ * redacted input wins: a detail key that collides with an input key is dropped (and named, never
+ * its value), so a detail can never un-redact a secret or omitted field.
+ */
+function auditedInput(op: Op, input: unknown, detail: Record<string, unknown>): object {
+  const base = redactInput(op, input);
+  const redacted =
+    base !== null && typeof base === "object" ? (base as Record<string, unknown>) : {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(detail)) {
+    if (k in redacted) {
+      console.warn(
+        `turntable: op ${op.name} auditDetail key "${k}" collides with an input key; dropped`,
+      );
+      continue;
+    }
+    out[k] = v;
+  }
+  return { ...out, ...redacted };
+}
+
 /** A short stable digest of an unrecognised token, so repeats of it share a throttle bucket. */
 const unknownTokenSource = (c: Credential): string =>
   c.kind === "bearer" ? hashToken(c.token).slice(0, 12) : "none";
@@ -380,7 +402,7 @@ export async function dispatch(
             op: target.name,
             effect: target.effect,
             outcome: "ok",
-            input: { ...(redactInput(target, input) as object), ...detail },
+            input: auditedInput(target, input, detail),
           });
         },
         { lock: `audit:${scope.orgId}` },
@@ -397,10 +419,7 @@ export async function dispatch(
             op: target.name,
             effect: target.effect,
             outcome: "ok",
-            input: {
-              ...(redactInput(target, input) as object),
-              ...(target.auditDetail?.(out) ?? {}),
-            },
+            input: auditedInput(target, input, target.auditDetail?.(out) ?? {}),
           });
           return out;
         },
