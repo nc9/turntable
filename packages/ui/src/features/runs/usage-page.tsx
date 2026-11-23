@@ -136,13 +136,17 @@ export function UsagePage() {
           ) : null}
           {(() => {
             const shown = usageFor(q.data, project);
-            const name = q.data.projects.find((p) => p.slug === project)?.name;
+            const chosen = q.data.projects.find((p) => p.slug === project);
+            const name = chosen?.name;
             return (
               <>
                 <p className="mb-6 text-sm text-dim">
                   {formatMinutes(shown.totalMinutes)} in the last {days} days
                   {name ? ` in ${name}` : ""}, counted from the provider's create to its confirmed
                   destroy.
+                  {chosen && chosen.preemptions > 0
+                    ? ` ${chosen.preemptions} preempted attempts used ${formatMinutes(chosen.preemptedMinutes)} of that (${formatMinutes(chosen.usefulMinutes)} useful).`
+                    : ""}
                 </p>
                 <UsageChart
                   usage={{

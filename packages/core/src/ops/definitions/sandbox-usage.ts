@@ -39,7 +39,7 @@ export const sandboxUsageOp = defineOp({
     "attempt's duration. Scoped to the org, or to one project when a project is given. This is " +
     'the number quotas limit. With `group_by: "project"` the answer also carries `projects`: the same ' +
     "per-day figures for each project that had a sandbox alive in the window (a project with no " +
-    "usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart); each day's project rows add up to that day's org row. A project-scoped " +
+    "usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart). Each project and class also carries `preemptions` (attempts preempted in the window), the sandbox time of those attempts as `preempted_seconds` and `preempted_minutes` (wasted work, still part of the totals and the quotas) against `useful_seconds` and `useful_minutes`, and a project the jobs preempted most under `preempted_jobs`; each day's project rows add up to that day's org row. A project-scoped " +
     "token sees only its own project. Read-only.",
   input: z.object({
     days: z.int().min(1).max(92).default(7).describe("How many UTC days, ending today."),
@@ -60,6 +60,21 @@ export const sandboxUsageOp = defineOp({
           days: z.array(dayShape),
           total_seconds: z.number(),
           total_minutes: z.number(),
+          preemptions: z.int().describe("Attempts of this project preempted in the window."),
+          preempted_seconds: z.number().describe("Sandbox seconds of the preempted attempts."),
+          preempted_minutes: z.number(),
+          useful_seconds: z.number().describe("`total_seconds` less `preempted_seconds`."),
+          useful_minutes: z.number(),
+          preempted_jobs: z
+            .array(
+              z.object({
+                job_id: z.string(),
+                job_key: z.string(),
+                run_id: z.string(),
+                preemptions: z.int(),
+              }),
+            )
+            .describe("The jobs preempted most in the window, with how often (at most 10)."),
         }),
       )
       .optional()
@@ -70,6 +85,11 @@ export const sandboxUsageOp = defineOp({
           scheduling_class: z.enum(["normal", "yield"]),
           total_seconds: z.number(),
           total_minutes: z.number(),
+          preemptions: z.int(),
+          preempted_seconds: z.number(),
+          preempted_minutes: z.number(),
+          useful_seconds: z.number(),
+          useful_minutes: z.number(),
         }),
       )
       .optional()
@@ -107,13 +127,35 @@ export const sandboxUsageOp = defineOp({
         days: p.days.map(mapDay),
         total_seconds: secs,
         total_minutes: round3(secs / 60),
+        preemptions: p.preemptions,
+        preempted_seconds: p.preemptedSeconds,
+        preempted_minutes: round3(p.preemptedSeconds / 60),
+        useful_seconds: round3(secs - p.preemptedSeconds),
+        useful_minutes: round3((secs - p.preemptedSeconds) / 60),
+        preempted_jobs: p.preemptedJobs.map((j) => ({
+          job_id: j.jobId,
+          job_key: j.jobKey,
+          run_id: j.runId,
+          preemptions: j.preemptions,
+        })),
       };
     });
     const classes = (["normal", "yield"] as const).map((c) => {
-      const secs = round3(
-        projects.filter((p) => p.scheduling_class === c).reduce((n, p) => n + p.total_seconds, 0),
-      );
-      return { scheduling_class: c, total_seconds: secs, total_minutes: round3(secs / 60) };
+      const mine = projects.filter((p) => p.scheduling_class === c);
+      const sum = (f: (p: (typeof projects)[number]) => number) =>
+        round3(mine.reduce((n, p) => n + f(p), 0));
+      const secs = sum((p) => p.total_seconds);
+      const lost = sum((p) => p.preempted_seconds);
+      return {
+        scheduling_class: c,
+        total_seconds: secs,
+        total_minutes: round3(secs / 60),
+        preemptions: mine.reduce((n, p) => n + p.preemptions, 0),
+        preempted_seconds: lost,
+        preempted_minutes: round3(lost / 60),
+        useful_seconds: round3(secs - lost),
+        useful_minutes: round3((secs - lost) / 60),
+      };
     });
     return { ...base, projects, classes };
   },

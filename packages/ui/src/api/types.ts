@@ -135,6 +135,10 @@ export type SandboxUsageProject = {
   name: string;
   days: SandboxUsageDay[];
   totalMinutes: number;
+  /** Attempts preempted for normal work in the window, and the sandbox time they wasted. */
+  preemptions: number;
+  preemptedMinutes: number;
+  usefulMinutes: number;
 };
 
 export type SandboxUsage = {

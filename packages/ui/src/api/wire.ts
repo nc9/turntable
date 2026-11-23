@@ -72,6 +72,9 @@ export type WireSandboxUsage = {
     }[];
     total_seconds: number;
     total_minutes: number;
+    preemptions?: number;
+    preempted_minutes?: number;
+    useful_minutes?: number;
   }[];
 };
 

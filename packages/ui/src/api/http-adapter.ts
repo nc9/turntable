@@ -715,6 +715,9 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           name: p.project_name,
           days: p.days.map(mapDay),
           totalMinutes: p.total_minutes,
+          preemptions: p.preemptions ?? 0,
+          preemptedMinutes: p.preempted_minutes ?? 0,
+          usefulMinutes: p.useful_minutes ?? p.total_minutes,
         })),
         limitMinutesPerDay: limit,
       };

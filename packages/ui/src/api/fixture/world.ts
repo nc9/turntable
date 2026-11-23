@@ -1110,12 +1110,16 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
     const project = (slug: "api" | "web", name: string) => {
       const d = rows.map((r) => share(r, slug));
+      const total = d.reduce((n, r) => n + r.minutes, 0);
       return {
         id: `01FIXTURE0PROJECT0${slug.toUpperCase()}000`,
         slug,
         name,
         days: d,
-        totalMinutes: d.reduce((n, r) => n + r.minutes, 0),
+        totalMinutes: total,
+        preemptions: 0,
+        preemptedMinutes: 0,
+        usefulMinutes: total,
       };
     };
     return {

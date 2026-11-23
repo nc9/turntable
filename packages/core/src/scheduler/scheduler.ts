@@ -15,6 +15,9 @@ import {
   resetAttemptOutput,
   upsertStep,
 } from "../db/repos";
+import { ambientSettings } from "../settings/ambient";
+import { preemptMaxPerJobSetting, preemptWindowMinutesSetting } from "../settings/definitions";
+import { resolveSetting, type SettingsRuntime } from "../settings/resolve";
 import { workflowReadiness } from "./workflow-readiness";
 import type {
   AttemptContext,
@@ -45,6 +48,8 @@ export type SchedulerOptions = {
   observer?: AttemptObserver;
   /** Run only this run's attempts (see ClaimOptions.onlyRun): `turntable run`'s own scheduler. */
   onlyRun?: string;
+  /** The settings layers (env, `turntable.toml`): where the preemption limits come from. Default: the process's own (`ambientSettings`). */
+  settings?: SettingsRuntime;
   now?: () => number;
   log?: (message: string) => void;
 };
@@ -60,10 +65,11 @@ const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reaso
 export class Scheduler {
   readonly owner: string;
   readonly #o: Required<
-    Omit<SchedulerOptions, "owner" | "log" | "readiness" | "onlyRun" | "observer">
+    Omit<SchedulerOptions, "owner" | "log" | "readiness" | "onlyRun" | "observer" | "settings">
   > & {
     observer?: AttemptObserver | undefined;
     onlyRun?: string | undefined;
+    settings?: SettingsRuntime | undefined;
     log: (message: string) => void;
     readiness: Readiness;
   };
@@ -91,10 +97,24 @@ export class Scheduler {
       perOrgCap: o.perOrgCap ?? 2,
       readiness: o.readiness ?? workflowReadiness,
       onlyRun: o.onlyRun,
+      settings: o.settings,
       observer: o.observer,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
     };
+  }
+
+  #limit: { at: number; value: { max: number; windowMs: number } } | undefined;
+
+  /** The anti-thrash limits (#355), read through the settings and kept a few seconds. */
+  async #preemptLimit(now: number): Promise<{ max: number; windowMs: number }> {
+    const rt = this.#o.settings ?? ambientSettings();
+    if (this.#limit && Math.abs(now - this.#limit.at) < 5_000) return this.#limit.value;
+    const max = (await resolveSetting(rt, this.#o.db, preemptMaxPerJobSetting.key)).value;
+    const minutes = (await resolveSetting(rt, this.#o.db, preemptWindowMinutesSetting.key)).value;
+    const value = { max: max as number, windowMs: (minutes as number) * 60_000 };
+    this.#limit = { at: now, value };
+    return value;
   }
 
   /** Attempts this worker is running right now. */
@@ -109,10 +129,12 @@ export class Scheduler {
   async tick(): Promise<number> {
     let started = 0;
     for (;;) {
+      const now = this.#o.now();
       const claim = await claimNextAttempt(this.#o.db, {
         owner: this.owner,
         leaseMs: this.#o.leaseMs,
-        now: this.#o.now(),
+        now,
+        preemptLimit: await this.#preemptLimit(now),
         globalCap: this.#o.globalCap,
         perOrgCap: this.#o.perOrgCap,
         quotaCacheMs: 5_000,

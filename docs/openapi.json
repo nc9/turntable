@@ -665,6 +665,12 @@
                             "description": "Set when the latest attempt ended in infra_error: the result is not trustworthy.",
                             "type": ["string", "null"]
                           },
+                          "preemptions": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How many of the job's attempts were preempted for normal work (error_class `preempted`): it was requeued each time and started over."
+                          },
                           "attempts": {
                             "type": "array",
                             "items": {
@@ -777,6 +783,7 @@
                           "finished_at",
                           "duration_ms",
                           "infra_error_reason",
+                          "preemptions",
                           "attempts",
                           "log_path"
                         ],
@@ -7085,7 +7092,7 @@
       "get": {
         "operationId": "sandbox_usage",
         "summary": "Exact sandbox time per UTC day: from the provider's create to its confirmed destroy.",
-        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart); each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
+        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart). Each project and class also carries `preemptions` (attempts preempted in the window), the sandbox time of those attempts as `preempted_seconds` and `preempted_minutes` (wasted work, still part of the totals and the quotas) against `useful_seconds` and `useful_minutes`, and a project the jobs preempted most under `preempted_jobs`; each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "days",
@@ -7236,6 +7243,51 @@
                           },
                           "total_minutes": {
                             "type": "number"
+                          },
+                          "preemptions": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Attempts of this project preempted in the window."
+                          },
+                          "preempted_seconds": {
+                            "type": "number",
+                            "description": "Sandbox seconds of the preempted attempts."
+                          },
+                          "preempted_minutes": {
+                            "type": "number"
+                          },
+                          "useful_seconds": {
+                            "type": "number",
+                            "description": "`total_seconds` less `preempted_seconds`."
+                          },
+                          "useful_minutes": {
+                            "type": "number"
+                          },
+                          "preempted_jobs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "job_id": {
+                                  "type": "string"
+                                },
+                                "job_key": {
+                                  "type": "string"
+                                },
+                                "run_id": {
+                                  "type": "string"
+                                },
+                                "preemptions": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": ["job_id", "job_key", "run_id", "preemptions"],
+                              "additionalProperties": false
+                            },
+                            "description": "The jobs preempted most in the window, with how often (at most 10)."
                           }
                         },
                         "required": [
@@ -7245,7 +7297,13 @@
                           "scheduling_class",
                           "days",
                           "total_seconds",
-                          "total_minutes"
+                          "total_minutes",
+                          "preemptions",
+                          "preempted_seconds",
+                          "preempted_minutes",
+                          "useful_seconds",
+                          "useful_minutes",
+                          "preempted_jobs"
                         ],
                         "additionalProperties": false
                       }
@@ -7265,9 +7323,35 @@
                           },
                           "total_minutes": {
                             "type": "number"
+                          },
+                          "preemptions": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "preempted_seconds": {
+                            "type": "number"
+                          },
+                          "preempted_minutes": {
+                            "type": "number"
+                          },
+                          "useful_seconds": {
+                            "type": "number"
+                          },
+                          "useful_minutes": {
+                            "type": "number"
                           }
                         },
-                        "required": ["scheduling_class", "total_seconds", "total_minutes"],
+                        "required": [
+                          "scheduling_class",
+                          "total_seconds",
+                          "total_minutes",
+                          "preemptions",
+                          "preempted_seconds",
+                          "preempted_minutes",
+                          "useful_seconds",
+                          "useful_minutes"
+                        ],
                         "additionalProperties": false
                       }
                     },
