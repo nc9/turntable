@@ -124,13 +124,20 @@ test("POST bodies: json object only, size capped, path wins over body", async ()
     body: "x".repeat(70_000),
   });
   expect(big.status).toBe(413);
-  // an operator token cannot mint tokens, whatever the body says
-  const forbidden = await req("/api/v1/tokens", {
+  // delegated minting (#437) never escalates: an operator token cannot mint above its own role,
+  // and a reader token cannot mint at all, whatever the body says
+  const escalate = await req("/api/v1/tokens", {
     method: "POST",
     token: operator,
+    body: JSON.stringify({ name: "x", role: "release_operator" }),
+  });
+  expect(escalate.status).toBe(403);
+  const readerMint = await req("/api/v1/tokens", {
+    method: "POST",
+    token: reader,
     body: JSON.stringify({ name: "x", role: "reader" }),
   });
-  expect(forbidden.status).toBe(403);
+  expect(readerMint.status).toBe(403);
   // path param beats a conflicting body value
   const conflict = await req(`/api/v1/runs/${a.runId}/cancel`, {
     method: "POST",
