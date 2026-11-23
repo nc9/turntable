@@ -1,0 +1,14 @@
+scripts/rcodesign.test.ts
+scripts/supply-chain.test.ts
+scripts/runner-toolset.test.ts
+scripts/public-hygiene.test.ts
+scripts/dry-run-provenance.test.ts
+scripts/check-pins.test.ts
+scripts/release-checks.test.ts
+scripts/test-wiring.test.ts
+scripts/check-migration-shas-diff.test.ts
+scripts/ops-table.test.ts
+scripts/config-reference.test.ts
+scripts/skills.test.ts
+scripts/page-css.test.ts
+scripts/test-groups.test.ts

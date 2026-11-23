@@ -1,0 +1,12 @@
+packages/core/tests/ops-dispatch.test.ts
+packages/core/tests/db-backup.test.ts
+packages/core/tests/ops-ops.test.ts
+packages/core/tests/ops-rest.test.ts
+packages/core/tests/ops-openapi.test.ts
+packages/core/tests/ops-untrusted-header.test.ts
+packages/core/tests/ops-cli.test.ts
+packages/core/tests/ops-outside-transaction.test.ts
+packages/core/tests/github-app-status.test.ts
+packages/core/tests/realtime.test.ts
+packages/core/tests/settings.test.ts
+packages/core/tests/settings-boot.test.ts

@@ -1,0 +1,5 @@
+packages/core/tests/audit-chain.test.ts
+packages/core/tests/audit-coverage.test.ts
+packages/core/tests/audit-cli.test.ts
+packages/core/tests/audit-hardening.test.ts
+packages/core/tests/audit-anchor-export.test.ts

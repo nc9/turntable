@@ -5,10 +5,13 @@
 //   TURNTABLE_TEST_DB=pglite bun run scripts/run-tests-pg.ts
 //   TURNTABLE_TEST_DB=postgres://postgres@localhost:5432/postgres bun run scripts/run-tests-pg.ts
 //
-// Only suites that are plain `bun test <files under packages/core/tests>` run here (the others
+// Only suites that are plain group runs (`bun scripts/run-test-group.ts <group>`, files read from
+// scripts/test-groups/<group>.txt) with files under packages/core/tests run here (the others
 // need Docker, a binary or a service and have their own jobs). A few files are about SQLite
 // itself or start a second process with its own database; they are listed below, with why.
 // At most five files go to one `bun test` (each PGlite-backed process is memory-heavy).
+import { parseGroupCall, readGroup, testScripts } from "./test-groups";
+
 const SQLITE_ONLY = new Map<string, string>([
   ["db.test.ts", "reopens a SQLite file"],
   ["legacy-names.test.ts", "renames SQLite files and the SQLite migrations table"],
@@ -28,20 +31,17 @@ const SQLITE_ONLY = new Map<string, string>([
 const url = process.env.TURNTABLE_TEST_DB;
 if (!url) throw new Error("set TURNTABLE_TEST_DB to pglite or a postgres:// URL");
 
-const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
-  scripts: Record<string, string>;
-};
-const suites = Object.entries(pkg.scripts).filter(([k, v]) => {
-  if (!k.startsWith("test:")) return false;
-  if (/^[A-Z_]+=/.test(v)) return false; // env-gated: needs Docker or a binary
-  return v.startsWith("bun test ") && v.includes("packages/core/tests/");
-});
+const suites: [string, string[]][] = [];
+for (const [k, v] of Object.entries(testScripts())) {
+  const call = parseGroupCall(v);
+  if (!call || call.env.length > 0) continue; // env-gated: needs Docker or a binary
+  const files = readGroup(call.group);
+  if (files.some((f) => f.includes("packages/core/tests/"))) suites.push([k, files]);
+}
 
 const failed: string[] = [];
-for (const [name, cmd] of suites) {
-  const files = cmd
-    .slice("bun test ".length)
-    .split(/\s+/)
+for (const [name, listed] of suites) {
+  const files = listed
     .filter((f) => f.startsWith("packages/core/tests/"))
     .filter((f) => !SQLITE_ONLY.has(f.split("/").pop()!));
   for (let i = 0; i < files.length; i += 5) {

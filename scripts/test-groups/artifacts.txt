@@ -1,0 +1,2 @@
+packages/core/tests/artifact-service.test.ts
+packages/core/tests/artifact-egress-none.test.ts
