@@ -64,18 +64,27 @@ describe("keys reseal with the master key from the environment", () => {
     expect(errs.join("\n")).not.toContain(key.toString("hex"));
   });
 
-  test("a previous key is accepted, scrubbed, and not echoed", async () => {
+  test("a previous key is refused, scrubbed (a child does not see it) and not echoed", async () => {
     const key = rnd();
     const prev = rnd();
     const data = await setup(key);
     process.env.TURNTABLE_MASTER_KEY = key.toString("hex");
     process.env.TURNTABLE_MASTER_KEY_PREVIOUS = prev.toString("hex");
-    await keysCommand(["reseal", "--org", "local", "--data-dir", data]);
+    const err = await keysCommand(["reseal", "--org", "local", "--data-dir", data]).then(
+      () => undefined,
+      (e: Error) => e,
+    );
+    expect(err?.message).toContain("a previous master key is set: finish the rotation first");
+    expect(err?.message).toContain("remove TURNTABLE_MASTER_KEY_PREVIOUS");
+    expect(err?.message).not.toContain(prev.toString("hex"));
+    expect(err?.message).not.toContain(key.toString("hex"));
+    expect(errs.join("\n")).not.toContain("resealed");
     expect(process.env.TURNTABLE_MASTER_KEY_PREVIOUS).toBeUndefined();
-    const out = errs.join("\n");
-    expect(out).toContain("previous master key is set");
-    expect(out).not.toContain(prev.toString("hex"));
-    expect(out).not.toContain(key.toString("hex"));
+    const child = Bun.spawnSync(
+      ["sh", "-c", 'printf "%s" "$TURNTABLE_MASTER_KEY_PREVIOUS$TURNTABLE_MASTER_KEY"'],
+      { env: process.env },
+    );
+    expect(child.stdout.toString()).toBe("");
   });
 
   test("the key from TURNTABLE_MASTER_KEY_FILE still works", async () => {

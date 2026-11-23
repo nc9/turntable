@@ -43,12 +43,17 @@ function keyFile(explicit: string | undefined, dataDir?: string): string {
  * directory's `master.key`, as before.
  */
 function resealKeys(flagFile: string | undefined, dataDir: string): MasterKeys {
+  // A rotation in flight: scrub every key variable first (never echoed), then refuse.
+  if (process.env[PREVIOUS_KEY_ENV]?.trim() || process.env[PREVIOUS_KEY_FILE_ENV]?.trim()) {
+    delete process.env[MASTER_KEY_ENV];
+    delete process.env[PREVIOUS_KEY_ENV];
+    delete process.env[PREVIOUS_KEY_FILE_ENV];
+    throw new Error(
+      `a previous master key is set: finish the rotation first: boot the server to re-wrap, confirm instance_doctor (or turntable doctor) is green, remove ${PREVIOUS_KEY_ENV}, then run keys reseal`,
+    );
+  }
   const given =
-    flagFile ||
-    process.env[MASTER_KEY_ENV]?.trim() ||
-    process.env[MASTER_KEY_FILE_ENV]?.trim() ||
-    process.env[PREVIOUS_KEY_ENV]?.trim() ||
-    process.env[PREVIOUS_KEY_FILE_ENV]?.trim();
+    flagFile || process.env[MASTER_KEY_ENV]?.trim() || process.env[MASTER_KEY_FILE_ENV]?.trim();
   return masterKeysForCommand(given ? flagFile : keyFile(undefined, dataDir));
 }
 
@@ -90,11 +95,6 @@ async function resealOrg(
 ): Promise<void> {
   if (!slug) throw new Error("--org <slug> is required");
   const master = keys.key;
-  if (keys.previous) {
-    console.error(
-      "a previous master key is set: it is not used here. Rotation happens when the server boots with it; reseal only moves records under the org's own key.",
-    );
-  }
   const db = openDatabase(dbPath(dataDir));
   try {
     const org = await getOrgBySlug(db, slug);
