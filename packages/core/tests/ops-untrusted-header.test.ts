@@ -67,5 +67,6 @@ test("rest.ts is the only place that sets the marker, so every untrusted route g
     }
   };
   walk(dir);
-  expect(hits.sort()).toEqual(["ops/openapi.ts", "ops/rest.ts"]);
+  // mcp/envelope.ts holds the MCP `_meta` key, a different marker from the REST header.
+  expect(hits.sort()).toEqual(["mcp/envelope.ts", "ops/openapi.ts", "ops/rest.ts"]);
 });

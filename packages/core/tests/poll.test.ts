@@ -984,3 +984,22 @@ test("prNumbers limits pull request ingest to the listed numbers", async () => {
   const prRuns = (await listRuns(db, scope)).filter((r) => r.event === "pull_request");
   expect(prRuns.map((r) => r.prNumber)).toEqual([7]);
 });
+
+test("changedFiles lists a rename by its old and new path and a deletion by its path", async () => {
+  const body = {
+    files: [
+      { filename: "src/new.ts", previous_filename: "src/old.ts", status: "renamed" },
+      { filename: "src/gone.ts", status: "removed" },
+    ],
+  };
+  const client = new GithubClient({
+    baseUrl: "https://api.github.com",
+    fetch: async () =>
+      new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }),
+  });
+  expect(await client.changedFiles("acme/web", "main", SHA("a"))).toEqual([
+    "src/new.ts",
+    "src/old.ts",
+    "src/gone.ts",
+  ]);
+});

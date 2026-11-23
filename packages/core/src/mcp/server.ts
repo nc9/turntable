@@ -14,7 +14,7 @@ import {
 import { dispatch, type DispatchEnv } from "../ops";
 import { errorBody, type OpError } from "../ops/errors";
 import { mcpTools } from "../ops/mcp";
-import { resultText } from "./envelope";
+import { resultText, untrustedMeta } from "./envelope";
 import { VERSION } from "../version";
 
 const INSTRUCTIONS =
@@ -59,6 +59,7 @@ export function createMcpServer(env: DispatchEnv, token: string): Server {
       description: t.description,
       inputSchema: t.inputSchema,
       annotations: t.annotations,
+      ...untrustedMeta(t.untrustedOutput),
     })),
   }));
 
@@ -70,6 +71,7 @@ export function createMcpServer(env: DispatchEnv, token: string): Server {
     if (!result.ok) return toolError(result.error);
     return {
       content: [{ type: "text" as const, text: resultText(name, result.output, result.untrusted) }],
+      ...untrustedMeta(result.untrusted),
     };
   });
 
@@ -109,6 +111,7 @@ export function createMcpServer(env: DispatchEnv, token: string): Server {
             uri,
             mimeType: "application/json",
             text: resultText("get_run", run.output, run.untrusted),
+            ...untrustedMeta(run.untrusted),
           },
         ],
       };
@@ -124,6 +127,7 @@ export function createMcpServer(env: DispatchEnv, token: string): Server {
           uri,
           mimeType: "application/json",
           text: resultText("job_log", log.output, log.untrusted),
+          ...untrustedMeta(log.untrusted),
         },
       ],
     };
