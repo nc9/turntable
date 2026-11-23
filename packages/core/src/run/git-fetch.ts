@@ -276,7 +276,11 @@ function inflateAt(buf: Uint8Array, pos: number, size: number): { data: Uint8Arr
   return { data: new Uint8Array(r.buffer), used: r.engine.bytesWritten };
 }
 
-/** Applies a delta. The result's declared size is checked against `maxBytes` BEFORE it is allocated. */
+/**
+ * Applies a delta. The result's declared size is checked against `maxBytes` (the smaller of the
+ * per-object cap and what is LEFT of the whole unpack budget) BEFORE it is allocated. Every copy
+ * is checked against the base and against the output still to fill.
+ */
 function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes: number): Uint8Array {
   let i = 0;
   const varint = (): number => {
@@ -293,7 +297,8 @@ function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes: number): Uint
   };
   if (varint() !== base.length) throw new GitFetchError("a delta does not match its base");
   const size = varint();
-  if (size > maxBytes) throw new GitFetchError("a delta would produce an object that is too large");
+  if (size > maxBytes)
+    throw new GitFetchError("a delta would produce more than the pack may unpack to");
   const out = new Uint8Array(size);
   let o = 0;
   while (i < delta.length) {
@@ -437,7 +442,14 @@ export function readPack(
       const baseAt = raw.baseOffset as number;
       const base = resolve(baseAt, depth + 1);
       chain(offset, baseAt);
-      obj = { type: base.type, data: applyDelta(base.data, raw.data, limits.maxObjectBytes) };
+      obj = {
+        type: base.type,
+        data: applyDelta(
+          base.data,
+          raw.data,
+          Math.min(limits.maxObjectBytes, limits.maxInflatedBytes - budget),
+        ),
+      };
       spend(obj.data.length);
     } else if (raw.type === 7) {
       let base = objects.get(raw.baseOid as string);
@@ -456,7 +468,14 @@ export function readPack(
       }
       if (!base) throw new GitFetchError("a delta's base is not in the pack");
       chain(offset, baseOffsetOf(raw.baseOid as string));
-      obj = { type: base.type, data: applyDelta(base.data, raw.data, limits.maxObjectBytes) };
+      obj = {
+        type: base.type,
+        data: applyDelta(
+          base.data,
+          raw.data,
+          Math.min(limits.maxObjectBytes, limits.maxInflatedBytes - budget),
+        ),
+      };
       spend(obj.data.length);
     } else {
       obj = { type: TYPES[raw.type] as ObjectType, data: raw.data };

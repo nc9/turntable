@@ -476,7 +476,7 @@ describe("a hostile pack is bounded before it is acted on", () => {
       items.push(ofsDelta(dist + between, d));
     }
     expect(() => readPack(packOf(items), { ...small, maxInflatedBytes: 5 * 1024 * 1024 })).toThrow(
-      /too large/,
+      /too large|more than the pack may unpack to/,
     );
   });
 
@@ -485,11 +485,85 @@ describe("a hostile pack is bounded before it is acted on", () => {
     const d = new Uint8Array([...varint(10), ...varint(5_000_000_000), 0x90, 10]);
     const dist = blobHeaderLen(base) + deflatedLen(base);
     const t0 = Date.now();
-    expect(() => readPack(packOf([blob(base), ofsDelta(dist, d)]), small)).toThrow(/too large/);
+    expect(() => readPack(packOf([blob(base), ofsDelta(dist, d)]), small)).toThrow(
+      /too large|more than the pack may unpack to/,
+    );
     expect(Date.now() - t0).toBeLessThan(1000);
   });
 
   const blobHeaderLen = (b: Uint8Array): number => sizeAndType(3, b.length).length;
+
+  test("a delta declaring 4 GiB from a tiny base is refused fast, with no large allocation", () => {
+    const base = new Uint8Array(10).fill(1);
+    const d = new Uint8Array([...varint(10), ...varint(4 * 1024 ** 3), 0x90, 10]);
+    const dist = blobHeaderLen(base) + deflatedLen(base);
+    const before = process.memoryUsage().arrayBuffers;
+    const t0 = Date.now();
+    expect(() => readPack(packOf([blob(base), ofsDelta(dist, d)]), small)).toThrow(
+      /more than the pack may unpack to|too large/,
+    );
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(50 * 1024 * 1024);
+    // what is LEFT of the budget bounds it too, not only the per-object cap: 100 bytes of room, a 1 KB result
+    const r = new Uint8Array([...varint(10), ...varint(1000), 0x90, 10]);
+    expect(() =>
+      readPack(packOf([blob(base), ofsDelta(dist, r)]), { ...small, maxInflatedBytes: 100 }),
+    ).toThrow(/more than the pack may unpack to|too large/);
+  });
+
+  test("a chain of deltas that each double their base is refused at the budget, not at memory", () => {
+    // base 1 KiB; each delta is the previous object twice (two copy ops): 2 KiB, 4 KiB, ...
+    const base = new Uint8Array(1024).fill(5);
+    const items: PackItem[] = [blob(base)];
+    const starts = [12];
+    let at = 12 + blobHeaderLen(base) + deflatedLen(base);
+    let size = base.length;
+    for (let i = 0; i < 40; i += 1) {
+      const copy = [0x80 | 0x10 | 0x20 | 0x40, 0, 0, 0];
+      const half = [size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff];
+      const ops = new Uint8Array([
+        ...varint(size),
+        ...varint(size * 2),
+        copy[0]!,
+        ...half,
+        copy[0]!,
+        ...half,
+      ]);
+      // 0x80|0x10|0x20|0x40 = copy with 3 size bytes and no offset bytes (offset 0)
+      const it = ofsDelta(at - starts.at(-1)!, ops);
+      starts.push(at);
+      at += it.header.length + deflatedLen(ops);
+      items.push(it);
+      size *= 2;
+    }
+    const t0 = Date.now();
+    expect(() => readPack(packOf(items), { ...small, maxInflatedBytes: 1024 * 1024 })).toThrow(
+      /more than the pack may unpack to|too large/,
+    );
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // and with the default budget the chain still stops: 2^30 bytes of base-times-doubling is over it
+    expect(() => readPack(packOf(items), small)).toThrow(GitFetchError);
+  });
+
+  test("a copy longer than the base, or than the output left, is refused", () => {
+    const base = new Uint8Array(10).fill(1);
+    const dist = blobHeaderLen(base) + deflatedLen(base);
+    const overBase = new Uint8Array([
+      ...varint(10),
+      ...varint(100),
+      0x80 | 0x10 | 0x20,
+      0,
+      100 & 0xff,
+      0,
+    ]);
+    expect(() => readPack(packOf([blob(base), ofsDelta(dist, overBase)]), small)).toThrow(
+      /copies out of range/,
+    );
+    const overOut = new Uint8Array([...varint(10), ...varint(5), 0x80 | 0x10, 10]);
+    expect(() => readPack(packOf([blob(base), ofsDelta(dist, overOut)]), small)).toThrow(
+      /copies out of range/,
+    );
+  });
 
   test("a delta chain is depth-limited, and a shorter one is fine", () => {
     const build = (n: number): Uint8Array => {
