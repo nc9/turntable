@@ -168,6 +168,10 @@
     {
       "tag": "0041_approval_policy_settings",
       "sha256": "4826635307b333eb84a4a5e8b37b9f022f795055fb9bc2e5e6a13c9a34e3eecf"
+    },
+    {
+      "tag": "0042_regrant_reattach",
+      "sha256": "e9d787f9f1cbd7ca9f41bc7d31e021bc83bf86721d3beb489d332009c3029674"
     }
   ],
   "pg": [
@@ -222,6 +226,10 @@
     {
       "tag": "0012_approval_policy_settings",
       "sha256": "487d3cfc7d0e08b95b8da68c0a2cfc33c0b7439f0398fa5ba85e35aae6b17939"
+    },
+    {
+      "tag": "0013_regrant_reattach",
+      "sha256": "595c50942b7299eb325620413b5dac7d51669b198c43e99e66324749e24038de"
     }
   ]
 }
