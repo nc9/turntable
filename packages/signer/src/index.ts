@@ -1,4 +1,7 @@
-export { AwsKmsSigner, sigV4, type AwsCredentials, type AwsKmsOptions } from "./aws";
+export { AwsKmsSigner, sigV4, type AwsKmsOptions } from "./aws";
+export { AwsKmsP256Signer, type AwsKmsP256Options } from "./aws-p256";
+export { type AwsCredentials, amzDateOf, signV4, type SigV4Request } from "./sigv4";
+export { webIdentityCredentials, type WebIdentityOptions } from "./aws-sts";
 export { type DsseEnvelope, pae, signEnvelope, verifyEnvelope, type VerifyResult } from "./dsse";
 export { GcpKmsSigner, type GcpKmsOptions } from "./gcp";
 export { publicKeyFromPem, publicKeyFromSpki } from "./keys";

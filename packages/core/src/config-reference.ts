@@ -674,6 +674,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       'The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals).',
   },
   {
+    name: "TURNTABLE_AWS_KMS_KEYS",
+    area: "Release lane",
+    description:
+      "How the `aws-kms` signing backend reaches each KMS key, for every org on the instance (JSON): a map from key ARN to `role_arn`, `region`, `audience` and `public_key_fingerprint`. No secret goes in it: the lane authenticates with an OIDC web identity token. The environment name of the `aws_kms_keys` setting. See [AWS KMS](/signing#aws-kms).",
+  },
+  {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",
     area: "Worker and provider",
     description:
