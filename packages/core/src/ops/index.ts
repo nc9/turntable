@@ -62,6 +62,7 @@ import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
 import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
+import { instanceIngestStatusOp } from "./definitions/instance-ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
@@ -126,6 +127,7 @@ export const registry = createRegistry([
   moveRepoBindingOp,
   instanceListOrgs,
   instanceDoctorOp,
+  instanceIngestStatusOp,
   instanceAuditVerifyOp,
   setQuotas,
   bootstrapApprover,

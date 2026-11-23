@@ -12,7 +12,7 @@ import {
 } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
 import { newTagCaches, pollRepo } from "./ingest";
-import { ingestStatus, type PollAuthMode, type RepoStatus } from "./status";
+import { ingestStatus, POLL_RESERVE, type PollAuthMode, type RepoStatus } from "./status";
 
 /** What the poller needs from the GitHub App: the one mint function (it caches until near expiry). */
 export interface InstallationMinter {
@@ -58,7 +58,7 @@ export type PollerOptions = {
 };
 
 /** Below this many requests left in the window the poller stops asking until it resets. */
-const RESERVE = 5;
+const RESERVE = POLL_RESERVE;
 /** The fewest ms between two polls of one repo that webhooks asked for. */
 export const MIN_NUDGE_GAP_MS = 5000;
 
@@ -193,12 +193,18 @@ export class Poller {
   }
 
   #track(r: PollRepoConfig): void {
-    if (ingestStatus.repos.has(r.repo)) return;
+    const known = ingestStatus.repos.get(r.repo);
+    if (known) {
+      known.intervalSeconds = r.intervalSeconds;
+      return;
+    }
     ingestStatus.repos.set(r.repo, {
       repo: r.repo,
       org: r.org,
       project: r.project,
+      intervalSeconds: r.intervalSeconds,
       lastPollAt: null,
+      lastSuccessAt: null,
       lastOutcome: null,
       lastError: null,
       nextPollAt: null,
@@ -303,6 +309,7 @@ export class Poller {
     if (this.#running) return;
     this.#running = true;
     ingestStatus.running = true;
+    ingestStatus.startedAt = this.#now();
     if (this.#anonymous) this.#warnAnonymous();
     for (const cfg of this.#o.config.repos) void this.#loop(cfg.repo);
     if (this.#o.bindings) {
@@ -386,6 +393,7 @@ export class Poller {
       this.#failures.delete(repo);
       if (res.skipped)
         return finish("error", "bound to another project; poll entry is stale", intervalMs);
+      status.lastSuccessAt = now;
       status.runsCreated += res.created.length;
       if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
       if (res.created.length > 0) this.#o.onQueued?.();
