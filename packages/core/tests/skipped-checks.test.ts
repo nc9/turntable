@@ -11,7 +11,7 @@ import {
   listJobs,
   setProjectChecksMode,
 } from "../src/db";
-import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
+import { CheckReporter, SKIP_BATCH, type TokenMinter } from "../src/checks/reporter";
 import type { CheckRunBody, CheckRunsApi } from "../src/checks/client";
 import { conclusionFor, NO_ATTEMPT_SKIP, skipReasonFor } from "../src/checks/mapping";
 import { jobAttempts } from "../src/db/schema";
@@ -219,6 +219,68 @@ describe("a skipped job with no attempt", () => {
       const [a] = await listAttempts(db, world.scope, id);
       expect(await getAttemptCheckRunId(db, world.scope, a!.id)).toBe([...runs.keys()][0]!);
     }
+  });
+
+  test("a skip resolved while a sweep is posting is not lost (the tick is not dropped)", async () => {
+    await setProjectChecksMode(db, world.scope, "live");
+    const run = await makeRun();
+    await addJob(run.id, "first", plan("first", { ifExpr: "false" }));
+    const { api, runs } = fakeApi();
+    // The first sweep has listed `first` and is held inside its create call.
+    let entered!: () => void;
+    const inCreate = new Promise<void>((r) => (entered = r));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const create = api.create;
+    let held = false;
+    api.create = async (...a) => {
+      if (!held) {
+        held = true;
+        entered();
+        await gate;
+      }
+      return create(...a);
+    };
+    const reporter = rep(api);
+    const sched = new Scheduler({
+      db,
+      providers: () => ({}) as never,
+      runner: async () => ({ state: "success", exitCode: 0, reason: "ok" }),
+      observer: reporter,
+      pollMs: 10,
+    });
+    await sched.tick();
+    await inCreate;
+    // A second job is skipped by the cascade now; its tick arrives mid-sweep.
+    await addJob(run.id, "second", plan("second", { ifExpr: "false" }));
+    await sched.tick();
+    release();
+    await sched.idle();
+    await reporter.idle();
+    expect(byName(runs, "turntable / first")).toHaveLength(1);
+    expect(byName(runs, "turntable / second")).toHaveLength(1);
+    expect(runs.size).toBe(2);
+  });
+
+  test("more than SKIP_BATCH skips resolved at once are all posted in one tick cycle", async () => {
+    await setProjectChecksMode(db, world.scope, "live");
+    const run = await makeRun();
+    const total = SKIP_BATCH + 5;
+    for (let i = 0; i < total; i++)
+      await addJob(run.id, `j${i}`, plan(`j${i}`, { ifExpr: "false" }));
+    const { api, runs } = fakeApi();
+    const reporter = rep(api);
+    const sched = new Scheduler({
+      db,
+      providers: () => ({}) as never,
+      runner: async () => ({ state: "success", exitCode: 0, reason: "ok" }),
+      observer: reporter,
+      pollMs: 10,
+    });
+    await sched.tick();
+    await sched.idle();
+    await reporter.idle();
+    expect(runs.size).toBe(total);
   });
 
   test("checks off posts nothing", async () => {

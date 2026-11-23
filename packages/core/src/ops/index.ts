@@ -29,6 +29,7 @@ import {
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
+import { githubAppStatus, instanceGithubAppStatus } from "./definitions/github-app-status";
 import { getQuotas } from "./definitions/quotas";
 import {
   createProjectOp,
@@ -114,6 +115,8 @@ export const registry = createRegistry([
   listActionPinsOp,
   listArtifacts,
   checkArtifactConsumption,
+  githubAppStatus,
+  instanceGithubAppStatus,
   getQuotas,
   instanceWhoami,
   rotateInstanceTokenOp,

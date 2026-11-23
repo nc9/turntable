@@ -148,6 +148,13 @@ How it is protected:
 
 This is gated by the setup token until the instance admin role exists.
 
+## Checking the GitHub App
+
+After the manifest flow, confirm the result without a shell:
+
+- The instance administrator calls `instance_github_app_status` (`GET /api/v1/instance/github-app`, a `tti_` token, REST only). It returns the App's id, slug, owner login, the Turntable org that owns it and when it was created, `sealed` (true when the app id, private key and webhook secret are all stored; the material itself is never returned), installation counts by status (`active`, `suspended`, `deleted`) and the ids of installations that webhooks named but no org has claimed (up to 100, newest first).
+- An org's own token (`release_operator` or admin, org-level) calls `github_app_status` (`GET /api/v1/github/app`, also an MCP tool). It returns whether the org owns the App, and only the installations that org has claimed, each with its account, status, repository selection and bound repos. Another org's installations never appear.
+
 ## One instance, several orgs: claiming an installation
 
 By default every installation of the App maps to the org that owns the App. On a hosted instance, set `TURNTABLE_CLAIM_INSTALLATIONS=1` and each org claims its own installation:

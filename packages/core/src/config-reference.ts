@@ -621,6 +621,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Hours (at least 1) after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver. The environment name of the `approver_rebootstrap_delay_hours` setting; set here, it applies to every org and locks the setting. See [Instance administration](/instance-admin).",
   },
   {
+    name: "TURNTABLE_ORG_REMINT_DELAY_HOURS",
+    area: "Server",
+    default: "24",
+    description:
+      "Hours `create_org_token` is refused for an org that has had a token, counted from when its last token was revoked or expired (minimum 1). The environment name of the `org_remint_delay_hours` setting, which `turntable.toml` and `instance_set_setting` also set.",
+  },
+  {
     name: "TURNTABLE_APPROVAL_POLICY",
     area: "Server",
     description:

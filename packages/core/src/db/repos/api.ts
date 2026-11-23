@@ -110,6 +110,32 @@ export function touchApiToken(db: Db, scope: Scope, id: string, at: number): Pro
   });
 }
 
+/**
+ * The org's token history, revoked and expired rows included (#367): whether it ever had a token,
+ * and when the last of them stopped being usable (each token's earlier end, revoked or expired;
+ * the latest over all). `lastEnd` is null while a token has no end yet, so only call it for an org
+ * with no active token. Derived from existing rows: no extra column.
+ */
+export function orgTokenHistory(
+  db: Db,
+  scope: Scope,
+): Promise<{ everHad: boolean; lastEnd: number | null }> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ revokedAt: s.apiTokens.revokedAt, expiresAt: s.apiTokens.expiresAt })
+      .from(s.apiTokens)
+      .where(scoped(scope, TOKEN_COLS));
+    let lastEnd: number | null = null;
+    for (const r of rows) {
+      const ends = [r.revokedAt, r.expiresAt].filter((x): x is number => x !== null);
+      if (ends.length === 0) continue;
+      const end = Math.min(...ends);
+      if (lastEnd === null || end > lastEnd) lastEnd = end;
+    }
+    return { everHad: rows.length > 0, lastEnd };
+  });
+}
+
 /** Revokes a token. Returns false when it is not in scope or was already revoked. */
 export function revokeApiToken(db: Db, scope: Scope, id: string, at: number): Promise<boolean> {
   return db.run(async (h) => {

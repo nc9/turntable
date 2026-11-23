@@ -29,6 +29,28 @@ export const backupKeepSetting = defineSetting({
   toml: "backup.keep",
 });
 
+/** Hours `create_org_token` waits, for an org that had a token, after its last token ended. */
+export const DEFAULT_ORG_TOKEN_REMINT_DELAY_HOURS = 24;
+export const MIN_ORG_TOKEN_REMINT_DELAY_HOURS = 1;
+
+export const orgTokenRemintDelaySetting = defineSetting({
+  key: "org_remint_delay_hours",
+  scope: "instance",
+  type: z.int().min(MIN_ORG_TOKEN_REMINT_DELAY_HOURS).max(8760),
+  default: DEFAULT_ORG_TOKEN_REMINT_DELAY_HOURS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it guards against re-minting a tenant's access, so only a person changes it",
+  description:
+    "Hours `create_org_token` is refused for an org that has had a token, counted from when its last token was revoked or expired (1 to 8760). An org that never had a token is not delayed.",
+  warning:
+    "Lowering this shortens the window in which a stolen instance token that gets an org's tokens revoked cannot mint itself a new one.",
+  env: ["TURNTABLE_ORG_REMINT_DELAY_HOURS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "org_remint_delay_hours",
+});
+
 export const untrustedRunApprovalSetting = defineSetting({
   key: "untrusted_run_approval",
   scope: "project",
@@ -132,6 +154,7 @@ export const schedulingClassSetting = defineSetting({
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
   approverRebootstrapDelaySetting,
+  orgTokenRemintDelaySetting,
   untrustedRunApprovalSetting,
   approvalPolicySetting,
   schedulingClassSetting,
