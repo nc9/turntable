@@ -173,6 +173,12 @@ export interface TrustFacts {
   /** The ref matched the project's protected refs (or the forge says the branch is protected). */
   protectedRef?: boolean;
   forgeProtected?: boolean;
+  /** For a tag run: whether a ruleset restricts creating the tag (`ruleset`, `none` or `unknown`). */
+  tagProtection?: string;
+  /** For a run the poller made from a tag: the tag's name. Set by ingest only; approvals read it. */
+  tag?: string;
+  /** For a tag run: the annotated tag's tagger name, shown only. Free text, never an identity. */
+  taggerLabel?: string;
 }
 
 export interface TrustDecision {
@@ -199,6 +205,8 @@ export function decideRun(input: {
   permission?: ForgePermission | "unknown" | undefined;
   allowlisted?: boolean | undefined;
   protectedRefs?: readonly string[] | undefined;
+  /** The project's release ref patterns, when it declares them (the poller's tag ingest does). */
+  releaseRefs?: readonly string[] | undefined;
   forgeProtected?: boolean | undefined;
   workflowHash: string;
   now: number;
@@ -226,6 +234,7 @@ export function decideRun(input: {
     fork: input.sameRepo !== true,
     authorTrusted,
     protectedRefs: refs,
+    ...(input.releaseRefs ? { releaseRefs: input.releaseRefs } : {}),
     ...(input.permission && input.permission !== "unknown"
       ? { actorPermission: input.permission }
       : {}),

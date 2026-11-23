@@ -339,7 +339,14 @@ export function recordExec(
   scope: Scope,
   attemptId: string,
   owner: string,
-  where: { sandboxId?: string | undefined; execId?: string | undefined },
+  where: {
+    sandboxId?: string | undefined;
+    execId?: string | undefined;
+    /** Epoch ms the provider's create returned. */
+    sandboxCreatedAt?: number | undefined;
+    /** Epoch ms the provider confirmed the destroy. */
+    sandboxDestroyedAt?: number | undefined;
+  },
 ): Promise<boolean> {
   return db.run(async (h) => {
     const rows = await h.orm
@@ -347,6 +354,12 @@ export function recordExec(
       .set({
         ...(where.sandboxId === undefined ? {} : { sandboxId: where.sandboxId }),
         ...(where.execId === undefined ? {} : { execId: where.execId }),
+        ...(where.sandboxCreatedAt === undefined
+          ? {}
+          : { sandboxCreatedAt: where.sandboxCreatedAt }),
+        ...(where.sandboxDestroyedAt === undefined
+          ? {}
+          : { sandboxDestroyedAt: where.sandboxDestroyedAt }),
       })
       .where(
         scoped(

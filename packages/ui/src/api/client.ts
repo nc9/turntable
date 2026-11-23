@@ -24,6 +24,7 @@ import type {
   Artifact,
   ConsumeResult,
   JobDigest,
+  OrgQuotas,
   RerunResult,
   Whoami,
 } from "./types";
@@ -140,6 +141,8 @@ export interface LongshoreApi {
     sources: { runId: string; name: string }[];
     quarantine?: { runId: string; name: string }[];
   }): Promise<ConsumeResult[]>;
+  /** The org's quotas, usage against each, and why work is held (`get_quotas`). */
+  getQuotas(): Promise<OrgQuotas>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

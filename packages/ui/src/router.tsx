@@ -9,6 +9,7 @@ import { JobPage } from "@/features/runs/job-page";
 import { IngestPage } from "@/features/runs/ingest-page";
 import { ApproveEnvironmentPage } from "@/features/runs/approve-environment-page";
 import { ApproversPage } from "@/features/runs/approvers-page";
+import { QuotasPage } from "@/features/runs/quotas-page";
 import { SettingsPage } from "@/features/runs/settings-page";
 
 export type RunsSearch = {
@@ -82,6 +83,12 @@ const approversRoute = createRoute({
   component: ApproversPage,
 });
 
+const quotasRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/quotas",
+  component: QuotasPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$org/$project/settings",
@@ -97,6 +104,7 @@ const routeTree = rootRoute.addChildren([
   jobRoute,
   approveRoute,
   approversRoute,
+  quotasRoute,
   settingsRoute,
 ]);
 

@@ -617,11 +617,15 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "collaboratorPermission",
     "commitInfo",
     "fileAt",
+    "firstParentChain",
     "openPulls",
+    "peelTag",
     "queueBranches",
     "queueCommit",
     "rateLimit",
     "repoDefaultBranch",
+    "tagRefs",
+    "tagRulesets",
   ]);
   for (const m of methods)
     expect(m).not.toMatch(/post|put|patch|delete|create|update|merge|comment|dispatch/i);
