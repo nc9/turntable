@@ -13,7 +13,7 @@ import {
   getProject,
   getProjectBySlug,
 } from "../../db/repos";
-import { putStoredSetting } from "../../db/repos/settings";
+import { getStoredSetting, putStoredSetting } from "../../db/repos/settings";
 import type { SettingScope } from "../../db/schema";
 import type { SettingDef } from "../../settings/define";
 import { settingsRegistry } from "../../settings/definitions";
@@ -49,6 +49,9 @@ const settingView = z.object({
     ),
 });
 type SettingView = z.infer<typeof settingView>;
+
+/** Times a set re-checks after losing a race to another writer. */
+const SET_ATTEMPTS = 3;
 
 const runtimeOf = (ctx: OpContext) => ctx.settings ?? createSettingsRuntime(settingsRegistry);
 
@@ -136,22 +139,36 @@ async function setSetting(
 ): Promise<SettingView> {
   const rt = runtimeOf(ctx);
   const subject = target ? await targetSubject(ctx, def, target) : await subjectOf(ctx, def);
-  const { before, next } = await guardSettingChange(
-    rt,
-    ctx.db,
-    def,
-    subject,
-    { principal: ctx.principal, viaMcp: ctx.viaMcp },
-    i,
-  );
-  await putStoredSetting(
-    ctx.db,
-    storeTarget(def, subject),
-    def.key,
-    next,
-    ctx.principal.id,
-    ctx.now(),
-  );
+  // Check and write against the row as read: an org tighten and an instance-administrator write
+  // take different locks, so a write the guard allowed against an older value could otherwise land
+  // after a stricter one and loosen it. The write is a compare-and-set; if the row moved, the
+  // guard runs again on the new value (and may now refuse).
+  let before: Resolved | undefined;
+  for (let attempt = 0; before === undefined; attempt++) {
+    if (attempt === SET_ATTEMPTS) {
+      throw new OpError("conflict", `${def.key} was changed by someone else; try again`);
+    }
+    const target = storeTarget(def, subject);
+    const stored = await getStoredSetting(ctx.db, target, def.key);
+    const checked = await guardSettingChange(
+      rt,
+      ctx.db,
+      def,
+      subject,
+      { principal: ctx.principal, viaMcp: ctx.viaMcp },
+      i,
+    );
+    const written = await putStoredSetting(
+      ctx.db,
+      target,
+      def.key,
+      checked.next,
+      ctx.principal.id,
+      ctx.now(),
+      { raw: stored?.raw },
+    );
+    if (written) before = checked.before;
+  }
   const after = await resolveSetting(rt, ctx.db, def.key, subject);
   // The old and new effective values, in the chain of the scope it changed. Never a secret: no
   // setting can be one.

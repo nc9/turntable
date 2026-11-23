@@ -7,6 +7,9 @@ import { createHash } from "node:crypto";
 import { createJob, createRun, type Db, listAudit } from "../src/db";
 import { putStoredSetting } from "../src/db/repos/settings";
 import { UNTRUSTED_RUN_APPROVALS } from "../src/db/schema";
+import { setSettingOp } from "../src/ops/definitions/settings";
+import type { OpContext } from "../src/ops/define";
+import type { OpError } from "../src/ops/errors";
 import { dispatch, type Credential, type DispatchEnv, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { setSandboxPolicy } from "../src/ops/policy-cli";
@@ -379,6 +382,76 @@ describe("strictness: an org tightens, only the instance administrator loosens (
       (x) => x.op === "setting_changed",
     );
     expect(JSON.stringify(row)).toContain("no_agents");
+  });
+
+  // An admin write lands between the owner's read and write, taking a different lock.
+  const raced = async (adminValue: string, ownerInput: Record<string, unknown>) => {
+    // `human` is not selectable through the ops yet (#324), so the admin's write is the stored
+    // row it will leave: the registry's value check is not what this race is about.
+    const mid = () =>
+      putStoredSetting(
+        db,
+        storeTarget(untrustedRunApprovalSetting, { orgId: a.orgId, projectId: a.projectId }),
+        KEY,
+        adminValue,
+        "admin",
+        Date.now(),
+      );
+    let fired = false;
+    // The handler is called without dispatch's transaction, so the admin's write commits on its
+    // own, as a write on another lock would. The hook fires on the write's transaction: after the
+    // guard's read, before the write.
+    const hooked: Db = {
+      ...db,
+      transaction: async (fn, o) => {
+        if (!fired) {
+          fired = true;
+          await mid();
+        }
+        return db.transaction(fn, o);
+      },
+    };
+    const principal = { kind: "member", id: "o", orgId: a.orgId, role: "owner" } as const;
+    const ctx = {
+      db: hooked,
+      scope: { orgId: a.orgId, projectId: a.projectId },
+      principal,
+      now: () => Date.now(),
+      settings: rt(),
+    } as unknown as OpContext;
+    const res = await setSettingOp.handler(ctx, { key: KEY, ...ownerInput }).then(
+      () => ({ ok: true as const }),
+      (error: OpError) => ({ ok: false as const, error }),
+    );
+    expect(fired).toBe(true);
+    return res;
+  };
+
+  test("an owner's tighten racing an admin's human keeps the stricter value", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    const r = await raced("human", { value: "no_agents" });
+    expect(await effective()).toBe("human");
+    expect(!r.ok && r.error.message).toBe(
+      `only the instance administrator can loosen ${KEY} (current: human)`,
+    );
+  });
+
+  test("an owner's reset to the default racing an admin's human keeps human", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    await raced("human", { unset: true });
+    expect(await effective()).toBe("human");
+  });
+
+  test("an owner's first write racing an admin's human, with no row before, keeps human", async () => {
+    const r = await raced("human", { value: "no_agents" });
+    expect(await effective()).toBe("human");
+    expect(r.ok).toBe(false);
+  });
+
+  test("an owner's tighten still lands when the admin wrote an equal or looser value meanwhile", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    expect((await raced("any", { value: "no_agents" })).ok).toBe(true);
+    expect(await effective()).toBe("no_agents");
   });
 
   test("setting the same value is allowed", async () => {
