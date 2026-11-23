@@ -33,6 +33,9 @@ jobs:
       # commit's OWN first parent (the base branch as it was when refs/pull/N/merge was built),
       # never the moving tip of the branch: main can gain golden entries between that build and
       # this run, and a stale head against a fresh tip reads as "the head removed them".
+      # The checkout is depth 1, so the script fetches exactly that parent by its sha (never history);
+      # the event's base sha is only the fallback for a head that is not a merge commit, and an older
+      # base is harmless (the head's extra entries are appends).
       - name: Migration hashes are only appended to
         if: github.event_name == 'pull_request'
         env:

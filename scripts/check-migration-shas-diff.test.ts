@@ -318,4 +318,89 @@ describe("the base of a pull request run is the merge commit's own first parent"
     expect(del.exitCode).toBe(1);
     expect(del.stderr.toString()).toContain("the entry was removed");
   });
+
+  /** A PR merge commit whose base already HAS the golden file: C0 (A, B) <- M (parents C0, P). */
+  function withFile(headShas: Record<string, string>): {
+    d: string;
+    c0: string;
+    m: string;
+  } {
+    const d = mkdtempSync(join(tmpdir(), "ls-shas-file-"));
+    roots.push(d);
+    git(d, "init", "-q", "-b", "main");
+    write(d, SHAS_PATH, shas({ "0000_a": A, "0001_b": B }));
+    write(d, EDITED_PATH, edited());
+    git(d, "add", "-A");
+    git(d, "commit", "-q", "-m", "c0");
+    const c0 = git(d, "rev-parse", "HEAD");
+    git(d, "checkout", "-q", "-b", "pr");
+    write(d, SHAS_PATH, shas(headShas));
+    write(d, "feature.txt", "pr\n");
+    git(d, "add", "-A");
+    git(d, "commit", "-q", "-m", "p");
+    git(d, "checkout", "-q", "main");
+    git(d, "merge", "-q", "--no-ff", "-X", "theirs", "-m", "merge ref", "pr");
+    return { d, c0, m: git(d, "rev-parse", "HEAD") };
+  }
+
+  test("main gains entries after the merge ref was built: it passes, against the first parent", async () => {
+    const { d, c0, m } = withFile({ "0000_a": A, "0001_b": B });
+    // main moves on after M: a new migration's entry lands (not part of M)
+    git(d, "checkout", "-q", "-b", "tip", c0);
+    write(d, SHAS_PATH, shas({ "0000_a": A, "0001_b": B, "0002_c": C }));
+    git(d, "add", "-A");
+    git(d, "commit", "-q", "-m", "main appends 0002_c");
+    const tip = git(d, "rev-parse", "HEAD");
+    git(d, "checkout", "-q", "--detach", m);
+    expect((await checkRepo({ repo: d, base: resolveBase(d, "auto") })).problems).toEqual([]);
+    // the moving tip as base would call it a removal: the false failure this guards against
+    expect((await checkRepo({ repo: d, base: tip })).problems).toEqual([
+      "sqlite 0002_c: the entry was removed",
+    ]);
+  });
+
+  test("a real edit or removal relative to the first parent fails; an append passes", async () => {
+    const edit = withFile({ "0000_a": D, "0001_b": B });
+    const e = await checkRepo({ repo: edit.d, base: resolveBase(edit.d, "auto") });
+    expect(e.problems).toHaveLength(1);
+    expect(e.problems[0]).toContain("sqlite 0000_a: the hash changed");
+    const removal = withFile({ "0000_a": A });
+    expect(
+      (await checkRepo({ repo: removal.d, base: resolveBase(removal.d, "auto") })).problems,
+    ).toEqual(["sqlite 0001_b: the entry was removed"]);
+    const append = withFile({ "0000_a": A, "0001_b": B, "0002_c": C });
+    expect(
+      (await checkRepo({ repo: append.d, base: resolveBase(append.d, "auto") })).problems,
+    ).toEqual([]);
+  });
+
+  test("an older base (the event's base sha) never fails just because it is older: the head's extra entries are appends", async () => {
+    const { d, c0 } = withFile({ "0000_a": A, "0001_b": B, "0002_c": C });
+    git(d, "checkout", "-q", "--detach", "pr"); // a head that is NOT a merge commit
+    expect(resolveBase(d, "auto", c0)).toBe(c0);
+    expect((await checkRepo({ repo: d, base: c0 })).problems).toEqual([]);
+  });
+
+  test("a depth-1 checkout of the merge commit still resolves and fetches its first parent by sha", async () => {
+    const { d, c0, m } = withFile({ "0000_a": A, "0001_b": B });
+    const shallow = mkdtempSync(join(tmpdir(), "ls-shas-shallow-"));
+    roots.push(shallow);
+    git(d, "config", "uploadpack.allowAnySHA1InWant", "true");
+    git(shallow, "init", "-q", "-b", "x");
+    git(shallow, "remote", "add", "origin", `file://${d}`);
+    git(shallow, "fetch", "-q", "--no-tags", "--depth=1", "origin", m);
+    git(shallow, "checkout", "-q", "--detach", "FETCH_HEAD");
+    // the merge commit names its parents, but the shallow checkout does not have them
+    expect(mergeFirstParent(shallow)).toBe(c0);
+    expect(() => git(shallow, "cat-file", "-e", `${c0}^{commit}`)).toThrow();
+    const script = join(import.meta.dir, "check-migration-shas-diff.ts");
+    const r = Bun.spawnSync(["bun", "run", script, "--base", "auto", "--repo", shallow], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(r.stderr.toString()).toBe("");
+    expect(r.exitCode).toBe(0);
+    // the first parent was fetched by its sha (exactly that commit, not the history)
+    expect(git(shallow, "cat-file", "-t", c0)).toBe("commit");
+  });
 });
