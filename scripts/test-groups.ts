@@ -17,7 +17,6 @@ export interface GroupCall {
   group: string;
 }
 
-/** The group a package.json script calls, or undefined when it is not a group call. */
 /**
  * `test:*` suites `bun run test` leaves out: they need Docker, a compiled binary or a live service,
  * and each runs in its own CI step (scripts/test-wiring.test.ts checks both). A Docker suite left in
@@ -37,6 +36,7 @@ export const GATED: ReadonlySet<string> = new Set([
   "test:pg-only",
 ]);
 
+/** The group a package.json script calls, or undefined when it is not a group call. */
 export function parseGroupCall(cmd: string): GroupCall | undefined {
   const m = GROUP_CALL.exec(cmd.trim());
   if (!m) return undefined;

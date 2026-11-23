@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { getDelivery, getInstallation, listProjects, setPreviousSecretExpiry } from "../src/db";
 import { SECRET_WEBHOOK_PREVIOUS } from "../src/github/app-auth";
 import {
@@ -217,5 +218,20 @@ describe("limits and routing", () => {
     const h = await harness();
     expect((await h.post(installed, { guid: "x" }))?.status).toBe(400);
     expect((await h.post(installed, { event: "Bad Event" }))?.status).toBe(400);
+  });
+});
+
+// approver_is_author (#408) compares the approver with run.actor alone, which is only safe while
+// runs come from poll ingest (actor = the PR author the trust decision judged). A webhook that
+// created runs or recorded the event's sender would need that check to compare both (#416).
+describe("webhooks create no runs and record no sender (#416)", () => {
+  const src = readFileSync(new URL("../src/github/webhook.ts", import.meta.url), "utf8");
+  test("webhook.ts never calls run creation", () => {
+    expect(src).not.toMatch(/\bcreate(Polled)?Run\s*\(/);
+    expect(src).not.toMatch(/\binsert\s*\(\s*runs\b/);
+  });
+  test("webhook.ts never reads the payload sender or sets an actor", () => {
+    expect(src).not.toMatch(/\.sender\b|\[\s*["']sender["']\s*\]/);
+    expect(src).not.toMatch(/\bactor\s*:/);
   });
 });
