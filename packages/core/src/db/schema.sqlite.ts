@@ -155,6 +155,18 @@ export const projects = sqliteTable(
      * audited.
      */
     oidcAudiences: text("oidc_audiences"),
+    /**
+     * The provider snapshot this project's sandboxes start from (Daytona: an existing snapshot
+     * name). Null (default): the size class's snapshot, else the provider config's. Set by the
+     * instance operator only.
+     */
+    sandboxSnapshot: text("sandbox_snapshot"),
+    /**
+     * Most attempts of this project running at once. Null: no project limit (the org's and the
+     * instance's caps still apply). It can only lower, never lift, those caps. Set by the instance
+     * operator only.
+     */
+    maxConcurrent: integer("max_concurrent", { mode: "number" }),
     createdAt: createdAt(),
   },
   (t) => [

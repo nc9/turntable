@@ -3,7 +3,13 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { systemOrgId } from "../src/audit/failures";
-import { type Db, getOrgQuotas, insertApiToken, listAudit } from "../src/db";
+import {
+  type Db,
+  getOrgQuotas,
+  getProjectSandboxSettings,
+  insertApiToken,
+  listAudit,
+} from "../src/db";
 import { AGENT_ROLES } from "../src/db/schema";
 import { findInstanceTokenByHash } from "../src/db/repos";
 import { mcpTools } from "../src/ops/mcp";
@@ -184,7 +190,12 @@ describe("no org principal reaches an instance op, and the instance token reache
     for (const t of [a, b]) {
       for (const { label, cred } of await orgCreds(t)) {
         for (const op of registry.instanceOps()) {
-          const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+          const input =
+            op.name === "set_quotas"
+              ? { target_org: "org-a", max_log_bytes: 1 }
+              : op.name === "set_project_settings"
+                ? { target_org: "org-a", target_project: "app", max_concurrent: 1 }
+                : {};
           const r = await dispatch(env, cred, op.name, input);
           expect(r.ok, `${label} on ${op.name}`).toBe(false);
           if (!r.ok) expect(r.error.code, `${label} on ${op.name}`).toBe("forbidden");
@@ -192,12 +203,16 @@ describe("no org principal reaches an instance op, and the instance token reache
       }
     }
     expect(JSON.stringify(await getOrgQuotas(db, a.orgId))).toBe(before);
+    expect(await getProjectSandboxSettings(db, a.scope)).toEqual({
+      sandboxSnapshot: null,
+      maxConcurrent: null,
+    });
     expect(
       registry
         .instanceOps()
         .map((o) => o.name)
         .toSorted(),
-    ).toEqual(["instance_list_orgs", "instance_whoami", "set_quotas"]);
+    ).toEqual(["instance_list_orgs", "instance_whoami", "set_project_settings", "set_quotas"]);
   });
 
   test("the instance token on every other op: forbidden (it holds no org grant), even with an org named", async () => {

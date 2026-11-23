@@ -24,6 +24,10 @@ import {
   setProjectSigning,
   signingKeyUsedByOtherOrg,
   getProjectEgress,
+  getProjectSandboxSettings,
+  setProjectSandboxSettings,
+  SNAPSHOT_NAME,
+  type ProjectSandboxSettings,
   listProjects,
   setApproveRunMinRole,
   setProjectEgress,
@@ -37,6 +41,8 @@ export const POLICY_USAGE = `Usage:
   longshore policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
   longshore policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
   longshore policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
+  longshore policy set --org <slug> --project <slug> [--sandbox-snapshot <name|none>]
+      [--max-concurrent <n|none>] [--data-dir ./data]
   longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
@@ -538,6 +544,71 @@ export async function showOidcAudiences(
     out.push({
       project: p.slug,
       audiences: await getProjectOidcAudiences(db, { orgId: org.id, projectId: p.id }),
+    });
+  }
+  return out;
+}
+
+/**
+ * Sets the sandbox snapshot and/or the concurrency cap of one project (the instance operator's:
+ * a tenant must not choose its own image or lift its own cap). `none` removes a setting. Audited
+ * in the project's org chain. The cap can only lower the instance's per-org cap, which the
+ * scheduler applies whatever is stored.
+ */
+export async function setSandboxPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  opts: { sandboxSnapshot?: string | undefined; maxConcurrent?: string | undefined },
+): Promise<{ project: string; from: ProjectSandboxSettings; to: ProjectSandboxSettings }> {
+  if (!projectSlug) throw new Error("--sandbox-snapshot and --max-concurrent need --project");
+  const patch: Partial<ProjectSandboxSettings> = {};
+  if (opts.sandboxSnapshot !== undefined) {
+    if (opts.sandboxSnapshot !== "none" && !SNAPSHOT_NAME.test(opts.sandboxSnapshot))
+      throw new Error(
+        '--sandbox-snapshot is a snapshot name (letters, digits, . _ -, up to 128) or "none"',
+      );
+    patch.sandboxSnapshot = opts.sandboxSnapshot === "none" ? null : opts.sandboxSnapshot;
+  }
+  if (opts.maxConcurrent !== undefined) {
+    if (opts.maxConcurrent !== "none" && !/^\d{1,15}$/.test(opts.maxConcurrent))
+      throw new Error('--max-concurrent must be a whole number or "none"');
+    patch.maxConcurrent = opts.maxConcurrent === "none" ? null : Number(opts.maxConcurrent);
+  }
+  if (Object.keys(patch).length === 0)
+    throw new Error("name --sandbox-snapshot or --max-concurrent");
+  const org = await orgOf(db, orgSlug);
+  const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
+  if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+  const scope = { orgId: org.id, projectId: project.id };
+  const from = await getProjectSandboxSettings(db, scope);
+  const to = await db.transaction(async (tx) => {
+    const after = await setProjectSandboxSettings(tx, scope, patch);
+    if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
+    await appendAudit(tx, scope, {
+      principalKind: "cli",
+      principalId: "local",
+      op: "policy_set",
+      effect: "write",
+      outcome: "ok",
+      input: { key: "sandbox", project: project.slug, from, to: after },
+    });
+    return after;
+  });
+  return { project: project.slug, from, to };
+}
+
+/** Each project's sandbox snapshot and cap, for `policy show`. */
+export async function showSandbox(
+  db: Db,
+  orgSlug: string,
+): Promise<{ project: string; settings: ProjectSandboxSettings }[]> {
+  const org = await orgOf(db, orgSlug);
+  const out: { project: string; settings: ProjectSandboxSettings }[] = [];
+  for (const p of await listProjects(db, { orgId: org.id })) {
+    out.push({
+      project: p.slug,
+      settings: await getProjectSandboxSettings(db, { orgId: org.id, projectId: p.id }),
     });
   }
   return out;

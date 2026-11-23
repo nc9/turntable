@@ -24,7 +24,13 @@ import {
   updateAttempt,
 } from "../src/db";
 import { dispatch, registry } from "../src/ops";
-import { setEgressPolicy, setPolicy, showEgress, showPolicy } from "../src/ops/policy-cli";
+import {
+  setEgressPolicy,
+  setPolicy,
+  setSandboxPolicy,
+  showEgress,
+  showPolicy,
+} from "../src/ops/policy-cli";
 import { egressForRun } from "../src/scheduler/egress";
 import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
@@ -1694,5 +1700,47 @@ jobs:
       "gate",
       "tests",
     ]);
+  });
+});
+
+describe("a project's sandbox snapshot", () => {
+  const ONE = `name: one
+on:
+  push:
+    branches: [main]
+jobs:
+  only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+  async function specsFor(snapshot: string | undefined): Promise<{ snapshot?: string }[]> {
+    if (snapshot !== undefined)
+      await setSandboxPolicy(db, "local", "local", { sandboxSnapshot: snapshot });
+    const gh = makeGithub();
+    gh.state.files.set("*", ONE);
+    await ingest(gh);
+    const specs: { snapshot?: string }[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    return specs;
+  }
+
+  test("the project's snapshot is on the sandbox spec of its jobs; with none set the spec names none", async () => {
+    const without = await specsFor(undefined);
+    expect(without.length).toBeGreaterThan(0);
+    expect(without.every((s) => s.snapshot === undefined)).toBe(true);
+  });
+
+  test("with a snapshot set, every sandbox of the project starts from it", async () => {
+    const withSnap = await specsFor("daytona-large");
+    expect(withSnap.length).toBeGreaterThan(0);
+    expect(withSnap.every((s) => s.snapshot === "daytona-large")).toBe(true);
   });
 });

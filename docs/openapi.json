@@ -7013,6 +7013,93 @@
         "x-longshore-untrusted-output": false
       }
     },
+    "/project-settings": {
+      "get": {
+        "operationId": "get_project_settings",
+        "summary": "A project's sandbox snapshot and concurrency cap.",
+        "description": "The settings the instance operator gave one project: `sandbox_snapshot` (the provider snapshot its sandboxes start from; it beats a size class's snapshot and the provider's default) and `max_concurrent` (most of its attempts running at once; it can only lower the org's and the instance's caps). Null means not set. Pass the project. Read-only. They are set by the instance operator (`set_project_settings`, or `longshore policy set` on the host), never by the project's own tokens.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug. Required unless the token is scoped to one project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "project": {
+                      "type": "string"
+                    },
+                    "sandbox_snapshot": {
+                      "description": "The provider snapshot this project's sandboxes start from; null is the default.",
+                      "type": ["string", "null"]
+                    },
+                    "max_concurrent": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Most attempts of this project running at once; null is no project limit."
+                    }
+                  },
+                  "required": ["project", "sandbox_snapshot", "max_concurrent"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "read",
+        "x-longshore-min-role": "reader",
+        "x-longshore-untrusted-output": false
+      }
+    },
     "/approvers/key-policy": {
       "post": {
         "operationId": "approve_key_policy",
@@ -8029,6 +8116,120 @@
                     }
                   },
                   "required": ["limits", "usage"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-longshore-effect": "write",
+        "x-longshore-instance-only": true,
+        "x-longshore-untrusted-output": false
+      }
+    },
+    "/instance/project-settings": {
+      "post": {
+        "operationId": "set_project_settings",
+        "summary": "Set a project's sandbox snapshot and concurrency cap (instance administrator only).",
+        "description": "Changes the sandbox settings of one project, naming only the ones to change (null removes one). `sandbox_snapshot` is the name of an existing provider snapshot: the project's sandboxes start from it instead of the size class's or the provider's default. `max_concurrent` caps the project's running attempts and can only lower the instance's per-org cap (`--org-cap`): a value above it is refused. Both are operator controls and a tenant must not choose its own image or lift its own cap, so only the instance administrator can call it: an org's own tokens, of any role, never can. The change is audited in the system org's chain and in the target org's own. Not an MCP tool.\n\nInstance administrator only: an `lsi_` token minted on the host with `longshore token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org."
+                  },
+                  "target_project": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the project."
+                  },
+                  "sandbox_snapshot": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "max_concurrent": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["target_org", "target_project"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "project": {
+                      "type": "string"
+                    },
+                    "sandbox_snapshot": {
+                      "description": "The provider snapshot this project's sandboxes start from; null is the default.",
+                      "type": ["string", "null"]
+                    },
+                    "max_concurrent": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Most attempts of this project running at once; null is no project limit."
+                    }
+                  },
+                  "required": ["project", "sandbox_snapshot", "max_concurrent"],
                   "additionalProperties": false
                 }
               }
