@@ -199,6 +199,7 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
       : null,
     // Legs of one matrix share the name before " (": "test (ubuntu, 20)" belongs to "test".
     matrixGroup: j.matrix ? j.name.replace(/\s*\(.*\)$/, "") : null,
+    shard: j.shard ?? null,
     approval: j.approval_kind,
     exitCode: j.exit_code,
     createdAt: ms(run.created_at) ?? 0,

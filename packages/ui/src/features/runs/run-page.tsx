@@ -13,6 +13,7 @@ import { cancelAction } from "@/db/collections";
 import { useRunSync } from "@/db/sync";
 import { useScope } from "@/features/shell/scope";
 import { formatDateTime, formatRelative } from "@/lib/format";
+import { groupJobs, type JobItem } from "@/lib/shards";
 import { isActive, STATE_META } from "@/lib/states";
 import { toast } from "@/lib/toast";
 import { ApprovalNotice, approvalLabel } from "./approval";
@@ -21,6 +22,7 @@ import { SandboxTimes } from "./sandbox-time";
 import { RerunButton } from "./rerun-dialog";
 import { EgressBadge, TrustBadge } from "./trust";
 import { JobGraph } from "./job-graph";
+import { ShardGroupRow } from "./shard-group";
 import { RefChip, ShaChip, useRunAttempts, useRunJobs, useRunRow } from "./common";
 
 export function AttemptChip({ attempt, job }: { attempt: JobAttempt; job?: Job }) {
@@ -78,9 +80,13 @@ function RunActions({ run, jobs }: { run: Run; jobs: Job[] }) {
   );
 }
 
-function jobSummary(jobs: Job[]): { state: JobState; count: number }[] {
+/** One count per job: the shards of a split job count once, as the fold of their states. */
+function jobSummary(items: JobItem[]): { state: JobState; count: number }[] {
   const counts = new Map<JobState, number>();
-  for (const j of jobs) counts.set(j.state, (counts.get(j.state) ?? 0) + 1);
+  for (const it of items) {
+    const state = it.kind === "job" ? it.job.state : it.group.state;
+    counts.set(state, (counts.get(state) ?? 0) + 1);
+  }
   return [...counts.entries()].map(([state, count]) => ({ state, count }));
 }
 
@@ -114,6 +120,7 @@ export function RunPage() {
     );
   }
   const infraAttempts = attempts.filter((a) => a.state === "infra_error");
+  const items = groupJobs(jobs);
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pb-16 pt-5 sm:px-5">
@@ -205,7 +212,7 @@ export function RunPage() {
                 Jobs
               </h2>
               <div className="flex flex-wrap items-center gap-3 text-xs text-dim">
-                {jobSummary(jobs).map((s) => (
+                {jobSummary(items).map((s) => (
                   <span key={s.state} className="inline-flex items-center gap-1">
                     <StateIcon state={s.state} className="size-3.5" />
                     {s.count} {STATE_META[s.state].label.toLowerCase()}
@@ -240,7 +247,21 @@ export function RunPage() {
                 Attempts
               </h2>
               <ul className="overflow-hidden rounded-xl border border-line">
-                {jobs.map((job) => {
+                {items.map((item) => {
+                  if (item.kind === "shards")
+                    return (
+                      <ShardGroupRow
+                        key={item.group.id}
+                        group={item.group}
+                        run={run}
+                        jobs={jobs}
+                        attempts={attempts}
+                        orgSlug={orgSlug}
+                        projectSlug={projectSlug}
+                        AttemptChip={AttemptChip}
+                      />
+                    );
+                  const job = item.job;
                   const jobAttempts = attempts.filter((a) => a.jobId === job.id);
                   const last = jobAttempts.at(-1);
                   return (

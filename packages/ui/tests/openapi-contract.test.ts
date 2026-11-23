@@ -116,6 +116,7 @@ test("get_run: run, job and attempt fields", () => {
       state: true,
       needs: true,
       matrix: true,
+      shard: true,
       approval_kind: true,
       exit_code: true,
       started_at: true,

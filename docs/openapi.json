@@ -585,16 +585,23 @@
                                     "type": "integer",
                                     "minimum": -9007199254740991,
                                     "maximum": 9007199254740991
+                                  },
+                                  "steps": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "description": "The steps this shard owns (names or #n); the others it turns off."
                                   }
                                 },
-                                "required": ["job", "index", "total"],
+                                "required": ["job", "index", "total", "steps"],
                                 "additionalProperties": false
                               },
                               {
                                 "type": "null"
                               }
                             ],
-                            "description": "Set when this row is one shard of a job the operator splits across sandboxes: `job` is the workflow job id the shards share (their name and forge check are the job's), `index` counts from 0. The job's result is the fold of its shards: failure if any failed, else infra_error, cancelled, skipped only if all were, else success. Null for a job that is not split."
+                            "description": "Set when this row is one shard of a job the operator splits across sandboxes: `job` is the workflow job id the shards share (their name and forge check are the job's), `index` counts from 0, `steps` are the steps only this shard runs. The job's result is the fold of its shards: failure if any failed, else infra_error, cancelled, skipped only if all were, else success. Null for a job that is not split."
                           },
                           "approval_kind": {
                             "anyOf": [
