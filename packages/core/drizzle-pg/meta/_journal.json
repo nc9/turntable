@@ -57,6 +57,13 @@
       "when": 1795419761704,
       "tag": "0007_skip_check_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795424036193,
+      "tag": "0008_untrusted_run_approval",
+      "breakpoints": true
     }
   ]
 }

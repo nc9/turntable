@@ -116,7 +116,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `get_release_request` | `GET /api/v1/release-requests/{id}` | yes |  | read | release_operator | token | The state of a release request: pending, signed, or refused with a reason. |
 | `start_installation_claim` | `POST /api/v1/github/installation-claims` | no |  | write | release_operator | token | Get the link that connects a GitHub installation to this org. |
 | `set_oidc_audiences` | `POST /api/v1/oidc-audiences` | no |  | write | admin | token | Limit the OIDC audiences a project's jobs may ask for, or lift the limit. |
-| `get_project_settings` | `GET /api/v1/project-settings` | yes |  | read | reader | token | A project's sandbox snapshot and concurrency cap. |
+| `get_project_settings` | `GET /api/v1/project-settings` | yes |  | read | reader | token | A project's sandbox snapshot, concurrency cap and untrusted-run approval policy. |
 | `set_project_settings` | none | no |  | write | admin | instance | Set a project's sandbox snapshot and concurrency cap (instance administrator only). |
 | `create_project` | none | no |  | write | admin | instance | Create a project in an org (instance administrator only). |
 | `create_webhook` | `POST /api/v1/webhooks` | no |  | write | admin | token | Send this org's events to a URL, signed. |
@@ -189,15 +189,17 @@ The HTTP transport is stateless: every request authenticates its own token and n
 
 ## Scoped agent tokens
 
-Agents authenticate with a token (`tt_` plus 32 random bytes, base64url) with one role, limited to an org or to one project, and expiring (90 days by default, 365 at most). Only the sha256 hash is stored. The secret is shown once, when `create_api_token` returns it. A revoked, expired or unknown token all fail with the same error. Secrets are never returned by any other operation, see [Secrets and security](/security).
+Agents authenticate with a token (`tt_` plus 32 random bytes, base64url) with one role and one kind, limited to an org or to one project, and expiring (90 days by default, 365 at most). Only the sha256 hash is stored. The secret is shown once, when `create_api_token` returns it. A revoked, expired or unknown token all fail with the same error. Secrets are never returned by any other operation, see [Secrets and security](/security).
 
 The first token comes from the command line, because creating one over the network needs an org admin and sessions do not exist yet:
 
 ```sh
-turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator> --name <name> [--expires-days 90] [--data-dir ./data]
+turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator> [--kind <agent|person>] --name <name> [--expires-days 90] [--data-dir ./data]
 ```
 
-Local access to the data directory is the trust root. The command writes through the same repos, audits the creation, prints the secret alone on stdout (so `TOKEN=$(turntable token create ...)` works) and the details on stderr. `turntable token list` and `turntable token revoke <id>` manage them. A token can never create a token with a higher role or a wider scope than its own.
+Local access to the data directory is the trust root. The command writes through the same repos, audits the creation, prints the secret alone on stdout (so `TOKEN=$(turntable token create ...)` works) and the details on stderr. `turntable token list` and `turntable token revoke <id>` manage them. A token can never create a token with a higher role, a wider scope or a less restricted kind than its own.
+
+**Token kind.** `kind` is `agent` (the default: an MCP client or a script an untrusted pull request could prompt) or `person` (a human's own token). It is set when the token is minted (`--kind`, or `kind` in `create_api_token`) and never changes: no operation edits it, and an agent token cannot mint a person token. A project whose `untrusted_run_approval` is `no_agents` (the default) refuses agent tokens as approvers of untrusted runs, so mint a `person` token only for a human. **Tokens minted before kinds existed have no kind and are treated as `agent`**, the same as the migration's default, so they fail closed: re-mint a token as `person` for a human who approves over REST or the CLI. `turntable token list` shows the kind. See [Secrets and security](/security) for the policy.
 
 ## Event feed and webhooks
 

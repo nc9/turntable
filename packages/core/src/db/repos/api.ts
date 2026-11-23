@@ -3,7 +3,7 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
-import type { AgentRole, JobState } from "../schema";
+import type { AgentRole, JobState, TokenKind } from "../schema";
 import { ulid } from "../ulid";
 import { type Scope, scoped } from "./scope";
 
@@ -20,6 +20,8 @@ export function insertApiToken(
   input: {
     name: string;
     role: AgentRole;
+    /** Absent means `agent`: a token is only a person's when it was minted as one. */
+    kind?: TokenKind | undefined;
     tokenHash: string;
     createdBy: string;
     expiresAt?: number | undefined;
@@ -33,6 +35,7 @@ export function insertApiToken(
       projectId: scope.projectId ?? null,
       name: input.name,
       role: input.role,
+      kind: input.kind ?? "agent",
       tokenHash: input.tokenHash,
       createdBy: input.createdBy,
       expiresAt: input.expiresAt ?? null,

@@ -47,6 +47,8 @@ export async function bootstrapToken(
     const created = await insertApiToken(tx, scope, {
       name: "bootstrap",
       role: "operator",
+      // The operator's own token, held by a person: it may approve under `no_agents`.
+      kind: "person",
       tokenHash: hash,
       createdBy: "bootstrap:env",
       expiresAt,
@@ -60,6 +62,7 @@ export async function bootstrapToken(
       input: {
         name: "bootstrap",
         role: "operator",
+        kind: "person",
         org: slug,
         source: "TURNTABLE_BOOTSTRAP_TOKEN_SHA256",
       },

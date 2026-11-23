@@ -403,8 +403,11 @@ async function world(
     by: "test",
     now: Date.now(),
   });
-  const releaseTok = (await mintToken(db, { orgId: org.id }, "release_operator")).secret;
-  const operatorTok = (await mintToken(db, { orgId: org.id }, "operator")).secret;
+  const releaseTok = (
+    await mintToken(db, { orgId: org.id }, "release_operator", { kind: "person" })
+  ).secret;
+  const operatorTok = (await mintToken(db, { orgId: org.id }, "operator", { kind: "person" }))
+    .secret;
   const env = { registry, db };
   const call = (tok: string, op: string, input: unknown) =>
     dispatch(env, { kind: "bearer", token: tok }, op, input);
@@ -810,7 +813,7 @@ describe("the same path, from a signed tag push webhook through the poller", () 
       });
       // an operator cannot release it, even when the org lowered approve_run to operator
       await setApproveRunMinRole(db, org.id, "operator");
-      const op = (await mintToken(db, { orgId: org.id }, "operator")).secret;
+      const op = (await mintToken(db, { orgId: org.id }, "operator", { kind: "person" })).secret;
       const refused = await dispatch(
         { registry, db },
         { kind: "bearer", token: op },

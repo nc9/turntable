@@ -2,6 +2,8 @@
 // directory is the trust root (like `turntable token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
+import { UNTRUSTED_RUN_APPROVALS, type UntrustedRunApproval } from "../db/schema";
+import { HUMAN_MODE_UNAVAILABLE } from "./approval-policy";
 import { validAudience } from "../oidc/issuer";
 import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
@@ -42,7 +44,7 @@ export const POLICY_USAGE = `Usage:
   turntable policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
   turntable policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
   turntable policy set --org <slug> --project <slug> [--sandbox-snapshot <name|none>]
-      [--max-concurrent <n|none>] [--data-dir ./data]
+      [--max-concurrent <n|none>] [--untrusted-run-approval <human|no_agents|any>] [--data-dir ./data]
   turntable policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
@@ -561,9 +563,16 @@ export async function setSandboxPolicy(
   db: Db,
   orgSlug: string,
   projectSlug: string | undefined,
-  opts: { sandboxSnapshot?: string | undefined; maxConcurrent?: string | undefined },
+  opts: {
+    sandboxSnapshot?: string | undefined;
+    maxConcurrent?: string | undefined;
+    untrustedRunApproval?: string | undefined;
+  },
 ): Promise<{ project: string; from: ProjectSandboxSettings; to: ProjectSandboxSettings }> {
-  if (!projectSlug) throw new Error("--sandbox-snapshot and --max-concurrent need --project");
+  if (!projectSlug)
+    throw new Error(
+      "--sandbox-snapshot, --max-concurrent and --untrusted-run-approval need --project",
+    );
   const patch: Partial<ProjectSandboxSettings> = {};
   if (opts.sandboxSnapshot !== undefined) {
     if (opts.sandboxSnapshot !== "none" && !SNAPSHOT_NAME.test(opts.sandboxSnapshot))
@@ -577,13 +586,29 @@ export async function setSandboxPolicy(
       throw new Error('--max-concurrent must be a whole number or "none"');
     patch.maxConcurrent = opts.maxConcurrent === "none" ? null : Number(opts.maxConcurrent);
   }
+  if (opts.untrustedRunApproval !== undefined) {
+    if (!(UNTRUSTED_RUN_APPROVALS as readonly string[]).includes(opts.untrustedRunApproval))
+      throw new Error(`--untrusted-run-approval is one of: ${UNTRUSTED_RUN_APPROVALS.join(", ")}`);
+    patch.untrustedRunApproval = opts.untrustedRunApproval as UntrustedRunApproval;
+  }
   if (Object.keys(patch).length === 0)
-    throw new Error("name --sandbox-snapshot or --max-concurrent");
+    throw new Error("name --sandbox-snapshot, --max-concurrent or --untrusted-run-approval");
   const org = await orgOf(db, orgSlug);
   const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
   if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
   const scope = { orgId: org.id, projectId: project.id };
   const from = await getProjectSandboxSettings(db, scope);
+  if (patch.untrustedRunApproval === "human") {
+    await appendAudit(db, scope, {
+      principalKind: "cli",
+      principalId: "local",
+      op: "policy_set",
+      effect: "write",
+      outcome: "error:invalid_input",
+      input: { key: "sandbox", project: project.slug, from, refused: HUMAN_MODE_UNAVAILABLE },
+    });
+    throw new Error(HUMAN_MODE_UNAVAILABLE);
+  }
   const to = await db.transaction(async (tx) => {
     const after = await setProjectSandboxSettings(tx, scope, patch);
     if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);

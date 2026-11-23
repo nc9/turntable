@@ -136,7 +136,7 @@ export function createRestApi(
     ...env.registry.signatureOps(),
     ...env.registry.instanceOps(),
   ].map(compile);
-  const restEnv: DispatchEnv = { ...env, allowInstance: true };
+  const restEnv: DispatchEnv = { ...env, allowInstance: true, transport: "rest" };
   return async (req, peer) => {
     const url = new URL(req.url);
     if (url.pathname !== API_PREFIX && !url.pathname.startsWith(`${API_PREFIX}/`)) return undefined;

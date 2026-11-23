@@ -112,7 +112,7 @@ TOKEN=$(./dist/turntable-darwin-arm64 token create \
   --org local --project local --role reader --name my-agent --data-dir ./data)
 ```
 
-The secret goes to stdout, and the details go to stderr. It is shown once and only its hash is stored, so keep it. Roles are `reader` (read-only), `operator` (also cancels runs) and `release_operator`. Tokens expire after 90 days unless you pass `--expires-days N` (1 to 365). `--project` narrows a token to one project. On a fresh data directory, `--org local` creates the built-in `local` org and project.
+The secret goes to stdout, and the details go to stderr. It is shown once and only its hash is stored, so keep it. Roles are `reader` (read-only), `operator` (also cancels runs) and `release_operator`. Tokens expire after 90 days unless you pass `--expires-days N` (1 to 365). `--project` narrows a token to one project. `--kind agent` (the default) or `--kind person` says who holds it: a project refuses agent tokens as approvers of untrusted pull request runs by default, so use `person` for a human's own token. On a fresh data directory, `--org local` creates the built-in `local` org and project.
 
 Use it against a running server:
 
