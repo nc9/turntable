@@ -31,7 +31,14 @@ export const WEBHOOK_PATH = "/api/v1/webhooks/github";
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const RETENTION_MS = 30 * 86_400_000;
 const HANDLED = new Set(["installation", "installation_repositories"]);
-/** Events that only wake the poller for the repo they name. */
+/**
+ * Events that only wake the poller for the repo they name. A webhook never creates a run and never
+ * records the event's `sender`: runs come only from poll ingest, which sets a PR run's `actor` to
+ * the PR author the trust decision judged. `approver_is_author` (#408) compares the approver with
+ * that `actor` alone. If a webhook path ever creates runs or records `sender` (a pusher can differ
+ * from the PR author on `synchronize`), that check must compare against both (#416), and the guard
+ * in tests/github-webhook.test.ts fails until it is revisited.
+ */
 const WAKE = new Set(["push", "pull_request", "merge_group"]);
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const GUID = /^[A-Za-z0-9-]{8,100}$/;
