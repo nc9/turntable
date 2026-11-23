@@ -63,7 +63,7 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
 | `quotaMode` | `"org-usage"` | `"org-usage"` reads the org's CPU in use (see `ownerCiPreflight`); if Daytona answers that read with 403 (a key scoped to sandbox write and delete) it falls back to `"own-fleet"` and logs it once. `"own-fleet"` never reads the org: it counts our own live sandboxes by our label and waits while that is `maxLive` or more. Only a 403 falls back. |
-| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
+| `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, diskLimitGiB, memLimitGiB, region, sandboxClass }`. Disk and memory are judged against the quotas the usage reply reports unless you set a limit; with neither they are not checked. |
 | `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
 | `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
