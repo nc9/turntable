@@ -17,7 +17,9 @@ import {
   checkForwarded,
   checkGithubApp,
   checkHttpsRedirect,
+  checkAuditAnchors,
   checkMasterKey,
+  checkReleaseKey,
   checkPrivileges,
   checkProxyTls,
   checkQuotas,
@@ -206,6 +208,31 @@ describe("privileges and the data directory", () => {
     expect(at({ [DIR]: { isDirectory: true, mode: 0o777 } })).toMatchObject({ status: "warn" });
     expect(at({ [DIR]: { isDirectory: true, uid: 1000 } })).toMatchObject({ status: "warn" });
     expect(at(goodFiles())).toMatchObject({ status: "pass" });
+  });
+});
+
+describe("the release key and the audit anchor", () => {
+  test("a release key file inside a data directory warns; outside, it passes; unset, no check", () => {
+    expect(checkReleaseKey(base())).toEqual([]);
+    const at = (file: string, dataDir?: string) =>
+      checkReleaseKey(base({ releaseKey: { file, dataDir } }));
+    const inMain = at(`${DIR}/release.key`);
+    expect(inMain[0]).toMatchObject({ status: "warn" });
+    expect(inMain[0]!.summary).toContain("data directory");
+    expect(inMain[0]!.fix).toContain("TURNTABLE_RELEASE_MASTER_KEY");
+    expect(at("/release/state/r.key", "/release/state")[0]).toMatchObject({ status: "warn" });
+    expect(at("/run/secrets/release.key", "/release/state")[0]).toMatchObject({ status: "pass" });
+    expect(JSON.stringify(inMain)).not.toContain("release.key");
+  });
+  test("an anchor that does not open names the fix: set the previous key and restart", () => {
+    expect(checkAuditAnchors(base({ unreadableAnchors: () => [] }))).toMatchObject({
+      status: "pass",
+    });
+    const r = checkAuditAnchors(base({ unreadableAnchors: () => ["01ORGAAAA"] }));
+    expect(r).toMatchObject({ status: "fail" });
+    expect(r.fix).toContain("audit anchor for org 01ORGAAAA");
+    expect(r.fix).toContain("TURNTABLE_MASTER_KEY_PREVIOUS");
+    expect(r.fix).toContain("restart");
   });
 });
 

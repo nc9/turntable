@@ -126,7 +126,7 @@ The release service's variables:
 
 | Variable | Meaning |
 | --- | --- |
-| `TURNTABLE_RELEASE_MASTER_KEY_FILE` | The release master key file (`turntable keys init`), on the release service's own volume. |
+| `TURNTABLE_RELEASE_MASTER_KEY_FILE` | The release master key file (`turntable keys init`), on the release service's own volume. Or set `TURNTABLE_RELEASE_MASTER_KEY` (base64 or hex) instead, not both; see [Hosted deployment](/hosted#the-release-lanes-key). |
 | `TURNTABLE_RELEASE_DATA_DIR` | Its own state: the attested digests. |
 | `TURNTABLE_RELEASE_GITHUB_TOKEN` | A read-only token for repository contents and refs, used only to re-check tags. |
 | `TURNTABLE_RELEASE_ARTIFACT_DIR` | Read-only artifact bytes, `<dir>/<run id>/<name>`. The lane refuses a symbolic link at any component, checks containment on real paths and reads through an open descriptor, so a link planted in the directory cannot make it hash (and sign) another file. |

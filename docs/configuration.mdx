@@ -283,7 +283,9 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 
 | Variable | Flag | Default | Description |
 | --- | --- | --- | --- |
-| `TURNTABLE_RELEASE_MASTER_KEY_FILE` |  |  | The release lane's own master key file. Read only by `serve --roles release`. |
+| `TURNTABLE_RELEASE_MASTER_KEY_FILE` |  |  | The release lane's own master key file (or `TURNTABLE_RELEASE_MASTER_KEY`, not both). Read only by `serve --roles release`. |
+| `TURNTABLE_RELEASE_MASTER_KEY` |  |  | The release lane's master key itself, 32 bytes as base64 or hex, so its wrapper stays off every volume backup. Read once at boot and removed from the environment. Not with `TURNTABLE_RELEASE_MASTER_KEY_FILE`. |
+| `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` |  |  | The release key the lane's sealed state is under before a rotation. The lane re-wraps its publish credentials and signing key files under the new key at boot, in one transaction. Remove it after a clean boot. |
 | `TURNTABLE_RELEASE_DATA_DIR` |  |  | The release lane's own data directory. |
 | `TURNTABLE_RELEASE_GITHUB_TOKEN` |  |  | The forge credential the lane uses to re-check a release (read access). |
 | `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN` |  |  | Optional credential the lane uses to publish. Absent means it does not publish. |

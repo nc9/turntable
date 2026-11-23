@@ -30,6 +30,7 @@ import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import {
+  anchorKeyMessage,
   auditStateDir,
   MasterKeyConfigError,
   takeMasterKeys,
@@ -76,7 +77,7 @@ import {
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
-import { mainRuntime, resolveRoles } from "./roles";
+import { mainRuntime, RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV, resolveRoles } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
@@ -549,6 +550,8 @@ async function serve(args: string[]): Promise<void> {
   }
   // A process that is not the release lane holds nothing of it: those variables do nothing here.
   const runtime = mainRuntime(roles, process.env);
+  // The lane's key is not this process's to hold, nor for a child to inherit.
+  for (const k of [RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV]) delete process.env[k];
   if (runtime.ignoredReleaseEnv.length > 0) {
     console.warn(
       `warning: ${runtime.ignoredReleaseEnv.join(", ")} belong to the release lane and are ignored here; run it as its own process (serve --roles release)`,
@@ -619,6 +622,16 @@ async function serve(args: string[]): Promise<void> {
     console.warn(
       "[turntable] the previous master key is set: once the re-wrap is done and a new backup is taken, remove it",
     );
+  }
+  // A key changed without its previous one: say so now, with the fix, not as a bare AnchorCorrupt
+  // from the checkpointer later. Not fatal: the checkpointer alerts on every pass either way.
+  if (masterKeys && !masterKeys.previous) {
+    for (const orgId of new AuditAnchor(
+      auditStateDir(masterKeys, dataDir),
+      masterKeys.key,
+    ).unreadable()) {
+      console.error(`[turntable] ${anchorKeyMessage(orgId)}`);
+    }
   }
   if (masterKeyCreated) {
     await appendAudit(

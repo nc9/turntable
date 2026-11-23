@@ -331,7 +331,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   {
     name: "TURNTABLE_RELEASE_MASTER_KEY_FILE",
     area: "Release lane",
-    description: "The release lane's own master key file. Read only by `serve --roles release`.",
+    description:
+      "The release lane's own master key file (or `TURNTABLE_RELEASE_MASTER_KEY`, not both). Read only by `serve --roles release`.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_MASTER_KEY",
+    area: "Release lane",
+    description:
+      "The release lane's master key itself, 32 bytes as base64 or hex, so its wrapper stays off every volume backup. Read once at boot and removed from the environment. Not with `TURNTABLE_RELEASE_MASTER_KEY_FILE`.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS",
+    area: "Release lane",
+    description:
+      "The release key the lane's sealed state is under before a rotation. The lane re-wraps its publish credentials and signing key files under the new key at boot, in one transaction. Remove it after a clean boot.",
   },
   {
     name: "TURNTABLE_RELEASE_DATA_DIR",

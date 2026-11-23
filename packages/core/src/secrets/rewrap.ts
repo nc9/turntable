@@ -8,7 +8,9 @@
 //   - `outbound_secrets`: outbound webhook signing secrets (the `webhook` domain);
 //   - the audit anchor state files (outside the database, so done around the transaction).
 // Not covered: cache blobs (a cache: entries sealed under the old key stop opening and are
-// misses), and the release lane's keys (sealed with the lane's own key).
+// misses), and the release lane's own state (sealed with the lane's key; see release/rewrap.ts).
+// A vault row that allows the `release` class and opens under neither key is taken to be a publish
+// credential sealed under the lane's key: it is skipped and named in the log, not failed.
 //
 // Idempotent without a stored key id: each row is tried under the NEW key first (already
 // re-wrapped: skipped), then under the previous one. A row that opens under neither fails the
@@ -34,6 +36,8 @@ export interface RewrapResult {
   rewrapped: RewrapCounts;
   /** Rows that were already under the new key. */
   alreadyCurrent: RewrapCounts;
+  /** Vault rows left alone: they allow `release` and open under neither key (the lane's own). */
+  skipped: string[];
 }
 
 /** The rewrap failed and nothing was changed. The message names the table and row, never a value. */
@@ -61,12 +65,12 @@ interface Planned<T> {
 }
 
 /** The new record for one row, or undefined when it is already under the new key. Throws SecretDecryptError. */
-function replan(
+export function replan(
   keys: { next: Buffer; previous: Buffer },
   record: string,
   aad: Buffer,
   domain: KeyDomain,
-  orgId: string,
+  orgId: string | undefined,
 ): string | undefined {
   // Old formats are not forced open: with TURNTABLE_REQUIRE_ORG_KEYS=1 an old-format row is refused here as
   // everywhere else (run `keys reseal` first); without it old formats open as usual.
@@ -103,11 +107,13 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
   const keys = { next: o.next, previous: o.previous };
   const rewrapped = zero();
   const alreadyCurrent = zero();
+  const skipped: string[] = [];
   const where = (table: string, id: string): string => `${table} ${id}`;
   const plan = async <T>(
     table: keyof RewrapCounts,
     rows: T[],
     one: (r: T) => { id: string; record: string; aad: Buffer; domain: KeyDomain; orgId: string },
+    tolerate?: (r: T) => boolean,
   ): Promise<Planned<T>[]> => {
     const out: Planned<T>[] = [];
     for (const row of rows) {
@@ -116,6 +122,10 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
       try {
         sealed = replan(keys, r.record, r.aad, r.domain, r.orgId);
       } catch {
+        if (tolerate?.(row)) {
+          skipped.push(where(table, r.id));
+          continue;
+        }
         throw new RewrapError(
           `cannot re-wrap ${where(table, r.id)}: it opens under neither the current nor the previous master key. Nothing was changed.`,
         );
@@ -150,6 +160,7 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
 
   await o.db.transaction(async (tx) => {
     // A retried transaction (Postgres serialization) starts from clean counts.
+    skipped.length = 0;
     for (const k of Object.keys(rewrapped) as (keyof RewrapCounts)[]) {
       rewrapped[k] = 0;
       if (k !== "audit_anchor_files") alreadyCurrent[k] = 0;
@@ -175,6 +186,7 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
           secretId: s.vaultSecretVersions.secretId,
           version: s.vaultSecretVersions.version,
           name: s.vaultSecrets.name,
+          trustClasses: s.vaultSecrets.trustClasses,
           ciphertext: s.vaultSecretVersions.ciphertext,
         })
         .from(s.vaultSecretVersions)
@@ -192,6 +204,7 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
         domain: "job",
         orgId: r.orgId,
       }),
+      (r) => (JSON.parse(r.trustClasses) as string[]).includes("release"),
     );
     const hookRows = await plan(
       "outbound_secrets",
@@ -279,5 +292,10 @@ export async function rewrapMasterKey(o: RewrapOptions): Promise<RewrapResult> {
   o.log?.(
     `master key re-wrap: re-sealed ${rewrapped.secrets} secrets, ${rewrapped.vault_secret_versions} vault versions, ${rewrapped.outbound_secrets} webhook secrets, ${rewrapped.audit_anchor_files} audit anchor files; ${alreadyCurrent.secrets + alreadyCurrent.vault_secret_versions + alreadyCurrent.outbound_secrets + alreadyCurrent.audit_anchor_files} already under the new key`,
   );
-  return { rewrapped, alreadyCurrent };
+  if (skipped.length > 0) {
+    o.log?.(
+      `master key re-wrap: left ${skipped.length} release-class vault rows that open under neither key (the release lane's own; it re-wraps them with its key): ${skipped.join(", ")}`,
+    );
+  }
+  return { rewrapped, alreadyCurrent, skipped };
 }

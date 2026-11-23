@@ -17,7 +17,9 @@ import { controlPost, type ControlTarget } from "@turntable/net";
 import { DIALECT } from "../db/dialect";
 import { embeddedMigrationTags, openReadOnly } from "../db/read-only";
 import { loadMasterKey } from "../secrets/crypto";
-import { type MasterKeys, parseMasterKeyValue } from "../secrets/master-key";
+import { releaseKeyLocation } from "../roles";
+import { AuditAnchor } from "../audit/anchor";
+import { auditStateDir, type MasterKeys, parseMasterKeyValue } from "../secrets/master-key";
 import { createProvider } from "../scheduler/providers";
 import { resolveProviderConfig } from "../serve-config";
 import { channelMac } from "../release/channel";
@@ -299,6 +301,27 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
           return keyFile ? loadMasterKey(keyFile) : undefined;
         } catch {
           return undefined;
+        }
+      },
+      releaseKey: releaseKeyLocation(o.env),
+      unreadableAnchors: () => {
+        try {
+          const key =
+            o.masterKeys?.key ??
+            (envKey
+              ? parseMasterKeyValue("TURNTABLE_MASTER_KEY", envKey)
+              : keyFile
+                ? loadMasterKey(keyFile)
+                : undefined);
+          if (!key) return [];
+          const anchorDir = o.masterKeys
+            ? auditStateDir(o.masterKeys, dir)
+            : keyFile
+              ? AuditAnchor.dirFor(keyFile)
+              : join(dir, "audit-state");
+          return new AuditAnchor(anchorDir, key).unreadable();
+        } catch {
+          return [];
         }
       },
       providerChecks: providerChecks(o.env, {

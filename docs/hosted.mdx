@@ -65,10 +65,18 @@ Rotation re-encrypts every sealed row at boot, so it needs only variables and a 
 2. Set `TURNTABLE_MASTER_KEY` to the new key and `TURNTABLE_MASTER_KEY_PREVIOUS` to the key in use now. To move off a key file, set the file's contents as the previous key (`TURNTABLE_MASTER_KEY_PREVIOUS_FILE=/data/master.key` works too) and remove `TURNTABLE_MASTER_KEY_FILE` and `TURNTABLE_MASTER_KEY_AUTOINIT`.
 3. Deploy. At boot, every sealed row is re-encrypted under the new key in one transaction: the secrets table (GitHub App credentials, audit signing keys, OIDC keys), vault versions and outbound webhook secrets. Each is opened again under the new key and compared before the commit, and the audit anchor state files are re-sealed with it. The system org's audit chain records `master_key_rewrap` with a count per table. If any row opens under neither key, nothing is changed and the server does not start; the log names the table and row, never a value. Fix the variables and deploy again.
 4. Take a new backup. It is the first one that holds nothing the old key opens.
-5. Remove `TURNTABLE_MASTER_KEY_PREVIOUS`. If the old key was a file on the volume, delete the file. Leaving the previous key set is harmless (rows already under the new key are skipped), but it keeps the old key in the environment.
+5. **Keep `TURNTABLE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed (`turntable doctor` green, no `AnchorCorrupt`, no "audit anchor ... previous master key" line in the log), and only then remove it.** Removing it earlier on a host that has not finished the re-wrap leaves rows the new key cannot open. If the old key was a file on the volume, delete the file. Leaving the previous key set is harmless (rows already under the new key are skipped), but it keeps the old key in the environment.
+
+If you boot on a new key without the previous one, an audit anchor that does not open is reported at boot and by `doctor` as "not sealed under the current master key (most likely the previous one)", with the fix: set `TURNTABLE_MASTER_KEY_PREVIOUS` and restart.
 6. **Rotate the secrets themselves.** The old key and every backup taken before step 4 still open the values inside those backups. Rotate the GitHub App private key and the webhook secret (`turntable github-app rotate-webhook-secret`, or create the App again), and every vault secret, so what the old backups hold is dead. Deleting the old backups is your decision; the rotation is what makes them safe.
 
-Cache blobs are not re-wrapped: a cache entry sealed under the old key stops opening and is a miss. The release lane has its own key file (`TURNTABLE_RELEASE_MASTER_KEY_FILE`) and is not touched.
+Cache blobs are not re-wrapped: a cache entry sealed under the old key stops opening and is a miss. The release lane has its own key and is not touched by this; see below.
+
+### The release lane's key
+
+On a host where the lane runs in the same service, a key file on the data volume puts the signing key wrapper in every backup. Set `TURNTABLE_RELEASE_MASTER_KEY` (base64 or hex, 32 bytes) instead of `TURNTABLE_RELEASE_MASTER_KEY_FILE`; both set is an error. The lane reads it once and removes it from its environment; the main process removes it too and never uses it. `doctor` warns when the release key file is inside the data directory or the release data directory.
+
+To rotate it, set the new key and `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` on the lane. At boot the lane re-wraps its publish credentials (release-class vault rows) and its signing key files under the new key, verified before the commit, and audits it as `release_key_rewrap`. **Keep `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed, then remove it.** A vault row that opens under neither release key is left alone and named in the log: it is sealed under the main key.
 
 Keep the new key in your secrets manager as well as in the platform variable. Losing it loses every stored secret.
 

@@ -97,6 +97,10 @@ export interface DoctorInputs {
    * so here rather than through `env`.
    */
   masterKeyEnv?: boolean;
+  /** The release lane's key file and data directory, when configured here. */
+  releaseKey?: { file: string; dataDir: string | undefined } | undefined;
+  /** Org ids whose sealed audit anchor does not open under the current master key. */
+  unreadableAnchors?: () => string[];
   /** The providers' own read-only checks (`Provider.diagnose`). */
   providerChecks: () => Promise<DoctorCheck[]>;
   /** Whether the release channel answers, when one is configured. */

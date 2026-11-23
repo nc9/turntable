@@ -60,6 +60,13 @@ export function parseMasterKeyValue(name: string, value: string): Buffer {
 }
 
 /**
+ * What to tell an operator whose audit anchor does not open under the current key: the usual cause
+ * is a rotation without the previous key, and the fix is to give it. Never carries a key.
+ */
+export const anchorKeyMessage = (orgId: string): string =>
+  `audit anchor for org ${orgId} is not sealed under the current master key (most likely the previous one): set ${PREVIOUS_KEY_ENV} (or ${PREVIOUS_KEY_FILE_ENV}) to the previous key and restart. Keep it set until a clean boot (doctor green, no AnchorCorrupt) is confirmed. If the key did not change, the file was edited: do not re-wrap, investigate.`;
+
+/**
  * Reads the master key (and the previous one, if a rotation is asked for) from `env`, and DELETES
  * the key variables from it. Call it once, early, before any child process or plugin is started.
  * Both a variable and a file for the same key is an error: it would be unclear which one is live.
