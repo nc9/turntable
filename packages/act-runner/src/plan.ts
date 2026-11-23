@@ -6,8 +6,8 @@ import {
   type SafeFetch,
   SsrfError,
   safeFetch,
-} from "@longshore/net";
-import { InfraError } from "@longshore/provider-sdk";
+} from "@turntable/net";
+import { InfraError } from "@turntable/provider-sdk";
 import { layoutFor, type Layout } from "./layout";
 import { classifyActionRuntime } from "./action-runtime";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";

@@ -4,7 +4,7 @@
 # oven/bun 1.4.5 (multi-arch index digest)
 FROM oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS build
 ARG TARGETARCH
-ARG LONGSHORE_VERSION=0.0.0-docker
+ARG TURNTABLE_VERSION=0.0.0-docker
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/core/package.json packages/core/package.json
@@ -25,25 +25,25 @@ RUN case "${TARGETARCH}" in \
       arm64) target=bun-linux-arm64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && LONGSHORE_VERSION="${LONGSHORE_VERSION}" bun run scripts/build.ts "${target}" \
-    && mv "dist/longshore-${target#bun-}" /longshore \
+    && TURNTABLE_VERSION="${TURNTABLE_VERSION}" bun run scripts/build.ts "${target}" \
+    && mv "dist/turntable-${target#bun-}" /turntable \
     && mkdir /data
 
 # distroless cc-debian12 nonroot (multi-arch index digest). The compiled binary is a
 # dynamically linked glibc executable; this image ships glibc, libgcc and libstdc++, and no shell.
 # The control plane runs no other program: a run's commit is fetched and packed in process (git's
 # smart-HTTP protocol and a tar writer inside the binary), so the image needs no git and no tar.
-# `scripts/smoke-image.sh` proves it with a real checkout (`longshore fetch-source`).
+# `scripts/smoke-image.sh` proves it with a real checkout (`turntable fetch-source`).
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
-COPY --from=build --chmod=0755 /longshore /longshore
+COPY --from=build --chmod=0755 /turntable /turntable
 COPY --from=build --chown=nonroot:nonroot /data /data
-ENV LONGSHORE_HOST=0.0.0.0
+ENV TURNTABLE_HOST=0.0.0.0
 # Starts as root only so it can take ownership of a volume a platform mounted as root (Railway),
 # then drops to nonroot (65532) before it opens anything: the server refuses to keep running as
 # root. Run with `--user 65532:65532` and no drop happens (nothing to do).
-ENV LONGSHORE_DROP_PRIVILEGES=65532:65532
+ENV TURNTABLE_DROP_PRIVILEGES=65532:65532
 USER 0:0
 # Data lives in /data. Mount a volume there (docker run -v ..., or your platform's volume feature).
 # No VOLUME directive: some platforms (Railway) reject it, and an anonymous volume hides data loss.
 EXPOSE 8080
-ENTRYPOINT ["/longshore","serve","--data-dir","/data"]
+ENTRYPOINT ["/turntable","serve","--data-dir","/data"]

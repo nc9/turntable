@@ -1,7 +1,7 @@
-# Bootstrap CI on GitHub Actions, also run by Longshore itself (dogfood). The Longshore project sets
-# the variable LONGSHORE_CI=true (`longshore policy set --ingest on --var LONGSHORE_CI=true`); GitHub
+# Bootstrap CI on GitHub Actions, also run by Turntable itself (dogfood). The Turntable project sets
+# the variable TURNTABLE_CI=true (`turntable policy set --ingest on --var TURNTABLE_CI=true`); GitHub
 # has no such variable. Jobs that need a docker daemon or service containers are gated off under
-# Longshore (`vars.LONGSHORE_CI != 'true'`), and `postgres-pglite` runs only there.
+# Turntable (`vars.TURNTABLE_CI != 'true'`), and `postgres-pglite` runs only there.
 name: ci
 
 on:
@@ -30,8 +30,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Everything fetched is pinned by digest, commit or checksum
         run: bun run scripts/check-pins.ts
-      - run: bun run format:check
-      - run: bun run lint
+      - run: bun fmt --check
       - run: bun run typecheck
       - name: One bun version in every workflow and the Dockerfile
         run: bun run scripts/toolchain-versions.ts
@@ -49,18 +48,18 @@ jobs:
       - run: bun run build
         env:
           # Re-signs the darwin binary with the pinned rcodesign and verifies the signature.
-          LONGSHORE_SIGN_DARWIN: "1"
+          TURNTABLE_SIGN_DARWIN: "1"
       - name: Darwin signature is fresh ad-hoc, and SHA256SUMS matches the signed files
         run: |
-          bun run scripts/rcodesign.ts verify dist/longshore-darwin-arm64
+          bun run scripts/rcodesign.ts verify dist/turntable-darwin-arm64
           (cd dist && sha256sum -c SHA256SUMS)
       - name: Smoke the linux-x64 binary
-        run: scripts/smoke.sh dist/longshore-linux-x64
+        run: scripts/smoke.sh dist/turntable-linux-x64
 
   # The core and ops suites against a real Postgres (the same suites as `bun run test`, with every
   # test given a fresh database). SQLite-only tests are listed in scripts/run-tests-pg.ts.
   postgres:
-    if: vars.LONGSHORE_CI != 'true'
+    if: vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -87,13 +86,13 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Core and ops suites on Postgres
         env:
-          LONGSHORE_TEST_DB: postgres://postgres@localhost:5432/postgres
+          TURNTABLE_TEST_DB: postgres://postgres@localhost:5432/postgres
         run: bun run pg:test
 
-  # Longshore only: no service containers in a sandbox, so the same suites run on in-process
+  # Turntable only: no service containers in a sandbox, so the same suites run on in-process
   # PGlite. GitHub CI runs the real-Postgres job above instead, so this one is not doubled there.
   postgres-pglite:
-    if: vars.LONGSHORE_CI == 'true'
+    if: vars.TURNTABLE_CI == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -106,7 +105,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Core and ops suites on PGlite
         env:
-          LONGSHORE_TEST_DB: pglite
+          TURNTABLE_TEST_DB: pglite
         run: bun run pg:test
 
   # New dependency versions in bun.lock must be at least 14 days old (scripts/dep-age.ts).
@@ -129,7 +128,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # The base branch from git when it is there (GitHub's checkout with fetch-depth 0). A
-          # checkout of only the one commit (Longshore's) has no origin/<base>: the script then
+          # checkout of only the one commit (Turntable's) has no origin/<base>: the script then
           # fetches the base lockfile by its sha.
           if ! git show "origin/${BASE_REF}:bun.lock" > "${RUNNER_TEMP}/base.bun.lock" 2>/dev/null; then
             echo "no origin/${BASE_REF} here: fetching the base lockfile at ${BASE_SHA}"
@@ -141,7 +140,7 @@ jobs:
 
   # The release golden path, end to end in process: tag push, release-class run, artifacts, release
   # request, tag and digest re-check, approval quorum, signing, strict publish to fake npm and
-  # GitHub, `longshore verify`, and one negative per gate. Slower than a unit test, so it is its own job.
+  # GitHub, `turntable verify`, and one negative per gate. Slower than a unit test, so it is its own job.
   release-golden:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -156,7 +155,7 @@ jobs:
       - run: bun run test:golden
 
   provider-docker:
-    if: vars.LONGSHORE_CI != 'true'
+    if: vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -174,7 +173,7 @@ jobs:
         run: bun run test:docker
 
   act-runner-e2e:
-    if: vars.LONGSHORE_CI != 'true'
+    if: vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -210,15 +209,15 @@ jobs:
         run: bun run test:vault-e2e
       - name: Build the linux-x64 binary
         run: bun run scripts/build.ts bun-linux-x64
-      - name: longshore run end to end (compiled binary, docker provider)
+      - name: turntable run end to end (compiled binary, docker provider)
         env:
-          TT_BINARY: dist/longshore-linux-x64
+          TT_BINARY: dist/turntable-linux-x64
           # Read-only: lifts the unauthenticated rate limit of the action commit verification.
-          LONGSHORE_GITHUB_TOKEN: ${{ github.token }}
+          TURNTABLE_GITHUB_TOKEN: ${{ github.token }}
         run: bun run test:run-e2e
 
   runner-image:
-    if: vars.LONGSHORE_CI != 'true'
+    if: vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -229,14 +228,14 @@ jobs:
         with:
           bun-version: 1.4.5
       - name: Build the runner image (not pushed)
-        run: docker build -t longshore-runner:ci images/runner
+        run: docker build -t turntable-runner:ci images/runner
       - name: pwsh runs
-        run: docker run --rm --network none longshore-runner:ci pwsh -NoProfile -Command 'Write-Output "pwsh-ok"' # pin-ok: the image built by the step above
+        run: docker run --rm --network none turntable-runner:ci pwsh -NoProfile -Command 'Write-Output "pwsh-ok"' # pin-ok: the image built by the step above
       - name: The compatibility table matches the image
-        run: bun run scripts/runner-toolset.ts --image longshore-runner:ci --check
+        run: bun run scripts/runner-toolset.ts --image turntable-runner:ci --check
 
   docker:
-    if: vars.LONGSHORE_CI != 'true'
+    if: vars.TURNTABLE_CI != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -258,6 +257,6 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: longshore:smoke
+          tags: turntable:smoke
       - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token, a real worker checkout)
-        run: scripts/smoke-image.sh longshore:smoke
+        run: scripts/smoke-image.sh turntable:smoke

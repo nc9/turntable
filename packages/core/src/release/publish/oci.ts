@@ -4,7 +4,7 @@
 // OCI 1.1 referrer of that image (subject = the image manifest). A registry without the referrers
 // API cannot carry it: the provenance then stays a release asset (see the GitHub release target).
 import { createHash } from "node:crypto";
-import { safeFetch, type SafeFetch } from "@longshore/net";
+import { safeFetch, type SafeFetch } from "@turntable/net";
 import type { OciTarget, PublishContext, TargetResult } from "./types";
 
 const MANIFEST_TYPES = [
@@ -109,7 +109,7 @@ export async function verifyOciImage(
   }
   const h = (extra: Record<string, string> = {}): Record<string, string> => ({
     ...(auth.header ? { authorization: auth.header } : {}),
-    "user-agent": "longshore",
+    "user-agent": "turntable",
     ...extra,
   });
 

@@ -1,5 +1,5 @@
 // First-boot creation of the master key file, for a platform with no shell (Railway) where
-// `longshore keys init` cannot be run. Opt in only (LONGSHORE_MASTER_KEY_AUTOINIT=1 or
+// `turntable keys init` cannot be run. Opt in only (TURNTABLE_MASTER_KEY_AUTOINIT=1 or
 // --init-master-key): without it, an absent key file is an error exactly as before.
 //
 // The file is created once and never overwritten. It is written complete to a private temporary
@@ -36,7 +36,7 @@ export class AutoInitRefused extends Error {
 export const autoInitRequested = (
   env: Record<string, string | undefined>,
   flag: boolean | undefined,
-): boolean => flag === true || env.LONGSHORE_MASTER_KEY_AUTOINIT?.trim() === "1";
+): boolean => flag === true || env.TURNTABLE_MASTER_KEY_AUTOINIT?.trim() === "1";
 
 /**
  * A directory that other users can read, list or write would expose where the key lives, and a

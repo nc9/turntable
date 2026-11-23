@@ -1,15 +1,15 @@
 ---
 title: Introduction
-description: Longshore is an open source CI system that runs GitHub Actions workflows outside GitHub.
+description: Turntable is an open source CI system that runs GitHub Actions workflows outside GitHub.
 ---
 
-Longshore reads GitHub Actions workflow YAML and runs it outside GitHub. Each job runs in its own disposable sandbox, on the provider you choose. It ships as a single Bun binary with a built-in web UI.
+Turntable reads GitHub Actions workflow YAML and runs it outside GitHub. Each job runs in its own disposable sandbox, on the provider you choose. It ships as a single Bun binary with a built-in web UI.
 
 <Warning>
-  Longshore is pre-alpha. Interfaces change without notice, and no release has been published yet. Pages mark work that is not built as not built.
+  Turntable is pre-alpha. Interfaces change without notice, and no release has been published yet. Pages mark work that is not built as not built.
 </Warning>
 
-## Why Longshore
+## Why Turntable
 
 - **MCP-first, agent-native.** Everything is drivable through MCP and a REST API with OpenAPI 3.1, both generated from one operations registry. No capability is UI-only or CLI-only. Agents follow a realtime event feed. Signed outbound webhooks are not built yet. See [Agent interface](/agent-interface).
 - **Secrets never enter sandboxes.** A secrets proxy injects credentials into outbound requests per allowed host, so job code and third-party actions never hold raw secrets. See [Secrets proxy](/secrets-proxy) and [Security](/security).

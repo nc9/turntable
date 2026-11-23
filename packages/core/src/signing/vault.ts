@@ -1,4 +1,4 @@
-import type { KeyVault } from "@longshore/signer";
+import type { KeyVault } from "@turntable/signer";
 import type { SecretStore } from "../secrets/store";
 
 /** The built-in signer's keys, sealed in the org's secret store (the system domain). */

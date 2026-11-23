@@ -1,4 +1,4 @@
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { randomBytes } from "node:crypto";
 import type { Db } from "../db";
 import { appendAudit, getGithubApp, setPreviousSecretExpiry } from "../db/repos";
@@ -36,7 +36,7 @@ export async function rotateWebhookSecret(
         authorization: `Bearer ${await auth.appJwt()}`,
         accept: "application/vnd.github+json",
         "content-type": "application/json",
-        "user-agent": "longshore",
+        "user-agent": "turntable",
       },
       body: JSON.stringify({ secret: fresh }),
       signal: AbortSignal.timeout(30_000),

@@ -188,7 +188,7 @@ export type World = ReturnType<typeof createWorld>;
 
 export function createWorld(options: { now?: () => number; seed?: string } = {}) {
   const now = options.now ?? Date.now;
-  const rng = createRng(options.seed ?? "longshore-fixture");
+  const rng = createRng(options.seed ?? "turntable-fixture");
 
   const orgs: Org[] = [
     { id: "01FIXTURE0ORG0NORTHWIND0000", slug: "northwind", name: "Northwind" },
@@ -780,9 +780,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     };
   }
 
-  const stripAnsi = (t: string): string =>
-    // oxlint-disable-next-line no-control-regex
-    t.replace(/\u001b\[[0-9;]*m/g, "");
+  const stripAnsi = (t: string): string => t.replace(/\u001b\[[0-9;]*m/g, "");
   const textOf = (attemptId: string): string[] => {
     const l = logOf(attemptId);
     if (!l) return [];

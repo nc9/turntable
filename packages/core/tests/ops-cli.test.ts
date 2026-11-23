@@ -81,10 +81,10 @@ test("bad input is refused before anything is written", async () => {
 });
 
 test.skipIf(onPostgres)("the CLI binary prints only the secret on stdout", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "turntable-cli-"));
   try {
     const { openDatabase, createOrg } = await import("../src/db");
-    const cliDb = openDatabase(join(dir, "longshore.db"));
+    const cliDb = openDatabase(join(dir, "turntable.db"));
     await createOrg(cliDb, { slug: "acme", name: "Acme" });
     cliDb.close();
     const proc = Bun.spawn(
@@ -112,7 +112,7 @@ test.skipIf(onPostgres)("the CLI binary prints only the secret on stdout", async
     ]);
     // A failure here is a spawn problem as often as a logic one: show what the child said.
     if (code !== 0) throw new Error(`token create exited ${code}\nstdout: ${out}\nstderr: ${err}`);
-    expect(out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
+    expect(out.trim()).toMatch(/^tt_[A-Za-z0-9_-]{43}$/);
     expect(err).toContain("shown once");
     expect(err).not.toContain(out.trim());
     const bad = Bun.spawn(
@@ -233,10 +233,10 @@ test.skipIf(onPostgres)(
   "token list and revoke run through the binary",
   { timeout: 60_000 },
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
+    const dir = mkdtempSync(join(tmpdir(), "turntable-cli-"));
     try {
       const { openDatabase, createOrg } = await import("../src/db");
-      const cliDb = openDatabase(join(dir, "longshore.db"));
+      const cliDb = openDatabase(join(dir, "turntable.db"));
       await createOrg(cliDb, { slug: "acme", name: "Acme" });
       cliDb.close();
       const main = join(import.meta.dir, "../src/main.ts");
@@ -315,9 +315,9 @@ describe.skipIf(onPostgres)("the CLI waits for another connection's write lock",
     "a fresh file another connection holds a write lock on (WAL switch): the CLI waits and succeeds",
     { timeout: 30_000 },
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), "longshore-cli-lock-"));
+      const dir = mkdtempSync(join(tmpdir(), "turntable-cli-lock-"));
       const { Database } = await import("bun:sqlite");
-      const holder = new Database(join(dir, "longshore.db"), { create: true });
+      const holder = new Database(join(dir, "turntable.db"), { create: true });
       try {
         holder.run("CREATE TABLE held (x)"); // an ordinary rollback-journal database
         // The spawned CLI starts opening while the lock is held; it is released a moment later.
@@ -331,7 +331,7 @@ describe.skipIf(onPostgres)("the CLI waits for another connection's write lock",
           () => holder.run("COMMIT"),
         );
         if (r.code !== 0) throw new Error(`token create exited ${r.code}\nstderr: ${r.err}`);
-        expect(r.out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
+        expect(r.out.trim()).toMatch(/^tt_[A-Za-z0-9_-]{43}$/);
         // It really waited for the lock: the child cannot have finished before it was released.
         expect(r.ms).toBeGreaterThanOrEqual(HOLD_MS - 200);
       } finally {
@@ -345,12 +345,12 @@ describe.skipIf(onPostgres)("the CLI waits for another connection's write lock",
     "a WAL database with a write transaction open: the CLI waits for it and succeeds",
     { timeout: 30_000 },
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), "longshore-cli-lock-"));
+      const dir = mkdtempSync(join(tmpdir(), "turntable-cli-lock-"));
       const { openDatabase } = await import("../src/db");
       const { Database } = await import("bun:sqlite");
-      const first = openDatabase(join(dir, "longshore.db"));
+      const first = openDatabase(join(dir, "turntable.db"));
       first.close();
-      const holder = new Database(join(dir, "longshore.db"));
+      const holder = new Database(join(dir, "turntable.db"));
       holder.run("PRAGMA busy_timeout = 5000");
       try {
         const r = await mint(
@@ -363,7 +363,7 @@ describe.skipIf(onPostgres)("the CLI waits for another connection's write lock",
           () => holder.run("COMMIT"),
         );
         if (r.code !== 0) throw new Error(`token create exited ${r.code}\nstderr: ${r.err}`);
-        expect(r.out.trim()).toMatch(/^ls_[A-Za-z0-9_-]{43}$/);
+        expect(r.out.trim()).toMatch(/^tt_[A-Za-z0-9_-]{43}$/);
         expect(r.ms).toBeGreaterThanOrEqual(HOLD_MS - 200);
       } finally {
         holder.close();

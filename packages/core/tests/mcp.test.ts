@@ -47,7 +47,7 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
   return { isError: res.isError === true, body: JSON.parse(res.content[0]!.text) };
 }
 
-/** A line-delimited JSON-RPC session over injected streams: what `longshore mcp` speaks. */
+/** A line-delimited JSON-RPC session over injected streams: what `turntable mcp` speaks. */
 async function stdioSession(bearer: string) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -226,25 +226,31 @@ describe("resources", () => {
     const templates = (await client.listResourceTemplates()).resourceTemplates.map(
       (t) => t.uriTemplate,
     );
-    expect(templates).toEqual(["longshore://runs/{id}", "longshore://runs/{id}/jobs/{key}/log"]);
-    const run = await client.readResource({ uri: `longshore://runs/${a.runId}` });
+    expect(templates).toEqual(["turntable://runs/{id}", "turntable://runs/{id}/jobs/{key}/log"]);
+    const run = await client.readResource({ uri: `turntable://runs/${a.runId}` });
     const runBody = JSON.parse((run.contents[0] as { text: string }).text);
     expect(runBody).toMatchObject({ untrusted: true, source: "get_run" });
     expect(runBody.content.jobs.map((j: { job_key: string }) => j.job_key)).toContain("test[0]");
 
     const log = await client.readResource({
-      uri: `longshore://runs/${a.runId}/jobs/${encodeURIComponent("test[0]")}/log`,
+      uri: `turntable://runs/${a.runId}/jobs/${encodeURIComponent("test[0]")}/log`,
     });
     const logBody = JSON.parse((log.contents[0] as { text: string }).text);
     expect(logBody).toMatchObject({ untrusted: true, source: "job_log" });
     expect(logBody.content.text).toContain("matrix leg output");
 
+    // A URI saved before the rename (formerly Longshore) still resolves.
+    const old = await client.readResource({ uri: `longshore://runs/${a.runId}` }); // rename-keep
+    expect(JSON.parse((old.contents[0] as { text: string }).text)).toMatchObject({
+      source: "get_run",
+    });
+
     await expect(
-      client.readResource({ uri: `longshore://runs/${a.runId}/jobs/nope/log` }),
+      client.readResource({ uri: `turntable://runs/${a.runId}/jobs/nope/log` }),
     ).rejects.toThrow();
     // Another org's run is not readable, and an unknown URI is refused.
-    await expect(client.readResource({ uri: `longshore://runs/${b.runId}` })).rejects.toThrow();
-    await expect(client.readResource({ uri: "longshore://other/x" })).rejects.toThrow();
+    await expect(client.readResource({ uri: `turntable://runs/${b.runId}` })).rejects.toThrow();
+    await expect(client.readResource({ uri: "turntable://other/x" })).rejects.toThrow();
     await client.close();
   });
 });

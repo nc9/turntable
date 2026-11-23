@@ -3,12 +3,11 @@ import { PlanError } from "./plan";
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The only non-composite runtimes Longshore runs. Anything else is refused. */
+/** The only non-composite runtimes Turntable runs. Anything else is refused. */
 export const NODE_RUNTIMES: readonly string[] = ["node12", "node16", "node20", "node24"];
 
 export type ActionRuntime =
-  | { kind: "composite"; steps: unknown[] }
-  | { kind: "node"; using: string };
+  { kind: "composite"; steps: unknown[] } | { kind: "node"; using: string };
 
 /**
  * Decides what an `action.yml` `runs:` section is, failing closed. `using` is trimmed and

@@ -99,7 +99,7 @@ function setupSteps(b: Builder, withInstall: boolean): void {
   const s1 = b.startStep("Set up job");
   b.line(`Current runner version: '2.321.0'`);
   b.group("Runner image", [
-    `Image: longshore/ubuntu-24.04`,
+    `Image: turntable/ubuntu-24.04`,
     `Provider: ${b.rng.pick(["daytona", "docker", "e2b"])}`,
     `Sandbox: sbx_${b.rng.int(100000, 999999).toString(36)}`,
   ]);

@@ -471,11 +471,7 @@ export type QuotaLimits = {
 };
 
 export type QuotaMetric =
-  | "concurrent"
-  | "runs_per_hour"
-  | "sandbox_minutes"
-  | "log_bytes"
-  | "stored_bytes";
+  "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
 
 export type QuotaUsage = {
   metric: QuotaMetric;

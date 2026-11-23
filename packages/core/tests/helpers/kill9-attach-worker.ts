@@ -1,7 +1,7 @@
 // Child process for the re-attach test: claims one attempt and records the sandbox and exec the
 // parent gave it (standing in for a worker that started act), then hangs so the parent can
 // kill -9 it while the job keeps running elsewhere.
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { openDatabase } from "../../src/db";
 import { Scheduler } from "../../src/scheduler";
 

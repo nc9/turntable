@@ -32,7 +32,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.LONGSHORE_REQUIRE_ORG_KEYS;
+  delete process.env.TURNTABLE_REQUIRE_ORG_KEYS;
 });
 
 describe("the key-encryption key is per org", () => {
@@ -57,12 +57,12 @@ describe("the key-encryption key is per org", () => {
     expect(() => open(master, rec, aad, "job", "org-a")).toThrow(SecretDecryptError);
   });
 
-  test("an older per-domain record still opens, until LONGSHORE_REQUIRE_ORG_KEYS=1", () => {
+  test("an older per-domain record still opens, until TURNTABLE_REQUIRE_ORG_KEYS=1", () => {
     const aad = secretAad("org-a", "n");
     const old = seal(master, "value", aad, "system");
     expect(recordVersion(old)).toBe("v2");
     expect(open(master, old, aad, "system", "org-a")).toBe("value");
-    process.env.LONGSHORE_REQUIRE_ORG_KEYS = "1";
+    process.env.TURNTABLE_REQUIRE_ORG_KEYS = "1";
     expect(() => open(master, old, aad, "system", "org-a")).toThrow(SecretDecryptError);
     // a record with no org (the release lane's own keys) is unaffected
     expect(open(master, old, aad, "system")).toBe("value");
@@ -164,11 +164,11 @@ describe("what is sealed per org, and the re-seal", () => {
   });
 });
 
-describe("strict mode (LONGSHORE_REQUIRE_ORG_KEYS=1) and the reseal", () => {
+describe("strict mode (TURNTABLE_REQUIRE_ORG_KEYS=1) and the reseal", () => {
   test("a normal read of an old record is refused, and only the explicit legacy path opens it", () => {
     const aad = secretAad("org-a", "n");
     const old = seal(master, "value", aad, "system");
-    process.env.LONGSHORE_REQUIRE_ORG_KEYS = "1";
+    process.env.TURNTABLE_REQUIRE_ORG_KEYS = "1";
     expect(() => open(master, old, aad, "system", "org-a")).toThrow(SecretDecryptError);
     expect(open(master, old, aad, "system", "org-a", { allowLegacy: true })).toBe("value");
     // the legacy path is for reading an old record: a per-org one still needs its own org
@@ -217,7 +217,7 @@ describe("strict mode (LONGSHORE_REQUIRE_ORG_KEYS=1) and the reseal", () => {
       ),
     );
 
-    process.env.LONGSHORE_REQUIRE_ORG_KEYS = "1";
+    process.env.TURNTABLE_REQUIRE_ORG_KEYS = "1";
     await expect(store.reseal(a.orgId)).rejects.toThrow(ResealRefused);
     await expect(vault.reseal(a.orgId)).rejects.toThrow(ResealRefused);
     expect(() => anchor.reseal(b.orgId)).toThrow(ResealRefused);
@@ -229,11 +229,11 @@ describe("strict mode (LONGSHORE_REQUIRE_ORG_KEYS=1) and the reseal", () => {
     await expect(store.get(a.orgId, "old")).rejects.toThrow(SecretDecryptError);
     expect(() => anchor.read(b.orgId)).toThrow();
     // turn strict off: the reseal works, and then strict reads work
-    delete process.env.LONGSHORE_REQUIRE_ORG_KEYS;
+    delete process.env.TURNTABLE_REQUIRE_ORG_KEYS;
     expect(await store.reseal(a.orgId)).toBe(1);
     expect(await vault.reseal(a.orgId)).toBe(1);
     expect(anchor.reseal(b.orgId)).toBe(true);
-    process.env.LONGSHORE_REQUIRE_ORG_KEYS = "1";
+    process.env.TURNTABLE_REQUIRE_ORG_KEYS = "1";
     expect(await store.get(a.orgId, "old")).toBe("o1");
     expect(anchor.read(b.orgId)).toMatchObject({ keyId: "k2" });
   });

@@ -1,9 +1,9 @@
 ---
 title: Quickstart
-description: Run the Longshore server from a binary or a container.
+description: Run the Turntable server from a binary or a container.
 ---
 
-Only what works today is listed here. You can run one job of a workflow locally with `longshore run`, or run the server to poll or receive webhooks for a repo and run every job. [How the pieces fit](/overview) explains what the server does around a run.
+Only what works today is listed here. You can run one job of a workflow locally with `turntable run`, or run the server to poll or receive webhooks for a repo and run every job. [How the pieces fit](/overview) explains what the server does around a run.
 
 ## Binary
 
@@ -17,8 +17,8 @@ bun run build
 Then run one:
 
 ```sh
-./dist/longshore-darwin-arm64 version
-./dist/longshore-darwin-arm64 serve --port 8080 --data-dir ./data
+./dist/turntable-darwin-arm64 version
+./dist/turntable-darwin-arm64 serve --port 8080 --data-dir ./data
 ```
 
 The binary works from an empty directory. Migrations and assets are embedded.
@@ -31,10 +31,10 @@ bun run dev
 
 ## Run a job
 
-`longshore run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
+`turntable run` runs one job of a GitHub Actions workflow in a fresh Docker sandbox, using [act](https://github.com/nektos/act) in host mode, and records the run in the database. You need a running Docker daemon and a git repository.
 
 ```sh
-./dist/longshore-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
+./dist/turntable-darwin-arm64 run examples/hello/.github/workflows/ci.yml -j hello \
   --repo path/to/repo --data-dir ./data
 ```
 
@@ -53,11 +53,11 @@ Flags: `-j <job>` (required), `--repo <dir>` (default: current directory; the re
 Build and run the image:
 
 ```sh
-docker build -t longshore .
-docker run --rm -p 8080:8080 -v longshore-data:/data longshore
+docker build -t turntable .
+docker run --rm -p 8080:8080 -v turntable-data:/data turntable
 ```
 
-The image is distroless (the server runs no other program: it fetches and packs a run's commit in process) and the server runs as the non-root user `65532`. It starts as root only to take ownership of its data directory and drops to `65532` before it opens anything (see [Root-owned volumes](#root-owned-volumes)). It stores data in `/data` and sets `LONGSHORE_HOST=0.0.0.0` so the published port is reachable.
+The image is distroless (the server runs no other program: it fetches and packs a run's commit in process) and the server runs as the non-root user `65532`. It starts as root only to take ownership of its data directory and drops to `65532` before it opens anything (see [Root-owned volumes](#root-owned-volumes)). It stores data in `/data` and sets `TURNTABLE_HOST=0.0.0.0` so the published port is reachable.
 
 ## Check that it is up
 
@@ -73,42 +73,42 @@ On a host where you cannot run commands in the container (Railway, Fly, a distro
 
 ```sh
 # On your own machine: prints the token (stdout) and its sha256 (stderr).
-./dist/longshore-darwin-arm64 token generate
+./dist/turntable-darwin-arm64 token generate
 ```
 
 Keep the token. Set only the hash on the server:
 
 | Variable | Value |
 | --- | --- |
-| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | the `sha256:` value printed above |
-| `LONGSHORE_BOOTSTRAP_ORG` | optional, default `local` |
+| `TURNTABLE_BOOTSTRAP_TOKEN_SHA256` | the `sha256:` value printed above |
+| `TURNTABLE_BOOTSTRAP_ORG` | optional, default `local` |
 | `PORT` | set by the host; `serve` uses it as the default port |
 
 On boot, if the org has no tokens yet, the server creates one `operator` token with that hash (valid 365 days). It does nothing when the org already has tokens, so the variable is safe to leave set. The token is never stored on the server or in its environment or logs; only its hash is. Use it as `Authorization: Bearer <token>`.
 
 ### Root-owned volumes
 
-Railway and some other platforms mount a volume owned by root, which a non-root process cannot write. The image handles this itself: it starts as root with `LONGSHORE_DROP_PRIVILEGES=65532:65532` (set in the image), chowns the data directory and the files it expects in it (the database and its `-wal` and `-shm` files, and a master key file and its `.audit-state` directory if they live there) to that user, then drops group, supplementary groups and user, and proves root cannot be regained, all before the database or any key file is opened. **Do not set `RAILWAY_RUN_UID=0`** (or any run-as-root override): the image no longer needs it.
+Railway and some other platforms mount a volume owned by root, which a non-root process cannot write. The image handles this itself: it starts as root with `TURNTABLE_DROP_PRIVILEGES=65532:65532` (set in the image), chowns the data directory and the files it expects in it (the database and its `-wal` and `-shm` files, and a master key file and its `.audit-state` directory if they live there) to that user, then drops group, supplementary groups and user, and proves root cannot be regained, all before the database or any key file is opened. **Do not set `RAILWAY_RUN_UID=0`** (or any run-as-root override): the image no longer needs it.
 
 - The chown does not walk the volume. It uses open file descriptors that never follow a symlink, and it refuses a symlink, a file with more than one hard link, anything on another device, and any entry it does not recognise (apart from `lost+found`): the server does not start, and names the entry. Remove it, or start without root.
 - Every step of the drop is checked: if setuid, setgid or setgroups is unavailable, the user, group or supplementary groups are not what was asked, or root can be regained, the server refuses to run.
 - Children are reached through the open descriptor of their parent directory, and files are opened without blocking, so a symlink, a FIFO or a swapped directory planted by a past process can neither redirect the chown nor hang the start.
-- Other subcommands that open the data directory (`token`, `keys`, `github-app`, `run`, `oidc`, `secret`, `audit`, `policy`, `mcp`, `approvals`, `incident`) apply the same drop-or-refuse first, without chowning, so a `docker exec` as root never leaves root-owned files. Prefer `docker exec --user 65532 <container> longshore ...`.
-- The server refuses to keep running as root. To run as root on purpose, set `LONGSHORE_ALLOW_ROOT=1`.
+- Other subcommands that open the data directory (`token`, `keys`, `github-app`, `run`, `oidc`, `secret`, `audit`, `policy`, `mcp`, `approvals`, `incident`) apply the same drop-or-refuse first, without chowning, so a `docker exec` as root never leaves root-owned files. Prefer `docker exec --user 65532 <container> turntable ...`.
+- The server refuses to keep running as root. To run as root on purpose, set `TURNTABLE_ALLOW_ROOT=1`.
 - Started as a non-root user (`docker run --user 65532:65532`), nothing is dropped and nothing is chowned.
-- Everything is opened after the drop, so a master key file (`LONGSHORE_MASTER_KEY_FILE`) must be readable by `65532`: keep it on the data volume, where it is chowned too, or make it readable.
-- Outside the image, set `LONGSHORE_DROP_PRIVILEGES=<uid>:<gid>` yourself if you start `longshore serve` as root.
+- Everything is opened after the drop, so a master key file (`TURNTABLE_MASTER_KEY_FILE`) must be readable by `65532`: keep it on the data volume, where it is chowned too, or make it readable.
+- Outside the image, set `TURNTABLE_DROP_PRIVILEGES=<uid>:<gid>` yourself if you start `turntable serve` as root.
 
 ## Network binding
 
-`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `LONGSHORE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
+`--host` defaults to `127.0.0.1`, so a bare binary is reachable only from the local machine. Pass `--host 0.0.0.0` or set `TURNTABLE_HOST` to listen on all interfaces. Put a TLS-terminating proxy in front before you expose it.
 
 ## Create your first API token
 
 Agents and scripts call the [REST API](/agent-interface) with a bearer token. Create the first one from the command line, because creating tokens over the network needs an org admin and sessions do not exist yet. Local access to the data directory is the trust root.
 
 ```sh
-TOKEN=$(./dist/longshore-darwin-arm64 token create \
+TOKEN=$(./dist/turntable-darwin-arm64 token create \
   --org local --project local --role reader --name my-agent --data-dir ./data)
 ```
 
@@ -123,8 +123,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/runs
 List and revoke tokens the same way:
 
 ```sh
-./dist/longshore-darwin-arm64 token list --org local --data-dir ./data
-./dist/longshore-darwin-arm64 token revoke <id> --data-dir ./data
+./dist/turntable-darwin-arm64 token list --org local --data-dir ./data
+./dist/turntable-darwin-arm64 token revoke <id> --data-dir ./data
 ```
 
 A revoked or expired token stops working at once. The OpenAPI document is at `/openapi.json`.
@@ -134,7 +134,7 @@ A revoked or expired token stops working at once. The OpenAPI document is at `/o
 `serve` can also run jobs. Start it with `--worker` and it claims queued attempts, runs each one with act in a sandbox, and records the logs, steps and result. Reruns queued with the `rerun` operation are picked up the same way.
 
 ```sh
-./dist/longshore-darwin-arm64 serve --worker --data-dir ./data
+./dist/turntable-darwin-arm64 serve --worker --data-dir ./data
 ```
 
 | Flag | Default | Meaning |
@@ -152,7 +152,7 @@ Each claim is a lease that the worker extends with heartbeats, and everything a 
 - **The exec still exists** (running, or finished while nobody watched): the server takes the lease over and re-attaches. The job runs in a detached exec that outlives the server, so a job that finished meanwhile keeps its real result. The worker replays the exec's whole log by offset, rewrites the stored log and steps, and records the real verdict (success, failure, or infra_error if act itself failed).
 - **The exec is lost, the sandbox is gone, or the provider cannot be reached**: whatever still runs is killed, the sandbox is destroyed, and the attempt is marked `infra_error` with the probe result. It never guesses a verdict.
 
-Runs started by `longshore run` are claimed only by the process that started them. If that process crashes, its expired leases are resolved like any other worker's. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
+Runs started by `turntable run` are claimed only by the process that started them. If that process crashes, its expired leases are resolved like any other worker's. On shutdown the worker stops claiming and does not abort running attempts (that would record a cancel nobody asked for): their leases lapse and the next boot re-attaches.
 
 ## Poll a GitHub repo
 
@@ -160,7 +160,7 @@ Runs started by `longshore run` are claimed only by the process that started the
 
 ```json
 {
-  "tokenFile": "/etc/longshore/github-token",
+  "tokenFile": "/etc/turntable/github-token",
   "repos": [
     {
       "repo": "acme/web",
@@ -175,12 +175,12 @@ Runs started by `longshore run` are claimed only by the process that started the
 }
 ```
 
-- `tokenFile` is required: polling is authenticated, so its rate limit is not shared with every other unauthenticated client. Put a token in a file outside the repo with mode 0600 (for example from `gh auth token`). The token is read once, sent only in the `Authorization` header and never put in a URL or a log. The config refuses an inline token. `allowUnauthenticated: true` opts out explicitly, for a public repo: with no token GitHub allows 60 requests an hour for the whole address, and counts a `304 Not Modified` answer to a conditional request against it (measured against api.github.com, unlike an authenticated caller). A steady-state poll costs 2 requests (head and branch protection), plus 1 each for tag refs, open pull requests and merge queue branches when on. Keep the total under 45 an hour: `intervalSeconds` of at least 80 times the requests per cycle (240 seconds for 3, 320 for 4, 400 for 5, summed over all repos). Longshore logs the estimate at start and warns when the interval is too short. A private repo answers an anonymous caller with 404, so it needs a token.
+- `tokenFile` is required: polling is authenticated, so its rate limit is not shared with every other unauthenticated client. Put a token in a file outside the repo with mode 0600 (for example from `gh auth token`). The token is read once, sent only in the `Authorization` header and never put in a URL or a log. The config refuses an inline token. `allowUnauthenticated: true` opts out explicitly, for a public repo: with no token GitHub allows 60 requests an hour for the whole address, and counts a `304 Not Modified` answer to a conditional request against it (measured against api.github.com, unlike an authenticated caller). A steady-state poll costs 2 requests (head and branch protection), plus 1 each for tag refs, open pull requests and merge queue branches when on. Keep the total under 45 an hour: `intervalSeconds` of at least 80 times the requests per cycle (240 seconds for 3, 320 for 4, 400 for 5, summed over all repos). Turntable logs the estimate at start and warns when the interval is too short. A private repo answers an anonymous caller with 404, so it needs a token.
 - The GitHub client is read-only: every request is a GET, enforced in the client and covered by a test.
 - Polling is cheap. Requests are conditional (`If-None-Match`), and a 304 does not count against the rate limit. `intervalSeconds` is 30 to 3600 (default 60; 60 to 120 is the intended range). A failing poll backs off exponentially, never shorter than `Retry-After` or the rate-limit reset GitHub reports, and a success resets it. When the remaining budget is nearly gone the poller waits for the reset instead of spending it. The `ingest_status` operation shows the budget and each repo's last poll over MCP or REST.
 - `prMode` is `off` by default. With `allowlist`, a pull request runs only if its head repo is the configured repo (a fork never runs, whatever else is true), whoever opened it is in `authors`, and the author of its head commit is in `authors` too. A head commit with no linked GitHub account is refused. The author check is defense in depth, not identity: a commit author is whatever name and email the committer wrote, so anyone who can push can forge it. The real anchors are the same-repo head (pushing a branch there needs write access) and the PR opener (an authenticated GitHub identity). Hosted mode will need verified commits or per-sha approval, tracked on #17. A bot runs only if its exact login (`dependabot[bot]`) is listed. All of this comes from the API response.
-- `prMode: "approval"` ingests every open pull request and decides its trust class from re-fetched facts (same repo, and the opener's collaborator permission, which needs a token that can read it). Untrusted ones are created but wait in `awaiting_approval` until `approve_run` is called with their head sha and workflow hash; they never get secrets. `protectedRefs` adds protected ref patterns (the default branch always is) and `maxWaitingRuns` (default 20) caps how many runs of that repo may wait, and `maxNewPrsPerPoll` (default 5) caps how many pull requests from authors outside `authors` one poll examines. `longshore policy set approve-run-min-role <operator|release_operator> --org <slug>` sets who may call `approve_run` (default `release_operator`). `egress` (`none`, `open` or `allowlist`) sets the sandbox egress for the repo's runs; unset, the project's setting applies, which defaults to `none` (`longshore policy set --egress <mode> --org <slug> [--project <slug>]` sets it; `longshore policy show` lists it). Runs classified `untrusted_pr` always get `none`, unless `untrustedEgress` is `allowlist`. Each run's plan records its trust class and egress (`plan.trust`, `plan.egress`) for isolation and egress policy. See [Trust classes](/security#trust-classes-and-fork-pr-gating).
-- `tagRefs` (default none) ingests tags as runs. A repo ingests no tag until it lists patterns, each an exact tag ref or `refs/tags/<literal prefix>*` with at least one literal character (`refs/tags/v*`, `refs/tags/v1.0.0`; never `refs/tags/*`, `**`, a leading wildcard or a `?`, which are refused when set, so one setting cannot make every tag a release). A bound project sets them with `longshore policy set --ingest on --tag-refs 'refs/tags/v*' --org <slug> --project <slug>` (local, audited, never over MCP). Anyone with write access can create a tag at any commit, so a tag becomes a run only when all of this holds, each fact fetched now:
+- `prMode: "approval"` ingests every open pull request and decides its trust class from re-fetched facts (same repo, and the opener's collaborator permission, which needs a token that can read it). Untrusted ones are created but wait in `awaiting_approval` until `approve_run` is called with their head sha and workflow hash; they never get secrets. `protectedRefs` adds protected ref patterns (the default branch always is) and `maxWaitingRuns` (default 20) caps how many runs of that repo may wait, and `maxNewPrsPerPoll` (default 5) caps how many pull requests from authors outside `authors` one poll examines. `turntable policy set approve-run-min-role <operator|release_operator> --org <slug>` sets who may call `approve_run` (default `release_operator`). `egress` (`none`, `open` or `allowlist`) sets the sandbox egress for the repo's runs; unset, the project's setting applies, which defaults to `none` (`turntable policy set --egress <mode> --org <slug> [--project <slug>]` sets it; `turntable policy show` lists it). Runs classified `untrusted_pr` always get `none`, unless `untrustedEgress` is `allowlist`. Each run's plan records its trust class and egress (`plan.trust`, `plan.egress`) for isolation and egress policy. See [Trust classes](/security#trust-classes-and-fork-pr-gating).
+- `tagRefs` (default none) ingests tags as runs. A repo ingests no tag until it lists patterns, each an exact tag ref or `refs/tags/<literal prefix>*` with at least one literal character (`refs/tags/v*`, `refs/tags/v1.0.0`; never `refs/tags/*`, `**`, a leading wildcard or a `?`, which are refused when set, so one setting cannot make every tag a release). A bound project sets them with `turntable policy set --ingest on --tag-refs 'refs/tags/v*' --org <slug> --project <slug>` (local, audited, never over MCP). Anyone with write access can create a tag at any commit, so a tag becomes a run only when all of this holds, each fact fetched now:
   - It matches a pattern. Each pattern is listed on its own (conditional, authenticated) and filtered before any tag object is read.
   - It is new. A tag is keyed by name and commit, so a tag at the default branch's head is still its own run, and tags already seen cost nothing: a poll skips them before counting and stops after 10 unseen tags and 100 forge requests, so old tags never starve new ones.
   - Its commit is on the default branch's **first-parent history** (within 1000 commits), or was itself ingested as a default branch push. A commit that only came in with a merged branch, or sits on an unmerged branch, is refused (and looked at again later). An annotated tag is followed to its commit.
@@ -191,7 +191,7 @@ Runs started by `longshore run` are claimed only by the process that started the
 - `prNumbers` (optional) limits pull request ingest to the listed PR numbers, for targeted runs without picking up every open pull request.
 - `mergeQueue` (default `false`) ingests merge queue runs (`merge_group`). Each poll lists the repo's `gh-readonly-queue/<defaultBranch>/` branches and runs one only when its tip commit is signed and verified by GitHub and committed by GitHub's own address (anyone with write access can create a branch with that name, but cannot make GitHub sign it), and the PR in the branch name is open, in this repo and opened by a listed author. The run is `trusted_pr`: no secrets, no write token. A `merge_group` webhook wakes the poller.
 - A push run's `before` (`github.event.before`, and the base of `paths:` filters) is GitHub's own value when the poller can get it: the events API's push event for that head, else the head commit's first parent when it has one (right for a one-commit push, the squash-merge case), else the last sha the poller handled. Which of these applied is recorded in the run's trust facts as `beforeSource` (`events`, `first_parent`, `last_polled` or `none`). Polling can miss a push that landed and was followed by another between two polls: without `everyPush` only the head becomes a run, as before.
-- `everyPush` (default `false`) also makes a run for each default-branch push the poller missed since the last one it handled: the first-parent commits between that sha and the head, the newest five at most per poll, oldest first, each with its own `before`. It does nothing after a force push (the last handled sha is no longer behind the head). Turn it on to mirror CI that ran for every push; each extra run counts against `maxRunsPerHour`. With `longshore policy --ingest on`, pass `--every-push`.
+- `everyPush` (default `false`) also makes a run for each default-branch push the poller missed since the last one it handled: the first-parent commits between that sha and the head, the newest five at most per poll, oldest first, each with its own `before`. It does nothing after a force push (the last handled sha is no longer behind the head). Turn it on to mirror CI that ran for every push; each extra run counts against `maxRunsPerHour`. With `turntable policy --ingest on`, pass `--every-push`.
 - Each (repo, workflow, event, sha) becomes a run once. `maxRunsPerHour` caps how many a repo can queue.
 - Runs land in the `org` and `project` you name (default: the built-in `local` ones), with the sha, ref, actor, commit message and PR number filled in. The project is bound to the repo so the worker knows what to fetch.
 - **The whole workflow is planned at ingest.** The trigger router applies `on:` (event, branch and tag filters, activity types). For a workflow with a `paths:` filter the poller asks the GitHub compare API which files changed (`base...head` for a pull request, the previously seen sha to the new one for a push; read-only, conditional like every request). A change that touches nothing the filter matches, such as docs only, creates no run and is remembered so it is not looked at again. If the changed files cannot be known (the first sight of a branch, a force push, more than 300 files) the filters are not applied and the workflow runs.
@@ -207,12 +207,12 @@ Runs started by `longshore run` are claimed only by the process that started the
 With a GitHub App configured, the worker can report each job to GitHub as a check run on the run's head commit. It is off by default and set per project from the CLI only (no operation can change it, so an agent cannot turn it on):
 
 ```sh
-longshore policy set --checks-mode shadow --org <slug> [--project <slug>]
-longshore serve --worker --public-url https://ci.example.com ...   # or LONGSHORE_PUBLIC_URL
+turntable policy set --checks-mode shadow --org <slug> [--project <slug>]
+turntable serve --worker --public-url https://ci.example.com ...   # or TURNTABLE_PUBLIC_URL
 ```
 
-- **`shadow`** posts `shadow / <job name>` (plus the matrix leg). The conclusion is always `neutral`, so it can never gate a merge. The real result is in the output title (`Shadow: failure`) and summary, and the details link opens the run in Longshore.
-- **`live`** posts `longshore / <job name>` with real conclusions: success, failure, cancelled and skipped map directly, and an infrastructure error is a `failure` titled "Longshore: infrastructure error".
+- **`shadow`** posts `shadow / <job name>` (plus the matrix leg). The conclusion is always `neutral`, so it can never gate a merge. The real result is in the output title (`Shadow: failure`) and summary, and the details link opens the run in Turntable.
+- **`live`** posts `turntable / <job name>` with real conclusions: success, failure, cancelled and skipped map directly, and an infrastructure error is a `failure` titled "Turntable: infrastructure error".
 - **What the summary says.** The real result, the failing step as the runner recorded it, and an extract of the failure (the same extraction as `failure_digest`) redacted and capped at 1 KiB, in a code fence so log text cannot add links or mentions. Never more log than that.
 - **Token.** Each report mints an installation token for the one repository with `checks: write` and nothing else. The repo must be bound through the App installation; a repo bound without one, and local runs, are never reported.
 - **Reliable, never blocking.** The check run id is stored on the attempt, so a restart or re-attach updates the same check instead of adding another. A check created by a worker that died before storing its id is found by its external id (the attempt id). Requests are retried with backoff on outages and rate limits; a refusal (such as a missing permission) is logged and dropped. A GitHub outage never delays or fails a run.

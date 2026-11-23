@@ -11,9 +11,7 @@ import { cn } from "@/lib/utils";
 const MAX_MATCHES = 200;
 
 type State =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "done"; result: GrepResult };
+  { kind: "loading" } | { kind: "error"; message: string } | { kind: "done"; result: GrepResult };
 
 /**
  * Server-side search of the whole log, for text past the window the viewer has loaded. Hits

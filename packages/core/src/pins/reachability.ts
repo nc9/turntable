@@ -2,15 +2,15 @@
 // parent's name, so `uses: owner/repo@<sha>` can name a commit that exists only in an attacker's
 // fork. An allowlist or a sha pin passes it, and the code is not owner/repo's. So every sha must
 // be reachable from a branch or tag of the named repository itself.
-import { PlanError } from "@longshore/act-runner";
+import { PlanError } from "@turntable/act-runner";
 import {
   type Backoff,
   fetchWithBackoff,
   RateLimitedError,
   type SafeFetch,
   safeFetch,
-} from "@longshore/net";
-import { InfraError } from "@longshore/provider-sdk";
+} from "@turntable/net";
+import { InfraError } from "@turntable/provider-sdk";
 
 /** True when `sha` is reachable from a branch or tag of owner/repo. Throws InfraError if GitHub is unreachable. */
 export type ReachabilityChecker = (owner: string, repo: string, sha: string) => Promise<boolean>;
@@ -40,7 +40,7 @@ export function githubReachability(o: GithubReachabilityOptions = {}): Reachabil
         headers: {
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
-          "user-agent": "longshore",
+          "user-agent": "turntable",
           ...(o.token ? { authorization: `Bearer ${o.token}` } : {}),
         },
         signal: AbortSignal.timeout(30_000),

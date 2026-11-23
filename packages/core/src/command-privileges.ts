@@ -1,5 +1,5 @@
 // Every subcommand that opens the data directory drops root the same way `serve` does. Without it
-// `docker exec <container> longshore token create` runs as root and leaves root-owned files
+// `docker exec <container> turntable token create` runs as root and leaves root-owned files
 // (the database's -wal and -shm, key state) in a directory the service user then cannot write.
 // Subcommands only drop; ownership of the directory is the server's business, so nothing is
 // chowned here.

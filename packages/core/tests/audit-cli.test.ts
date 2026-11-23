@@ -35,11 +35,11 @@ test("secret store writes audit by name, never by value", async () => {
   expect(rows[0]?.input).toContain("deploy-token");
 });
 
-test("longshore audit: checkpoint, verify, export, and tamper exit codes", async () => {
+test("turntable audit: checkpoint, verify, export, and tamper exit codes", async () => {
   const dir = join(tmp, "data");
   const keyFile = join(tmp, "m.key");
   initMasterKey(keyFile);
-  const db = openDatabase(join(dir, "longshore.db"));
+  const db = openDatabase(join(dir, "turntable.db"));
   await ensureInstance(db);
   const org = await createOrg(db, { slug: "acme", name: "acme" });
   for (let i = 0; i < 4; i++) {

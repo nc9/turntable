@@ -33,7 +33,7 @@ export function createMcpHttp(env: DispatchEnv): (req: Request) => Promise<Respo
     const bearer = /^Bearer +(\S+)$/i.exec(req.headers.get("authorization") ?? "");
     if (!bearer) {
       return failure(new OpError("unauthenticated", "missing bearer token"), {
-        "www-authenticate": 'Bearer realm="longshore"',
+        "www-authenticate": 'Bearer realm="turntable"',
       });
     }
     const token = bearer[1]!;
@@ -42,7 +42,7 @@ export function createMcpHttp(env: DispatchEnv): (req: Request) => Promise<Respo
       await authenticate(env, { kind: "bearer", token });
     } catch (err) {
       if (err instanceof OpError) {
-        return failure(err, { "www-authenticate": 'Bearer realm="longshore"' });
+        return failure(err, { "www-authenticate": 'Bearer realm="turntable"' });
       }
       throw err;
     }

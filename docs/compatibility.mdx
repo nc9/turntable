@@ -1,9 +1,9 @@
 ---
 title: Compatibility
-description: Which GitHub Actions features Longshore supports, and how it reports the rest.
+description: Which GitHub Actions features Turntable supports, and how it reports the rest.
 ---
 
-Longshore promises that unsupported features fail loudly at parse or plan time. It never silently ignores them. Every feature is in one of three states.
+Turntable promises that unsupported features fail loudly at parse or plan time. It never silently ignores them. Every feature is in one of three states.
 
 | State | Meaning |
 | --- | --- |
@@ -12,14 +12,14 @@ Longshore promises that unsupported features fail loudly at parse or plan time. 
 | Unsupported | Rejected with an error that names the feature. |
 
 <Note>
-  Longshore runs workflows through [act](https://github.com/nektos/act), one job per sandbox. The table below says what v1 supports; rows still being proven against real workflows say so.
+  Turntable runs workflows through [act](https://github.com/nektos/act), one job per sandbox. The table below says what v1 supports; rows still being proven against real workflows say so.
 </Note>
 
 ## Pull request events
 
 Steps see the event as they do on GitHub where it matters: act is given a `github.event` payload built only from forge facts fetched at poll time (for a pull request: `number`, `pull_request.number`, `base.{ref, sha, repo.full_name}`, `head.{ref, sha, repo.full_name}`, `draft`, and `repository.full_name`; for a push: `ref`, `before`, `after`, `repository.full_name`). It is stored with the run, so a re-attach or a rerun sees the same bytes. Titles, bodies, tokens and anything else are never included. The delivered checkout has an `origin` remote (`https://github.com/<owner>/<repo>`, never with credentials), as `actions/checkout` leaves it, so `git fetch origin <sha>` works when the job has network egress.
 
-**Known difference:** GitHub runs `pull_request` workflows on the merge commit (`refs/pull/N/merge`). Longshore runs the pull request head sha. This is deliberate for now, and `github.sha` is the head sha.
+**Known difference:** GitHub runs `pull_request` workflows on the merge commit (`refs/pull/N/merge`). Turntable runs the pull request head sha. This is deliberate for now, and `github.sha` is the head sha.
 
 ## Support
 
@@ -36,7 +36,7 @@ Steps see the event as they do on GitHub where it matters: act is given a `githu
 
 ## Splitting a job across sandboxes
 
-A heavy job can run as several shards, each in its own sandbox, **without editing the workflow**. The operator configures it per repo (`splits` in the poll config, or `longshore policy set --ingest on ... --splits-json '<json>'` for a bound repo); it is never read from the repository, so a pull request cannot change it.
+A heavy job can run as several shards, each in its own sandbox, **without editing the workflow**. The operator configures it per repo (`splits` in the poll config, or `turntable policy set --ingest on ... --splits-json '<json>'` for a bound repo); it is never read from the repository, so a pull request cannot change it.
 
 ```json
 "splits": [{
@@ -51,7 +51,7 @@ A heavy job can run as several shards, each in its own sandbox, **without editin
 
 `job` is the job id. Each shard lists the steps (by `name:`, or `#<n>` for the nth step counted from 1) that run only there; 2 to 8 shards, and a step may be in one shard only. Every other step (checkout, setup, anything the rule does not name) runs in every shard, so each shard sets itself up. The only change made to a shard's workflow is `if: false` on the steps another shard owns: no step is added or edited. A step the rule names that no longer exists (a pull request renamed it) is owned by no shard, so it runs in all of them: coverage is never lost, only time.
 
-- **One job to everything else.** The shards are ordinary jobs (`tests[0]`, `tests[1]`, ...) with the job's own name. `needs` waits for all of them; `needs.<job>.result` is the fold (failure if any shard failed, else infrastructure error, cancelled, skipped only if all were, else success); outputs merge with a later non-empty value winning. The forge sees **one check, under the job's name**, running until the last shard finishes, with the fold as its conclusion and each shard's result in its summary. In the UI the run page shows the shards as one job row (its name, the folded state and the wall time) that opens to one row per shard, with the step it owns, its attempts, its duration and its own rerun. `longshore parity` treats the shards as one job and reports the wall time from the first shard's start to the last one's finish, not the sum.
+- **One job to everything else.** The shards are ordinary jobs (`tests[0]`, `tests[1]`, ...) with the job's own name. `needs` waits for all of them; `needs.<job>.result` is the fold (failure if any shard failed, else infrastructure error, cancelled, skipped only if all were, else success); outputs merge with a later non-empty value winning. The forge sees **one check, under the job's name**, running until the last shard finishes, with the fold as its conclusion and each shard's result in its summary. In the UI the run page shows the shards as one job row (its name, the folded state and the wall time) that opens to one row per shard, with the step it owns, its attempts, its duration and its own rerun. `turntable parity` treats the shards as one job and reports the wall time from the first shard's start to the last one's finish, not the sum.
 - **Failure.** Shards never cancel each other (a job's steps already run every suite even when one is red). An infrastructure error in one shard is an infrastructure failure of the job. Cancelling the run cancels every shard. A shard can be rerun alone (the others keep their results); the rerun reports its own check with the fold of the latest result of each shard.
 - **Limits.** Each shard counts against the project's and the org's concurrency caps like any job, and pays its own setup. A job with `strategy.matrix`, or whose declared outputs read the output of a step a shard owns, is not split and runs whole; the run's plan says why (`splitNotices`).
 
@@ -61,17 +61,17 @@ A heavy job can run as several shards, each in its own sandbox, **without editin
 | --- | --- |
 | Windows runners | Not in v1. |
 | macOS runners | Not in v1. A future provider plugin could offer them. |
-| GitHub artifact attestations | [Longshore signed provenance](/signing) is the substitute. |
-| GitHub OIDC claims | Longshore's own OIDC issuer replaces them. |
+| GitHub artifact attestations | [Turntable signed provenance](/signing) is the substitute. |
+| GitHub OIDC claims | Turntable's own OIDC issuer replaces them. |
 
 ## Known gaps
 
 Everything found while running real workflows. Each one is a gap with a stated behaviour, not a silent one.
 
-- **`pwsh` exists only where the image has it.** The Longshore runner image includes PowerShell 7. A provider that starts from its own snapshot (Daytona, for example) has `pwsh` only if that snapshot does. A tool that is missing is absent as on a runner without it, so a workflow's own probe works: `if ! command -v pwsh; then echo "::notice::skipped"; exit 0; fi` skips and succeeds. A step that needs it without a probe fails with exit 127 and a log line naming the tool.
+- **`pwsh` exists only where the image has it.** The Turntable runner image includes PowerShell 7. A provider that starts from its own snapshot (Daytona, for example) has `pwsh` only if that snapshot does. A tool that is missing is absent as on a runner without it, so a workflow's own probe works: `if ! command -v pwsh; then echo "::notice::skipped"; exit 0; fi` skips and succeeds. A step that needs it without a probe fails with exit 127 and a log line naming the tool.
 - **`services:` jobs are skipped, with the reason.** A job that declares `services:` is not run: it is reported as skipped, and its log says `uses services:`. There is no service container support in a sandbox.
-- **Docker in a sandbox.** A sandbox has no Docker daemon. The planner skips a job it can see needs one (`docker` as a command, a `docker://` image, a `docker/` action, a local action that is a docker action or runs docker), with the reason. It cannot see a docker call hidden inside a script such as `bun run test:integration`, so that job starts and fails when the command runs. To keep such jobs off Longshore, gate them with a project variable: set `LONGSHORE_CI=true` on the project (`longshore policy set --ingest on ... --var LONGSHORE_CI=true`) and write `if: vars.LONGSHORE_CI != 'true'` on the jobs that need docker or services. GitHub has no such variable, so the job runs there as before. The opposite gate (`if: vars.LONGSHORE_CI == 'true'`) adds a job that runs only on Longshore, for example a variant of a database test that runs in-process.
-- **Interpreters installed mid-job get no shim.** Longshore puts a shim on `PATH` for `node`, `python` and `pwsh` only when the interpreter exists at job start, which keeps steps off a terminal and makes `command -v` behave as on GitHub. An interpreter installed later in the job (`setup-node`, `setup-python`, a `pwsh` install step) is not shimmed, so a later `shell: node`, `shell: python` or `shell: pwsh` step runs with act's terminal and may differ from GitHub in terminal-dependent output. Fix planned: check for and link newly installed interpreters before each step.
+- **Docker in a sandbox.** A sandbox has no Docker daemon. The planner skips a job it can see needs one (`docker` as a command, a `docker://` image, a `docker/` action, a local action that is a docker action or runs docker), with the reason. It cannot see a docker call hidden inside a script such as `bun run test:integration`, so that job starts and fails when the command runs. To keep such jobs off Turntable, gate them with a project variable: set `TURNTABLE_CI=true` on the project (`turntable policy set --ingest on ... --var TURNTABLE_CI=true`) and write `if: vars.TURNTABLE_CI != 'true'` on the jobs that need docker or services. GitHub has no such variable, so the job runs there as before. The opposite gate (`if: vars.TURNTABLE_CI == 'true'`) adds a job that runs only on Turntable, for example a variant of a database test that runs in-process.
+- **Interpreters installed mid-job get no shim.** Turntable puts a shim on `PATH` for `node`, `python` and `pwsh` only when the interpreter exists at job start, which keeps steps off a terminal and makes `command -v` behave as on GitHub. An interpreter installed later in the job (`setup-node`, `setup-python`, a `pwsh` install step) is not shimmed, so a later `shell: node`, `shell: python` or `shell: pwsh` step runs with act's terminal and may differ from GitHub in terminal-dependent output. Fix planned: check for and link newly installed interpreters before each step.
 - **`export-ignore` is not honoured.** A run's checkout is the whole commit, fetched and packed in process, which is what `actions/checkout` gives. The earlier path used `git archive`, which honours `export-ignore` in `.gitattributes`, so files a repo marks that way are now present where they were absent before. If a workflow relied on them being absent, it needs an explicit step.
 - **Job splitting is configuration, not workflow syntax.** A heavy job is split across sandboxes by an operator rule (`splits`), never by anything in the repository, so a pull request cannot change it. See [Splitting a job across sandboxes](#splitting-a-job-across-sandboxes). A job with `strategy.matrix` is not split, and a step a rule names that was renamed runs in every shard.
 - **Pull requests run the head commit, not the merge commit,** as described under [Pull request events](#pull-request-events).
@@ -79,13 +79,13 @@ Everything found while running real workflows. Each one is a gap with a stated b
 
 ## Runner image toolset
 
-GitHub's `ubuntu-latest` image comes with a large preinstalled toolset, and workflows assume it. Longshore's sandbox is a smaller image, built from `images/runner/Dockerfile`: the pinned `node:22-bookworm` base plus PowerShell 7 (pinned by version and checksum), `jq`, `rsync`, `zip` and `unzip`. A step that needs a tool the image lacks fails with exit 127, and the log says `<tool> is not available on this image` so it is not a bare "command not found". A tool the image lacks is simply absent, as on a runner without it: `command -v pwsh` fails, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit 0; fi`) skips and succeeds. Longshore puts a shim on `PATH` only for the interpreters that exist (it uses them to keep steps off a terminal), never for one that does not. Install the tool in a step if egress allows it, or use your own image.
+GitHub's `ubuntu-latest` image comes with a large preinstalled toolset, and workflows assume it. Turntable's sandbox is a smaller image, built from `images/runner/Dockerfile`: the pinned `node:22-bookworm` base plus PowerShell 7 (pinned by version and checksum), `jq`, `rsync`, `zip` and `unzip`. A step that needs a tool the image lacks fails with exit 127, and the log says `<tool> is not available on this image` so it is not a bare "command not found". A tool the image lacks is simply absent, as on a runner without it: `command -v pwsh` fails, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit 0; fi`) skips and succeeds. Turntable puts a shim on `PATH` only for the interpreters that exist (it uses them to keep steps off a terminal), never for one that does not. Install the tool in a step if egress allows it, or use your own image.
 
 This table is generated from the built image in CI (`scripts/runner-toolset.ts`), so it cannot drift from the image. "On GitHub" is whether `ubuntu-latest` has the tool preinstalled.
 
 {/* toolset:begin (generated by scripts/runner-toolset.ts, do not edit) */}
 
-| Tool | On GitHub ubuntu-latest | On the Longshore runner image |
+| Tool | On GitHub ubuntu-latest | On the Turntable runner image |
 | --- | --- | --- |
 | bash | Yes | Yes: 5.2.15 |
 | git | Yes | Yes: 2.39.5 |

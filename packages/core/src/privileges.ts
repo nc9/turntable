@@ -1,14 +1,14 @@
 // Running as root, and getting out of it. Some platforms (Railway) mount volumes owned by root,
 // which a non-root image cannot write. The image therefore starts as root, and with
-// LONGSHORE_DROP_PRIVILEGES=<uid>:<gid> the server takes ownership of the files it expects in its
+// TURNTABLE_DROP_PRIVILEGES=<uid>:<gid> the server takes ownership of the files it expects in its
 // data directory and drops to that user BEFORE it opens anything else: no database, no key file,
 // no socket is ever touched as root. A server that is still root after startup is refused unless
-// the operator said LONGSHORE_ALLOW_ROOT=1.
+// the operator said TURNTABLE_ALLOW_ROOT=1.
 //
 // Two things here are deliberately strict, because root is doing the work:
 //  - the chown never walks an arbitrary tree. Something the old non-root process could create
 //    (a symlink, or a hardlink to /etc/shadow, which IS that file) must never be handed to the
-//    service user, so only the names Longshore itself writes are touched, each through an open
+//    service user, so only the names Turntable itself writes are touched, each through an open
 //    file descriptor opened without following links, and anything unexpected stops the start;
 //  - every step of the drop is checked, and a platform that cannot do one refuses to run.
 import { basename, dirname, join, resolve } from "node:path";
@@ -42,16 +42,16 @@ type Env = Record<string, string | undefined>;
 /** `uid:gid`, both whole numbers, neither root. */
 export function parseDropSpec(spec: string): { uid: number; gid: number } {
   const m = /^(\d{1,10}):(\d{1,10})$/.exec(spec.trim());
-  if (!m) throw new Error("LONGSHORE_DROP_PRIVILEGES must be <uid>:<gid>, for example 65532:65532");
+  if (!m) throw new Error("TURNTABLE_DROP_PRIVILEGES must be <uid>:<gid>, for example 65532:65532");
   const uid = Number(m[1]);
   const gid = Number(m[2]);
   if (uid === 0 || gid === 0)
-    throw new Error("LONGSHORE_DROP_PRIVILEGES cannot name root (uid or gid 0)");
+    throw new Error("TURNTABLE_DROP_PRIVILEGES cannot name root (uid or gid 0)");
   return { uid, gid };
 }
 
-/** The files Longshore writes in its data directory: the database, as the current or old name. */
-const DB_FILE = /^(longshore|turntable)\.db(-wal|-shm|-journal)?$/;
+/** The files Turntable writes in its data directory: the database, as the current or old name. */
+const DB_FILE = /^(turntable|longshore)\.db(-wal|-shm|-journal)?$/; // rename-keep
 /** What a volume brings itself; left alone, never chowned. */
 const SKIP = new Set(["lost+found"]);
 
@@ -66,7 +66,7 @@ export interface Expected {
 export function expectedFor(dataDir: string, env: Env): Expected {
   const files = new Set<string>();
   const stateDirs = new Set<string>();
-  const keyFile = env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  const keyFile = env.TURNTABLE_MASTER_KEY_FILE?.trim();
   if (keyFile && dirname(resolve(keyFile)) === resolve(dataDir)) {
     files.add(basename(keyFile));
     stateDirs.add(`${basename(keyFile)}.audit-state`);
@@ -159,7 +159,7 @@ function assertSameDir(dirPath: string, st: Stats): void {
 }
 
 /**
- * Gives the data directory and the files Longshore expects in it to uid:gid. Not recursive in
+ * Gives the data directory and the files Turntable expects in it to uid:gid. Not recursive in
  * general: the top level only, plus the contents of the audit state directory. An entry that is
  * not on the list stops the start, named, so nothing a past process planted is touched. Every
  * child is reached through the open descriptor of its parent, never by a path that a symlink
@@ -252,7 +252,7 @@ const throws = (f: () => void): boolean => {
  * Call first in `serve`. Not root: nothing to do (a drop request is ignored). Root with a drop
  * spec: own the expected files, then groups, gid, uid, in that order; then check that the process
  * really is that user with exactly that one group, and that root cannot be regained by uid, gid
- * or group. Any failure refuses to run. Root with neither a spec nor LONGSHORE_ALLOW_ROOT=1:
+ * or group. Any failure refuses to run. Root with neither a spec nor TURNTABLE_ALLOW_ROOT=1:
  * refuse.
  */
 export function enforceRootPolicy(
@@ -262,7 +262,7 @@ export function enforceRootPolicy(
   opts: { chown?: boolean } = {},
 ): PrivilegeOutcome {
   if (ops.uid() !== 0) return "not_root";
-  const spec = env.LONGSHORE_DROP_PRIVILEGES?.trim();
+  const spec = env.TURNTABLE_DROP_PRIVILEGES?.trim();
   if (spec) {
     const { uid, gid } = parseDropSpec(spec);
     // Only the server owns the data directory's files; other subcommands (docker exec) just drop.
@@ -295,10 +295,10 @@ export function enforceRootPolicy(
     }
     return "dropped";
   }
-  if (env.LONGSHORE_ALLOW_ROOT === "1") return "root_allowed";
+  if (env.TURNTABLE_ALLOW_ROOT === "1") return "root_allowed";
   throw new RootRefused(
-    "refusing to run as root. Set LONGSHORE_DROP_PRIVILEGES=65532:65532 to drop to an unprivileged user " +
-      "(the data directory is chowned to it first), run as a non-root user, or set LONGSHORE_ALLOW_ROOT=1 " +
+    "refusing to run as root. Set TURNTABLE_DROP_PRIVILEGES=65532:65532 to drop to an unprivileged user " +
+      "(the data directory is chowned to it first), run as a non-root user, or set TURNTABLE_ALLOW_ROOT=1 " +
       "if running as root is intended.",
   );
 }

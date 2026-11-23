@@ -68,14 +68,14 @@ export const PATTERNS: readonly Pattern[] = [
     run: "A-Za-z0-9_",
   },
   {
-    // Longshore's own tokens (core/src/ops/tokens.ts): a prefix and 32 random bytes as base64url,
-    // exactly 43 characters. `lsi_` is the instance administrator's, `ls_` an org's, and `tt_` the
-    // same org token minted before the rename (still accepted). No boundary on either side: the
+    // Turntable's own tokens (core/src/ops/tokens.ts): a prefix and 32 random bytes as base64url,
+    // exactly 43 characters. `tti_` is the instance administrator's and `tt_` an org's. The same two
+    // minted before the rename (`lsi_`, `ls_`) are still accepted, so they are still redacted. No boundary on either side: the
     // 43 characters are distinctive enough that `ls_colors` and other words are safe without one,
     // and a token glued to other text (`xls_<token>`, `<token>abc`, `id=ls_<token>X`) still holds
     // a usable credential, so it fails closed: whatever token characters follow are redacted too.
-    name: "longshore-token",
-    re: /(?:lsi|ls|tt)_[A-Za-z0-9_-]{43}/g,
+    name: "turntable-token",
+    re: /(?:tti|tt|lsi|ls)_[A-Za-z0-9_-]{43}/g, // rename-keep
     maxLength: 4 + 43 + 1,
     run: "A-Za-z0-9_-",
   },

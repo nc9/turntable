@@ -1,8 +1,8 @@
 // Realtime wire protocol: one WebSocket at /api/v1/realtime, JSON text frames. This file is pure
 // (no imports) so the web UI shares the exact types and constants the server uses.
 //
-// Connect:   new WebSocket(url, ["longshore.v1", "bearer.<token>"]). The token rides in
-//            Sec-WebSocket-Protocol (never the query string); the server echoes only longshore.v1.
+// Connect:   new WebSocket(url, ["turntable.v1", "bearer.<token>"]). The token rides in
+//            Sec-WebSocket-Protocol (never the query string); the server echoes the protocol name offered (never the token).
 // Topics:    org                      every event in the token's grant
 //            project:<slug>           events of one project
 //            run:<id>                 events of one run (job and attempt changes included)
@@ -11,7 +11,9 @@
 // Every subscribe is authorized by dispatching the matching read operation as the caller.
 
 export const REALTIME_PATH = "/api/v1/realtime";
-export const SUBPROTOCOL = "longshore.v1";
+export const SUBPROTOCOL = "turntable.v1";
+/** The subprotocol before the rename (formerly Longshore). The server still accepts it. */
+export const LEGACY_SUBPROTOCOL = "longshore.v1"; // rename-keep
 export const BEARER_PREFIX = "bearer.";
 
 /** Close codes (4000 to 4999 are application-defined). */

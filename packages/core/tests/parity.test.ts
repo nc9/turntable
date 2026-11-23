@@ -161,7 +161,7 @@ describe("the command", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "ls-parity-"));
     tokenFile = join(dir, "token");
-    writeFileSync(tokenFile, "ls_reader_example_token_value\n", { mode: 0o600 });
+    writeFileSync(tokenFile, "tt_reader_example_token_value\n", { mode: 0o600 });
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -240,7 +240,7 @@ describe("the command", () => {
     expect(
       seen
         .filter((s) => s.auth !== null)
-        .every((s) => s.auth === "Bearer ls_reader_example_token_value"),
+        .every((s) => s.auth === "Bearer tt_reader_example_token_value"),
     ).toBe(true);
     expect(seen.some((s) => s.url.startsWith("api.github.com") && s.auth !== null)).toBe(false);
   });
@@ -443,7 +443,7 @@ describe("the shards of a split job are one job", () => {
     fetchOurRun({
       baseUrl: new URL("http://127.0.0.1:1"),
       org: "acme",
-      token: "ls_reader_example_token_value",
+      token: "tt_reader_example_token_value",
       runId: "r1",
       fetch: runWith(jobs) as never,
     });

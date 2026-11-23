@@ -5,9 +5,9 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { planJob, resolveActions, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { DockerProvider } from "@longshore/provider-docker";
-import { SecretRegistry } from "@longshore/redact";
+import { planJob, resolveActions, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { DockerProvider } from "@turntable/provider-docker";
+import { SecretRegistry } from "@turntable/redact";
 import { type Db } from "../src/db";
 import { getAttempt, getJob, getRun, listAudit, setProxyRule } from "../src/db/repos";
 import * as s from "../src/db/schema";
@@ -197,7 +197,7 @@ describe.skipIf(!enabled)("a job behind the secrets proxy (docker, Linux)", () =
     expect(answer.startsWith("HTTP/1.1 407")).toBe(true);
     raw.destroy();
     // And nothing of the sandbox is left: no container, relay or network for this attempt.
-    expect(await provider.list({ labels: { "longshore.run": a.runId } })).toHaveLength(0);
+    expect(await provider.list({ labels: { "turntable.run": a.runId } })).toHaveLength(0);
   }, 600_000);
 
   test("GITHUB_TOKEN in a job is a placeholder, the proxy attaches the real token to the repository's API only", async () => {
@@ -236,7 +236,7 @@ describe.skipIf(!enabled)("a job behind the secrets proxy (docker, Linux)", () =
       recordStep: async () => {},
       finishJob: async () => {},
     } as unknown as RunStore;
-    const PLACEHOLDER = "longshore-token-is-added-by-the-proxy";
+    const PLACEHOLDER = "turntable-token-is-added-by-the-proxy";
 
     const runner = withSecretsProxy(
       async (ctx) => {

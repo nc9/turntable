@@ -76,22 +76,24 @@ describe("patterns", () => {
   });
 });
 
-describe("Longshore's own tokens are redacted by pattern alone", () => {
+describe("Turntable's own tokens are redacted by pattern alone", () => {
   // Minted the way core/src/ops/tokens.ts does it (prefix + 32 random bytes as base64url), built here
   // so no scanner-shaped literal sits in the repo.
   const body = (): string => randomBytes(32).toString("base64url");
-  const org = () => `l${SPLIT}s_${body()}`;
-  const instance = () => `ls${SPLIT}i_${body()}`;
-  const legacy = () => `t${SPLIT}t_${body()}`;
+  const org = () => `t${SPLIT}t_${body()}`;
+  const instance = () => `tt${SPLIT}i_${body()}`;
+  // Minted before the rename (formerly Longshore): still accepted, so still redacted.
+  const legacyOrg = () => `l${SPLIT}s_${body()}`;
+  const legacyInstance = () => `ls${SPLIT}i_${body()}`;
 
-  test("an org token, an instance token and a legacy token, in prose, headers, env and JSON", () => {
-    for (const make of [org, instance, legacy]) {
+  test("an org token, an instance token and their pre-rename forms, in prose, headers, env and JSON", () => {
+    for (const make of [org, instance, legacyOrg, legacyInstance]) {
       const tok = make();
-      expect(tok.length).toBe(make === instance ? 47 : 46);
+      expect(tok.length).toBe(make === instance || make === legacyInstance ? 47 : 46);
       for (const [text, expected] of [
         [tok, R],
         [`token ${tok} end`, `token ${R} end`],
-        [`LONGSHORE_TOKEN=${tok}`, `LONGSHORE_TOKEN=${R}`],
+        [`TURNTABLE_TOKEN=${tok}`, `TURNTABLE_TOKEN=${R}`],
         [`{"token":"${tok}"}`, `{"token":"${R}"}`],
         [`curl -H 'x: ${tok}'`, `curl -H 'x: ${R}'`],
         [`${tok}\n${tok}`, `${R}\n${R}`],
@@ -110,7 +112,7 @@ describe("Longshore's own tokens are redacted by pattern alone", () => {
   });
 
   test("a token glued to other text is still redacted: it fails closed", () => {
-    for (const make of [org, instance, legacy]) {
+    for (const make of [org, instance, legacyOrg, legacyInstance]) {
       const tok = make();
       for (const [text, expected] of [
         [`x${tok}`, `x${R}`],
@@ -136,12 +138,13 @@ describe("Longshore's own tokens are redacted by pattern alone", () => {
     for (const text of [
       "export LS_COLORS=ls_colors",
       "ls_colors",
-      "ls_",
-      "lsi_",
-      "ls_short",
-      `ls_${b.slice(0, 42)}`, // one short
+      "tt_",
+      "tti_",
+      "tt_short",
+      `tt_${b.slice(0, 42)}`, // one short
+      `tti_${b.slice(0, 42)}`,
+      `ls_${b.slice(0, 42)}`,
       `lsi_${b.slice(0, 42)}`,
-      `tt_${b.slice(0, 42)}`,
       `lsx_${b}`,
       `ls-${b}`,
       `ls ${b}`,

@@ -1,4 +1,4 @@
-// `longshore mcp`: the MCP server over stdio for local agents. The token comes from a file,
+// `turntable mcp`: the MCP server over stdio for local agents. The token comes from a file,
 // never argv (argv is visible to every process on the machine). stdout is the protocol channel:
 // nothing here may write to it.
 import { statSync, readFileSync } from "node:fs";

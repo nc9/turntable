@@ -41,7 +41,7 @@ export function checkAgainstSums(
   built: Record<string, string>,
   published: Record<string, string>,
 ): string[] {
-  const linux = Object.keys(built).filter((n) => n.startsWith("longshore-linux-"));
+  const linux = Object.keys(built).filter((n) => n.startsWith("turntable-linux-"));
   if (linux.length === 0) return ["no linux binary was built, so nothing could be compared"];
   return linux.flatMap((n) =>
     published[n] === undefined
@@ -67,7 +67,7 @@ export function parseSums(text: string): Record<string, string> {
 function run(cmd: string[], cwd: string, env: Record<string, string | undefined> = {}): void {
   const r = Bun.spawnSync(cmd, {
     cwd,
-    env: { ...process.env, ...env, LONGSHORE_SIGN_DARWIN: "" },
+    env: { ...process.env, ...env, TURNTABLE_SIGN_DARWIN: "" },
     stdout: "inherit",
     stderr: "inherit",
   });
@@ -89,13 +89,13 @@ if (import.meta.main) {
   const work = mkdtempSync(join(tmpdir(), "ls-repro-"));
   try {
     const first = join(work, "first");
-    run(["bun", "run", "scripts/build.ts", ...targets], root, { LONGSHORE_DIST: first });
+    run(["bun", "run", "scripts/build.ts", ...targets], root, { TURNTABLE_DIST: first });
     const copy = join(work, "fresh", "checkout-elsewhere");
     run(["mkdir", "-p", copy], root);
     run(["sh", "-c", `git archive HEAD | tar -x -C '${copy}'`], root);
     run(["bun", "install", "--frozen-lockfile"], copy);
     const second = join(work, "second");
-    run(["bun", "run", "scripts/build.ts", ...targets], copy, { LONGSHORE_DIST: second });
+    run(["bun", "run", "scripts/build.ts", ...targets], copy, { TURNTABLE_DIST: second });
     const result = compareHashes(
       parseSums(readFileSync(join(first, "SHA256SUMS"), "utf8")),
       parseSums(readFileSync(join(second, "SHA256SUMS"), "utf8")),

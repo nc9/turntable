@@ -1,9 +1,9 @@
-// `longshore release init-key --name <key>`: creates the release lane's built-in signing key,
+// `turntable release init-key --name <key>`: creates the release lane's built-in signing key,
 // sealed under the release master key in the lane's own data directory, and prints the public key
-// (to pin outside the server, and to verify releases with `longshore verify`).
+// (to pin outside the server, and to verify releases with `turntable verify`).
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { LocalSigner } from "@longshore/signer";
+import { LocalSigner } from "@turntable/signer";
 import { getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
 import { loadMasterKey } from "../secrets/crypto";
 import { releaseConfigFromEnv } from "../roles";
@@ -19,7 +19,7 @@ export async function releaseCommand(args: string[]): Promise<number> {
   if (sub === "publish-target") return publishTarget(rest);
   if (sub !== "init-key") {
     console.error(
-      "usage:\n  longshore release init-key --org <slug> --name <key> [--data-dir ./data]\n  longshore release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\n  longshore release publish-target set|remove|list --org <slug> --project <slug> [--key <name>] [...] (see docs/release-lane)\nRuns with the release role's environment (LONGSHORE_RELEASE_*).",
+      "usage:\n  turntable release init-key --org <slug> --name <key> [--data-dir ./data]\n  turntable release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\n  turntable release publish-target set|remove|list --org <slug> --project <slug> [--key <name>] [...] (see docs/release-lane)\nRuns with the release role's environment (TURNTABLE_RELEASE_*).",
     );
     return 2;
   }
@@ -35,7 +35,7 @@ export async function releaseCommand(args: string[]): Promise<number> {
   if (!values.name || !values.org) throw new Error("--org <slug> and --name <key> are required");
   // The key is stored under the org's id: another org's project naming the same `builtin:<name>`
   // reaches its own key, never this one.
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   const org = await getOrgBySlug(db, values.org);
   db.close();
   if (!org) throw new Error(`no org with slug ${values.org}`);
@@ -72,7 +72,7 @@ async function pinRepo(args: string[]): Promise<number> {
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(values.repo))
     throw new Error("--repo must be owner/name");
   const cfg = releaseConfigFromEnv(process.env);
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     const org = await getOrgBySlug(db, values.org);
     if (!org) throw new Error(`no org with slug ${values.org}`);
@@ -92,17 +92,17 @@ async function pinRepo(args: string[]): Promise<number> {
 }
 
 const PUBLISH_USAGE = `usage:
-  longshore release publish-target set --org <slug> --project <slug> --key <name> --kind npm \
+  turntable release publish-target set --org <slug> --project <slug> --key <name> --kind npm \
       --package <name> --artifact <tarball artifact> --secret <vault secret> [--tag latest] \
       [--access public|restricted] --accept-long-lived-token
-  longshore release publish-target set --org <slug> --project <slug> --key <name> --kind github-release \
+  turntable release publish-target set --org <slug> --project <slug> --key <name> --kind github-release \
       --assets <a,b,...> [--provenance-asset <name>|none]
-  longshore release publish-target set --org <slug> --project <slug> --key <name> --kind oci-image \
+  turntable release publish-target set --org <slug> --project <slug> --key <name> --kind oci-image \
       --registry ghcr.io --repository <owner/name> --manifest <manifest artifact> --tags v1,latest \
       --username <registry user> --secret <vault secret> [--realm-host <token host>]
   (npm and github-release also take --mode strict|compat; an image is always compat)
-  longshore release publish-target remove --org <slug> --project <slug> --key <name>
-  longshore release publish-target list --org <slug> --project <slug>
+  turntable release publish-target remove --org <slug> --project <slug> --key <name>
+  turntable release publish-target list --org <slug> --project <slug>
 Targets are stored in the release lane's own file, never in the workflow. An npm target uses a
 long-lived registry token (npm has no tokenless path for a self-hosted issuer), so it needs
 --accept-long-lived-token.`;
@@ -141,7 +141,7 @@ async function publishTarget(args: string[]): Promise<number> {
     return 2;
   }
   const cfg = releaseConfigFromEnv(process.env);
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     const org = await getOrgBySlug(db, values.org);
     if (!org) throw new Error(`no org with slug ${values.org}`);

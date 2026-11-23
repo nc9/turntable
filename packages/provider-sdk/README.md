@@ -1,6 +1,6 @@
-# @longshore/provider-sdk
+# @turntable/provider-sdk
 
-The contract between Longshore and sandbox providers (Docker, Daytona and others).
+The contract between Turntable and sandbox providers (Docker, Daytona and others).
 
 ## Rule zero
 
@@ -35,7 +35,7 @@ command, so a start is atomic and uploads nothing.
 
 ### The wrapper
 
-State lives in `/tmp/.longshore/<execId>` inside the sandbox:
+State lives in `/tmp/.turntable/<execId>` inside the sandbox:
 
 | File                             | Meaning                                                                                                         |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -65,7 +65,7 @@ touch a path.
 After exit, output larger than head (1 MiB) + tail (4 MiB) + slack (64 KiB) is cut: the wrapper
 saves the first 1 MiB and last 4 MiB plus the original size, then deletes `out`. `exec.logs`
 keeps offsets logical. A read that lands in the cut returns a marker line
-(`[longshore: N bytes of output omitted]`) and jumps `nextOffset` past it, so a reader polling
+(`[turntable: N bytes of output omitted]`) and jumps `nextOffset` past it, so a reader polling
 across the exit sees no lost or duplicated real bytes. Reading raw `out` opens it before
 checking, so an exit-time cap cannot pull the file out from under a read.
 
@@ -90,7 +90,7 @@ error. Never use one job's self-reported result as a security gate for another t
 
 ## Testing
 
-`@longshore/provider-sdk/testing` exports `FakeWorld`, which backs providers with temp dirs and
+`@turntable/provider-sdk/testing` exports `FakeWorld`, which backs providers with temp dirs and
 real local `sh` processes under a scrubbed environment, with scriptable failures (`failNext`,
 `dropConnections`, `loseExec`, `setLatency`). Run any provider through
-`@longshore/provider-conformance`.
+`@turntable/provider-conformance`.

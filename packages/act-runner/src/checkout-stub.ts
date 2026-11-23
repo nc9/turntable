@@ -87,7 +87,7 @@ export function checkoutStubAction(repoDir: string): string {
     .split("\n")
     .map((l) => (l === "" ? "" : `        ${l}`))
     .join("\n");
-  return `name: longshore checkout stub
+  return `name: turntable checkout stub
 description: Checks out from the repository the controller delivered; never uses the network.
 inputs:
   repository: { required: false }

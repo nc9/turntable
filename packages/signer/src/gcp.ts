@@ -2,7 +2,7 @@
 // OAuth access token the caller provides (from the org's OIDC issuer through workload identity
 // federation, never a static key). The key version must be EC_SIGN_ED25519; the private key never
 // leaves KMS.
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { publicKeyFromPem } from "./keys";
 import { type PublicKey, type Signer, SignerError } from "./types";
 

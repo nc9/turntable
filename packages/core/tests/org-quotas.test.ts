@@ -490,10 +490,10 @@ describe("who can read and set quotas", () => {
 });
 
 describe("the host command sets them", () => {
-  test("longshore quotas set changes only the named limits, none removes one, and show prints usage", async () => {
+  test("turntable quotas set changes only the named limits, none removes one, and show prints usage", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ls-quotas-host-"));
     try {
-      const file = openDatabase(join(dir, "longshore.db"));
+      const file = openDatabase(join(dir, "turntable.db"));
       await createOrg(file, { slug: "acme", name: "Acme" });
       file.close();
       const logs: string[] = [];
@@ -524,7 +524,7 @@ describe("the host command sets them", () => {
         console.log = log;
         console.error = err;
       }
-      const check = openDatabase(join(dir, "longshore.db"));
+      const check = openDatabase(join(dir, "turntable.db"));
       const org = (await getOrgBySlug(check, "acme"))!;
       expect(await getOrgQuotas(check, org.id)).toMatchObject({
         maxConcurrent: 3,

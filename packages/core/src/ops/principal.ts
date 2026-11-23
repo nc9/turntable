@@ -16,7 +16,7 @@ export type Principal =
    */
   | { kind: "approver"; id: string; orgId: string; person: string; role: "viewer" }
   /**
-   * The instance administrator, from an `lsi_` token. It holds no org grant: `orgId` is the
+   * The instance administrator, from a `tti_` token. It holds no org grant: `orgId` is the
    * system org only so its audit entries land in that chain. It can call `instance` ops and
    * nothing else, and no org principal can call those.
    */

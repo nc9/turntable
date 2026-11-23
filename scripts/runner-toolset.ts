@@ -113,7 +113,7 @@ export function renderTable(probed: readonly Probed[], tools: readonly Tool[] = 
     return `| ${t.name} | ${t.github ? "Yes" : "No"} | ${have}${t.note ? `. ${cell(t.note)}` : ""} |`;
   });
   return [
-    "| Tool | On GitHub ubuntu-latest | On the Longshore runner image |",
+    "| Tool | On GitHub ubuntu-latest | On the Turntable runner image |",
     "| --- | --- | --- |",
     ...rows,
   ].join("\n");

@@ -76,7 +76,7 @@ export async function createPasskey(
     cred = await credentials.create({
       publicKey: {
         challenge: b64urlDecode(o.challenge),
-        rp: { id: o.rpId, name: "Longshore" },
+        rp: { id: o.rpId, name: "Turntable" },
         user: {
           id: crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16))),
           name: o.person,

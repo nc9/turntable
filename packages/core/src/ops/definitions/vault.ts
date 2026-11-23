@@ -49,7 +49,7 @@ function vaultOf(ctx: OpContext): SecretVault {
   if (!ctx.vault) {
     throw new OpError(
       "unavailable",
-      "the secrets vault is not configured: start the server with LONGSHORE_MASTER_KEY_FILE",
+      "the secrets vault is not configured: start the server with TURNTABLE_MASTER_KEY_FILE",
     );
   }
   return ctx.vault;
@@ -91,7 +91,7 @@ const scopeOf = (
 
 const VALUE_NOTE =
   "The value is in the request body and is never returned, logged or audited. Send it only over " +
-  "https; prefer `longshore secret set --value-file`. Not available over MCP.";
+  "https; prefer `turntable secret set --value-file`. Not available over MCP.";
 
 export const setSecretOp = defineOp({
   name: "set_secret",

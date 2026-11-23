@@ -5,7 +5,7 @@
 export const OWN_LABEL = "longshore-dev";
 export const OWN_LABEL_VALUE = "1";
 /** Label naming the run a sandbox belongs to. */
-export const RUN_LABEL = "longshore-run";
+export const RUN_LABEL = "turntable-run";
 /** Every sandbox we create is named with this prefix. */
 export const NAME_PREFIX = "longshore-dev-";
 
@@ -99,14 +99,17 @@ export interface Fleet {
   isOwn(s: { name?: string | undefined; labels?: Record<string, string> | undefined }): boolean;
 }
 
-const FLEET_NAME = /^longshore-[a-z0-9]+(-[a-z0-9]+)*$/;
+// rename-keep-begin
+/** A fleet name starts with the product's name, or with its name before the rename (`longshore-`). */
+const FLEET_NAME = /^(?:turntable|longshore)-[a-z0-9]+(-[a-z0-9]+)*$/;
+// rename-keep-end
 
-/** A fleet name: lower case, `longshore-` first, letters digits and single hyphens, at most 30 characters. */
+/** A fleet name: lower case, `turntable-` (or `longshore-`) first, letters digits and single hyphens, at most 30 characters. */ // rename-keep
 export function parseFleetName(name: string): string {
   if (name.length > 30) throw new RangeError("fleet must be at most 30 characters");
   if (!FLEET_NAME.test(name)) {
     throw new RangeError(
-      "fleet must be lower case, start with longshore-, and use only letters, digits and single hyphens (for example longshore-shadow)",
+      "fleet must be lower case, start with turntable- (or longshore-), and use only letters, digits and single hyphens (for example turntable-shadow)", // rename-keep
     );
   }
   return name;

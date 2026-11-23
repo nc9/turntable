@@ -3,7 +3,7 @@
 // the SBOM is the transitive closure of those, with the lockfile's sha512 integrity as hashes.
 // Dev-only tooling (typescript, oxlint, drizzle-kit) is not in the binary and not listed.
 //
-//   bun run scripts/sbom.ts --version 0.1.0-alpha.1 --out dist/longshore-0.1.0-alpha.1.cdx.json
+//   bun run scripts/sbom.ts --version 0.1.0-alpha.1 --out dist/turntable-0.1.0-alpha.1.cdx.json
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -68,7 +68,7 @@ export function buildSbom(o: {
       hashes: integrityHash(p.integrity),
     }))
     .toSorted((a, b) => a["bom-ref"].localeCompare(b["bom-ref"]));
-  const rootRef = `pkg:generic/longshore@${o.version}`;
+  const rootRef = `pkg:generic/turntable@${o.version}`;
   const direct = SHIPPED_WORKSPACES.flatMap((ws) =>
     Object.keys(lock.workspaces[ws]?.dependencies ?? {}).map((d) => resolveDep(lock, "", d)),
   ).filter((p): p is LockPackage => p !== undefined && !p.workspace);
@@ -98,7 +98,7 @@ export function buildSbom(o: {
       component: {
         type: "application",
         "bom-ref": rootRef,
-        name: "longshore",
+        name: "turntable",
         version: o.version,
         licenses: [{ license: { id: "MIT" } }],
       },

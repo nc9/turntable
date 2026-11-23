@@ -1,5 +1,5 @@
-// `longshore policy`: per-org settings that change what agents may do. Local access to the data
-// directory is the trust root (like `longshore token`), so this writes through the repos directly
+// `turntable policy`: per-org settings that change what agents may do. Local access to the data
+// directory is the trust root (like `turntable token`), so this writes through the repos directly
 // and audits the change.
 import type { Db } from "../db";
 import { validAudience } from "../oidc/issuer";
@@ -37,20 +37,20 @@ import {
 } from "../db/repos";
 
 export const POLICY_USAGE = `Usage:
-  longshore policy show --org <slug> [--data-dir ./data]
-  longshore policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
-  longshore policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
-  longshore policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
-  longshore policy set --org <slug> --project <slug> [--sandbox-snapshot <name|none>]
+  turntable policy show --org <slug> [--data-dir ./data]
+  turntable policy set approve-run-min-role <operator|release_operator> --org <slug> [--data-dir ./data]
+  turntable policy set --checks-mode <off|shadow|live> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --egress <none|open|allowlist> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --org <slug> --project <slug> [--sandbox-snapshot <name|none>]
       [--max-concurrent <n|none>] [--data-dir ./data]
-  longshore policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
+  turntable policy set --ingest <on|off> --org <slug> --project <slug> [--workflow <path>]
       [--tag-refs refs/tags/v*,...]   (tags matching these become release runs; default none)
       [--default-branch <name>] [--pr-mode <off|allowlist|approval>] [--authors a,b]
       [--splits-json '<json>']   (run jobs as shards, e.g. [{"job":"tests","shards":[{"steps":["A"]},{"steps":["B"]}]}]; replaces the stored ones)
-      [--var NAME=value ...]   (non-secret vars.* for workflows, e.g. LONGSHORE_CI=true; replaces the stored ones)
+      [--var NAME=value ...]   (non-secret vars.* for workflows, e.g. TURNTABLE_CI=true; replaces the stored ones)
       [--merge-queue] [--data-dir ./data]
-  longshore policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
-  longshore policy set --oidc-audiences <aud,aud,...|any> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --cache-release-restore <on|off> --org <slug> [--project <slug>] [--data-dir ./data]
+  turntable policy set --oidc-audiences <aud,aud,...|any> --org <slug> [--project <slug>] [--data-dir ./data]
       (the audiences a project's jobs may mint OIDC tokens for; "any" lifts the limit)
 
 approve-run-min-role: the lowest agent role that may approve a run held for an untrusted author.
@@ -374,7 +374,7 @@ export async function setSigningPolicy(
   }[] = [];
   // A builtin key is looked up inside the org (its id is part of the stored name), so the same
   // `builtin:<name>` in two orgs is two keys. Any other reference (a KMS key) names one key
-  // outside Longshore: an org may not name one that another org already does.
+  // outside Turntable: an org may not name one that another org already does.
   if (
     patch.signingKey &&
     !patch.signingKey.startsWith("builtin:") &&

@@ -6,8 +6,8 @@ Secure MCP-first CI runner for cloud containers. Turntable is an open source CI 
 
 - Use bun for everything: `bun install`, `bun run <script>`, `bun test`. Do not use node or npm.
 - TypeScript only, strict mode, with explicit types at module boundaries.
-- Lint with `oxlint` (`bun run lint`) and format with `oxfmt` (`bun run format`, check with `bun run format:check`).
-- Typecheck with `tsgo --noEmit` from `@typescript/native-preview` (`bun run typecheck`).
+- Format with `bun fmt` (`bun run format`, check with `bun fmt --check`). There is no lint step; `tsconfig.base.json` turns on `noUnusedLocals`, `noUnusedParameters` and `noFallthroughCasesInSwitch`.
+- Typecheck with `bun check` per package (`bun run typecheck` runs them one at a time).
 - File names are kebab-case, for example `run-queue.ts`.
 - Commits use conventional commits: `type(scope): message`, with a required scope. Add no attribution or co-author lines.
 - Tests live in `packages/<name>/tests/` and run with `bun test <file>`.
