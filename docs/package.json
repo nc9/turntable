@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tangly dev",
     "check": "tangly check --strict",
-    "build": "tangly build"
+    "build": "tangly build --base /docs/ --siteUrl https://turntableci.com --adapter cloudflare --env production",
+    "deploy": "bun run build && bunx wrangler@4.159.0 deploy"
   },
   "devDependencies": {
     "tangly": "0.6.0"
