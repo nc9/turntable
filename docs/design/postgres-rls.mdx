@@ -1,0 +1,170 @@
+---
+title: "Design: Postgres row-level security"
+description: A second wall at the database for tenant isolation on Postgres, how the scope reaches it, what happens when it is missing, and how the tests prove it.
+---
+
+Nothing here is built. This is the design for the row-level security item of the tenant isolation checklist, to settle the shape before code. It applies to Postgres only; on SQLite, isolation stays in the repo layer.
+
+## What it is for
+
+Today a tenant is separated by code: every repo function takes a `Scope` and adds the org (and project) to its query, a lexical test keeps tenant tables out of everything else, and the hostile suite probes the result. All of that is one layer. A query that forgets its predicate is a cross-tenant read or write.
+
+Row-level security (RLS) puts a second layer under it, in the database, which refuses rows of another org even when the SQL asked for them. It is defence in depth against our own bugs: a repo function with a missing `where`, a new query written without the helper, a join that widens by accident.
+
+What it does not do: it does not stop a process that can run arbitrary SQL as the tenant role from changing its own scope (see [what it does not cover](#what-it-does-not-cover)), and it does not replace the repo layer. Both stay; the hostile suite runs against both.
+
+## Roles
+
+Four database roles, each a separate login, none shared:
+
+| Role | Used by | Rights |
+| --- | --- | --- |
+| `longshore_owner` | migrations only, at start, then disconnected | owns the tables and policies; the only role that can change them. No request path ever connects as it. |
+| `longshore_tenant` | everything that serves an org: ops, REST, MCP, realtime, the UI | DML on the tenant tables, subject to RLS. Cannot change the schema or policies, cannot bypass RLS, no `CREATE` on the schema. |
+| `longshore_system` | the work that is cross-tenant by nature, see below | DML on the tables it needs, with its own explicit policies. Not `BYPASSRLS`: its access is written down as policies, so it shows up in review and in `pg_policies`. |
+| `longshore_release` | the release lane process, with its own URL | a small grant list, see below. |
+
+`FORCE ROW LEVEL SECURITY` is set on every table, so even the owner is subject to the policies if some code connects as it by mistake. `PUBLIC` gets nothing on the schema.
+
+Configuration is one URL per role: `LONGSHORE_DATABASE_URL` for the tenant pool, `LONGSHORE_SYSTEM_DATABASE_URL`, `LONGSHORE_MIGRATE_DATABASE_URL`, `LONGSHORE_RELEASE_DATABASE_URL`. With only the first set, as today, Longshore runs as one role without RLS; RLS is on when the role URLs are given, and a boot check says which mode it is in.
+
+## How the scope reaches the database
+
+The scope travels as two transaction-local settings:
+
+```sql
+select set_config('app.org_id',     $1, true);   -- true = local to this transaction
+select set_config('app.project_id', $2, true);   -- empty when the caller is org-wide
+```
+
+`true` makes it `SET LOCAL`: it is gone at commit or rollback, so a pooled connection never carries one request's scope into the next, and it works behind a transaction-mode pooler. A session-level setting is never used.
+
+Where it is set. The `Db` layer already has the right shape: a transaction handle joins every nested repo call through an async context. Two entry points:
+
+- `db.scoped(scope, fn)` opens a transaction, sets the two settings as its first statement, and runs `fn`. The op dispatcher wraps every op in it, reads included (a read-only, `READ COMMITTED` transaction; writes keep `SERIALIZABLE` and the retry, as in the Postgres support notes). Realtime wraps each read it does for a subscription the same way.
+- `db.system(fn)` opens a transaction on the system pool. It is the only way to reach that pool.
+
+Repo functions do not change: they already take a scope and join the ambient transaction. A repo call made with no ambient scope on the tenant pool runs with no `app.org_id`, which is the deny case below. The extra cost is one `BEGIN`, one `set_config` and one `COMMIT` per request, which for reads is the main price of this design; the dispatcher's reads are single-statement today, and a read-only transaction on a pooled connection is cheap next to the network round trip.
+
+The settings are written by the server from the authenticated principal's grant, after authentication and scope resolution in the dispatcher (the steps that exist today), never from the request. A project-scoped token sets `app.project_id` as well.
+
+## The policies
+
+A helper function returns the setting, or null when it is empty or unset:
+
+```sql
+create function app_org() returns text language sql stable as
+  $$ select nullif(current_setting('app.org_id', true), '') $$;
+create function app_project() returns text language sql stable as
+  $$ select nullif(current_setting('app.project_id', true), '') $$;
+```
+
+For every table with an `org_id` column (all but `instance`, `orgs`, `users`):
+
+```sql
+alter table runs enable row level security;
+alter table runs force  row level security;
+
+create policy tenant_org on runs to longshore_tenant
+  using (org_id = app_org()) with check (org_id = app_org());
+create policy system_all on runs to longshore_system
+  using (true) with check (true);
+```
+
+`org_id = null` is never true, so no `app.org_id` means no rows, and an insert or update that names another org fails its `with check`.
+
+For tables that also have `project_id`, a restrictive policy narrows a project-scoped caller:
+
+```sql
+create policy tenant_project on runs as restrictive to longshore_tenant
+  using (app_project() is null or project_id = app_project());
+```
+
+Tables where `project_id` is nullable (org-wide rows such as tokens or secrets) use `project_id is null or ...`. This mirrors what the repos already do with `scoped()`.
+
+The three tables without `org_id` need their own rule, decided here:
+
+- `orgs`: `id = app_org()` for the tenant role, so an org sees only itself.
+- `users`: global identity. The tenant role sees a user only through membership: `exists (select 1 from org_members m where m.user_id = users.id and m.org_id = app_org())`. Writes are system only.
+- `instance`: system only.
+
+`webhook_deliveries.org_id` is nullable (a delivery is stored before it is routed). The tenant role sees rows of its own org; the system role, which does the routing, sees all.
+
+## Generated, like the Postgres schema
+
+The policies are generated from the schema, not written by hand. A script, `gen-pg-rls.ts`, reads the generated `schema.pg.ts`, finds every table and whether it has `org_id` and `project_id`, and writes the SQL above. A table with neither and not on its short list of named exceptions makes the script fail, so a new table cannot be added without deciding its policy. The SQL is idempotent (`drop policy if exists`, then `create`), embedded in a module like the migrations, and re-applied by the owner role at every start after the migrations, so a new table gets its policies with no migration of its own. CI regenerates it and fails on a difference.
+
+Two checks guard it at runtime. At start, as the owner, Longshore reads `pg_class` and `pg_policies` and refuses to start in RLS mode if any table in the schema lacks `relrowsecurity`, `relforcerowsecurity` or its tenant policy. And a test (below) does the same comparison against the generated list.
+
+## What a missed SET does
+
+Deny by default, loudly:
+
+- A read with no `app.org_id` returns no rows. A list is empty, a get is not found.
+- A write fails with `42501` (new row violates row-level security policy). The error is logged with the stack and counted; the op returns `internal`.
+- A query on the tenant pool that has no scope is therefore a bug that shows up as "nothing found" in tests, not as a leak in production. The test suite makes such a bug fail on purpose: with RLS on, the tenant pool is used with no scope in a canary test and must see zero rows from every table.
+
+The setting is empty by default for the role (`alter role longshore_tenant set app.org_id = ''`), so a connection that never set it behaves the same as one that set it empty.
+
+## Who uses the system role, and who only needs a scope
+
+Each caller that touches the database outside an ordinary request is listed with the entry point it uses. "System" means `db.system`, cross-tenant by nature. "Scoped" means `db.scoped` for one org, even if the code is a background loop: when the org is known, the scope is used, and the system role is only for the step that finds it.
+
+| Caller | Entry point | Why |
+| --- | --- | --- |
+| Authentication: finding a token by its hash (`findApiTokenByHash`) | system, for the lookup only | No scope exists yet. The dispatcher then switches to `db.scoped` for the org and project on the row. |
+| Webhook routing: the App row, installation by id, repo by installation | system, for the lookups | The tenant is what they find. The handler then runs `db.scoped` for it. |
+| Installation claim callback, before the state is verified | system, for the App row and the claim row; then scoped | There is no org until the HMAC state is checked, and the key and the App row are instance-level. After verification the binding and the audit write use `db.scoped` for the org in the state. |
+| Scheduler: claiming the next attempt, leases, reconciling attempts left running by a dead process | system | Cross-tenant by nature. Work on a claimed attempt is then `db.scoped` for its org and project. |
+| Org usage and quota reads in the claim loop (#182) | scoped, per org | The loop already iterates orgs; reading each org's usage under its own scope needs no cross-tenant read, and a quota check cannot see another org's numbers. |
+| Poller: reading the bindings and ingest settings of every project (`listIngestBindings`) | system, for the list; each poll scoped | Finding which repos to poll is cross-tenant; ingesting one repo writes `db.scoped` for its project. |
+| Audit checkpointer and exporter; the failure audit for an unknown token (the `_system` org) | system | They walk every org's chain. |
+| Cache service grant lookups (#143) | scoped, by the grant's org | The credential names one attempt, so one org; the grant row is found under it. |
+| The secrets proxy's per-request `vault.use` | scoped, by the attempt's org | The proxy holds an attempt credential that fixes the org; the vault read and the `secret_use` audit write run under that org's scope. |
+| `longshore doctor` (lane-a3) | system, read-only | It checks the whole instance. A read-only transaction (`SET TRANSACTION READ ONLY`) makes writes impossible from this path, and its grants are `select` only. |
+| Release lane: channel attempt lookup (#183) and everything else it does | the release role, not system | A separate process with its own role and grant list, below. It never holds the system role. |
+| Boot: migrations, ensuring the instance row, the RLS boot check | owner, then system | The owner role runs the migrations and policies and disconnects. |
+
+The rule: `db.system` appears only in an allowlisted set of files, enforced by a lexical test beside the existing tenancy guard, each with a reason. A new cross-tenant caller is a visible change in review, not an import. The converse is also tested: a path in the table marked scoped that is found calling `db.system` fails the guard.
+
+## The release lane's own role
+
+The release lane is a separate process with its own database URL and role, `longshore_release`. It serves every org (it is the one place that signs), so it has no per-org policy; its limit is the grant list, which is short:
+
+- `select` on runs, jobs, job attempts (for the recorded trust class), artifacts, the projects' signing settings, the repo bindings, approvals, approvers, and `audit_log`;
+- `select` and `update` on `release_requests`; `insert` on `audit_log`;
+- nothing on vault tables, the secret store, tokens, events or logs.
+
+The main process's tenant role can `insert` a release request only with `status = 'pending'` (a `with check` on its policy) and cannot `update` one. So "only the release lane claims and finishes requests" becomes a property the database enforces, not a convention between two processes. The master key and the lane's own key directory stay separate, as today.
+
+## How the tests prove it
+
+The suite from the tenant isolation PR (registry-generated, row fingerprints, REST, MCP, realtime, the vault, approvals, installations) is reused; RLS adds three layers of proof.
+
+1. **Nothing breaks.** The full suites run on a real Postgres with RLS on and the tenant, system and owner roles in use, as the existing Postgres job does without it. A legitimate path that forgot to set a scope fails here.
+2. **RLS holds alone.** A test-only switch (`LONGSHORE_TEST_SABOTAGE_SCOPE=1`) makes the repo layer's `scoped()` drop the org and project predicates, so every repo query is unscoped. The hostile suite then runs and must still find no leak and no change in org A, now because the database refuses. The same run with RLS off must fail, which proves the sabotage is real and the suite can see it (the same positive-control rule as the suite itself).
+3. **The policies are what the schema says.** Direct SQL as the tenant role, per table: with no scope it sees zero rows; with org A set it sees only A's; an insert naming org B under A's scope fails with `42501`; a project-scoped setting hides sibling projects. The same as the owner (`FORCE`). A comparison of `pg_policies` with the generated list, and a test that every table in the schema is covered. A lexical test for `db.system` as above.
+
+The release role gets its own: it can do its listed operations and nothing else (a `select` on `vault_secrets` is refused), and the tenant role cannot update a release request.
+
+## What it does not cover
+
+- A compromised server process holds the tenant pool and can run any SQL as that role, including `set_config('app.org_id', ...)` for another org. RLS driven by a setting protects against our bugs, not against code execution in the server. The stronger form is a role per org (`set local role`), which changes the cost model (roles to manage, grants per org); this design keeps the setting as the first step and records the role per org as the documented route for hosted multi-tenant, if the first step proves not to be enough.
+- The system role, by design, sees every org. Its callers are few and allowlisted, but a bug there is still cross-tenant.
+- SQLite. There is no RLS there; its isolation is the repo layer and the hostile suite.
+- Encryption at rest and keys: tracked separately in the tenant isolation checklist.
+
+## Open questions
+
+- The `users` rule through `org_members` assumes a user belongs to a few orgs; confirm before the people model grows.
+- Whether the realtime server should hold one scoped transaction per subscription or open one per read. Per read is simpler and what the sketch assumes.
+- Whether `app.project_id` should also be enforced on tables where `project_id` is a denormalised copy, or only where the row is project-owned.
+- The cost of a transaction per read. It is measured under the Postgres CI job (the same suites with and without a scope transaction around reads) before scoped reads become the default.
+
+## Work, in order
+
+1. `db.scoped` and `db.system`, the roles and the configuration, with RLS off by default and the dispatcher using `scoped`. Behaviour unchanged, the role split in place.
+2. `gen-pg-rls.ts`, the boot check, the policies, and the tenant-role tests, switched on in CI.
+3. The sabotage run of the hostile suite.
+4. The release role and its grants.
+5. Switch RLS on by default for Postgres, once the first customer has run it in shadow.

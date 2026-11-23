@@ -39,7 +39,8 @@
           "contributing",
           "internals/bun-notes",
           "design/daytona-proxy",
-          "design/publish-targets"
+          "design/publish-targets",
+          "design/postgres-rls"
         ]
       }
     ]
