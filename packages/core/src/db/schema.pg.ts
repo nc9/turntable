@@ -60,6 +60,8 @@ export const EVENT_TYPES = [
   "quota.warning",
   "quota.reached",
   "webhook.disabled",
+  "approver.bootstrapped",
+  "approvers.depleted",
   "approval.policy_loosened",
   "org.token_reminted",
   "org.tokens_exhausted",
