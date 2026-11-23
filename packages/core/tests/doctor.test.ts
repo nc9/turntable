@@ -17,7 +17,9 @@ import {
   checkForwarded,
   checkGithubApp,
   checkHttpsRedirect,
+  checkAuditAnchors,
   checkMasterKey,
+  checkReleaseKey,
   checkPrivileges,
   checkProxyTls,
   checkQuotas,
@@ -64,6 +66,10 @@ function fakeFs(
     },
     writable: (p) => files[p]?.writable ?? true,
     read: (p) => files[p]?.bytes,
+    list: (dir) =>
+      Object.keys(files)
+        .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes("/"))
+        .map((p) => p.slice(dir.length + 1)),
   };
 }
 
@@ -205,6 +211,31 @@ describe("privileges and the data directory", () => {
   });
 });
 
+describe("the release key and the audit anchor", () => {
+  test("a release key file inside a data directory warns; outside, it passes; unset, no check", () => {
+    expect(checkReleaseKey(base())).toEqual([]);
+    const at = (file: string, dataDir?: string) =>
+      checkReleaseKey(base({ releaseKey: { file, dataDir } }));
+    const inMain = at(`${DIR}/release.key`);
+    expect(inMain[0]).toMatchObject({ status: "warn" });
+    expect(inMain[0]!.summary).toContain("data directory");
+    expect(inMain[0]!.fix).toContain("TURNTABLE_RELEASE_MASTER_KEY");
+    expect(at("/release/state/r.key", "/release/state")[0]).toMatchObject({ status: "warn" });
+    expect(at("/run/secrets/release.key", "/release/state")[0]).toMatchObject({ status: "pass" });
+    expect(JSON.stringify(inMain)).not.toContain("release.key");
+  });
+  test("an anchor that does not open names the fix: set the previous key and restart", () => {
+    expect(checkAuditAnchors(base({ unreadableAnchors: () => [] }))).toMatchObject({
+      status: "pass",
+    });
+    const r = checkAuditAnchors(base({ unreadableAnchors: () => ["01ORGAAAA"] }));
+    expect(r).toMatchObject({ status: "fail" });
+    expect(r.fix).toContain("audit anchor for org 01ORGAAAA");
+    expect(r.fix).toContain("TURNTABLE_MASTER_KEY_PREVIOUS");
+    expect(r.fix).toContain("restart");
+  });
+});
+
 describe("the master key", () => {
   const at = (
     files: Record<string, Partial<FileFacts>>,
@@ -224,6 +255,43 @@ describe("the master key", () => {
     expect(loose).toMatchObject({ status: "warn" });
     expect(loose.fix).toContain("chmod 600");
     expect(at({ [KEY]: { size: 32, mode: 0o400 } }, env)).toMatchObject({ status: "pass" });
+  });
+  test("a key file inside the data directory warns: every volume backup holds it", () => {
+    const inData = `${DIR}/master.key`;
+    const r = at(
+      { [DIR]: { isDirectory: true }, [inData]: { size: 32, mode: 0o600 } },
+      { TURNTABLE_MASTER_KEY_FILE: inData },
+    );
+    expect(r).toMatchObject({ status: "warn" });
+    expect(r.summary).toContain("inside the data directory");
+    expect(r.fix).toContain("TURNTABLE_MASTER_KEY");
+    // A key on a separate mount is fine.
+    expect(
+      at({ [KEY]: { size: 32, mode: 0o600 } }, { TURNTABLE_MASTER_KEY_FILE: KEY }),
+    ).toMatchObject({ status: "pass" });
+  });
+  test("a key from the environment passes; a key file left in the data directory warns", () => {
+    const base_ = (files: Record<string, Partial<FileFacts>>) =>
+      checkMasterKey(base({ fs: fakeFs(files), env: {}, masterKeyEnv: true }));
+    expect(base_({ [DIR]: { isDirectory: true } })).toMatchObject({ status: "pass" });
+    const stray = base_({
+      [DIR]: { isDirectory: true },
+      [`${DIR}/master.key`]: { size: 32, mode: 0o600 },
+    });
+    expect(stray).toMatchObject({ status: "warn" });
+    expect(stray.summary).toContain("master.key");
+    expect(stray.fix).toContain("rotate");
+    // Other files of other sizes are not key files.
+    expect(
+      base_({ [DIR]: { isDirectory: true }, [`${DIR}/turntable.db`]: { size: 4096 } }),
+    ).toMatchObject({ status: "pass" });
+  });
+  test("the variable and a configured file together fail", () => {
+    expect(
+      checkMasterKey(
+        base({ fs: fakeFs({}), env: { TURNTABLE_MASTER_KEY_FILE: KEY }, masterKeyEnv: true }),
+      ),
+    ).toMatchObject({ status: "fail" });
   });
   test("the key's path is not in the output", () => {
     expect(

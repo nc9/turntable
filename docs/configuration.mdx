@@ -161,6 +161,8 @@ Only some settings are on the registry so far; the rest are still read straight 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `backup_keep` | instance | whole number, 1 to 10000 | `10` | instance_admin | no: instance settings are changed by the instance administrator, never by an agent | `TURNTABLE_BACKUP_KEEP` | `[backup] keep` | How many backups to keep under `<data-dir>/backups`, newest first. |
 | `untrusted_run_approval` | project | one of "human", "no_agents", "any" | `"no_agents"` | instance_admin (`instanceAdminOnly`) | no: it decides whether agents may approve runs, so only a person changes it | none | `orgs.<slug>.projects.<slug>.untrusted_run_approval` | Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`. |
+| `approval_policy` | org | object | `{}` | instance_admin (`instanceAdminOnly`) | no: it decides how many people must approve a release, so only a person changes it | `TURNTABLE_APPROVAL_POLICY` | `orgs.<slug>.approval_policy` | Approval policy per environment, a map from environment name to `required` (distinct approvers, 1 to 10), `allow_author_approval` (default false) and `key_policy` (`any` or `hardware`, default `any`). An environment with no entry is `production` and `release` at two approvers and every other one ungated. |
+| `scheduling_class` | project | one of "normal", "yield" | `"normal"` | instance_admin (`instanceAdminOnly`) | no: it decides whose work the shared fleet serves first, so only the instance administrator changes it | none | `orgs.<slug>.projects.<slug>.scheduling_class` | How the project's jobs share the fleet: `normal`, or `yield` (a yield job is claimed only while no normal job is waiting, and is preempted and requeued when a normal job waits at a cap). |
 
 {/* settings:end */}
 
@@ -212,6 +214,7 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_CONFIG` | `--config` |  | Path of a `turntable.toml` of settings. An unknown key or a bad value stops the boot, naming the key and the file; no file is fine. The environment beats the file. See [Settings registry](#settings-registry). |
 | `TURNTABLE_BACKUP_BEFORE_MIGRATE` |  |  | Set to `1` to back up the SQLite database at boot when migrations are pending, before they run. A failed backup stops the boot. See [Backups](/instance-admin#backups). |
 | `TURNTABLE_BACKUP_KEEP` |  | 10 | How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set. |
+| `TURNTABLE_APPROVAL_POLICY` |  |  | The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals). |
 
 ### Worker and provider
 
@@ -244,7 +247,10 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | Variable | Flag | Default | Description |
 | --- | --- | --- | --- |
 | `TURNTABLE_MASTER_KEY_FILE` |  |  | 32-byte master key file for the encrypted secret store (`turntable keys init`). Required for the GitHub App, its webhook endpoint, the vault and OIDC. |
-| `TURNTABLE_MASTER_KEY_AUTOINIT` | `--init-master-key` | off | Set to `1` to create `TURNTABLE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `TURNTABLE_MASTER_KEY_FILE`. Back the key up: without it stored secrets cannot be opened. |
+| `TURNTABLE_MASTER_KEY` |  |  | The master key itself: 32 bytes as base64 (`openssl rand -base64 32`) or 64 hex characters. It keeps the key off the data volume, so a volume backup does not hold the key next to what it unseals. Read once at boot and deleted from the environment before any child process starts. Setting it together with `TURNTABLE_MASTER_KEY_FILE` is an error. |
+| `TURNTABLE_MASTER_KEY_PREVIOUS` |  |  | The master key the sealed rows are under now, set together with the new key to rotate it. At boot every sealed row (secrets, vault versions, webhook secrets, audit anchor files) is re-encrypted under the new key in one transaction, verified and audited; on any failure nothing changes and the boot stops. Rows already under the new key are skipped, so it is safe to leave set for one more boot, but remove it once a new backup is taken. Same encoding as `TURNTABLE_MASTER_KEY`. |
+| `TURNTABLE_MASTER_KEY_PREVIOUS_FILE` |  |  | The previous master key as a 32-byte file, instead of `TURNTABLE_MASTER_KEY_PREVIOUS`. |
+| `TURNTABLE_MASTER_KEY_AUTOINIT` | `--init-master-key` | off | Set to `1` to create `TURNTABLE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `TURNTABLE_MASTER_KEY_FILE`, and is refused with `TURNTABLE_MASTER_KEY`. Back the key up: without it stored secrets cannot be opened. |
 | `TURNTABLE_REQUIRE_ORG_KEYS` |  | off | Set to `1` after `turntable keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused wherever the org is known, and `keys reseal` itself refuses to run while it is set. See [Secrets vault](/secrets-vault#per-org-keys). |
 
 ### GitHub
@@ -275,12 +281,17 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_CACHE_URL` |  |  | The base URL jobs reach the control-plane cache at, no trailing slash. Setting it turns the cache on. See [Job cache](/cache). |
 | `TURNTABLE_CACHE_QUOTA_GIB` |  | 10 | GiB an org may hold in the cache in total, split between trust classes. |
 | `TURNTABLE_CACHE_MAX_ENTRY_GIB` |  | 2 | GiB of the largest single cache entry. |
+| `TURNTABLE_ARTIFACTS_URL` |  |  | The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts). |
+| `TURNTABLE_ARTIFACT_MAX_GIB` |  | 2 | GiB of the largest single artifact. The org's stored-bytes quota applies as well. |
+| `TURNTABLE_ARTIFACT_RETENTION_DAYS` |  | 90 | Days a stored artifact is kept. Past it the bytes are removed and downloads fail; the recorded digest stays. |
 
 ### Release lane
 
 | Variable | Flag | Default | Description |
 | --- | --- | --- | --- |
-| `TURNTABLE_RELEASE_MASTER_KEY_FILE` |  |  | The release lane's own master key file. Read only by `serve --roles release`. |
+| `TURNTABLE_RELEASE_MASTER_KEY_FILE` |  |  | The release lane's own master key file (or `TURNTABLE_RELEASE_MASTER_KEY`, not both). Read only by `serve --roles release`. |
+| `TURNTABLE_RELEASE_MASTER_KEY` |  |  | The release lane's master key itself, 32 bytes as base64 or hex, so its wrapper stays off every volume backup. Read once at boot and removed from the environment. Not with `TURNTABLE_RELEASE_MASTER_KEY_FILE`. |
+| `TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS` |  |  | The release key the lane's sealed state is under before a rotation. The lane re-wraps its publish credentials and signing key files under the new key at boot, in one transaction. Remove it after a clean boot. |
 | `TURNTABLE_RELEASE_DATA_DIR` |  |  | The release lane's own data directory. |
 | `TURNTABLE_RELEASE_GITHUB_TOKEN` |  |  | The forge credential the lane uses to re-check a release (read access). |
 | `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN` |  |  | Optional credential the lane uses to publish. Absent means it does not publish. |

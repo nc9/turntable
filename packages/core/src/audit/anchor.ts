@@ -93,6 +93,18 @@ export class AuditAnchor {
     return true;
   }
 
+  /** Org ids whose state file is here but does not open under this key (edited, or another key). */
+  unreadable(): string[] {
+    return this.orgIds().filter((id) => {
+      try {
+        this.read(id);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+  }
+
   /** Org ids that have a state file here. Used so an org whose database rows are gone is still checked. */
   orgIds(): string[] {
     if (!existsSync(this.#dir)) return [];

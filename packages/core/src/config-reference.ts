@@ -254,6 +254,24 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "32-byte master key file for the encrypted secret store (`turntable keys init`). Required for the GitHub App, its webhook endpoint, the vault and OIDC.",
   },
   {
+    name: "TURNTABLE_MASTER_KEY",
+    area: "Secrets and keys",
+    description:
+      "The master key itself: 32 bytes as base64 (`openssl rand -base64 32`) or 64 hex characters. It keeps the key off the data volume, so a volume backup does not hold the key next to what it unseals. Read once at boot and deleted from the environment before any child process starts. Setting it together with `TURNTABLE_MASTER_KEY_FILE` is an error.",
+  },
+  {
+    name: "TURNTABLE_MASTER_KEY_PREVIOUS",
+    area: "Secrets and keys",
+    description:
+      "The master key the sealed rows are under now, set together with the new key to rotate it. At boot every sealed row (secrets, vault versions, webhook secrets, audit anchor files) is re-encrypted under the new key in one transaction, verified and audited; on any failure nothing changes and the boot stops. Rows already under the new key are skipped, so it is safe to leave set for one more boot, but remove it once a new backup is taken. Same encoding as `TURNTABLE_MASTER_KEY`.",
+  },
+  {
+    name: "TURNTABLE_MASTER_KEY_PREVIOUS_FILE",
+    area: "Secrets and keys",
+    description:
+      "The previous master key as a 32-byte file, instead of `TURNTABLE_MASTER_KEY_PREVIOUS`.",
+  },
+  {
     name: "TURNTABLE_SECRETS_PROXY",
     area: "Secrets proxy",
     default: "off",
@@ -313,7 +331,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   {
     name: "TURNTABLE_RELEASE_MASTER_KEY_FILE",
     area: "Release lane",
-    description: "The release lane's own master key file. Read only by `serve --roles release`.",
+    description:
+      "The release lane's own master key file (or `TURNTABLE_RELEASE_MASTER_KEY`, not both). Read only by `serve --roles release`.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_MASTER_KEY",
+    area: "Release lane",
+    description:
+      "The release lane's master key itself, 32 bytes as base64 or hex, so its wrapper stays off every volume backup. Read once at boot and removed from the environment. Not with `TURNTABLE_RELEASE_MASTER_KEY_FILE`.",
+  },
+  {
+    name: "TURNTABLE_RELEASE_MASTER_KEY_PREVIOUS",
+    area: "Release lane",
+    description:
+      "The release key the lane's sealed state is under before a rotation. The lane re-wraps its publish credentials and signing key files under the new key at boot, in one transaction. Remove it after a clean boot.",
   },
   {
     name: "TURNTABLE_RELEASE_DATA_DIR",
@@ -541,7 +572,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     flag: "--init-master-key",
     default: "off",
     description:
-      "Set to `1` to create `TURNTABLE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `TURNTABLE_MASTER_KEY_FILE`. Back the key up: without it stored secrets cannot be opened.",
+      "Set to `1` to create `TURNTABLE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `TURNTABLE_MASTER_KEY_FILE`, and is refused with `TURNTABLE_MASTER_KEY`. Back the key up: without it stored secrets cannot be opened.",
   },
   {
     name: "TURNTABLE_REQUIRE_ORG_KEYS",
@@ -575,6 +606,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     default: "10",
     description:
       "How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set.",
+  },
+  {
+    name: "TURNTABLE_APPROVAL_POLICY",
+    area: "Server",
+    description:
+      'The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals).',
   },
   {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",
@@ -617,6 +654,26 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Job cache",
     default: "2",
     description: "GiB of the largest single cache entry.",
+  },
+  {
+    name: "TURNTABLE_ARTIFACTS_URL",
+    area: "Job cache",
+    description:
+      "The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts).",
+  },
+  {
+    name: "TURNTABLE_ARTIFACT_MAX_GIB",
+    area: "Job cache",
+    default: "2",
+    description:
+      "GiB of the largest single artifact. The org's stored-bytes quota applies as well.",
+  },
+  {
+    name: "TURNTABLE_ARTIFACT_RETENTION_DAYS",
+    area: "Job cache",
+    default: "90",
+    description:
+      "Days a stored artifact is kept. Past it the bytes are removed and downloads fail; the recorded digest stays.",
   },
   {
     name: "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",

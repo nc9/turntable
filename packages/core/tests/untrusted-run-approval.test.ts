@@ -471,9 +471,13 @@ describe("token kind", () => {
   });
 
   test("no operation changes a token's kind, and minting is not an MCP tool", () => {
-    expect(mcpTools(registry).map((t) => t.name)).not.toContain("create_api_token");
+    const mcpNames = mcpTools(registry).map((t) => t.name);
+    expect(mcpNames).not.toContain("create_api_token");
+    expect(mcpNames).not.toContain("create_org_token");
+    expect(registry.ops.find((o) => o.name === "create_org_token")!.mcp).toBe(false);
     const withKind = registry.ops.filter((o) => "kind" in o.input.shape).map((o) => o.name);
-    expect(withKind).toEqual(["create_api_token"]);
+    // create_org_token: instance-admin only, REST only, first token of an org only.
+    expect(withKind).toEqual(["create_api_token", "create_org_token"]);
   });
 });
 

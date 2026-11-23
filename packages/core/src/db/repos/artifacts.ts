@@ -40,6 +40,12 @@ export function recordArtifact(
     size: number;
     /** When the control plane has the bytes it hashes them itself and the digest must match. */
     bytes?: Uint8Array;
+    /**
+     * For a caller that streamed the blob into its own storage and hashed it there (the artifact
+     * service): the digest and size are the control plane's own, not a job's report. Never set
+     * it from anything a job said.
+     */
+    computedByControlPlane?: boolean;
   },
 ): Promise<ArtifactRow> {
   if (!/^[0-9a-f]{64}$/.test(input.sha256))
@@ -61,6 +67,8 @@ export function recordArtifact(
       return Promise.reject(new ArtifactConflict("the bytes do not match the reported digest"));
     }
     sha256 = computed;
+    digestSource = "computed";
+  } else if (input.computedByControlPlane) {
     digestSource = "computed";
   }
   return db.transaction(async (tx) => {

@@ -14,7 +14,7 @@ import {
 
 const DAY_MS = 86_400_000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const ORG_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const ORG_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export type BootstrapResult =
   | { status: "created"; org: string; tokenId: string; expiresAt: number }

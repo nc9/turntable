@@ -4,6 +4,7 @@ import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
+import type { GithubFacts } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import type { DoctorReport } from "../doctor/types";
@@ -38,6 +39,8 @@ export type OpContext = {
   vault?: SecretVault | undefined;
   /** Starts installation claims (hosted); absent without a master key. */
   claims?: InstallationClaims | undefined;
+  /** GitHub App API facts for `resync_installation`; absent when no App is configured. */
+  githubFacts?: GithubFacts | undefined;
   /** The adapter that carried the call; undefined for in-process callers. */
   transport?: "mcp" | "rest" | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */

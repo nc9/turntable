@@ -6,7 +6,8 @@ import { allowHostsFromEnv } from "@turntable/net";
 import type { Provider } from "@turntable/provider-sdk";
 import { checkoutConfigFromEnv } from "./run/checkout-child";
 import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
-import { githubFacts } from "./github/api";
+import { githubFacts, type GithubFacts } from "./github/api";
+import { adoptPolledBindings } from "./github/installations";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
@@ -23,13 +24,21 @@ import {
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
+import { setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
-import { loadMasterKey } from "./secrets/crypto";
+import {
+  anchorKeyMessage,
+  auditStateDir,
+  MasterKeyConfigError,
+  takeMasterKeys,
+  type MasterKeys,
+} from "./secrets/master-key";
+import { rewrapMasterKey } from "./secrets/rewrap";
 import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
 import { appendAudit } from "./db/repos";
 import { systemOrgId } from "./audit/failures";
@@ -39,8 +48,12 @@ import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { JobOidc } from "./oidc/job-delivery";
-import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
+import { artifactTargetOf, githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
+import { ArtifactGrants } from "./artifacts/grants";
+import { jobArtifactProvider } from "./artifacts/job";
+import { createArtifactService, type ArtifactService } from "./artifacts/service";
+import { FsArtifactStore } from "./artifacts/store";
 import { CacheGrants } from "./cache/grants";
 import { jobCacheProvider } from "./cache/job";
 import { createCacheService, type CacheService } from "./cache/service";
@@ -70,7 +83,7 @@ import {
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops/token-cli";
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
-import { mainRuntime, resolveRoles } from "./roles";
+import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
@@ -141,7 +154,10 @@ Environment:
   TURNTABLE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create TURNTABLE_MASTER_KEY_FILE on first boot when it is
                     absent (a host with no shell); never overwrites an existing file
   TURNTABLE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (turntable keys init);
-                    required for the GitHub App and its webhook endpoint
+                    required for the GitHub App and its webhook endpoint (or TURNTABLE_MASTER_KEY, not both)
+  TURNTABLE_MASTER_KEY  the master key itself, 32 bytes as base64 or hex, so it stays off the data volume; read once at
+                    boot and removed from the environment. TURNTABLE_MASTER_KEY_PREVIOUS (or _FILE) re-wraps every sealed row
+                    under the new key at that boot, in one transaction; remove it afterwards
   TURNTABLE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
   TURNTABLE_AUDIT_WEBHOOK_URL  POST audit batches here (HMAC with TURNTABLE_AUDIT_WEBHOOK_SECRET_FILE)
   TURNTABLE_OIDC_BASE_URL  base of the per-org OIDC issuers (default <public url>/oidc); an org's issuer
@@ -167,6 +183,8 @@ Environment:
   TURNTABLE_TOKEN_FILE  token file for "turntable mcp" (mode 0600; never pass a token on the command line)
   TURNTABLE_WEBAUTHN_RP_ID, TURNTABLE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   TURNTABLE_CACHE_URL  base URL jobs reach the control-plane cache at (enables it; see docs/cache.mdx)
+  TURNTABLE_ARTIFACTS_URL  base URL jobs reach the control plane at for upload/download-artifact (enables it; see docs/compatibility.mdx)
+  TURNTABLE_ARTIFACT_MAX_GIB, TURNTABLE_ARTIFACT_RETENTION_DAYS  largest artifact (default 2) and how long blobs are kept (default 90)
   TURNTABLE_CACHE_QUOTA_GIB, TURNTABLE_CACHE_MAX_ENTRY_GIB  per-org cache quota (default 10) and largest entry (default 2)
   TURNTABLE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   TURNTABLE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
@@ -203,6 +221,7 @@ async function startBackground(
     auth?: AppAuth;
     vault?: SecretVault;
     cache?: CacheService;
+    artifacts?: ArtifactService;
     jobOidc?: JobOidc;
   } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
@@ -249,7 +268,7 @@ async function startBackground(
     // runs with no route but the proxy; see docs/secrets-proxy.mdx.
     if (process.env.TURNTABLE_SECRETS_PROXY === "1") {
       if (!extras.vault) {
-        throw new Error("TURNTABLE_SECRETS_PROXY=1 needs the vault (TURNTABLE_MASTER_KEY_FILE)");
+        throw new Error("TURNTABLE_SECRETS_PROXY=1 needs the vault (a master key)");
       }
       const port = process.env.TURNTABLE_PROXY_PORT?.trim();
       secretsProxy = await SecretsProxy.start({
@@ -321,6 +340,9 @@ async function startBackground(
             proxy: secretsProxy,
             ...(jobTokens ? { github: githubTargetOf(db) } : {}),
             ...(extras.jobOidc ? { oidc: (c, k) => extras.jobOidc!.proxyTarget(c, k) } : {}),
+            ...(extras.artifacts
+              ? { artifacts: () => artifactTargetOf(extras.artifacts!.resultsUrl) }
+              : {}),
           })
         : r;
     scheduler = new Scheduler({
@@ -352,6 +374,7 @@ async function startBackground(
                 ...(jobTokens ? { jobTokens } : {}),
                 ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
+                ...(extras.artifacts ? { artifacts: jobArtifactProvider(extras.artifacts) } : {}),
                 ...(v.image ? { image: v.image } : {}),
                 ...(sandboxSizes ? { sizes: sandboxSizes } : {}),
               }),
@@ -516,6 +539,8 @@ async function serve(args: string[]): Promise<void> {
   // key, a bad value or an unreadable file stops the boot here, before anything is opened. No file
   // is fine.
   const settings = loadSettingsRuntime({ config: values.config });
+  // The approval engine and the release lane read the approval policy from the same runtime.
+  setAmbientSettings(settings);
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid --port: ${values.port}`);
@@ -526,6 +551,9 @@ async function serve(args: string[]): Promise<void> {
     // (or refuses) like every other process that opens a data dir, before any file is touched. It
     // does not chown: its own directories belong to whoever provisions the lane.
     enforceRootPolicy(resolve(values["data-dir"]), process.env, undefined, { chown: false });
+    // The lane has its own key file; the main process's key is not its to hold.
+    delete process.env.TURNTABLE_MASTER_KEY;
+    delete process.env.TURNTABLE_MASTER_KEY_PREVIOUS;
     const lane = await serveRelease(values);
     const stopLane = () => {
       lane.stop();
@@ -537,6 +565,9 @@ async function serve(args: string[]): Promise<void> {
   }
   // A process that is not the release lane holds nothing of it: those variables do nothing here.
   const runtime = mainRuntime(roles, process.env);
+  // The lane's keys, if given, are used once for the boot re-wrap and removed: not for a child to inherit.
+  const releaseLaneElsewhere = releaseLaneConfigured(process.env);
+  const releaseKeys = takeReleaseKeys(process.env);
   if (runtime.ignoredReleaseEnv.length > 0) {
     console.warn(
       `warning: ${runtime.ignoredReleaseEnv.join(", ")} belong to the release lane and are ignored here; run it as its own process (serve --roles release)`,
@@ -553,6 +584,13 @@ async function serve(args: string[]): Promise<void> {
   // before anything reads it. Never overwrites; without the opt-in an absent file stays an error.
   let masterKeyCreated: string | undefined;
   const keyPath = process.env.TURNTABLE_MASTER_KEY_FILE?.trim();
+  if (keyPath && process.env.TURNTABLE_MASTER_KEY?.trim()) {
+    delete process.env.TURNTABLE_MASTER_KEY;
+    delete process.env.TURNTABLE_MASTER_KEY_PREVIOUS;
+    throw new MasterKeyConfigError(
+      "TURNTABLE_MASTER_KEY and TURNTABLE_MASTER_KEY_FILE are both set: use one. Remove the file setting once the key is in the variable.",
+    );
+  }
   if (keyPath && autoInitRequested(process.env, values["init-master-key"])) {
     if (
       autoInitMasterKey(resolve(keyPath), dataDir, (m) => console.log(`[turntable] ${m}`)) ===
@@ -562,9 +600,14 @@ async function serve(args: string[]): Promise<void> {
     }
   } else if (!keyPath && autoInitRequested(process.env, values["init-master-key"])) {
     throw new Error(
-      "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) needs TURNTABLE_MASTER_KEY_FILE",
+      process.env.TURNTABLE_MASTER_KEY?.trim()
+        ? "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) creates a key file and is not used with TURNTABLE_MASTER_KEY: remove it"
+        : "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) needs TURNTABLE_MASTER_KEY_FILE",
     );
   }
+  // The key is read once, here, and TURNTABLE_MASTER_KEY is deleted from the environment before
+  // any provider, plugin or child process starts. Both a variable and a file is refused.
+  const masterKeys: MasterKeys | undefined = takeMasterKeys(process.env);
   // Before the database is opened (and so migrated) by this binary. SQLite only: on Postgres the
   // operator takes the backup with pg_dump.
   if (
@@ -581,6 +624,33 @@ async function serve(args: string[]): Promise<void> {
   }
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
+  // A rotation: the previous key is given, so every sealed row moves to the new key before anything
+  // reads one. All or nothing; a failure stops the boot.
+  if (masterKeys && (masterKeys.previous || releaseKeys?.previous)) {
+    await rewrapMasterKey({
+      db,
+      next: masterKeys.key,
+      previous: masterKeys.previous,
+      release: releaseKeys,
+      releaseElsewhere: !releaseKeys && releaseLaneElsewhere,
+      anchorDir: auditStateDir(masterKeys, dataDir),
+      auditOrgId: await systemOrgId(db),
+      log: (m) => console.log(`[turntable] ${m}`),
+    });
+    console.warn(
+      "[turntable] a previous master key is set: once the re-wrap is done and a new backup is taken, remove it",
+    );
+  }
+  // A key changed without its previous one: say so now, with the fix, not as a bare AnchorCorrupt
+  // from the checkpointer later. Not fatal: the checkpointer alerts on every pass either way.
+  if (masterKeys && !masterKeys.previous) {
+    for (const orgId of new AuditAnchor(
+      auditStateDir(masterKeys, dataDir),
+      masterKeys.key,
+    ).unreadable()) {
+      console.error(`[turntable] ${anchorKeyMessage(orgId)}`);
+    }
+  }
   if (masterKeyCreated) {
     await appendAudit(
       db,
@@ -638,11 +708,7 @@ async function serve(args: string[]): Promise<void> {
     cache = createCacheService({
       db,
       // With a master key the blobs are encrypted at rest, per org (cache/blob-crypto.ts).
-      store: new FsCacheStore(join(dataDir, "cache"), {
-        masterKey: process.env.TURNTABLE_MASTER_KEY_FILE?.trim()
-          ? loadMasterKey(process.env.TURNTABLE_MASTER_KEY_FILE.trim())
-          : undefined,
-      }),
+      store: new FsCacheStore(join(dataDir, "cache"), { masterKey: masterKeys?.key }),
       grants: new CacheGrants(),
       orgQuotaBytes: gib("TURNTABLE_CACHE_QUOTA_GIB", 10),
       maxEntryBytes: gib("TURNTABLE_CACHE_MAX_ENTRY_GIB", 2),
@@ -666,6 +732,37 @@ async function serve(args: string[]): Promise<void> {
     console.log(`[turntable] job cache on, sandboxes reach it at ${cacheUrl}`);
   }
 
+  // The artifact store for jobs: what upload-artifact and download-artifact talk to, and what the
+  // release lane signs from. Off unless a URL the sandboxes can reach is given.
+  let artifacts: ArtifactService | undefined;
+  const artifactsUrl = process.env.TURNTABLE_ARTIFACTS_URL?.trim();
+  if (artifactsUrl) {
+    const num = (name: string, dflt: number): number => {
+      const n = Number(process.env[name] ?? dflt);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid ${name}`);
+      return n;
+    };
+    artifacts = createArtifactService({
+      db,
+      store: new FsArtifactStore(join(dataDir, "artifacts")),
+      grants: new ArtifactGrants(),
+      maxArtifactBytes: Math.floor(num("TURNTABLE_ARTIFACT_MAX_GIB", 2) * 1024 ** 3),
+      retentionMs: Math.floor(num("TURNTABLE_ARTIFACT_RETENTION_DAYS", 90) * 86_400_000),
+      baseUrl: artifactsUrl,
+      onNotice: (g, m) => {
+        console.log(`[turntable] ${m} (attempt ${g.attemptId})`);
+        void addNotice(db, g.scope, { attemptId: g.attemptId, source: "artifacts", text: m }).catch(
+          () => {},
+        );
+      },
+      // A grant works only while its attempt is running, whatever else the token says.
+      isActive: async (g) => (await getAttempt(db, g.scope, g.attemptId))?.state === "running",
+    });
+    const sweep = setInterval(() => void artifacts?.sweep().catch(() => {}), 5 * 60_000);
+    sweep.unref();
+    console.log(`[turntable] job artifacts on, sandboxes reach them at ${artifactsUrl}`);
+  }
+
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
     ...(process.env.TURNTABLE_ALLOWED_ORIGINS?.split(",") ?? []),
@@ -675,6 +772,7 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  let appFacts: GithubFacts | undefined;
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
@@ -688,9 +786,8 @@ async function serve(args: string[]): Promise<void> {
   let oidc: OidcHandler | undefined;
   let jobOidc: JobOidc | undefined;
   let outboundWebhooks: WebhookService | undefined;
-  const keyFile = process.env.TURNTABLE_MASTER_KEY_FILE?.trim();
-  if (keyFile) {
-    const masterKey = loadMasterKey(keyFile);
+  if (masterKeys) {
+    const masterKey = masterKeys.key;
     const store = new SecretStore(db, masterKey);
     vault = new SecretVault({ db, masterKey });
     outboundWebhooks = new WebhookService({
@@ -742,6 +839,7 @@ async function serve(args: string[]): Promise<void> {
       revoke: () => auth.dropCached(),
     });
     const ghFacts = githubFacts(auth);
+    appFacts = ghFacts;
     webhooks = createWebhookHandler({
       db,
       store,
@@ -796,7 +894,7 @@ async function serve(args: string[]): Promise<void> {
     void webhooks.retryUnfinished().catch(() => {});
     // Signed audit checkpoints need the store's key; export sinks are opt in.
     auditStops.push(
-      startCheckpointer(db, store, new AuditAnchor(AuditAnchor.dirFor(keyFile), masterKey)),
+      startCheckpointer(db, store, new AuditAnchor(auditStateDir(masterKeys, dataDir), masterKey)),
     );
   }
   const sinks: AuditSink[] = [];
@@ -834,6 +932,7 @@ async function serve(args: string[]): Promise<void> {
       providerConfig: values["provider-config"],
       observed: forwarded.snapshot(),
       db: readerOf(db),
+      masterKeys,
     });
     try {
       return await runDoctor(inputs);
@@ -853,8 +952,10 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(appFacts ? { githubFacts: appFacts } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
+        ...(artifacts ? { artifacts } : {}),
         backup:
           DIALECT === "pg"
             ? { dialect: "pg" }
@@ -877,6 +978,14 @@ async function serve(args: string[]): Promise<void> {
     : undefined;
   if (server)
     console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  // Installations synced before polled repos were adopted: adopt now, after listening, so a slow
+  // or failing GitHub never holds up startup or healthz.
+  if (appFacts) {
+    const facts = appFacts;
+    void adoptPolledBindings(db, facts, (m) => console.log(`[turntable] ${m}`)).catch((err) =>
+      console.warn(`[turntable] adopt sweep failed: ${err instanceof Error ? err.message : err}`),
+    );
+  }
 
   const background = await startBackground(
     db,
@@ -890,6 +999,7 @@ async function serve(args: string[]): Promise<void> {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
       ...(cache ? { cache } : {}),
+      ...(artifacts ? { artifacts } : {}),
       ...(jobOidc ? { jobOidc } : {}),
     },
   );

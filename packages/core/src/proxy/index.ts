@@ -18,7 +18,7 @@ import {
   startProxy,
   type RunningProxy,
 } from "@turntable/proxy";
-import { plannedIdToken } from "@turntable/act-runner";
+import { plannedArtifactUpload, plannedIdToken } from "@turntable/act-runner";
 import { dockerBridgeGateway } from "@turntable/provider-docker";
 import type { ProxyEndpoint } from "@turntable/provider-sdk";
 import { SecretRegistry } from "@turntable/redact";
@@ -48,6 +48,8 @@ export interface ProxyAccess {
    * there to hold a GitHub token, and a job that gets none runs as if it were not here.
    */
   vaultRules: boolean;
+  /** The attempt's rules include the upload-only route to the artifact service. */
+  artifactUpload?: boolean;
   /**
    * Hands the proxy this attempt's GitHub installation token, minted once the job is planned. The
    * proxy attaches it to requests to the run's own repository; the job never holds it.
@@ -87,6 +89,57 @@ export function oidcRules(t: OidcTarget): Rule[] {
       secret: OIDC_CREDENTIAL_SECRET,
     },
   ];
+}
+
+/** Where the control plane's artifact service is, as a sandbox reaches it. */
+export interface ArtifactTarget {
+  host: string;
+  port: number;
+}
+
+/**
+ * The route a sandbox with no network of its own has to the artifact service: the two twirp calls
+ * and the blob PUT of an upload, and nothing else on that host (no list, no signed download URL,
+ * no GET). Nothing is injected: the job holds an upload-only artifact credential (artifacts/grants,
+ * mode `upload`), and the service refuses it everything but this.
+ */
+export function artifactRules(t: ArtifactTarget): Rule[] {
+  const twirp = (id: string, method: string): Rule => ({
+    id,
+    host: t.host,
+    port: t.port,
+    methods: ["POST"],
+    pathPrefix: `${ARTIFACT_TWIRP}${method}`,
+    pathExact: true,
+    inject: { type: "none" },
+  });
+  return [
+    twirp("artifact-create", "CreateArtifact"),
+    twirp("artifact-finalize", "FinalizeArtifact"),
+    {
+      id: "artifact-blob-put",
+      host: t.host,
+      port: t.port,
+      methods: ["PUT"],
+      pathPrefix: "/_artifacts",
+      pathShape: "/_artifacts/*/upload/*",
+      inject: { type: "none" },
+    },
+  ];
+}
+
+/** The twirp path the artifact service answers on (kept equal to artifacts/service.ts by a test). */
+const ARTIFACT_TWIRP = "/twirp/github.actions.results.api.v1.ArtifactService/";
+
+/** The target of an artifact service whose public URL is `baseUrl`: https only, as the proxy is. */
+export function artifactTargetOf(baseUrl: string): ArtifactTarget | undefined {
+  try {
+    const u = new URL(baseUrl);
+    if (u.protocol !== "https:") return undefined;
+    return { host: u.hostname.toLowerCase(), port: u.port === "" ? 443 : Number(u.port) };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The rule `secret` that means "this attempt's GitHub token" (not a vault secret). */
@@ -345,7 +398,12 @@ export class SecretsProxy {
   register(
     ctx: AttemptContext,
     rules: readonly Rule[],
-    o: { passthroughHosts: readonly PassthroughEntry[]; ttlMs: number; vaultRules?: boolean },
+    o: {
+      passthroughHosts: readonly PassthroughEntry[];
+      ttlMs: number;
+      vaultRules?: boolean;
+      artifactUpload?: boolean;
+    },
   ): { access: ProxyAccess; redact: SecretRegistry } {
     const redact = new SecretRegistry();
     this.#live.set(ctx.attempt.id, { scope: ctx.scope, redact });
@@ -371,6 +429,7 @@ export class SecretsProxy {
         },
         credential,
         vaultRules: o.vaultRules ?? true,
+        artifactUpload: o.artifactUpload ?? false,
         setGithubToken: (token) => {
           if (live) live.githubToken = token;
         },
@@ -405,6 +464,12 @@ export interface SecretsProxyRunnerOptions {
    */
   github?: (ctx: AttemptContext) => Promise<GithubTarget | undefined>;
   /**
+   * The artifact service, for a job whose plan has an `actions/upload-artifact` step: the proxy
+   * then lets it reach the upload endpoints (and only those). Absent or returning nothing: no
+   * artifact rule, so a job with no network of its own cannot upload.
+   */
+  artifacts?: (ctx: AttemptContext) => ArtifactTarget | undefined;
+  /**
    * The org's OIDC mint endpoint, for a class that may mint. Absent or returning nothing: no
    * OIDC rule, so a job cannot reach the issuer through the proxy.
    */
@@ -437,7 +502,15 @@ export function withSecretsProxy(
     // class that may mint.
     const oidcTarget =
       o.oidc && plannedIdToken(ctx.job.planned) ? await o.oidc(ctx, klass) : undefined;
-    const rules = [...vaultRules, ...ghRules, ...(oidcTarget ? oidcRules(oidcTarget) : [])];
+    // Likewise only for a job that has an upload-artifact step.
+    const artifactTarget =
+      o.artifacts && plannedArtifactUpload(ctx.job.planned) ? o.artifacts(ctx) : undefined;
+    const rules = [
+      ...vaultRules,
+      ...ghRules,
+      ...(oidcTarget ? oidcRules(oidcTarget) : []),
+      ...(artifactTarget ? artifactRules(artifactTarget) : []),
+    ];
     if (rules.length === 0) return runner(ctx);
     if (ctx.resume) {
       // Vault rules: the credential died with the old process, so the job cannot be resumed. With
@@ -455,6 +528,7 @@ export function withSecretsProxy(
       passthroughHosts: mayHoldSecrets ? await o.proxy.passthroughFor(ctx.scope) : [],
       ttlMs: o.ttlMs ?? 5 * 3600 * 1000,
       vaultRules: vaultRules.length > 0,
+      artifactUpload: artifactTarget !== undefined,
     });
     const revoke = (): void => o.proxy.release(ctx.attempt.id);
     ctx.signal.addEventListener("abort", revoke, { once: true });

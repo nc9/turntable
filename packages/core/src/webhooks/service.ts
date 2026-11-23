@@ -88,7 +88,7 @@ export function validateWebhookUrl(raw: string): string {
 
 export const generateWebhookSecret = (): string => `whsec_${randomBytes(32).toString("base64url")}`;
 
-const aad = (orgId: string, version: number): Buffer =>
+export const webhookSecretAad = (orgId: string, version: number): Buffer =>
   Buffer.from(`longshore:webhook-secret:${orgId.length}:${orgId}:${version}`, "utf8");
 
 /** The `Longshore-Signature` header: `t=<unix seconds>` and one `v1=<hex>` per signing secret. */
@@ -169,7 +169,8 @@ export class WebhookService {
     await addWebhookSecret(
       this.#o.db,
       { orgId },
-      (version) => seal(this.#o.masterKey, secret, aad(orgId, version), "webhook", orgId),
+      (version) =>
+        seal(this.#o.masterKey, secret, webhookSecretAad(orgId, version), "webhook", orgId),
       this.#now(),
       this.#o.overlapMs ?? OVERLAP_MS,
     );
@@ -197,7 +198,7 @@ export class WebhookService {
   async #signingSecrets(orgId: string): Promise<string[]> {
     const rows = await activeWebhookSecrets(this.#o.db, { orgId }, this.#now());
     return rows.map((r) =>
-      open(this.#o.masterKey, r.sealed, aad(orgId, r.version), "webhook", orgId),
+      open(this.#o.masterKey, r.sealed, webhookSecretAad(orgId, r.version), "webhook", orgId),
     );
   }
 

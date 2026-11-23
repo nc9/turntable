@@ -243,3 +243,24 @@ describe("the id-token flag on a planned job", () => {
     expect(flag(plan("permissions:\n  id-token: read\n", ""), "a")).toBeUndefined();
   });
 });
+
+describe("the artifact-upload flag on a planned job", () => {
+  const jobs = (step: string) =>
+    planWorkflow(
+      `name: t\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - ${step}\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`,
+      push,
+      { readFile },
+    ).jobs;
+  const flags = (step: string) => jobs(step).map((j) => j.artifactUpload);
+
+  test("set only for a job with an actions/upload-artifact step, at any ref", () => {
+    const sha = "a".repeat(40);
+    expect(flags(`uses: actions/upload-artifact@${sha} # v7`)).toEqual([true, undefined]);
+    expect(flags("uses: actions/Upload-Artifact@v4")).toEqual([true, undefined]);
+    expect(flags("uses: actions/upload-artifact/merge@v4")).toEqual([true, undefined]);
+    // Other actions, including the download side, never set it.
+    expect(flags("uses: actions/download-artifact@v8")).toEqual([undefined, undefined]);
+    expect(flags("uses: other/upload-artifact@v4")).toEqual([undefined, undefined]);
+    expect(flags("run: echo hi")).toEqual([undefined, undefined]);
+  });
+});
