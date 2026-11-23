@@ -53,10 +53,11 @@ export interface ProxyAccess {
    */
   setGithubToken(token: string | undefined): void;
   /**
-   * Hands the proxy this attempt's OIDC mint credential (see oidc/job-delivery). The proxy
-   * attaches it to requests for the org's mint URL; the job holds a placeholder.
+   * Hands the proxy a way to mint this attempt's OIDC credential (see oidc/job-delivery). The
+   * proxy calls it per request, attaches the result to requests for the org's mint URL and keeps
+   * nothing; the job holds a placeholder.
    */
-  setOidcCredential(credential: string | undefined): void;
+  setOidcMinter(mint: (() => string) | undefined): void;
 }
 
 /** The rule `secret` that means "this attempt's OIDC mint credential" (not a vault secret). */
@@ -67,6 +68,16 @@ export interface OidcTarget {
   host: string;
   port: number;
   pathPrefix: string;
+}
+
+/** Whether the job's stored plan says it asked for an ID token. Unreadable means no. */
+export function plannedIdToken(planned: string | null | undefined): boolean {
+  if (!planned) return false;
+  try {
+    return (JSON.parse(planned) as { idToken?: unknown }).idToken === true;
+  } catch {
+    return false;
+  }
 }
 
 /** The one rule that lets a job ask its own org's issuer for a token. Nothing else on that host. */
@@ -173,7 +184,7 @@ interface Live {
   scope: Required<Scope>;
   redact: SecretRegistry;
   githubToken?: string | undefined;
-  oidcCredential?: string | undefined;
+  oidcMint?: (() => string) | undefined;
 }
 
 const toRule = (r: ProxyRuleRow): Rule => ({
@@ -262,9 +273,11 @@ export class SecretsProxy {
     }
     if (rule.secret === OIDC_CREDENTIAL_SECRET) {
       // This attempt's own mint credential, never a vault secret. Only oidcRules names it.
-      if (!live.oidcCredential) return { ok: false, reason: "no_oidc_credential" };
-      live.redact.register(live.oidcCredential);
-      return { ok: true, value: live.oidcCredential };
+      if (!live.oidcMint) return { ok: false, reason: "no_oidc_credential" };
+      // Minted now, for this request, and short-lived. Registered with the redactor all the same.
+      const credential = live.oidcMint();
+      live.redact.register(credential);
+      return { ok: true, value: credential };
     }
     // Through the vault's one policy path, per request: class, scope, destination, rotation,
     // freeze and audit all apply. Nothing is read ahead of time.
@@ -368,8 +381,8 @@ export class SecretsProxy {
         setGithubToken: (token) => {
           if (live) live.githubToken = token;
         },
-        setOidcCredential: (credential) => {
-          if (live) live.oidcCredential = credential;
+        setOidcMinter: (mint) => {
+          if (live) live.oidcMint = mint;
         },
       },
       redact,
@@ -427,7 +440,10 @@ export function withSecretsProxy(
     const vaultRules = mayHoldSecrets ? await o.proxy.rulesFor(ctx.scope) : [];
     const target = o.github ? await o.github(ctx) : undefined;
     const ghRules = target ? githubRules(target) : [];
-    const oidcTarget = o.oidc ? await o.oidc(ctx, klass) : undefined;
+    // The rule exists only for a job whose plan asked for an ID token, not for every job of a
+    // class that may mint.
+    const oidcTarget =
+      o.oidc && plannedIdToken(ctx.job.planned) ? await o.oidc(ctx, klass) : undefined;
     const rules = [...vaultRules, ...ghRules, ...(oidcTarget ? oidcRules(oidcTarget) : [])];
     if (rules.length === 0) return runner(ctx);
     if (ctx.resume) {

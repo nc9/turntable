@@ -96,6 +96,11 @@ export function wantsIdToken(workflowYaml: string, jobId: string): boolean {
   } catch {
     return false;
   }
+  return wantsIdTokenIn(doc, jobId);
+}
+
+/** The same question for an already parsed workflow document (the planner has one). */
+export function wantsIdTokenIn(doc: unknown, jobId: string): boolean {
   const root = isObj(doc) ? doc : {};
   const job = isObj(root.jobs) && isObj(root.jobs[jobId]) ? (root.jobs[jobId] as object) : {};
   const raw =

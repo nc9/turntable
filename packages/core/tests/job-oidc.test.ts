@@ -7,10 +7,17 @@ import { type Db } from "../src/db";
 import { getAttempt, getJob, getRun } from "../src/db/repos";
 import * as s from "../src/db/schema";
 import { verifyAttemptCredential } from "../src/oidc/attempt-credential";
+import { OIDC_CREDENTIAL_MS } from "../src/oidc/job-delivery";
 import { JobOidc, OIDC_PLACEHOLDER_TOKEN } from "../src/oidc/job-delivery";
 import { createOidcHandler } from "../src/oidc/http";
 import { OidcIssuer } from "../src/oidc/issuer";
-import { OIDC_CREDENTIAL_SECRET, oidcRules, SecretsProxy, withSecretsProxy } from "../src/proxy";
+import {
+  OIDC_CREDENTIAL_SECRET,
+  oidcRules,
+  plannedIdToken,
+  SecretsProxy,
+  withSecretsProxy,
+} from "../src/proxy";
 import { SecretVault } from "../src/secrets/vault";
 import type { AttemptContext, AttemptOutcome } from "../src/scheduler/types";
 import { seedWorld, type Tenant } from "./ops-helpers";
@@ -27,7 +34,8 @@ let master: Buffer;
 let issuer: OidcIssuer;
 let jobOidc: JobOidc;
 let proxy: SecretsProxy;
-let upstreamSaw: { url: string; headers: Headers }[] = [];
+let upstreamSaw: { url: string; headers: Headers; redirect: unknown }[] = [];
+let respond: () => Response = () => new Response("minted");
 
 beforeEach(async () => {
   ({ db, a } = await seedWorld());
@@ -35,13 +43,18 @@ beforeEach(async () => {
   issuer = new OidcIssuer({ db, masterKey: master, baseUrl: BASE });
   jobOidc = new JobOidc({ db, issuer, masterKey: master });
   upstreamSaw = [];
+  respond = () => new Response("minted");
   proxy = await SecretsProxy.start({
     db,
     vault: new SecretVault({ db, masterKey: master }),
     bindHost: "127.0.0.1",
     upstream: async (u, init) => {
-      upstreamSaw.push({ url: String(u), headers: new Headers(init?.headers) });
-      return new Response("minted");
+      upstreamSaw.push({
+        url: String(u),
+        headers: new Headers(init?.headers),
+        redirect: init?.redirect,
+      });
+      return respond();
     },
     tunnel: async () => {
       throw new Error("no passthrough");
@@ -67,9 +80,18 @@ async function klass(k: string): Promise<void> {
     .update(s.jobAttempts)
     .set({ state: "running", trustClass: k })
     .where(eq(s.jobAttempts.id, a.attemptId));
+  await planned({ idToken: true });
 }
 
-async function ctxOf(): Promise<AttemptContext> {
+/** What the planner stored on the job: whether it asked for an ID token. */
+async function planned(p: { idToken?: boolean }): Promise<void> {
+  await db.orm
+    .update(s.jobs)
+    .set({ planned: JSON.stringify({ id: "a", key: "a", ...p }) })
+    .where(eq(s.jobs.id, a.jobId));
+}
+
+async function ctxOf(extra: Partial<AttemptContext> = {}): Promise<AttemptContext> {
   return {
     run: (await getRun(db, a.scope, a.runId))!,
     job: (await getJob(db, a.scope, a.jobId))!,
@@ -78,6 +100,7 @@ async function ctxOf(): Promise<AttemptContext> {
     provider: {} as AttemptContext["provider"],
     signal: new AbortController().signal,
     store: {} as AttemptContext["store"],
+    ...extra,
   };
 }
 
@@ -126,12 +149,18 @@ describe("JobOidc.issue", () => {
     if ("none" in r) throw new Error(r.none);
     expect(r.requestUrl).toBe(`${BASE}/${a.slug}/token?api-version=2.0`);
     expect(r.requestToken).toBe(OIDC_PLACEHOLDER_TOKEN);
-    // The credential is the real one, for the proxy; it is not what the job is given.
-    expect(r.credential).not.toBe(r.requestToken);
-    expect(verifyAttemptCredential(master, r.credential, Date.now())).toEqual({
+    // The credential is minted per request, for the proxy; it is not what the job is given.
+    const c1 = r.credentialFor();
+    expect(c1).not.toBe(r.requestToken);
+    expect(verifyAttemptCredential(master, c1, Date.now())).toEqual({
       orgId: a.orgId,
       attemptId: a.attemptId,
     });
+    // Short-lived, and never stored: nothing to leak that lasts.
+    expect(
+      verifyAttemptCredential(master, c1, Date.now() + OIDC_CREDENTIAL_MS + 1_000),
+    ).toBeUndefined();
+    expect(OIDC_CREDENTIAL_MS).toBeLessThanOrEqual(2 * 60 * 1000);
     expect(r.mint).toEqual({
       host: "ci.example.test",
       port: 443,
@@ -167,6 +196,23 @@ describe("JobOidc.issue", () => {
     expect("none" in (await wide.issue(req("untrusted_pr", WF_ASKS)))).toBe(true);
   });
 
+  test("an IP-literal issuer host gets no rule and no token, and nothing throws", async () => {
+    for (const base of [
+      "https://127.0.0.1/oidc",
+      "https://[::1]/oidc",
+      "https://10.0.0.5:8443/oidc",
+    ]) {
+      const ip = new JobOidc({
+        db,
+        issuer: new OidcIssuer({ db, masterKey: master, baseUrl: base }),
+        masterKey: master,
+      });
+      expect(await ip.mintTarget(a.orgId)).toBeUndefined();
+      expect(await ip.proxyTarget({ scope: a.scope }, "protected")).toBeUndefined();
+      expect("none" in (await ip.issue(req("protected", WF_ASKS)))).toBe(true);
+    }
+  });
+
   test("an issuer that is not https is not reachable through the proxy, so nothing is issued", async () => {
     const plain = new JobOidc({
       db,
@@ -197,7 +243,7 @@ describe("the mint credential behind the proxy", () => {
     const issued = await jobOidc.issue(req("protected", WF_ASKS));
     if ("none" in issued) throw new Error(issued.none);
     await wrap(async (c) => {
-      c.proxy!.setOidcCredential(issued.credential);
+      c.proxy!.setOidcMinter(issued.credentialFor);
       expect(
         await through(
           c.proxy!,
@@ -206,7 +252,12 @@ describe("the mint credential behind the proxy", () => {
         ),
       ).toBe(200);
       // The job's own header is replaced by the credential.
-      expect(upstreamSaw[0]?.headers.get("authorization")).toBe(`Bearer ${issued.credential}`);
+      const sent = upstreamSaw[0]?.headers.get("authorization") ?? "";
+      expect(sent).toMatch(/^Bearer lsat1\./);
+      expect(verifyAttemptCredential(master, sent.slice(7), Date.now())).toEqual({
+        orgId: a.orgId,
+        attemptId: a.attemptId,
+      });
       // Another org's issuer, the JWKS and anything else on the host get no credential.
       for (const path of ["/oidc/other/token", `/oidc/${a.slug}/jwks.json`, "/api/v1/runs"]) {
         expect(await through(c.proxy!, "ci.example.test", path)).toBe(403);
@@ -227,9 +278,55 @@ describe("the mint credential behind the proxy", () => {
     expect(upstreamSaw).toHaveLength(0);
   });
 
+  test("the proxy does not follow a redirect: the job gets the 302, and nothing is sent on", async () => {
+    await klass("protected");
+    const issued = await jobOidc.issue(req("protected", WF_ASKS));
+    if ("none" in issued) throw new Error(issued.none);
+    respond = () =>
+      new Response(null, { status: 302, headers: { location: "https://evil.example.test/steal" } });
+    let status = 0;
+    await wrap(async (c) => {
+      c.proxy!.setOidcMinter(issued.credentialFor);
+      status = await through(c.proxy!, "ci.example.test", `/oidc/${a.slug}/token?audience=sts`);
+      return done;
+    })(await ctxOf());
+    expect(status).toBe(302);
+    // One upstream call, told not to follow, and none to the redirect target.
+    expect(upstreamSaw).toHaveLength(1);
+    expect(upstreamSaw[0]!.redirect).toBe("manual");
+    expect(upstreamSaw.map((u) => new URL(u.url).host)).toEqual(["ci.example.test"]);
+  });
+
+  test("a job whose plan did not ask gets no rule, even in a class that may mint", async () => {
+    await klass("protected");
+    await planned({});
+    let seen = undefined as AttemptContext | undefined;
+    await wrap(async (c) => ((seen = c), done))(await ctxOf());
+    expect(seen?.proxy).toBeUndefined();
+    // And an unreadable plan counts as not asking.
+    await db.orm.update(s.jobs).set({ planned: "{not json" }).where(eq(s.jobs.id, a.jobId));
+    seen = undefined as AttemptContext | undefined;
+    await wrap(async (c) => ((seen = c), done))(await ctxOf());
+    expect(seen?.proxy).toBeUndefined();
+    expect([plannedIdToken(null), plannedIdToken(""), plannedIdToken('{"idToken":"yes"}')]).toEqual(
+      [false, false, false],
+    );
+    expect(plannedIdToken('{"idToken":true}')).toBe(true);
+  });
+
+  test("a resumed attempt fails closed: no proxy, so no way to reach the issuer", async () => {
+    await klass("protected");
+    let seen = undefined as AttemptContext | undefined;
+    await wrap(async (c) => ((seen = c), done))(
+      await ctxOf({ resume: { sandboxId: "sbx", execId: "exec" } }),
+    );
+    expect(seen?.proxy).toBeUndefined();
+    expect(upstreamSaw).toHaveLength(0);
+  });
+
   test("a class that may not mint gets no rule at all, so no proxy is registered", async () => {
     await klass("untrusted_pr");
-    let seen: AttemptContext | undefined;
+    let seen = undefined as AttemptContext | undefined;
     await wrap(async (c) => ((seen = c), done))(await ctxOf());
     expect(seen?.proxy).toBeUndefined();
   });
@@ -243,7 +340,7 @@ describe("the minted credential works at the issuer", () => {
     const handler = createOidcHandler({ db, issuer, masterKey: master });
     const res = await handler.handle(
       new Request(`${BASE}/${a.slug}/token?audience=sts.example`, {
-        headers: { authorization: `Bearer ${issued.credential}` },
+        headers: { authorization: `Bearer ${issued.credentialFor()}` },
       }),
     );
     expect(res?.status).toBe(200);

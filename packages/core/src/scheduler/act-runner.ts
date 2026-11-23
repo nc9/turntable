@@ -596,7 +596,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               "this job asked for an OIDC identity token, and a job that can mint one cannot run with open egress",
           };
         } else {
-          ctx.proxy.setOidcCredential(r.credential);
+          ctx.proxy.setOidcMinter(r.credentialFor);
           oidcVars = { requestUrl: r.requestUrl, requestToken: r.requestToken };
           useProxy = true;
           notices.push(

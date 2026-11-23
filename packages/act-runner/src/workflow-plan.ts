@@ -9,6 +9,7 @@ import {
   type Value,
 } from "./expr";
 import { lintError, localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
+import { wantsIdTokenIn } from "./permissions";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
 import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers";
 
@@ -42,6 +43,12 @@ export interface PlannedJob {
   maxParallel?: number;
   /** The job's `environment:` (a name, or `name` of the mapping), when it is a literal. */
   environment?: string;
+  /**
+   * The job asked for an OIDC token (`permissions: id-token: write`, a job's own block replacing
+   * the workflow's, `write-all` counting). The control plane registers its proxy rule for the
+   * mint endpoint only for such a job.
+   */
+  idToken?: boolean;
 }
 
 export interface WorkflowPlan {
@@ -370,6 +377,7 @@ export function planWorkflow(
         failFast,
         ...(maxParallel !== undefined ? { maxParallel } : {}),
         ...(environment !== undefined ? { environment } : {}),
+        ...(wantsIdTokenIn(doc, id) ? { idToken: true } : {}),
       };
       // Static `if:` is decided now; one that reads needs waits for schedule time.
       if (job.if !== undefined && !unsupported) {
