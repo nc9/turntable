@@ -1,5 +1,5 @@
 {
-  "id": "b4b9ccf6-bf1d-4422-a983-45980e5ab676",
+  "id": "722af007-2758-49bc-8b38-feb21c5e3eb5",
   "prevId": "81f0b0f9-e6cf-43d4-b7bc-158e34a8ba71",
   "version": "7",
   "dialect": "postgresql",
@@ -2550,18 +2550,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "check_dismissed_at": {
-          "name": "check_dismissed_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "check_dismissed_reason": {
-          "name": "check_dismissed_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "plan": {
           "name": "plan",
           "type": "text",
@@ -4133,6 +4121,18 @@
         },
         "max_concurrent": {
           "name": "max_concurrent",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_forge_repo_id": {
+          "name": "last_forge_repo_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unbound_at": {
+          "name": "unbound_at",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false

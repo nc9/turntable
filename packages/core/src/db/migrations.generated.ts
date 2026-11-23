@@ -492,8 +492,16 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0042_dismissed_skips",
-    "when": 1795445272951,
+    "tag": "0042_regrant_reattach",
+    "when": 1795441786572,
+    "statements": [
+      "ALTER TABLE `projects` ADD `last_forge_repo_id` text;",
+      "ALTER TABLE `projects` ADD `unbound_at` integer;"
+    ]
+  },
+  {
+    "tag": "0043_dismissed_skips",
+    "when": 1795452409043,
     "statements": [
       "ALTER TABLE `job_attempts` ADD `check_dismissed_at` integer;",
       "ALTER TABLE `job_attempts` ADD `check_dismissed_reason` text;"

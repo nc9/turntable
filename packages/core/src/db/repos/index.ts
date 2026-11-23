@@ -199,6 +199,11 @@ export function bindRepo(
       installationId: input.installationId ?? null,
       forgeRepoId: input.forgeRepoId ?? null,
     });
+    // Bound again: the project no longer waits for a re-grant.
+    await h.orm
+      .update(s.projects)
+      .set({ lastForgeRepoId: null, unboundAt: null })
+      .where(and(eq(s.projects.id, projectId), eq(s.projects.orgId, scope.orgId)));
     const [row] = await h.orm
       .select()
       .from(s.projectRepos)
