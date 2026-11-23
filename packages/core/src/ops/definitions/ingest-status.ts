@@ -1,8 +1,28 @@
 import { z } from "zod";
 import { getOrgById, getProject } from "../../db/repos";
+import type { RateLimitInfo } from "../../poll/github";
 import { ingestStatus } from "../../poll/status";
 import { iso } from "../common";
 import { defineOp } from "../define";
+
+const rateLimitShape = z.object({
+  limit: z.int().nullable(),
+  remaining: z.int().nullable(),
+  reset_at: z.string().nullable(),
+  resource: z.string().nullable(),
+  observed_at: z.string(),
+});
+
+const wireRate = (r: RateLimitInfo | undefined): z.infer<typeof rateLimitShape> | null =>
+  r
+    ? {
+        limit: r.limit ?? null,
+        remaining: r.remaining ?? null,
+        reset_at: iso(r.resetAt),
+        resource: r.resource ?? null,
+        observed_at: iso(r.observedAt)!,
+      }
+    : null;
 
 export const ingestStatusOp = defineOp({
   name: "ingest_status",
@@ -10,23 +30,29 @@ export const ingestStatusOp = defineOp({
   description:
     "Reports the poll ingester's health for the caller's org: for each polled repo the last poll " +
     "time and outcome (ok, rate_limited or error), the next poll time, consecutive failures and " +
-    "runs created, plus GitHub's rate-limit budget (limit, remaining, reset) as last observed. " +
+    "runs created, the auth mode each repo is polled with (anonymous, token, or installation: a " +
+    "read-only token minted for that one repo), plus GitHub's rate-limit budget (limit, remaining, " +
+    "reset) as last observed, per repo and per mode (each mode has its own budget). " +
     "Use it to check that polling is alive and is not about to run out of API budget. Read-only " +
     "and cheap. Reflects the poller in the server process answering the call; empty when polling " +
     "is off. Error text is short and never contains the token. Repo names are untrusted text.",
   input: z.object({}),
   output: z.object({
     running: z.boolean().describe("Whether the poller is running in this process."),
-    rate_limit: z
-      .object({
-        limit: z.int().nullable(),
-        remaining: z.int().nullable(),
-        reset_at: z.string().nullable(),
-        resource: z.string().nullable(),
-        observed_at: z.string(),
-      })
+    rate_limit: rateLimitShape
       .nullable()
-      .describe("GitHub's budget as last seen; null before the first request."),
+      .describe(
+        "The budget of the fallback mode (the poll token, or anonymous) as last seen; null before the first request.",
+      ),
+    rate_limit_by_mode: z
+      .object({
+        anonymous: rateLimitShape.nullable(),
+        poll_token: rateLimitShape.nullable(),
+        installation: rateLimitShape
+          .nullable()
+          .describe("The installed repo with the least budget left."),
+      })
+      .describe("The last seen budget of each auth mode; null for a mode that made no request."),
     repos: z.array(
       z.object({
         repo: z.string(),
@@ -37,6 +63,13 @@ export const ingestStatusOp = defineOp({
         next_poll_at: z.string().nullable(),
         consecutive_failures: z.int(),
         runs_created: z.int(),
+        auth_mode: z
+          .enum(["anonymous", "token", "installation"])
+          .nullable()
+          .describe("How the last poll authenticated; null before the first."),
+        rate_limit: rateLimitShape
+          .nullable()
+          .describe("The budget of that mode as last seen for this repo."),
       }),
     ),
   }),
@@ -56,19 +89,19 @@ export const ingestStatusOp = defineOp({
     const repos = [...ingestStatus.repos.values()].filter(
       (r) => r.org === org?.slug && (project === undefined || r.project === project.slug),
     );
-    const rate = ingestStatus.rateLimit;
+    const fallback = wireRate(ingestStatus.rateLimit);
+    const installed = repos
+      .filter((r) => r.authMode === "installation" && r.rateLimit)
+      .map((r) => r.rateLimit as RateLimitInfo)
+      .toSorted((a, b) => (a.remaining ?? Infinity) - (b.remaining ?? Infinity))[0];
     return {
       running: ingestStatus.running,
-      rate_limit:
-        repos.length > 0 && rate
-          ? {
-              limit: rate.limit ?? null,
-              remaining: rate.remaining ?? null,
-              reset_at: iso(rate.resetAt),
-              resource: rate.resource ?? null,
-              observed_at: iso(rate.observedAt)!,
-            }
-          : null,
+      rate_limit: repos.length > 0 ? fallback : null,
+      rate_limit_by_mode: {
+        anonymous: repos.length > 0 && ingestStatus.fallbackAuth === "anonymous" ? fallback : null,
+        poll_token: repos.length > 0 && ingestStatus.fallbackAuth === "token" ? fallback : null,
+        installation: wireRate(installed),
+      },
       repos: repos.map((r) => ({
         repo: r.repo,
         project: r.project,
@@ -78,6 +111,8 @@ export const ingestStatusOp = defineOp({
         next_poll_at: iso(r.nextPollAt),
         consecutive_failures: r.consecutiveFailures,
         runs_created: r.runsCreated,
+        auth_mode: r.authMode,
+        rate_limit: wireRate(r.rateLimit),
       })),
     };
   },
