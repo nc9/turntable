@@ -10,9 +10,16 @@ export function SandboxTimes({ attempts, now }: { attempts: JobAttempt[]; now: n
     const info = sandboxInfo(a, now);
     return info ? [{ a, info }] : [];
   });
-  if (rows.length === 0) return null;
+  const preempted = attempts.filter((a) => a.errorClass === "preempted").length;
+  if (rows.length === 0 && preempted === 0) return null;
   return (
     <ul className="m-0 w-full list-none space-y-0.5 pl-[30px] text-xs text-dim">
+      {preempted > 0 ? (
+        <li>
+          Preempted {preempted} {preempted === 1 ? "time" : "times"} for other work; each time it
+          was requeued and started over.
+        </li>
+      ) : null}
       {rows.map(({ a, info }) => (
         <li key={a.id} className="flex flex-wrap items-center gap-x-2">
           <span>Attempt {a.attempt} sandbox</span>

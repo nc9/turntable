@@ -24,6 +24,10 @@ import {
   recordExec,
   type Scope,
 } from "../src/db";
+import { Scheduler, type AttemptRunner } from "../src/scheduler";
+import { createSettingsRuntime } from "../src/settings/resolve";
+import { settingsRegistry } from "../src/settings/definitions";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { sandboxUsageByProject } from "../src/db/repos/usage";
 import { putStoredSetting } from "../src/db/repos/settings";
 
@@ -292,4 +296,168 @@ test("sandbox minutes are reported per project with its scheduling class, preemp
   expect(mine.schedulingClass).toBe("yield");
   // The preempted attempt's sandbox counts to the yield project (its finish ends the estimate).
   expect(mine.days.reduce((n, d) => n + d.seconds, 0)).toBeGreaterThanOrEqual(60);
+});
+
+const HOUR = 3_600_000;
+
+/** One preemption round: the yield job is claimed, normal work arrives, and the claim preempts. */
+async function preemptOnce(
+  y: { jobId: string },
+  N: number,
+  limit: { max: number; windowMs: number },
+  whileRunning?: (attemptId: string) => Promise<unknown>,
+) {
+  const running = (await claimNextAttempt(db, {
+    owner: "w1",
+    leaseMs: 1000,
+    now: N,
+    globalCap: 1,
+    perOrgCap: 1000,
+    preemptLimit: limit,
+  }))!;
+  expect(running.attempt.jobId).toBe(y.jobId);
+  await whileRunning?.(running.attempt.id);
+  const n = await queue(normal);
+  const c = await claimNextAttempt(db, {
+    owner: "w1",
+    leaseMs: 1000,
+    now: N,
+    globalCap: 1,
+    perOrgCap: 1000,
+    preemptLimit: limit,
+  });
+  return { n, c, yieldAttempt: running.attempt };
+}
+
+const finishOk = (scope: Required<Scope>, attemptId: string) =>
+  finishAttempt(db, scope, { attemptId, owner: "w1", state: "success", exitCode: 0 });
+
+test("anti-thrash: after N preemptions of one job in the window it is no longer preempted", async () => {
+  const N = Date.now(); // finished_at is stamped by the row clock
+  const limit = { max: 2, windowMs: HOUR };
+  const y = await queue(yielding);
+  for (let i = 0; i < 2; i++) {
+    const { n, c } = await preemptOnce(y, N, limit);
+    expect(c!.attempt.id).toBe(n.attemptId);
+    await finishOk(normal, n.attemptId);
+  }
+  // Third round: the job has been preempted twice, so normal work waits for it.
+  const third = await claimNextAttempt(db, {
+    owner: "w1",
+    leaseMs: 1000,
+    now: N,
+    globalCap: 1,
+    perOrgCap: 1000,
+    preemptLimit: limit,
+  });
+  expect(third!.attempt).toMatchObject({ jobId: y.jobId, attempt: 3 });
+  const waiting = await queue(normal);
+  expect(
+    await claimNextAttempt(db, {
+      owner: "w1",
+      leaseMs: 1000,
+      now: N,
+      globalCap: 1,
+      perOrgCap: 1000,
+      preemptLimit: limit,
+    }),
+  ).toBeUndefined();
+  expect((await listAttempts(db, yielding, y.jobId)).map((a) => [a.attempt, a.state])).toEqual([
+    [1, "cancelled"],
+    [2, "cancelled"],
+    [3, "running"],
+  ]);
+  expect((await getJob(db, normal, waiting.jobId))!.state).toBe("queued");
+  expect((await listAudit(db, yielding)).filter((r) => r.op === "scheduler.preempt").length).toBe(
+    2,
+  );
+
+  // Once the window has passed the job is preemptable again.
+  const later = await claimNextAttempt(db, {
+    owner: "w1",
+    leaseMs: 1000,
+    now: N + 2 * HOUR,
+    globalCap: 1,
+    perOrgCap: 1000,
+    preemptLimit: limit,
+  });
+  expect(later!.attempt.id).toBe(waiting.attemptId);
+  expect((await listAttempts(db, yielding, y.jobId)).at(-2)!.errorClass).toBe("preempted");
+});
+
+test("anti-thrash: another job of the same project is still preempted", async () => {
+  const N = Date.now();
+  const limit = { max: 1, windowMs: HOUR };
+  const a = await queue(yielding, "a");
+  const first = await preemptOnce(a, N, limit);
+  await finishOk(normal, first.n.attemptId);
+  expect((await claim({ globalCap: 1 }, N))!.attempt.jobId).toBe(a.jobId); // a, attempt 2
+  await finishOk(yielding, (await listAttempts(db, yielding, a.jobId)).at(-1)!.id);
+  const b = await queue(yielding, "b");
+  const second = await preemptOnce(b, N, limit);
+  expect(second.c!.attempt.id).toBe(second.n.attemptId);
+});
+
+test("preemption counts and the minutes split: per project, per job and per class", async () => {
+  const N = Date.now();
+  const limit = { max: 5, windowMs: HOUR };
+  const y = await queue(yielding);
+  // The preempted attempt held a sandbox for two minutes.
+  const { n } = await preemptOnce(y, N, limit, (id) =>
+    recordExec(db, yielding, id, "w1", { sandboxCreatedAt: N - 120_000 }),
+  );
+  await finishOk(normal, n.attemptId);
+  const again = (await claim({ globalCap: 1 }, N))!;
+  await recordExec(db, yielding, again.attempt.id, "w1", {
+    sandboxCreatedAt: N - 60_000,
+    sandboxDestroyedAt: N,
+  });
+  await finishOk(yielding, again.attempt.id);
+
+  const rows = await sandboxUsageByProject(
+    db,
+    { orgId: normal.orgId },
+    { from: N - 86_400_000, to: N + 86_400_000, now: N + 120_000 },
+  );
+  const mine = rows.find((r) => r.projectId === yielding.projectId)!;
+  expect(mine.preemptions).toBe(1);
+  expect(mine.preemptedJobs).toEqual([
+    { jobId: y.jobId, jobKey: "build", runId: y.runId, preemptions: 1 },
+  ]);
+  const total = mine.days.reduce((s, d) => s + d.seconds, 0);
+  expect(mine.preemptedSeconds).toBeGreaterThanOrEqual(110);
+  expect(mine.preemptedSeconds).toBeLessThan(total);
+  expect(total - mine.preemptedSeconds).toBeCloseTo(60, 0); // the useful minute
+  const other = rows.find((r) => r.projectId === normal.projectId)!;
+  expect(other.preemptions).toBe(0);
+  expect(other.preemptedSeconds).toBe(0);
+});
+
+test("the scheduler reads the preemption limit from the settings: a locked max of 1 stops the second preemption", async () => {
+  const N = Date.now();
+  const y = await queue(yielding);
+  // One preemption already happened to the job.
+  const first = await preemptOnce(y, N, { max: 5, windowMs: HOUR });
+  await finishOk(normal, first.n.attemptId);
+  const runner: AttemptRunner = (ctx) =>
+    new Promise((resolve) =>
+      ctx.signal.addEventListener("abort", () => resolve({ state: "cancelled", reason: "x" })),
+    );
+  const sched = new Scheduler({
+    db,
+    runner,
+    providers: () => new FakeWorld().provider(),
+    globalCap: 1,
+    perOrgCap: 1000,
+    settings: createSettingsRuntime(settingsRegistry, { TURNTABLE_PREEMPT_MAX_PER_JOB: "1" }),
+  });
+  expect(await sched.tick()).toBe(1); // the yield job's attempt 2
+  const waiting = await queue(normal);
+  expect(await sched.tick()).toBe(0); // not preempted again: normal work waits
+  expect((await getJob(db, normal, waiting.jobId))!.state).toBe("queued");
+  expect((await listAttempts(db, yielding, y.jobId)).at(-1)).toMatchObject({
+    attempt: 2,
+    state: "running",
+  });
+  await sched.stop({ abort: true });
 });

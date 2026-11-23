@@ -308,6 +308,38 @@ describe("group_by project", () => {
     expect(site.project_name).toBe("Site");
   });
 
+  test("preempted attempts are counted and their minutes reported apart from useful ones", async () => {
+    // A preempted attempt: 1200 s of sandbox, error class `preempted`. A useful one: 600 s.
+    const lost = await life(a, at(2, 9), at(2, 9, 20));
+    await updateAttempt(db, a.scope, lost, { state: "running" });
+    await updateAttempt(db, a.scope, lost, { state: "cancelled", errorClass: "preempted" });
+    await life(a, at(2, 10), at(2, 10, 10));
+    const tok = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const out = ((await call(tok, { days: 1, group_by: "project" })) as { output: any }).output;
+    const p = out.projects[0];
+    expect(p).toMatchObject({
+      total_seconds: 1800,
+      preemptions: 1,
+      preempted_seconds: 1200,
+      preempted_minutes: 20,
+      useful_seconds: 600,
+      useful_minutes: 10,
+    });
+    expect(p.preempted_jobs).toEqual([
+      { job_id: a.jobId, job_key: "build", run_id: a.runId, preemptions: 1 },
+    ]);
+    expect(out.classes.find((c: any) => c.scheduling_class === "normal")).toMatchObject({
+      preemptions: 1,
+      preempted_seconds: 1200,
+      useful_seconds: 600,
+    });
+    // The run view says how often each job was preempted.
+    const run = (await dispatch(env(), { kind: "bearer", token: tok }, "get_run", {
+      run_id: a.runId,
+    })) as { output: any };
+    expect(run.output.jobs.find((j: any) => j.id === a.jobId).preemptions).toBe(1);
+  });
+
   test("without group_by there is no projects key", async () => {
     await life(a, at(2, 9), at(2, 9, 30));
     const tok = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;

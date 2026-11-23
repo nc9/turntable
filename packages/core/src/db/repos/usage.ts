@@ -2,9 +2,10 @@
 // confirmed (`job_attempts.sandbox_created_at` and `sandbox_destroyed_at`). An attempt's own
 // duration also covers waiting for provider capacity, so it is not used. Quotas read the same
 // numbers, so what is shown and what is limited cannot differ.
-import { and, eq, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
+import { PREEMPTED } from "./lease";
 import { yieldProjects } from "./project-settings";
 import { type Scope, scoped } from "./scope";
 
@@ -49,6 +50,9 @@ const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 interface Span {
   projectId: string;
+  jobId: string;
+  /** The attempt was preempted (#355): its time is reported apart from useful time. */
+  preempted: boolean;
   start: number;
   end: number;
   confirmed: boolean;
@@ -73,6 +77,8 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
         finished: s.jobAttempts.finishedAt,
         ttl: s.jobAttempts.sandboxTtlSeconds,
         projectId: s.jobAttempts.projectId,
+        jobId: s.jobAttempts.jobId,
+        errorClass: s.jobAttempts.errorClass,
       })
       .from(s.jobAttempts)
       .where(
@@ -109,6 +115,8 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
     return [
       {
         projectId: r.projectId,
+        jobId: r.jobId,
+        preempted: r.errorClass === PREEMPTED,
         start: begin,
         end,
         confirmed: r.destroyed !== null && r.created !== null,
@@ -158,7 +166,15 @@ export interface ProjectSandboxUsage {
   /** The project's `scheduling_class`. Minutes of preempted attempts count to the project. */
   schedulingClass: "normal" | "yield";
   days: SandboxDay[];
+  /** Attempts of the project preempted in the window (a yield project only; #355). */
+  preemptions: number;
+  /** Sandbox seconds of those attempts: counted in `days`, and reported apart here as waste. */
+  preemptedSeconds: number;
+  /** The jobs preempted most, with their counts (at most `TOP_PREEMPTED_JOBS`). */
+  preemptedJobs: { jobId: string; jobKey: string; runId: string; preemptions: number }[];
 }
+
+const TOP_PREEMPTED_JOBS = 10;
 
 /**
  * The same figures per project, for the projects that had a sandbox alive in the window (a project
@@ -186,14 +202,42 @@ export async function sandboxUsageByProject(
   );
   const meta = new Map(projects.map((p) => [p.id, p]));
   const yielding = await yieldProjects(db);
+  const preemptedIds = [...new Set(all.filter((sp) => sp.preempted).map((sp) => sp.jobId))];
+  const jobRows =
+    preemptedIds.length === 0
+      ? []
+      : await db.run((h) =>
+          h.orm
+            .select({ id: s.jobs.id, jobKey: s.jobs.jobKey, runId: s.jobs.runId })
+            .from(s.jobs)
+            .where(and(eq(s.jobs.orgId, scope.orgId), inArray(s.jobs.id, preemptedIds))),
+        );
+  const jobMeta = new Map(jobRows.map((j) => [j.id, j]));
   return [...byProject.entries()]
-    .map(([projectId, list]) => ({
-      projectId,
-      slug: meta.get(projectId)?.slug ?? projectId,
-      name: meta.get(projectId)?.name ?? projectId,
-      schedulingClass: yielding.has(projectId) ? ("yield" as const) : ("normal" as const),
-      days: dayRows(list, w),
-    }))
+    .map(([projectId, list]) => {
+      const lost = list.filter((sp) => sp.preempted);
+      const perJob = new Map<string, number>();
+      for (const sp of lost) perJob.set(sp.jobId, (perJob.get(sp.jobId) ?? 0) + 1);
+      return {
+        projectId,
+        slug: meta.get(projectId)?.slug ?? projectId,
+        name: meta.get(projectId)?.name ?? projectId,
+        schedulingClass: yielding.has(projectId) ? ("yield" as const) : ("normal" as const),
+        days: dayRows(list, w),
+        preemptions: lost.length,
+        preemptedSeconds: round3(lost.reduce((n, sp) => n + overlap(sp, w.from, w.to), 0) / 1000),
+        preemptedJobs: [...perJob.entries()]
+          .filter(([id]) => jobMeta.has(id))
+          .map(([id, n]) => ({
+            jobId: id,
+            jobKey: jobMeta.get(id)!.jobKey,
+            runId: jobMeta.get(id)!.runId,
+            preemptions: n,
+          }))
+          .sort((a, b) => b.preemptions - a.preemptions || a.jobId.localeCompare(b.jobId))
+          .slice(0, TOP_PREEMPTED_JOBS),
+      };
+    })
     .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 

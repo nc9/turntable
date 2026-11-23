@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getRunRow, listJobs, listRunAttempts } from "../../db/repos";
+import { getRunRow, listJobs, listRunAttempts, PREEMPTED } from "../../db/repos";
 import { APPROVAL_KINDS } from "../../db/schema";
 import { durationMs, iso, jobStateSchema, runSummarySchema, toRunSummary } from "../common";
 import { defineOp } from "../define";
@@ -66,6 +66,11 @@ const jobSchema = z.object({
     .string()
     .nullable()
     .describe("Set when the latest attempt ended in infra_error: the result is not trustworthy."),
+  preemptions: z
+    .int()
+    .describe(
+      "How many of the job's attempts were preempted for normal work (error_class `preempted`): it was requeued each time and started over.",
+    ),
   attempts: z.array(attemptSchema),
   log_path: z
     .string()
@@ -179,6 +184,7 @@ export const getRun = defineOp({
           duration_ms: durationMs(job.startedAt, job.finishedAt),
           infra_error_reason:
             latest?.state === "infra_error" ? (latest.errorClass ?? "unknown") : null,
+          preemptions: mine.filter((a) => a.errorClass === PREEMPTED).length,
           attempts: mine.map((a) => ({
             id: a.id,
             attempt: a.attempt,

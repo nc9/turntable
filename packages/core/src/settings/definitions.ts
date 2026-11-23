@@ -201,6 +201,45 @@ export const schedulingClassSetting = defineSetting({
   toml: "scheduling_class",
 });
 
+/**
+ * Anti-thrash for `yield` projects (#355): after this many preemptions of one job inside the
+ * window, the job is no longer preempted until it finishes (the window runs out first, or it ends).
+ */
+export const DEFAULT_PREEMPT_MAX_PER_JOB = 3;
+export const DEFAULT_PREEMPT_WINDOW_MINUTES = 60;
+
+export const preemptMaxPerJobSetting = defineSetting({
+  key: "preempt_max_per_job",
+  scope: "instance",
+  type: z.int().min(1).max(1000),
+  default: DEFAULT_PREEMPT_MAX_PER_JOB,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much a yield job may be disturbed, so only a person changes it",
+  description:
+    "How many times one `yield` job may be preempted inside `preempt_window_minutes` (1 to 1000). After that the job is not preempted again until it finishes: normal work waits for it, and the job runs to the end.",
+  env: ["TURNTABLE_PREEMPT_MAX_PER_JOB"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "scheduler.preempt_max_per_job",
+});
+
+export const preemptWindowMinutesSetting = defineSetting({
+  key: "preempt_window_minutes",
+  scope: "instance",
+  type: z.int().min(1).max(10_080),
+  default: DEFAULT_PREEMPT_WINDOW_MINUTES,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it decides how much a yield job may be disturbed, so only a person changes it",
+  description:
+    "The window, in minutes, over which `preempt_max_per_job` counts the preemptions of one job (1 to 10080).",
+  env: ["TURNTABLE_PREEMPT_WINDOW_MINUTES"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "scheduler.preempt_window_minutes",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
@@ -211,4 +250,6 @@ export const settingsRegistry = createSettingsRegistry([
   untrustedRunApprovalSetting,
   approvalPolicySetting,
   schedulingClassSetting,
+  preemptMaxPerJobSetting,
+  preemptWindowMinutesSetting,
 ]);
