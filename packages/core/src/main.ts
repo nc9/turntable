@@ -135,7 +135,7 @@ Environment:
   TURNTABLE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "turntable token generate"; on boot, an
                     org with no tokens gets one operator token with this hash
   TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "turntable token generate --instance"; on boot, an
-                    instance with no unrevoked instance token gets one (30 days at most). Rotate it, then remove the variable
+                    instance with no active (unexpired, unrevoked) instance token gets one (30 days at most). Rotate it, then remove the variable
   TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS  lifetime of that token, 1 to 30 (default 30)
   TURNTABLE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
   TURNTABLE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create TURNTABLE_MASTER_KEY_FILE on first boot when it is
