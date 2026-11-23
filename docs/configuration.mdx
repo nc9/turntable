@@ -162,6 +162,8 @@ Only some settings are on the registry so far; the rest are still read straight 
 | `backup_keep` | instance | whole number, 1 to 10000 | `10` | instance_admin | no: instance settings are changed by the instance administrator, never by an agent | `TURNTABLE_BACKUP_KEEP` | `[backup] keep` | How many backups to keep under `<data-dir>/backups`, newest first. |
 | `approver_rebootstrap_delay_hours` | org | whole number, 1 to 8760 | `24` | instance_admin (`instanceAdminOnly`) | no: it guards who may enrol an org's release approvers, so only a person changes it | `TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS` | `orgs.<slug>.approver_rebootstrap_delay_hours` | Hours after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver (at least 1). An org that never had an approver has no delay. |
 | `untrusted_run_approval` | project | one of "human", "no_agents", "any" | `"no_agents"` | instance_admin (`instanceAdminOnly`) | no: it decides whether agents may approve runs, so only a person changes it | none | `orgs.<slug>.projects.<slug>.untrusted_run_approval` | Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`. |
+| `approval_policy` | org | object | `{}` | instance_admin (`instanceAdminOnly`) | no: it decides how many people must approve a release, so only a person changes it | `TURNTABLE_APPROVAL_POLICY` | `orgs.<slug>.approval_policy` | Approval policy per environment, a map from environment name to `required` (distinct approvers, 1 to 10), `allow_author_approval` (default false) and `key_policy` (`any` or `hardware`, default `any`). An environment with no entry is `production` and `release` at two approvers and every other one ungated. |
+| `scheduling_class` | project | one of "normal", "yield" | `"normal"` | instance_admin (`instanceAdminOnly`) | no: it decides whose work the shared fleet serves first, so only the instance administrator changes it | none | `orgs.<slug>.projects.<slug>.scheduling_class` | How the project's jobs share the fleet: `normal`, or `yield` (a yield job is claimed only while no normal job is waiting, and is preempted and requeued when a normal job waits at a cap). |
 
 {/* settings:end */}
 
@@ -214,6 +216,7 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_BACKUP_BEFORE_MIGRATE` |  |  | Set to `1` to back up the SQLite database at boot when migrations are pending, before they run. A failed backup stops the boot. See [Backups](/instance-admin#backups). |
 | `TURNTABLE_BACKUP_KEEP` |  | 10 | How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set. |
 | `TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS` |  | 24 | Hours (at least 1) after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver. The environment name of the `approver_rebootstrap_delay_hours` setting; set here, it applies to every org and locks the setting. See [Instance administration](/instance-admin). |
+| `TURNTABLE_APPROVAL_POLICY` |  |  | The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals). |
 
 ### Worker and provider
 
@@ -277,6 +280,9 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_CACHE_URL` |  |  | The base URL jobs reach the control-plane cache at, no trailing slash. Setting it turns the cache on. See [Job cache](/cache). |
 | `TURNTABLE_CACHE_QUOTA_GIB` |  | 10 | GiB an org may hold in the cache in total, split between trust classes. |
 | `TURNTABLE_CACHE_MAX_ENTRY_GIB` |  | 2 | GiB of the largest single cache entry. |
+| `TURNTABLE_ARTIFACTS_URL` |  |  | The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts). |
+| `TURNTABLE_ARTIFACT_MAX_GIB` |  | 2 | GiB of the largest single artifact. The org's stored-bytes quota applies as well. |
+| `TURNTABLE_ARTIFACT_RETENTION_DAYS` |  | 90 | Days a stored artifact is kept. Past it the bytes are removed and downloads fail; the recorded digest stays. |
 
 ### Release lane
 

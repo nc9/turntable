@@ -1,14 +1,36 @@
 // Human approvals (#46): enrolled approver keys, per-environment policy, single-use challenges,
 // pending enrolments and the signed records. Part of the only code allowed to name tenant tables.
-import { DEFAULT_KEY_POLICY, keyPolicyViolation, type KeyPolicy } from "../../approvals/key-policy";
+import {
+  DEFAULT_KEY_POLICY,
+  keyPolicyViolation,
+  type KeyPolicy,
+  type KeyPolicyMode,
+} from "../../approvals/key-policy";
 import { approverIdentity } from "../../approvals/identity";
 import { and, asc, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import {
+  type ApprovalPolicyMap,
+  approvalPolicyMap,
+  defaultEnvEntry,
+  PROTECTED_ENVIRONMENTS,
+} from "../../approvals/policy-setting";
+import { ambientSettings } from "../../settings/ambient";
+import { approvalPolicySetting } from "../../settings/definitions";
+import { type Resolved, resolveSetting, type SettingsRuntime } from "../../settings/resolve";
 import type { Db } from "..";
 import { isUniqueViolation } from "../errors";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
 import { ulid } from "../ulid";
-import { listAttempts, listJobs, setRunStatus, transitionJob, updateAttempt } from "./index";
+import { putStoredSetting } from "./settings";
+import {
+  getOrgById,
+  listAttempts,
+  listJobs,
+  setRunStatus,
+  transitionJob,
+  updateAttempt,
+} from "./index";
 import { effectiveStates } from "./readiness";
 import { type Scope } from "./scope";
 
@@ -20,48 +42,83 @@ export class ApprovalConflict extends Error {}
 
 // ---- policy ----
 
-/** Environments that always need approval and default to two people. */
-export const PROTECTED_ENVIRONMENTS: readonly string[] = ["production", "release"];
+export { PROTECTED_ENVIRONMENTS };
 
 export type EnvPolicy = {
   environment: string;
   required: number;
   allowAuthorApproval: boolean;
-  /** `configured` is a stored row; `default` is the built-in rule. */
+  /** The key-type policy this environment adds to the org's (#152): `hardware` is stricter. */
+  keyPolicy: KeyPolicyMode;
+  /** `configured` is a stored, file or environment value; `default` is the built-in rule. */
   source: "configured" | "default";
   /** Whether a job in this environment waits for human approval at all. */
   gated: boolean;
+  /** Set by the environment or `turntable.toml`: nothing here can change it. */
+  locked: boolean;
 };
 
-export function getEnvPolicy(db: Db, orgId: string, environment: string): Promise<EnvPolicy> {
-  return db.run(async (h) => {
-    const [row] = await h.orm
-      .select()
-      .from(s.approvalPolicies)
-      .where(
-        and(eq(s.approvalPolicies.orgId, orgId), eq(s.approvalPolicies.environment, environment)),
-      )
-      .limit(1);
-    if (row) {
-      return {
-        environment,
-        required: row.required,
-        allowAuthorApproval: row.allowAuthorApproval === 1,
-        source: "configured" as const,
-        gated: true,
-      };
-    }
-    const prot = PROTECTED_ENVIRONMENTS.includes(environment);
-    return {
-      environment,
-      required: prot ? 2 : 1,
-      allowAuthorApproval: false,
-      source: "default" as const,
-      gated: prot,
-    };
+const POLICY_KEY = approvalPolicySetting.key;
+
+/**
+ * The approval policy map of an org, resolved: environment, `turntable.toml`, the stored value,
+ * then the default. The one reader of the setting, so the engine, the ops and the CLI all see
+ * what an operator is shown. `rt` defaults to the process's runtime.
+ */
+export async function resolveApprovalPolicies(
+  db: Db,
+  orgId: string,
+  rt: SettingsRuntime = ambientSettings(),
+): Promise<Resolved & { value: ApprovalPolicyMap }> {
+  const org = await getOrgById(db, orgId);
+  const r = await resolveSetting(rt, db, POLICY_KEY, {
+    orgId,
+    ...(org ? { orgSlug: org.slug } : {}),
   });
+  return { ...r, value: r.value as ApprovalPolicyMap };
 }
 
+const toPolicy = (environment: string, map: ApprovalPolicyMap, locked: boolean): EnvPolicy => {
+  const e = map[environment];
+  if (e) {
+    return {
+      environment,
+      required: e.required,
+      allowAuthorApproval: e.allow_author_approval,
+      keyPolicy: e.key_policy,
+      source: "configured",
+      gated: true,
+      locked,
+    };
+  }
+  const d = defaultEnvEntry(environment);
+  return {
+    environment,
+    required: d.entry.required,
+    allowAuthorApproval: false,
+    keyPolicy: "any",
+    source: "default",
+    gated: d.gated,
+    locked,
+  };
+};
+
+export async function getEnvPolicy(
+  db: Db,
+  orgId: string,
+  environment: string,
+  rt?: SettingsRuntime,
+): Promise<EnvPolicy> {
+  const r = await resolveApprovalPolicies(db, orgId, rt);
+  return toPolicy(environment, r.value, r.locked);
+}
+
+/**
+ * Writes one environment's entry into the stored map. Refused when the environment or
+ * `turntable.toml` sets the policy (it is locked for everything). Returns the map before and
+ * after, for the caller to audit. This is the database layer only: who may call it is decided by
+ * the op or the command above it.
+ */
 export function setEnvPolicy(
   db: Db,
   orgId: string,
@@ -69,42 +126,63 @@ export function setEnvPolicy(
     environment: string;
     required: number;
     allowAuthorApproval: boolean;
+    keyPolicy?: KeyPolicyMode;
     by: string;
     now: number;
+    rt?: SettingsRuntime;
   },
-): Promise<void> {
-  return db.run(async (h) => {
-    await h.orm
-      .insert(s.approvalPolicies)
-      .values({
-        orgId,
-        environment: o.environment,
+): Promise<{ before: ApprovalPolicyMap; after: ApprovalPolicyMap }> {
+  return db.transaction(async (tx) => {
+    const cur = await resolveApprovalPolicies(tx, orgId, o.rt);
+    if (cur.locked) {
+      throw new ApprovalConflict(
+        `${POLICY_KEY} is locked: it is set by ${
+          cur.source === "env" ? `the environment (${cur.origin})` : "turntable.toml"
+        }; change it there`,
+      );
+    }
+    const next = approvalPolicyMap.safeParse({
+      ...cur.value,
+      [o.environment]: {
         required: o.required,
-        allowAuthorApproval: o.allowAuthorApproval ? 1 : 0,
-        updatedBy: o.by,
-        updatedAt: o.now,
-      })
-      .onConflictDoUpdate({
-        target: [s.approvalPolicies.orgId, s.approvalPolicies.environment],
-        set: {
-          required: o.required,
-          allowAuthorApproval: o.allowAuthorApproval ? 1 : 0,
-          updatedBy: o.by,
-          updatedAt: o.now,
-        },
-      });
+        allow_author_approval: o.allowAuthorApproval,
+        key_policy: o.keyPolicy ?? cur.value[o.environment]?.key_policy ?? "any",
+      },
+    });
+    if (!next.success) {
+      throw new ApprovalConflict(next.error.issues.map((i) => i.message).join("; "));
+    }
+    await putStoredSetting(
+      tx,
+      { kind: "org", id: orgId, orgId },
+      POLICY_KEY,
+      next.data,
+      o.by,
+      o.now,
+    );
+    return { before: cur.value, after: next.data };
   });
 }
 
-export function listEnvPolicies(db: Db, orgId: string) {
-  return db.run((h) =>
-    h.orm
-      .select()
-      .from(s.approvalPolicies)
-      .where(eq(s.approvalPolicies.orgId, orgId))
-      .orderBy(asc(s.approvalPolicies.environment)),
-  );
+/** The environments with an entry, in name order. */
+export async function listEnvPolicies(
+  db: Db,
+  orgId: string,
+  rt?: SettingsRuntime,
+): Promise<EnvPolicy[]> {
+  const r = await resolveApprovalPolicies(db, orgId, rt);
+  return Object.keys(r.value)
+    .toSorted()
+    .map((e) => toPolicy(e, r.value, r.locked));
 }
+
+/**
+ * The key policy an environment is held to: the org's (#152), made `hardware` when the
+ * environment's own says so. An environment can add the hardware rule, never remove the org's.
+ * The allowlist is the org's, so `hardware` here with no allowlist counts no key at all.
+ */
+export const effectiveKeyPolicy = (org: KeyPolicy, env: EnvPolicy): KeyPolicy =>
+  env.keyPolicy === "hardware" && org.mode !== "hardware" ? { ...org, mode: "hardware" } : org;
 
 // ---- key policy (#152) ----
 

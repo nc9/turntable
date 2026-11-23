@@ -584,6 +584,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Hours (at least 1) after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver. The environment name of the `approver_rebootstrap_delay_hours` setting; set here, it applies to every org and locks the setting. See [Instance administration](/instance-admin).",
   },
   {
+    name: "TURNTABLE_APPROVAL_POLICY",
+    area: "Server",
+    description:
+      'The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals).',
+  },
+  {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",
     area: "Worker and provider",
     description:
@@ -624,6 +630,26 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Job cache",
     default: "2",
     description: "GiB of the largest single cache entry.",
+  },
+  {
+    name: "TURNTABLE_ARTIFACTS_URL",
+    area: "Job cache",
+    description:
+      "The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts).",
+  },
+  {
+    name: "TURNTABLE_ARTIFACT_MAX_GIB",
+    area: "Job cache",
+    default: "2",
+    description:
+      "GiB of the largest single artifact. The org's stored-bytes quota applies as well.",
+  },
+  {
+    name: "TURNTABLE_ARTIFACT_RETENTION_DAYS",
+    area: "Job cache",
+    default: "90",
+    description:
+      "Days a stored artifact is kept. Past it the bytes are removed and downloads fail; the recorded digest stays.",
   },
   {
     name: "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",

@@ -44,7 +44,10 @@ export const JOB_STATES = [
 ] as const;
 export type JobState = (typeof JOB_STATES)[number];
 
-/** Event types in the feed. Append-only; new types are additive (the column is text + CHECK). */
+/**
+ * Event types in the feed. Append-only; new types are additive. The column is plain text with no
+ * CHECK: `appendEvent` refuses a type not listed here, so adding one never rebuilds the table.
+ */
 export const EVENT_TYPES = [
   "run.queued",
   "run.started",
@@ -59,6 +62,7 @@ export const EVENT_TYPES = [
   "webhook.disabled",
   "approver.bootstrapped",
   "approvers.depleted",
+  "approval.policy_loosened",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -604,7 +608,6 @@ export const events = pgTable(
   (t) => [
     foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
     unique("events_public_id_unique").on(t.publicId),
-    check("events_type_check", inList("type", EVENT_TYPES)),
     index("events_org_idx").on(t.orgId, t.id),
     index("events_org_project_idx").on(t.orgId, t.projectId, t.id),
   ],

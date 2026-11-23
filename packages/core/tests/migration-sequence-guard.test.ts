@@ -165,28 +165,32 @@ test("the same when EVERY row is pruned, so a rebuild meets an empty table", () 
   walk("all");
 });
 
-test("the guard catches a rebuild that forgets the sequence", () => {
-  // A migration list in which the events rebuild of 0033 has lost its guard: the walk must fail,
-  // naming the table and the migration.
-  const i = all.findIndex((m) => m.tag.endsWith("_outbound_webhooks"));
-  expect(i).toBeGreaterThan(0);
-  const unguarded = all.map((m, j) =>
-    j === i
-      ? {
-          ...m,
-          statements: m.statements.filter((s) => !/__events_seq|UPDATE sqlite_sequence/.test(s)),
-        }
-      : m,
-  );
-  const sqlite = new Database(":memory:");
-  sqlite.run("PRAGMA foreign_keys = ON");
-  applyMigrations(sqlite, unguarded.slice(0, i));
-  for (let t = 0; t < 6; t++) insertRow(sqlite, "events");
-  sqlite.run("DELETE FROM events WHERE id >= 5");
-  applyMigrations(sqlite, unguarded.slice(0, i + 1));
-  const id = insertRow(sqlite, "events");
-  expect(id).toBeLessThanOrEqual(6); // the id was handed out again: exactly what the guard looks for
-});
+// Every migration that rebuilds events: 0033 (outbound webhooks) and the last one, which drops the
+// type CHECK (#345). Each, stripped of its guard, must be caught.
+for (const suffix of ["_outbound_webhooks", "_approval_policy_settings"]) {
+  test(`the guard catches a rebuild that forgets the sequence (${suffix})`, () => {
+    // A migration list in which the events rebuild has lost its guard: the walk must fail,
+    // naming the table and the migration.
+    const i = all.findIndex((m) => m.tag.endsWith(suffix));
+    expect(i).toBeGreaterThan(0);
+    const unguarded = all.map((m, j) =>
+      j === i
+        ? {
+            ...m,
+            statements: m.statements.filter((s) => !/__events_seq|UPDATE sqlite_sequence/.test(s)),
+          }
+        : m,
+    );
+    const sqlite = new Database(":memory:");
+    sqlite.run("PRAGMA foreign_keys = ON");
+    applyMigrations(sqlite, unguarded.slice(0, i));
+    for (let t = 0; t < 6; t++) insertRow(sqlite, "events");
+    sqlite.run("DELETE FROM events WHERE id >= 5");
+    applyMigrations(sqlite, unguarded.slice(0, i + 1));
+    const id = insertRow(sqlite, "events");
+    expect(id).toBeLessThanOrEqual(6); // the id was handed out again: exactly what the guard looks for
+  });
+}
 
 // The static half: a rebuild (`__new_<t>` created with AUTOINCREMENT) saves sqlite_sequence before
 // the drop and restores it after the rename. Cheap, and it names the pattern; the walk above is

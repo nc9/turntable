@@ -143,3 +143,20 @@ export async function projectsWithCaps(db: Db): Promise<Map<string, number>> {
     return new Map(rows.map((r) => [r.id, Number(r.max)]));
   });
 }
+
+/** The scheduling class setting's key and the one non-default value. Mirrors `settings/definitions.ts`. */
+const SCHEDULING_CLASS_KEY = "scheduling_class";
+
+/**
+ * Projects whose stored `scheduling_class` is `yield`, by id. Anything else (no row, `normal`, an
+ * unknown value) is `normal`: an unreadable value never demotes a project.
+ */
+export async function yieldProjects(db: Db): Promise<Set<string>> {
+  const rows = await db.run((h) =>
+    h.orm
+      .select({ id: s.settings.scopeId, value: s.settings.value })
+      .from(s.settings)
+      .where(and(eq(s.settings.scopeKind, "project"), eq(s.settings.key, SCHEDULING_CLASS_KEY))),
+  );
+  return new Set(rows.filter((r) => r.value === JSON.stringify("yield")).map((r) => r.id));
+}

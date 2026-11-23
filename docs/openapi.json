@@ -1730,7 +1730,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 13,
+              "maxItems": 14,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1747,7 +1747,8 @@
                   "quota.reached",
                   "webhook.disabled",
                   "approver.bootstrapped",
-                  "approvers.depleted"
+                  "approvers.depleted",
+                  "approval.policy_loosened"
                 ]
               }
             }
@@ -1853,7 +1854,8 @@
                               "quota.reached",
                               "webhook.disabled",
                               "approver.bootstrapped",
-                              "approvers.depleted"
+                              "approvers.depleted",
+                              "approval.policy_loosened"
                             ]
                           },
                           "project": {
@@ -5289,12 +5291,28 @@
                           "allow_author_approval": {
                             "type": "boolean"
                           },
+                          "key_policy": {
+                            "type": "string",
+                            "enum": ["any", "hardware"],
+                            "description": "Added to the org key policy for this environment: hardware is stricter."
+                          },
+                          "locked": {
+                            "type": "boolean",
+                            "description": "Set by the environment or turntable.toml: it cannot be changed here."
+                          },
                           "source": {
                             "type": "string",
                             "enum": ["configured", "default"]
                           }
                         },
-                        "required": ["environment", "required", "allow_author_approval", "source"],
+                        "required": [
+                          "environment",
+                          "required",
+                          "allow_author_approval",
+                          "key_policy",
+                          "locked",
+                          "source"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -6701,7 +6719,7 @@
       "get": {
         "operationId": "sandbox_usage",
         "summary": "Exact sandbox time per UTC day: from the provider's create to its confirmed destroy.",
-        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out); each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
+        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart); each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "days",
@@ -6807,6 +6825,10 @@
                           "project_name": {
                             "type": "string"
                           },
+                          "scheduling_class": {
+                            "type": "string",
+                            "enum": ["normal", "yield"]
+                          },
                           "days": {
                             "type": "array",
                             "items": {
@@ -6854,10 +6876,32 @@
                           "project_id",
                           "project_slug",
                           "project_name",
+                          "scheduling_class",
                           "days",
                           "total_seconds",
                           "total_minutes"
                         ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "classes": {
+                      "description": "Present only with `group_by: project`: the totals per scheduling class, so yield usage is reported apart.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "scheduling_class": {
+                            "type": "string",
+                            "enum": ["normal", "yield"]
+                          },
+                          "total_seconds": {
+                            "type": "number"
+                          },
+                          "total_minutes": {
+                            "type": "number"
+                          }
+                        },
+                        "required": ["scheduling_class", "total_seconds", "total_minutes"],
                         "additionalProperties": false
                       }
                     },
@@ -7539,6 +7583,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -7551,7 +7599,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }
@@ -7675,6 +7724,10 @@
                           },
                           "mcp_editable": {
                             "type": "boolean"
+                          },
+                          "warning": {
+                            "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                            "type": ["string", "null"]
                           }
                         },
                         "required": [
@@ -7687,7 +7740,8 @@
                           "locked",
                           "locked_by",
                           "role",
-                          "mcp_editable"
+                          "mcp_editable",
+                          "warning"
                         ],
                         "additionalProperties": false
                       }
@@ -7807,6 +7861,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -7819,7 +7877,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }
@@ -8652,6 +8711,83 @@
       }
     },
     "/instance/orgs": {
+      "post": {
+        "operationId": "create_org",
+        "summary": "Create an empty org (instance administrator only).",
+        "description": "Creates an org with a slug (lower-case letters, digits and `-`, up to 63, starting alphanumeric) and a display name. The org starts with no projects and no tokens: give it its first token with `create_org_token`. A slug already in use is a conflict, and the internal system org is never a target. On a hosted instance with no shell this is how a second tenant is added. Audited in the system org's chain and in the new org's own. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63,
+                    "description": "Slug of the new org."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Display name. Untrusted text elsewhere."
+                  }
+                },
+                "required": ["slug", "name"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "slug", "name"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      },
       "get": {
         "operationId": "instance_list_orgs",
         "summary": "Every org on the instance, for the instance administrator.",
@@ -8726,6 +8862,118 @@
         "x-turntable-effect": "read",
         "x-turntable-instance-only": true,
         "x-turntable-untrusted-output": true
+      }
+    },
+    "/instance/orgs/tokens": {
+      "post": {
+        "operationId": "create_org_token",
+        "summary": "Mint an org's first token (instance administrator only).",
+        "description": "Mints the first token of an org that has none: it is refused as a conflict once the org has any token that is neither revoked nor expired, so it cannot be used to add access to an org that already has some (the same one-shot rule as the env bootstrap). The role is at most `release_operator`; `kind` defaults to `person` (the operator's own token, which may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is returned once in `token` and cannot be read again: only its hash is stored, and the audit entries never hold it. After this the org manages its own tokens. The system org is never a target. Audited in the system org's chain and in the org's own. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "description": "A label for the token."
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": ["reader", "operator", "release_operator"],
+                    "description": "At most release_operator."
+                  },
+                  "kind": {
+                    "default": "person",
+                    "description": "person: a human's own token (default). agent: an MCP client or script.",
+                    "type": "string",
+                    "enum": ["agent", "person"]
+                  },
+                  "expires_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Lifetime in days."
+                  }
+                },
+                "required": ["target_org", "name", "role", "expires_days"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "org": {
+                      "type": "string",
+                      "description": "Org slug."
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": ["reader", "operator", "release_operator"]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["agent", "person"]
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "The secret. Shown once, store it now."
+                    }
+                  },
+                  "required": ["id", "name", "org", "role", "kind", "expires_at", "token"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/quotas": {
@@ -9450,6 +9698,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -9462,7 +9714,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }
@@ -9542,6 +9795,10 @@
                           },
                           "mcp_editable": {
                             "type": "boolean"
+                          },
+                          "warning": {
+                            "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                            "type": ["string", "null"]
                           }
                         },
                         "required": [
@@ -9554,7 +9811,8 @@
                           "locked",
                           "locked_by",
                           "role",
-                          "mcp_editable"
+                          "mcp_editable",
+                          "warning"
                         ],
                         "additionalProperties": false
                       }
@@ -9671,6 +9929,10 @@
                     },
                     "mcp_editable": {
                       "type": "boolean"
+                    },
+                    "warning": {
+                      "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -9683,7 +9945,8 @@
                     "locked",
                     "locked_by",
                     "role",
-                    "mcp_editable"
+                    "mcp_editable",
+                    "warning"
                   ],
                   "additionalProperties": false
                 }

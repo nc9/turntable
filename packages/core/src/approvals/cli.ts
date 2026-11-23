@@ -11,14 +11,17 @@ import {
   getKeyPolicy,
   listApprovers,
   listEnvPolicies,
-  setEnvPolicy,
 } from "../db/repos";
+import { setAmbientSettings } from "../settings/ambient";
+import { loadSettingsRuntime } from "../settings/boot";
 import {
   approvalWarnings,
   bootstrapFirstApprover,
   revokeApproverNotifying,
   setKeyPolicyBootstrap,
 } from "./apply";
+import { changeEnvPolicy } from "./policy-change";
+import { MAX_REQUIRED_APPROVALS } from "./policy-setting";
 import { notCountingReason } from "./identity";
 import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
 import { generateEd25519, signEd25519 } from "./keys";
@@ -33,10 +36,11 @@ export const APPROVALS_USAGE = `Usage:
   turntable approvals sign --key <private-key-file> --statement <file|->
       Signs the "canonical" text of an approval statement (from approval_challenge) offline.
       Prints the signature object to send with the statement.
-  turntable approvals policy --org <slug> --environment <name> --required <n> [--allow-author-approval]
+  turntable approvals policy --org <slug> --environment <name> --required <n> [--allow-author-approval] [--key-policy any|hardware]
       Sets how many distinct people an environment needs. Without --allow-author-approval the
       author of a run cannot approve it. Allowing it removes the two-person guarantee for that
-      environment: use it only for a solo setup.
+      environment: use it only for a solo setup. This writes the \`approval_policy\` setting, so it
+      is refused while the environment or turntable.toml (--config, TURNTABLE_CONFIG) sets it.
   turntable approvals key-policy --org <slug> --policy any|hardware [--preset yubikey] [--aaguid <uuid>]
       Bootstrap only: works while the org has no approver. Afterwards a change needs a statement
       signed by a quorum of the counted approvers (key_policy_challenge and approve_key_policy).
@@ -67,6 +71,8 @@ export async function approvalsCommand(args: string[]): Promise<number> {
       environment: { type: "string" },
       required: { type: "string" },
       "allow-author-approval": { type: "boolean", default: false },
+      "key-policy": { type: "string" },
+      config: { type: "string" },
       id: { type: "string" },
       "data-dir": { type: "string", default: "./data" },
     },
@@ -129,6 +135,9 @@ export async function approvalsCommand(args: string[]): Promise<number> {
       return 1;
     }
     const now = Date.now();
+    // The policy is a setting: the environment and turntable.toml (--config) lock it, here as in
+    // the server, and the warnings below read it the way the engine does.
+    setAmbientSettings(loadSettingsRuntime({ config: values.config }));
     if (sub === "bootstrap") {
       if (!values.person || !values["public-key"] || !values["forge-login"]) return usage();
       let a: { id: string; person: string };
@@ -156,14 +165,27 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     }
     if (sub === "policy") {
       const n = Number(values.required);
-      if (!values.environment || !Number.isInteger(n) || n < 1 || n > 10) return usage();
-      await setEnvPolicy(db, org.id, {
-        environment: values.environment,
-        required: n,
-        allowAuthorApproval: values["allow-author-approval"],
-        by: "cli",
-        now,
-      });
+      const kp = values["key-policy"];
+      if (!values.environment || !Number.isInteger(n) || n < 1 || n > MAX_REQUIRED_APPROVALS)
+        return usage();
+      if (kp !== undefined && kp !== "any" && kp !== "hardware") return usage();
+      let loosened: string[];
+      try {
+        ({ loosened } = await changeEnvPolicy(db, org, {
+          environment: values.environment,
+          required: n,
+          allowAuthorApproval: values["allow-author-approval"],
+          ...(kp ? { keyPolicy: kp } : {}),
+          now,
+        }));
+      } catch (e) {
+        if (e instanceof ApprovalConflict) {
+          console.error(e.message);
+          return 1;
+        }
+        throw e;
+      }
+      for (const l of loosened) console.error(`warning: ${l}`);
       if (values["allow-author-approval"])
         console.error(
           `warning: the author of a run can approve it in ${values.environment}. This is for solo setups only.`,
@@ -213,7 +235,9 @@ export async function approvalsCommand(args: string[]): Promise<number> {
             policies: (await listEnvPolicies(db, org.id)).map((p) => ({
               environment: p.environment,
               required: p.required,
-              allow_author_approval: p.allowAuthorApproval === 1,
+              allow_author_approval: p.allowAuthorApproval,
+              key_policy: p.keyPolicy,
+              locked: p.locked,
             })),
           },
           null,

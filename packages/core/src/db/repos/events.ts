@@ -70,6 +70,10 @@ export function appendEvent(
     payload?: Record<string, unknown> | undefined;
   },
 ): Promise<number> {
+  // The column has no CHECK (a new type must not rebuild the table), so the list is enforced here.
+  if (!(s.EVENT_TYPES as readonly string[]).includes(input.type)) {
+    return Promise.reject(new Error(`unknown event type: ${String(input.type)}`));
+  }
   return db.run(async (h) => {
     const rows = await h.orm
       .insert(s.events)

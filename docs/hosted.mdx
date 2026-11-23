@@ -122,6 +122,23 @@ turntable policy set --ingest off --org acme --project web
 
 The settings are the poll knobs that belong to a repo: `--workflow`, `--default-branch` (fixed when ingest is turned on: given, or asked from GitHub once for the bound repository, and stored; the poller never asks again to decide it, so a repo admin changing GitHub's default branch cannot move what counts as protected. If GitHub later reports another branch, that is logged and audited as `ingest_default_branch_drift` and the stored one stays in use), `--pr-mode`, `--authors`, `--merge-queue`, and `--var NAME=value` (repeatable). Vars are non-secret variables for `${{ vars.NAME }}` in a workflow's `if:` and expressions, as GitHub's repository variables are: they are stored in the clear, shown by `policy show`, written to the audit chain, and replaced as a set each time ingest is turned on (a name may not start with `GITHUB_`; at most 50, values up to 1024 bytes). `--splits-json` takes rules that run a job as several shards, see [Compatibility](/compatibility#splitting-a-job-across-sandboxes); a poll-config repo takes `splits` too. A poll-config repo takes the same as `vars`. Turntable's own project sets `TURNTABLE_CI=true`, which is how the repository's CI workflow turns off the jobs that need a docker daemon or service containers when Turntable runs it, and turns on the PGlite stand-in for its Postgres job. The poller reads the bindings at start, every minute, and when a signed webhook names a repo it does not know (it looks once, then polls). A repo in the static poll config wins over its binding. A repo bound to several projects is ingested into the first only. The poll config still needs at least one repo entry to run the poller at all, plus the token (`tokenEnv`) and limits, which the bound repos share.
 
+## Adding a second tenant to a running instance
+
+The env bootstrap handles one org. For another, the instance administrator makes the org and its first token over REST, with no redeploy (see [Instance administrator](/instance-admin#adding-a-tenant-on-a-hosted-instance)):
+
+```sh
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/orgs" \
+  -H "authorization: Bearer $(cat "$TOKEN_FILE")" -H 'content-type: application/json' \
+  -d '{"slug":"acme","name":"Acme"}'
+
+# the first token only: refused once the org has any active token. The secret is in the response once.
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/orgs/tokens" \
+  -H "authorization: Bearer $(cat "$TOKEN_FILE")" -H 'content-type: application/json' \
+  -d '{"target_org":"acme","name":"acme operator","role":"operator","expires_days":90}'
+```
+
+Then add its projects as below. This is how a tenant is moved out of the bootstrap org before its GitHub App installation is claimed.
+
 ## Moving a polled repo to the GitHub App
 
 A repo ingested by polling before the App is installed gets checks as soon as the App is installed on it: the installation sync adopts its existing binding (same org, no installation yet) and keeps its project. A binding in another org, from another installation, or with a different GitHub repo id is a conflict and is not touched. See [Moving a polled repo to the App](/github-app#moving-a-polled-repo-to-the-app).
@@ -158,6 +175,18 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/project-settings" \
 ```
 
 The cap divides the instance's sandboxes between projects: with a global cap of 10 and `max_concurrent` 4 on this project, the other projects of the org always have 6. A project cap can only lower the per-org cap (`--org-cap`, `TURNTABLE_ORG_CAP`), so that must be at least as high as the largest cap you set. The snapshot only changes where this project's sandboxes start, and it is used for every trust class in the project, untrusted pull requests included, so never bake credentials or private code into it. `max_concurrent: 0` pauses the project. See [Providers](/providers#per-project-snapshot-and-concurrency-cap) for the order against size classes and the provider default.
+
+### A low-priority project
+
+When the instance runs its own CI next to a customer's, mark its project `yield` so its jobs wait for, and give way to, the customer's. With the instance token:
+
+```sh
+curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/settings" \
+  -H "authorization: Bearer $(cat "$TOKEN_FILE")" -H 'content-type: application/json' \
+  -d '{"key":"scheduling_class","value":"yield","target_org":"local","target_project":"dogfood"}'
+```
+
+A normal job that waits at the global or org cap preempts the newest running yield job, which is requeued under a new attempt and starts over. Under the global cap this is cross-org, because yield is instance-wide: a yield project in org A can be preempted by normal work in org B. See [Providers](/providers#scheduling-class-yield-to-other-projects).
 
 ## Sandbox sizes: set `untrustedClass` explicitly
 

@@ -343,3 +343,23 @@ describe("the control-plane cache", () => {
     expect(() => rebuildArgv(withCache)).not.toThrow();
   });
 });
+
+describe("the control-plane artifact service", () => {
+  const base = plan("    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n");
+  test("without one, no artifact env is passed", () => {
+    expect(base.argv.some((a) => a.startsWith("ACTIONS_RESULTS_URL"))).toBe(false);
+    expect(base.argv.some((a) => a.startsWith("ACTIONS_RUNTIME_TOKEN"))).toBe(false);
+  });
+  test("with one, the job gets ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN and the stored plan has neither", () => {
+    const withArtifacts = rebuildArgv({
+      ...base,
+      cacheUrl: "http://host/_cache/tok/",
+      artifacts: { resultsUrl: "http://host:8080/", token: "a.b.c" },
+    });
+    const envs = withArtifacts.argv.flatMap((a, i, all) => (all[i - 1] === "--env" ? [a] : []));
+    expect(envs).toContain("ACTIONS_RESULTS_URL=http://host:8080/");
+    expect(envs).toContain("ACTIONS_RUNTIME_TOKEN=a.b.c");
+    expect(envs).toContain("ACTIONS_CACHE_URL=http://host/_cache/tok/");
+    expect(JSON.stringify(base)).not.toContain("a.b.c");
+  });
+});

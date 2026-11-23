@@ -166,8 +166,8 @@
       "sha256": "26af83345d5b1a062362a04ab27f21049b77c7ed3d8606e0dc436347db826ce1"
     },
     {
-      "tag": "0041_approver_event_types",
-      "sha256": "f58f11a981fe3b68f804cda9aecb2557244026e091668f7b5eca998a1d2cd911"
+      "tag": "0041_approval_policy_settings",
+      "sha256": "4826635307b333eb84a4a5e8b37b9f022f795055fb9bc2e5e6a13c9a34e3eecf"
     }
   ],
   "pg": [
@@ -220,8 +220,8 @@
       "sha256": "4c32112e78acd7e0e7942602d4ad6ffd53cab3adf227453967de027b17a6dfee"
     },
     {
-      "tag": "0012_approver_event_types",
-      "sha256": "3c97d2fcd923e78d3253b1377d9f1fda4a2ceee826f468960cac6534abda4101"
+      "tag": "0012_approval_policy_settings",
+      "sha256": "487d3cfc7d0e08b95b8da68c0a2cfc33c0b7439f0398fa5ba85e35aae6b17939"
     }
   ]
 }

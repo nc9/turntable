@@ -21,6 +21,8 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
 | `bootstrap_approver` | `POST /api/v1/instance/approvers/bootstrap` | Enrols an org's first approver from an offline ed25519 public key, only while the org has none. Audited in both chains with the key's fingerprint. See [Hosted](/hosted#the-first-approver-on-a-host-with-no-shell). |
 | `set_project_settings` | `POST /api/v1/instance/project-settings` | Sets one project's `sandbox_snapshot` and `max_concurrent` (`target_org`, `target_project`; null removes one). See [Providers](/providers#per-project-snapshot-and-concurrency-cap). |
+| `create_org` | `POST /api/v1/instance/orgs` | Creates an empty org (`slug`, `name`); a slug in use, or the internal system org's, is a conflict, and a slug of any other shape is refused. |
+| `create_org_token` | `POST /api/v1/instance/orgs/tokens` | Mints an org's first token (`target_org`, `name`, `role` up to `release_operator`, `kind` default `person`, `expires_days` 1 to 365, required). Refused as a conflict when the org has any token that is neither revoked nor expired. The secret is in the response once. |
 | `create_project` | `POST /api/v1/instance/projects` | Creates an empty project in an existing org (`target_org`, `slug`, `name`); a slug already used there is a conflict. See [Hosted](/hosted#adding-a-second-repo-to-a-running-instance). |
 | `rotate_instance_token` | `POST /api/v1/instance/tokens/rotate` | Mints a new instance token (the secret is in the response once) and revokes the one that made the call. Also `turntable token rotate <id> --instance`. See [Bootstrapping with no shell](#bootstrapping-with-no-shell). |
 | `db_backup` | `POST /api/v1/instance/db-backup` | Backs up the SQLite database into `<data-dir>/backups/` and returns the path, size and sha256. See [Backups](#backups). |
@@ -28,6 +30,16 @@ Some settings are not an org's to change: the limits that stop one org taking th
 `max_concurrent` can only lower an org's concurrency below the instance's per-org cap (`--org-cap`): a value above it is refused, and removing it falls back to the cap. Instance operations take no `org` or `project` field. A change is audited twice: in the system org's chain (who held the token) and in the target org's own chain (so its operators see who changed their limits).
 
 The full doctor report joins this set once the doctor operation lands: it is read-only and needs the same principal.
+
+## Adding a tenant on a hosted instance
+
+With no shell, a second org needs no redeploy:
+
+1. `create_org` with the new org's `slug` and `name`. The org starts with no projects and no tokens.
+2. `create_org_token` for that slug, with the role the tenant's first operator needs (at most `release_operator`) and an expiry. Hand the secret over once: it is not stored and cannot be read again. `kind` defaults to `person`, the operator's own token, which may approve under `untrusted_run_approval = no_agents`.
+3. `create_project` for each repo the org will ingest.
+
+`create_org_token` is a one-shot, like the env bootstrap: it works only while the org has no active token (not revoked, not expired, project-scoped ones included), so it can never add access to an org that already has some. After that the org's own admins manage its tokens. The system org is never a target of either operation. Both are audited in the system org's chain and in the new org's own, and no audit entry holds the secret or its hash. Neither is an MCP tool.
 
 ## Bootstrapping with no shell
 

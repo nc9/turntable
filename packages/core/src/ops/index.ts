@@ -22,6 +22,8 @@ import {
   instanceListOrgs,
   instanceWhoami,
   rotateInstanceTokenOp,
+  createOrgOp,
+  createOrgTokenOp,
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
@@ -113,6 +115,8 @@ export const registry = createRegistry([
   getQuotas,
   instanceWhoami,
   rotateInstanceTokenOp,
+  createOrgOp,
+  createOrgTokenOp,
   instanceListOrgs,
   setQuotas,
   bootstrapApprover,
