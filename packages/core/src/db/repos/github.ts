@@ -282,6 +282,14 @@ const SEEN_COPY_CHUNK = 100;
  * not run it again there; the old project keeps its own markers with its runs. Call it inside a
  * transaction. False when the binding is gone.
  */
+/**
+ * `poll_seen.run_id` of a marker copied by a binding move. The run belongs to the old org, so the
+ * id is not carried over (countPolledSince joins `runs` on it). The column is NOT NULL, hence a
+ * sentinel that matches no run, like `'skipped'`: a moved pull-request marker does not count
+ * against the trusted budget, a push marker still does.
+ */
+export const MOVED_RUN_ID = "moved";
+
 export function moveRepoBinding(
   db: Db,
   bindingId: string,
@@ -309,7 +317,11 @@ export function moveRepoBinding(
     for (let i = 0; i < seen.length; i += SEEN_COPY_CHUNK) {
       await h.orm
         .insert(s.pollSeen)
-        .values(seen.slice(i, i + SEEN_COPY_CHUNK).map((r) => ({ ...r, ...to })))
+        .values(
+          seen
+            .slice(i, i + SEEN_COPY_CHUNK)
+            .map((r) => ({ ...r, ...to, runId: r.runId === "skipped" ? "skipped" : MOVED_RUN_ID })),
+        )
         .onConflictDoNothing();
     }
     return true;

@@ -1,6 +1,7 @@
 // Instance op move_repo_binding (#370): a polled repo moves from one org's project to another's.
 // REST only, instance administrator only, audited in the system chain and both orgs' chains. The
 // poller follows the move (seen markers travel with the repo) and skips a stale entry quietly.
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
 import { systemOrgId } from "../src/audit/failures";
@@ -8,13 +9,16 @@ import {
   bindRepo,
   createAttempt,
   createJob,
+  countPolledSince,
   createOrg,
+  createPolledRun,
   createProject,
   createRun,
   type Db,
   listAudit,
   listRepos,
   listRuns,
+  schema,
   setProjectChecksMode,
   upsertInstallation,
 } from "../src/db";
@@ -200,6 +204,42 @@ describe("move_repo_binding", () => {
     expect(await listRuns(db, scopeA)).toHaveLength(1);
     // Polling again at the new head adds nothing.
     expect((await pollRepo(deps(), entry("beta", "web"))).created).toEqual([]);
+  });
+
+  test("a moved marker carries no run id: the new org's cap reads nothing of the old org", async () => {
+    await pollRepo(deps(), entry("acme", "poll")); // binds the repo, one push marker
+    const seed = await createPolledRun(db, scopeA, {
+      repo: "acme/api",
+      run: {
+        workflowPath: ".github/workflows/ci.yml",
+        event: "pull_request",
+        ref: "refs/pull/1/merge",
+        sha: "c".repeat(40),
+        trust: JSON.stringify({ class: "trusted_pr" }),
+      },
+      jobs: [],
+      provider: "docker",
+      now: 1_800_000_000_000,
+    });
+    expect(seed).toBeDefined();
+    expect(await countPolledSince(db, scopeA, "acme/api", 0)).toBe(2);
+    expect((await move()).ok).toBe(true);
+    // The old run is not counted for the new org (the marker has no matching run), and the
+    // old org's own rows are untouched.
+    // Only the push marker counts for the new org; the old org's PR run would have added one.
+    expect(await countPolledSince(db, scopeB, "acme/api", 0)).toBe(1);
+    expect(await countPolledSince(db, scopeA, "acme/api", 0)).toBe(2);
+    const moved = await db.run((h) =>
+      h.orm.select().from(schema.pollSeen).where(eq(schema.pollSeen.orgId, orgB.id)),
+    );
+    expect(moved.length).toBe(2);
+    expect(moved.every((r) => r.runId === "moved")).toBe(true);
+
+    const before = (await listRuns(db, scopeB)).length;
+    expect((await pollRepo(deps(), entry("beta", "web"))).created).toEqual([]);
+    expect(await listRuns(db, scopeB)).toHaveLength(before);
+    head = "d".repeat(40);
+    expect((await pollRepo(deps(), entry("beta", "web"))).created).toHaveLength(1);
   });
 
   test("a stale poll entry is skipped with one warning per poll: no bind, no crash, no GitHub call", async () => {
