@@ -127,6 +127,11 @@ export const pollConfigSchema = z
              * GitHub-made commit for an open same-repo PR by a listed author. Off by default.
              */
             mergeQueue: z.boolean().default(false),
+            /**
+             * Make a run for each default-branch push the poller missed between two polls (at most
+             * 5 a poll, the newest), as GitHub would have run CI for each. Off: only the head.
+             */
+            everyPush: z.boolean().default(false),
             /** GitHub logins trusted without asking the forge. Compared case-insensitively. */
             authors: z.array(z.string().min(1)).default([]),
             /** Extra protected ref patterns (refs/heads/release/**). The default branch always is. */
@@ -188,6 +193,8 @@ export const ingestSettingsSchema = z
     /** Tag ref patterns to ingest as release runs (refs/tags/v*). Default none. */
     tagRefs: tagRefsSchema,
     mergeQueue: z.boolean().default(false),
+    /** A run for each default-branch push missed between polls (at most 5 a poll). Default off. */
+    everyPush: z.boolean().default(false),
     intervalSeconds: z.int().min(30).max(3600).default(60),
     egress: z.enum(["none", "open", "allowlist"]).optional(),
     /** Non-secret `vars.*` for the workflows (set with `policy set --ingest on --var NAME=value`). */
