@@ -69,7 +69,8 @@
     "test:proxy": "bun test packages/proxy/tests/ca.test.ts packages/proxy/tests/rules.test.ts packages/proxy/tests/registry.test.ts packages/proxy/tests/http.test.ts packages/proxy/tests/proxy.test.ts packages/core/tests/proxy-wiring.test.ts packages/core/tests/proxy-rules-ops.test.ts packages/core/tests/job-token.test.ts packages/core/tests/job-token-proxy.test.ts packages/core/tests/job-token-runner.test.ts",
     "typecheck:signer": "bun run --cwd packages/signer typecheck",
     "test:signer": "bun test packages/signer/tests/signer.test.ts packages/signer/tests/kms.test.ts packages/core/tests/signing.test.ts packages/core/tests/verify-cli.test.ts",
-    "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts"
+    "test:net": "bun test packages/net/tests/net.test.ts packages/net/tests/source-guard.test.ts packages/net/tests/rate-limit.test.ts",
+    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",

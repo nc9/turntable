@@ -414,5 +414,13 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `projects` ADD `oidc_audiences` text;"
     ]
+  },
+  {
+    "tag": "0035_project_sandbox_settings",
+    "when": 1795402134841,
+    "statements": [
+      "ALTER TABLE `projects` ADD `sandbox_snapshot` text;",
+      "ALTER TABLE `projects` ADD `max_concurrent` integer;"
+    ]
   }
 ];
