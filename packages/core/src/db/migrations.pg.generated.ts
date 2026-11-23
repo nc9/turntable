@@ -126,5 +126,14 @@ export const migrations: Migration[] = [
     "statements": [
       "CREATE TABLE \"instance_tokens\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"name\" text NOT NULL,\n\t\"token_hash\" text NOT NULL,\n\t\"created_by\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"last_used_at\" bigint,\n\t\"expires_at\" bigint,\n\t\"revoked_at\" bigint,\n\tCONSTRAINT \"instance_tokens_hash_unique\" UNIQUE(\"token_hash\")\n);"
     ]
+  },
+  {
+    "tag": "0002_job_log_notices",
+    "when": 1795396725646,
+    "statements": [
+      "CREATE TABLE \"log_notices\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"project_id\" text NOT NULL,\n\t\"attempt_id\" text NOT NULL,\n\t\"at_offset\" bigint NOT NULL,\n\t\"source\" text NOT NULL,\n\t\"text\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL\n);",
+      "ALTER TABLE \"log_notices\" ADD CONSTRAINT \"log_notices_attempt_id_org_id_project_id_job_attempts_id_org_id_project_id_fk\" FOREIGN KEY (\"attempt_id\",\"org_id\",\"project_id\") REFERENCES \"job_attempts\"(\"id\",\"org_id\",\"project_id\") ON DELETE no action ON UPDATE no action;",
+      "CREATE INDEX \"log_notices_attempt_idx\" ON \"log_notices\" USING btree (\"attempt_id\",\"at_offset\");"
+    ]
   }
 ];

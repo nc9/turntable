@@ -134,6 +134,7 @@ export type WireCuts = {
   job_id: string;
   attempt: number | null;
   cuts: { at_offset: number; omitted_bytes: number; reason: string }[];
+  notices: { at_offset: number; source: string; text: string }[];
 };
 
 export type WireDigest = {
