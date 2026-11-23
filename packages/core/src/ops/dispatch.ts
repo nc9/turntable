@@ -284,18 +284,21 @@ export async function dispatch(
       return { ok: true, op: target, output, untrusted: target.untrustedOutput };
     }
     try {
-      const output = await env.db.transaction(async (tx) => {
-        const out = validateOutput(target, await target.handler(ctx(tx), input));
-        await appendAudit(tx, scope, {
-          principalKind: principal.kind,
-          principalId: principal.id,
-          op: target.name,
-          effect: target.effect,
-          outcome: "ok",
-          input: redactInput(target, input),
-        });
-        return out;
-      });
+      const output = await env.db.transaction(
+        async (tx) => {
+          const out = validateOutput(target, await target.handler(ctx(tx), input));
+          await appendAudit(tx, scope, {
+            principalKind: principal.kind,
+            principalId: principal.id,
+            op: target.name,
+            effect: target.effect,
+            outcome: "ok",
+            input: redactInput(target, input),
+          });
+          return out;
+        },
+        { lock: `audit:${scope.orgId}` },
+      );
       return { ok: true, op: target, output, untrusted: target.untrustedOutput };
     } catch (err) {
       const code = err instanceof OpError ? err.code : "internal";

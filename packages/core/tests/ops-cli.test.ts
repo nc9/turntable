@@ -9,6 +9,7 @@ import { dispatch, hashToken, registry } from "../src/ops";
 import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "../src/ops/token-cli";
 import { assertMintable } from "../src/ops/tokens";
 import { seedWorld, type Tenant } from "./ops-helpers";
+import { onPostgres } from "./pg-mode";
 
 let db: Db;
 let a: Tenant;
@@ -79,7 +80,7 @@ test("bad input is refused before anything is written", async () => {
   expect(await db.orm.select().from(schema.apiTokens)).toHaveLength(0);
 });
 
-test("the CLI binary prints only the secret on stdout", async () => {
+test.skipIf(onPostgres)("the CLI binary prints only the secret on stdout", async () => {
   const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
   try {
     const { openDatabase, createOrg } = await import("../src/db");
@@ -227,7 +228,7 @@ test("token revoke cuts access at once, is audited, and refuses unknown or repea
   await expect(revokeTokenFromCli(db, "01HZZZZZZZZZZZZZZZZZZZZZZZ")).rejects.toThrow(/no token/);
 });
 
-test("token list and revoke run through the binary", async () => {
+test.skipIf(onPostgres)("token list and revoke run through the binary", async () => {
   const dir = mkdtempSync(join(tmpdir(), "longshore-cli-"));
   try {
     const { openDatabase, createOrg } = await import("../src/db");

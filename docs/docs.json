@@ -27,7 +27,8 @@
           "release-lane",
           "github-app",
           "hosted",
-          "tenant-isolation"
+          "tenant-isolation",
+          "postgres"
         ]
       },
       {

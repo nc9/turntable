@@ -31,7 +31,7 @@ import { SecretVault } from "../src/secrets/vault";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { USAGE_SCAN_LIMIT } from "../src/ops/definitions/secret-usage";
 import { createRestApi } from "../src/ops/rest";
-import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { mintToken, seedWorld, type Tenant, rawExec } from "./ops-helpers";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let db: Db;
@@ -321,7 +321,7 @@ describe("credentials and secrets", () => {
     await run("incident_freeze", { reason: "org wide" }); // the flag has no project
     // Every vault row of the name was updated after the flag was raised.
     await db.run(async (h) => {
-      await h.orm.run(sql`update vault_secrets set updated_at = ${Date.now() + 1000}`);
+      await rawExec(h.orm, sql`update vault_secrets set updated_at = ${Date.now() + 1000}`);
     });
     const project = { orgId: a.orgId, projectId: a.projectId };
     expect(await clearRotationFlagIfRotated(db, project, "ORG_KEY", Date.now())).toBe(false);
@@ -402,8 +402,9 @@ describe("secret_usage", () => {
       },
     });
     await db.run(async (h) => {
-      await h.orm.run(
-        sql`update audit_log set created_at = ${at} where id = (select id from audit_log where op = 'secret_use' order by rowid desc limit 1)`,
+      await rawExec(
+        h.orm,
+        sql`update audit_log set created_at = ${at} where id = (select id from audit_log where op = 'secret_use' order by id desc limit 1)`,
       );
     });
   }

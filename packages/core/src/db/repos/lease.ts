@@ -138,7 +138,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
   const scanLimit = o.scanLimit ?? 1000;
   return db.transaction(async (tx) => {
     const running = await tx.orm
-      .select({ orgId: s.jobAttempts.orgId, n: sql<number>`count(*)` })
+      .select({ orgId: s.jobAttempts.orgId, n: sql<number>`count(*)`.mapWith(Number) })
       .from(s.jobAttempts)
       .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
       .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
@@ -548,7 +548,7 @@ export function listExpiredLeases(db: Db, now: number): Promise<JobAttempt[]> {
 export function countRunning(db: Db, orgId?: string): Promise<number> {
   return db.run(async (h) => {
     const [row] = await h.orm
-      .select({ n: sql<number>`count(*)` })
+      .select({ n: sql<number>`count(*)`.mapWith(Number) })
       .from(s.jobAttempts)
       .where(
         and(
