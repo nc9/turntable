@@ -1,4 +1,5 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import * as s from "../src/db/schema";
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   createHash,
@@ -31,6 +32,7 @@ import {
   type Db,
   getJob,
   insertApprover,
+  listAudit,
   listJobs,
   openDatabase,
   setEnvPolicy,
@@ -40,7 +42,7 @@ import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { mcpTools } from "../src/ops/mcp";
 import { createRestApi } from "../src/ops/rest";
 import { makeCert, type TestCert } from "./helpers/x509";
-import { mintToken } from "./ops-helpers";
+import { mintToken, rawExec, rawRows } from "./ops-helpers";
 
 // ---- a software WebAuthn authenticator ----
 
@@ -472,7 +474,7 @@ describe("two approvers release a production job", () => {
     const stale = await challenge(alice.id);
     const s2 = await signOffline(alice, stale);
     await db.run(async (h) => {
-      await h.orm.run(sql`update runs set sha = ${"e".repeat(40)} where id = ${runId}`);
+      await rawExec(h.orm, sql`update runs set sha = ${"e".repeat(40)} where id = ${runId}`);
     });
     const r = await approve(stale.statement, s2);
     expect(!r.ok && r.error.code).toBe("conflict");
@@ -830,7 +832,10 @@ describe("ApprovalVerifier", () => {
     }
     const forged = JSON.stringify({ kind: "ed25519", signature: "AAAA" });
     await db.run(async (h) => {
-      await h.orm.run(sql`update approval_records set signature = ${forged} where person = 'bob'`);
+      await rawExec(
+        h.orm,
+        sql`update approval_records set signature = ${forged} where person = 'bob'`,
+      );
     });
     const v = await verifier.verify(subject(), "production", { now: t });
     expect(!v.approved && v.have).toBe(1);
@@ -1020,9 +1025,18 @@ describe("review hardening", () => {
     // A run whose author is unknown.
     const anon = await makeRun({ sha: "9".repeat(40) });
     await db.run(async (h) => {
-      await h.orm.run(sql`update runs set actor = NULL where id = ${anon}`);
+      await rawExec(h.orm, sql`update runs set actor = NULL where id = ${anon}`);
     });
     const bob = await ed25519Approver("bob");
+    // With a quorum of one, an unknown author cannot be told from the approver: refused. (With a
+    // quorum of two the quorum itself guarantees a second person: see the next describe.)
+    await setEnvPolicy(db, orgId, {
+      environment: "production",
+      required: 1,
+      allowAuthorApproval: false,
+      by: "t",
+      now: t,
+    });
     const c2 = await challenge(bob.id, "production", anon);
     const r2 = await approve(c2.statement, await signOffline(bob, c2));
     expect(!r2.ok && r2.error.code).toBe("forbidden");
@@ -1060,12 +1074,209 @@ describe("review hardening", () => {
       workflowHash: WF_HASH,
     };
     expect((await verifier.verify(subject, "production", { now: t })).approved).toBe(true);
-    // The run's author becomes unknown after the fact: the approvals stop counting.
+    // The run's author becomes unknown after the fact: the approvals stop counting, whatever the
+    // quorum (only a tag run the poller made has an author unknown by construction).
     await db.run(async (h) => {
-      await h.orm.run(sql`update runs set actor = NULL where id = ${runId}`);
+      await rawExec(h.orm, sql`update runs set actor = NULL where id = ${runId}`);
     });
     const v = await verifier.verify(subject, "production", { now: t });
     expect(!v.approved && v.reason).toBe("self_approval");
+  });
+
+  describe("a run whose author is unknown", () => {
+    /** Merges trust facts in JS, so it runs on either dialect (no json_set). */
+    const setFacts = async (id: string, facts: Record<string, unknown>, extra = {}) => {
+      await db.run(async (h) => {
+        const [row] = await h.orm
+          .select({ trust: s.runs.trust })
+          .from(s.runs)
+          .where(eq(s.runs.id, id));
+        const trust = JSON.parse(row!.trust as string) as Record<string, unknown>;
+        await h.orm
+          .update(s.runs)
+          .set({ trust: JSON.stringify({ ...trust, facts }), ...extra })
+          .where(eq(s.runs.id, id));
+      });
+    };
+    /** A run with no author that is not a tag run: it stays unknown whatever the quorum. */
+    const anonRun = async (sha: string) => {
+      const id = await makeRun({ sha });
+      await db.run(async (h) => {
+        await h.orm.update(s.runs).set({ actor: null }).where(eq(s.runs.id, id));
+      });
+      return id;
+    };
+    /** A run the poller made from a tag: no author, the trust facts name the tag, the ref is its ref. */
+    const tagRun = async (sha: string, taggerLabel?: string) => {
+      const id = await makeRun({ sha });
+      await setFacts(
+        id,
+        { tag: "v1.0.0", ...(taggerLabel ? { taggerLabel } : {}) },
+        { actor: null, ref: "refs/tags/v1.0.0" },
+      );
+      return id;
+    };
+    const subject = (rid: string, sha: string) => ({
+      orgId,
+      projectId: scope.projectId,
+      runId: rid,
+      headSha: sha,
+      workflowHash: WF_HASH,
+    });
+    const authorAudits = async () =>
+      (await listAudit(db, scope)).filter((a) => a.op === "approval_author_unknown");
+
+    test("a tag run with a quorum of two needs three distinct approvers, and the audit says why", async () => {
+      const rid = await tagRun("8".repeat(40));
+      const alice = await ed25519Approver("alice");
+      const bob = await ed25519Approver("bob");
+      const carol = await ed25519Approver("carol");
+      const verify = () =>
+        createApprovalVerifier(db, { rp: RP }).verify(subject(rid, "8".repeat(40)), "production", {
+          now: t,
+        });
+      const c1 = await challenge(alice.id, "production", rid);
+      const first = await approve(c1.statement, await signOffline(alice, c1));
+      expect(first.ok && first.output).toMatchObject({
+        approvals: 1,
+        required: 3,
+        released_jobs: 0,
+      });
+      const c2 = await challenge(bob.id, "production", rid);
+      const second = await approve(c2.statement, await signOffline(bob, c2));
+      // the environment says 2, but the author is unknown, so two are not enough
+      expect(second.ok && second.output).toMatchObject({
+        approvals: 2,
+        required: 3,
+        released_jobs: 0,
+      });
+      expect(await authorAudits()).toEqual([]);
+      const refused = await verify();
+      expect(!refused.approved && refused.required).toBe(3);
+      expect(refused.approved).toBe(false);
+      const c3 = await challenge(carol.id, "production", rid);
+      const third = await approve(c3.statement, await signOffline(carol, c3));
+      expect(third.ok && third.output).toMatchObject({
+        approvals: 3,
+        required: 3,
+        released_jobs: 1,
+      });
+      const [a] = await authorAudits();
+      expect(a).toMatchObject({ outcome: "ok" });
+      const input = JSON.parse(a!.input);
+      expect(input).toMatchObject({
+        run: rid,
+        environment: "production",
+        note: "author unknown; required 3 distinct approvers (2+1)",
+      });
+      expect(input.approvers).toHaveLength(3);
+      // the verifier (what signing asks) agrees
+      expect((await verify()).approved).toBe(true);
+    });
+
+    test("a run with no author that is NOT a tag run stays unknown, even with a quorum of two", async () => {
+      const rid = await anonRun("5".repeat(40));
+      const alice = await ed25519Approver("alice");
+      const c = await challenge(alice.id, "production", rid);
+      const r = await approve(c.statement, await signOffline(alice, c));
+      expect(!r.ok && r.error.code).toBe("forbidden");
+      expect(!r.ok && r.error.message).toContain("cannot establish");
+      expect(await authorAudits()).toEqual([]);
+      // a tag-looking ref alone is not enough: the facts must name the tag
+      await db.run(async (h) => {
+        await h.orm.update(s.runs).set({ ref: "refs/tags/v1.0.0" }).where(eq(s.runs.id, rid));
+      });
+      const c2 = await challenge(alice.id, "production", rid);
+      expect((await approve(c2.statement, await signOffline(alice, c2))).ok).toBe(false);
+      // and facts naming a tag on a run whose ref is something else are not enough either
+      const odd = await anonRun("4".repeat(40));
+      await setFacts(odd, { tag: "v1.0.0" });
+      const c3 = await challenge(alice.id, "production", odd);
+      expect((await approve(c3.statement, await signOffline(alice, c3))).ok).toBe(false);
+    });
+
+    test("the tagger label is not a signal: an approver whose login equals it counts like any other", async () => {
+      const rid = await tagRun("3".repeat(40), "Alice-GH");
+      const alice = await ed25519Approver("alice", "alice-gh");
+      const bob = await ed25519Approver("bob");
+      const carol = await ed25519Approver("carol");
+      let last: unknown;
+      for (const p of [alice, bob, carol]) {
+        const c = await challenge(p.id, "production", rid);
+        const r = await approve(c.statement, await signOffline(p, c));
+        expect(r.ok).toBe(true);
+        last = r.ok ? r.output : undefined;
+      }
+      expect(last).toMatchObject({ approvals: 3, required: 3, released_jobs: 1 });
+    });
+
+    test("a tag run with a quorum of one needs two distinct approvers, and the solo policy needs one", async () => {
+      const rid = await tagRun("6".repeat(40));
+      const alice = await ed25519Approver("alice");
+      const bob = await ed25519Approver("bob");
+      await setEnvPolicy(db, orgId, {
+        environment: "production",
+        required: 1,
+        allowAuthorApproval: false,
+        by: "t",
+        now: t,
+      });
+      const c = await challenge(alice.id, "production", rid);
+      const one = await approve(c.statement, await signOffline(alice, c));
+      expect(one.ok && one.output).toMatchObject({ approvals: 1, required: 2, released_jobs: 0 });
+      const c1 = await challenge(bob.id, "production", rid);
+      const two = await approve(c1.statement, await signOffline(bob, c1));
+      expect(two.ok && two.output).toMatchObject({ approvals: 2, required: 2, released_jobs: 1 });
+      expect((await authorAudits())[0]).toBeDefined();
+      // the solo policy is explicit about the author rule: one approver, no note
+      const solo = await tagRun("9".repeat(40));
+      await setEnvPolicy(db, orgId, {
+        environment: "production",
+        required: 1,
+        allowAuthorApproval: true,
+        by: "t",
+        now: t,
+      });
+      const before = (await authorAudits()).length;
+      const c2 = await challenge(alice.id, "production", solo);
+      const s = await approve(c2.statement, await signOffline(alice, c2));
+      expect(s.ok && s.output).toMatchObject({ approvals: 1, required: 1, released_jobs: 1 });
+      expect((await authorAudits()).length).toBe(before);
+    });
+
+    test("one person with two keys is one identity, so it is not a quorum", async () => {
+      const rid = await tagRun("7".repeat(40));
+      const alice = await ed25519Approver("alice", "alice-gh");
+      const alice2 = await ed25519Approver("alice-second-key", "bob-gh");
+      // Rows from before the identity rule: a second key on the same login.
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.approvers)
+          .set({ forgeLogin: "Alice-GH" })
+          .where(eq(s.approvers.id, alice2.id));
+      });
+      for (const p of [alice, alice2]) {
+        const c = await challenge(p.id, "production", rid);
+        await approve(c.statement, await signOffline(p, c));
+      }
+      expect(await authorAudits()).toEqual([]);
+      expect(
+        (
+          await createApprovalVerifier(db, { rp: RP }).verify(
+            subject(rid, "7".repeat(40)),
+            "production",
+            { now: t },
+          )
+        ).approved,
+      ).toBe(false);
+    });
+
+    test("a KNOWN author still cannot approve, whatever the quorum", async () => {
+      const author = await ed25519Approver("octocat", "OCTO");
+      const c = await challenge(author.id);
+      const refused = await approve(c.statement, await signOffline(author, c));
+      expect(!refused.ok && refused.error.message).toContain("author of a run cannot approve");
+    });
   });
 
   test("enrolment requires a forge login", async () => {
@@ -1116,7 +1327,10 @@ describe("review hardening", () => {
       const bob = await ed25519Approver("bob", "bob-gh");
       // Rows from before the identity rule: a second label on the same login.
       await db.run(async (h) => {
-        await h.orm.run(sql`update approvers set forge_login = 'Alice-GH' where id = ${bob.id}`);
+        await rawExec(
+          h.orm,
+          sql`update approvers set forge_login = 'Alice-GH' where id = ${bob.id}`,
+        );
       });
       const c1 = await challenge(alice.id);
       await approve(c1.statement, await signOffline(alice, c1));
@@ -1225,7 +1439,7 @@ describe("review hardening", () => {
       t += 11 * 60_000;
       expect((await call(releaseTok, "register_challenge", {})).ok).toBe(true);
       const rows = await db.run(async (h) =>
-        h.orm.all<{ n: number }>(sql`select count(*) as n from approval_challenges`),
+        rawRows<{ n: number }>(h.orm, sql`select count(*) as n from approval_challenges`),
       );
       // Expired rows were purged: only the fresh ones remain.
       expect(Number(rows[0]!.n)).toBeLessThanOrEqual(2);
@@ -1278,7 +1492,7 @@ describe("keys without a forge login count for nothing (fix)", () => {
       expect((await approve(cc.statement, await signOffline(p, cc))).ok).toBe(true);
     }
     await db.run(async (h) => {
-      await h.orm.run(sql`update approvers set forge_login = NULL where id = ${bob.id}`);
+      await rawExec(h.orm, sql`update approvers set forge_login = NULL where id = ${bob.id}`);
     });
     const v = await createApprovalVerifier(db, { rp: RP }).verify(
       { orgId, projectId: scope.projectId, runId, headSha: SHA, workflowHash: WF_HASH },
@@ -1296,7 +1510,8 @@ describe("keys without a forge login count for nothing (fix)", () => {
       ed25519_public_key: generateEd25519().publicSpki,
     });
     const rows = await db.run(async (h) =>
-      h.orm.all<{ d: string }>(
+      rawRows<{ d: string }>(
+        h.orm,
         sql`select input as d from audit_log where op = 'request_enrolment'`,
       ),
     );
@@ -1661,7 +1876,7 @@ describe("quorum counting and self-approval hardening", () => {
     expect(first.ok && first.output).toMatchObject({ approvals: 1, activated: false });
     // alice is revoked: her signature stays on record but is worth nothing.
     await db.run(async (h) => {
-      await h.orm.run(sql`update approvers set revoked_at = ${t} where id = ${alice.id}`);
+      await rawExec(h.orm, sql`update approvers set revoked_at = ${t} where id = ${alice.id}`);
     });
     const second = await sign(bob);
     expect(second.ok && second.output).toMatchObject({ approvals: 1, activated: false });
@@ -1686,8 +1901,9 @@ describe("quorum counting and self-approval hardening", () => {
     const row = await db.transaction(async (tx) =>
       tx.run(async (h) => {
         const id = "enrol-self";
-        await h.orm.run(
-          sql`insert into approver_enrolments (id, org_id, person, forge_login, kind, public_key, alg, sign_count, requested_by, created_at, expires_at, aaguid, attested) values (${id}, ${orgId}, 'alice', 'alice-other', 'ed25519', ${k.publicSpki}, 'EdDSA', 0, 'test', ${t}, ${t + 86_400_000}, null, 0)`,
+        await rawExec(
+          h.orm,
+          sql`insert into approver_enrolments (id, org_id, person, forge_login, kind, public_key, alg, sign_count, requested_by, created_at, expires_at, aaguid, attested) values (${id}, ${orgId}, 'alice', 'alice-other', 'ed25519', ${k.publicSpki}, 'EdDSA', 0, 'test', ${t}, ${t + 86_400_000}, null, false)`,
         );
         return id;
       }),

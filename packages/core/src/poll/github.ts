@@ -72,6 +72,17 @@ const num = (v: string | null): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+/** What a tag ruleset covers and who may bypass it. */
+export interface TagRuleset {
+  include: string[];
+  exclude: string[];
+  rules: string[];
+  /** Who may bypass it. Undefined when the API did not say (it omits the list without admin read access). */
+  bypass: { type: string; id: number | null }[] | undefined;
+  /** When the ruleset was last changed (epoch ms), if the API says: what it enforces now applies from then. */
+  updatedAt?: number | undefined;
+}
+
 export class GithubClient {
   readonly #fetch: FetchLike;
   readonly #base: string;
@@ -208,6 +219,152 @@ export class GithubClient {
     } catch (err) {
       if (err instanceof GithubError && err.status === 404) return [];
       throw err;
+    }
+  }
+
+  /**
+   * Tag refs whose name starts with `prefix` (empty: all), as the matching refs API lists them:
+   * the ref and what it points at, with NO dereferencing. Filtering by pattern happens before an
+   * annotated tag costs a request (see `peelTag`). Conditional like every read.
+   */
+  async tagRefs(
+    repo: string,
+    prefix: string,
+  ): Promise<{ ref: string; type: "commit" | "tag"; sha: string }[]> {
+    if (!/^[A-Za-z0-9._/-]{0,100}$/.test(prefix)) return [];
+    const path = `/repos/${repo}/git/matching-refs/tags/${prefix.split("/").map(encodeURIComponent).join("/")}`;
+    let body: { ref?: string; object?: { type?: string; sha?: string } }[];
+    try {
+      const got = await this.#get(path);
+      body = Array.isArray(got) ? got : [];
+    } catch (err) {
+      if (err instanceof GithubError && err.status === 404) return [];
+      throw err;
+    }
+    return body.flatMap((r) => {
+      const type = r.object?.type;
+      const sha = r.object?.sha;
+      return typeof r.ref === "string" &&
+        r.ref.startsWith("refs/tags/") &&
+        (type === "commit" || type === "tag") &&
+        typeof sha === "string" &&
+        /^[0-9a-f]{40,64}$/i.test(sha)
+        ? [{ ref: r.ref, type, sha: sha.toLowerCase() }]
+        : [];
+    });
+  }
+
+  /**
+   * An annotated tag object followed to its commit (a few levels at most), with the name its
+   * outermost tag object gives as the tagger. The tagger is text the tag's author typed (the API
+   * has a name and an email, not a verified login), so it is a label and never an identity.
+   * Undefined when the chain does not end at a commit.
+   */
+  async peelTag(
+    repo: string,
+    objectSha: string,
+  ): Promise<{ sha: string; tagger: string | null } | undefined> {
+    let sha = objectSha.toLowerCase();
+    let tagger: string | null = null;
+    for (let i = 0; i < 3; i += 1) {
+      if (!/^[0-9a-f]{40,64}$/.test(sha)) return undefined;
+      const body = (await this.#get(`/repos/${repo}/git/tags/${sha}`)) as {
+        tagger?: { name?: string } | null;
+        object?: { type?: string; sha?: string };
+      };
+      if (i === 0) tagger = typeof body.tagger?.name === "string" ? body.tagger.name : null;
+      const o = body.object;
+      if (typeof o?.sha !== "string") return undefined;
+      sha = o.sha.toLowerCase();
+      if (o.type === "commit") return /^[0-9a-f]{40,64}$/.test(sha) ? { sha, tagger } : undefined;
+      if (o.type !== "tag") return undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * The first-parent history of `head`: the commits that were themselves the tip of the branch at
+   * some point (a squash, a rebase, a direct push, or a merge commit), NOT the intermediate commits
+   * a merged branch brought in. Built from the commit listing (up to `depth` commits, 100 per
+   * request) by following each commit's first parent. Undefined when the chain cannot be followed
+   * (a parent is outside the listing: the history is deeper than `depth`, or the API said no).
+   */
+  async firstParentChain(
+    repo: string,
+    head: string,
+    depth = 1000,
+  ): Promise<Set<string> | undefined> {
+    if (!/^[0-9a-f]{40,64}$/i.test(head)) return undefined;
+    const parents = new Map<string, string | undefined>();
+    for (let page = 1; page <= Math.ceil(depth / 100); page += 1) {
+      let body: { sha?: string; parents?: { sha?: string }[] }[];
+      try {
+        const got = await this.#get(
+          `/repos/${repo}/commits?sha=${head.toLowerCase()}&per_page=100&page=${page}`,
+        );
+        body = Array.isArray(got) ? got : [];
+      } catch (err) {
+        if (err instanceof GithubError && (err.status === 404 || err.status === 422))
+          return undefined;
+        throw err;
+      }
+      for (const c of body) {
+        if (typeof c.sha === "string")
+          parents.set(c.sha.toLowerCase(), c.parents?.[0]?.sha?.toLowerCase());
+      }
+      if (body.length < 100) break;
+    }
+    const chain = new Set<string>();
+    let cur: string | undefined = head.toLowerCase();
+    while (cur !== undefined && chain.size < depth) {
+      if (!parents.has(cur)) break;
+      chain.add(cur);
+      cur = parents.get(cur);
+    }
+    return chain.has(head.toLowerCase()) ? chain : undefined;
+  }
+
+  /**
+   * The repository's rulesets that govern tags and are active, with what each one covers and who
+   * may bypass it, for the one question that matters here: is the creation of a tag restricted.
+   * `"unknown"` for any failure to read them (no permission, an error): the caller treats that as
+   * not protected. Includes rulesets inherited from the organization.
+   */
+  async tagRulesets(repo: string): Promise<TagRuleset[] | "unknown"> {
+    try {
+      const list = (await this.#get(
+        `/repos/${repo}/rulesets?includes_parents=true&per_page=100`,
+      )) as { id?: number; target?: string; enforcement?: string }[];
+      if (!Array.isArray(list)) return "unknown";
+      const out: TagRuleset[] = [];
+      for (const r of list) {
+        if (r.target !== "tag" || r.enforcement !== "active" || typeof r.id !== "number") continue;
+        const d = (await this.#get(`/repos/${repo}/rulesets/${r.id}?includes_parents=true`)) as {
+          enforcement?: string;
+          conditions?: { ref_name?: { include?: string[]; exclude?: string[] } };
+          rules?: { type?: string }[];
+          bypass_actors?: { actor_type?: string; actor_id?: number | null }[];
+          updated_at?: string;
+        };
+        if (d.enforcement !== "active") continue;
+        const updated = typeof d.updated_at === "string" ? Date.parse(d.updated_at) : Number.NaN;
+        out.push({
+          ...(Number.isFinite(updated) ? { updatedAt: updated } : {}),
+          include: (d.conditions?.ref_name?.include ?? []).filter((x) => typeof x === "string"),
+          exclude: (d.conditions?.ref_name?.exclude ?? []).filter((x) => typeof x === "string"),
+          rules: (d.rules ?? []).flatMap((x) => (typeof x.type === "string" ? [x.type] : [])),
+          bypass: Array.isArray(d.bypass_actors)
+            ? d.bypass_actors.map((b) => ({
+                type: String(b.actor_type ?? ""),
+                id: typeof b.actor_id === "number" ? b.actor_id : null,
+              }))
+            : undefined,
+        });
+      }
+      return out;
+    } catch (err) {
+      if (err instanceof RateLimited) throw err;
+      return "unknown";
     }
   }
 

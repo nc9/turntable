@@ -1,13 +1,15 @@
 // `longshore quotas show|set`: the instance operator's tool, on the host, against the data
 // directory (like `token`, `policy` and `approvals`). Quotas limit tenants, so they are not
-// settable over the API by the tenant's own tokens: only someone who can run this on the server
-// can change them. Reading them is `get_quotas` (REST and MCP, org-level reader token).
+// settable over the API by the tenant's own tokens: only someone who can run this on the server,
+// or hold an instance token (`set_quotas`, REST only), can change them. Reading them is `get_quotas` (REST and MCP, org-level reader token).
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
 import { getOrgBySlug, getOrgQuotas, quotaStatuses, quotaUsage, setOrgQuotas } from "../db/repos";
 
 export const QUOTAS_USAGE = `Usage: longshore quotas show --org <slug> [--data-dir ./data]
+       longshore quotas get --url <https://host> --org <slug> [--token-file <path>]
+                            (remote read over REST with an org-level reader token)
        longshore quotas set --org <slug> [--data-dir ./data]
                             [--max-concurrent <n|none>] [--max-runs-per-hour <n|none>]
                             [--max-sandbox-minutes-per-day <n|none>] [--max-log-bytes <n|none>]
@@ -34,6 +36,7 @@ export function parseLimit(flag: string, v: string): number | null {
 
 export async function quotasCommand(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
+  if (sub === "get") return (await import("./remote")).quotasGet(rest);
   if (sub !== "show" && sub !== "set") {
     console.error(QUOTAS_USAGE);
     return 2;

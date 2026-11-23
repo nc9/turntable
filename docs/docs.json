@@ -16,6 +16,7 @@
           "architecture",
           "agent-interface",
           "compatibility",
+          "parity",
           "providers",
           "cache",
           "security",
@@ -26,7 +27,9 @@
           "release-lane",
           "github-app",
           "hosted",
-          "tenant-isolation"
+          "tenant-isolation",
+          "postgres",
+          "instance-admin"
         ]
       },
       {

@@ -1,4 +1,6 @@
 import type { AgentRole, MemberRole } from "../db/schema";
+import { OpError } from "./errors";
+import type { Role } from "./roles";
 
 /**
  * Who is calling. A `token` principal comes from a bearer token (REST, MCP). A `member`
@@ -12,7 +14,13 @@ export type Principal =
    * An enrolled approver, proven by a signature over the request's statement. It exists only for
    * signature ops: no token op accepts it, and no bearer token or member can become one.
    */
-  | { kind: "approver"; id: string; orgId: string; person: string; role: "viewer" };
+  | { kind: "approver"; id: string; orgId: string; person: string; role: "viewer" }
+  /**
+   * The instance administrator, from an `lsi_` token. It holds no org grant: `orgId` is the
+   * system org only so its audit entries land in that chain. It can call `instance` ops and
+   * nothing else, and no org principal can call those.
+   */
+  | { kind: "instance"; id: string; orgId: string; role: "instance_admin" };
 
 /** What a caller presents to the dispatcher. */
 export type Credential =
@@ -26,3 +34,12 @@ export type Credential =
   | { kind: "principal"; principal: Principal };
 
 export const principalLabel = (p: Principal): string => `${p.kind}:${p.id}`;
+
+/**
+ * The org role of a principal. An instance administrator holds none: the dispatcher never gives
+ * it an org op, and this makes the type say so for the handlers that read a role.
+ */
+export function orgRole(p: Principal): Role {
+  if (p.kind === "instance") throw new OpError("forbidden", "an instance token holds no org role");
+  return p.role;
+}

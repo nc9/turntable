@@ -131,6 +131,19 @@ export type CutRecord = {
   reason: string;
 };
 
+/**
+ * A system notice the control plane put on an attempt's log (the cache dropped entries, a hold
+ * reason). Recorded apart from the log text, so a job's output cannot forge one. `atOffset` is
+ * where the stored log ended when it was added.
+ */
+export type LogNotice = {
+  attemptId: string;
+  kind: "notice";
+  atOffset: number;
+  source: string;
+  text: string;
+};
+
 /** The caller, from `whoami`. */
 export type Whoami = {
   kind: "token" | "member";
@@ -406,3 +419,30 @@ export type ConsumeResult = {
   trustClass: string | null;
   sha256: string | null;
 };
+/** The limits of an org (null is no limit). */
+export type QuotaLimits = {
+  maxConcurrent: number | null;
+  maxRunsPerHour: number | null;
+  maxSandboxMinutesPerDay: number | null;
+  maxLogBytes: number | null;
+  maxStoredBytes: number | null;
+};
+
+export type QuotaMetric =
+  | "concurrent"
+  | "runs_per_hour"
+  | "sandbox_minutes"
+  | "log_bytes"
+  | "stored_bytes";
+
+export type QuotaUsage = {
+  metric: QuotaMetric;
+  used: number;
+  limit: number | null;
+  /** Percent of the limit, rounded down; null with no limit. */
+  percent: number | null;
+  /** Why new work is held because of this limit, when it is. */
+  held: string | null;
+};
+
+export type OrgQuotas = { limits: QuotaLimits; usage: QuotaUsage[] };

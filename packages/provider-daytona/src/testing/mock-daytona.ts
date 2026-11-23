@@ -32,6 +32,12 @@ export function startMock(
     deleteDelayMs?: number;
     /** New sandboxes appear in listings, and deleted ones disappear, only after this long. */
     listLagMs?: number;
+    /**
+     * What Daytona was measured doing: a label-filtered list returns nothing for new sandboxes
+     * (not even a minute later), and the unfiltered list is stale both ways: it omits new
+     * sandboxes and keeps showing deleted ones as started. Only a get by id is accurate.
+     */
+    listBroken?: boolean;
     /** Behave like an account that accepts an allow list but does not apply it. */
     ignoreNetworkLists?: boolean;
   } = {},
@@ -51,7 +57,11 @@ export function startMock(
   const ghosts = new Map<string, MockSandbox>();
   let seq = 0;
   /** Extra sandboxes that belong to someone else; the provider must never touch them. */
-  const failNext: { createStatus?: number | undefined } = {};
+  const failNext: {
+    createStatus?: number | undefined;
+    /** Answer the next `times` creates with this status and message (a quota 400, say). */
+    createReply?: { status: number; message: string; times: number } | undefined;
+  } = {};
   /** What the org usage endpoint answers. `status` other than 200 makes it fail. */
   const usage: { rows: unknown[]; status: number; calls: number } = {
     rows: [],
@@ -93,6 +103,10 @@ export function startMock(
                 )),
           );
           const lag = opts.listLagMs ?? 0;
+          if (opts.listBroken) {
+            const stale = labels ? [] : [...ghosts.values()].map((g) => view(g, origin));
+            return Response.json({ items: stale, nextCursor: null });
+          }
           if (hugeList) {
             // An endless body with no content-length: the client must stop at its own cap.
             const filler = new TextEncoder().encode(`"${"x".repeat(65_534)}",`);
@@ -129,6 +143,13 @@ export function startMock(
           });
         }
         if (!id && req.method === "POST") {
+          if (failNext.createReply && failNext.createReply.times > 0) {
+            failNext.createReply.times -= 1;
+            return Response.json(
+              { message: failNext.createReply.message },
+              { status: failNext.createReply.status },
+            );
+          }
           if (failNext.createStatus) {
             const st = failNext.createStatus;
             failNext.createStatus = undefined;
@@ -165,7 +186,7 @@ export function startMock(
         if (req.method === "GET") return Response.json(view(sb, origin));
         if (req.method === "DELETE") {
           const finish = () => {
-            if (opts.listLagMs) {
+            if (opts.listLagMs || opts.listBroken) {
               diedAt.set(sb.id, Date.now());
               ghosts.set(sb.id, { ...sb, state: "started" });
             }

@@ -23,6 +23,7 @@ import {
   ApprovalConflict,
   consumeChallenge,
   getEnrolment,
+  appendAudit,
   getEnvPolicy,
   getOrgById,
   getProject,
@@ -87,26 +88,68 @@ async function checkTenant(c: Ctx, statement: { org: string; project?: string })
   }
 }
 
+const unknown = (s: string | null | undefined): boolean =>
+  s === null || s === undefined || s === "";
+
+/** What authorBlocked reads of a run: its author, its ref and the stored trust decision. */
+export type AuthorRun = { actor: string | null; ref: string; trust: string | null };
+
+/**
+ * The tag a run was made from, when the poller's tag ingest made it: the stored trust facts name a
+ * tag (set by ingest, never by input) AND the ref is that tag's ref. Only such a run has an
+ * unknown author by construction; any other run with no author is simply unknown. (The tagger's
+ * name is free text the tag's creator chose, so it is not read anywhere as a signal.)
+ */
+export function ingestedTag(run: AuthorRun): { tag: string } | null {
+  if (run.trust === null) return null;
+  try {
+    const facts = (JSON.parse(run.trust) as { facts?: { tag?: unknown } }).facts;
+    const tag = facts?.tag;
+    if (typeof tag !== "string" || tag === "" || run.ref !== `refs/tags/${tag}`) return null;
+    return { tag };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The run's author may not approve it. This fails closed: when the approver's forge login or the
  * run's author is unknown, it cannot be established that they are different people, so the
  * approval is refused (unless the environment's policy allows author approval).
+ *
+ * One exception, for a run whose author is unknown BY CONSTRUCTION (one the poller made from a
+ * tag): no approver is excluded, whoever tagged, and the environment instead needs one more
+ * distinct identity than it normally does (`requiredApprovals`), so at least `required` of them
+ * are not the author. Any other run with no author stays unknown.
  */
 export function authorBlocked(
-  policy: { allowAuthorApproval: boolean },
+  policy: { allowAuthorApproval: boolean; required: number },
   approverForgeLogin: string | null,
-  runActor: string | null,
+  run: AuthorRun,
 ): "author" | "unknown" | null {
   if (policy.allowAuthorApproval) return null;
-  if (
-    approverForgeLogin === null ||
-    approverForgeLogin === "" ||
-    runActor === null ||
-    runActor === ""
-  )
-    return "unknown";
-  return approverForgeLogin.toLowerCase() === runActor.toLowerCase() ? "author" : null;
+  if (unknown(approverForgeLogin)) return "unknown";
+  const login = (approverForgeLogin as string).toLowerCase();
+  if (!unknown(run.actor)) return login === (run.actor as string).toLowerCase() ? "author" : null;
+  return ingestedTag(run) === null ? "unknown" : null;
 }
+
+/** True for an ingested tag run with no known author, under a policy that has the author rule on. */
+export const authorUnknownByConstruction = (
+  policy: { allowAuthorApproval: boolean },
+  run: AuthorRun,
+): boolean => !policy.allowAuthorApproval && unknown(run.actor) && ingestedTag(run) !== null;
+
+/**
+ * How many distinct identities an environment needs for this run: its `required`, plus one when
+ * the author is unknown by construction (the author may be one of the approvers and cannot be
+ * told apart, so `required` of them must be someone else). The solo policy (`allowAuthorApproval`)
+ * keeps `required`.
+ */
+export const requiredApprovals = (
+  policy: { allowAuthorApproval: boolean; required: number },
+  run: AuthorRun,
+): number => policy.required + (authorUnknownByConstruction(policy, run) ? 1 : 0);
 
 function checkExpiry(expiresAt: number, now: number): void {
   if (expiresAt <= now) throw new OpError("invalid_input", "the statement has expired");
@@ -220,7 +263,7 @@ export async function applyEnvironmentApproval(
   const keyPolicy = await getKeyPolicy(c.db, c.scope.orgId);
   const violation = keyPolicyViolation(keyPolicy, v.key);
   if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
-  const blocked = authorBlocked(policy, v.key.forgeLogin, run.actor);
+  const blocked = authorBlocked(policy, v.key.forgeLogin, run);
   if (blocked === "author") throw new OpError("forbidden", "the author of a run cannot approve it");
   if (blocked === "unknown")
     throw new OpError(
@@ -247,7 +290,25 @@ export async function applyEnvironmentApproval(
   const people = await recordIdentities(c.db, c.scope.orgId, live, keyPolicy);
   let released = 0;
   let state = run.status as string;
-  if (people.size >= policy.required) {
+  const needed = requiredApprovals(policy, run);
+  if (people.size >= needed && authorUnknownByConstruction(policy, run)) {
+    // Said in the audit trail: this release of the jobs did not rest on telling the approvers from
+    // the author, but on one more approver than the environment normally needs.
+    await appendAudit(c.db, c.scope, {
+      principalKind: "approver",
+      principalId: v.key.id,
+      op: "approval_author_unknown",
+      effect: "write",
+      outcome: "ok",
+      input: {
+        run: run.id,
+        environment: statement.environment,
+        approvers: [...people].toSorted(),
+        note: `author unknown; required ${needed} distinct approvers (${policy.required}+1)`,
+      },
+    });
+  }
+  if (people.size >= needed) {
     const r = await releaseEnvironmentJobs(c.db, c.scope, run.id, statement.environment);
     released = r.released;
     state = r.state;
@@ -256,7 +317,7 @@ export async function applyEnvironmentApproval(
     run_id: run.id,
     environment: statement.environment,
     approvals: people.size,
-    required: policy.required,
+    required: needed,
     released_jobs: released,
     state,
   };

@@ -52,7 +52,7 @@ export interface ArtifactRecords {
     scope: { orgId: string; projectId: string },
     runId: string,
     names: readonly string[],
-  ): Promise<{ name: string; sha256: string }[]>;
+  ): Promise<{ name: string; sha256: string; size?: number }[]>;
 }
 
 export type LaneDenial =
@@ -70,6 +70,7 @@ export type LaneDenial =
   | "artifact_not_recorded"
   | "artifact_bytes_missing"
   | "digest_mismatch"
+  | "size_mismatch"
   | "attestation_mismatch"
   | `signer:${string}`;
 
@@ -237,6 +238,7 @@ export class ReleaseLane {
     if (names.length === 0) return refuse("no_artifacts");
     const recorded = await this.#o.records.recorded(scope, req.runId, names);
     const byName = new Map(recorded.map((r) => [r.name, r.sha256]));
+    const sizeOf = new Map(recorded.map((r) => [r.name, r.size]));
     const missing = names.filter((n) => !byName.has(n));
     if (missing.length > 0) return refuse("artifact_not_recorded", missing.join(", "));
 
@@ -249,6 +251,12 @@ export class ReleaseLane {
       facts.digests = digests;
       // The bytes must be what the build recorded...
       if (actual !== byName.get(name)) return refuse("digest_mismatch", name);
+      // ...and be as long as the build said: the recorded size is what the org's stored-bytes
+      // quota charged, and the stored file is where the true size is. Same digest, other length
+      // can only mean the recorded size is wrong.
+      const recordedSize = sizeOf.get(name);
+      if (recordedSize !== undefined && recordedSize !== bytes.length)
+        return refuse("size_mismatch", `${name}: recorded ${recordedSize}, stored ${bytes.length}`);
     }
     // ...and what this lane attested for this TAG before, in a store the main process cannot
     // write. Keyed by the release identity, not the run: a new run for an attested tag gets no

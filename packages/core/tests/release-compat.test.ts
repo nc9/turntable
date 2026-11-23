@@ -748,11 +748,17 @@ describe("the release proxy", () => {
       });
     const id = { orgId: a.orgId, projectId: a.projectId, runId: a.runId };
     attest.markFinalized(id, Date.now());
-    // the next request is refused and sends nothing upstream, even before any sweep
+    // the next request is refused, with the refusal written to the job (not a reset), and nothing
+    // is sent upstream, even before any sweep
     const denied = await viaProxy(r, publishDoc(npmTar));
     expect(denied.status).not.toBe(201);
+    expect(denied.status).toBe(502); // the proxy's refusal, written to the job: not a reset
     expect(seen).toHaveLength(0);
-    expect(proxy!.active).toBe(0); // the request ended the registration
+    expect(await outcomes()).toContain("release_proxy_refuse:release_finalized");
+    // the registration ends when the sweep runs, never from inside the refused request
+    expect(proxy!.active).toBe(1);
+    expect(await proxy!.sweepApprovals()).toBe(1);
+    expect(proxy!.active).toBe(0);
     expect(await outcomes()).toContain("release_proxy_revoke:release_finalized");
   });
 
@@ -767,7 +773,7 @@ describe("the release proxy", () => {
       { repo: "acme/web", tag: "v2.0.0", sha: SHA, artifacts: ["web-1.0.0.tgz"] },
       Date.now() + 1_000,
     );
-    // a request on one is refused and ends that one
+    // a request on one is refused (the reason is written to the job), and nothing is sent
     const viaProxy = (cred: typeof r1) =>
       fetch("https://registry.npmjs.org/@acme%2Fweb", {
         method: "PUT",
@@ -776,11 +782,13 @@ describe("the release proxy", () => {
         proxy: cred.credential.proxyUrl(cred.listen.host, cred.listen.port),
         tls: { ca: cred.credential.caPem },
       });
-    expect((await viaProxy(r1)).status).not.toBe(201);
+    const denied = await viaProxy(r1);
+    expect(denied.status).toBe(502);
     expect(seen).toHaveLength(0);
-    expect(proxy!.active).toBe(1);
-    // the sweep ends the one nobody used
-    expect(await proxy!.sweepApprovals()).toBe(1);
+    expect(await outcomes()).toContain("release_proxy_refuse:superseded");
+    expect(proxy!.active).toBe(2); // refusing does not close anything
+    // the sweep ends both, the one that was refused and the one nobody used
+    expect(await proxy!.sweepApprovals()).toBe(2);
     expect(proxy!.active).toBe(0);
     expect(await outcomes()).toContain("release_proxy_revoke:superseded");
   });

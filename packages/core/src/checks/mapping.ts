@@ -113,6 +113,8 @@ export type SummaryInput = {
   excerpt?: string | undefined;
   /** For infra_error: the classified reason. Never the raw text. */
   infraClass?: InfraClass | undefined;
+  /** For a job split across sandboxes: one line per shard (fixed words and numbers only). */
+  shards?: readonly string[] | undefined;
 };
 
 /**
@@ -132,6 +134,8 @@ export function summaryFor(i: SummaryInput): string {
     );
     lines.push(`Reason: ${i.infraClass ?? "internal"}. See the Longshore run for details.`);
   }
+  if (i.shards && i.shards.length > 0)
+    lines.push(`**Shards:**\n${i.shards.map((s) => `- ${s}`).join("\n")}`);
   if (i.failingStep) lines.push(`**Failing step:** ${plain(i.failingStep, 120)}`);
   if (i.runUrl) lines.push(`[Open the run in Longshore](${i.runUrl})`);
   if (i.excerpt) lines.push(fenced(i.excerpt));

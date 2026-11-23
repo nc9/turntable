@@ -66,6 +66,20 @@ Then `actions/core`'s `getIDToken`, the cloud login actions and plain `curl` wor
 - **A resumed attempt fails closed.** After a worker restart the job has no proxy credential, so it cannot reach the issuer.
 - **An incident freeze stops minting** for the org or project, and the refusal is audited.
 
+## Limiting the audiences a project may ask for
+
+`aud` is chosen by the job, per request. By default any printable string works, so a job that may mint at all can get a token for any relying party that trusts this org's issuer. A project can name the audiences it really uses, and a request for any other is refused and audited (`audience_not_allowed`, with the audience that was asked for):
+
+```sh
+longshore policy set --oidc-audiences sts.amazonaws.com,my-vault --org acme --project api
+longshore policy set --oidc-audiences any --org acme --project api   # lift the limit
+longshore policy show --org acme                                     # oidc-audiences per project
+```
+
+The same is the `set_oidc_audiences` operation (org admins only, never an agent token; one project, 1 to 20 audiences, or `null` to lift the limit) and `list_projects` shows each project's `oidc_audiences` (`null` means any). Matching is exact. A project with no list behaves as before.
+
+**On a hosted instance, set it on every project that mints tokens.** Your cloud trust policies should pin `sub` as well, but this closes the gap one layer earlier: a compromised job in an allowed trust class cannot obtain a token for an audience nobody listed.
+
 ## Rotation
 
 `longshore oidc rotate --org <slug>` makes a new key current. The old key stays in the JWKS for 10 minutes (the longest a token lives) plus 5 minutes of grace, so every token it signed stays verifiable until it expires; after that it is deleted. `longshore oidc status --org <slug>` lists the published keys.

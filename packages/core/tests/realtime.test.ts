@@ -20,6 +20,7 @@ import { CLOSE, type ServerMessage } from "../src/realtime/protocol";
 import { createRealtime, type Limits, type Realtime, type WsData } from "../src/realtime/server";
 import { handleRequest } from "../src/server";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { onPostgres } from "./pg-mode";
 
 let db: Db;
 let a: Tenant;
@@ -482,62 +483,67 @@ function maskedTextFrame(text: string): Buffer {
   return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
 }
 
-test("a slow client is dropped with the slow-client code instead of buffering without bound", async () => {
-  rt.stop();
-  await server.stop(true);
-  start({ maxBufferedBytes: 64 * 1024 });
-  // a big log the client will not read
-  const chunk = new TextEncoder().encode(`${"x".repeat(1023)}\n`.repeat(256)); // 256 KiB
-  let at = 0;
-  for (let i = 0; i < 24; i++) {
-    await appendLog(db, a.scope, a.attemptId, at, chunk);
-    at += chunk.length;
-  }
-  const key = randomBytes(16).toString("base64");
-  const socket = net.connect(server.port!, "127.0.0.1");
-  socket.pause();
-  const accept = createHash("sha1")
-    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-    .digest("base64");
-  socket.write(
-    [
-      "GET /api/v1/realtime HTTP/1.1",
-      `Host: ${base}`,
-      "Upgrade: websocket",
-      "Connection: Upgrade",
-      `Sec-WebSocket-Key: ${key}`,
-      "Sec-WebSocket-Version: 13",
-      `Sec-WebSocket-Protocol: longshore.v1, bearer.${reader}`,
-      "",
-      "",
-    ].join("\r\n"),
-  );
-  socket.write(
-    maskedTextFrame(
-      JSON.stringify({ op: "subscribe", id: "big", topic: `attempt:${a.attemptId}:log` }),
-    ),
-  );
-  // do not read for a while: the kernel buffers fill and the server's buffer grows past the limit
-  await new Promise((r) => setTimeout(r, 1500));
-  const chunks: Buffer[] = [];
-  let code = null as number | null;
-  await new Promise<void>((resolve) => {
-    socket.on("data", (d: Buffer) => {
-      chunks.push(d);
-      const all = Buffer.concat(chunks);
-      const body = all.subarray(all.indexOf("\r\n\r\n") + 4);
-      code = closeCode(body);
-      if (code !== null) resolve();
+// A raw socket sends the upgrade and the first frame in one write, which only works when the
+// token check finishes before the next bytes arrive: true in process on SQLite, not over a network.
+test.skipIf(onPostgres)(
+  "a slow client is dropped with the slow-client code instead of buffering without bound",
+  async () => {
+    rt.stop();
+    await server.stop(true);
+    start({ maxBufferedBytes: 64 * 1024 });
+    // a big log the client will not read
+    const chunk = new TextEncoder().encode(`${"x".repeat(1023)}\n`.repeat(256)); // 256 KiB
+    let at = 0;
+    for (let i = 0; i < 24; i++) {
+      await appendLog(db, a.scope, a.attemptId, at, chunk);
+      at += chunk.length;
+    }
+    const key = randomBytes(16).toString("base64");
+    const socket = net.connect(server.port!, "127.0.0.1");
+    socket.pause();
+    const accept = createHash("sha1")
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      [
+        "GET /api/v1/realtime HTTP/1.1",
+        `Host: ${base}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Key: ${key}`,
+        "Sec-WebSocket-Version: 13",
+        `Sec-WebSocket-Protocol: longshore.v1, bearer.${reader}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    socket.write(
+      maskedTextFrame(
+        JSON.stringify({ op: "subscribe", id: "big", topic: `attempt:${a.attemptId}:log` }),
+      ),
+    );
+    // do not read for a while: the kernel buffers fill and the server's buffer grows past the limit
+    await new Promise((r) => setTimeout(r, 1500));
+    const chunks: Buffer[] = [];
+    let code = null as number | null;
+    await new Promise<void>((resolve) => {
+      socket.on("data", (d: Buffer) => {
+        chunks.push(d);
+        const all = Buffer.concat(chunks);
+        const body = all.subarray(all.indexOf("\r\n\r\n") + 4);
+        code = closeCode(body);
+        if (code !== null) resolve();
+      });
+      socket.on("close", () => resolve());
+      socket.resume();
+      setTimeout(resolve, 8000);
     });
-    socket.on("close", () => resolve());
-    socket.resume();
-    setTimeout(resolve, 8000);
-  });
-  expect(Buffer.concat(chunks).toString("latin1")).toContain(accept);
-  expect(code).toBe(CLOSE.slowClient);
-  socket.destroy();
-  expect(rt.stats().connections).toBe(0);
-});
+    expect(Buffer.concat(chunks).toString("latin1")).toContain(accept);
+    expect(code).toBe(CLOSE.slowClient);
+    socket.destroy();
+    expect(rt.stats().connections).toBe(0);
+  },
+);
 
 // ---- limits and hygiene ----
 

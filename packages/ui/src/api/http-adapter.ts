@@ -11,6 +11,7 @@ import type {
   EnvironmentApprovalResult,
   CheckSummary,
   CutRecord,
+  LogNotice,
   GrepHit,
   GrepResult,
   IncidentStatus,
@@ -29,6 +30,7 @@ import type {
   StepEvent,
   Artifact,
   ConsumeResult,
+  OrgQuotas,
 } from "./types";
 import type {
   WireApprovalStatus,
@@ -40,6 +42,7 @@ import type {
   WireRegisterChallenge,
   WireArtifacts,
   WireConsumption,
+  WireQuotas,
   WireAttempt,
   WireChecks,
   WireApprove,
@@ -200,6 +203,19 @@ function mapJob(j: WireJob, run: WireRun, org: string): Job {
 }
 
 const FINISHED: readonly JobState[] = ["success", "failure", "infra_error", "cancelled", "skipped"];
+
+function quotasOf(w: WireQuotas): OrgQuotas {
+  return {
+    limits: {
+      maxConcurrent: w.limits.max_concurrent,
+      maxRunsPerHour: w.limits.max_runs_per_hour,
+      maxSandboxMinutesPerDay: w.limits.max_sandbox_minutes_per_day,
+      maxLogBytes: w.limits.max_log_bytes,
+      maxStoredBytes: w.limits.max_stored_bytes,
+    },
+    usage: w.usage,
+  };
+}
 
 export function createHttpApi(options: HttpApiOptions): LongshoreApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -377,6 +393,21 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         atOffset: c.at_offset,
         omittedBytes: c.omitted_bytes,
         reason: c.reason,
+      }));
+    },
+
+    async jobNotices({ attemptId }): Promise<LogNotice[]> {
+      const k = known(attemptId);
+      const w = await call<WireCuts>("GET", `/jobs/${encodeURIComponent(k.jobId)}/cuts`, {
+        org: org(),
+        attempt: k.attempt,
+      });
+      return w.notices.map((n) => ({
+        attemptId,
+        kind: "notice" as const,
+        atOffset: n.at_offset,
+        source: n.source,
+        text: n.text,
       }));
     },
 
@@ -583,6 +614,10 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         trustClass: r.trust_class,
         sha256: r.sha256,
       }));
+    },
+
+    async getQuotas(): Promise<OrgQuotas> {
+      return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
     },
 
     async approversOverview(): Promise<ApproversOverview> {

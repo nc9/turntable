@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { createFixture } from "../src/api/fixture/adapter";
 import { createHttpApi } from "../src/api/http-adapter";
 import type { WireArtifacts, WireConsumption } from "../src/api/wire";
-import { formatSize, shortDigest } from "../src/lib/artifact";
+import { formatSize } from "../src/lib/format";
+import { shortDigest } from "../src/lib/artifact";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

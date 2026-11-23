@@ -1392,7 +1392,7 @@ describe("entries at denied paths are dropped, not the whole archive", () => {
         data: () => {},
       });
       expect(names).toEqual(["pkg/index.js", "pkg/lib.js"]);
-      expect(notices).toEqual([expect.stringContaining("dropped 2 entries")]);
+      expect(notices).toEqual(["cache: 2 entries dropped (denied paths)"]);
       expect(notices.join(" ")).not.toContain("ssh");
     } finally {
       await w.server.stop(true);

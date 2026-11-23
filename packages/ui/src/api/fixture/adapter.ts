@@ -114,6 +114,8 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
       delay(() => (world.logOf(attemptId)?.steps ?? []).map((st) => ({ ...st, attemptId }))),
     jobCuts: ({ attemptId }) =>
       delay(() => (world.logOf(attemptId)?.cuts ?? []).map((c) => ({ ...c, attemptId }))),
+    jobNotices: ({ attemptId }) =>
+      delay(() => (world.logOf(attemptId)?.notices ?? []).map((n) => ({ ...n, attemptId }))),
     checksForSha: ({ projectId, sha }) =>
       delay((): CheckSummary => {
         const rows = [...world.runs.values()].filter(
@@ -156,6 +158,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     approversOverview: () => delay(() => world.approversOverview()),
     getArtifacts: ({ runId }) => delay(() => world.getArtifacts(runId)),
     checkArtifactConsumption: (a) => delay(() => world.checkArtifactConsumption(a)),
+    getQuotas: () => delay(() => world.getQuotas()),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
     approveEnvironment: ({ statement, signature }) =>
