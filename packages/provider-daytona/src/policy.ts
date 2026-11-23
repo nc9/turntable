@@ -11,7 +11,7 @@ export const NAME_PREFIX = "longshore-dev-";
 
 /** Live sandboxes of ours at once. The default is 2; options can lower it, never past the ceiling. */
 export const DEFAULT_MAX_LIVE = 2;
-export const HARD_MAX_LIVE = 5;
+export const HARD_MAX_LIVE = 10;
 
 /** Auto-stop, auto-delete and the hard TTL are never longer than this. */
 export const MAX_TTL_SECONDS = 30 * 60;
