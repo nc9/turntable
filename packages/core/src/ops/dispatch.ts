@@ -16,6 +16,7 @@ import {
 import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { WebhookService } from "../webhooks/service";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
@@ -39,6 +40,7 @@ export type DispatchEnv = {
   allowInstance?: boolean | undefined;
   /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
+  webhooks?: WebhookService | undefined;
   /** WebAuthn relying party for human approvals (LONGSHORE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
@@ -319,6 +321,7 @@ export async function dispatch(
       now: env.now ?? Date.now,
       vault: env.vault,
       claims: env.claims,
+      webhooks: env.webhooks,
       webauthn: env.webauthn,
       instanceOrgCap: env.instanceOrgCap,
       attestationAnchors: env.attestationAnchors,
