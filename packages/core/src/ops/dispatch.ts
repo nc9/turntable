@@ -111,11 +111,18 @@ function auditedInput(op: Op, input: unknown, detail: Record<string, unknown>): 
   const base = redactInput(op, input);
   const redacted =
     base !== null && typeof base === "object" ? (base as Record<string, unknown>) : {};
+  // A detail key that names a secret, omitted or one-time-secret field is dropped even when the
+  // input left that (optional) field out: otherwise an omitted optional secret would slip through.
+  const guarded = new Set([
+    ...op.secretInputFields,
+    ...op.logOmitFields,
+    ...op.oneTimeSecretFields,
+  ]);
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(detail)) {
-    if (k in redacted) {
+    if (k in redacted || guarded.has(k)) {
       console.warn(
-        `turntable: op ${op.name} auditDetail key "${k}" collides with an input key; dropped`,
+        `turntable: op ${op.name} auditDetail key "${k}" collides with an input or secret field; dropped`,
       );
       continue;
     }

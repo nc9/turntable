@@ -432,6 +432,52 @@ test("an op's auditDetail can never un-redact a secret or omitted input field", 
   expect(warnings.join("\n")).not.toContain(value);
 });
 
+test("an auditDetail key naming an optional secret field is dropped even when the input omits it", async () => {
+  const value = `v-${crypto.randomUUID()}`;
+  const make = (name: string, outside: boolean) =>
+    defineOp({
+      name,
+      summary: "Echoes an optional secret field the input left out.",
+      description: "Test op whose optional token is absent from the input but named by its detail.",
+      input: z.object({ token: z.string().optional() }),
+      output: z.object({}),
+      effect: "write",
+      auth: { type: "token", minRole: "operator" },
+      untrustedOutput: false,
+      scope: "org",
+      http: { method: "POST", path: `/${name}` },
+      secretInputFields: ["token"],
+      ...(outside ? { outsideTransaction: true } : {}),
+      auditDetail: () => ({ token: value, extra: "kept" }),
+      async handler() {
+        return {};
+      },
+    });
+  const ops = [make("leak_optional_tx", false), make("leak_optional_out", true)];
+  const e = { registry: createRegistry(ops), db, now: () => NOW };
+  const { secret } = await mintToken(db, { orgId: a.orgId }, "operator");
+  const warn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (m: string) => void warnings.push(m);
+  try {
+    for (const op of ops) {
+      const res = await dispatch(e, { kind: "bearer", token: secret }, op.name, {});
+      expect(res.ok).toBe(true);
+    }
+  } finally {
+    console.warn = warn;
+  }
+  const rows = await listAudit(db, { orgId: a.orgId });
+  expect(JSON.stringify(rows)).not.toContain(value);
+  for (const op of ops) {
+    const input = JSON.parse(rows.find((r) => r.op === op.name)!.input as string);
+    expect("token" in input).toBe(false);
+    expect(input.extra).toBe("kept");
+  }
+  expect(warnings.length).toBe(2);
+  expect(warnings.join("\n")).not.toContain(value);
+});
+
 test("sign_release is a signature op: no token of any role can reach it, over any adapter", async () => {
   const input = { run_id: a.runId, artifacts: ["x.bin"], environment: "production" };
   for (const role of ["reader", "operator", "release_operator"] as const) {
