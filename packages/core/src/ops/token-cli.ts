@@ -4,6 +4,8 @@
 import type { Db } from "../db";
 import {
   appendAudit,
+  appendEvent,
+  countActiveApiTokens,
   ensureLocalTenant,
   findApiTokenById,
   getOrgBySlug,
@@ -15,6 +17,7 @@ import {
   type Scope,
 } from "../db/repos";
 import { AGENT_ROLES, type AgentRole, TOKEN_KINDS, type TokenKind } from "../db/schema";
+import { systemOrgId } from "../audit/failures";
 import { generateToken, hashToken } from "./tokens";
 
 /** Roles the CLI will mint: every agent role. Org roles are for people and never go on a token. */
@@ -187,6 +190,42 @@ export async function revokeTokenFromCli(
       outcome: "ok",
       input: { id: row.id, name: row.name },
     });
+    // The last usable token gone leaves the org with no access but the instance administrator's
+    // re-mint, which now waits (#367): tell the org, in both chains and on its feed.
+    if ((await countActiveApiTokens(tx, { orgId: row.orgId }, now())) === 0) {
+      await appendAudit(
+        tx,
+        { orgId: row.orgId },
+        {
+          principalKind: "cli",
+          principalId: "local",
+          op: "org_tokens_exhausted",
+          effect: "write",
+          outcome: "ok",
+          input: { revoked_id: row.id },
+        },
+      );
+      await appendAudit(
+        tx,
+        { orgId: await systemOrgId(tx) },
+        {
+          principalKind: "cli",
+          principalId: "local",
+          op: "org_tokens_exhausted",
+          effect: "write",
+          outcome: "ok",
+          input: { org_id: row.orgId, revoked_id: row.id },
+        },
+      );
+      await appendEvent(
+        tx,
+        { orgId: row.orgId },
+        {
+          type: "org.tokens_exhausted",
+          payload: { revoked_id: row.id, reason: "revoked" },
+        },
+      );
+    }
   });
   return { id: row.id, name: row.name };
 }
