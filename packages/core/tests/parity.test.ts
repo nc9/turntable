@@ -474,6 +474,15 @@ describe("the shards of a split job are one job", () => {
     expect(running.jobs[0]).toMatchObject({ state: "running", durationMs: null });
   });
 
+  test("shards skipped because their paths did not change do not count toward the wall time", async () => {
+    const r = await get([
+      shard(0, "skipped", null, null),
+      shard(1, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:03:00Z"),
+      shard(2, "success", "2026-11-23T10:00:30Z", "2026-11-23T10:02:00Z"),
+    ]);
+    expect(r.jobs[0]).toMatchObject({ state: "success", durationMs: 3 * 60_000 });
+  });
+
   test("a split job compares against the one check of that name", async () => {
     const r = await get([
       shard(0, "success", "2026-11-23T10:00:00Z", "2026-11-23T10:06:00Z"),

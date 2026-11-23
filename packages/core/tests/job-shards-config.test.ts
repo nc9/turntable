@@ -70,3 +70,31 @@ test("policy set --ingest on stores the rules, audits them and shows them; an in
   const again = await setIngestPolicy(db, "acme", "web", "on", { defaultBranch: "main" });
   expect(again.to?.splits).toBeUndefined();
 });
+
+test("shard paths: workflow path-filter globs are accepted; an empty list or a bad glob is a config error", () => {
+  const rule = (paths: unknown) => [
+    { job: "tests", shards: [{ steps: ["A"], paths }, { steps: ["B"] }] },
+  ];
+  expect(splitsSchema.safeParse(rule(["src/**", "!src/docs/**"])).success).toBe(true);
+  for (const bad of [[], [""], ["!"], ["a[b"], ["!only/**"], "src/**", [1], Array(51).fill("a/**")])
+    expect(splitsSchema.safeParse(rule(bad)).success, JSON.stringify(bad)).toBe(false);
+  const empty = splitsSchema.safeParse(rule([]));
+  expect(JSON.stringify(empty.error?.issues)).toContain("empty paths list");
+  // the poll config and the ingest settings reject it when they load
+  expect(() =>
+    pollConfigSchema.parse({
+      allowUnauthenticated: true,
+      repos: [
+        {
+          repo: "acme/web",
+          workflow: ".github/workflows/ci.yml",
+          defaultBranch: "main",
+          splits: rule(["a[b"]),
+        },
+      ],
+    }),
+  ).toThrow();
+  expect(ingestSettingsSchema.safeParse({ defaultBranch: "main", splits: rule([]) }).success).toBe(
+    false,
+  );
+});
