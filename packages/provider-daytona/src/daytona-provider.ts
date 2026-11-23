@@ -16,7 +16,13 @@ import {
   type ShellRunner,
   type WrappedExecOptions,
 } from "@longshore/provider-sdk";
-import { type DaytonaSandbox, DaytonaApi, DEFAULT_BASE_URL, readJson } from "./api";
+import {
+  type DaytonaSandbox,
+  DaytonaApi,
+  DaytonaKeyRejectedError,
+  DEFAULT_BASE_URL,
+  readJson,
+} from "./api";
 import {
   mustNotReachFor,
   networkSettingFor,
@@ -97,6 +103,15 @@ export interface DaytonaProviderOptions {
    * usage endpoint does not exist (404), the check is skipped and the label count still applies.
    */
   ownerCiPreflight?: OwnerCiPreflight | false;
+  /**
+   * How the account's capacity is judged. `org-usage` (the default) reads the org's CPU in use and
+   * needs a key that may read `/organizations/<id>/usage`; if Daytona answers that read with 403
+   * (a customer-scoped key with sandbox write and delete only) it falls back to `own-fleet` and
+   * says so once. `own-fleet` never reads the org: it counts our own live sandboxes by our label
+   * and waits while that is `maxLive` or more. Only a 403 falls back; any other failure of the
+   * read (404, 5xx, network, an unreadable body) still refuses the create.
+   */
+  quotaMode?: "org-usage" | "own-fleet";
   /**
    * How the account owner's CI sandboxes are recognised (a label key and its values). Default:
    * none, so no label check. It only matters together with `ownerCiLabelWaitAt`.
@@ -392,6 +407,23 @@ export class DaytonaProvider implements Provider {
 
   private orgId: string | undefined;
   private warnedNoOrg = false;
+  /** Set once the usage read answered 403: from then on the own-fleet budget is the only gate. */
+  private usageForbidden = false;
+
+  /** What gates a create, for status and the logs. */
+  diagnose(): { quotaMode: "off" | "org-usage" | "own-fleet"; reason: string; maxLive: number } {
+    const base = { maxLive: this.maxLive };
+    if (this.opts.ownerCiPreflight === false) {
+      return { quotaMode: "off", reason: "ownerCiPreflight is false", ...base };
+    }
+    if (this.opts.quotaMode === "own-fleet") {
+      return { quotaMode: "own-fleet", reason: "configured", ...base };
+    }
+    if (this.usageForbidden) {
+      return { quotaMode: "own-fleet", reason: "org usage forbidden (403)", ...base };
+    }
+    return { quotaMode: "org-usage", reason: "default", ...base };
+  }
 
   /**
    * The org's CPU in use against the limit: `{ ok: true }` when there is room for `vcpu` more (or
@@ -403,6 +435,8 @@ export class DaytonaProvider implements Provider {
   ): Promise<{ ok: true } | { ok: false; cpu: number; limit: number }> {
     const o = this.opts.ownerCiPreflight;
     if (o === false) return { ok: true };
+    // Own-fleet budget: the caller already waits while our live count is at maxLive.
+    if (this.opts.quotaMode === "own-fleet" || this.usageForbidden) return { ok: true };
     const limit = o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT;
     if (this.orgId === undefined) {
       const first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
@@ -428,6 +462,15 @@ export class DaytonaProvider implements Provider {
         timeoutMs: 20_000,
       });
     } catch (e) {
+      // A key without the permission to read usage (403): the one failure that falls back, to
+      // the own-fleet budget. A 401 is a bad key and still fails, like everything below.
+      if (e instanceof DaytonaKeyRejectedError && e.status === 403) {
+        this.usageForbidden = true;
+        this.opts.log?.(
+          `daytona: org usage forbidden (403); own-fleet budget mode, maxLive ${this.maxLive}`,
+        );
+        return { ok: true };
+      }
       // Fail closed: a check that cannot be made is not a check that passed. An operator whose
       // deployment has no usage endpoint opts out with `ownerCiPreflight: false`.
       if (e instanceof SandboxNotFoundError) {
