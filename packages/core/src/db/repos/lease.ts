@@ -363,8 +363,13 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     // preempting the newest yield attempt holding one, then claim for the waiting attempt. One
     // victim per call, so a fan-out of waiting normal attempts preempts one yield attempt each.
     const blocked = await pass("normal", true);
-    if (blocked && "blockedOrg" in blocked) {
-      const orgFull = (perOrg.get(blocked.blockedOrg) ?? 0) >= capOf(blocked.blockedOrg);
+    const orgFull =
+      blocked !== undefined &&
+      "blockedOrg" in blocked &&
+      (perOrg.get(blocked.blockedOrg) ?? 0) >= capOf(blocked.blockedOrg);
+    // Preempt only when a cap is actually full. Normal work that is claimable with room under
+    // both caps (or that lost a claim race) must take no yield attempt's slot.
+    if (blocked && "blockedOrg" in blocked && (orgFull || total >= o.globalCap)) {
       const victim = await newestYieldAttempt(tx, yieldIds, {
         ...(orgFull ? { orgId: blocked.blockedOrg } : {}),
         ...(o.onlyRun ? { onlyRun: o.onlyRun } : {}),

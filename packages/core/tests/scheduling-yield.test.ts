@@ -199,6 +199,33 @@ test("a normal attempt is never preempted, and nothing is preempted when no norm
   expect((await listAttempts(db, yielding, y.jobId))[0]!.state).toBe("queued");
 });
 
+test("claimable normal work with room under both caps preempts nothing", async () => {
+  const y = await queue(yielding);
+  expect((await claim({ globalCap: 3, perOrgCap: 3 }))!.attempt.id).toBe(y.attemptId);
+  const n = await queue(normal);
+  // Room under the global cap (1 of 3) and the org cap (1 of 3): a plain claim, no victim.
+  expect((await claim({ globalCap: 3, perOrgCap: 3 }))!.attempt.id).toBe(n.attemptId);
+  expect((await listAttempts(db, yielding, y.jobId)).map((a) => a.state)).toEqual(["running"]);
+  expect((await listAudit(db, yielding)).filter((r) => r.op === "scheduler.preempt")).toEqual([]);
+});
+
+test("a normal attempt that is already leased (a lost race) preempts nothing", async () => {
+  const y = await queue(yielding);
+  await claim({ globalCap: 2, perOrgCap: 2 });
+  const n = await queue(normal);
+  // Another worker claimed the normal attempt first: it is no longer waiting, and room is left.
+  const other = await claimNextAttempt(db, {
+    owner: "w2",
+    leaseMs: 1000,
+    now: T0,
+    globalCap: 2,
+    perOrgCap: 2,
+  });
+  expect(other!.attempt.id).toBe(n.attemptId);
+  expect(await claim({ globalCap: 2, perOrgCap: 2 })).toBeUndefined();
+  expect((await listAttempts(db, yielding, y.jobId)).map((a) => a.state)).toEqual(["running"]);
+});
+
 test("fairness: a normal fan-out with four yield jobs running starts one normal job per pass, preempting each yield once", async () => {
   const ys = [];
   for (let i = 0; i < 4; i++) ys.push(await queue(yielding));
