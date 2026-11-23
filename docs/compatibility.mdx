@@ -62,6 +62,19 @@ A heavy job can run as several shards, each in its own sandbox, **without editin
   - **Results.** A skipped shard is ignored by the fold. If every shard is skipped, the job is `skipped`: it reports to the forge exactly as a job skipped by `if:` does (no check is posted), and `needs:` consumers see a skipped job, so a job that needs it with the default `if:` is skipped too. `turntable parity` takes the wall time from the shards that ran.
   - **Not a gate.** A shard limited by `paths` is not a gate for files outside its globs. Do not put a security check behind a path rule unless its globs cover everything it checks.
 
+## Artifacts
+
+`actions/upload-artifact@v4` and `actions/download-artifact@v4` work inside a run when the control plane has an artifact store. Set `TURNTABLE_ARTIFACTS_URL` to the base URL sandboxes reach the control plane at (the same kind of address as `TURNTABLE_CACHE_URL`). act's own artifact server speaks only the old v3 protocol, so Turntable serves the one these actions use: the twirp `ArtifactService` at `ACTIONS_RESULTS_URL`, with Azure block-blob requests for the bytes. Each job gets `ACTIONS_RESULTS_URL` and a per-job `ACTIONS_RUNTIME_TOKEN` for its attempt, which stops working when the attempt ends. The token is redacted from the log. It also travels in the blob URL paths (`/_artifacts/`), so access logs should not record those paths.
+
+- **Scope.** The run, project and org come from the job's token, never from the request. A job reaches only the artifacts of its own run. Downloading from another run (`run-id`, `github-token`) goes to GitHub's API, not here, and is not supported.
+- **What is stored.** The client's zip, as one blob under `<data dir>/artifacts/<run id>/<name>`. The control plane streams it to disk, hashes it itself (sha256), compares the client's reported hash and size, then records it against the run, job attempt, name, size and digest. A mismatch is refused and nothing is recorded. A name is recorded once per run: a second upload of the same name, `overwrite`, and `delete-artifact` are refused. Names are one plain component of letters, digits and `. _ + -`.
+- **Limits.** The org's stored-bytes quota (shared with the cache) and `TURNTABLE_ARTIFACT_MAX_GIB` (default 2). An upload that would pass either is refused with a message in the job log.
+- **Trust class.** An artifact carries the trust class of the attempt that wrote it. A download is decided against the class of the job reading: the same class or a higher one reads it, a lower class's artifact is refused (the actions have no way to ask for a lower class's artifact explicitly), and a `release` job reads only `release` class artifacts. The refusal is a line in the job log and the artifact looks absent. The digest is recomputed from the stored file before every download, and a mismatch is refused.
+- **Retention.** `TURNTABLE_ARTIFACT_RETENTION_DAYS` (default 90) for the whole instance. After it the bytes are removed and downloads fail. The recorded digest stays.
+- **Reach.** A job needs open egress to reach the store, as for the cache. A job with egress `none` gets no artifact credential, and the actions fail with a missing `ACTIONS_RESULTS_URL`.
+- **Release lane.** Set `TURNTABLE_RELEASE_ARTIFACT_DIR` to `<data dir>/artifacts` and the lane signs from what the jobs uploaded. See [Release lane](/release-lane#artifacts-from-jobs).
+- **Not supported yet.** Encryption at rest (unlike the cache, the directory is plaintext, so use an encrypted volume), a per-project retention, unzipped single-file artifacts (`archive: false`), and the newer action majors, which are not tested here.
+
 ## Unsupported in v1
 
 | Feature | Notes |

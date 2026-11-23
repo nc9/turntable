@@ -109,6 +109,12 @@ When the job is done, `finalize` looks at what the registry now holds for an ima
 
 The lane then attaches its own signed provenance as an OCI 1.1 referrer of the image: an artifact manifest (`artifactType: application/vnd.in-toto+json`) whose subject is the image manifest and whose one layer is the signed envelope. A repeat run finds the referrer already listed and pushes nothing. A registry that has no referrers API cannot carry it: the target still succeeds (the image is verified) and says what happened to the provenance. Images are processed after the project's release targets, and `provenance_as_release_asset` is recorded only when a GitHub release target that carries the provenance was published or is already on record as done in that pass, so the asset was uploaded and read back on the release. Otherwise (no such target, or it failed or was refused) it records `provenance_unattached`. Blob uploads for images are not pinned: they are content-addressed, and the manifest decides what a tag means.
 
+## Artifacts from jobs
+
+With the artifact store on (`TURNTABLE_ARTIFACTS_URL`, see [Compatibility](/compatibility#artifacts)), a build job's `actions/upload-artifact` records the artifact for the run and writes its bytes to `<data dir>/artifacts/<run id>/<name>`, which is the layout the lane reads. Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at that directory, read-only for the lane's user. What the lane signs is the uploaded blob, which is the client's zip. The lane still recomputes the digest and length from the bytes and refuses a mismatch with the record, as before.
+
+The class recorded with each artifact is the control plane's own, taken from the attempt that wrote it, and the signing service already refuses an artifact below the `release` class (`artifact_not_release_class`). The artifact service applies the same rule to downloads, so a job in a release run never receives what a lower class wrote.
+
 ## Deployment
 
 Run the release lane as its own service, with its own volume or directory and its own secrets. On Railway that is two services from the same image:

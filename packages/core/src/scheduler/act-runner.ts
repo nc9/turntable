@@ -21,6 +21,7 @@ import {
   splitJob,
   workflowHeadCheckouts,
 } from "@turntable/act-runner";
+import type { JobArtifactProvider } from "../artifacts/job";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
@@ -232,6 +233,8 @@ export type ActRunnerOptions = {
   fetch?: SafeFetch;
   /** Gives a job its control-plane cache (see cache/job.ts). Absent: jobs keep act's local cache. */
   cache?: JobCacheProvider;
+  /** Gives a job its artifact access (see artifacts/job.ts). Absent: the artifact actions fail. */
+  artifacts?: JobArtifactProvider;
   /** Sandbox root the job layout is planned under (a fake provider needs a host path). */
   planRoot?: string;
   /** Live terminal output of a job, line by line (`turntable run` prints it with a key prefix). */
@@ -699,18 +702,41 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               egress: egressForRun(ctx.run.plan, o.egress) === "open" ? "open" : "none",
             })
           : undefined;
+      // Likewise the artifact credential (ACTIONS_RUNTIME_TOKEN), for upload and download-artifact.
+      const jobArtifacts =
+        o.artifacts && jobKlass
+          ? o.artifacts({
+              runId: dbRun.id,
+              attemptId: ctx.attempt.id,
+              scope: ctx.scope,
+              klass: jobKlass,
+              egress: egressForRun(ctx.run.plan, o.egress) === "open" ? "open" : "none",
+              local: dbRun.local === true,
+            })
+          : undefined;
       try {
         return await run(
           jobCtx,
-          jobCache ? rebuildArgv({ ...plan, cacheUrl: jobCache.url }) : plan,
+          jobCache || jobArtifacts
+            ? rebuildArgv({
+                ...plan,
+                ...(jobCache ? { cacheUrl: jobCache.url } : {}),
+                ...(jobArtifacts
+                  ? {
+                      artifacts: { resultsUrl: jobArtifacts.resultsUrl, token: jobArtifacts.token },
+                    }
+                  : {}),
+              })
+            : plan,
           checkout.tarball,
           githubToken,
-          jobCache ? [jobCache.secret] : [],
+          [...(jobCache ? [jobCache.secret] : []), ...(jobArtifacts ? [jobArtifacts.token] : [])],
           oidcVars,
           jobKlass,
         );
       } finally {
         jobCache?.release();
+        jobArtifacts?.release();
         ctx.signal.removeEventListener("abort", revoke);
         await issued?.revoke();
       }

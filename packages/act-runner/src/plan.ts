@@ -136,6 +136,12 @@ export interface JobPlan {
    * When present act does not start its own cache server and jobs read this as ACTIONS_CACHE_URL.
    */
   cacheUrl?: string;
+  /**
+   * The control-plane artifact service for this attempt (set at execution, never stored with the
+   * plan): actions/upload-artifact@v4 and download-artifact@v4 read these as ACTIONS_RESULTS_URL
+   * and ACTIONS_RUNTIME_TOKEN. Without it they have nowhere to go.
+   */
+  artifacts?: { resultsUrl: string; token: string };
   /** act event name. */
   event: string;
   /** Files to overwrite in the delivered repo so every `uses:` is pinned to its sha. */
@@ -351,6 +357,14 @@ function withArgv(plan: JobPlan): JobPlan {
     "127.0.0.1",
     // The control-plane cache, when the job has one: act then starts no cache server of its own.
     ...(plan.cacheUrl ? ["--env", `ACTIONS_CACHE_URL=${plan.cacheUrl}`] : []),
+    ...(plan.artifacts
+      ? [
+          "--env",
+          `ACTIONS_RESULTS_URL=${plan.artifacts.resultsUrl}`,
+          "--env",
+          `ACTIONS_RUNTIME_TOKEN=${plan.artifacts.token}`,
+        ]
+      : []),
     // Never hand the job a container socket.
     "--container-daemon-socket",
     "-",
