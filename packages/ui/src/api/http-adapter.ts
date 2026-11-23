@@ -625,8 +625,19 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
       return quotasOf(await call<WireQuotas>("GET", "/quotas", { org: org() }));
     },
 
-    async sandboxUsage({ days }): Promise<SandboxUsage> {
-      const w = await call<WireSandboxUsage>("GET", "/usage/sandbox", { org: org(), days });
+    async sandboxUsage({ days, byProject }): Promise<SandboxUsage> {
+      const w = await call<WireSandboxUsage>("GET", "/usage/sandbox", {
+        org: org(),
+        days,
+        ...(byProject ? { group_by: "project" } : {}),
+      });
+      const mapDay = (d: WireSandboxUsage["days"][number]) => ({
+        day: d.day,
+        seconds: d.sandbox_seconds,
+        minutes: d.sandbox_minutes,
+        attempts: d.attempts,
+        estimatedAttempts: d.estimated_attempts,
+      });
       let limit: number | null = null;
       try {
         // The quota limit is optional context: a token that cannot read quotas still gets the chart.
@@ -640,14 +651,15 @@ export function createHttpApi(options: HttpApiOptions): LongshoreApi {
         limit = null;
       }
       return {
-        days: w.days.map((d) => ({
-          day: d.day,
-          seconds: d.sandbox_seconds,
-          minutes: d.sandbox_minutes,
-          attempts: d.attempts,
-          estimatedAttempts: d.estimated_attempts,
-        })),
+        days: w.days.map(mapDay),
         totalMinutes: w.total_minutes,
+        projects: (w.projects ?? []).map((p) => ({
+          id: p.project_id,
+          slug: p.project_slug,
+          name: p.project_name,
+          days: p.days.map(mapDay),
+          totalMinutes: p.total_minutes,
+        })),
         limitMinutesPerDay: limit,
       };
     },

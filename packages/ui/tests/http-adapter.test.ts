@@ -285,15 +285,67 @@ describe("mapping", () => {
     expect(await ok.api.sandboxUsage({ days: 7 })).toEqual({
       days: [{ day: "2026-11-22", seconds: 90, minutes: 1.5, attempts: 2, estimatedAttempts: 1 }],
       totalMinutes: 1.5,
+      projects: [],
       limitMinutesPerDay: 600,
     });
     expect(ok.calls[0]!.url.searchParams.get("days")).toBe("7");
+    expect(ok.calls[0]!.url.searchParams.has("group_by")).toBe(false);
     const refused = make((url) =>
       url.pathname.endsWith("/usage/sandbox")
         ? json(days)
         : json({ error: { code: "forbidden", message: "no" } }, 403),
     );
     expect((await refused.api.sandboxUsage({ days: 7 })).limitMinutesPerDay).toBeNull();
+  });
+
+  test("sandboxUsage with byProject asks for group_by=project and maps each project", async () => {
+    const d = (minutes: number) => ({
+      day: "2026-11-22",
+      sandbox_seconds: minutes * 60,
+      sandbox_minutes: minutes,
+      attempts: 1,
+      estimated_attempts: 0,
+    });
+    const fx = make((url) =>
+      url.pathname.endsWith("/usage/sandbox")
+        ? json({
+            days: [d(3)],
+            total_seconds: 180,
+            total_minutes: 3,
+            projects: [
+              {
+                project_id: "p1",
+                project_slug: "api",
+                project_name: "API",
+                days: [d(2)],
+                total_seconds: 120,
+                total_minutes: 2,
+              },
+              {
+                project_id: "p2",
+                project_slug: "web",
+                project_name: "Web",
+                days: [d(1)],
+                total_seconds: 60,
+                total_minutes: 1,
+              },
+            ],
+          })
+        : json({ limits: { max_sandbox_minutes_per_day: null } }),
+    );
+    const u = await fx.api.sandboxUsage({ days: 7, byProject: true });
+    expect(fx.calls[0]!.url.searchParams.get("group_by")).toBe("project");
+    expect(u.projects.map((p) => [p.id, p.slug, p.name, p.totalMinutes])).toEqual([
+      ["p1", "api", "API", 2],
+      ["p2", "web", "Web", 1],
+    ]);
+    expect(u.projects[0]!.days[0]).toEqual({
+      day: "2026-11-22",
+      seconds: 120,
+      minutes: 2,
+      attempts: 1,
+      estimatedAttempts: 0,
+    });
   });
 
   test("capabilities: rerun and approve are available", () => {

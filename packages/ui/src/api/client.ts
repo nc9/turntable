@@ -94,7 +94,7 @@ export interface LongshoreApi {
   approvalStatus(args: { runId: string }): Promise<ApprovalStatus>;
   approversOverview(): Promise<ApproversOverview>;
   /** Sandbox minutes per UTC day for the last `days` days, with the quota limit if one is set. */
-  sandboxUsage(args: { days: number }): Promise<SandboxUsage>;
+  sandboxUsage(args: { days: number; byProject?: boolean }): Promise<SandboxUsage>;
   /** The statement to sign for a run and environment, with its single-use challenge. */
   approvalChallenge(args: {
     runId: string;

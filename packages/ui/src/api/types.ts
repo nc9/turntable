@@ -120,9 +120,20 @@ export type SandboxUsageDay = {
   estimatedAttempts: number;
 };
 
+/** One project's sandbox time, from `sandbox_usage` with `group_by=project`. */
+export type SandboxUsageProject = {
+  id: string;
+  slug: string;
+  name: string;
+  days: SandboxUsageDay[];
+  totalMinutes: number;
+};
+
 export type SandboxUsage = {
   days: SandboxUsageDay[];
   totalMinutes: number;
+  /** Per project, for the projects with usage in the window. Empty when the server gives none. */
+  projects: SandboxUsageProject[];
   /** The org's sandbox-minutes-per-day quota, or null when none is set (or unreadable). */
   limitMinutesPerDay: number | null;
 };
