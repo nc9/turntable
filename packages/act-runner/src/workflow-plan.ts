@@ -76,6 +76,8 @@ export interface PlannedJob {
    * nth step, counted from 1). Steps named for another shard are turned off in this leg.
    */
   shard?: { index: number; total: number; partition: string[][] };
+  /** The job's `runs-on` labels, interpolated at plan time. The operator's sandbox size map reads these. */
+  runsOn?: string[];
 }
 
 /**
@@ -341,6 +343,25 @@ function runsOnReason(runsOn: unknown, ctx: ExprContext): string | undefined {
   return undefined;
 }
 
+/** The runs-on labels as strings, interpolated; an expression that cannot be evaluated is left out. */
+function runsOnLabelList(runsOn: unknown, ctx: ExprContext): string[] {
+  let labels: unknown[];
+  if (typeof runsOn === "string") labels = [runsOn];
+  else if (Array.isArray(runsOn)) labels = runsOn;
+  else if (isObj(runsOn) && runsOn.labels !== undefined) labels = [runsOn.labels].flat();
+  else return [];
+  const out: string[] = [];
+  for (const l of labels) {
+    if (typeof l !== "string") continue;
+    try {
+      out.push(l.includes("${{") ? interpolate(l, ctx) : l);
+    } catch (e) {
+      if (!(e instanceof ExprError)) throw e;
+    }
+  }
+  return out;
+}
+
 // ---- planning ----
 
 /** True when the expression reads only data known at plan time. */
@@ -542,6 +563,10 @@ export function planWorkflow(
         ...(maxParallel !== undefined ? { maxParallel } : {}),
         ...(environment !== undefined ? { environment } : {}),
         ...(wantsIdTokenIn(doc, id) ? { idToken: true } : {}),
+        ...(() => {
+          const runsOn = runsOnLabelList(job["runs-on"], ctx);
+          return runsOn.length > 0 ? { runsOn } : {};
+        })(),
       };
       // A shard limited by `paths` runs only when a changed file matches. Unknown, an empty list
       // and a partial list all mean the shard runs: the changed set is never guessed.

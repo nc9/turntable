@@ -80,6 +80,7 @@
     "test:exec-wrapper": "bun test packages/provider-sdk/tests/wrapper-watcher.test.ts",
     "test:pg-only": "bun test packages/core/tests/pg-transactions.test.ts",
     "test:poll-usage": "bun test packages/core/tests/poll-before.test.ts packages/core/tests/usage-cli.test.ts",
-    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts"
+    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts",
+    "test:sandbox-size": "bun test packages/core/tests/sandbox-size.test.ts"
   }
 }

@@ -45,7 +45,12 @@ import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
-import { resolvePollConfig, resolveProviderConfig, serveDefaults } from "./serve-config";
+import {
+  resolvePollConfig,
+  resolveProviderConfig,
+  resolveSandboxSizes,
+  serveDefaults,
+} from "./serve-config";
 import {
   createActRunner,
   createProvider,
@@ -284,6 +289,12 @@ async function startBackground(
             : { unix: requiredEnv("TURNTABLE_PUBLISH_CHANNEL_SOCKET") },
         })
       : undefined;
+    // The operator's map from runs-on labels to a sandbox size (none: providers' default size).
+    const sandboxSizes = resolveSandboxSizes();
+    if (sandboxSizes)
+      console.log(
+        `sandbox sizes: ${Object.keys(sandboxSizes.classes).length} class(es), ${Object.keys(sandboxSizes.labels).length} label(s)`,
+      );
     const released = (r: AttemptRunner): AttemptRunner =>
       publishChannel ? withReleaseChannel(r, { client: publishChannel }) : r;
     const proxied = (r: AttemptRunner): AttemptRunner =>
@@ -324,6 +335,7 @@ async function startBackground(
                 ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
                 ...(v.image ? { image: v.image } : {}),
+                ...(sandboxSizes ? { sizes: sandboxSizes } : {}),
               }),
               // A job behind the proxy holds secrets: it never runs with open egress.
               { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },

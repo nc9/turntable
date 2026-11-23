@@ -105,8 +105,8 @@ These were checked by running the conformance suite and a short capability test 
 
 Two settings belong to the instance operator, one project at a time. A tenant must not choose its own image or lift its own cap, so they are set with `turntable policy set --org <slug> --project <slug> --sandbox-snapshot <name|none> --max-concurrent <n|none>` on the host, or with `set_project_settings` over REST with an instance token (not an MCP tool, audited in the system chain and the org's). `get_project_settings` (reader, project-scoped) and `turntable policy show` read them.
 
-- **`sandboxSnapshot`** names an existing provider snapshot (Daytona) that the project's sandboxes start from. Order: the project's snapshot, then a size class's snapshot, then the provider config's `snapshot`, then the provider's default. The project's wins because it carries that project's tools; an instance-wide size class must not replace it. A size class's cpus, memory and disk still apply on top, for a provider that honours them.
-- **`maxConcurrent`** caps the project's running attempts. Like an org quota it can only lower the instance's per-org cap (`--org-cap`), never lift it: with the default per-org cap of 2 a project cap of 4 does nothing, so raise `--org-cap` and `--global-cap` first. The org's own cap still applies. A project at its cap holds new work (running attempts finish) while the org's other projects keep running. `0` holds the project completely.
+- **`sandboxSnapshot`** names an existing provider snapshot (Daytona) that the project's sandboxes start from. Order: the project's snapshot, then a size class's snapshot, then the provider config's `snapshot`, then the provider's default. The project's wins because it carries that project's tools; an instance-wide size class must not replace it. A size class's cpus, memory and disk still apply on top, for a provider that honours them. **The project's snapshot is used for every trust class in that project, untrusted pull requests included, so never bake credentials or private code into a snapshot** (a job holds untrusted code or usable credentials, never both).
+- **`maxConcurrent`** caps the project's running attempts. Like an org quota it can only lower the instance's per-org cap (`--org-cap`), never lift it: with the default per-org cap of 2 a project cap of 4 does nothing, so raise `--org-cap` and `--global-cap` first. The org's own cap still applies. A project at its cap holds new work (running attempts finish) while the org's other projects keep running. `max_concurrent: 0` pauses the project: nothing of it is claimed until the cap is raised or cleared (attempts already running finish).
 
 ### Not declared, and why
 
@@ -118,6 +118,33 @@ Two settings belong to the instance operator, one project at a time. A tenant mu
 
 - `nproc` and `/proc/meminfo` show the host, not the sandbox. Read limits from the sandbox's cgroup instead.
 - Listings are eventually consistent and deletion is asynchronous. The provider waits for both, which adds a few seconds to create and destroy.
+
+## Sandbox size per job
+
+By default every sandbox gets the provider's own default size (Docker: no limits; Daytona: the snapshot's). To give some jobs more, the operator maps `runs-on` labels to a size class. It is server configuration, not stored in the database and not a migration: set `TURNTABLE_SANDBOX_SIZES_JSON` (or `TURNTABLE_SANDBOX_SIZES_FILE`) to a document like this.
+
+```json
+{
+  "classes": {
+    "small": { "cpus": 2, "memoryMb": 4096 },
+    "large": { "cpus": 4, "memoryMb": 8192, "diskGb": 40, "snapshot": "daytona-large" }
+  },
+  "labels": { "ubuntu-latest-4-cores": "large" },
+  "default": "small",
+  "untrustedClass": "small",
+  "maxCpus": 8,
+  "maxMemoryMb": 16384,
+  "maxDiskGb": 100
+}
+```
+
+- A job's `runs-on` labels are read at plan time (a string, a list, or `labels:`; a matrix expression is resolved per leg). The first label with a mapping picks the class. A job with no mapped label gets `default`; with no `default` either, it gets the provider's own size.
+- A class sets `cpus`, `memoryMb`, `diskGb` and, for a provider that picks the size by image, a `snapshot` (Daytona: one snapshot per class, for example `daytona-large`). The scheduler puts these in the sandbox spec; a provider that cannot honour a field says so in its capabilities.
+- Daytona's capacity wait already counts the class's `cpus`, so a 4-vCPU job waits until 4 are free in the account.
+- `maxCpus`, `maxMemoryMb` and `maxDiskGb` are ceilings across every class: a class past one is clamped to it. They are instance-wide. There is no per-org CPU quota; the org's concurrency and sandbox-minute quotas still apply.
+- A workflow file chooses its own labels, so a stranger's pull request could ask for the biggest class. A job that runs as `untrusted_pr` ignores its labels and gets `untrustedClass` (else `default`). The class is the job's own, as recorded on its attempt (after the demotion rule), not its run's; a missing or unrecognised class counts as untrusted, and only a local run is exempt.
+- Lookups use own keys only: a label such as `constructor` or `__proto__` is not a mapping and gets the default, and a class named like an inherited key does not exist. A failed lookup falls back to `default`, never to the provider's size, while a map is configured.
+- A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default` or `untrustedClass`, a non-integer or non-positive number, or an unknown key.
 
 ## Provider trust model
 
