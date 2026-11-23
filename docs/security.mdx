@@ -128,6 +128,20 @@ An address the guard refuses ends the job as a `policy:` failure, not an infrast
 
 Each org is its own OpenID Connect issuer (`<public url>/oidc/<org slug>`), so a job can prove who it is to a cloud or to Vault and receive short-lived credentials, with no long-lived cloud secret in CI. Tokens are signed ES256 by per-org keys sealed in their own key domain, last at most 5 minutes, carry a mandatory per-request audience, are never issued to `untrusted_pr` (or `trusted_pr`) by default, and every mint is audited. See [OIDC](/oidc).
 
+## Longshore's own token shapes
+
+The log redactor has a built-in pattern for Longshore's own tokens, so one that lands in a job log or an error message is redacted even when nobody registered it:
+
+| Prefix | What | Shape |
+| --- | --- | --- |
+| `ls_` | An org API token (`longshore token create`, the `create_api_token` operation) | the prefix and exactly 43 base64url characters |
+| `lsi_` | An instance administrator token (`longshore token create --instance`) | the prefix and exactly 43 base64url characters |
+| `tt_` | An org token minted before the rename; still accepted | the prefix and exactly 43 base64url characters |
+
+The pattern is tight on purpose: exact length, at a word boundary, and no letter or digit right after, so `ls_colors` and ordinary identifiers are left alone. Only a hash of a token is stored, and a token is shown once.
+
+To make your own secret scanner catch a leaked one too, register these as custom patterns (GitHub secret scanning custom patterns, GitGuardian custom detectors, gitleaks or trufflehog rules): `\b(?:lsi|ls|tt)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9])`. Treat a match as a live credential: revoke it with `longshore token revoke <id>` and mint a new one. This repository has no scanner configuration of its own to extend.
+
 ## Transport: https only
 
 Plain http must redirect to https on every site we run. The primary control is the proxy or Cloudflare zone ("Always Use HTTPS", HSTS). The server enforces it too, so a proxy misconfiguration never serves plain http: with `LONGSHORE_TRUST_FORWARDED_PROTO=1`, a forwarded `http` request is redirected (301 for GET and HEAD, 400 for other methods, which a redirect would silently turn into a GET), and https responses carry `Strict-Transport-Security: max-age=31536000; includeSubDomains` (configurable or off with `LONGSHORE_HSTS_MAX_AGE`). The forwarded header is believed only when you set that variable, and only its last hop. Check both layers when you ship or audit a site.
