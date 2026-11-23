@@ -22,6 +22,8 @@ import {
   type ClaimHandler,
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
+import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
+import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
@@ -45,7 +47,12 @@ import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
 import { generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
-import { resolvePollConfig, resolveProviderConfig, serveDefaults } from "./serve-config";
+import {
+  resolvePollConfig,
+  resolveProviderConfig,
+  resolveSandboxSizes,
+  serveDefaults,
+} from "./serve-config";
 import {
   createActRunner,
   createProvider,
@@ -63,6 +70,10 @@ import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, resolveRoles } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
+import { cachedDoctor } from "./doctor/cache";
+import { runDoctor } from "./doctor/checks";
+import { ForwardedObserver } from "./doctor/observe";
+import { readerOf, realInputs } from "./doctor/real";
 import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
 import { enableDevUi, hasUi } from "./ui-assets";
@@ -103,6 +114,7 @@ Usage:
   turntable mcp [--token-file <path>] [--data-dir ./data]
   turntable approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   turntable incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
+  turntable db backup [--keep <n>] [--data-dir ./data]  (SQLite backup into <data-dir>/backups; not for Postgres)
   turntable quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
   turntable artifacts list|check --url <https://host> --org <slug> --project <slug> [--run <id>] [--token-file <path>]
   turntable quotas get --url <https://host> --org <slug> [--token-file <path>]  (remote read)
@@ -111,6 +123,7 @@ Usage:
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   turntable fetch-source <owner/name> <sha> [--file <path>]   check that a commit can be fetched, as a worker does
   turntable parity --run <id> --repo <owner/name> --app-id <n> [--json]   compare a run with another CI's checks
+  turntable doctor [--data-dir ./data] [--json] [--strict]   read-only readiness check before going live
   turntable verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
   turntable version
 
@@ -134,6 +147,9 @@ Environment:
                     sent over x-forwarded-proto: https are accepted
   TURNTABLE_DATABASE_URL  Postgres connection URL (default for --database-url); every subcommand that opens
                     the database uses it. Without it the database is SQLite in the data dir
+  TURNTABLE_BACKUP_BEFORE_MIGRATE  set to 1 to back up the SQLite database (under <data-dir>/backups) at boot,
+                    when migrations are pending and before they run; a failed backup stops the boot
+  TURNTABLE_BACKUP_KEEP  how many backups to keep (default 10), for "db backup" and the db_backup operation
   TURNTABLE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); TURNTABLE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   TURNTABLE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
@@ -284,6 +300,12 @@ async function startBackground(
             : { unix: requiredEnv("TURNTABLE_PUBLISH_CHANNEL_SOCKET") },
         })
       : undefined;
+    // The operator's map from runs-on labels to a sandbox size (none: providers' default size).
+    const sandboxSizes = resolveSandboxSizes();
+    if (sandboxSizes)
+      console.log(
+        `sandbox sizes: ${Object.keys(sandboxSizes.classes).length} class(es), ${Object.keys(sandboxSizes.labels).length} label(s)`,
+      );
     const released = (r: AttemptRunner): AttemptRunner =>
       publishChannel ? withReleaseChannel(r, { client: publishChannel }) : r;
     const proxied = (r: AttemptRunner): AttemptRunner =>
@@ -324,6 +346,7 @@ async function startBackground(
                 ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
                 ...(v.image ? { image: v.image } : {}),
+                ...(sandboxSizes ? { sizes: sandboxSizes } : {}),
               }),
               // A job behind the proxy holds secrets: it never runs with open egress.
               { secretBearing: (ctx) => ctx.proxy?.vaultRules === true },
@@ -529,6 +552,20 @@ async function serve(args: string[]): Promise<void> {
     throw new Error(
       "--init-master-key (TURNTABLE_MASTER_KEY_AUTOINIT) needs TURNTABLE_MASTER_KEY_FILE",
     );
+  }
+  // Before the database is opened (and so migrated) by this binary. SQLite only: on Postgres the
+  // operator takes the backup with pg_dump.
+  if (
+    DIALECT === "sqlite" &&
+    ["1", "true"].includes(process.env.TURNTABLE_BACKUP_BEFORE_MIGRATE ?? "")
+  ) {
+    await backupBeforeMigrate({
+      dbPath: join(dataDir, "turntable.db"),
+      dataDir,
+      version: VERSION,
+      keep: backupKeepFromEnv(process.env),
+      log: (m) => console.log(`[turntable] ${m}`),
+    });
   }
   const db = openDatabase(join(dataDir, "turntable.db"));
   await ensureInstance(db);
@@ -756,6 +793,26 @@ async function serve(args: string[]): Promise<void> {
         "TURNTABLE_UI_DIR is not used: it needs a run from source (the compiled binary serves only its embedded UI) and a directory with an index.html",
       );
   }
+  // The readiness checks behind the `doctor` operation, with what this server has seen of
+  // forwarded headers. Read-only: the handle it is given can only run queries.
+  const forwarded = new ForwardedObserver();
+  const hostedMode = values.hosted === true || process.env.TURNTABLE_HOSTED === "1";
+  const doctorRun = cachedDoctor(async () => {
+    const { inputs, close } = realInputs({
+      env: process.env,
+      dataDir,
+      hosted: hostedMode,
+      provider: values.provider,
+      providerConfig: values["provider-config"],
+      observed: forwarded.snapshot(),
+      db: readerOf(db),
+    });
+    try {
+      return await runDoctor(inputs);
+    } finally {
+      close();
+    }
+  });
   const server = roles.has("web")
     ? startServer({
         port,
@@ -770,11 +827,23 @@ async function serve(args: string[]): Promise<void> {
         ...(claims ? { claims } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
+        backup:
+          DIALECT === "pg"
+            ? { dialect: "pg" }
+            : {
+                dialect: "sqlite",
+                dataDir,
+                dbPath: join(dataDir, "turntable.db"),
+                keep: backupKeepFromEnv(process.env),
+              },
         instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
           ? Number(values["org-cap"])
           : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
+        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`turntable doctor` on the host).
+        ...(hostedMode ? {} : { doctor: doctorRun }),
+        forwarded,
       })
     : undefined;
   if (server)
@@ -993,6 +1062,10 @@ async function main(argv: string[]): Promise<void> {
       const { incidentCommand } = await import("./incident/cli");
       process.exit(await incidentCommand(rest));
     }
+    case "db": {
+      const { dbCommand } = await import("./db/cli");
+      process.exit(await dbCommand(rest));
+    }
     case "quotas": {
       const { quotasCommand } = await import("./quotas/cli");
       process.exit(await quotasCommand(rest));
@@ -1000,6 +1073,10 @@ async function main(argv: string[]): Promise<void> {
     case "usage": {
       const { usageCommand } = await import("./usage/cli");
       process.exit(await usageCommand(rest));
+    }
+    case "doctor": {
+      const { doctorCommand } = await import("./doctor/cli");
+      process.exit(await doctorCommand(rest));
     }
     case "artifacts": {
       const { artifactsCommand } = await import("./artifacts/cli");

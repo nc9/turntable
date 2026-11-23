@@ -1266,6 +1266,62 @@ describe("the release channel", () => {
     expect(proxy.active).toBe(0);
   });
 
+  describe("health", () => {
+    const health = (over: Record<string, unknown> = {}, ts = clock) =>
+      post("/v1/health", { ts, mac: channelMac(key, "health", [], ts), ...over });
+
+    test("a valid MAC answers 200 and changes nothing", async () => {
+      await signedRegister();
+      expect(proxy.active).toBe(1);
+      expect(await health()).toMatchObject({ status: 200, json: { ok: true } });
+      // asking twice is fine: health is not a replay-guarded call and holds no state
+      expect((await health()).status).toBe(200);
+      expect(proxy.active).toBe(1);
+      const row = await db.orm
+        .select({ state: s.jobAttempts.state })
+        .from(s.jobAttempts)
+        .where(eq(s.jobAttempts.id, a.attemptId));
+      expect(row[0]?.state).toBe("running");
+    });
+
+    test("a bad or missing MAC is 401", async () => {
+      expect(await health({ mac: "0".repeat(64) })).toMatchObject({
+        status: 401,
+        json: { reason: "bad_mac" },
+      });
+      expect((await health({ mac: undefined })).status).toBe(401);
+      expect((await health({ mac: "not hex" })).status).toBe(401);
+      expect((await post("/v1/health", { ts: clock })).status).toBe(401);
+      expect(
+        (await health({ mac: channelMac("another key entirely", "health", [], clock) })).status,
+      ).toBe(401);
+    });
+
+    test("a stale or missing ts is refused", async () => {
+      const old = clock - 5 * 60_000;
+      expect((await health({}, old)).status).toBe(401);
+      const future = clock + 5 * 60_000;
+      expect((await health({}, future)).status).toBe(401);
+      // a MAC over a fresh ts does not carry a stale ts in the body
+      expect((await health({ ts: old })).status).toBe(401);
+      expect((await post("/v1/health", { mac: channelMac(key, "health", [], clock) })).status).toBe(
+        401,
+      );
+    });
+
+    test("a MAC computed for health is refused by register and revoke: the operation is bound in", async () => {
+      const mac = channelMac(key, "health", [], clock);
+      const reg = await post("/v1/register", { ...ids(), ts: clock, mac });
+      expect(reg).toMatchObject({ status: 401, json: { reason: "bad_mac" } });
+      expect(proxy.active).toBe(0);
+      await signedRegister({}, clock + 1);
+      expect(proxy.active).toBe(1);
+      const rev = await post("/v1/revoke", { attemptId: a.attemptId, ts: clock, mac });
+      expect(rev).toMatchObject({ status: 401, json: { reason: "bad_mac" } });
+      expect(proxy.active).toBe(1);
+    });
+  });
+
   test("malformed bodies and unknown paths", async () => {
     expect((await post("/v1/register", { orgId: "x" })).status).toBe(400);
     expect((await post("/v1/other", {})).status).toBe(404);

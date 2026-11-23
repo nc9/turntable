@@ -94,7 +94,7 @@ export async function fetchOurRun(o: {
   };
   const jobs: OurJob[] = [];
   // The shards of one split job are one job: its state is the fold of theirs and its duration the
-  // wall time from the first shard's start to the last one's finish (never the sum).
+  // wall time from the first shard's start to the last one's finish (never the sum), counting only the shards that ran.
   const shards = new Map<string, typeof run.jobs>();
   for (const j of run.jobs) {
     if (!j.shard) continue;
@@ -118,9 +118,11 @@ export async function fetchOurRun(o: {
       folded.add(j.shard.job);
       const group = shards.get(j.shard.job)!;
       const state = foldShardStates(group.map((g) => g.state));
-      const starts = group.map((g) => (g.started_at ? Date.parse(g.started_at) : Number.NaN));
-      const ends = group.map((g) => (g.finished_at ? Date.parse(g.finished_at) : Number.NaN));
-      const done = [...starts, ...ends].every(Number.isFinite);
+      // Skipped shards (none of their paths changed) never ran: they do not count toward the wall time.
+      const ran = group.filter((g) => g.state !== "skipped");
+      const starts = ran.map((g) => (g.started_at ? Date.parse(g.started_at) : Number.NaN));
+      const ends = ran.map((g) => (g.finished_at ? Date.parse(g.finished_at) : Number.NaN));
+      const done = ran.length > 0 && [...starts, ...ends].every(Number.isFinite);
       jobs.push({
         name: j.name,
         state,

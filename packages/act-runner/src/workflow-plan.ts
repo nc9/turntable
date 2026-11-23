@@ -11,7 +11,13 @@ import {
 import { lintError, localActionDir, PlanError, type PlanWarning, untrustedIn } from "./plan";
 import { wantsIdTokenIn } from "./permissions";
 import { findHeadCheckouts, isPrivilegedEvent } from "./taint";
-import { matchTrigger, type TriggerResult, type WorkflowEvent } from "./triggers";
+import {
+  matchesPatterns,
+  matchTrigger,
+  patternToRegExp,
+  type TriggerResult,
+  type WorkflowEvent,
+} from "./triggers";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -70,6 +76,8 @@ export interface PlannedJob {
    * nth step, counted from 1). Steps named for another shard are turned off in this leg.
    */
   shard?: { index: number; total: number; partition: string[][] };
+  /** The job's `runs-on` labels, interpolated at plan time. The operator's sandbox size map reads these. */
+  runsOn?: string[];
 }
 
 /**
@@ -79,7 +87,39 @@ export interface PlannedJob {
  */
 export interface SplitRule {
   job: string;
-  shards: { steps: string[] }[];
+  /**
+   * `paths` (optional) limits a shard to runs whose changed files match: workflow path-filter
+   * globs, `!` negation included. A shard with no `paths` always runs.
+   */
+  shards: { steps: string[]; paths?: string[] | undefined }[];
+}
+
+/** The most `paths` globs one shard may list, and the longest glob. */
+export const MAX_SHARD_PATHS = 50;
+const MAX_PATH_GLOB = 200;
+
+/** Why a shard's `paths` list is not valid, or undefined. */
+function shardPathsProblem(paths: readonly string[]): string | undefined {
+  if (paths.length === 0) return "an empty paths list (leave paths out to always run)";
+  if (paths.length > MAX_SHARD_PATHS) return `more than ${MAX_SHARD_PATHS} paths`;
+  for (const p of paths) {
+    if (typeof p !== "string" || p === "" || p.length > MAX_PATH_GLOB)
+      return "a path glob is empty or too long";
+    const body = p.startsWith("!") ? p.slice(1) : p;
+    if (body === "") return `path ${JSON.stringify(p)} negates nothing`;
+    if (/\0|\n|\r/.test(body)) return `path ${JSON.stringify(p)} has a control character`;
+    // An unclosed `[` is a literal in the matcher, so it is almost certainly a typo.
+    if (body.includes("[") && body.indexOf("]", body.indexOf("[") + 1) < 0)
+      return `path ${JSON.stringify(p)} has an unclosed [`;
+    try {
+      patternToRegExp(body);
+    } catch {
+      return `path ${JSON.stringify(p)} is not a valid glob`;
+    }
+  }
+  if (!paths.some((p) => !p.startsWith("!")))
+    return "paths needs one pattern that is not a !negation";
+  return undefined;
 }
 
 /** The most shards one job may be split into. */
@@ -93,6 +133,10 @@ export function splitRuleProblem(rule: SplitRule): string | undefined {
   const seen = new Set<string>();
   for (const [i, s] of rule.shards.entries()) {
     if (s.steps.length === 0) return `split ${rule.job}: shard ${i + 1} names no step`;
+    if (s.paths !== undefined) {
+      const why = shardPathsProblem(s.paths);
+      if (why) return `split ${rule.job}: shard ${i + 1}: ${why}`;
+    }
     for (const name of s.steps) {
       if (name === "" || name.length > 200)
         return `split ${rule.job}: a step name is empty or too long`;
@@ -142,6 +186,10 @@ export interface PlanWorkflowOptions {
   failOnLint?: boolean;
   /** Operator rules that split a job into shards (see SplitRule). Never read from the repository. */
   splits?: readonly SplitRule[];
+  /** The files shard selection reads, when they differ from `event.changedFiles` (a merge group). */
+  shardChangedFiles?: readonly string[];
+  /** Where the event's changed files came from, for the shard-selection notice and skip reason. */
+  changedSource?: string;
 }
 
 export function githubContext(
@@ -295,6 +343,25 @@ function runsOnReason(runsOn: unknown, ctx: ExprContext): string | undefined {
   return undefined;
 }
 
+/** The runs-on labels as strings, interpolated; an expression that cannot be evaluated is left out. */
+function runsOnLabelList(runsOn: unknown, ctx: ExprContext): string[] {
+  let labels: unknown[];
+  if (typeof runsOn === "string") labels = [runsOn];
+  else if (Array.isArray(runsOn)) labels = runsOn;
+  else if (isObj(runsOn) && runsOn.labels !== undefined) labels = [runsOn.labels].flat();
+  else return [];
+  const out: string[] = [];
+  for (const l of labels) {
+    if (typeof l !== "string") continue;
+    try {
+      out.push(l.includes("${{") ? interpolate(l, ctx) : l);
+    } catch (e) {
+      if (!(e instanceof ExprError)) throw e;
+    }
+  }
+  return out;
+}
+
 // ---- planning ----
 
 /** True when the expression reads only data known at plan time. */
@@ -367,6 +434,16 @@ export function planWorkflow(
   for (const id of rules.keys())
     if (!Object.keys(doc.jobs).includes(id))
       splitNotices.push(`split rule for job ${id}: the workflow has no such job`);
+
+  const changed = opts.shardChangedFiles ?? event.changedFiles;
+  const source = opts.changedSource ?? event.name;
+  if ([...rules.values()].some((r) => r.shards.some((sh) => sh.paths))) {
+    splitNotices.push(
+      changed === undefined || changed.length === 0
+        ? `shards selected by changed paths: changed files unknown (${source}), so every shard runs`
+        : `shards selected by changed paths (${source}, ${changed.length} files)`,
+    );
+  }
 
   const rawJobs = doc.jobs;
   const ids = Object.keys(rawJobs);
@@ -486,14 +563,29 @@ export function planWorkflow(
         ...(maxParallel !== undefined ? { maxParallel } : {}),
         ...(environment !== undefined ? { environment } : {}),
         ...(wantsIdTokenIn(doc, id) ? { idToken: true } : {}),
+        ...(() => {
+          const runsOn = runsOnLabelList(job["runs-on"], ctx);
+          return runsOn.length > 0 ? { runsOn } : {};
+        })(),
       };
+      // A shard limited by `paths` runs only when a changed file matches. Unknown, an empty list
+      // and a partial list all mean the shard runs: the changed set is never guessed.
+      const shardPaths = rule?.shards[i]?.paths;
+      if (shardPaths && changed !== undefined && changed.length > 0) {
+        const hit = changed.some((f) => matchesPatterns(shardPaths, f));
+        if (!hit) {
+          node.staticSkip = {
+            reason: `no shard paths changed: none of ${changed.length} changed files match ${shardPaths.join(", ")} (${source})`,
+          };
+        }
+      }
       // Static `if:` is decided now; one that reads needs waits for schedule time.
       if (job.if !== undefined && !unsupported) {
         const cond = job.if as string | boolean;
         try {
           const isStat = typeof cond === "boolean" || isStatic(wholeExpression(cond) ?? cond);
           if (isStat && !evaluateCondition(cond, ctx)) {
-            node.staticSkip = { reason: `if: ${String(cond).trim()} is false` };
+            node.staticSkip ??= { reason: `if: ${String(cond).trim()} is false` };
           }
         } catch (e) {
           if (e instanceof ExprError) node.unsupported = `if: ${e.message}`;

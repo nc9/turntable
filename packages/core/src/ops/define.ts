@@ -6,6 +6,8 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
+import type { DoctorReport } from "../doctor/types";
+import type { BackupConfig } from "../db/backup";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
 
@@ -37,12 +39,16 @@ export type OpContext = {
   claims?: InstallationClaims | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
   instanceOrgCap?: number | undefined;
+  /** Where `db_backup` may write; absent when the server was not set up for it. */
+  backup?: BackupConfig | undefined;
   /** Outbound webhooks; absent without a master key. */
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent (tests inject their own). */
   attestationAnchors?: TrustAnchors | undefined;
+  /** Runs the readiness checks against the running server; absent where there is no server. */
+  doctor?: (() => Promise<DoctorReport>) | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
@@ -81,6 +87,15 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
   secretInputFields?: readonly string[];
   /** False keeps the op out of MCP tools: a value in tool input sits in an agent's context. */
   mcp?: boolean;
+  /**
+   * For a long-running write that must not hold the database's write lock (`db_backup`): the
+   * dispatcher runs the handler with the plain handle, outside any transaction, then writes the
+   * audit row (success or failure) in its own short transaction afterwards. The handler must not
+   * need atomicity with the audit row.
+   */
+  outsideTransaction?: boolean;
+  /** For an `outsideTransaction` op: extra fields recorded in the audit input on success. */
+  auditDetail?: (output: z.infer<O>) => Record<string, unknown>;
   handler(ctx: OpContext, input: z.infer<I>): Promise<z.infer<O>>;
 };
 
@@ -101,6 +116,8 @@ export type Op = {
   oneTimeSecretFields: readonly string[];
   secretInputFields: readonly string[];
   mcp: boolean;
+  outsideTransaction: boolean;
+  auditDetail?: ((output: unknown) => Record<string, unknown>) | undefined;
   handler(ctx: OpContext, input: unknown): Promise<unknown>;
 };
 
@@ -177,6 +194,8 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     oneTimeSecretFields: spec.oneTimeSecretFields ?? [],
     secretInputFields: spec.secretInputFields ?? [],
     mcp: spec.mcp ?? true,
+    outsideTransaction: spec.outsideTransaction ?? false,
+    auditDetail: spec.auditDetail ? (out) => spec.auditDetail!(out as z.infer<O>) : undefined,
     handler: (ctx, raw) => spec.handler(ctx, raw as z.infer<I>),
   };
 }
