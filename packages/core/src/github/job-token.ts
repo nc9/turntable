@@ -7,8 +7,8 @@ import {
   declaredPermissions,
   isMappablePermission,
   type PermissionLevel,
-} from "@longshore/act-runner";
-import { type SafeFetch, safeFetch } from "@longshore/net";
+} from "@turntable/act-runner";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import type { TrustClass } from "../trust";
 
 export type Permissions = Record<string, PermissionLevel>;
@@ -26,7 +26,7 @@ export interface CappedPermissions {
  * - `protected` and `release`: what was asked for;
  * then never more than the installation was granted (`granted`, when known). `metadata: read` is
  * always present, since GitHub grants it with every installation token. There is no id-token
- * here: Longshore's own OIDC issuer is the way to ask for one.
+ * here: Turntable's own OIDC issuer is the way to ask for one.
  */
 export function capPermissions(
   declared: Readonly<Record<string, PermissionLevel>>,
@@ -112,8 +112,7 @@ export interface JobTokensOptions {
    * token would only make it a secret-bearing job. Unknown means private.
    */
   isPublic?:
-    | ((owner: string, repo: string, installationId: string) => Promise<boolean>)
-    | undefined;
+    ((owner: string, repo: string, installationId: string) => Promise<boolean>) | undefined;
 }
 
 /** True when the permissions are nothing beyond `contents: read` and `metadata: read`. */
@@ -123,8 +122,7 @@ export const isReadOnlyContents = (p: Readonly<Record<string, string>>): boolean
 export class JobTokens {
   readonly #auth: TokenAuthority;
   readonly #isPublic:
-    | ((owner: string, repo: string, installationId: string) => Promise<boolean>)
-    | undefined;
+    ((owner: string, repo: string, installationId: string) => Promise<boolean>) | undefined;
 
   constructor(auth: TokenAuthority, o: JobTokensOptions = {}) {
     this.#auth = auth;
@@ -226,7 +224,7 @@ export function publicRepoCheck(o: {
           authorization: `Bearer ${token}`,
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
-          "user-agent": "longshore",
+          "user-agent": "turntable",
         },
         signal: AbortSignal.timeout(10_000),
       });

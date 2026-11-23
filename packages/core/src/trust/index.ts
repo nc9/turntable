@@ -4,7 +4,7 @@
 // class. The demotion rule is structural: a job on a privileged trigger that is handed a
 // non-protected ref, by delivery or by its own checkout step, is demoted to untrusted before it
 // starts, so it can never hold credentials next to attacker-controlled code.
-import { isPrivilegedEvent, matchesPatterns } from "@longshore/act-runner";
+import { isPrivilegedEvent, matchesPatterns } from "@turntable/act-runner";
 
 export type TrustClass = "protected" | "release" | "trusted_pr" | "untrusted_pr";
 
@@ -267,7 +267,7 @@ const TRUSTED_CLASSES: readonly string[] = ["protected", "release", "trusted_pr"
 /**
  * Whether a run's code is trusted, for isolation and egress. Fails closed: only a stored class of
  * protected, release or trusted_pr is trusted, and anything missing, unknown or unparseable is
- * untrusted. The one exception is a local run (`longshore run`, from the operator's own
+ * untrusted. The one exception is a local run (`turntable run`, from the operator's own
  * checkout). The decided class lives in `runs.trust`, with a copy in `run.plan.trust`; if either
  * says untrusted the run is. A job that the demotion rule lowers (a privileged trigger handed a
  * non-protected ref, or a step that checks out the PR head; the head-checkout jobs are listed in

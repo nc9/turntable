@@ -1,4 +1,4 @@
-// The instance administrator (#205): an `lsi_` token minted on the host, accepted over REST only,
+// The instance administrator (#205): a `tti_` token minted on the host, accepted over REST only,
 // able to call the instance operations and nothing else, and unreachable by any org token.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -64,8 +64,8 @@ const orgCreds = async (t: Tenant): Promise<{ label: string; cred: Credential }[
 };
 
 describe("minting is host-only and the token is stored hashed", () => {
-  test("lsi_ prefix, hash only in the database, audited in the system org's chain, no org op mints one", async () => {
-    expect(secret.startsWith("lsi_")).toBe(true);
+  test("tti_ prefix, hash only in the database, audited in the system org's chain, no org op mints one", async () => {
+    expect(secret.startsWith("tti_")).toBe(true);
     expect(secret.length).toBe(4 + 43);
     const row = await findInstanceTokenByHash(db, hashToken(secret));
     expect(row?.id).toBe(tokenId);
@@ -233,8 +233,8 @@ describe("no org principal reaches an instance op, and the instance token reache
     }
   });
 
-  test("an lsi_-shaped string is never an org token, even if its hash is in api_tokens", async () => {
-    const fake = `lsi_${"A".repeat(43)}`;
+  test("a tti_-shaped string is never an org token, even if its hash is in api_tokens", async () => {
+    const fake = `tti_${"A".repeat(43)}`;
     await insertApiToken(
       db,
       { orgId: a.orgId },
@@ -316,12 +316,12 @@ describe("REST only", () => {
     ).rejects.toMatchObject({ code: "unauthenticated" });
   });
 
-  test("a bad, expired or unknown lsi_ token fails like any bad token, and is audited in the system chain", async () => {
-    const unknown = `lsi_${"B".repeat(43)}`;
+  test("a bad, expired or unknown tti_ token fails like any bad token, and is audited in the system chain", async () => {
+    const unknown = `tti_${"B".repeat(43)}`;
     const r = await dispatch(env, { kind: "bearer", token: unknown }, "instance_whoami", {});
     expect(!r.ok && r.error.code).toBe("unauthenticated");
     expect(!r.ok && r.error.message).toBe(
-      await dispatch(env, { kind: "bearer", token: `ls_${"B".repeat(43)}` }, "list_runs", {}).then(
+      await dispatch(env, { kind: "bearer", token: `tt_${"B".repeat(43)}` }, "list_runs", {}).then(
         (x) => (!x.ok ? x.error.message : ""),
       ),
     );

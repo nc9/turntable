@@ -1,5 +1,5 @@
 import { afterAll } from "bun:test";
-import { runConformance } from "@longshore/provider-conformance";
+import { runConformance } from "@turntable/provider-conformance";
 import { DaytonaProvider } from "../src/index";
 import { MOCK_KEY, startMock } from "../src/testing/mock-daytona";
 

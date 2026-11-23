@@ -1,4 +1,4 @@
-import type { SafeFetch } from "@longshore/net";
+import type { SafeFetch } from "@turntable/net";
 import {
   FileTooLargeError,
   InfraError,
@@ -15,7 +15,7 @@ import {
   type SandboxSpec,
   type ShellRunner,
   type WrappedExecOptions,
-} from "@longshore/provider-sdk";
+} from "@turntable/provider-sdk";
 import {
   type DaytonaSandbox,
   DaytonaApi,
@@ -66,7 +66,7 @@ export interface DaytonaProviderOptions {
   /** Where to read the API key at runtime: a file path, an env var name, or a function. */
   apiKey: ApiKeySource;
   baseUrl?: string;
-  /** Run id stamped on every sandbox as the `longshore-run` label unless the spec already has one. */
+  /** Run id stamped on every sandbox as the `turntable-run` label unless the spec already has one. */
   runId?: string;
   /** Live sandboxes of ours at once. Default 2, never above 3. */
   maxLive?: number;
@@ -128,7 +128,7 @@ export interface DaytonaProviderOptions {
    * This instance's fleet in a shared account: the label `<fleet>=1` and the name prefix
    * `<fleet>-`. Everything that counts, lists, verifies or deletes sandboxes is limited to it, so
    * instances with different fleets (a dev machine and a hosted shadow) never touch each other's
-   * sandboxes or count against each other's `maxLive`. Lower case, starts with `longshore-`, at
+   * sandboxes or count against each other's `maxLive`. Lower case, starts with `turntable-`, at
    * most 30 characters. Default `longshore-dev`.
    */
   fleet?: string;
@@ -875,7 +875,7 @@ export class DaytonaProvider implements Provider {
     const name = endpoint.tlsName ?? endpoint.host;
     let caFile: string[] = [];
     if (this.opts.proxyTlsCaPem !== undefined) {
-      const path = "/tmp/longshore-proxy-ca.pem";
+      const path = "/tmp/turntable-proxy-ca.pem";
       await this.files.put(id, path, new TextEncoder().encode(this.opts.proxyTlsCaPem));
       caFile = [path];
     }

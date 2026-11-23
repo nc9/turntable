@@ -2,7 +2,7 @@
 // bytes it verified to the project's declared targets itself. The declaration lives in the lane's
 // own file (never in the workflow, which a pull request can edit), and the credentials are
 // release-class secrets only the lane can open.
-import type { SafeFetch } from "@longshore/net";
+import type { SafeFetch } from "@turntable/net";
 
 export const NPM_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 export const DIST_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

@@ -493,7 +493,7 @@ describe("CLI", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   test("freeze, status and unfreeze as the local owner, audited", async () => {
-    const file = openDatabase(join(dir, "longshore.db"));
+    const file = openDatabase(join(dir, "turntable.db"));
     const org = await createOrg(file, { slug: "acme", name: "Acme" });
     file.close();
     const logs: string[] = [];
@@ -523,7 +523,7 @@ describe("CLI", () => {
     } finally {
       console.log = origLog;
     }
-    const check = openDatabase(join(dir, "longshore.db"));
+    const check = openDatabase(join(dir, "turntable.db"));
     const rows = await listAudit(check, { orgId: org.id });
     expect(rows.map((r) => r.op)).toContain("incident_freeze");
     check.close();

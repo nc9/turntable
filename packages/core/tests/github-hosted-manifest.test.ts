@@ -44,10 +44,10 @@ const BASE = "https://ci.example.test";
 const SETUP_TOKEN = ["setup", "token", randomBytes(12).toString("hex")].join("-");
 const conv = (id: number): ManifestConversion => ({
   id,
-  slug: `longshore-${id}`,
-  name: "Longshore",
+  slug: `turntable-${id}`,
+  name: "Turntable",
   owner: { login: "acme" },
-  html_url: `https://github.com/apps/longshore-${id}`,
+  html_url: `https://github.com/apps/turntable-${id}`,
   client_id: `Iv1.client${id}`,
   client_secret: `client-secret-${id}-${randomBytes(6).toString("hex")}`,
   webhook_secret: `webhook-secret-${id}-${randomBytes(6).toString("hex")}`,
@@ -263,7 +263,7 @@ describe("starting the flow", () => {
   });
 
   test("the manifest asks for least privilege and points back at this instance", async () => {
-    const f = await startFlow({ gh_org: "acme-inc", name: "Longshore CI" });
+    const f = await startFlow({ gh_org: "acme-inc", name: "Turntable CI" });
     expect(f.html).toContain("https://github.com/organizations/acme-inc/settings/apps/new?state=");
     const m = JSON.parse(
       f
@@ -272,7 +272,7 @@ describe("starting the flow", () => {
         .replaceAll("&lt;", "<")
         .replaceAll("&gt;", ">"),
     ) as Record<string, any>;
-    expect(m.name).toBe("Longshore CI");
+    expect(m.name).toBe("Turntable CI");
     expect(m.redirect_url).toBe(`${BASE}${MANIFEST_CALLBACK_PATH}`);
     expect(m.hook_attributes.url).toBe(`${BASE}/api/v1/webhooks/github`);
     expect(m.default_permissions).toEqual({
@@ -347,13 +347,13 @@ describe("the callback", () => {
     const c = first;
     for (const secret of [c.client_secret, c.webhook_secret, rsa.privateKey])
       expect(html).not.toContain(secret);
-    expect(html).toContain("longshore-4242");
-    expect(html).toContain("https://github.com/apps/longshore-4242/installations/new");
+    expect(html).toContain("turntable-4242");
+    expect(html).toContain("https://github.com/apps/turntable-4242/installations/new");
     expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(exchanged).toEqual(["good-code"]);
 
     const app = (await getGithubApp(db))!;
-    expect([app.appId, app.orgId, app.slug]).toEqual(["4242", orgId, "longshore-4242"]);
+    expect([app.appId, app.orgId, app.slug]).toEqual(["4242", orgId, "turntable-4242"]);
     expect(await store.get(orgId, SECRET_APP_ID)).toBe("4242");
     expect(await store.get(orgId, SECRET_PRIVATE_KEY)).toBe(rsa.privateKey);
     expect(await store.get(orgId, SECRET_WEBHOOK)).toBe(c.webhook_secret);
@@ -840,12 +840,12 @@ describe("the App that comes back must be the one that was asked for", () => {
 
   test("a name other than the requested one stores nothing", async () => {
     first = { ...conv(4242), name: "Something Else" };
-    await refused({ name: "Longshore" });
+    await refused({ name: "Turntable" });
   });
 
   test("the name is compared without regard to case or edge spaces", async () => {
-    first = { ...conv(4242), name: " longshore ci " };
-    const f = await startFlow({ name: "Longshore CI" });
+    first = { ...conv(4242), name: " turntable ci " };
+    const f = await startFlow({ name: "Turntable CI" });
     expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
   });
 
@@ -875,7 +875,7 @@ describe("the App that comes back must be the one that was asked for", () => {
   });
 
   test("an App page that is not on github.com stores nothing", async () => {
-    first = { ...conv(4242), html_url: "https://evil.example.test/apps/longshore-4242" };
+    first = { ...conv(4242), html_url: "https://evil.example.test/apps/turntable-4242" };
     await refused();
   });
 
@@ -970,7 +970,7 @@ describe("through the server", () => {
     try {
       const form = await fetch(`http://127.0.0.1:${on.port}${MANIFEST_PATH}`);
       expect(form.status).toBe(200);
-      expect(await form.text()).toContain("Create the Longshore GitHub App");
+      expect(await form.text()).toContain("Create the Turntable GitHub App");
       const refused = await fetch(`http://127.0.0.1:${on.port}${MANIFEST_PATH}`, {
         method: "POST",
         headers: { authorization: "Bearer wrong" },

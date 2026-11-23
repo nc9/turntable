@@ -1,4 +1,4 @@
-// `longshore fetch-source <owner/name> <sha>`: gets a run's commit the way the worker does and says
+// `turntable fetch-source <owner/name> <sha>`: gets a run's commit the way the worker does and says
 // what it got. It runs no git or tar binary (an in-process git fetch at depth 1 over https, every
 // object verified, the tree and `.git` written, a tarball streamed to disk).
 //
@@ -11,18 +11,18 @@
 //     same deadline and ceilings) and reports what came back: the image's smoke test of a real
 //     checkout, and a way to check that a host can reach GitHub without starting a run.
 import { parseArgs } from "node:util";
-import { readTarGz } from "@longshore/act-runner";
+import { readTarGz } from "@turntable/act-runner";
 import { gitRepoSource } from "../scheduler/act-runner";
 import { isRepoPart, performCheckout } from "./checkout";
 import { checkoutConfigFromEnv } from "./checkout-child";
 import { clean, type FetchLimits } from "./git-fetch";
 
-export const FETCH_SOURCE_USAGE = `Usage: longshore fetch-source <owner/name> <sha> [--file <path>]
+export const FETCH_SOURCE_USAGE = `Usage: turntable fetch-source <owner/name> <sha> [--file <path>]
 
 Fetches that commit of a public GitHub repository the way a worker does, and prints one line:
   ok <sha> files=<n> tarball=<bytes>[ file=<path>:<bytes>]
 --file also reads that repository file through the worker's safe reader. Exit status 1 on failure.
-The worker's own settings apply (LONGSHORE_CHECKOUT_* in the environment).`;
+The worker's own settings apply (TURNTABLE_CHECKOUT_* in the environment).`;
 
 const NUMERIC_LIMITS = [
   "maxPackBytes",

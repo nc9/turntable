@@ -68,8 +68,8 @@ export type ClaimOptions = {
   /** Most queued rows examined in one claim, across all orgs. Default 1000. */
   scanLimit?: number;
   /**
-   * Claim only this run's attempts (a `longshore run` process running its own run), and count
-   * only its attempts against the caps. Without it, runs started by `longshore run` (`local`)
+   * Claim only this run's attempts (a `turntable run` process running its own run), and count
+   * only its attempts against the caps. Without it, runs started by `turntable run` (`local`)
    * are never claimed.
    */
   onlyRun?: string;

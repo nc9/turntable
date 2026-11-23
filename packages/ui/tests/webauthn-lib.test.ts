@@ -81,7 +81,7 @@ test("registration asks for attestation none, ES256 and EdDSA, and user verifica
   expect(seen!.attestation).toBe("none");
   expect(seen!.pubKeyCredParams.map((p) => p.alg)).toEqual([-7, -8]);
   expect(seen!.authenticatorSelection?.userVerification).toBe("required");
-  expect(seen!.rp).toEqual({ id: "ci.example.com", name: "Longshore" });
+  expect(seen!.rp).toEqual({ id: "ci.example.com", name: "Turntable" });
   expect(out).toEqual({
     clientDataJson: b64urlEncode(buf(4)),
     attestationObject: b64urlEncode(buf(5)),

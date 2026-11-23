@@ -1,4 +1,4 @@
-// `longshore secret set|rotate|delete|list`. Local access to the data directory and the master
+// `turntable secret set|rotate|delete|list`. Local access to the data directory and the master
 // key is the trust root, so this talks to the vault directly (no network). The value is read
 // from a file or stdin, never from an argument, and is never printed or audited.
 import { readFileSync } from "node:fs";
@@ -10,13 +10,13 @@ import { loadMasterKey } from "./crypto";
 import { SecretVault, VaultInputError, type SecretView } from "./vault";
 
 const USAGE = `usage:
-  longshore secret set    --org <slug> [--project <slug>] --name <NAME> (--value-file <path> | --value-stdin)
+  turntable secret set    --org <slug> [--project <slug>] --name <NAME> (--value-file <path> | --value-stdin)
                           [--environment <env>] [--ref <pattern>] [--class protected]... [--destination host]...
-  longshore secret rotate --org <slug> [--project <slug>] --name <NAME> (--value-file <path> | --value-stdin)
+  turntable secret rotate --org <slug> [--project <slug>] --name <NAME> (--value-file <path> | --value-stdin)
                           [--environment <env>] [--ref <pattern>] [--overlap-seconds 0]
-  longshore secret delete --org <slug> [--project <slug>] --name <NAME> [--environment <env>] [--ref <pattern>]
-  longshore secret list   --org <slug> [--project <slug>]
-Needs LONGSHORE_MASTER_KEY_FILE (or --master-key-file). The value is never taken from an argument,
+  turntable secret delete --org <slug> [--project <slug>] --name <NAME> [--environment <env>] [--ref <pattern>]
+  turntable secret list   --org <slug> [--project <slug>]
+Needs TURNTABLE_MASTER_KEY_FILE (or --master-key-file). The value is never taken from an argument,
 so it cannot land in shell history or the process list; the default classes are protected and
 release, and untrusted_pr can never be allowed.`;
 
@@ -82,10 +82,10 @@ export async function secretCommand(args: string[]): Promise<number> {
     console.error(`${String(e instanceof Error ? e.message : e)}\n${USAGE}`);
     return 2;
   }
-  const keyFile = values["master-key-file"] ?? process.env.LONGSHORE_MASTER_KEY_FILE;
-  if (!keyFile) throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+  const keyFile = values["master-key-file"] ?? process.env.TURNTABLE_MASTER_KEY_FILE;
+  if (!keyFile) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
   if (!values.org) throw new Error("--org <slug> is required");
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     await ensureInstance(db);
     const org = await getOrgBySlug(db, values.org);

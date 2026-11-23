@@ -1,4 +1,4 @@
-/* oxlint-disable no-control-regex -- this file exists to match terminal control sequences */
+// this file exists to match terminal control sequences
 // Incremental log parser. Feed it ordered byte chunks (by byte offset); it keeps only the
 // unfinished tail line between pushes, so a new chunk never reparses earlier lines.
 //

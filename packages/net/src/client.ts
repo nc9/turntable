@@ -152,7 +152,7 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
   const defaultMax = o.maxBytes ?? 32 * 1024 * 1024;
   const defaultTimeout = o.timeoutMs ?? 30_000;
   const attemptMs = o.connectAttemptMs ?? 3000;
-  const ua = o.userAgent ?? "longshore";
+  const ua = o.userAgent ?? "turntable";
 
   const hostOf = (u: URL): string => {
     let h = u.hostname.toLowerCase();
@@ -455,9 +455,9 @@ export function createHttpClient(o: HttpClientOptions = {}): HttpClient {
   return { fetch: doFetch, tunnel };
 }
 
-/** Parses `LONGSHORE_NET_ALLOW_HOSTS`: comma-separated hostnames or IP literals. */
+/** Parses `TURNTABLE_NET_ALLOW_HOSTS`: comma-separated hostnames or IP literals. */
 export function allowHostsFromEnv(env: Record<string, string | undefined> = process.env): string[] {
-  return (env.LONGSHORE_NET_ALLOW_HOSTS ?? "")
+  return (env.TURNTABLE_NET_ALLOW_HOSTS ?? "")
     .split(",")
     .map((h) => h.trim())
     .filter(Boolean);
@@ -466,7 +466,7 @@ export function allowHostsFromEnv(env: Record<string, string | undefined> = proc
 let shared: { key: string; client: HttpClient } | undefined;
 
 /**
- * The process-wide client: addresses validated, hosts from LONGSHORE_NET_ALLOW_HOSTS allowed to
+ * The process-wide client: addresses validated, hosts from TURNTABLE_NET_ALLOW_HOSTS allowed to
  * be private (for example a local Daytona). This is what callers use unless a test injects its own.
  * The allowlist is read from the environment on each call, so a changed value takes effect.
  */
@@ -475,14 +475,14 @@ export const safeTunnel = (
   port: number,
   signal?: AbortSignal,
 ): Promise<net.Socket> => {
-  const key = process.env.LONGSHORE_NET_ALLOW_HOSTS ?? "";
+  const key = process.env.TURNTABLE_NET_ALLOW_HOSTS ?? "";
   if (shared?.key !== key)
     shared = { key, client: createHttpClient({ allowHosts: allowHostsFromEnv() }) };
   return shared.client.tunnel(host, port, signal);
 };
 
 export const safeFetch: SafeFetch = (input, init) => {
-  const key = process.env.LONGSHORE_NET_ALLOW_HOSTS ?? "";
+  const key = process.env.TURNTABLE_NET_ALLOW_HOSTS ?? "";
   if (shared?.key !== key)
     shared = { key, client: createHttpClient({ allowHosts: allowHostsFromEnv() }) };
   return shared.client.fetch(input, init);

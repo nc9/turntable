@@ -381,7 +381,7 @@ export function createCacheService(o: CacheOptions): CacheService {
         if (req.method === "POST" && route === "/clean") return json(200);
         return json(404, { error: "not found" });
       } catch (err) {
-        console.error("longshore: cache service error", err);
+        console.error("turntable: cache service error", err);
         return json(500, { error: "internal error" });
       }
     },

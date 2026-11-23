@@ -43,10 +43,10 @@ export function startMock(
   } = {},
 ) {
   // The mock listens on loopback, which the outbound client refuses unless it is allowlisted.
-  const hadAllow = process.env.LONGSHORE_NET_ALLOW_HOSTS;
+  const hadAllow = process.env.TURNTABLE_NET_ALLOW_HOSTS;
   const allow = new Set((hadAllow ?? "").split(",").filter(Boolean));
   allow.add("127.0.0.1");
-  process.env.LONGSHORE_NET_ALLOW_HOSTS = [...allow].join(",");
+  process.env.TURNTABLE_NET_ALLOW_HOSTS = [...allow].join(",");
   const sandboxes = new Map<string, MockSandbox>();
   const requests: Recorded[] = [];
   /** Chunks the server managed to push to a client that read a huge body. */
@@ -306,8 +306,8 @@ export function startMock(
       return id;
     },
     stop: async () => {
-      if (hadAllow === undefined) delete process.env.LONGSHORE_NET_ALLOW_HOSTS;
-      else process.env.LONGSHORE_NET_ALLOW_HOSTS = hadAllow;
+      if (hadAllow === undefined) delete process.env.TURNTABLE_NET_ALLOW_HOSTS;
+      else process.env.TURNTABLE_NET_ALLOW_HOSTS = hadAllow;
       for (const s of sandboxes.values()) rmSync(s.dir, { recursive: true, force: true });
       await server.stop(true);
     },

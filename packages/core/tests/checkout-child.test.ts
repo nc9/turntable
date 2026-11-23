@@ -61,7 +61,7 @@ console.log("ok ${SHA} files=3 tarball=1234");`,
   });
 
   test("the child holds no secret: its environment is scrubbed", async () => {
-    process.env.LONGSHORE_TEST_SECRET = "s3cret-value";
+    process.env.TURNTABLE_TEST_SECRET = "s3cret-value";
     process.env.GITHUB_TOKEN = "ghp_not_for_children";
     try {
       const cmd = stub(
@@ -75,9 +75,9 @@ console.log("ok ${SHA} files=1 tarball=1");`,
       const env = readFileSync(join(tmp, "o.tgz.env"), "utf8");
       expect(env).not.toContain("s3cret-value");
       expect(env).not.toContain("ghp_not_for_children");
-      expect(Object.keys(JSON.parse(env)).some((k) => k.startsWith("LONGSHORE_"))).toBe(false);
+      expect(Object.keys(JSON.parse(env)).some((k) => k.startsWith("TURNTABLE_"))).toBe(false);
     } finally {
-      delete process.env.LONGSHORE_TEST_SECRET;
+      delete process.env.TURNTABLE_TEST_SECRET;
       delete process.env.GITHUB_TOKEN;
     }
   });
@@ -202,12 +202,12 @@ describe("settings", () => {
       concurrency: 2,
     });
     const c = checkoutConfigFromEnv({
-      LONGSHORE_CHECKOUT_TIMEOUT_SECONDS: "60",
-      LONGSHORE_CHECKOUT_MAX_MEMORY_MIB: "0",
-      LONGSHORE_CHECKOUT_CONCURRENCY: "1",
-      LONGSHORE_CHECKOUT_MAX_PACK_MIB: "64",
-      LONGSHORE_CHECKOUT_MAX_UNPACKED_MIB: "256",
-      LONGSHORE_CHECKOUT_MAX_TARBALL_MIB: "100",
+      TURNTABLE_CHECKOUT_TIMEOUT_SECONDS: "60",
+      TURNTABLE_CHECKOUT_MAX_MEMORY_MIB: "0",
+      TURNTABLE_CHECKOUT_CONCURRENCY: "1",
+      TURNTABLE_CHECKOUT_MAX_PACK_MIB: "64",
+      TURNTABLE_CHECKOUT_MAX_UNPACKED_MIB: "256",
+      TURNTABLE_CHECKOUT_MAX_TARBALL_MIB: "100",
     });
     expect(c).toMatchObject({ timeoutMs: 60_000, memoryMb: 0, concurrency: 1 });
     expect(c.limits).toEqual({
@@ -216,9 +216,9 @@ describe("settings", () => {
       maxTarballBytes: 100 * 1024 * 1024,
     });
     for (const bad of [
-      { LONGSHORE_CHECKOUT_CONCURRENCY: "0" },
-      { LONGSHORE_CHECKOUT_TIMEOUT_SECONDS: "abc" },
-      { LONGSHORE_CHECKOUT_MAX_PACK_MIB: "-1" },
+      { TURNTABLE_CHECKOUT_CONCURRENCY: "0" },
+      { TURNTABLE_CHECKOUT_TIMEOUT_SECONDS: "abc" },
+      { TURNTABLE_CHECKOUT_MAX_PACK_MIB: "-1" },
     ])
       expect(() => checkoutConfigFromEnv(bad)).toThrow(/must be a whole number/);
     // the lowered defaults

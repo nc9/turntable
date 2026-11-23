@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import type { Provider } from "@longshore/provider-sdk";
+import type { Provider } from "@turntable/provider-sdk";
 import { createAttempt, createJob, type Db, getAttempt } from "../src/db";
 import * as s from "../src/db/schema";
 import {

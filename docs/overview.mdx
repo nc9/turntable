@@ -1,9 +1,9 @@
 ---
 title: How the pieces fit
-description: The path a change takes through Longshore, from trust class to published release, with a link to each control.
+description: The path a change takes through Turntable, from trust class to published release, with a link to each control.
 ---
 
-A change reaches Longshore as a push or a pull request. The controls below apply in this order. Each step narrows what the next one is allowed to do, so a weakness in an early class of work cannot reach a late, privileged one.
+A change reaches Turntable as a push or a pull request. The controls below apply in this order. Each step narrows what the next one is allowed to do, so a weakness in an early class of work cannot reach a late, privileged one.
 
 ```mermaid
 flowchart LR
@@ -37,7 +37,7 @@ Signing and publishing run in a separate process that holds the signing keys and
 
 ## 6. Publishing
 
-The lane publishes the bytes it verified to npm, GitHub Releases and a container registry, either itself (strict mode) or by holding the credential while the job pushes (compat mode). Signed provenance goes with them, and anyone can check it with `longshore verify`. See [Publishing](/release-lane#publishing) and [Releases](/releases).
+The lane publishes the bytes it verified to npm, GitHub Releases and a container registry, either itself (strict mode) or by holding the credential while the job pushes (compat mode). Signed provenance goes with them, and anyone can check it with `turntable verify`. See [Publishing](/release-lane#publishing) and [Releases](/releases).
 
 ## Around the path
 

@@ -1,5 +1,5 @@
 // The feed cursor, kept in a file so a restart resumes where the last session stopped.
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,7 +12,11 @@ export function defaultStatePath(url: string, org: string, projects: readonly st
     .digest("hex")
     .slice(0, 16);
   const base = process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state");
-  return join(base, "longshore", `channel-${key}.json`);
+  const current = join(base, "turntable", `channel-${key}.json`);
+  // Cursors saved before the rename (formerly Longshore) live in the old directory: keep using
+  // them, so a channel does not replay events it already showed.
+  const previous = join(base, "longshore", `channel-${key}.json`); // rename-keep
+  return !existsSync(current) && existsSync(previous) ? previous : current;
 }
 
 export function fileCursorStore(path: string): CursorStore {

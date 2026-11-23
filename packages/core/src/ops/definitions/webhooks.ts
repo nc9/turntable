@@ -16,7 +16,7 @@ const need = (svc: WebhookService | undefined): WebhookService => {
   if (!svc) {
     throw new OpError(
       "unavailable",
-      "outbound webhooks are not configured: start the server with LONGSHORE_MASTER_KEY_FILE",
+      "outbound webhooks are not configured: start the server with TURNTABLE_MASTER_KEY_FILE",
     );
   }
   return svc;

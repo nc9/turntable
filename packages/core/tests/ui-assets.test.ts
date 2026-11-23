@@ -92,7 +92,7 @@ function devFixture(): { root: string; dist: string } {
 
 test("dev mode serves the bundle from a directory, the shell for routes, and sees a rebuild", async () => {
   const { dist } = devFixture();
-  expect(enableDevUi({ LONGSHORE_UI_DIR: dist }, { compiled: false })).toMatchObject({
+  expect(enableDevUi({ TURNTABLE_UI_DIR: dist }, { compiled: false })).toMatchObject({
     source: "env",
   });
   expect(hasUi()).toBe(true);
@@ -121,25 +121,25 @@ test("dev mode defaults to the source tree's dist when it has an index.html", ()
 
 test("the compiled binary never reads the UI from disk, whatever the environment says", async () => {
   const { dist } = devFixture();
-  expect(enableDevUi({ LONGSHORE_UI_DIR: dist }, { compiled: true })).toBeUndefined();
+  expect(enableDevUi({ TURNTABLE_UI_DIR: dist }, { compiled: true })).toBeUndefined();
   expect(hasUi()).toBe(false);
   expect(await (await get("/")).text()).toContain("not built yet");
-  expect(compiledBinary("/$bunfs/root/longshore")).toBe(true);
-  expect(compiledBinary("B:/~BUN/root/longshore.exe")).toBe(true);
+  expect(compiledBinary("/$bunfs/root/turntable")).toBe(true);
+  expect(compiledBinary("B:/~BUN/root/turntable.exe")).toBe(true);
   expect(compiledBinary("/repo/packages/core/src/main.ts")).toBe(false);
 });
 
 test("an embedded UI wins: dev mode does not replace a registered bundle", () => {
   const { dist } = devFixture();
   fixture();
-  expect(enableDevUi({ LONGSHORE_UI_DIR: dist }, { compiled: false })).toBeUndefined();
+  expect(enableDevUi({ TURNTABLE_UI_DIR: dist }, { compiled: false })).toBeUndefined();
 });
 
 test("no request can reach a file outside the directory", async () => {
   const { root, dist } = devFixture();
   symlinkSync(join(root, "secret.txt"), join(dist, "assets", "link.txt"));
   symlinkSync(root, join(dist, "assets", "up"));
-  enableDevUi({ LONGSHORE_UI_DIR: dist }, { compiled: false });
+  enableDevUi({ TURNTABLE_UI_DIR: dist }, { compiled: false });
   const attempts = [
     "/../secret.txt",
     "/assets/../../secret.txt",

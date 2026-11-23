@@ -1,4 +1,4 @@
-import type { ActEvent } from "@longshore/act-runner";
+import type { ActEvent } from "@turntable/act-runner";
 
 /** First line of a step name, shortened. Unnamed `run:` steps are named after their script. */
 export function stepLabel(name: string, stage: string): string {

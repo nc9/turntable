@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { createReadStream, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { verifyDigest } from "@longshore/signer";
+import { verifyDigest } from "@turntable/signer";
 
-export const VERIFY_USAGE = `Usage: longshore verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
+export const VERIFY_USAGE = `Usage: turntable verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
 
 Checks that <artifact> is a subject of the DSSE-signed SLSA provenance in --provenance, and that the
 signature verifies under the Ed25519 public key (SPKI PEM) in --pubkey. It trusts only that key.

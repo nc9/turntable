@@ -4,8 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { tarDirectory } from "@longshore/act-runner";
-import type { SafeFetch } from "@longshore/net";
+import { tarDirectory } from "@turntable/act-runner";
+import type { SafeFetch } from "@turntable/net";
 import {
   chainedAudit,
   clearFreeze,

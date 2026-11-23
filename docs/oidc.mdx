@@ -3,7 +3,7 @@ title: OIDC identity for jobs
 description: Per-org OpenID Connect issuer so jobs can assume cloud roles without stored cloud secrets.
 ---
 
-Each org on a Longshore instance is its own OpenID Connect (OIDC) issuer. A running job asks for an identity token for a named audience; a cloud (AWS, GCP) or Vault that trusts the issuer exchanges the token for short-lived credentials, matching on claims such as `sub`. No long-lived cloud secret is stored in CI.
+Each org on a Turntable instance is its own OpenID Connect (OIDC) issuer. A running job asks for an identity token for a named audience; a cloud (AWS, GCP) or Vault that trusts the issuer exchanges the token for short-lived credentials, matching on claims such as `sub`. No long-lived cloud secret is stored in CI.
 
 **Status.** The issuer, the mint endpoint and delivery to jobs are built and tested. A job that asks gets GitHub's request variables, with the credential kept outside the sandbox (see [How a job asks for a token](#how-a-job-asks-for-a-token)). Checks against a real cloud provider and Vault are still manual.
 
@@ -11,7 +11,7 @@ Each org on a Longshore instance is its own OpenID Connect (OIDC) issuer. A runn
 
 | | |
 | --- | --- |
-| Issuer URL | `<base>/<org slug>`, where `<base>` is `LONGSHORE_OIDC_BASE_URL`, default `<public url>/oidc` (https only) |
+| Issuer URL | `<base>/<org slug>`, where `<base>` is `TURNTABLE_OIDC_BASE_URL`, default `<public url>/oidc` (https only) |
 | Discovery | `<issuer>/.well-known/openid-configuration` |
 | JWKS | `<issuer>/jwks.json` (public members only: `kty crv x y kid use alg`) |
 | Signing | ES256 (P-256), supported by AWS, GCP and Vault |
@@ -45,7 +45,7 @@ org:<org slug>:project:<project slug>:repo:<owner/repo>:ref:<ref>:class:<trust c
 
 ## Who gets a token
 
-Only a running attempt, proven by its attempt credential (an HMAC bound to one attempt and org, expiring, in its own key domain), and only as the class the scheduler recorded for it. `untrusted_pr` and `trusted_pr` get nothing by default; `LONGSHORE_OIDC_ALLOW_CLASSES` widens that and you should not widen it to `untrusted_pr`. An unrecorded class, an attempt that is not running, a missing or malformed audience and a credential for another org are all refused. Every mint and every refusal is audited (attempt, run, job, audience, `jti`, never the token).
+Only a running attempt, proven by its attempt credential (an HMAC bound to one attempt and org, expiring, in its own key domain), and only as the class the scheduler recorded for it. `untrusted_pr` and `trusted_pr` get nothing by default; `TURNTABLE_OIDC_ALLOW_CLASSES` widens that and you should not widen it to `untrusted_pr`. An unrecorded class, an attempt that is not running, a missing or malformed audience and a credential for another org are all refused. Every mint and every refusal is audited (attempt, run, job, audience, `jti`, never the token).
 
 ## How a job asks for a token
 
@@ -56,10 +56,10 @@ permissions:
   id-token: write
 ```
 
-Then `actions/core`'s `getIDToken`, the cloud login actions and plain `curl` work as they do on GitHub: Longshore sets `ACTIONS_ID_TOKEN_REQUEST_URL` (the org's mint endpoint, with a query already on it, so `&audience=` can be appended) and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
+Then `actions/core`'s `getIDToken`, the cloud login actions and plain `curl` work as they do on GitHub: Turntable sets `ACTIONS_ID_TOKEN_REQUEST_URL` (the org's mint endpoint, with a query already on it, so `&audience=` can be appended) and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
 
 - **The request token is a placeholder.** The real attempt credential never enters the sandbox. The [secrets proxy](/secrets-proxy) adds it to requests for exactly the org's mint path, on that host and nothing else, and it replaces any `Authorization` header the job sends. The job's egress stays deny-all-except-proxy.
-- **Only when all of these hold:** the job asked with `id-token: write`; its trust class may mint (`protected` and `release` by default, never `untrusted_pr` unless an operator allows it with `LONGSHORE_OIDC_ALLOW_CLASSES`); a secrets proxy runs (`LONGSHORE_SECRETS_PROXY=1`); the issuer URL is https. Otherwise the job gets neither variable, and its log says why (silently, when it never asked).
+- **Only when all of these hold:** the job asked with `id-token: write`; its trust class may mint (`protected` and `release` by default, never `untrusted_pr` unless an operator allows it with `TURNTABLE_OIDC_ALLOW_CLASSES`); a secrets proxy runs (`TURNTABLE_SECRETS_PROXY=1`); the issuer URL is https. Otherwise the job gets neither variable, and its log says why (silently, when it never asked).
 - **A job that can mint is secret-bearing,** so it never runs on `open` egress and its sandbox is probed from inside before it starts.
 - **The credential is minted per request.** The proxy mints it when a request for the mint path arrives, it lasts 2 minutes, nothing stores it, and it works only while the attempt is running. A leak from worker memory or a redaction miss is good for minutes, not for the job.
 - **The proxy rule exists only for a job that asked.** A job whose plan did not ask for `id-token: write` has no rule for the mint path, even in a class that may mint. An issuer URL whose host is an IP address, or is not https, gets no rule and no token (a proxy rule names a host name).
@@ -71,9 +71,9 @@ Then `actions/core`'s `getIDToken`, the cloud login actions and plain `curl` wor
 `aud` is chosen by the job, per request. By default any printable string works, so a job that may mint at all can get a token for any relying party that trusts this org's issuer. A project can name the audiences it really uses, and a request for any other is refused and audited (`audience_not_allowed`, with the audience that was asked for):
 
 ```sh
-longshore policy set --oidc-audiences sts.amazonaws.com,my-vault --org acme --project api
-longshore policy set --oidc-audiences any --org acme --project api   # lift the limit
-longshore policy show --org acme                                     # oidc-audiences per project
+turntable policy set --oidc-audiences sts.amazonaws.com,my-vault --org acme --project api
+turntable policy set --oidc-audiences any --org acme --project api   # lift the limit
+turntable policy show --org acme                                     # oidc-audiences per project
 ```
 
 The same is the `set_oidc_audiences` operation (org admins only, never an agent token; one project, 1 to 20 audiences, or `null` to lift the limit) and `list_projects` shows each project's `oidc_audiences` (`null` means any). Matching is exact. A project with no list behaves as before.
@@ -82,17 +82,17 @@ The same is the `set_oidc_audiences` operation (org admins only, never an agent 
 
 ## Rotation
 
-`longshore oidc rotate --org <slug>` makes a new key current. The old key stays in the JWKS for 10 minutes (the longest a token lives) plus 5 minutes of grace, so every token it signed stays verifiable until it expires; after that it is deleted. `longshore oidc status --org <slug>` lists the published keys.
+`turntable oidc rotate --org <slug>` makes a new key current. The old key stays in the JWKS for 10 minutes (the longest a token lives) plus 5 minutes of grace, so every token it signed stays verifiable until it expires; after that it is deleted. `turntable oidc status --org <slug>` lists the published keys.
 
 ## Static hosting
 
 To serve the JWKS from somewhere else (a bucket, a CDN), export the files and host them at the issuer URL:
 
 ```
-longshore oidc export --org acme --base-url https://auth.example.com/oidc --out ./site
+turntable oidc export --org acme --base-url https://auth.example.com/oidc --out ./site
 ```
 
-This writes `./site/acme/.well-known/openid-configuration` and `./site/acme/jwks.json`. Start the server with `LONGSHORE_OIDC_BASE_URL=https://auth.example.com/oidc` so tokens carry the matching `iss`, and re-export after each rotation.
+This writes `./site/acme/.well-known/openid-configuration` and `./site/acme/jwks.json`. Start the server with `TURNTABLE_OIDC_BASE_URL=https://auth.example.com/oidc` so tokens carry the matching `iss`, and re-export after each rotation.
 
 ## Trust policy examples
 
@@ -122,10 +122,10 @@ Create an OIDC identity provider with the issuer URL as the provider URL and you
 ### GCP Workload Identity Federation
 
 ```
-gcloud iam workload-identity-pools providers create-oidc longshore \
+gcloud iam workload-identity-pools providers create-oidc turntable \
   --workload-identity-pool=ci --location=global \
   --issuer-uri="https://ci.example.com/oidc/acme" \
-  --allowed-audiences="//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/ci/providers/longshore" \
+  --allowed-audiences="//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/ci/providers/turntable" \
   --attribute-mapping="google.subject=assertion.sub,attribute.class=assertion.trust_class,attribute.repo=assertion.repository" \
   --attribute-condition="assertion.trust_class == 'protected' && assertion.repository == 'acme/web'"
 ```

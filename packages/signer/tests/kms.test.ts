@@ -2,7 +2,7 @@
 // and that a failure never echoes a response body.
 import crypto from "node:crypto";
 import { describe, expect, test } from "bun:test";
-import type { SafeFetch } from "@longshore/net";
+import type { SafeFetch } from "@turntable/net";
 import {
   AwsKmsSigner,
   GcpKmsSigner,

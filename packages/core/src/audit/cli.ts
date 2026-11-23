@@ -21,16 +21,16 @@ import { exportOrg, jsonlSink, webhookSink, type AuditSink } from "./export";
 import { verifyAudit, type AnchorCheckpoint } from "./verify";
 
 const USAGE = `usage:
-  longshore audit verify [--org <slug>] [--pubkey <file>]... [--anchor <file>]... [--data-dir ./data]
-  longshore audit init-key --org <slug> --out <file>
-  longshore audit adopt --org <slug>
-  longshore audit checkpoint [--org <slug>]
-  longshore audit export-key --org <slug> --out <file>
-  longshore audit export [--org <slug>] (--dir <path> | --webhook <url> [--webhook-secret-file <path>])
+  turntable audit verify [--org <slug>] [--pubkey <file>]... [--anchor <file>]... [--data-dir ./data]
+  turntable audit init-key --org <slug> --out <file>
+  turntable audit adopt --org <slug>
+  turntable audit checkpoint [--org <slug>]
+  turntable audit export-key --org <slug> --out <file>
+  turntable audit export [--org <slug>] (--dir <path> | --webhook <url> [--webhook-secret-file <path>])
 init-key is the only thing that ever creates an org's signing key (the checkpointer never does),
 and writes the public key file to keep off this server. adopt is for an org that signed
 checkpoints before the sealed anchor existed: it trusts the chain as it is, once, after it verifies.
-init-key, adopt, checkpoint and export-key need LONGSHORE_MASTER_KEY_FILE (or --master-key-file).
+init-key, adopt, checkpoint and export-key need TURNTABLE_MASTER_KEY_FILE (or --master-key-file).
 Keep the export-key file and the exported checkpoints OFF this server. verify --pubkey rejects
 checkpoints signed by any other key; verify --anchor (an export file or a saved checkpoint)
 fails if the database lacks a checkpoint the anchor has. Without them, verify says
@@ -58,10 +58,10 @@ export async function auditCommand(args: string[]): Promise<number> {
     },
     strict: true,
   });
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     await ensureInstance(db);
-    const keyFile = values["master-key-file"] ?? process.env.LONGSHORE_MASTER_KEY_FILE;
+    const keyFile = values["master-key-file"] ?? process.env.TURNTABLE_MASTER_KEY_FILE;
     const masterKey = keyFile ? loadMasterKey(keyFile) : undefined;
     const store = keyFile && masterKey ? new SecretStore(db, masterKey) : undefined;
     const anchor =
@@ -69,13 +69,13 @@ export async function auditCommand(args: string[]): Promise<number> {
     const orgs = await resolveOrgs(db, values.org, anchor);
 
     if (sub === "export-key") {
-      if (!store) throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+      if (!store) throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
       const org = orgs[0];
       if (!org || !values.org || !values.out)
         throw new Error("--org <slug> and --out <file> are required");
       const key = await loadAuditKey(store, org.id);
       if (!key)
-        throw new Error(`org ${org.slug} has no signing key; run: longshore audit init-key`);
+        throw new Error(`org ${org.slug} has no signing key; run: turntable audit init-key`);
       writeFileSync(
         values.out,
         `${JSON.stringify(publicKeyFile(org.id, org.slug, key), null, 2)}\n`,
@@ -90,7 +90,7 @@ export async function auditCommand(args: string[]): Promise<number> {
 
     if (sub === "init-key" || sub === "adopt") {
       if (!store || !anchor)
-        throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+        throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
       const org = orgs[0];
       if (!org || !values.org) throw new Error("--org <slug> is required");
       try {
@@ -122,7 +122,7 @@ export async function auditCommand(args: string[]): Promise<number> {
 
     if (sub === "checkpoint") {
       if (!store || !anchor)
-        throw new Error("set LONGSHORE_MASTER_KEY_FILE or pass --master-key-file");
+        throw new Error("set TURNTABLE_MASTER_KEY_FILE or pass --master-key-file");
       let refused = false;
       for (const o of orgs) {
         try {

@@ -82,7 +82,7 @@ export type Superseded = {
   running: { attemptId: string; sandboxId: string | null; provider: string }[];
 };
 
-/** The run, its jobs and a queued attempt per job. Shared by the poller and `longshore run`. */
+/** The run, its jobs and a queued attempt per job. Shared by the poller and `turntable run`. */
 async function insertPlannedRun(
   tx: Db,
   scope: Scope,
@@ -127,7 +127,7 @@ async function insertPlannedRun(
 }
 
 /**
- * Creates a run started by `longshore run`: the planned jobs with queued attempts, marked
+ * Creates a run started by `turntable run`: the planned jobs with queued attempts, marked
  * `local` so only the starting process runs them. No poll marker, no concurrency group (a local
  * run never waits for, or cancels, another).
  */

@@ -1,4 +1,4 @@
-import { SsrfError, type SafeFetch, safeFetch } from "@longshore/net";
+import { SsrfError, type SafeFetch, safeFetch } from "@turntable/net";
 import {
   FileTooLargeError,
   InfraError,
@@ -7,7 +7,7 @@ import {
   TransientInfraError,
   readCappedJson,
   readCappedText,
-} from "@longshore/provider-sdk";
+} from "@turntable/provider-sdk";
 import { type ApiKeySource, readApiKey } from "./key";
 
 /** The key was refused (401 or 403). The status is kept so a caller can tell a missing permission from a bad key. */

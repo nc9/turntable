@@ -41,9 +41,9 @@ Both adapters ship in the pinned drizzle-orm 0.45.4. We confirmed the modules `d
 
 Notes and gaps:
 
-- `bun-sqlite` is what Longshore uses today (`packages/core/src/db/index.ts`). Its sync API means a Postgres port changes call sites from sync to async, so repos should expose async signatures from the start.
+- `bun-sqlite` is what Turntable uses today (`packages/core/src/db/index.ts`). Its sync API means a Postgres port changes call sites from sync to async, so repos should expose async signatures from the start.
 - `bun-sql` is Postgres-only in drizzle, even though `Bun.sql` also speaks other databases.
 - `bun-sql` sends queries through `client.unsafe(query, params)`. We have not load-tested it, and we have not verified behavior across Postgres versions or poolers.
-- Longshore applies its own embedded migrations through a dialect-agnostic runner, so neither drizzle migrator is needed at runtime.
+- Turntable applies its own embedded migrations through a dialect-agnostic runner, so neither drizzle migrator is needed at runtime.
 
 Sources: [Drizzle with Bun SQLite](https://orm.drizzle.team/docs/sqlite/connect-bun-sqlite), [Drizzle with Bun SQL](https://orm.drizzle.team/docs/connect-bun-sql), [Bun SQL](https://bun.com/docs/runtime/sql), and the type declarations in `drizzle-orm/bun-sql` and `drizzle-orm/bun-sqlite`.

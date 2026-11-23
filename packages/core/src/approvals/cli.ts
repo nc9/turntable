@@ -1,4 +1,4 @@
-// `longshore approvals`: the local trust root for human approvals. The first approver can only
+// `turntable approvals`: the local trust root for human approvals. The first approver can only
 // come from here (nobody is enrolled to approve an enrolment yet), and policy is set here. Key
 // creation and signing run on the approver's own machine and never touch the server.
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -20,27 +20,27 @@ import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
 import { generateEd25519, parseEd25519PublicKey, signEd25519 } from "./keys";
 
 export const APPROVALS_USAGE = `Usage:
-  longshore approvals keygen --out <private-key-file>
+  turntable approvals keygen --out <private-key-file>
       Makes an ed25519 approver key. The private key is written (mode 0600) to the file and never
       leaves it; the public key is printed. Run it on the machine that will hold the key.
-  longshore approvals bootstrap --org <slug> --person <name> --forge-login <login> --public-key <file|text>
+  turntable approvals bootstrap --org <slug> --person <name> --forge-login <login> --public-key <file|text>
       Enrols the FIRST approver of an org. Refused once any approver exists: after that, new keys
       need a quorum of existing approvers (request_enrolment / approve_enrolment).
-  longshore approvals sign --key <private-key-file> --statement <file|->
+  turntable approvals sign --key <private-key-file> --statement <file|->
       Signs the "canonical" text of an approval statement (from approval_challenge) offline.
       Prints the signature object to send with the statement.
-  longshore approvals policy --org <slug> --environment <name> --required <n> [--allow-author-approval]
+  turntable approvals policy --org <slug> --environment <name> --required <n> [--allow-author-approval]
       Sets how many distinct people an environment needs. Without --allow-author-approval the
       author of a run cannot approve it. Allowing it removes the two-person guarantee for that
       environment: use it only for a solo setup.
-  longshore approvals key-policy --org <slug> --policy any|hardware [--preset yubikey] [--aaguid <uuid>]
+  turntable approvals key-policy --org <slug> --policy any|hardware [--preset yubikey] [--aaguid <uuid>]
       Bootstrap only: works while the org has no approver. Afterwards a change needs a statement
       signed by a quorum of the counted approvers (key_policy_challenge and approve_key_policy).
       Which keys approvers may use. hardware accepts only passkeys whose attestation chained to a
       pinned vendor root at enrolment and whose AAGUID is on the allowlist (security keys; Touch ID
       and Face ID passkeys give no attestation). Keys that do not satisfy it stop counting.
-  longshore approvals list --org <slug>
-  longshore approvals revoke --org <slug> --id <approver id>
+  turntable approvals list --org <slug>
+  turntable approvals revoke --org <slug> --id <approver id>
 All but keygen and sign take --data-dir (default ./data).`;
 
 const read = (v: string): string => (existsSync(v) ? readFileSync(v, "utf8") : v);
@@ -117,7 +117,7 @@ export async function approvalsCommand(args: string[]): Promise<number> {
 
   if (!values.org || !["bootstrap", "policy", "key-policy", "list", "revoke"].includes(sub ?? ""))
     return usage();
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     const org = await getOrgBySlug(db, values.org);
     if (!org) {

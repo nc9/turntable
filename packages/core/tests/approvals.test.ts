@@ -847,7 +847,7 @@ describe("ApprovalVerifier", () => {
 describe("offline signature and CLI", () => {
   test("keygen, bootstrap, sign and approve round-trip through the CLI helpers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ls-approvals-"));
-    const file = openDatabase(join(dir, "longshore.db"));
+    const file = openDatabase(join(dir, "turntable.db"));
     await createOrg(file, { slug: "cli-org", name: "Cli" });
     file.close();
     const logs: string[] = [];

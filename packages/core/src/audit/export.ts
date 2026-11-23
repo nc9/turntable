@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
-import { safeFetch } from "@longshore/net";
+import { safeFetch } from "@turntable/net";
 import type { Db } from "../db";
 import {
   chainedAudit,
@@ -103,7 +103,7 @@ export function jsonlSink(
 
 /**
  * POSTs batches as JSON through the outbound client (address validation applies: a webhook on a
- * private address needs LONGSHORE_NET_ALLOW_HOSTS). With a secret, the body is signed in
+ * private address needs TURNTABLE_NET_ALLOW_HOSTS). With a secret, the body is signed in
  * `x-longshore-signature: sha256=<hmac>`.
  */
 export function webhookSink(

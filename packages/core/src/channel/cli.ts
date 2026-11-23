@@ -9,17 +9,17 @@ import { defaultStatePath, fileCursorStore } from "./state";
 
 const CONCLUSIONS = ["failure", "infra_error", "success", "cancelled"] as const;
 
-export const CHANNEL_USAGE = `Usage: longshore channel --url <https://host> --org <slug> [--token-file <path>]
+export const CHANNEL_USAGE = `Usage: turntable channel --url <https://host> --org <slug> [--token-file <path>]
                          [--project a,b] [--branch main,release/*]
                          [--types run.finished,approval.required]
                          [--conclusions failure,infra_error] [--state-file <path>]
 
-A Claude Code channel: pushes run events from a Longshore server into a running Claude Code
+A Claude Code channel: pushes run events from a Turntable server into a running Claude Code
 session. Claude Code starts it as an MCP server over stdio (see docs/agent-interface.mdx).
-The token (reader role is enough) is read from --token-file or LONGSHORE_TOKEN_FILE, a file with
-mode 0600; it is never taken from the command line. Each option also reads LONGSHORE_URL,
-LONGSHORE_ORG, LONGSHORE_CHANNEL_PROJECTS, LONGSHORE_CHANNEL_BRANCHES, LONGSHORE_CHANNEL_TYPES,
-LONGSHORE_CHANNEL_CONCLUSIONS and LONGSHORE_CHANNEL_STATE_FILE. Event types: ${EVENT_TYPES.join(", ")}.
+The token (reader role is enough) is read from --token-file or TURNTABLE_TOKEN_FILE, a file with
+mode 0600; it is never taken from the command line. Each option also reads TURNTABLE_URL,
+TURNTABLE_ORG, TURNTABLE_CHANNEL_PROJECTS, TURNTABLE_CHANNEL_BRANCHES, TURNTABLE_CHANNEL_TYPES,
+TURNTABLE_CHANNEL_CONCLUSIONS and TURNTABLE_CHANNEL_STATE_FILE. Event types: ${EVENT_TYPES.join(", ")}.
 Conclusions: ${CONCLUSIONS.join(", ")}. Only stdout carries the protocol.`;
 
 const env = (k: string): string | undefined => process.env[k]?.trim() || undefined;
@@ -47,24 +47,24 @@ export async function channelCommand(args: string[]): Promise<void> {
     return;
   }
   const fail = (m: string): never => {
-    console.error(`longshore channel: ${m}\n\n${CHANNEL_USAGE}`);
+    console.error(`turntable channel: ${m}\n\n${CHANNEL_USAGE}`);
     process.exit(2);
   };
   const url =
-    values.url ?? env("LONGSHORE_URL") ?? fail("no server: pass --url or set LONGSHORE_URL");
-  const org = values.org ?? env("LONGSHORE_ORG") ?? fail("no org: pass --org or set LONGSHORE_ORG");
+    values.url ?? env("TURNTABLE_URL") ?? fail("no server: pass --url or set TURNTABLE_URL");
+  const org = values.org ?? env("TURNTABLE_ORG") ?? fail("no org: pass --org or set TURNTABLE_ORG");
   const tokenFile =
     values["token-file"] ??
-    env("LONGSHORE_TOKEN_FILE") ??
-    fail("no token file: pass --token-file or set LONGSHORE_TOKEN_FILE");
+    env("TURNTABLE_TOKEN_FILE") ??
+    fail("no token file: pass --token-file or set TURNTABLE_TOKEN_FILE");
   try {
     const baseUrl = parseBaseUrl(url, values["allow-insecure"]);
     const filter = buildFilter(
       {
-        types: values.types ?? env("LONGSHORE_CHANNEL_TYPES"),
-        conclusions: values.conclusions ?? env("LONGSHORE_CHANNEL_CONCLUSIONS"),
-        projects: values.project ?? env("LONGSHORE_CHANNEL_PROJECTS"),
-        branches: values.branch ?? env("LONGSHORE_CHANNEL_BRANCHES"),
+        types: values.types ?? env("TURNTABLE_CHANNEL_TYPES"),
+        conclusions: values.conclusions ?? env("TURNTABLE_CHANNEL_CONCLUSIONS"),
+        projects: values.project ?? env("TURNTABLE_CHANNEL_PROJECTS"),
+        branches: values.branch ?? env("TURNTABLE_CHANNEL_BRANCHES"),
       },
       EVENT_TYPES,
       CONCLUSIONS,
@@ -73,7 +73,7 @@ export async function channelCommand(args: string[]): Promise<void> {
     const api = createChannelApi({ baseUrl, org, token });
     const store = fileCursorStore(
       values["state-file"] ??
-        env("LONGSHORE_CHANNEL_STATE_FILE") ??
+        env("TURNTABLE_CHANNEL_STATE_FILE") ??
         defaultStatePath(baseUrl.href, org, filter.projects),
     );
     const server = createChannelServer();
@@ -88,13 +88,13 @@ export async function channelCommand(args: string[]): Promise<void> {
       org,
       notify,
       signal: ac.signal,
-      log: (m) => console.error(`longshore channel: ${m}`),
+      log: (m) => console.error(`turntable channel: ${m}`),
     });
     await server.close().catch(() => {});
     process.exit(result === "auth" ? 2 : 0);
   } catch (e) {
     // stderr only: stdout is the protocol channel.
-    console.error(`longshore channel: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`turntable channel: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(2);
   }
 }

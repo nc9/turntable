@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { planJob, rebuildArgv } from "@longshore/act-runner";
+import { planJob, rebuildArgv } from "@turntable/act-runner";
 import { buildActEvent, type ActEventRun } from "../src/run/act-event";
 import { snapshotRepo, TAR_ENV, tarMetadataArgs } from "../src/run/repo-archive";
 import { CHECKOUT_COMMAND, serveGitRepo } from "./git-http-server";

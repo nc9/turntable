@@ -1,8 +1,8 @@
-// GitHub App manifest flow: `longshore github-app create` serves a loopback page whose form POSTs
+// GitHub App manifest flow: `turntable github-app create` serves a loopback page whose form POSTs
 // the App manifest to GitHub. GitHub redirects back to a loopback callback with a one-time code,
 // which is exchanged for the App's credentials. Those go straight into the encrypted store and
 // are never printed.
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db";
 import {
@@ -75,9 +75,9 @@ export function manifestPage(
     ? `https://github.com/organizations/${encodeURIComponent(ghOrg)}/settings/apps/new`
     : "https://github.com/settings/apps/new";
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Create the Longshore GitHub App</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>Create the Turntable GitHub App</title></head>
 <body>
-<h1>Create the Longshore GitHub App</h1>
+<h1>Create the Turntable GitHub App</h1>
 <p>This sends the App manifest below to GitHub. You approve it there; GitHub then returns here.</p>
 <form method="post" action="${escapeHtml(action)}?state=${encodeURIComponent(state)}">
 <input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">
@@ -109,7 +109,7 @@ export async function convertManifest(
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(code)) throw new Error("malformed manifest code");
   const res = await fetchImpl(`${apiBase}/app-manifests/${code}/conversions`, {
     method: "POST",
-    headers: { accept: "application/vnd.github+json", "user-agent": "longshore" },
+    headers: { accept: "application/vnd.github+json", "user-agent": "turntable" },
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`manifest conversion failed: HTTP ${res.status}`);
@@ -221,7 +221,7 @@ export async function storeApp(
 export interface ManifestFlowOptions {
   db: Db;
   store: SecretStore;
-  /** The Longshore org that will own the App and its installations. */
+  /** The Turntable org that will own the App and its installations. */
   orgId: string;
   name: string;
   url: string;
@@ -290,7 +290,7 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
         if (used || given.length !== want.length || !timingSafeEqual(given, want)) {
           return html(
             400,
-            "<p>Invalid or reused state. Start again with longshore github-app create.</p>",
+            "<p>Invalid or reused state. Start again with turntable github-app create.</p>",
           );
         }
         used = true;

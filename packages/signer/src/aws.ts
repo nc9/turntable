@@ -3,7 +3,7 @@
 // through STS, never a static key). The key must be an Ed25519 key (ECC_NIST_EDWARDS25519,
 // algorithm ED25519_SHA_512); the private key never leaves KMS.
 import crypto from "node:crypto";
-import { type SafeFetch, safeFetch } from "@longshore/net";
+import { type SafeFetch, safeFetch } from "@turntable/net";
 import { publicKeyFromSpki } from "./keys";
 import { type PublicKey, type Signer, SignerError } from "./types";
 

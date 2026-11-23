@@ -1,9 +1,9 @@
 // The two read-only sides of a parity comparison: our run over the REST API with a reader token,
 // and the check runs another CI posted for a commit, from GitHub's checks API. Neither side is
 // written to. Tokens go in a header only; redirects are refused so a token cannot be carried to
-// another host. Every request goes through @longshore/net.
-import { foldShardStates } from "@longshore/act-runner";
-import { createHttpClient, type SafeFetch } from "@longshore/net";
+// another host. Every request goes through @turntable/net.
+import { foldShardStates } from "@turntable/act-runner";
+import { createHttpClient, type SafeFetch } from "@turntable/net";
 import { baseString } from "../channel/api";
 import type { OurJob, TheirCheck } from "./compare";
 

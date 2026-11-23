@@ -3,7 +3,7 @@
 // spends in minutes. The order follows how the run was ingested:
 //   1. the poll config's token file, for a repo the poller watches;
 //   2. an App installation token minted read-only for that one repo (contents: read);
-//   3. LONGSHORE_GITHUB_TOKEN, only when neither exists.
+//   3. TURNTABLE_GITHUB_TOKEN, only when neither exists.
 // Nothing here is logged, and no token is returned by any operation.
 import type { Run } from "../db/repos";
 import { getOrgById, listProjects, listRepos, type Scope } from "../db/repos";
@@ -33,7 +33,7 @@ export interface ForgeTokenOptions {
     | undefined;
   /** The GitHub App, when configured. */
   auth?: TokenMinter | undefined;
-  /** LONGSHORE_GITHUB_TOKEN, last resort. */
+  /** TURNTABLE_GITHUB_TOKEN, last resort. */
   envToken?: string | undefined;
   log?: (message: string) => void;
 }
@@ -50,7 +50,7 @@ export function createForgeToken(o: ForgeTokenOptions): ForgeToken {
     if (!warnedUnauthenticated) {
       warnedUnauthenticated = true;
       log(
-        "no GitHub credential for resolving actions (no poll token, no App installation, no LONGSHORE_GITHUB_TOKEN): requests are unauthenticated and limited to 60 per hour",
+        "no GitHub credential for resolving actions (no poll token, no App installation, no TURNTABLE_GITHUB_TOKEN): requests are unauthenticated and limited to 60 per hour",
       );
     }
     return undefined;

@@ -16,11 +16,7 @@ export type Labels = Readonly<Record<string, string>>;
  * possible (no stable address).
  */
 export type EgressPolicy =
-  | "none"
-  | "open"
-  | "allowlist"
-  | "deny-all-except-proxy"
-  | "proxy-domain-filtered";
+  "none" | "open" | "allowlist" | "deny-all-except-proxy" | "proxy-domain-filtered";
 
 /**
  * How strongly a sandbox is separated from the host and from other sandboxes, weakest first.

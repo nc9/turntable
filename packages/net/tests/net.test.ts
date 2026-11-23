@@ -226,9 +226,9 @@ describe("refusing what the control plane must never contact", () => {
     expect(err).toBeInstanceOf(SsrfError);
   });
 
-  test("LONGSHORE_NET_ALLOW_HOSTS is parsed", () => {
+  test("TURNTABLE_NET_ALLOW_HOSTS is parsed", () => {
     expect(
-      allowHostsFromEnv({ LONGSHORE_NET_ALLOW_HOSTS: " daytona.internal, 10.1.2.3 ,," }),
+      allowHostsFromEnv({ TURNTABLE_NET_ALLOW_HOSTS: " daytona.internal, 10.1.2.3 ,," }),
     ).toEqual(["daytona.internal", "10.1.2.3"]);
     expect(allowHostsFromEnv({})).toEqual([]);
   });
@@ -360,7 +360,7 @@ describe("it behaves like fetch for ordinary requests", () => {
     ).json()) as Record<string, string>;
     expect(echo).toMatchObject({
       method: "POST",
-      ua: "longshore",
+      ua: "turntable",
       auth: "x",
       enc: "identity",
       body: '{"a":1}',

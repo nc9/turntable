@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { ensureInstance, getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
 import { getActionPolicy, setActionPolicy } from "../db/repos";
 
-/** `longshore policy <show|set> --org <slug> --project <slug> [...]` (local trust root). */
+/** `turntable policy <show|set> --org <slug> --project <slug> [...]` (local trust root). */
 export async function policyCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const { values } = parseArgs({
@@ -20,10 +20,10 @@ export async function policyCommand(args: string[]): Promise<void> {
   });
   if (sub !== "show" && sub !== "set") {
     throw new Error(
-      "usage: longshore policy <show|set> [--org local] [--project local] [--require-sha-pins true|false] [--allow-owners a,b | --clear-allowlist]",
+      "usage: turntable policy <show|set> [--org local] [--project local] [--require-sha-pins true|false] [--allow-owners a,b | --clear-allowlist]",
     );
   }
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     await ensureInstance(db);
     const org = await getOrgBySlug(db, values.org);

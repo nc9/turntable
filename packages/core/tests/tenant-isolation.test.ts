@@ -54,7 +54,7 @@ import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
 
 // Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
 // connection, each needs its own instance.
-process.env.LONGSHORE_TEST_PGLITE_ISOLATED = "1";
+process.env.TURNTABLE_TEST_PGLITE_ISOLATED = "1";
 
 // ---- the world ----
 
@@ -917,7 +917,7 @@ describe("realtime WebSocket", () => {
   async function connect(
     token: string,
   ): Promise<{ msgs: ServerMessage[]; send(m: object): void; close(): void }> {
-    const ws = new WebSocket(`ws://${base}/api/v1/realtime`, ["longshore.v1", `bearer.${token}`]);
+    const ws = new WebSocket(`ws://${base}/api/v1/realtime`, ["turntable.v1", `bearer.${token}`]);
     const msgs: ServerMessage[] = [];
     ws.onmessage = (e) => void msgs.push(JSON.parse(String(e.data)) as ServerMessage);
     await new Promise<void>((resolve, reject) => {

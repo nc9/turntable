@@ -81,7 +81,7 @@ async function ownPolicy(args: string[]): Promise<void> {
     console.error(POLICY_USAGE);
     process.exit(2);
   }
-  const db = openDatabase(join(resolve(values["data-dir"]), "longshore.db"));
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   try {
     if (sub === "show") {
       const p = await showPolicy(db, values.org);
@@ -158,7 +158,7 @@ async function ownPolicy(args: string[]): Promise<void> {
         resolveDefaultBranch: (repo) =>
           new GithubClient({
             baseUrl: "https://api.github.com",
-            token: process.env.LONGSHORE_GITHUB_TOKEN?.trim() || undefined,
+            token: process.env.TURNTABLE_GITHUB_TOKEN?.trim() || undefined,
           }).repoDefaultBranch(repo),
       });
       console.error(`ingest ${r.project}: ${r.from ? "on" : "off"} -> ${r.to ? "on" : "off"}`);
@@ -206,7 +206,7 @@ async function ownPolicy(args: string[]): Promise<void> {
 }
 
 /**
- * `longshore policy`: one command for every per-org and per-project policy. Action pinning
+ * `turntable policy`: one command for every per-org and per-project policy. Action pinning
  * (`--require-sha-pins`, `--allow-owners`) is handled by the pins module; `approve-run-min-role`
  * and `--egress` here. `show` prints both.
  */

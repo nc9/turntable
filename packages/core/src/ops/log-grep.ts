@@ -1,5 +1,5 @@
 // grep over a stored job log, with context, bounded work and a continuation offset.
-import { redactString } from "@longshore/redact";
+import { redactString } from "@turntable/redact";
 import { OpError } from "./errors";
 import { compileSafeRegex, SafeRegexError, type LineMatcher } from "./safe-regex";
 

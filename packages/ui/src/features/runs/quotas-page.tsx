@@ -134,7 +134,7 @@ export function QuotasPage() {
         Limits are set by the instance operator on the server, never from here or over the API, so
         an org cannot raise its own:{" "}
         <code className="font-mono text-xs">
-          longshore quotas set --org {scope.orgSlug ?? "&lt;org&gt;"} ...
+          turntable quotas set --org {scope.orgSlug ?? "&lt;org&gt;"} ...
         </code>
         . The concurrency limit can only lower the instance's per-org cap.
       </p>

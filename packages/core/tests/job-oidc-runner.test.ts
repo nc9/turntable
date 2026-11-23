@@ -4,8 +4,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { sha256Hex, staticResolver, tarDirectory } from "@longshore/act-runner";
-import { FakeWorld } from "@longshore/provider-sdk/testing";
+import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
+import { FakeWorld } from "@turntable/provider-sdk/testing";
 import {
   type Db,
   ensureLocalTenant,

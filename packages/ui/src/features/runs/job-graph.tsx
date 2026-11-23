@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { Job, JobAttempt, JobState } from "@/api/types";
 import { Duration } from "@/components/live-clock";
 import { StateIcon } from "@/components/state-badge";
+import { foldShardStates, shardGroupId } from "@/lib/shards";
 import { cn } from "@/lib/utils";
 
 const NODE_W = 236;
@@ -19,6 +20,8 @@ type GraphNode = {
   title: string;
   jobs: Job[];
   group: boolean;
+  /** The legs are shards of one split job, not matrix legs. */
+  shards: boolean;
   needs: string[];
   level: number;
   x: number;
@@ -41,17 +44,30 @@ export function worstState(states: JobState[]): JobState {
   return "queued";
 }
 
+/** The graph node a job row belongs to: its shard group, its matrix group, or itself. */
+const nodeId = (job: Job): string => shardGroupId(job) ?? job.matrixGroup ?? job.jobKey;
+
+/** What a leg row says: "1/3 Audit engine tests" for a shard, the matrix values for a matrix leg. */
+function legLabel(job: Job): string {
+  if (job.shard) {
+    const n = `${job.shard.index + 1}/${job.shard.total}`;
+    return job.shard.steps.length > 0 ? `${n} ${job.shard.steps.join(", ")}` : n;
+  }
+  return Object.values(job.matrix ?? {}).join(", ");
+}
+
 function layout(jobs: Job[]): { nodes: GraphNode[]; width: number; height: number } {
   const byId = new Map<string, GraphNode>();
   const keyToNode = new Map<string, string>();
   for (const job of jobs) {
-    const id = job.matrixGroup ?? job.jobKey;
+    const id = nodeId(job);
     keyToNode.set(job.jobKey, id);
     const node = byId.get(id) ?? {
       id,
-      title: job.matrixGroup ?? job.name,
+      title: job.shard ? job.name : (job.matrixGroup ?? job.name),
       jobs: [],
-      group: job.matrixGroup !== null,
+      group: job.matrixGroup !== null || job.shard !== null,
+      shards: job.shard !== null,
       needs: [],
       level: 0,
       x: 0,
@@ -128,9 +144,9 @@ export function JobGraph({
       to="/$org/$project/runs/$runId/jobs/$jobId"
       params={{ org: orgSlug, project: projectSlug, runId, jobId: job.id }}
       className={className}
-      onMouseEnter={() => setHover(job.matrixGroup ?? job.jobKey)}
+      onMouseEnter={() => setHover(nodeId(job))}
       onMouseLeave={() => setHover(null)}
-      onFocus={() => setHover(job.matrixGroup ?? job.jobKey)}
+      onFocus={() => setHover(nodeId(job))}
       onBlur={() => setHover(null)}
     >
       {children}
@@ -175,7 +191,8 @@ export function JobGraph({
           )}
         </svg>
         {nodes.map((n) => {
-          const state = worstState(n.jobs.map((j) => j.state));
+          const states = n.jobs.map((j) => j.state);
+          const state = n.shards ? foldShardStates(states) : worstState(states);
           const dim = hover !== null && !linked(n.id);
           const common =
             "absolute rounded-lg border bg-surface transition-[border-color,opacity] duration-150";
@@ -228,7 +245,9 @@ export function JobGraph({
               <div className="flex items-center gap-2.5 px-3" style={{ height: GROUP_HEAD }}>
                 <StateIcon state={state} className="size-[18px]" />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{n.title}</span>
-                <span className="text-xs text-faint">{n.jobs.length} legs</span>
+                <span className="text-xs text-faint">
+                  {n.jobs.length} {n.shards ? "shards" : "legs"}
+                </span>
               </div>
               <ul className="border-t border-line">
                 {n.jobs.map((job) => (
@@ -238,8 +257,8 @@ export function JobGraph({
                       "flex h-[30px] items-center gap-2 px-3 text-[13px] text-dim hover:bg-subtle hover:text-foreground focus-visible:-outline-offset-2",
                       <>
                         <StateIcon state={job.state} className="size-3.5" />
-                        <span className="min-w-0 flex-1 truncate">
-                          {Object.values(job.matrix ?? {}).join(", ")}
+                        <span className="min-w-0 flex-1 truncate" title={legLabel(job)}>
+                          {legLabel(job)}
                         </span>
                         <Duration
                           startedAt={job.startedAt}

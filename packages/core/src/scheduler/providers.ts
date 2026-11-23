@@ -4,9 +4,9 @@ import {
   HARD_MAX_LIVE,
   type OwnerCiPreflight,
   parseFleetName,
-} from "@longshore/provider-daytona";
-import { DockerProvider } from "@longshore/provider-docker";
-import type { Provider } from "@longshore/provider-sdk";
+} from "@turntable/provider-daytona";
+import { DockerProvider } from "@turntable/provider-docker";
+import type { Provider } from "@turntable/provider-sdk";
 import {
   BUILTIN_CEILINGS,
   checkProviderInfo,
@@ -71,7 +71,7 @@ export function createProvider(
     // Not built in: gated by hosted mode and a digest pin, and no external loader exists yet.
     const path = verifyExternalPlugin(name, {
       hosted: opts.hosted === true,
-      pins: opts.pins ?? parsePluginPins(process.env.LONGSHORE_PROVIDER_PLUGINS),
+      pins: opts.pins ?? parsePluginPins(process.env.TURNTABLE_PROVIDER_PLUGINS),
     });
     throw new ProviderTrustError(
       `plugin ${name} (${path}) matches its pinned digest, but this build has no external provider loader; use one of: ${PROVIDER_NAMES.join(", ")}`,

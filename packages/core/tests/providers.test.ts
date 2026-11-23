@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MOCK_KEY, startMock } from "@longshore/provider-daytona/testing";
+import { MOCK_KEY, startMock } from "@turntable/provider-daytona/testing";
 import { egressForRun } from "../src/scheduler/egress";
 import { createProvider } from "../src/scheduler/providers";
 
@@ -11,14 +11,14 @@ let dir: string;
 beforeEach(() => {
   mock = startMock();
   // The mock Daytona listens on loopback: allow exactly that host for the outbound client.
-  process.env.LONGSHORE_NET_ALLOW_HOSTS = "127.0.0.1";
+  process.env.TURNTABLE_NET_ALLOW_HOSTS = "127.0.0.1";
   dir = mkdtempSync(join(tmpdir(), "ls-prov-"));
 });
 afterEach(async () => {
   await mock.stop();
   rmSync(dir, { recursive: true, force: true });
   delete process.env.LS_TEST_DAYTONA_KEY;
-  delete process.env.LONGSHORE_NET_ALLOW_HOSTS;
+  delete process.env.TURNTABLE_NET_ALLOW_HOSTS;
 });
 
 test("daytona is selectable and its options are validated strictly", () => {
@@ -88,7 +88,7 @@ test("a daytona provider built from config talks to the API with the key from a 
   // the scheduler's own spec: an image, and a TTL past 30 minutes
   const h = await p.create({
     name: "tt-run-ABC123",
-    labels: { "longshore.run": "r1", "longshore.job": "j1" },
+    labels: { "turntable.run": "r1", "turntable.job": "j1" },
     image: "ghcr.io/example/runner:1",
     ttlSeconds: 3600 + 900,
     network: { egress: "none" },
@@ -103,7 +103,7 @@ test("a daytona provider built from config talks to the API with the key from a 
     autoStopInterval: 30,
     autoDeleteInterval: 0,
   });
-  expect(body.labels).toMatchObject({ "longshore-dev": "1", "longshore.run": "r1" });
+  expect(body.labels).toMatchObject({ "longshore-dev": "1", "turntable.run": "r1" });
   expect(body).not.toHaveProperty("buildInfo");
   expect(body).not.toHaveProperty("env");
   expect(await p.count({})).toBe(1);
@@ -165,7 +165,7 @@ test(
     mock.usage.rows = [{ regionId: "us", sandboxClass: "container", currentCpuUsage: 40 }];
     const spec = {
       name: "tt-run-x",
-      labels: { "longshore.run": "r1" },
+      labels: { "turntable.run": "r1" },
       ttlSeconds: 600,
       network: { egress: "none" as const },
     };
@@ -193,8 +193,8 @@ test("the daytona fleet is config: validated when the provider is built, the def
   for (const bad of [
     "shadow",
     "Longshore-shadow",
-    "longshore-",
-    "longshore-".padEnd(31, "a"),
+    "turntable-",
+    "turntable-".padEnd(31, "a"),
     "",
   ]) {
     expect(() => createProvider("daytona", { ...key, fleet: bad }), bad).toThrow();

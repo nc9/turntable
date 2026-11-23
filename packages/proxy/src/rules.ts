@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isIP } from "node:net";
-import { MIN_SECRET_LENGTH } from "@longshore/redact";
+import { MIN_SECRET_LENGTH } from "@turntable/redact";
 import { type BodyCheck, type Inject, type NpmExpect, type Rule, RuleError } from "./types";
 
 const HOST =

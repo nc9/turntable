@@ -1,9 +1,9 @@
 // Runs the core and ops suites against Postgres: the same `test:*` scripts as `bun run test`,
-// with LONGSHORE_TEST_DB set so `openDatabase` gives each test a fresh Postgres database
+// with TURNTABLE_TEST_DB set so `openDatabase` gives each test a fresh Postgres database
 // (`pglite` for an in-process one, or a postgres:// URL for a real server, as CI does).
 //
-//   LONGSHORE_TEST_DB=pglite bun run scripts/run-tests-pg.ts
-//   LONGSHORE_TEST_DB=postgres://postgres@localhost:5432/postgres bun run scripts/run-tests-pg.ts
+//   TURNTABLE_TEST_DB=pglite bun run scripts/run-tests-pg.ts
+//   TURNTABLE_TEST_DB=postgres://postgres@localhost:5432/postgres bun run scripts/run-tests-pg.ts
 //
 // Only suites that are plain `bun test <files under packages/core/tests>` run here (the others
 // need Docker, a binary or a service and have their own jobs). A few files are about SQLite
@@ -21,8 +21,8 @@ const SQLITE_ONLY = new Map<string, string>([
   ["master-key-autoinit.test.ts", "starts a server process with its own database"],
 ]);
 
-const url = process.env.LONGSHORE_TEST_DB;
-if (!url) throw new Error("set LONGSHORE_TEST_DB to pglite or a postgres:// URL");
+const url = process.env.TURNTABLE_TEST_DB;
+if (!url) throw new Error("set TURNTABLE_TEST_DB to pglite or a postgres:// URL");
 
 const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
   scripts: Record<string, string>;

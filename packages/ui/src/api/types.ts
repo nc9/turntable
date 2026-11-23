@@ -63,6 +63,8 @@ export type Run = {
   finishedAt: number | null;
 };
 
+export type JobShard = { job: string; index: number; total: number; steps: string[] };
+
 export type Job = {
   id: string;
   orgId: string;
@@ -76,6 +78,12 @@ export type Job = {
   /** Matrix leg values, or null for a plain job. Legs of one matrix share `matrixGroup`. */
   matrix: Record<string, string> | null;
   matrixGroup: string | null;
+  /**
+   * Set when this row is one shard of a job the operator splits across sandboxes. `job` is the
+   * workflow job id the shards share (they also share a name and one forge check), `index` counts
+   * from 0, `steps` are the steps only this shard runs. Null for a job that is not split.
+   */
+  shard: JobShard | null;
   /**
    * Why the job is waiting when `state` is awaiting_approval: an untrusted-author gate
    * (an operator approves) or a release/environment gate (a human approves with a security key).
@@ -463,11 +471,7 @@ export type QuotaLimits = {
 };
 
 export type QuotaMetric =
-  | "concurrent"
-  | "runs_per_hour"
-  | "sandbox_minutes"
-  | "log_bytes"
-  | "stored_bytes";
+  "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
 
 export type QuotaUsage = {
   metric: QuotaMetric;

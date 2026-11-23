@@ -58,7 +58,7 @@ function fail(err: OpError): Response {
     headers: {
       ...API_HEADERS,
       "content-type": "application/json; charset=utf-8",
-      ...(err.code === "unauthenticated" ? { "www-authenticate": 'Bearer realm="longshore"' } : {}),
+      ...(err.code === "unauthenticated" ? { "www-authenticate": 'Bearer realm="turntable"' } : {}),
     },
   });
 }
@@ -153,7 +153,7 @@ export function createEventStream(o: {
         first = await read(from, limits.page);
       } catch (err) {
         if (err instanceof OpError) return fail(err);
-        console.error("longshore: SSE error", err);
+        console.error("turntable: SSE error", err);
         return fail(new OpError("internal", "internal error"));
       }
       if (
@@ -252,7 +252,7 @@ export function createEventStream(o: {
               `event: error\ndata: ${JSON.stringify({ code: err.code, message: err.message })}\n\n`,
             );
           } else {
-            console.error("longshore: SSE error", err);
+            console.error("turntable: SSE error", err);
             close(`event: error\ndata: {"code":"internal","message":"internal error"}\n\n`);
           }
         } finally {

@@ -52,7 +52,6 @@ function useScopedSync(
       off();
     };
     // `load` and `topic` are derived from `key`
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [key, nonce]);
 
   return {

@@ -1,5 +1,5 @@
 // Source guard (issue #49): nothing outside the one outbound client may make a network request.
-// Control-plane code must go through @longshore/net so every request gets address validation,
+// Control-plane code must go through @turntable/net so every request gets address validation,
 // pinned resolution, redirect rules and caps. A new caller that reaches for fetch fails here.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
