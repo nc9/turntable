@@ -1,0 +1,11 @@
+{
+  "name": "turntable",
+  "owner": { "name": "nc9" },
+  "plugins": [
+    {
+      "name": "turntable",
+      "source": "./claude-plugin",
+      "description": "Setup skills for self-hosting Turntable, and a channel for CI events."
+    }
+  ]
+}

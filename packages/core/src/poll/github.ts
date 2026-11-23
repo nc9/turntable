@@ -86,7 +86,7 @@ export interface TagRuleset {
 export class GithubClient {
   readonly #fetch: FetchLike;
   readonly #base: string;
-  readonly #token: string | undefined;
+  #token: string | undefined;
   readonly #now: () => number;
   readonly #cache = new Map<string, Cached>();
   #rate: RateLimitInfo | undefined;
@@ -101,6 +101,14 @@ export class GithubClient {
     this.#base = o.baseUrl.replace(/\/$/, "");
     this.#token = o.token;
     this.#now = o.now ?? Date.now;
+  }
+
+  /**
+   * Swaps the credential, for an installation token that was minted again. The ETag cache and the
+   * rate-limit reading stay: they belong to this client's one auth mode and repo.
+   */
+  setToken(token: string | undefined): void {
+    this.#token = token;
   }
 
   /** The latest rate-limit headers seen (304 responses carry them too), or undefined. */

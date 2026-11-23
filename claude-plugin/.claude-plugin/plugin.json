@@ -1,7 +1,7 @@
 {
   "name": "turntable",
   "version": "0.0.0",
-  "description": "Pushes Turntable CI events (failed runs, approvals needed) into a running Claude Code session.",
+  "description": "Setup skills for self-hosting Turntable, plus a channel that pushes CI events (failed runs, approvals needed) into a running Claude Code session.",
   "channels": [
     {
       "server": "turntable",
