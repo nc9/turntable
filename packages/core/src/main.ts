@@ -102,6 +102,7 @@ Usage:
   longshore quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
   longshore artifacts list|check --url <https://host> --org <slug> --project <slug> [--run <id>] [--token-file <path>]
   longshore quotas get --url <https://host> --org <slug> [--token-file <path>]  (remote read)
+  longshore usage --url <https://host> [--days <n>] [--by-project] [--token-file <path>]  (sandbox minutes per day, remote read)
   longshore channel --url <https://host> --org <slug> [--token-file <path>] [--project a,b]
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   longshore fetch-source <owner/name> <sha> [--file <path>]   check that a commit can be fetched, as a worker does
@@ -953,6 +954,10 @@ async function main(argv: string[]): Promise<void> {
     case "quotas": {
       const { quotasCommand } = await import("./quotas/cli");
       process.exit(await quotasCommand(rest));
+    }
+    case "usage": {
+      const { usageCommand } = await import("./usage/cli");
+      process.exit(await usageCommand(rest));
     }
     case "artifacts": {
       const { artifactsCommand } = await import("./artifacts/cli");
