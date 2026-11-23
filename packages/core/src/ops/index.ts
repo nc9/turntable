@@ -12,7 +12,7 @@ import {
   submitApproval,
 } from "./definitions/approvals";
 import { dbBackupOp } from "./definitions/db-backup";
-import { approveRunOp } from "./definitions/approve-run";
+import { approveRunChallengeOp, approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
@@ -107,6 +107,7 @@ export const registry = createRegistry([
   cancel,
   rerun,
   approveRunOp,
+  approveRunChallengeOp,
   signRelease,
   whoami,
   doctor,

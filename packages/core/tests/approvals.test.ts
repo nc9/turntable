@@ -27,7 +27,10 @@ import { verifyAssertion, verifyRegistration, type RelyingParty } from "../src/a
 import {
   claimNextAttempt,
   createOrg,
+  createJob,
   createPolledRun,
+  createRun,
+  setProjectSandboxSettings,
   createProject,
   type Db,
   getJob,
@@ -624,6 +627,62 @@ describe("WebAuthn approvals", () => {
     const made: EnvStatement = { ...c2.statement, nonce: "q".repeat(24) };
     const unissued = await approve(made, { kind: "webauthn", ...dev.assert(challengeOf(made)) });
     expect(!unissued.ok && unissued.error.code).toBe("conflict");
+  });
+
+  test("a passkey signs a run approval (approve_run.v1) under the human policy, once", async () => {
+    const alice = await ed25519Approver("alice", "alice-gh");
+    const bob = await ed25519Approver("bob", "bob-gh");
+    const { dev, enrol } = await passkey("carol", "carol-gh");
+    for (const p of [alice, bob]) {
+      const c = await ok(releaseTok, "enrolment_challenge", {
+        enrolment_id: enrol.enrolment_id,
+        approver: p.id,
+      });
+      await dispatch(env, { kind: "signed" }, "approve_enrolment", {
+        statement: c.statement,
+        signature: await signOffline(p, c),
+      });
+    }
+    const carol = (await ok(releaseTok, "approvers_overview")).approvers.find(
+      (a: any) => a.person === "carol",
+    );
+    await setProjectSandboxSettings(db, scope, { untrustedRunApproval: "human" });
+    const hold = await createRun(db, scope, {
+      workflowPath: ".github/workflows/ci.yml",
+      event: "pull_request",
+      ref: "refs/pull/9/head",
+      sha: "d".repeat(40),
+      trust: JSON.stringify({ class: "untrusted_pr", workflowHash: WF_HASH }),
+    });
+    const job = (await createJob(db, scope, {
+      runId: hold.id,
+      jobKey: "build",
+      name: "build",
+      approvalKind: "untrusted_author",
+    }))!;
+    await db.run((h) =>
+      rawExec(h.orm, sql`update jobs set state = 'awaiting_approval' where id = ${job.id}`),
+    );
+    const body = { run_id: hold.id, head_sha: "d".repeat(40), workflow_hash: WF_HASH };
+    const c = await ok(releaseTok, "approve_run_challenge", {
+      run_id: hold.id,
+      approver: carol.id,
+    });
+    expect(c.challenge).toBe(challengeOf(c.statement));
+    const assertion = { kind: "webauthn", ...dev.assert(c.challenge) };
+    const r = await call(releaseTok, "approve_run", {
+      ...body,
+      statement: c.statement,
+      signature: assertion,
+    });
+    expect(r.ok && r.output).toMatchObject({ released_jobs: 1, signed_by: carol.id });
+    const again = await call(releaseTok, "approve_run", {
+      ...body,
+      statement: c.statement,
+      signature: assertion,
+    });
+    expect(again.ok).toBe(false);
+    expect((await listJobs(db, scope, hold.id)).map((j) => j.state)).toEqual(["queued"]);
   });
 
   test("enrolment needs the quorum; one existing approver is not enough once two exist; nobody approves their own key", async () => {

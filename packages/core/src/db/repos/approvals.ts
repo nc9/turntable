@@ -607,7 +607,7 @@ export function activateEnrolment(
 
 export type NewRecord = {
   projectId?: string | undefined;
-  kind: "environment" | "enrol" | "policy";
+  kind: "environment" | "enrol" | "policy" | "run";
   runId?: string | undefined;
   environment?: string | undefined;
   enrolmentId?: string | undefined;

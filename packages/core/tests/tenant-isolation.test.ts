@@ -492,6 +492,8 @@ const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => voi
       head_sha: w.fx.heldSha,
       workflow_hash: w.fx.workflowHash,
     }),
+  approve_run_challenge: (w, i) =>
+    Object.assign(i, { run_id: w.fx.heldRunId, approver: w.fx.aliceId }),
   approval_challenge: (w, i) =>
     Object.assign(i, { run_id: w.fx.envRunId, environment: "production", approver: w.fx.aliceId }),
   key_policy_challenge: (w, i) =>

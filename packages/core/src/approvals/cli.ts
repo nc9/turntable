@@ -110,7 +110,15 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     // Show what is being signed, so the signer sees the identity an enrolment would grant.
     try {
       const st = JSON.parse(canonical) as Record<string, unknown>;
-      const fields = ["type", "person", "forge_login", "run_id", "environment", "enrolment_id"];
+      const fields = [
+        "type",
+        "person",
+        "forge_login",
+        "run_id",
+        "environment",
+        "trust_class",
+        "enrolment_id",
+      ];
       console.error(
         `signing: ${fields
           .filter((f) => typeof st[f] === "string")

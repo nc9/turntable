@@ -47,10 +47,13 @@ import { OpError } from "../ops/errors";
 import {
   canonicalStatement,
   keyFingerprint,
+  MAX_RUN_STATEMENT_TTL_MS,
   MAX_STATEMENT_TTL_MS,
   POLICY_STATEMENT_TYPE,
   policyDigest,
+  statementHash as hashOf,
   type EnrolStatement,
+  type RunStatement,
   type EnvStatement,
   type PolicyStatement,
 } from "./statement";
@@ -64,7 +67,7 @@ type Ctx = { db: Db; scope: Scope; now: number; rp?: RelyingParty | undefined };
 
 async function verified(
   c: Ctx,
-  statement: EnvStatement | EnrolStatement | PolicyStatement,
+  statement: EnvStatement | EnrolStatement | PolicyStatement | RunStatement,
   signature: SignatureMaterial,
 ): Promise<Verified> {
   const key = await dbKeyStore(c.db, c.scope.orgId).lookup(statement.approver);
@@ -164,6 +167,62 @@ function checkExpiry(expiresAt: number, now: number): void {
     throw new OpError("invalid_input", "the statement is valid for too long (7 days at most)");
 }
 
+/**
+ * A human's signed approval of a run held for an untrusted author (#324). Checks, in one
+ * transaction with the release that follows, that: the key is an active approver of THIS org that
+ * counts and satisfies the org key policy; the signature verifies over exactly this statement;
+ * the statement names this org and the run's project, binds this run's sha, workflow and trust
+ * class, and is live for at most 10 minutes; and its server-issued nonce is unused (spent here,
+ * for webauthn and ed25519 alike). The caller releases the run's jobs afterwards.
+ */
+export async function verifyRunApproval(
+  c: Ctx,
+  statement: RunStatement,
+  signature: SignatureMaterial,
+  run: { id: string; projectId: string; sha: string | null; trust: string | null },
+): Promise<{ hash: string; approverId: string; person: string; method: "webauthn" | "ed25519" }> {
+  const v = await verified(c, statement, signature);
+  const org = await getOrgById(c.db, c.scope.orgId);
+  if (!org || org.slug !== statement.org)
+    throw new OpError("conflict", "the statement is for another org");
+  const project = await getProject(c.db, { orgId: c.scope.orgId }, run.projectId);
+  if (!project || project.slug !== statement.project)
+    throw new OpError("conflict", "the statement is for another project");
+  if (statement.expires_at <= c.now)
+    throw new OpError("invalid_input", "the statement has expired");
+  if (statement.expires_at > c.now + MAX_RUN_STATEMENT_TTL_MS)
+    throw new OpError("invalid_input", "the statement is valid for too long (10 minutes at most)");
+  const trust = parseTrust(run);
+  if (statement.run_id !== run.id)
+    throw new OpError("conflict", "the statement is for another run");
+  if (run.sha === null || run.sha.toLowerCase() !== statement.head_sha)
+    throw new OpError("conflict", "head_sha is not the sha of this run");
+  if (!trust || trust.workflowHash !== statement.workflow_hash)
+    throw new OpError("conflict", "workflow_hash is not the hash of this run's workflow");
+  if (trust.class !== statement.trust_class)
+    throw new OpError("conflict", "the statement is for another trust class");
+  if (approverIdentity(v.key) === null)
+    throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  const violation = keyPolicyViolation(await getKeyPolicy(c.db, c.scope.orgId), v.key);
+  if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
+  // Both methods spend the server-issued challenge: a replayed statement is refused even if its
+  // signature still verifies.
+  const ok = await consumeChallenge(c.db, c.scope.orgId, {
+    id: statement.nonce,
+    kind: "approve",
+    statementHash: v.hash,
+    now: c.now,
+  });
+  if (!ok) throw new OpError("conflict", "the challenge is unknown, already used or expired");
+  if (v.signCount !== null) await setSignCount(c.db, c.scope.orgId, v.key.id, v.signCount);
+  await record({ ...c, scope: { ...c.scope, projectId: run.projectId } }, v, signature, {
+    kind: "run",
+    runId: run.id,
+    expiresAt: statement.expires_at,
+  });
+  return { hash: hashOf(statement), approverId: v.key.id, person: v.key.person, method: v.method };
+}
+
 /** Consumes the server-issued nonce (WebAuthn) and advances the authenticator's counter. */
 async function consumeProof(
   c: Ctx,
@@ -187,7 +246,7 @@ async function record(
   v: Verified,
   signature: SignatureMaterial,
   r: {
-    kind: "environment" | "enrol" | "policy";
+    kind: "environment" | "enrol" | "policy" | "run";
     runId?: string;
     environment?: string;
     enrolmentId?: string;

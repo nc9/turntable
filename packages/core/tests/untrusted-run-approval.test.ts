@@ -19,7 +19,6 @@ import {
   setProjectSandboxSettings,
   type Scope,
 } from "../src/db";
-import { systemOrgId } from "../src/audit/failures";
 import { TOKEN_KINDS, type UntrustedRunApproval, UNTRUSTED_RUN_APPROVALS } from "../src/db/schema";
 import { dispatch, type DispatchEnv, registry, type Credential } from "../src/ops";
 import { approvalRefusal } from "../src/ops/approval-policy";
@@ -325,19 +324,22 @@ describe("changing the setting", () => {
     });
   });
 
-  test("selecting human is refused and audited, over the op and the host CLI", async () => {
+  test("human is selectable through the op and the host CLI, audited with old and new", async () => {
     const r = await asInstance({ untrusted_run_approval: "human" });
-    expect(!r.ok && r.error.message).toMatch(/isn't available yet \(#324\)/);
-    await expect(
-      setSandboxPolicy(db, "org-a", "app", { untrustedRunApproval: "human" }),
-    ).rejects.toThrow(/isn't available yet \(#324\)/);
-    expect((await getProjectSandboxSettings(db, a.scope)).untrustedRunApproval).toBe("no_agents");
-    const rows = await listAudit(db, { orgId: a.orgId }, { limit: 10 });
-    const sys = await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 10 });
-    expect(
-      sys.some((x) => x.op === "set_project_settings" && x.outcome === "error:invalid_input"),
-    ).toBe(true);
-    expect(rows.some((x) => x.op === "policy_set" && x.outcome.startsWith("error:"))).toBe(true);
+    expect(r.ok && (r.output as { untrusted_run_approval: string }).untrusted_run_approval).toBe(
+      "human",
+    );
+    expect((await getProjectSandboxSettings(db, a.scope)).untrustedRunApproval).toBe("human");
+    await setSandboxPolicy(db, "org-a", "app", { untrustedRunApproval: "no_agents" });
+    await setSandboxPolicy(db, "org-a", "app", { untrustedRunApproval: "human" });
+    expect((await getProjectSandboxSettings(db, a.scope)).untrustedRunApproval).toBe("human");
+    const own = (await listAudit(db, { orgId: a.orgId }, { limit: 20 })).find(
+      (x) => x.op === "set_project_settings",
+    );
+    expect(JSON.parse(own!.input)).toMatchObject({
+      from: { untrustedRunApproval: "no_agents" },
+      to: { untrustedRunApproval: "human" },
+    });
   });
 
   test("no org token, of any role or kind, can set it, and it is not an MCP tool", async () => {

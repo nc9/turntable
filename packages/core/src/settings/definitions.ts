@@ -7,7 +7,6 @@ import {
   approvalPolicyMap,
   MAX_REQUIRED_APPROVALS,
 } from "../approvals/policy-setting";
-import { HUMAN_MODE_UNAVAILABLE } from "../ops/approval-policy";
 import { createSettingsRegistry, defineSetting } from "./define";
 
 /** How many backups `db_backup` keeps when nothing says otherwise. */
@@ -117,10 +116,8 @@ export const untrustedRunApprovalSetting = defineSetting({
   // Raising it to `any` lets agents approve: a value in an agent's context is not a human decision.
   mcpEditable: false,
   mcpReason: "it decides whether agents may approve runs, so only a person changes it",
-  // `human` is in the type so a stored value still fails closed, but it cannot be chosen yet.
-  refuse: (v) => (v === "human" ? HUMAN_MODE_UNAVAILABLE : undefined),
   description:
-    "Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`.",
+    "Who may approve a run held for an untrusted author: `human` (an enrolled approver's signed statement only), `no_agents` (not over MCP, not with an agent token) or `any`.",
   toml: "untrusted_run_approval",
 });
 

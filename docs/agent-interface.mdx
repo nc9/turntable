@@ -70,6 +70,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `cancel` | `POST /api/v1/runs/{run_id}/cancel` | yes |  | destructive | operator | token | Cancel a run: queued, running and waiting jobs become cancelled. |
 | `rerun` | `POST /api/v1/runs/{run_id}/rerun` | yes |  | write | operator | token | Rerun failed jobs of a run, or named jobs, with a reason. Capped per commit. |
 | `approve_run` | `POST /api/v1/runs/{run_id}/approve` | yes |  | write | operator (per org policy) | token | Approve a run held for an untrusted author, bound to its head sha and workflow hash. |
+| `approve_run_challenge` | `POST /api/v1/runs/{run_id}/approve-challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a run held for an untrusted author. |
 | `sign_release` | none | no |  | write | owner | signature | Sign the recorded artifacts of a release run (human-signed assertion required). |
 | `whoami` | `GET /api/v1/whoami` | yes |  | read | reader | token | Who this credential is: kind, token name, role, org and project grant. |
 | `doctor` | `GET /api/v1/doctor` | no | `turntable doctor` | read | owner (per org policy) | token | Read-only readiness check of this instance: pass, warn or fail, with a fix for each. |
