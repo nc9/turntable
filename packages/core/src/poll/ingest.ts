@@ -864,6 +864,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           return localFiles.get(p);
         },
         github: githubExtra,
+        vars: cfg.vars ?? {},
       });
     } catch (err) {
       const reason = `plan rejected: ${err instanceof Error ? err.message : String(err)}`;
@@ -985,7 +986,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         plan: JSON.stringify({
           env: wp.env,
           github: githubContext(event, githubExtra),
-          vars: {},
+          vars: cfg.vars ?? {},
           // What isolation and egress policy read: the decided class, and the sandbox egress.
           trust: decision.class,
           egress,

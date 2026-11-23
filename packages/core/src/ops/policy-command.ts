@@ -20,6 +20,20 @@ import {
   showPolicy,
 } from "./policy-cli";
 
+/** `--var NAME=value` (repeatable) into a record; a repeat of a name or a missing `=` is an error. */
+function parseVars(raw: string[] | undefined): Record<string, string> | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const item of raw) {
+    const eq = item.indexOf("=");
+    if (eq <= 0) throw new Error(`--var wants NAME=value, got ${JSON.stringify(item)}`);
+    const name = item.slice(0, eq);
+    if (Object.hasOwn(out, name)) throw new Error(`--var ${name} is given twice`);
+    out[name] = item.slice(eq + 1);
+  }
+  return out;
+}
+
 async function ownPolicy(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -37,6 +51,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       "merge-queue": { type: "boolean", default: false },
       "cache-release-restore": { type: "string" },
       "tag-refs": { type: "string" },
+      var: { type: "string", multiple: true },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -70,7 +85,7 @@ async function ownPolicy(args: string[]): Promise<void> {
         );
       for (const i of await showIngest(db, values.org)) {
         console.log(
-          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"})` : "off"}`,
+          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"}, vars ${Object.keys(i.ingest.vars ?? {}).join(",") || "(none)"})` : "off"}`,
         );
       }
     } else if (
@@ -104,6 +119,7 @@ async function ownPolicy(args: string[]): Promise<void> {
           .map((x) => x.trim())
           .filter(Boolean),
         mergeQueue: values["merge-queue"],
+        vars: parseVars(values.var),
         tagRefs: values["tag-refs"]
           ?.split(",")
           .map((x) => x.trim())
