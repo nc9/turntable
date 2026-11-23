@@ -1,7 +1,21 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { resetFailureThrottle } from "../src/audit/failures";
-import { chainedAudit, createOrg, getGithubApp, openDatabase, type Db } from "../src/db";
+import {
+  bindRepo,
+  chainedAudit,
+  createOrg,
+  createProject,
+  getGithubApp,
+  listInstallationBindings,
+  openDatabase,
+  setGithubApp,
+  upsertInstallation,
+  getInstallation,
+  type Db,
+} from "../src/db";
+import * as schema from "../src/db/schema";
+import { eq } from "drizzle-orm";
 import {
   SECRET_APP_ID,
   SECRET_CLIENT,
@@ -14,11 +28,12 @@ import {
   MANIFEST_COOKIE,
   MANIFEST_PATH,
   MANIFEST_TTL_MS,
+  MAX_BODY_BYTES,
   SECRET_MANIFEST_KEY,
   SETUP_FAILURES_PER_MINUTE,
   type HostedManifestHandler,
 } from "../src/github/hosted-manifest";
-import type { ManifestConversion } from "../src/github/manifest";
+import { AppStateError, storeApp, type ManifestConversion } from "../src/github/manifest";
 import { hashToken } from "../src/ops/tokens";
 import { startServer } from "../src/server";
 import { SecretStore } from "../src/secrets/store";
@@ -54,6 +69,9 @@ let first: ManifestConversion;
 /** What the App's own webhook config says when read back with its credentials. */
 let hookUrl: string;
 let hookReads: number;
+/** What GitHub says about the new App (GET /app), unless a test changes it. */
+let appOverride: ((app: Record<string, unknown>) => Record<string, unknown>) | undefined;
+let lastConv: ManifestConversion | undefined;
 
 const make = (extra: { claimFlow?: boolean } = {}) =>
   createHostedManifestHandler({
@@ -63,8 +81,25 @@ const make = (extra: { claimFlow?: boolean } = {}) =>
     setupTokenSha256: hashToken(SETUP_TOKEN),
     now: () => now,
     log: (l) => logs.push(l),
+    ownerOrgSlugs: ["acme"],
     onReplaced: () => (replacedCalls += 1),
     fetch: (async (url: string | URL | Request) => {
+      if (String(url).endsWith("/app")) {
+        const c = lastConv!;
+        const info = {
+          name: c.name,
+          slug: c.slug,
+          owner: { login: c.owner.login },
+          permissions: {
+            checks: "write",
+            contents: "read",
+            metadata: "read",
+            pull_requests: "read",
+          },
+          events: ["push", "pull_request", "check_run"],
+        };
+        return Response.json(appOverride ? appOverride(info) : info);
+      }
       if (String(url).endsWith("/app/hook/config")) {
         hookReads += 1;
         return hookUrl === ""
@@ -73,7 +108,12 @@ const make = (extra: { claimFlow?: boolean } = {}) =>
       }
       const code = /app-manifests\/([^/]+)\/conversions/.exec(String(url))?.[1] ?? "";
       exchanged.push(code);
-      return answer(code);
+      const r = answer(code);
+      lastConv = (await r
+        .clone()
+        .json()
+        .catch(() => undefined)) as ManifestConversion | undefined;
+      return r;
     }) as never,
     ...extra,
   });
@@ -89,11 +129,16 @@ beforeEach(async () => {
   replacedCalls = 0;
   hookUrl = `${BASE}/api/v1/webhooks/github`;
   hookReads = 0;
+  appOverride = undefined;
+  lastConv = undefined;
   first = conv(4242);
   answer = () => Response.json(first, { status: 201 });
   resetFailureThrottle();
   handler = make();
 });
+
+/** Marks the open flow finished, as a callback would, so another may start. */
+const releaseFlow = () => db.orm.update(schema.installationClaims).set({ usedAt: now });
 
 const form = (fields: Record<string, string>) =>
   new Request(`${BASE}${MANIFEST_PATH}`, {
@@ -213,6 +258,7 @@ describe("starting the flow", () => {
       expect(f.state).toMatch(/^m1\./);
       expect(f.cookie).toBeTruthy();
       expect(f.html).toContain("https://github.com/settings/apps/new?state=");
+      await releaseFlow();
     }
   });
 
@@ -239,6 +285,7 @@ describe("starting the flow", () => {
     expect(m.public).toBe(false);
     // Not set unless the claim flow is on.
     expect(m.setup_url).toBeUndefined();
+    await releaseFlow();
     handler = make({ claimFlow: true });
     const claim = JSON.parse(
       (await startFlow()).manifest!.replaceAll("&quot;", '"').replaceAll("&amp;", "&"),
@@ -262,7 +309,16 @@ describe("starting the flow", () => {
 
   test("bad input is refused before anything is stored", async () => {
     expect((await handler.handle(asOperator({ org: "Not A Slug" })))!.status).toBe(400);
-    expect((await handler.handle(asOperator({ org: "nope" })))!.status).toBe(404);
+    // An org outside the allowed list is refused; an allowed slug with no org is not found.
+    expect((await handler.handle(asOperator({ org: "nope" })))!.status).toBe(403);
+    const open = createHostedManifestHandler({
+      db,
+      store,
+      publicUrl: BASE,
+      setupTokenSha256: hashToken(SETUP_TOKEN),
+      now: () => now,
+    });
+    expect((await open.handle(asOperator({ org: "nope" })))!.status).toBe(404);
     expect((await handler.handle(asOperator({ org: "acme", name: "x".repeat(40) })))!.status).toBe(
       400,
     );
@@ -431,14 +487,26 @@ describe("a second create", () => {
   test("is refused unless a replace is asked for, and the refusal is audited", async () => {
     await createFirst();
     const res = (await handler.handle(asOperator({ org: "acme" })))!;
-    expect(res.status).toBe(409);
-    expect(res.headers.get("set-cookie")).toBeNull();
+    // The route also closes after a success, so open it again to test the App check itself.
+    expect(res.status).toBe(410);
+    handler = make();
+    const again = (await handler.handle(asOperator({ org: "acme" })))!;
+    expect(again.status).toBe(409);
+    expect(again.headers.get("set-cookie")).toBeNull();
     expect(await ops()).toContainEqual(["github_app_manifest_start", "error:app_exists"]);
     expect((await getGithubApp(db))!.appId).toBe("4242");
   });
 
   test("a replace needs the same owning org", async () => {
     await createFirst();
+    handler = createHostedManifestHandler({
+      db,
+      store,
+      publicUrl: BASE,
+      setupTokenSha256: hashToken(SETUP_TOKEN),
+      now: () => now,
+      ownerOrgSlugs: ["acme", "other"],
+    });
     const res = (await handler.handle(asOperator({ org: "other", rotate: "1" })))!;
     expect(res.status).toBe(409);
     expect((await getGithubApp(db))!.orgId).toBe(orgId);
@@ -446,6 +514,7 @@ describe("a second create", () => {
 
   test("a replace swaps the App and its credentials, drops cached tokens, and is audited", async () => {
     await createFirst();
+    handler = make();
     const old = first;
     const next = conv(7);
     answer = () => Response.json(next, { status: 201 });
@@ -463,17 +532,275 @@ describe("a second create", () => {
     expect(String(row.input)).toContain("4242");
   });
 
+  test("a replace retires the old App's installations and bindings, audits the count and says so", async () => {
+    await createFirst();
+    const project = await createProject(db, { orgId }, { slug: "web", name: "Web" });
+    await upsertInstallation(
+      db,
+      { orgId },
+      {
+        installationId: "900",
+        appId: "4242",
+        accountLogin: "acme",
+        accountId: "1",
+        accountType: "Organization",
+        repositorySelection: "all",
+        status: "active",
+      },
+    );
+    await bindRepo(
+      db,
+      { orgId, projectId: project.id },
+      {
+        forge: "github",
+        owner: "acme",
+        repo: "web",
+        installationId: "900",
+      },
+    );
+    handler = make();
+    const next = conv(8);
+    answer = () => Response.json(next, { status: 201 });
+    const f = await startFlow({ rotate: "1" });
+    const res = await callback(f.state, "second-code", f.cookie);
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain(
+      "1 installation(s) of it were marked deleted and 1 repository binding(s)",
+    );
+    expect((await getInstallation(db, "900"))?.status).toBe("deleted");
+    expect(await listInstallationBindings(db, { orgId }, "900")).toEqual([]);
+    const row = (await chainedAudit(db, orgId, 0, 100)).find((r) => r.op === "github_app_replace")!;
+    expect(String(row.input)).toContain('"retired_installations":1');
+    expect(String(row.input)).toContain('"unbound_repositories":1');
+  });
+
   test("a link started for a first create cannot replace an App that appeared meanwhile", async () => {
     const f = await startFlow();
-    // Another flow completes first.
-    const g = await startFlow();
-    expect((await callback(g.state, "good-code", g.cookie)).status).toBe(200);
-    exchanged = [];
-    answer = () => Response.json(conv(8), { status: 201 });
+    // Another way of creating one (the CLI) finishes first.
+    await setGithubApp(
+      db,
+      { orgId },
+      {
+        appId: "99",
+        slug: "other-app",
+        name: "x",
+        ownerLogin: "acme",
+        htmlUrl: "https://github.com/apps/other-app",
+        clientId: "Iv1.x",
+      },
+    );
     const res = await callback(f.state, "late-code", f.cookie);
     expect(res.status).toBe(409);
     expect(exchanged).toEqual([]);
-    expect((await getGithubApp(db))!.appId).toBe("4242");
+    expect((await getGithubApp(db))!.appId).toBe("99");
+  });
+});
+
+describe("storing is one transaction, rechecked inside it", () => {
+  test("an App that exists is refused inside the transaction even if the caller's check was stale", async () => {
+    await setGithubApp(
+      db,
+      { orgId },
+      {
+        appId: "99",
+        slug: "other-app",
+        name: "x",
+        ownerLogin: "acme",
+        htmlUrl: "https://github.com/apps/other-app",
+        clientId: "Iv1.x",
+      },
+    );
+    const c = conv(5);
+    await expect(storeApp(db, store, orgId, c, { existing: "refuse" })).rejects.toBeInstanceOf(
+      AppStateError,
+    );
+    await expect(
+      storeApp(db, store, otherOrgId, c, { existing: "replace" }),
+    ).rejects.toBeInstanceOf(AppStateError);
+    expect((await getGithubApp(db))!.appId).toBe("99");
+    expect(await store.get(orgId, SECRET_APP_ID)).toBeUndefined();
+  });
+
+  test("a failure part way leaves nothing: no App row, no secret, the old App untouched", async () => {
+    await setGithubApp(
+      db,
+      { orgId },
+      {
+        appId: "99",
+        slug: "other-app",
+        name: "x",
+        ownerLogin: "acme",
+        htmlUrl: "https://github.com/apps/other-app",
+        clientId: "Iv1.x",
+      },
+    );
+    await store.set(orgId, SECRET_APP_ID, "99");
+    let sets = 0;
+    const failing = {
+      set: (o: string, n: string, v: string) => {
+        sets += 1;
+        if (sets === 3) return Promise.reject(new Error("disk full"));
+        return store.set(o, n, v);
+      },
+    } as unknown as SecretStore;
+    await expect(storeApp(db, failing, orgId, conv(5), { existing: "replace" })).rejects.toThrow(
+      "disk full",
+    );
+    expect((await getGithubApp(db))!.appId).toBe("99");
+    expect(await store.get(orgId, SECRET_APP_ID)).toBe("99");
+    expect(await store.get(orgId, SECRET_PRIVATE_KEY)).toBeUndefined();
+  });
+
+  test("two concurrent callbacks never mix one App's key with another's id", async () => {
+    // Two flows cannot be open at once, so race the callbacks of two sequential-but-overlapping
+    // starts by finishing each state's nonce row by hand and calling both callbacks together.
+    const a = await startFlow({ rotate: "1" });
+    await releaseFlow();
+    // releaseFlow marked a's nonce used, so a is refused; a fresh flow is the one that lands.
+    const b = await startFlow({ rotate: "1" });
+    const c7 = conv(7);
+    answer = () => Response.json(c7, { status: 201 });
+    const [ra, rb] = await Promise.all([
+      callback(a.state, "code-a", a.cookie),
+      callback(b.state, "code-b", b.cookie),
+    ]);
+    expect([ra.status, rb.status].toSorted()).toEqual([200, 400]);
+    const app = (await getGithubApp(db))!;
+    expect(app.appId).toBe("7");
+    expect(await store.get(orgId, SECRET_APP_ID)).toBe("7");
+    expect(await store.get(orgId, SECRET_WEBHOOK)).toBe(c7.webhook_secret);
+    expect(
+      (
+        await db.run((h) =>
+          h.orm.select().from(schema.githubApps).where(eq(schema.githubApps.orgId, orgId)),
+        )
+      ).length,
+    ).toBe(1);
+  });
+});
+
+describe("the route is guarded", () => {
+  test("only the system or bootstrap org may own the App, never a customer org", async () => {
+    const res = (await handler.handle(asOperator({ org: "other" })))!;
+    expect(res.status).toBe(403);
+    expect(await store.get(otherOrgId, SECRET_MANIFEST_KEY)).toBeUndefined();
+  });
+
+  test("the form prefills the owning org", async () => {
+    const html = await (await handler.handle(new Request(`${BASE}${MANIFEST_PATH}`)))!.text();
+    expect(html).toContain('value="acme"');
+  });
+
+  test("one flow at a time: a second start waits for the first to finish or expire", async () => {
+    expect((await startFlow()).res.status).toBe(200);
+    const second = (await handler.handle(asOperator({ org: "acme" })))!;
+    expect(second.status).toBe(409);
+    expect(await ops()).toContainEqual(["github_app_manifest_start", "error:flow_in_progress"]);
+    now += MANIFEST_TTL_MS + 1;
+    expect((await handler.handle(asOperator({ org: "acme" })))!.status).toBe(200);
+  });
+
+  test("it closes after the first success, until restart", async () => {
+    const f = await startFlow();
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
+    for (const req of [
+      asOperator({ org: "acme", rotate: "1" }),
+      new Request(`${BASE}${MANIFEST_PATH}`),
+    ]) {
+      expect((await handler.handle(req))!.status).toBe(410);
+    }
+    // A restart (a new handler) opens it again.
+    expect((await make().handle(new Request(`${BASE}${MANIFEST_PATH}`)))!.status).toBe(200);
+  });
+
+  test("it closes a few hours after start up even if nothing was created", async () => {
+    handler = createHostedManifestHandler({
+      db,
+      store,
+      publicUrl: BASE,
+      setupTokenSha256: hashToken(SETUP_TOKEN),
+      now: () => now,
+      openForMs: 60_000,
+    });
+    expect((await handler.handle(asOperator({ org: "acme" })))!.status).toBe(200);
+    now += 61_000;
+    expect((await handler.handle(asOperator({ org: "acme" })))!.status).toBe(410);
+    expect((await handler.handle(new Request(`${BASE}${MANIFEST_PATH}`)))!.status).toBe(410);
+  });
+
+  test("the body is capped before it is parsed and before the token is looked at", async () => {
+    const big = "x".repeat(MAX_BODY_BYTES + 1);
+    const withLength = new Request(`${BASE}${MANIFEST_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `setup_token=bad&pad=${big}`,
+    });
+    expect((await handler.handle(withLength))!.status).toBe(413);
+    // No declared length: a stream is cut off as soon as it is over the cap.
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        sent += 1024;
+        c.enqueue(new TextEncoder().encode("a".repeat(1024)));
+        if (sent > 1024 * 64) c.close();
+      },
+    });
+    const chunked = new Request(`${BASE}${MANIFEST_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    expect((await handler.handle(chunked))!.status).toBe(413);
+    expect(sent).toBeLessThan(1024 * 16);
+    // Not counted as a failed token attempt: the operator is not throttled afterwards.
+    for (let i = 0; i < SETUP_FAILURES_PER_MINUTE + 2; i++)
+      await handler.handle(
+        new Request(`${BASE}${MANIFEST_PATH}`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: `setup_token=bad&pad=${big}`,
+        }),
+      );
+    expect((await handler.handle(asOperator({ org: "acme" })))!.status).toBe(200);
+  });
+
+  test("a state with a malformed org id or nonce is refused before any key is read", async () => {
+    let reads = 0;
+    const spy = {
+      get: (o: string, n: string) => {
+        reads += 1;
+        return store.get(o, n);
+      },
+      set: store.set.bind(store),
+    } as unknown as SecretStore;
+    const h = createHostedManifestHandler({
+      db,
+      store: spy,
+      publicUrl: BASE,
+      setupTokenSha256: hashToken(SETUP_TOKEN),
+      now: () => now,
+    });
+    const good = await startFlow();
+    reads = 0;
+    const body = good.state!.split(".")[1]!;
+    const p = JSON.parse(Buffer.from(body, "base64url").toString()) as Record<string, unknown>;
+    for (const bad of [
+      { ...p, o: "../x" },
+      { ...p, o: 7 },
+      { ...p, n: "short" },
+      { ...p, k: "x" },
+      { ...p, m: "<script>" },
+      { ...p, g: "a b" },
+    ]) {
+      const b = Buffer.from(JSON.stringify(bad)).toString("base64url");
+      const res = (await h.handle(
+        new Request(`${BASE}${MANIFEST_CALLBACK_PATH}?code=c&state=m1.${b}.${"A".repeat(43)}`),
+      ))!;
+      expect(res.status).toBe(400);
+    }
+    expect(reads).toBe(0);
   });
 });
 
@@ -511,9 +838,65 @@ describe("the App that comes back must be the one that was asked for", () => {
     expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
   });
 
+  test("a name other than the requested one stores nothing", async () => {
+    first = { ...conv(4242), name: "Something Else" };
+    await refused({ name: "Longshore" });
+  });
+
+  test("the name is compared without regard to case or edge spaces", async () => {
+    first = { ...conv(4242), name: " longshore ci " };
+    const f = await startFlow({ name: "Longshore CI" });
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
+  });
+
+  test("permissions broader than the manifest's store nothing, narrower or equal are fine", async () => {
+    appOverride = (a) => ({
+      ...a,
+      permissions: { checks: "write", contents: "write", metadata: "read" },
+    });
+    await refused();
+    await releaseFlow();
+    appOverride = (a) => ({ ...a, permissions: { checks: "write", administration: "read" } });
+    await refused();
+    await releaseFlow();
+    appOverride = (a) => ({ ...a, permissions: { contents: "read", checks: "read" } });
+    const f = await startFlow();
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(200);
+  });
+
+  test("events beyond the manifest's store nothing", async () => {
+    appOverride = (a) => ({ ...a, events: ["push", "pull_request", "check_run", "issues"] });
+    await refused();
+  });
+
+  test("an owner that GitHub reports differently from the conversion stores nothing", async () => {
+    appOverride = (a) => ({ ...a, owner: { login: "someone-else" } });
+    await refused();
+  });
+
   test("an App page that is not on github.com stores nothing", async () => {
     first = { ...conv(4242), html_url: "https://evil.example.test/apps/longshore-4242" };
     await refused();
+  });
+
+  test("a failed exchange or store audits a class, never the error text", async () => {
+    handler = createHostedManifestHandler({
+      db,
+      store,
+      publicUrl: BASE,
+      setupTokenSha256: hashToken(SETUP_TOKEN),
+      now: () => now,
+      ownerOrgSlugs: ["acme"],
+      log: (l) => logs.push(l),
+      fetch: (async () => {
+        throw new Error("leaky-detail-pem-and-secret-123");
+      }) as never,
+    });
+    const f = await startFlow();
+    expect((await callback(f.state, "good-code", f.cookie)).status).toBe(502);
+    const everything = JSON.stringify(await chainedAudit(db, orgId, 0, 100)) + logs.join("\n");
+    expect(everything).not.toContain("leaky-detail");
+    expect(await ops()).toContainEqual(["github_app_manifest_callback", "error:exchange_failed"]);
   });
 
   test("the credentials of a refused App are not in the audit chain or the log", async () => {

@@ -19,6 +19,7 @@ import {
   type ClaimHandler,
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
+import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
@@ -626,6 +627,8 @@ async function serve(args: string[]): Promise<void> {
           publicUrl: publicBase,
           setupTokenSha256: setupHash,
           ...(claimMode ? { claimFlow: true } : {}),
+          // The App owns every installation of it: only the bootstrap or system org may.
+          ownerOrgSlugs: [process.env.LONGSHORE_BOOTSTRAP_ORG?.trim() || "local", SYSTEM_ORG_SLUG],
           trustedProxies: parseTrustedProxies(process.env.LONGSHORE_TRUSTED_PROXIES),
           onReplaced: () => auth.dropCached(),
           log: (m) => console.log(`[longshore] ${m}`),

@@ -221,6 +221,7 @@ describe("manifest", () => {
       slug: "longshore-x",
       htmlUrl: conv.html_url,
       replaced: [],
+      retired: { installations: 0, repos: 0 },
     });
     expect(await store.get(org.id, SECRET_PRIVATE_KEY)).toBe(conv.pem);
     expect(await store.get(org.id, SECRET_WEBHOOK)).toBe(conv.webhook_secret);

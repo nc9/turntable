@@ -7,12 +7,14 @@
 //     secret the operator generated; only its sha256 is configured
 //     (LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256), like the bootstrap token.
 //  2. The reply is a page that posts the App manifest to GitHub. Its `state` is an HMAC over (org,
-//     nonce, expiry, rotate flag), the nonce is stored and single use, and a HttpOnly cookie holds
-//     the nonce, so only the browser that started the flow can finish it.
+//     nonce, expiry, rotate flag, requested name and owner, a MAC of a browser-binding secret), the
+//     nonce is stored and single use, and a HttpOnly cookie holds the secret itself, so only the
+//     browser that started the flow can finish it.
 //  3. GitHub sends the browser to GET /api/v1/github/app-callback with a one-time `code` and the
 //     state. The code is exchanged for the App's credentials, which go straight into the sealed
 //     secret store. They are never printed, logged or put in a response.
-//  4. Once an App exists, a second create is refused unless the request asks to replace it.
+//  4. Once an App exists, a second create is refused unless the request asks to replace it. The
+//     route closes after the first success (until restart) and after a few hours from boot.
 //
 // Every step is audited in the owning org's chain; a refusal before an org is known goes to the
 // system chain through the throttled failure path.
@@ -26,11 +28,19 @@ import {
   createManifestNonce,
   getGithubApp,
   getOrgBySlug,
+  hasOpenManifestNonce,
 } from "../db/repos";
 import { hashToken } from "../ops/tokens";
 import type { SecretStore } from "../secrets/store";
 import { signAppJwt } from "./app-auth";
-import { buildManifest, convertManifest, manifestPage, storeApp } from "./manifest";
+import {
+  AppStateError,
+  buildManifest,
+  convertManifest,
+  manifestPage,
+  storeApp,
+  type ManifestConversion,
+} from "./manifest";
 import { clientAddress, parseTrustedProxies, type TrustedProxies } from "./trusted-proxies";
 import { WEBHOOK_PATH } from "./webhook";
 
@@ -42,11 +52,19 @@ export const SECRET_MANIFEST_KEY = "github-app/manifest-state-key";
 const COOKIE_PATH = "/api/v1/github";
 /** Failed setup-token attempts allowed per minute, per client address. */
 export const SETUP_FAILURES_PER_MINUTE = 10;
+/** The most a start request may send. The form is a handful of short fields. */
+export const MAX_BODY_BYTES = 4096;
+/** How long after boot the route stays open, unless an App is created first. */
+export const DEFAULT_OPEN_MS = 6 * 3600_000;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const ORG_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const APP_NAME = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,33}$/;
 const GH_ORG = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+/** Shapes of what the state carries, checked before any key is looked up. */
+const ORG_ID = /^[0-9A-Z]{26}$/;
+const NONCE = /^[A-Za-z0-9_-]{24}$/;
+const MAC = /^[A-Za-z0-9_-]{43}$/;
 
 const b64u = (b: Buffer | string): string => Buffer.from(b).toString("base64url");
 
@@ -72,6 +90,8 @@ interface StatePayload {
   k: string;
   /** The GitHub organization the App was requested under, when one was. */
   g?: string;
+  /** The App name that was requested. */
+  m: string;
 }
 
 export interface HostedManifestOptions {
@@ -91,6 +111,14 @@ export interface HostedManifestOptions {
   onReplaced?: () => void;
   /** The proxies in front of the server, for keying the failure limiter on the real client. */
   trustedProxies?: TrustedProxies;
+  /**
+   * The slugs of the orgs that may own the App. On a hosted instance this is the system or
+   * bootstrap org, never a customer org (an App's owner holds every installation of it). Absent:
+   * any org (a single-tenant instance).
+   */
+  ownerOrgSlugs?: readonly string[];
+  /** How long after start up the route stays open. Default 6 hours. */
+  openForMs?: number;
 }
 
 export interface HostedManifestHandler {
@@ -139,6 +167,32 @@ function cookieValue(req: Request, name: string): string | undefined {
   return undefined;
 }
 
+/** The form of a request, read with a cap. "too_large" when it is over; undefined when unreadable. */
+type Form = Awaited<ReturnType<Response["formData"]>>;
+async function readForm(req: Request): Promise<Form | undefined | "too_large"> {
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return "too_large";
+  if (!req.body) return undefined;
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => {});
+      return "too_large";
+    }
+    chunks.push(value);
+  }
+  return new Response(Buffer.concat(chunks), {
+    headers: { "content-type": req.headers.get("content-type") ?? "" },
+  })
+    .formData()
+    .catch(() => undefined);
+}
+
 export function createHostedManifestHandler(o: HostedManifestOptions): HostedManifestHandler {
   const hash = o.setupTokenSha256.trim().toLowerCase();
   if (!SHA256_HEX.test(hash)) {
@@ -153,6 +207,25 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
   const cookieAttrs = `Path=${COOKIE_PATH}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
   const clearCookie = `${MANIFEST_COOKIE}=; Max-Age=0; ${cookieAttrs}`;
   const trusted = o.trustedProxies ?? parseTrustedProxies(undefined);
+  const openUntil = now() + (o.openForMs ?? DEFAULT_OPEN_MS);
+  /** Set after an App is created: the route stays shut until the process restarts. */
+  let done = false;
+  const isOpen = (): boolean => !done && now() < openUntil;
+  /** Starting and finishing run one at a time in this process. */
+  let chain: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = chain.then(fn, fn);
+    chain = run.catch(() => {});
+    return run;
+  };
+  const closedPage = (): Response =>
+    note(
+      410,
+      "Closed",
+      done
+        ? "The App was created. This page stays closed until the instance restarts."
+        : "This page closes a few hours after the instance starts. Restart the instance to open it again.",
+    );
   /** Failed setup-token attempts per client in the current minute. A correct token is never counted or refused. */
   const failures = new Map<string, { windowStart: number; count: number }>();
   const MAX_TRACKED = 10_000;
@@ -202,11 +275,16 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     }
     if (
       typeof p.o !== "string" ||
+      !ORG_ID.test(p.o) ||
       typeof p.n !== "string" ||
+      !NONCE.test(p.n) ||
       typeof p.e !== "number" ||
       typeof p.r !== "boolean" ||
       typeof p.k !== "string" ||
-      (p.g !== undefined && typeof p.g !== "string")
+      !MAC.test(p.k) ||
+      typeof p.m !== "string" ||
+      !APP_NAME.test(p.m) ||
+      (p.g !== undefined && (typeof p.g !== "string" || !GH_ORG.test(p.g)))
     )
       return undefined;
     // The key is the claimed org's; nothing in the body is trusted until the MAC holds.
@@ -240,23 +318,28 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
   };
 
   const formPage = (): Response =>
-    shell(
-      200,
-      "Create the Longshore GitHub App",
-      `<p>Sends the App manifest to GitHub, where you approve it. The App's credentials are stored on this instance and never shown.</p>
+    !isOpen()
+      ? closedPage()
+      : shell(
+          200,
+          "Create the Longshore GitHub App",
+          `<p>Sends the App manifest to GitHub, where you approve it. The App's credentials are stored on this instance and never shown.</p>
 <form method="post" action="${MANIFEST_PATH}" autocomplete="off">
 <p><label>Setup token<br><input type="password" name="setup_token" required autocomplete="off" size="48"></label></p>
-<p><label>Longshore org that will own the App (its slug)<br><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}" size="24"></label></p>
+<p><label>Longshore org that will own the App (its slug)<br><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}" size="24"${o.ownerOrgSlugs?.[0] ? ` value="${esc(o.ownerOrgSlugs[0])}"` : ""}></label></p>
 <p><label>App name<br><input name="name" value="Longshore" maxlength="34" size="24"></label></p>
 <p><label>Create it under this GitHub organization (blank for your own account)<br><input name="gh_org" maxlength="39" size="24"></label></p>
 <p><label><input type="checkbox" name="rotate" value="1"> Replace the App this instance already has</label></p>
 <button type="submit">Continue</button>
 </form>`,
-      { formAction: "'self'" },
-    );
+          { formAction: "'self'" },
+        );
 
   const start = async (req: Request, peer: string | undefined): Promise<Response> => {
-    const form = await req.formData().catch(() => undefined);
+    // The body is capped before it is parsed, and before the token is looked at.
+    const form = await readForm(req);
+    if (form === "too_large") return note(413, "Request too large", "That request is too big.");
+    if (!isOpen()) return closedPage();
     const field = (name: string): string => {
       const v = form?.get(name);
       return typeof v === "string" ? v.trim() : "";
@@ -276,7 +359,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
           principalId: "unknown",
           op: "github_app_manifest_start",
           outcome: "error:unauthenticated",
-          source: `setup-token:${clientAddress(req.headers, peer, trusted)}`,
+          source: `setup-token:${client}`,
         },
         now,
       );
@@ -292,101 +375,141 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
       return note(400, "Bad request", "The App name is 1 to 34 letters, digits, spaces, . _ -.");
     if (ghOrg !== "" && !GH_ORG.test(ghOrg))
       return note(400, "Bad request", "That is not a GitHub organization name.");
+    if (o.ownerOrgSlugs && !o.ownerOrgSlugs.includes(slug))
+      return note(
+        403,
+        "Not allowed",
+        `The App can be owned by ${o.ownerOrgSlugs.join(" or ")} only, never a customer org.`,
+      );
     const org = await getOrgBySlug(o.db, slug);
     if (!org)
       return note(404, "No such org", "Create the org first (the bootstrap org, or an operator).");
 
-    const existing = await getGithubApp(o.db);
-    if (existing && !rotate) {
-      await audit(org.id, "github_app_manifest_start", "error:app_exists", {
-        existing_app_id: existing.appId,
-      });
-      return note(
-        409,
-        "An App already exists",
-        `This instance already has the GitHub App ${existing.slug}. To replace it, submit again with "Replace the App" ticked. Installations of the old App stop working.`,
-      );
-    }
-    if (existing && existing.orgId !== org.id) {
-      await audit(org.id, "github_app_manifest_start", "error:other_org", {
-        existing_app_id: existing.appId,
-      });
-      return note(409, "An App already exists", "The existing App belongs to another org.");
-    }
+    return serial(async () => {
+      const existing = await getGithubApp(o.db);
+      if (existing && !rotate) {
+        await audit(org.id, "github_app_manifest_start", "error:app_exists", {
+          existing_app_id: existing.appId,
+        });
+        return note(
+          409,
+          "An App already exists",
+          `This instance already has the GitHub App ${existing.slug}. To replace it, submit again with "Replace the App" ticked. Installations of the old App stop working.`,
+        );
+      }
+      if (existing && existing.orgId !== org.id) {
+        await audit(org.id, "github_app_manifest_start", "error:other_org", {
+          existing_app_id: existing.appId,
+        });
+        return note(409, "An App already exists", "The existing App belongs to another org.");
+      }
+      // One flow at a time: a second start while one is unexpired and unfinished could race it.
+      if (await hasOpenManifestNonce(o.db, now())) {
+        await audit(org.id, "github_app_manifest_start", "error:flow_in_progress", {});
+        return note(
+          409,
+          "A flow is already in progress",
+          "Finish the one that was started, or wait up to 15 minutes for it to expire.",
+        );
+      }
 
-    const key = (await keyFor(org.id, true))!;
-    const nonce = randomBytes(18).toString("base64url");
-    // The cookie holds this secret; the state holds only its MAC.
-    const bindSecret = randomBytes(24).toString("base64url");
-    const expiresAt = now() + MANIFEST_TTL_MS;
-    const body = b64u(
-      JSON.stringify({
-        o: org.id,
-        n: nonce,
-        e: expiresAt,
-        r: rotate,
-        k: bindMac(key, bindSecret, nonce),
-        ...(ghOrg ? { g: ghOrg } : {}),
-      } satisfies StatePayload),
-    );
-    const state = `m1.${body}.${sign(key, body)}`;
-    await createManifestNonce(
-      o.db,
-      { orgId: org.id },
-      { nonce, startedBy: "setup-token", expiresAt },
-    );
-    await audit(org.id, "github_app_manifest_start", "ok", {
-      name,
-      ...(ghOrg ? { gh_org: ghOrg } : {}),
-      rotate,
+      const key = (await keyFor(org.id, true))!;
+      const nonce = randomBytes(18).toString("base64url");
+      // The cookie holds this secret; the state holds only its MAC.
+      const bindSecret = randomBytes(24).toString("base64url");
+      const expiresAt = now() + MANIFEST_TTL_MS;
+      const body = b64u(
+        JSON.stringify({
+          o: org.id,
+          n: nonce,
+          e: expiresAt,
+          r: rotate,
+          k: bindMac(key, bindSecret, nonce),
+          m: name,
+          ...(ghOrg ? { g: ghOrg } : {}),
+        } satisfies StatePayload),
+      );
+      const state = `m1.${body}.${sign(key, body)}`;
+      await createManifestNonce(
+        o.db,
+        { orgId: org.id },
+        { nonce, startedBy: "setup-token", expiresAt },
+      );
+      await audit(org.id, "github_app_manifest_start", "ok", {
+        name,
+        ...(ghOrg ? { gh_org: ghOrg } : {}),
+        rotate,
+      });
+      // The page is built by manifestPage (it posts the manifest to github.com); only its headers
+      // differ here: no inline script, the form may go to GitHub only, and the binding cookie.
+      return new Response(manifestPage(requestedManifest(name), state, ghOrg || undefined), {
+        status: 200,
+        headers: headers("https://github.com", [
+          `${MANIFEST_COOKIE}=${bindSecret}; Max-Age=${MANIFEST_TTL_MS / 1000}; ${cookieAttrs}`,
+        ]),
+      });
     });
-    const manifest = buildManifest({
+  };
+
+  const requestedManifest = (name: string) =>
+    buildManifest({
       name,
       url: base,
       redirectUrl: callback,
       ...(o.claimFlow ? { claimFlow: true } : {}),
     });
-    // The page is built by manifestPage (it posts the manifest to github.com); only its headers
-    // differ here: no inline script, the form may go to GitHub only, and the binding cookie.
-    return new Response(manifestPage(manifest, state, ghOrg || undefined), {
-      status: 200,
-      headers: headers("https://github.com", [
-        `${MANIFEST_COOKIE}=${bindSecret}; Max-Age=${MANIFEST_TTL_MS / 1000}; ${cookieAttrs}`,
-      ]),
+
+  const getFromGithub = async (path: string, c: ManifestConversion): Promise<unknown> => {
+    const res = await (o.fetch ?? safeFetch)(`${o.apiBase ?? "https://api.github.com"}${path}`, {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${signAppJwt(String(c.id), c.pem, now())}`,
+        "user-agent": "longshore",
+      },
+      signal: AbortSignal.timeout(30_000),
     });
+    if (!res.ok) throw new Error("unreadable");
+    return res.json();
   };
 
   /**
-   * Why a converted App is not the one this instance asked for, or undefined when it is: its
-   * owner is the requested organization, its page is on github.com, and, read back with its own
-   * credentials, its webhook points at this instance.
+   * Why a converted App is not the one this flow asked for, or undefined when it is. The state
+   * (signed) carries the requested name and owner; the App must match them, its page must be on
+   * github.com, and, read back with its own credentials, its permissions and events must be no
+   * broader than the manifest's and its webhook must point at this instance. Class names only.
    */
   const appMismatch = async (
-    c: Awaited<ReturnType<typeof convertManifest>>,
-    ghOrg: string | undefined,
+    c: ManifestConversion,
+    st: StatePayload,
   ): Promise<string | undefined> => {
-    if (ghOrg && c.owner.login.toLowerCase() !== ghOrg.toLowerCase())
-      return "the App is owned by a different account than requested";
-    if (c.html_url !== `https://github.com/apps/${c.slug}`)
-      return "the App's page is not on github.com";
+    if (c.html_url !== `https://github.com/apps/${c.slug}`) return "page_not_on_github";
+    if (st.g && c.owner.login.toLowerCase() !== st.g.toLowerCase()) return "owner_differs";
+    if (c.name.trim().toLowerCase() !== st.m.trim().toLowerCase()) return "name_differs";
     try {
-      const res = await (o.fetch ?? safeFetch)(
-        `${o.apiBase ?? "https://api.github.com"}/app/hook/config`,
-        {
-          headers: {
-            accept: "application/vnd.github+json",
-            authorization: `Bearer ${signAppJwt(String(c.id), c.pem, now())}`,
-            "user-agent": "longshore",
-          },
-          signal: AbortSignal.timeout(30_000),
-        },
-      );
-      if (!res.ok) return "the App's webhook settings could not be read back";
-      const j = (await res.json()) as { url?: unknown };
-      if (j.url !== `${base}${WEBHOOK_PATH}`)
-        return "the App's webhook does not point at this instance";
+      const requested = requestedManifest(st.m) as {
+        default_permissions: Record<string, string>;
+        default_events: string[];
+      };
+      const app = (await getFromGithub("/app", c)) as {
+        owner?: { login?: unknown };
+        permissions?: Record<string, unknown>;
+        events?: unknown;
+      };
+      if (app.owner?.login !== c.owner.login) return "owner_differs";
+      for (const [k, v] of Object.entries(app.permissions ?? {})) {
+        const want = requested.default_permissions[k];
+        const ok = want !== undefined && (v === want || (v === "read" && want === "write"));
+        if (!ok) return "permissions_broader";
+      }
+      if (
+        Array.isArray(app.events) &&
+        !app.events.every((e) => typeof e === "string" && requested.default_events.includes(e))
+      )
+        return "events_broader";
+      const hook = (await getFromGithub("/app/hook/config", c)) as { url?: unknown };
+      if (hook.url !== `${base}${WEBHOOK_PATH}`) return "webhook_elsewhere";
     } catch {
-      return "the App's webhook settings could not be read back";
+      return "unreadable";
     }
     return undefined;
   };
@@ -424,61 +547,74 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
         "no_binding",
       );
     }
-    const existing = await getGithubApp(o.db);
-    if (existing && !st.r) {
-      return refuse(409, "An App already exists. Start again and ask to replace it.", "app_exists");
-    }
-    if (existing && existing.orgId !== st.o) {
-      return refuse(409, "The existing App belongs to another org.", "other_org");
-    }
-    // Consumed before the exchange, so a link is used once even if GitHub or the store fails.
-    if (!(await consumeManifestNonce(o.db, st.n, now()))) {
-      return refuse(400, "This link was already used or has expired. Start again.", "nonce_used");
-    }
-    try {
-      const conv = await convertManifest(code, o.fetch ?? safeFetch, o.apiBase);
-      // Nothing is sealed until the App is shown to be the one this instance's manifest made: a
-      // code from someone else's App (a stolen link, a tampered form) would otherwise put their
-      // credentials here. GitHub lets the person edit the name, so the name is not checked.
-      const mismatch = await appMismatch(conv, st.g);
+    return serial(async () => {
+      const existing = await getGithubApp(o.db);
+      if (existing && !st.r) {
+        return refuse(
+          409,
+          "An App already exists. Start again and ask to replace it.",
+          "app_exists",
+        );
+      }
+      if (existing && existing.orgId !== st.o) {
+        return refuse(409, "The existing App belongs to another org.", "other_org");
+      }
+      // Consumed before the exchange, so a link is used once even if GitHub or the store fails.
+      if (!(await consumeManifestNonce(o.db, st.n, now()))) {
+        return refuse(400, "This link was already used or has expired. Start again.", "nonce_used");
+      }
+      const fail = async (outcome: string): Promise<Response> => {
+        await audit(st.o, "github_app_manifest_callback", `error:${outcome}`, {});
+        log(`github app manifest failed: ${outcome}`);
+        return note(
+          502,
+          "Could not create the App",
+          "GitHub did not complete the manifest, it returned an App that does not match this request, or the credentials could not be stored. Nothing was stored. Start again.",
+          [clearCookie],
+        );
+      };
+      // GitHub's replies are never logged or audited: they can carry the credentials.
+      let conv: ManifestConversion;
+      try {
+        conv = await convertManifest(code, o.fetch ?? safeFetch, o.apiBase);
+      } catch {
+        return fail("exchange_failed");
+      }
+      // Nothing is sealed until the App is shown to be the one this flow asked for: a code from
+      // someone else's App (a stolen link, a tampered form) would otherwise put their credentials here.
+      const mismatch = await appMismatch(conv, st);
       if (mismatch) {
         await audit(st.o, "github_app_manifest_callback", "error:app_mismatch", {
           reason: mismatch,
           app_id: String(conv.id),
         });
         log(`github app manifest refused: ${mismatch}`);
-        return note(
-          502,
-          "Could not create the App",
-          "GitHub returned an App that does not match this request, so it was not stored. Start again.",
-          [clearCookie],
-        );
+        return fail("app_mismatch");
       }
-      const app = await storeApp(o.db, o.store, st.o, conv, {
-        principal: { kind: "setup-token", id: "env" },
-        replace: existing !== undefined,
-      });
+      let app;
+      try {
+        app = await storeApp(o.db, o.store, st.o, conv, {
+          principal: { kind: "setup-token", id: "env" },
+          existing: st.r ? "replace" : "refuse",
+        });
+      } catch (e) {
+        if (e instanceof AppStateError) return refuse(409, e.message, e.reason);
+        return fail("store_failed");
+      }
+      done = true;
       if (app.replaced.length > 0) o.onReplaced?.();
       log(`github app ${app.slug} (id ${app.appId}) created through the hosted manifest flow`);
+      const retired =
+        app.replaced.length > 0
+          ? `<p>The old App was replaced. ${app.retired.installations} installation(s) of it were marked deleted and ${app.retired.repos} repository binding(s) were removed. Install the new App again to bind them.</p>`
+          : "";
       return shell(
         200,
         "The GitHub App was created",
-        `<p>The App <strong>${esc(app.slug)}</strong> was created and its credentials are stored on this instance. They are not shown.</p><p>Next, install it on your repositories: <a href="${esc(app.htmlUrl)}/installations/new" rel="noreferrer">${esc(app.htmlUrl)}/installations/new</a></p><p>Then remove <code>LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256</code> from the instance's variables.</p>`,
+        `<p>The App <strong>${esc(app.slug)}</strong> was created and its credentials are stored on this instance. They are not shown.</p>${retired}<p>Next, install it on your repositories: <a href="${esc(app.htmlUrl)}/installations/new" rel="noreferrer">${esc(app.htmlUrl)}/installations/new</a></p><p>This page is now closed until the instance restarts. Remove <code>LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256</code> from the instance's variables.</p>`,
         { cookies: [clearCookie] },
       );
-    } catch (e) {
-      // GitHub's reply is not logged: it can carry the credentials on a partial failure.
-      await audit(st.o, "github_app_manifest_callback", "error:conversion_failed", {
-        reason: e instanceof Error ? e.message.slice(0, 200) : "unknown",
-      });
-      log("github app manifest conversion failed");
-      return note(
-        502,
-        "Could not create the App",
-        "GitHub did not complete the manifest, or the credentials could not be stored. Start again.",
-        [clearCookie],
-      );
-    }
+    });
   };
 
   return {

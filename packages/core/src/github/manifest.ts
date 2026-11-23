@@ -5,7 +5,13 @@
 import { type SafeFetch, safeFetch } from "@longshore/net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db";
-import { appendAudit, removeOtherGithubApps, setGithubApp } from "../db/repos";
+import {
+  appendAudit,
+  getGithubApp,
+  removeOtherGithubApps,
+  retireAppInstallations,
+  setGithubApp,
+} from "../db/repos";
 import type { SecretStore } from "../secrets/store";
 import { SECRET_APP_ID, SECRET_CLIENT, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "./app-auth";
 import { WEBHOOK_PATH } from "./webhook";
@@ -124,7 +130,24 @@ export async function convertManifest(
   return j as ManifestConversion;
 }
 
-/** Stores the App record and its four secrets. Nothing returned here contains a secret. */
+/** Why storeApp refused to write: an App is there that this call may not touch. */
+export class AppStateError extends Error {
+  readonly reason: "app_exists" | "other_org";
+  constructor(reason: "app_exists" | "other_org") {
+    super(
+      reason === "app_exists" ? "an App already exists" : "the existing App belongs to another org",
+    );
+    this.reason = reason;
+  }
+}
+
+/**
+ * Stores the App record and its four secrets, in ONE transaction: concurrent writers cannot mix
+ * one App's key with another's id, and a failure leaves what was there. Nothing returned here
+ * contains a secret. `existing` is re-checked inside the transaction (the caller's earlier check
+ * may be stale): "refuse" throws when any App exists; "replace" accepts none or one owned by the
+ * same org, and drops it (and retires its installations). Omitted: no check (the local CLI).
+ */
 export async function storeApp(
   db: Db,
   store: SecretStore,
@@ -133,45 +156,66 @@ export async function storeApp(
   o: {
     /** Who is recorded in the audit entry. Default: the local CLI. */
     principal?: { kind: string; id: string };
-    /** Drop this org's other App rows: the new App replaces them. */
-    replace?: boolean;
+    existing?: "refuse" | "replace";
   } = {},
-): Promise<{ appId: string; slug: string; htmlUrl: string; replaced: string[] }> {
-  await store.set(orgId, SECRET_APP_ID, String(c.id));
-  await store.set(orgId, SECRET_PRIVATE_KEY, c.pem);
-  await store.set(orgId, SECRET_WEBHOOK, c.webhook_secret);
-  await store.set(orgId, SECRET_CLIENT, c.client_secret);
-  await setGithubApp(
-    db,
-    { orgId },
-    {
-      appId: String(c.id),
-      slug: c.slug,
-      name: c.name,
-      ownerLogin: c.owner.login,
-      htmlUrl: c.html_url,
-      clientId: c.client_id,
-    },
-  );
-  const replaced = o.replace ? await removeOtherGithubApps(db, { orgId }, String(c.id)) : [];
-  await appendAudit(
-    db,
-    { orgId },
-    {
-      principalKind: o.principal?.kind ?? "cli",
-      principalId: o.principal?.id ?? "local",
-      op: replaced.length > 0 ? "github_app_replace" : "github_app_create",
-      effect: "write",
-      outcome: "ok",
-      input: {
-        app_id: String(c.id),
+): Promise<{
+  appId: string;
+  slug: string;
+  htmlUrl: string;
+  replaced: string[];
+  retired: { installations: number; repos: number };
+}> {
+  return db.transaction(async (tx) => {
+    if (o.existing) {
+      const there = await getGithubApp(tx);
+      if (there && o.existing === "refuse") throw new AppStateError("app_exists");
+      if (there && there.orgId !== orgId) throw new AppStateError("other_org");
+    }
+    // The store writes through the root handle, which joins this transaction.
+    await store.set(orgId, SECRET_APP_ID, String(c.id));
+    await store.set(orgId, SECRET_PRIVATE_KEY, c.pem);
+    await store.set(orgId, SECRET_WEBHOOK, c.webhook_secret);
+    await store.set(orgId, SECRET_CLIENT, c.client_secret);
+    await setGithubApp(
+      tx,
+      { orgId },
+      {
+        appId: String(c.id),
         slug: c.slug,
-        owner: c.owner.login,
-        ...(replaced.length > 0 ? { replaced_app_ids: replaced } : {}),
+        name: c.name,
+        ownerLogin: c.owner.login,
+        htmlUrl: c.html_url,
+        clientId: c.client_id,
       },
-    },
-  );
-  return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url, replaced };
+    );
+    const replaced =
+      o.existing === "replace" ? await removeOtherGithubApps(tx, { orgId }, String(c.id)) : [];
+    const retired = await retireAppInstallations(tx, replaced);
+    await appendAudit(
+      tx,
+      { orgId },
+      {
+        principalKind: o.principal?.kind ?? "cli",
+        principalId: o.principal?.id ?? "local",
+        op: replaced.length > 0 ? "github_app_replace" : "github_app_create",
+        effect: "write",
+        outcome: "ok",
+        input: {
+          app_id: String(c.id),
+          slug: c.slug,
+          owner: c.owner.login,
+          ...(replaced.length > 0
+            ? {
+                replaced_app_ids: replaced,
+                retired_installations: retired.installations,
+                unbound_repositories: retired.repos,
+              }
+            : {}),
+        },
+      },
+    );
+    return { appId: String(c.id), slug: c.slug, htmlUrl: c.html_url, replaced, retired };
+  });
 }
 
 export interface ManifestFlowOptions {
