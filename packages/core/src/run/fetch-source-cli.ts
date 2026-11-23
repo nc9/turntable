@@ -1,17 +1,62 @@
-// `longshore fetch-source <owner/name> <sha>`: does exactly what the worker does to get a run's
-// commit (gitRepoSource: an in-process git fetch at depth 1 over https, every object verified, the
-// tree and `.git` written and packed) and says what it got. It runs no git or tar binary. It is
-// the image's smoke test of a real checkout, and a way for an operator to check that a host can
-// reach GitHub and that a commit can be fetched, without starting a run.
+// `longshore fetch-source <owner/name> <sha>`: gets a run's commit the way the worker does and says
+// what it got. It runs no git or tar binary (an in-process git fetch at depth 1 over https, every
+// object verified, the tree and `.git` written, a tarball streamed to disk).
+//
+// Two modes, one command:
+//   - with `--out <file>` it IS the checkout: it does the work in this process, writes the
+//     tarball to the file and the tree to `--dir`, and prints one line. The worker runs this as a
+//     child process of its own binary, which is how a hostile repository is kept out of the
+//     server's process.
+//   - without it, it goes through the same path the worker does (a child of this binary, under the
+//     same deadline and ceilings) and reports what came back: the image's smoke test of a real
+//     checkout, and a way to check that a host can reach GitHub without starting a run.
 import { parseArgs } from "node:util";
 import { readTarGz } from "@longshore/act-runner";
 import { gitRepoSource } from "../scheduler/act-runner";
+import { isRepoPart, performCheckout } from "./checkout";
+import { checkoutConfigFromEnv } from "./checkout-child";
+import { clean, type FetchLimits } from "./git-fetch";
 
 export const FETCH_SOURCE_USAGE = `Usage: longshore fetch-source <owner/name> <sha> [--file <path>]
 
 Fetches that commit of a public GitHub repository the way a worker does, and prints one line:
   ok <sha> files=<n> tarball=<bytes>[ file=<path>:<bytes>]
---file also reads that repository file through the worker's safe reader. Exit status 1 on failure.`;
+--file also reads that repository file through the worker's safe reader. Exit status 1 on failure.
+The worker's own settings apply (LONGSHORE_CHECKOUT_* in the environment).`;
+
+const NUMERIC_LIMITS = [
+  "maxPackBytes",
+  "maxObjects",
+  "maxInflatedBytes",
+  "maxObjectBytes",
+  "maxDeltaDepth",
+  "maxEntries",
+  "maxTreeBytes",
+  "maxTarballBytes",
+  "timeoutMs",
+] as const;
+
+/** Limits given as JSON by the parent: only known keys, only positive whole numbers. */
+function parseLimits(json: string | undefined): Partial<FetchLimits> {
+  if (json === undefined) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    throw new Error("--limits is not JSON");
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    throw new Error("--limits is not an object");
+  const out: Partial<FetchLimits> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!(NUMERIC_LIMITS as readonly string[]).includes(k))
+      throw new Error(`--limits has an unknown key ${clean(k, 30)}`);
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1)
+      throw new Error(`--limits ${k} must be a positive whole number`);
+    (out as Record<string, number>)[k] = v;
+  }
+  return out;
+}
 
 export async function fetchSourceCommand(
   args: string[],
@@ -19,7 +64,15 @@ export async function fetchSourceCommand(
 ): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
-    options: { file: { type: "string" }, help: { type: "boolean", default: false } },
+    options: {
+      file: { type: "string" },
+      out: { type: "string" },
+      dir: { type: "string" },
+      url: { type: "string" },
+      limits: { type: "string" },
+      "allow-host": { type: "string", multiple: true },
+      help: { type: "boolean", default: false },
+    },
     allowPositionals: true,
     strict: true,
   });
@@ -29,15 +82,38 @@ export async function fetchSourceCommand(
   }
   const [repo, sha = ""] = positionals;
   const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repo ?? "");
-  if (!m || !/^[0-9a-fA-F]{40}$/.test(sha)) {
+  if (
+    !m ||
+    !isRepoPart(m[1] as string) ||
+    !isRepoPart(m[2] as string) ||
+    !/^[0-9a-fA-F]{40}$/.test(sha)
+  ) {
     console.error(FETCH_SOURCE_USAGE);
     return 2;
   }
+  const owner = m[1] as string;
+  const name = m[2] as string;
+  const allowHosts = values["allow-host"] ?? [];
   try {
-    const co = await gitRepoSource().checkout({ sha } as never, {
-      owner: m[1] as string,
-      repo: m[2] as string,
-    });
+    if (values.out !== undefined) {
+      // The checkout itself, as the worker's child process.
+      const r = await performCheckout({
+        owner,
+        repo: name,
+        sha,
+        out: values.out,
+        ...(values.dir ? { dir: values.dir } : {}),
+        ...(values.url ? { url: values.url } : {}),
+        limits: parseLimits(values.limits),
+        allowHosts,
+      });
+      out(`ok ${r.sha} files=${r.files} tarball=${r.tarballBytes}`);
+      return 0;
+    }
+    const co = await gitRepoSource({ allowHosts, config: checkoutConfigFromEnv() }).checkout(
+      { sha } as never,
+      { owner, repo: name },
+    );
     try {
       const files = readTarGz(co.tarball).filter((e) => e.type === "file").length;
       let extra = "";
@@ -52,7 +128,7 @@ export async function fetchSourceCommand(
       co.dispose?.();
     }
   } catch (e) {
-    console.error(`fetch-source failed: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`fetch-source failed: ${clean(e instanceof Error ? e.message : String(e), 300)}`);
     return 1;
   }
 }

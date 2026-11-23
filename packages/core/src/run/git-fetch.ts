@@ -10,7 +10,7 @@
 // the sandbox receives. Repo contents are untrusted: names that could escape the directory or
 // alias `.git`, and writes through symlinks, are refused, and sizes and counts are capped.
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
 import { safeFetch, type SafeFetch } from "@longshore/net";
@@ -23,29 +23,35 @@ export class GitFetchError extends Error {
 }
 
 export interface FetchLimits {
-  /** Most bytes of packfile. Default 256 MiB. */
+  /** Most bytes of packfile. Default 128 MiB. */
   maxPackBytes: number;
   /** Most objects in the pack. Default 500 000. */
   maxObjects: number;
-  /** Most bytes of inflated object data in total, delta results included. Default 1 GiB. */
+  /** Most bytes of inflated object data in total, delta results included. Default 512 MiB. */
   maxInflatedBytes: number;
-  /** Most bytes of any one object, as declared and as produced. Default 256 MiB. */
+  /** Most bytes of any one object, as declared and as produced. Default 128 MiB. */
   maxObjectBytes: number;
   /** Longest chain of deltas on deltas. Default 512 (git's own limit is 4095 and its default 50). */
   maxDeltaDepth: number;
   /** Most files and directories written. Default 300 000. */
   maxEntries: number;
+  /** Largest tree object, in bytes. Default 32 MiB. */
+  maxTreeBytes: number;
+  /** Largest gzip tarball written for the sandbox. Default 256 MiB. */
+  maxTarballBytes: number;
   /** Wall clock for the whole fetch: the requests, and the parsing and writing after them. */
   timeoutMs: number;
 }
 
 export const DEFAULT_FETCH_LIMITS: FetchLimits = {
-  maxPackBytes: 256 * 1024 * 1024,
+  maxPackBytes: 128 * 1024 * 1024,
   maxObjects: 500_000,
-  maxInflatedBytes: 1024 * 1024 * 1024,
-  maxObjectBytes: 256 * 1024 * 1024,
+  maxInflatedBytes: 512 * 1024 * 1024,
+  maxObjectBytes: 128 * 1024 * 1024,
   maxDeltaDepth: 512,
   maxEntries: 300_000,
+  maxTreeBytes: 32 * 1024 * 1024,
+  maxTarballBytes: 256 * 1024 * 1024,
   timeoutMs: 300_000,
 };
 
@@ -61,6 +67,20 @@ const GIT_FETCH_COMMAND = "fetch";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+/**
+ * Text that came from the other side (a path name, a server's error line, a zlib message) goes into
+ * errors and logs only shortened and with control characters (and bidi/zero-width marks) removed.
+ */
+/* oxlint-disable eslint/no-control-regex -- stripping control characters is the point */
+export function clean(s: string, max = 120): string {
+  const stripped = s
+    .replaceAll(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, " ")
+    .trim();
+  const chars = [...stripped];
+  return chars.length > max ? `${chars.slice(0, max).join("")}...` : stripped;
+}
+
+/* oxlint-enable eslint/no-control-regex */
 export const oidOf = (type: ObjectType, data: Uint8Array): string =>
   createHash("sha1").update(`${type} ${data.length}\0`).update(data).digest("hex");
 
@@ -82,8 +102,9 @@ function* packets(buf: Uint8Array): Generator<Packet> {
   let i = 0;
   while (i < buf.length) {
     if (i + 4 > buf.length) throw new GitFetchError("truncated pkt-line header");
-    const len = Number.parseInt(dec.decode(buf.subarray(i, i + 4)), 16);
-    if (!Number.isInteger(len) || len < 0) throw new GitFetchError("bad pkt-line length");
+    const hex = dec.decode(buf.subarray(i, i + 4));
+    if (!/^[0-9a-f]{4}$/i.test(hex)) throw new GitFetchError("bad pkt-line length");
+    const len = Number.parseInt(hex, 16);
     if (len === 0) {
       yield { kind: "flush" };
       i += 4;
@@ -223,13 +244,13 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
       const band = p.data[0];
       if (band === 1) pack.push(p.data.subarray(1));
       else if (band === 3)
-        throw new GitFetchError(`the server refused: ${dec.decode(p.data.subarray(1)).trim()}`);
+        throw new GitFetchError(`the server refused: ${clean(dec.decode(p.data.subarray(1)))}`);
       continue;
     }
     const line = dec.decode(p.data).trim();
     if (line === "packfile") section = "packfile";
     else if (line.startsWith("ERR "))
-      throw new GitFetchError(`the server refused: ${line.slice(4)}`);
+      throw new GitFetchError(`the server refused: ${clean(line.slice(4))}`);
   }
   if (pack.length === 0)
     throw new GitFetchError(
@@ -243,12 +264,17 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   if (!commit || commit.type !== "commit")
     throw new GitFetchError("the pack does not contain the requested commit");
   const text = dec.decode(commit.data);
-  const head = text.split("\n\n", 1)[0] ?? "";
-  const tree = /^tree ([0-9a-f]{40})$/m.exec(head)?.[1];
-  if (!tree) throw new GitFetchError("the commit has no tree");
-  const parents = [...head.matchAll(/^parent ([0-9a-f]{40})$/gm)].map((m) => m[1] as string);
+  // The header is anchored: `tree` first, then any `parent` lines in a row, then `author`. A
+  // `tree` or `parent` line further down (in a signature or the message) is never read.
+  const m = /^tree ([0-9a-f]{40})\n((?:parent [0-9a-f]{40}\n)*)author /.exec(text);
+  if (!m) throw new GitFetchError("the commit header is malformed");
+  const tree = m[1] as string;
+  const parents = [...(m[2] as string).matchAll(/parent ([0-9a-f]{40})\n/g)].map(
+    (x) => x[1] as string,
+  );
   if (!objects.has(tree)) throw new GitFetchError("the pack does not contain the commit's tree");
-  const subject = text.slice(head.length + 2).split("\n", 1)[0] ?? "";
+  const sep = text.indexOf("\n\n");
+  const subject = sep < 0 ? "" : (text.slice(sep + 2).split("\n", 1)[0] ?? "");
   return { sha: o.sha, objects, parents, tree, subject };
 }
 
@@ -495,7 +521,26 @@ export function readPack(
 
 // ---- writing the checkout ----
 
-const GIT_NAME = /^\.git$/i;
+/** Characters HFS+ ignores when comparing names, so `.g\u200cit` is `.git` there. */
+/* oxlint-disable eslint/no-misleading-character-class -- these are single code points, listed on purpose */
+const HFS_IGNORABLE = /[\u200c\u200d\u200e\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
+
+/* oxlint-enable eslint/no-misleading-character-class */
+/**
+ * Whether a name IS `target` (or its 8.3 short name `short`) on a filesystem that folds case,
+ * ignores trailing dots and spaces (NTFS), ignorable Unicode (HFS+) or names an NTFS alternate data
+ * stream (`.git::$INDEX_ALLOCATION`): a checkout on such a disk would otherwise write into `.git`.
+ */
+function isNamed(name: string, target: string, short: string): boolean {
+  const folded = name
+    .replaceAll(HFS_IGNORABLE, "")
+    .toLowerCase()
+    .replace(/[ .]+$/, "");
+  const base = folded.split(":", 1)[0] ?? folded;
+  return base === target || base === short;
+}
+const isDotGit = (name: string): boolean => isNamed(name, ".git", "git~1");
+const isDotGitmodules = (name: string): boolean => isNamed(name, ".gitmodules", "gitmod~1");
 
 interface TreeEntry {
   mode: string;
@@ -503,21 +548,38 @@ interface TreeEntry {
   oid: string;
 }
 
-function parseTree(data: Uint8Array): TreeEntry[] {
-  const out: TreeEntry[] = [];
+const strict = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * A tree's entries, one at a time (so a cap inside the caller's loop stops a huge tree early).
+ * Names must be valid UTF-8, each unique, and in git's order (byte order, a directory sorting as
+ * if its name ended in `/`): a tree that is not is not one git wrote, and is refused.
+ */
+function* treeEntries(data: Uint8Array): Generator<TreeEntry> {
   let i = 0;
+  let prev: Buffer | undefined;
+  const seen = new Set<string>();
   while (i < data.length) {
     const sp = data.indexOf(0x20, i);
-    const nul = data.indexOf(0, sp + 1);
+    const nul = sp < 0 ? -1 : data.indexOf(0, sp + 1);
     if (sp < 0 || nul < 0 || nul + 21 > data.length) throw new GitFetchError("a tree is malformed");
-    out.push({
-      mode: dec.decode(data.subarray(i, sp)),
-      name: dec.decode(data.subarray(sp + 1, nul)),
-      oid: Buffer.from(data.subarray(nul + 1, nul + 21)).toString("hex"),
-    });
+    const mode = dec.decode(data.subarray(i, sp));
+    const rawName = data.subarray(sp + 1, nul);
+    let name: string;
+    try {
+      name = strict.decode(rawName);
+    } catch {
+      throw new GitFetchError("a tree has a name that is not valid UTF-8");
+    }
+    if (seen.has(name)) throw new GitFetchError("a tree has the same name twice");
+    seen.add(name);
+    const key = Buffer.concat([Buffer.from(rawName), Buffer.from([mode === "40000" ? 0x2f : 0])]);
+    if (prev && Buffer.compare(prev, key) >= 0)
+      throw new GitFetchError("a tree is not in git's order");
+    prev = key;
+    yield { mode, name, oid: Buffer.from(data.subarray(nul + 1, nul + 21)).toString("hex") };
     i = nul + 21;
   }
-  return out;
 }
 
 function safeName(name: string): boolean {
@@ -528,9 +590,7 @@ function safeName(name: string): boolean {
     !name.includes("/") &&
     !name.includes("\\") &&
     !name.includes("\0") &&
-    !GIT_NAME.test(name) &&
-    // git itself refuses .git spellings that some filesystems fold to .git
-    !/^git~\d+$/i.test(name)
+    !isDotGit(name)
   );
 }
 
@@ -539,10 +599,62 @@ export interface Materialized {
   bytes: number;
 }
 
+interface IndexEntry {
+  path: string;
+  /** The git mode as a number: 0o100644, 0o100755, 0o120000, 0o160000. */
+  mode: number;
+  oid: string;
+}
+
+const u32 = (n: bigint | number): number => Number(BigInt(n) & 0xffffffffn);
+
+/**
+ * A version 2 `.git/index` for the checkout: one entry per file, symlink and submodule, sorted by
+ * path, with the stat data of what was just written. With it `git status` is clean and
+ * `git ls-files -s` lists the tree; without it git sees every file as deleted.
+ */
+function writeIndex(dir: string, entries: IndexEntry[]): Buffer {
+  const sorted = entries.toSorted((a, b) =>
+    Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)),
+  );
+  const head = Buffer.alloc(12);
+  head.write("DIRC", 0);
+  head.writeUInt32BE(2, 4);
+  head.writeUInt32BE(sorted.length, 8);
+  const parts: Buffer[] = [head];
+  for (const e of sorted) {
+    const path = Buffer.from(e.path);
+    const fixed = Buffer.alloc(62);
+    if (e.mode !== 0o160000) {
+      const st = lstatSync(join(dir, e.path), { bigint: true });
+      const ct = st.ctimeNs;
+      const mt = st.mtimeNs;
+      fixed.writeUInt32BE(u32(ct / 1_000_000_000n), 0);
+      fixed.writeUInt32BE(u32(ct % 1_000_000_000n), 4);
+      fixed.writeUInt32BE(u32(mt / 1_000_000_000n), 8);
+      fixed.writeUInt32BE(u32(mt % 1_000_000_000n), 12);
+      fixed.writeUInt32BE(u32(st.dev), 16);
+      fixed.writeUInt32BE(u32(st.ino), 20);
+      fixed.writeUInt32BE(u32(st.uid), 28);
+      fixed.writeUInt32BE(u32(st.gid), 32);
+      fixed.writeUInt32BE(u32(st.size), 36);
+    }
+    fixed.writeUInt32BE(e.mode, 24);
+    Buffer.from(e.oid, "hex").copy(fixed, 40);
+    fixed.writeUInt16BE(Math.min(path.length, 0xfff), 60);
+    const pad = 8 - ((62 + path.length) % 8);
+    parts.push(fixed, path, Buffer.alloc(pad));
+  }
+  const body = Buffer.concat(parts);
+  return Buffer.concat([body, createHash("sha1").update(body).digest()]);
+}
+
 /**
  * Writes the commit's tree into `dir` and a `.git` next to it (HEAD detached at the commit,
- * `origin` as the remote, a `shallow` file when the history was cut, every object loose). `dir`
- * must be empty and private to the caller.
+ * `origin` as the remote, a `shallow` file when the history was cut, a real index, and the objects
+ * the commit reaches, loose). Objects the pack carried but the commit does not reach are not
+ * written. `dir` must be empty and private to the caller. On success the commit's object map is
+ * cleared: nothing needs it any more, and it can be large.
  */
 export function materialize(
   dir: string,
@@ -554,16 +666,28 @@ export function materialize(
   const deadline = Date.now() + max.timeoutMs;
   let entries = 0;
   let bytes = 0;
+  // The paths of symlinks the tree made, lowercased. Nothing is written at or below one.
   const symlinks = new Set<string>();
+  const reachable = new Set<string>([c.sha, c.tree]);
+  const index: IndexEntry[] = [];
+  const underSymlink = (lower: string): boolean => {
+    let at = lower.indexOf("/");
+    while (at >= 0) {
+      if (symlinks.has(lower.slice(0, at))) return true;
+      at = lower.indexOf("/", at + 1);
+    }
+    return symlinks.has(lower);
+  };
   const walk = (treeOid: string, rel: string, depth: number): void => {
     if (depth > 200) throw new GitFetchError("the tree is nested too deeply");
     const tree = c.objects.get(treeOid);
     if (!tree || tree.type !== "tree")
       throw new GitFetchError("the pack lacks a tree the commit needs");
-    for (const e of parseTree(tree.data)) {
+    if (tree.data.length > max.maxTreeBytes) throw new GitFetchError("a tree object is too large");
+    for (const e of treeEntries(tree.data)) {
       if (!safeName(e.name))
         throw new GitFetchError(
-          `the repository has an unsafe path name: ${JSON.stringify(e.name)}`,
+          `the repository has an unsafe path name: ${JSON.stringify(clean(e.name))}`,
         );
       entries += 1;
       if (entries > max.maxEntries) throw new GitFetchError("the repository has too many files");
@@ -572,33 +696,35 @@ export function materialize(
       const path = rel === "" ? e.name : `${rel}/${e.name}`;
       // Nothing is written through a symlink the tree itself made (a case-folding filesystem could
       // make `A` and `a` the same name; this holds there too).
-      const lower = path.toLowerCase();
-      for (const s of symlinks) {
-        if (lower === s || lower.startsWith(`${s}/`))
-          throw new GitFetchError("the repository writes through a symlink");
-      }
+      if (underSymlink(path.toLowerCase()))
+        throw new GitFetchError("the repository writes through a symlink");
       const full = join(dir, path);
       if (e.mode === "40000") {
+        reachable.add(e.oid);
         mkdirSync(full, { recursive: true });
         walk(e.oid, path, depth + 1);
       } else if (e.mode === "160000") {
         mkdirSync(full, { recursive: true }); // a submodule: an empty directory, never fetched
+        index.push({ path, mode: 0o160000, oid: e.oid });
       } else {
         const blob = c.objects.get(e.oid);
         if (!blob || blob.type !== "blob")
           throw new GitFetchError("the pack lacks a blob the commit needs");
         bytes += blob.data.length;
         if (bytes > max.maxInflatedBytes) throw new GitFetchError("the repository is too large");
+        reachable.add(e.oid);
         if (e.mode === "120000") {
-          if (/^\.gitmodules$/i.test(e.name))
-            throw new GitFetchError(".gitmodules may not be a symlink");
+          if (isDotGitmodules(e.name)) throw new GitFetchError(".gitmodules may not be a symlink");
           symlinkSync(dec.decode(blob.data), full);
-          symlinks.add(lower);
+          symlinks.add(path.toLowerCase());
+          index.push({ path, mode: 0o120000, oid: e.oid });
         } else if (e.mode === "100644" || e.mode === "100755" || e.mode === "100664") {
           writeFileSync(full, blob.data);
-          chmodSync(full, e.mode === "100755" ? 0o755 : 0o644);
+          const exec = e.mode === "100755";
+          chmodSync(full, exec ? 0o755 : 0o644);
+          index.push({ path, mode: exec ? 0o100755 : 0o100644, oid: e.oid });
         } else {
-          throw new GitFetchError(`the tree has an unsupported mode ${e.mode}`);
+          throw new GitFetchError(`the tree has an unsupported mode ${clean(e.mode, 12)}`);
         }
       }
     }
@@ -614,7 +740,9 @@ export function materialize(
     `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[remote "origin"]\n\turl = ${remoteUrl}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`,
   );
   if (c.parents.length > 0) writeFileSync(join(git, "shallow"), `${c.sha}\n`);
-  for (const [oid, obj] of c.objects) {
+  for (const oid of reachable) {
+    const obj = c.objects.get(oid);
+    if (!obj) throw new GitFetchError("the pack lacks an object the commit reaches");
     const path = join(git, "objects", oid.slice(0, 2), oid.slice(2));
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(
@@ -623,5 +751,7 @@ export function materialize(
       { mode: 0o444 },
     );
   }
+  writeFileSync(join(git, "index"), writeIndex(dir, index));
+  c.objects.clear();
   return { files: entries, bytes };
 }

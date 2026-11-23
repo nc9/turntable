@@ -86,3 +86,9 @@ export function serveGitRepo(repo: string, opts: GitHttpOptions = {}): GitHttpSe
     stop: () => void server.stop(true),
   };
 }
+
+/** The program that runs a checkout in a test: bun running this repository's entry file. */
+export const CHECKOUT_COMMAND = [
+  process.execPath,
+  new URL("../src/main.ts", import.meta.url).pathname,
+];

@@ -44,7 +44,7 @@ export async function readActionYml(tgz: Uint8Array, subpath: string): Promise<s
 }
 
 /** An action's source tarball, unpacked, is at most this large. */
-const ACTION_TAR_MAX_BYTES = 256 * 1024 * 1024;
+const ACTION_TAR_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface NestedHooks {
   /** Resolves a nested tag or branch to a sha (the pin-aware resolver). */

@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { readTar, readTarGz, tarGzDirectory, writeTar } from "../src/tar";
+import { readTar, readTarGz, tarGzDirectory, tarGzDirectoryToFile, writeTar } from "../src/tar";
 import { tarDirectory } from "../src/workspace";
 
 const tmp = mkdtempSync(join(tmpdir(), "ls-tar-"));
@@ -139,5 +139,76 @@ describe("reading", () => {
       Array.from({ length: 10 }, (_, i) => ({ path: `f${i}`, type: "file" as const, mode: 0o644 })),
     );
     expect(() => readTar(many, { maxEntries: 5 })).toThrow(/too many/);
+  });
+});
+
+describe("hardening", () => {
+  test("pax records are a Map: a record named __proto__ or constructor changes nothing", () => {
+    const rec = (k: string, v: string): string => {
+      const rest = ` ${k}=${v}\n`;
+      let len = rest.length + 1;
+      while (`${len}${rest}`.length !== len) len = `${len}${rest}`.length;
+      return `${len}${rest}`;
+    };
+    const body = new TextEncoder().encode(
+      rec("__proto__", "polluted") + rec("constructor", "x") + rec("path", "renamed.txt"),
+    );
+    const entry = writeTar([
+      { path: "orig.txt", type: "file", mode: 0o644, data: new TextEncoder().encode("hi") },
+    ]);
+    // a pax header in front of the entry
+    const pax = writeTar([{ path: "PaxHeader", type: "file", mode: 0o644, data: body }]).subarray(
+      0,
+      512 + Math.ceil(body.length / 512) * 512,
+    );
+    pax[156] = "x".charCodeAt(0);
+    // fix the checksum after changing the type
+    let sum = 0;
+    for (let i = 0; i < 512; i += 1) sum += i >= 148 && i < 156 ? 32 : pax[i]!;
+    pax.set(new TextEncoder().encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+    const all = new Uint8Array([...pax, ...entry]);
+    const got = readTar(all);
+    expect(got.map((e) => e.path)).toEqual(["renamed.txt"]);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(Object.prototype)).toBeNull();
+    expect(Object.keys(Object.prototype)).toEqual([]);
+  });
+
+  test("the writer keeps permission bits only (0o777), and refuses a number that does not fit its field", () => {
+    const tar = writeTar([{ path: "f", type: "file", mode: 0o4755, data: new Uint8Array(1) }]);
+    expect(readTar(tar)[0]!.mode).toBe(0o755); // setuid is gone
+    expect(() => writeTar([{ path: "f", type: "file", mode: 0o644, mtime: 2 ** 40 }])).toThrow(
+      /does not fit/,
+    );
+    expect(() => writeTar([{ path: "f", type: "file", mode: 0o644, mtime: Number.NaN }])).toThrow(
+      /integer/,
+    );
+  });
+
+  test("a directory streams to a file in batches (several gzip members), which tar and the reader both accept; the size cap is enforced", () => {
+    const d = join(tmp, "stream");
+    mkdirSync(join(d, "sub"), { recursive: true });
+    for (let i = 0; i < 40; i += 1)
+      writeFileSync(join(d, `sub/f${i}.txt`), `file ${i}\n`.repeat(2000));
+    symlinkSync("sub/f1.txt", join(d, "ln"));
+    const out = join(tmp, "stream.tgz");
+    const r = tarGzDirectoryToFile(d, out, { maxBytes: 10_000_000, batchBytes: 50_000 });
+    expect(r.entries).toBe(43); // ".", sub, 40 files, the symlink
+    const bytes = new Uint8Array(readFileSync(out));
+    // more than one gzip member: the magic number appears again after the start
+    let members = 0;
+    for (let i = 0; i + 2 < bytes.length; i += 1)
+      if (bytes[i] === 0x1f && bytes[i + 1] === 0x8b && bytes[i + 2] === 8) members += 1;
+    expect(members).toBeGreaterThan(1);
+    const read = readTarGz(bytes);
+    expect(read.filter((e) => e.type === "file")).toHaveLength(40);
+    expect(read.find((e) => e.type === "symlink")!.linkTarget).toBe("sub/f1.txt");
+    const x = join(tmp, "stream-x");
+    mkdirSync(x);
+    execFileSync("tar", ["xzf", out, "-C", x]);
+    expect(readFileSync(join(x, "sub/f39.txt"), "utf8")).toBe("file 39\n".repeat(2000));
+    expect(() =>
+      tarGzDirectoryToFile(d, join(tmp, "cap.tgz"), { maxBytes: 100, batchBytes: 50_000 }),
+    ).toThrow(/larger than the cap/);
   });
 });

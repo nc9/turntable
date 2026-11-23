@@ -18,7 +18,6 @@ import {
   planJob,
   rebuildArgv,
   splitJob,
-  tarGzDirectory,
   workflowHeadCheckouts,
 } from "@longshore/act-runner";
 import type { JobCacheProvider } from "../cache/job";
@@ -29,7 +28,13 @@ import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { buildActEvent } from "../run/act-event";
-import { fetchCommit, materialize } from "../run/git-fetch";
+import { assertCloneHost, isRepoPart } from "../run/checkout";
+import {
+  type CheckoutConfig,
+  DEFAULT_CHECKOUT_CONFIG,
+  runCheckoutChild,
+  Semaphore,
+} from "../run/checkout-child";
 import { makeSafeReader } from "../run/safe-read";
 import { resolvePlanActions } from "../pins";
 import type { ForgeToken } from "../pins/forge-token";
@@ -58,7 +63,11 @@ export interface Checkout {
 
 export interface RepoSource {
   /** `repo` is undefined for a local run (`longshore run`), which has no bound repo. */
-  checkout(run: Run, repo: { owner: string; repo: string } | undefined): Promise<Checkout>;
+  checkout(
+    run: Run,
+    repo: { owner: string; repo: string } | undefined,
+    opts?: { signal?: AbortSignal | undefined },
+  ): Promise<Checkout>;
 }
 
 /**
@@ -82,8 +91,6 @@ export function localRepoSource(o: {
   };
 }
 
-const SAFE_PART = /^[A-Za-z0-9_.-]+$/;
-
 /** A remote URL with a user or password in it would be stored in the repo's config. */
 export function assertNoCredentials(u: string): void {
   let parsed: URL | undefined;
@@ -98,44 +105,72 @@ export function assertNoCredentials(u: string): void {
 }
 
 /**
- * Fetches exactly the run's commit from a public repo, in process (see run/git-fetch.ts: git's
- * smart-HTTP protocol at depth 1, every object verified), writes the tree and the `.git` git would
- * have made, and packs them the way `longshore run` does. No `git` or `tar` binary is run, so the
- * control plane needs neither.
+ * Fetches exactly the run's commit from a public repo (see run/git-fetch.ts: git's smart-HTTP
+ * protocol at depth 1, every object verified), writes the tree and the `.git` git would have made,
+ * and packs them the way `longshore run` does. It runs no `git` or `tar` binary, and it runs in a
+ * CHILD process of this same binary (run/checkout-child.ts), because it parses hostile input: one
+ * deadline, a memory ceiling where the system can enforce one, at most `concurrency` at a time,
+ * and killed when the attempt is cancelled. The child writes the tree and a tarball to a private
+ * temporary directory; this process reads workflow files through the safe reader and hands the
+ * tarball on.
  */
 export function gitRepoSource(
-  o: { cloneUrl?: (owner: string, repo: string) => string; fetch?: SafeFetch } = {},
+  o: {
+    cloneUrl?: (owner: string, repo: string) => string;
+    /** Hosts besides github.com a clone URL may name. */
+    allowHosts?: readonly string[];
+    config?: Partial<CheckoutConfig>;
+    /** The program that runs a checkout, default this binary (a test seam). */
+    command?: string[];
+  } = {},
 ): RepoSource {
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
+  const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...o.config };
+  const turns = new Semaphore(cfg.concurrency);
   return {
-    async checkout(run, bound) {
+    async checkout(run, bound, opts) {
       if (!bound) throw new Error("run has no repo binding");
       const { owner, repo } = bound;
-      if (!SAFE_PART.test(owner) || !SAFE_PART.test(repo) || run.sha === null) {
+      if (!isRepoPart(owner) || !isRepoPart(repo) || run.sha === null) {
         throw new Error("run has no sha or the repo binding is not a plain owner/name");
       }
+      // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
+      // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
+      // Never with credentials in the URL.
+      const clone = url(owner, repo);
+      assertNoCredentials(clone);
+      assertCloneHost(clone, o.allowHosts);
+      const release = await turns.acquire(opts?.signal);
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
+      const out = join(tmpdir(), `tt-src-${crypto.randomUUID()}.tgz`);
+      const dispose = (): void => {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(out, { force: true });
+      };
       try {
-        // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
-        // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
-        // Never with credentials in the URL.
-        const remote = o.cloneUrl ? url(owner, repo) : `https://github.com/${owner}/${repo}`;
-        assertNoCredentials(remote);
-        const fetched = await fetchCommit({
-          url: url(owner, repo),
+        await runCheckoutChild({
+          owner,
+          repo,
           sha: run.sha.toLowerCase(),
-          ...(o.fetch ? { fetch: o.fetch } : {}),
+          ...(o.cloneUrl ? { url: clone } : {}),
+          dir,
+          out,
+          allowHosts: o.allowHosts ?? [],
+          config: cfg,
+          signal: opts?.signal,
+          ...(o.command ? { command: o.command } : {}),
         });
-        materialize(dir, fetched, remote);
         return {
-          tarball: tarGzDirectory(dir),
+          tarball: await Bun.file(out).bytes(),
           // Repo files are untrusted: no traversal, no symlinks, size-capped.
           readFile: makeSafeReader(dir),
-          dispose: () => rmSync(dir, { recursive: true, force: true }),
+          dispose,
         };
       } catch (err) {
-        rmSync(dir, { recursive: true, force: true });
+        dispose();
         throw err;
+      } finally {
+        release();
       }
     },
   };
@@ -324,6 +359,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     const checkout = await o.source.checkout(
       dbRun,
       repo ? { owner: repo.owner, repo: repo.repo } : undefined,
+      { signal: ctx.signal },
     );
     try {
       const workflowYaml = checkout.readFile(dbRun.workflowPath);

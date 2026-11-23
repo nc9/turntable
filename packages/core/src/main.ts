@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { allowHostsFromEnv } from "@longshore/net";
 import type { Provider } from "@longshore/provider-sdk";
+import { checkoutConfigFromEnv } from "./run/checkout-child";
 import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
 import { githubFacts } from "./github/api";
 import { CheckReporter } from "./checks/reporter";
@@ -291,7 +293,10 @@ async function startBackground(
             withEgressPolicy(
               createActRunner({
                 db,
-                source: gitRepoSource(),
+                source: gitRepoSource({
+                  allowHosts: allowHostsFromEnv(),
+                  config: checkoutConfigFromEnv(),
+                }),
                 // Actions are resolved and verified with the run's own GitHub credential: the poll
                 // token, else an App token read-only for that repo, else LONGSHORE_GITHUB_TOKEN.
                 forgeToken: createForgeToken({

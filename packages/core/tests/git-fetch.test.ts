@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { readTarGz } from "@longshore/act-runner";
 import { createHttpClient, type SafeFetch } from "@longshore/net";
 import {
+  clean,
   DEFAULT_FETCH_LIMITS,
   fetchCommit,
   GitFetchError,
@@ -24,7 +25,8 @@ import {
   oidOf,
 } from "../src/run/git-fetch";
 import { gitRepoSource } from "../src/scheduler";
-import { serveGitRepo } from "./git-http-server";
+import { performCheckout } from "../src/run/checkout";
+import { CHECKOUT_COMMAND, serveGitRepo } from "./git-http-server";
 
 const base = mkdtempSync(join(tmpdir(), "ls-gitfetch-"));
 afterAll(() => rmSync(base, { recursive: true, force: true }));
@@ -80,7 +82,11 @@ describe("a checkout fetched in process", () => {
   test("is what git would have fetched: real git accepts it, the tree and modes match, the history is cut at depth 1", async () => {
     const { dir, sha } = makeRepo();
     const server = serveGitRepo(dir);
-    const src = gitRepoSource({ cloneUrl: () => server.url, fetch: server.fetch });
+    const src = gitRepoSource({
+      cloneUrl: () => server.url,
+      allowHosts: ["127.0.0.1"],
+      command: CHECKOUT_COMMAND,
+    });
     const co = await src.checkout({ sha } as never, { owner: "acme", repo: "web" });
     try {
       const x = extract(co.tarball);
@@ -90,8 +96,9 @@ describe("a checkout fetched in process", () => {
       expect(git(x, "log", "--format=%H|%s").trim()).toBe(`${sha}|second commit: the subject line`);
       expect(git(x, "remote", "get-url", "origin").trim()).toBe(server.url);
       expect(readFileSync(join(x, ".git/shallow"), "utf8").trim()).toBe(sha);
-      git(x, "checkout", "-q", "--force", "--detach", sha);
+      // the delivered index is real: with the checkout DROPPED and nothing re-run, git sees a clean tree
       expect(git(x, "status", "--porcelain").trim()).toBe("");
+      expect(git(x, "diff", "--stat").trim()).toBe("");
       // the working tree equals the committed one, modes and symlink included
       expect(git(x, "ls-files", "-s").trim()).toBe(git(dir, "ls-files", "-s").trim());
       expect(statSync(join(x, "src/deep/run.sh")).mode & 0o111).not.toBe(0);
@@ -155,14 +162,21 @@ describe("a checkout fetched in process", () => {
       throw new Error("a process was spawned");
     };
     try {
-      const src = gitRepoSource({
-        cloneUrl: () => "https://example.test/acme/web.git",
+      const out = join(base, `replay${n++}.tgz`);
+      const r = await performCheckout({
+        owner: "acme",
+        repo: "web",
+        sha,
+        url: "https://example.test/acme/web.git",
+        out,
         fetch: replay,
+        allowHosts: ["example.test"],
       });
-      const co = await src.checkout({ sha } as never, { owner: "acme", repo: "web" });
-      expect(co.tarball.length).toBeGreaterThan(1000);
-      expect(readTarGz(co.tarball).some((e) => e.path.endsWith(".git/HEAD"))).toBe(true);
-      co.dispose?.();
+      expect(r.tarballBytes).toBeGreaterThan(1000);
+      expect(
+        readTarGz(new Uint8Array(readFileSync(out))).some((e) => e.path.endsWith(".git/HEAD")),
+      ).toBe(true);
+      rmSync(r.dir, { recursive: true, force: true });
     } finally {
       (Bun as { spawn: unknown }).spawn = spawn;
       (Bun as { spawnSync: unknown }).spawnSync = spawnSync;
@@ -259,48 +273,56 @@ describe("what the server says is verified, not trusted", () => {
   });
 });
 
-describe("a hostile tree is refused before anything is written outside the directory", () => {
-  /** A repository whose root tree is built from raw entries (git plumbing, no safety checks). */
-  function hostile(entries: { mode: string; name: string; blob?: string; sub?: string }[]): {
-    dir: string;
-    sha: string;
-  } {
-    const dir = join(base, `hostile${n++}`);
-    mkdirSync(dir);
-    git(dir, "init", "-q", "-b", "main");
-    const hash = (data: string): string =>
-      execFileSync("git", ["hash-object", "-w", "--stdin"], {
-        cwd: dir,
-        env: ENV,
-        input: data,
-        encoding: "utf8",
-      }).trim();
-    const tree = (rows: { mode: string; name: string; oid: string }[]): string => {
-      const parts: Buffer[] = [];
-      for (const r of rows)
-        parts.push(Buffer.from(`${r.mode} ${r.name}\0`), Buffer.from(r.oid, "hex"));
-      return execFileSync("git", ["hash-object", "-w", "-t", "tree", "--literally", "--stdin"], {
-        cwd: dir,
-        env: ENV,
-        input: Buffer.concat(parts),
-        encoding: "utf8",
-      }).trim();
-    };
-    const rows = entries.map((e) => ({
-      mode: e.mode,
-      name: e.name,
-      oid: e.sub
-        ? tree([{ mode: "100644", name: "inner", oid: hash("x") }])
-        : hash(e.blob ?? "data"),
-    }));
-    const root = tree(rows);
-    const sha = execFileSync("git", ["commit-tree", root, "-m", "hostile"], {
+/** A repository whose root tree is built from raw entries (git plumbing, no safety checks). */
+function hostileTree(
+  entries: { mode: string; name: string; blob?: string; sub?: string; raw?: Buffer }[],
+): {
+  dir: string;
+  sha: string;
+} {
+  const dir = join(base, `hostile${n++}`);
+  mkdirSync(dir);
+  git(dir, "init", "-q", "-b", "main");
+  const hash = (data: string): string =>
+    execFileSync("git", ["hash-object", "-w", "--stdin"], {
       cwd: dir,
       env: ENV,
+      input: data,
       encoding: "utf8",
     }).trim();
-    return { dir, sha };
-  }
+  const tree = (rows: { mode: string; name: string; oid: string; raw?: Buffer }[]): string => {
+    const parts: Buffer[] = [];
+    for (const r of rows)
+      parts.push(
+        Buffer.from(`${r.mode} `),
+        r.raw ?? Buffer.from(r.name),
+        Buffer.from("\0"),
+        Buffer.from(r.oid, "hex"),
+      );
+    return execFileSync("git", ["hash-object", "-w", "-t", "tree", "--literally", "--stdin"], {
+      cwd: dir,
+      env: ENV,
+      input: Buffer.concat(parts),
+      encoding: "utf8",
+    }).trim();
+  };
+  const rows = entries.map((e) => ({
+    mode: e.mode,
+    name: e.name,
+    ...(e.raw ? { raw: e.raw } : {}),
+    oid: e.sub ? tree([{ mode: "100644", name: "inner", oid: hash("x") }]) : hash(e.blob ?? "data"),
+  }));
+  const root = tree(rows);
+  const sha = execFileSync("git", ["commit-tree", root, "-m", "hostile"], {
+    cwd: dir,
+    env: ENV,
+    encoding: "utf8",
+  }).trim();
+  return { dir, sha };
+}
+
+describe("a hostile tree is refused before anything is written outside the directory", () => {
+  const hostile = hostileTree;
 
   const refuse = async (entries: Parameters<typeof hostile>[0], why: RegExp): Promise<void> => {
     const { dir, sha } = hostile(entries);
@@ -349,6 +371,254 @@ describe("a hostile tree is refused before anything is written outside the direc
     } finally {
       s.stop();
     }
+  });
+});
+
+describe("more hostile trees and commits", () => {
+  const withRepo = async (
+    entries: Parameters<typeof hostileTree>[0],
+    f: (
+      c: Awaited<ReturnType<typeof fetchCommit>>,
+      s: ReturnType<typeof serveGitRepo>,
+    ) => void | Promise<void>,
+  ): Promise<void> => {
+    const { dir, sha } = hostileTree(entries);
+    const s = serveGitRepo(dir);
+    try {
+      await f(await fetchCommit({ url: s.url, sha, fetch: s.fetch }), s);
+    } finally {
+      s.stop();
+    }
+  };
+  const mk = (): string => {
+    const out = join(base, `h${n++}`);
+    mkdirSync(out);
+    return out;
+  };
+
+  test("every spelling of .git a filesystem might fold to it is refused: NTFS dots and spaces, 8.3 names, streams, HFS-ignorable characters", async () => {
+    for (const name of [
+      ".git ",
+      ".git.",
+      ".git. .",
+      ".GiT",
+      "git~1",
+      "GIT~1",
+      ".g\u200cit",
+      ".\u200egit",
+      ".git::$INDEX_ALLOCATION",
+      ".git:stream",
+    ]) {
+      await withRepo([{ mode: "100644", name }], (c, s) => {
+        expect(() => materialize(mk(), c, s.url), JSON.stringify(name)).toThrow(/unsafe path name/);
+      });
+    }
+    // and a symlink may not be any spelling of .gitmodules
+    for (const name of [
+      ".gitmodules",
+      ".GITMODULES",
+      ".gitmodules ",
+      "gitmod~1",
+      ".gitmodules::$DATA",
+    ]) {
+      await withRepo([{ mode: "120000", name, blob: "/etc/passwd" }], (c, s) => {
+        expect(() => materialize(mk(), c, s.url), name).toThrow(/gitmodules/);
+      });
+    }
+    // an ordinary name that merely contains .git is fine
+    await withRepo(
+      [
+        { mode: "100644", name: ".gitignore" },
+        { mode: "100644", name: "x.git" },
+      ],
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url)).not.toThrow();
+      },
+    );
+  });
+
+  test("a tree must be unique, in git's order and valid UTF-8", async () => {
+    await withRepo(
+      [
+        { mode: "100644", name: "a" },
+        { mode: "100644", name: "a" },
+      ],
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url)).toThrow(/same name twice/);
+      },
+    );
+    await withRepo(
+      [
+        { mode: "100644", name: "b" },
+        { mode: "100644", name: "a" },
+      ],
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url)).toThrow(/not in git's order/);
+      },
+    );
+    // a directory sorts as if its name ended in a slash: `a.b` (file) comes before `a` (directory) ...
+    await withRepo(
+      [
+        { mode: "100644", name: "a.b" },
+        { mode: "40000", name: "a", sub: "1" },
+      ],
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url)).not.toThrow();
+      },
+    );
+    // ... and the other order is refused
+    await withRepo(
+      [
+        { mode: "40000", name: "a", sub: "1" },
+        { mode: "100644", name: "a.b" },
+      ],
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url)).toThrow(/not in git's order/);
+      },
+    );
+    await withRepo(
+      [{ mode: "100644", name: "bad", raw: Buffer.from([0x62, 0xff, 0xfe]) }],
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url)).toThrow(/UTF-8/);
+      },
+    );
+  });
+
+  test("a tree object over its size cap is refused, and the entry count is checked inside the loop", async () => {
+    const names = Array.from({ length: 50 }, (_, i) => `f${String(i).padStart(3, "0")}`);
+    await withRepo(
+      names.map((name) => ({ mode: "100644", name })),
+      (c, s) => {
+        expect(() => materialize(mk(), c, s.url, { maxTreeBytes: 100 })).toThrow(
+          /tree object is too large/,
+        );
+        expect(() => materialize(mk(), c, s.url, { maxEntries: 3 })).toThrow(/too many files/);
+      },
+    );
+  });
+
+  test("an unreachable object in the pack is not written, and the object map is released afterwards", async () => {
+    await withRepo([{ mode: "100644", name: "f" }], (c, s) => {
+      const junk = new TextEncoder().encode("unreachable junk");
+      const oid = oidOf("blob", junk);
+      c.objects.set(oid, { type: "blob", data: junk });
+      const out = mk();
+      materialize(out, c, s.url);
+      expect(() => statSync(join(out, ".git/objects", oid.slice(0, 2), oid.slice(2)))).toThrow();
+      expect(c.objects.size).toBe(0);
+      git(out, "fsck", "--full", "--no-dangling");
+    });
+  });
+
+  test("a commit header is anchored: tree first, then parents, then author; a tree line in the message is not read", async () => {
+    const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const who = "author a <a@x> 1 +0000\ncommitter a <a@x> 1 +0000\n";
+    const pkt = (s: string): Uint8Array =>
+      new TextEncoder().encode(`${(s.length + 4).toString(16).padStart(4, "0")}${s}`);
+    /** A server that answers any fetch with a pack of the empty tree and this commit text. */
+    const serving = (commit: string): { sha: string; fetch: SafeFetch } => {
+      const body = new TextEncoder().encode(commit);
+      const sha = oidOf("commit", body);
+      const pack = packOf([
+        { header: sizeAndType(1, body.length), body },
+        { header: sizeAndType(2, 0), body: new Uint8Array() },
+      ]);
+      return {
+        sha,
+        fetch: async (_u, init) => {
+          if (init?.method !== "POST")
+            return new Response(
+              new Uint8Array([
+                ...pkt("version 2\n"),
+                ...pkt("fetch\n"),
+                ...new TextEncoder().encode("0000"),
+              ]),
+            );
+          const data = new Uint8Array(pack.length + 1);
+          data[0] = 1;
+          data.set(pack, 1);
+          const len = (data.length + 4).toString(16).padStart(4, "0");
+          return new Response(
+            new Uint8Array([
+              ...pkt("packfile\n"),
+              ...new TextEncoder().encode(len),
+              ...data,
+              ...new TextEncoder().encode("0000"),
+            ]),
+          );
+        },
+      };
+    };
+    const good = serving(
+      `tree ${EMPTY_TREE}\n${who}\nsubject\n\ntree ${"f".repeat(40)}\nparent ${"e".repeat(40)}\n`,
+    );
+    const c = await fetchCommit({
+      url: "https://x.test/a/b.git",
+      sha: good.sha,
+      fetch: good.fetch,
+    });
+    expect(c.tree).toBe(EMPTY_TREE);
+    expect(c.parents).toEqual([]);
+    expect(c.subject).toBe("subject");
+    const withParent = serving(
+      `tree ${EMPTY_TREE}\nparent ${"1".repeat(40)}\nparent ${"2".repeat(40)}\n${who}\nm\n`,
+    );
+    expect(
+      (
+        await fetchCommit({
+          url: "https://x.test/a/b.git",
+          sha: withParent.sha,
+          fetch: withParent.fetch,
+        })
+      ).parents,
+    ).toEqual(["1".repeat(40), "2".repeat(40)]);
+    for (const bad of [
+      `parent ${"1".repeat(40)}\ntree ${EMPTY_TREE}\n${who}\nm\n`, // parent before tree
+      `tree ${EMPTY_TREE}\n\nm\n`, // no author
+      `${who}tree ${EMPTY_TREE}\n\nm\n`, // tree not first
+      `tree ${EMPTY_TREE}\nparent short\n${who}\nm\n`,
+    ]) {
+      const s = serving(bad);
+      await expect(
+        fetchCommit({ url: "https://x.test/a/b.git", sha: s.sha, fetch: s.fetch }),
+      ).rejects.toThrow(/header is malformed/);
+    }
+  });
+
+  test("a pkt-line length must be four hex digits; text from the other side is cleaned and shortened in errors", async () => {
+    const adv =
+      (body: string): SafeFetch =>
+      async () =>
+        new Response(body, { status: 200 });
+    for (const bad of ["0x1f0000", "zzzz", "+01f", "00 1"])
+      await expect(
+        fetchCommit({ url: "https://x.test/a/b.git", sha: "a".repeat(40), fetch: adv(bad) }),
+      ).rejects.toThrow(/pkt-line/);
+    expect(clean("a\u0000b\u001b[31m\u202ec\n".repeat(1))).toBe("a b [31m c");
+    expect(clean("x".repeat(500)).length).toBe(123);
+    // a server's refusal text: control characters gone, length bounded
+    const evil = `${"E".repeat(400)}\u001b[2J\u0007`;
+    const body = (() => {
+      const pkt = (s: string): string => `${(s.length + 4).toString(16).padStart(4, "0")}${s}`;
+      return `${pkt("version 2\n")}${pkt("fetch\n")}0000`;
+    })();
+    const calls: string[] = [];
+    const stub: SafeFetch = async (_u, init) => {
+      calls.push(init?.method ?? "GET");
+      if (init?.method !== "POST") return new Response(body, { status: 200 });
+      const pkt = (s: string): string => `${(s.length + 4).toString(16).padStart(4, "0")}${s}`;
+      return new Response(`${pkt("packfile\n")}${pkt(`\u0003${evil}`)}0000`, { status: 200 });
+    };
+    const err = await fetchCommit({
+      url: "https://x.test/a/b.git",
+      sha: "a".repeat(40),
+      fetch: stub,
+    }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(GitFetchError);
+    const msg = (err as Error).message;
+    expect(msg.length).toBeLessThan(160);
+    expect(msg).not.toContain("\u001b");
+    expect(msg).not.toContain("\u0007");
   });
 });
 
