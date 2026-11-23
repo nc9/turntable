@@ -38,7 +38,7 @@ Every run the server ingests gets a trust class, decided once at ingest from for
 
 | Value | Who can approve |
 | --- | --- |
-| `human` | Only an enrolled approver's signed approval (WebAuthn or ed25519). No token qualifies, over MCP or REST. |
+| `human` | Not selectable yet (#324): `set_project_settings` and `turntable policy set` refuse it. The approve-time refusal stays as a backstop. Intended: only an enrolled approver's signed approval (WebAuthn or ed25519). No token qualifies, over MCP or REST. |
 | `no_agents` (default) | Not over MCP, whoever holds the token. Not with a token whose kind is `agent`, over REST either, so an agent cannot step around the MCP block. A person approves in the web UI, or over REST or the CLI with their own `person` token. |
 | `any` | Any caller with the role `approve_run` needs. This is how it worked before the setting existed. |
 

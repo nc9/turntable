@@ -19,6 +19,7 @@ import {
   setProjectSandboxSettings,
   type Scope,
 } from "../src/db";
+import { systemOrgId } from "../src/audit/failures";
 import { TOKEN_KINDS, type UntrustedRunApproval, UNTRUSTED_RUN_APPROVALS } from "../src/db/schema";
 import { dispatch, type DispatchEnv, registry, type Credential } from "../src/ops";
 import { approvalRefusal } from "../src/ops/approval-policy";
@@ -314,14 +315,29 @@ describe("changing the setting", () => {
       to: { untrustedRunApproval: "any" },
     });
     // lowering is audited the same way
-    await asInstance({ untrusted_run_approval: "human" });
+    await asInstance({ untrusted_run_approval: "no_agents" });
     const [latest] = (await listAudit(db, { orgId: a.orgId }, { limit: 5 })).filter(
       (x) => x.op === "set_project_settings",
     );
     expect(JSON.parse(latest!.input)).toMatchObject({
       from: { untrustedRunApproval: "any" },
-      to: { untrustedRunApproval: "human" },
+      to: { untrustedRunApproval: "no_agents" },
     });
+  });
+
+  test("selecting human is refused and audited, over the op and the host CLI", async () => {
+    const r = await asInstance({ untrusted_run_approval: "human" });
+    expect(!r.ok && r.error.message).toMatch(/isn't available yet \(#324\)/);
+    await expect(
+      setSandboxPolicy(db, "org-a", "app", { untrustedRunApproval: "human" }),
+    ).rejects.toThrow(/isn't available yet \(#324\)/);
+    expect((await getProjectSandboxSettings(db, a.scope)).untrustedRunApproval).toBe("no_agents");
+    const rows = await listAudit(db, { orgId: a.orgId }, { limit: 10 });
+    const sys = await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 10 });
+    expect(
+      sys.some((x) => x.op === "set_project_settings" && x.outcome === "error:invalid_input"),
+    ).toBe(true);
+    expect(rows.some((x) => x.op === "policy_set" && x.outcome.startsWith("error:"))).toBe(true);
   });
 
   test("no org token, of any role or kind, can set it, and it is not an MCP tool", async () => {

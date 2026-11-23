@@ -3,6 +3,9 @@
 import type { UntrustedRunApproval } from "../db/schema";
 import type { Principal } from "./principal";
 
+/** Why selecting `human` is refused until the signed-approval path exists (#324). */
+export const HUMAN_MODE_UNAVAILABLE = "human approval mode isn't available yet (#324)";
+
 export type ApprovalRefusal = {
   /** Stable reason code, returned in the message and written to the audit row. */
   reason: "approval_requires_human" | "agents_may_not_approve";

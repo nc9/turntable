@@ -10,6 +10,7 @@ import {
 } from "../../db/repos";
 import { UNTRUSTED_RUN_APPROVALS } from "../../db/schema";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
+import { HUMAN_MODE_UNAVAILABLE } from "../approval-policy";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 
@@ -71,7 +72,7 @@ export const setProjectSettings = defineOp({
     "per-org cap (`--org-cap`): a value above it is refused. Both are operator controls and a " +
     "tenant must not choose its own image or lift its own cap, so only the instance " +
     "administrator can call it: an org's own tokens, of any role, never can. " +
-    "`untrusted_run_approval` (human, no_agents or any) says who may approve a run held for an " +
+    "`untrusted_run_approval` (no_agents or any; `human` is not selectable yet, #324) says who may approve a run held for an " +
     "untrusted author; raising it to `any` lets agents approve, so it is audited with the old " +
     "and new value like every change here and is never an MCP call. The change is " +
     "audited in the system org's chain and in the target org's own. Not an MCP tool.",
@@ -112,6 +113,8 @@ export const setProjectSettings = defineOp({
         `max_concurrent ${i.max_concurrent} is above the instance's per-org cap of ${cap}; it can only lower it`,
       );
     }
+    if (i.untrusted_run_approval === "human")
+      throw new OpError("invalid_input", HUMAN_MODE_UNAVAILABLE);
     const scope = { orgId: org.id, projectId: project.id };
     const from = await getProjectSandboxSettings(ctx.db, scope);
     const to = await setProjectSandboxSettings(ctx.db, scope, {

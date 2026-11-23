@@ -3,6 +3,7 @@
 // and audits the change.
 import type { Db } from "../db";
 import { UNTRUSTED_RUN_APPROVALS, type UntrustedRunApproval } from "../db/schema";
+import { HUMAN_MODE_UNAVAILABLE } from "./approval-policy";
 import { validAudience } from "../oidc/issuer";
 import { ingestSettingsSchema, type IngestSettings } from "../poll/config";
 import {
@@ -597,6 +598,17 @@ export async function setSandboxPolicy(
   if (!project) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
   const scope = { orgId: org.id, projectId: project.id };
   const from = await getProjectSandboxSettings(db, scope);
+  if (patch.untrustedRunApproval === "human") {
+    await appendAudit(db, scope, {
+      principalKind: "cli",
+      principalId: "local",
+      op: "policy_set",
+      effect: "write",
+      outcome: "error:invalid_input",
+      input: { key: "sandbox", project: project.slug, from, refused: HUMAN_MODE_UNAVAILABLE },
+    });
+    throw new Error(HUMAN_MODE_UNAVAILABLE);
+  }
   const to = await db.transaction(async (tx) => {
     const after = await setProjectSandboxSettings(tx, scope, patch);
     if (!after) throw new Error(`no project ${projectSlug} in org ${orgSlug}`);
