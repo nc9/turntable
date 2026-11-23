@@ -40,6 +40,7 @@
           "internals/bun-notes",
           "design/daytona-proxy",
           "design/publish-targets",
+          "design/microvm-provider",
           "design/postgres-rls"
         ]
       }

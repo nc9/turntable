@@ -60,8 +60,8 @@ export function launcherArgv(shimDir: string, actArgv: readonly string[], envFil
  * 0; fi`) would find the shim, run it, and fail the step with 127. Without a shim the probe
  * behaves exactly as it does without Turntable, and a step that names the missing tool as its
  * `shell:` fails in act with its own "Cannot find: <tool> in PATH", which the log annotates.
- * One consequence: an interpreter installed after the job starts (a setup action that puts node on
- * PATH) is not shimmed, so a step that uses it as its `shell:` runs with act's pty.
+ * An interpreter installed after the job starts is picked up later by the shim's own resync (see
+ * STEP_SHIM), but only when it lands behind the shim directory on PATH.
  */
 export const INSTALL_SHIMS_SH = `set -eu
 d=$1; text=$2; shift 2
@@ -104,6 +104,31 @@ export const STEP_SHIM = `#!/bin/sh
 # packages/act-runner/src/step-env.ts.
 self=\${0##*/}
 dir=$(cd "$(dirname "$0")" && pwd)
+# Resync: link a shim for each interpreter that now exists on PATH and has none yet, so a tool
+# installed mid-job behind the shim directory is wrapped from the next shimmed step on. Add-only:
+# it never removes or replaces a link, never links before the tool exists, and skips a tool whose
+# directory is AHEAD of the shim directory (it would not be reached through the shim anyway, and
+# a shim must never stand in front of what GITHUB_PATH put first). The link is made under a temp
+# name and renamed into place, so a concurrent run never sees a partial link.
+resync() {
+  for n in ${SHIM_NAMES.join(" ")}; do
+    [ -e "$dir/$n" ] || [ -L "$dir/$n" ] && continue
+    seen=
+    found=
+    oldifs=$IFS
+    IFS=:
+    for p in $PATH; do
+      [ -n "$p" ] || continue
+      if [ "$p" = "$dir" ]; then seen=1; continue; fi
+      if [ -x "$p/$n" ] && [ ! -d "$p/$n" ]; then found=1; break; fi
+    done
+    IFS=$oldifs
+    [ -n "$found" ] && [ -n "$seen" ] || continue
+    t="$dir/.$n.$$"
+    if ln -s step-shim "$t" 2>/dev/null; then mv -f "$t" "$dir/$n" 2>/dev/null || rm -f "$t"; fi
+  done
+}
+resync
 real=
 oldifs=$IFS
 IFS=:
@@ -170,11 +195,14 @@ else
 fi
 # The forwarder ends at EOF. A step that leaves a background process holding the pipe must not
 # hold the step: give the forwarder two seconds, then stop it.
-( sleep 2; kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
-killer=$!
+# The killer is never signalled or waited for. A TERM sent right after its fork can run the TERM
+# trap the shim has inherited instead of stopping it, and a subshell blocked on a foreground sleep
+# does not act on TERM until the sleep ends: waiting on it made every step cost the full two
+# seconds. It only sleeps and holds no pipe, so it is left to run out. The shim's exit removes the
+# fifo, which tells the killer there is nothing left to stop (the forwarder's pid may be reused).
+( sleep 2; [ -e "$fifo" ] && kill "$cpid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
 wait "$cpid" 2>/dev/null
-kill "$killer" 2>/dev/null
-wait "$killer" 2>/dev/null
+resync
 exit "$rc"
 `;
 
