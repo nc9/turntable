@@ -77,13 +77,13 @@
     "test:quota-ops": "bun test packages/core/tests/org-quotas.test.ts packages/core/tests/quotas-cli.test.ts packages/core/tests/instance-admin.test.ts",
     "test:events-stream": "bun test packages/core/tests/event-stream.test.ts packages/core/tests/outbound-webhooks.test.ts",
     "test:artifacts-core": "bun test packages/core/tests/artifact-provenance.test.ts packages/core/tests/artifacts-cli.test.ts",
-    "test:security-misc": "bun test packages/core/tests/master-key-autoinit.test.ts packages/core/tests/master-key-rewrap.test.ts packages/core/tests/release-key.test.ts packages/core/tests/per-org-kek.test.ts packages/core/tests/provider-trust.test.ts packages/core/tests/sandbox-sweep.test.ts packages/core/tests/poll-unauthenticated.test.ts",
+    "test:security-misc": "bun test packages/core/tests/master-key-autoinit.test.ts packages/core/tests/master-key-rewrap.test.ts packages/core/tests/master-key-retire.test.ts packages/core/tests/release-key.test.ts packages/core/tests/per-org-kek.test.ts packages/core/tests/provider-trust.test.ts packages/core/tests/sandbox-sweep.test.ts packages/core/tests/poll-unauthenticated.test.ts",
     "test:routing": "bun test packages/core/tests/merge-queue.test.ts packages/core/tests/oidc-audiences.test.ts packages/core/tests/parity.test.ts",
     "test:ui-more": "bun test packages/ui/tests/artifacts.test.ts packages/ui/tests/quotas.test.ts packages/ui/tests/sandbox.test.ts",
     "test:exec-wrapper": "bun test packages/provider-sdk/tests/wrapper-watcher.test.ts",
     "test:pg-only": "bun test packages/core/tests/pg-transactions.test.ts",
     "test:poll-usage": "bun test packages/core/tests/poll-before.test.ts packages/core/tests/usage-cli.test.ts",
-    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts packages/core/tests/instance-create-org.test.ts packages/core/tests/untrusted-run-approval.test.ts packages/core/tests/instance-bootstrap.test.ts packages/core/tests/instance-bootstrap-boot.test.ts packages/core/tests/settings-run-approval.test.ts packages/core/tests/settings-approval-policy.test.ts",
+    "test:project-settings": "bun test packages/core/tests/project-sandbox-settings.test.ts packages/core/tests/instance-admin.test.ts packages/core/tests/instance-create-org.test.ts packages/core/tests/instance-move-repo-binding.test.ts packages/core/tests/untrusted-run-approval.test.ts packages/core/tests/instance-bootstrap.test.ts packages/core/tests/instance-bootstrap-boot.test.ts packages/core/tests/settings-run-approval.test.ts packages/core/tests/settings-approval-policy.test.ts",
     "test:sandbox-size": "bun test packages/core/tests/sandbox-size.test.ts"
   }
 }

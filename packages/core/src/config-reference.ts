@@ -272,6 +272,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "The previous master key as a 32-byte file, instead of `TURNTABLE_MASTER_KEY_PREVIOUS`.",
   },
   {
+    name: "TURNTABLE_MASTER_KEY_RETIRE_FILE",
+    area: "Secrets and keys",
+    description:
+      "One-shot: the path of the old master key file on the data volume, deleted at boot after any re-wrap, only if the process runs on `TURNTABLE_MASTER_KEY`, every sealed row opens under it, the file equals the previous key given this boot, and the path is a regular file (not a symlink) inside the data directory. Otherwise one log line names the condition that failed and the file stays. Audited as `master_key_file_retired`. Remove it, and the previous key, afterwards.",
+  },
+  {
     name: "TURNTABLE_SECRETS_PROXY",
     area: "Secrets proxy",
     default: "off",
