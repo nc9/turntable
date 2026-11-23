@@ -27,6 +27,10 @@ for _ in $(seq 1 100); do
     code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/acme/api/runs/x")
     test "$code" = "200" || { echo "deep route returned $code, expected the app shell"; exit 1; }
     echo "ui: shell, csp, asset and spa fallback ok"
+    # The backup copy runs on a worker embedded in the binary (#310): no worker file on disk.
+    "$bin" db backup --data-dir "$work/data" >"$work/backup.log" 2>&1 || { echo "db backup failed"; cat "$work/backup.log"; exit 1; }
+    ls "$work"/data/backups/turntable-*.db >/dev/null || { echo "no backup file written"; exit 1; }
+    echo "db backup: embedded worker ok"
     exit 0
   fi
   sleep 0.1

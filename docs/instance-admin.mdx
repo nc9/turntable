@@ -34,7 +34,7 @@ The image is distroless, so there is no shell to copy the database with. `db_bac
 - **Where it writes:** always a new file under `<data-dir>/backups/`. The operation takes no path. A backups directory that is a link, or resolves outside the data dir, is refused.
 - **Retention:** the newest `keep` files stay (`--keep`, the `keep` input, or `TURNTABLE_BACKUP_KEEP`, default 10); older `turntable-*.db` files there are deleted. Other files are left alone.
 - **Space:** refused when the free space is below twice the database size (the file plus its write-ahead log).
-- **It blocks the event loop:** `VACUUM INTO` in bun:sqlite is synchronous, so the server handles nothing else for the whole copy. Run it in a quiet window. On a busy hosted instance, prefer `TURNTABLE_BACKUP_BEFORE_MIGRATE=1` at boot until the backup runs in a worker.
+- **The event loop keeps serving:** the copy runs on a worker thread whose code is embedded in the binary, so heartbeats, log streaming and API calls carry on while a large database is copied. It still reads and writes disk, so expect some I/O load.
 - **Before a migration:** set `TURNTABLE_BACKUP_BEFORE_MIGRATE=1` and the server takes a backup at boot, only when migrations are pending on an existing database and before they run (the file name ends in `-pre-migrate`). If the backup fails, the server does not start. It is off by default.
 - **Postgres:** refused, with a pointer to `pg_dump`. Use your platform's snapshots or `pg_dump`.
 - **Access and audit:** instance administrator only (a `tti_` token over REST, or the host CLI), never an MCP tool. Each backup is audited in the system org's chain.

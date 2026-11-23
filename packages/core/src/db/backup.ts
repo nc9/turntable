@@ -3,6 +3,7 @@
 // from the time and the binary version, under `<data-dir>/backups/`, and every step checks that
 // it stays inside the data dir (no `..`, no symlinked backups directory).
 //
+// The copy runs on a worker thread (backup-worker.ts) so the event loop is never blocked.
 // The backup reads through its own read-only connection. In WAL mode that sees one consistent
 // snapshot of the committed rows, whatever another connection is writing meanwhile.
 import { Database } from "bun:sqlite";
@@ -10,6 +11,7 @@ import { createReadStream, existsSync, statSync, statfsSync } from "node:fs";
 import { chmod, lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import type { BackupWorkerReply, BackupWorkerRequest } from "./backup-worker";
 import { BUSY_TIMEOUT_MS } from "./sqlite-wal";
 import { migrations } from "./migrations.generated";
 
@@ -68,6 +70,8 @@ export type BackupOptions = {
    * schema and not set by the CLI or the server.
    */
   afterCopy?: (() => Promise<void>) | undefined;
+  /** TEST ONLY: the worker blocks this long after the copy, to stand in for a large database. */
+  workerHoldMs?: number | undefined;
 };
 
 /** `turntable-<time>-<version>[-<label>].db`. The time prefix makes names sort oldest first. */
@@ -134,6 +138,33 @@ export async function listBackups(dataDir: string): Promise<string[]> {
   return (await readdir(dir)).filter((n) => NAME_RE.test(n)).sort();
 }
 
+/**
+ * Where the worker's code is. From source it is the file beside this one. In the compiled binary
+ * it is an entrypoint embedded in the executable (scripts/build.ts builds with `root` set to the
+ * repo root), so nothing is read from disk and the binary works from an empty directory.
+ */
+function workerEntry(): string | URL {
+  return import.meta.url.includes("/$bunfs/") || import.meta.url.includes("B:/~BUN")
+    ? "./packages/core/src/db/backup-worker.ts"
+    : new URL("./backup-worker.ts", import.meta.url);
+}
+
+/** Runs `VACUUM INTO` on a worker thread; the main thread only waits for the reply. */
+function copyInWorker(req: BackupWorkerRequest): Promise<void> {
+  return new Promise<void>((resolveCopy, reject) => {
+    const worker = new Worker(workerEntry());
+    const done = (err?: Error): void => {
+      void worker.terminate();
+      if (err) reject(err);
+      else resolveCopy();
+    };
+    worker.onmessage = (event: MessageEvent<BackupWorkerReply>) =>
+      done(event.data.ok ? undefined : new Error(event.data.message));
+    worker.onerror = (event) => done(new Error(event.message || "the backup worker crashed"));
+    worker.postMessage(req);
+  });
+}
+
 export async function backupSqlite(opts: BackupOptions): Promise<BackupResult> {
   const keep = opts.keep ?? DEFAULT_BACKUP_KEEP;
   if (!Number.isInteger(keep) || keep < 1 || keep > 10_000) {
@@ -165,13 +196,12 @@ export async function backupSqlite(opts: BackupOptions): Promise<BackupResult> {
   }
   await rm(partial, { force: true });
   try {
-    const src = new Database(dbPath, { readonly: true, strict: true });
-    try {
-      src.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-      src.run("VACUUM INTO ?", [partial]);
-    } finally {
-      src.close();
-    }
+    await copyInWorker({
+      dbPath,
+      partial,
+      busyTimeoutMs: BUSY_TIMEOUT_MS,
+      holdMs: opts.workerHoldMs,
+    });
     await opts.afterCopy?.();
     await chmod(partial, 0o600);
     // The copy must open and be sound before it is trusted as a backup.
