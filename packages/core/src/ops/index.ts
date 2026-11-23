@@ -38,6 +38,7 @@ import {
 import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
+import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
@@ -103,6 +104,7 @@ export const registry = createRegistry([
   incidentUnfreeze,
   incidentStatus,
   secretUsage,
+  sandboxUsageOp,
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,

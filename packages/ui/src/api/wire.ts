@@ -321,3 +321,20 @@ export type WireConsumption = {
     sha256: string | null;
   }[];
 };
+
+export type WireQuotas = {
+  limits: {
+    max_concurrent: number | null;
+    max_runs_per_hour: number | null;
+    max_sandbox_minutes_per_day: number | null;
+    max_log_bytes: number | null;
+    max_stored_bytes: number | null;
+  };
+  usage: {
+    metric: "concurrent" | "runs_per_hour" | "sandbox_minutes" | "log_bytes" | "stored_bytes";
+    used: number;
+    limit: number | null;
+    percent: number | null;
+    held: string | null;
+  }[];
+};

@@ -7,6 +7,9 @@ import type {
   ApproversOverview,
   Artifact,
   ConsumeResult,
+  OrgQuotas,
+  QuotaLimits,
+  QuotaMetric,
   KeyPolicy,
   PolicyStatement,
   EnrolStatement,
@@ -969,6 +972,56 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     });
   }
 
+  // Quotas: a few limits and usage that moves with the fixture's running attempts.
+  const quotaLimits: QuotaLimits = {
+    maxConcurrent: 4,
+    maxRunsPerHour: 30,
+    maxSandboxMinutesPerDay: 600,
+    maxLogBytes: null,
+    maxStoredBytes: 5_000_000_000,
+  };
+  function getQuotas(): OrgQuotas {
+    const running = [...attempts.values()].filter((a) => a.state === "running").length;
+    const used: Record<QuotaMetric, number> = {
+      concurrent: running,
+      runs_per_hour: 12,
+      sandbox_minutes: 522,
+      log_bytes: 48_000_000,
+      stored_bytes: 1_200_000_000,
+    };
+    const limitOf: Record<QuotaMetric, number | null> = {
+      concurrent: quotaLimits.maxConcurrent,
+      runs_per_hour: quotaLimits.maxRunsPerHour,
+      sandbox_minutes: quotaLimits.maxSandboxMinutesPerDay,
+      log_bytes: quotaLimits.maxLogBytes,
+      stored_bytes: quotaLimits.maxStoredBytes,
+    };
+    const what: Record<QuotaMetric, string> = {
+      concurrent: "concurrent attempts",
+      runs_per_hour: "runs started in the last hour",
+      sandbox_minutes: "sandbox minutes in the last 24 hours",
+      log_bytes: "stored log bytes",
+      stored_bytes: "stored artifact bytes",
+    };
+    return {
+      limits: { ...quotaLimits },
+      usage: (Object.keys(used) as QuotaMetric[]).map((metric) => {
+        const limit = limitOf[metric];
+        const u = used[metric];
+        return {
+          metric,
+          used: u,
+          limit,
+          percent: limit === null || limit === 0 ? null : Math.floor((u / limit) * 100),
+          held:
+            limit !== null && u >= limit
+              ? `new work is held: ${what[metric]} reached its limit (${u} of ${limit})`
+              : null,
+        };
+      }),
+    };
+  }
+
   function approversOverview(): ApproversOverview {
     return {
       keyPolicy: {
@@ -1227,6 +1280,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     approversOverview,
     getArtifacts,
     checkArtifactConsumption,
+    getQuotas,
     keyPolicyChallenge,
     approveKeyPolicy,
     approvalChallenge,

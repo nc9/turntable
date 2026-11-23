@@ -406,3 +406,30 @@ export type ConsumeResult = {
   trustClass: string | null;
   sha256: string | null;
 };
+/** The limits of an org (null is no limit). */
+export type QuotaLimits = {
+  maxConcurrent: number | null;
+  maxRunsPerHour: number | null;
+  maxSandboxMinutesPerDay: number | null;
+  maxLogBytes: number | null;
+  maxStoredBytes: number | null;
+};
+
+export type QuotaMetric =
+  | "concurrent"
+  | "runs_per_hour"
+  | "sandbox_minutes"
+  | "log_bytes"
+  | "stored_bytes";
+
+export type QuotaUsage = {
+  metric: QuotaMetric;
+  used: number;
+  limit: number | null;
+  /** Percent of the limit, rounded down; null with no limit. */
+  percent: number | null;
+  /** Why new work is held because of this limit, when it is. */
+  held: string | null;
+};
+
+export type OrgQuotas = { limits: QuotaLimits; usage: QuotaUsage[] };
