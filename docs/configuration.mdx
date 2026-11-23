@@ -276,6 +276,9 @@ Every environment variable Turntable reads, grouped by area. A variable that sta
 | `TURNTABLE_CACHE_URL` |  |  | The base URL jobs reach the control-plane cache at, no trailing slash. Setting it turns the cache on. See [Job cache](/cache). |
 | `TURNTABLE_CACHE_QUOTA_GIB` |  | 10 | GiB an org may hold in the cache in total, split between trust classes. |
 | `TURNTABLE_CACHE_MAX_ENTRY_GIB` |  | 2 | GiB of the largest single cache entry. |
+| `TURNTABLE_ARTIFACTS_URL` |  |  | The base URL jobs reach the control plane at for `actions/upload-artifact` and `download-artifact` (v4 and up), no trailing slash. Setting it turns the artifact store on. A job with open egress reaches it directly; one with egress `none` can upload through the secrets proxy (an `https` URL on a public address). Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at `<data dir>/artifacts` for the release lane to sign from it. See [Compatibility](/compatibility#artifacts). |
+| `TURNTABLE_ARTIFACT_MAX_GIB` |  | 2 | GiB of the largest single artifact. The org's stored-bytes quota applies as well. |
+| `TURNTABLE_ARTIFACT_RETENTION_DAYS` |  | 90 | Days a stored artifact is kept. Past it the bytes are removed and downloads fail; the recorded digest stays. |
 
 ### Release lane
 

@@ -109,6 +109,22 @@ When the job is done, `finalize` looks at what the registry now holds for an ima
 
 The lane then attaches its own signed provenance as an OCI 1.1 referrer of the image: an artifact manifest (`artifactType: application/vnd.in-toto+json`) whose subject is the image manifest and whose one layer is the signed envelope. A repeat run finds the referrer already listed and pushes nothing. A registry that has no referrers API cannot carry it: the target still succeeds (the image is verified) and says what happened to the provenance. Images are processed after the project's release targets, and `provenance_as_release_asset` is recorded only when a GitHub release target that carries the provenance was published or is already on record as done in that pass, so the asset was uploaded and read back on the release. Otherwise (no such target, or it failed or was refused) it records `provenance_unattached`. Blob uploads for images are not pinned: they are content-addressed, and the manifest decides what a tag means.
 
+## Artifacts from jobs
+
+With the artifact store on (`TURNTABLE_ARTIFACTS_URL`, see [Compatibility](/compatibility#artifacts)), a build job's `actions/upload-artifact` records the artifact for the run and writes its bytes to `<data dir>/artifacts/<run id>/<name>`, which is the layout the lane reads. Point `TURNTABLE_RELEASE_ARTIFACT_DIR` at that directory, read-only for the lane's user. The uploaded blob is only transport. The lane recomputes its digest and length from the bytes and refuses a mismatch with the record, as before. Then, if it is a zip, the lane unpacks it into a fresh private directory under `unpackRoot` (default: `turntable-release-unpack` in the system temp directory), and **the provenance subjects are the files inside**: each file's path in the zip and the sha256 of its bytes. Release targets name those files. An artifact that is not a zip (`archive: false`) is its own subject, by artifact name. The unpacked files are removed when the request is done.
+
+Unpacking refuses, with `unpack_failed` and the reason in the detail, and signs nothing:
+
+- an absolute path, a drive letter, a backslash, a NUL, an empty, `.` or `..` segment, or a name outside `A-Za-z0-9._/+-` (up to 190 characters, starting with a letter or digit);
+- a symlink, a device, a fifo, a socket or a Windows reparse point (a zip has no hardlinks, so an entry claiming any link type is refused);
+- a duplicate name, also one that differs only in case, or a name that is both a file and a directory;
+- more than 10,000 entries or more than 2 GiB of uncompressed data in total. Sizes are checked from the archive's declared sizes before anything is inflated, and again while inflating, so an archive cannot expand past its own claim. These are constants in `release/unpack.ts`;
+- encryption, zip64, split archives, a method other than stored or deflate, a local header that disagrees with the central directory, overlapping entries, a bad CRC, or bytes after the end record.
+
+Two files with the same name across the request's artifacts are refused as `duplicate_subject`. The signing service checks each zip's digest against its own record and signs the lane's file subjects only alongside those zip digests (`verified.archives`); with no zip in the request it signs exactly the recorded artifacts as before.
+
+The class recorded with each artifact is the control plane's own, taken from the attempt that wrote it, and the signing service already refuses an artifact below the `release` class (`artifact_not_release_class`). The artifact service applies the same rule to downloads, so a job in a release run never receives what a lower class wrote.
+
 ## Deployment
 
 Run the release lane as its own service, with its own volume or directory and its own secrets. On Railway that is two services from the same image:

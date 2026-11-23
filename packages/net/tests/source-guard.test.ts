@@ -29,6 +29,8 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/proxy-e2e.test.ts", // the same proxy, dialled on 127.0.0.1 (CI only)
   "packages/core/tests/job-oidc.test.ts", // the same proxy, dialled on 127.0.0.1
   "packages/core/tests/vault-jwt-e2e.test.ts", // a Vault dev server in a container, on 127.0.0.1
+  "packages/core/tests/artifact-service.test.ts", // the control server under test, on 127.0.0.1
+  "packages/core/tests/artifact-egress-none.test.ts", // the proxy under test, dialled on 127.0.0.1
 ]);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "data", "drizzle"]);

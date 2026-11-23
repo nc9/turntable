@@ -1,3 +1,4 @@
+import type { ArtifactService } from "./artifacts/service";
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
 import type { BackupConfig } from "./db/backup";
@@ -106,6 +107,8 @@ export type ServeOptions = {
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
+  /** The artifact service for jobs (the twirp API and `/_artifacts/...`), when a URL is configured. */
+  artifacts?: ArtifactService;
   /** Outbound webhook management ops, when a master key is configured. */
   outboundWebhooks?: WebhookService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
@@ -168,6 +171,8 @@ export function startServer(options: ServeOptions) {
     if (idp) return idp;
     const cached = await options.cache?.handle(req);
     if (cached) return cached;
+    const artifact = await options.artifacts?.handle(req);
+    if (artifact) return artifact;
     const upgraded = await realtime.handle(req, srv);
     if (upgraded === "upgraded") return undefined;
     if (upgraded) return upgraded;
