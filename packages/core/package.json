@@ -8,7 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit -p tsconfig.json",
-    "db:generate": "drizzle-kit generate && bun run scripts/gen-migrations.ts",
+    "db:generate": "bun run scripts/db-generate.ts",
+    "db:pg-schema": "bun run scripts/gen-pg-schema.ts",
     "db:embed": "bun run scripts/gen-migrations.ts",
     "openapi:gen": "bun run scripts/gen-openapi.ts"
   },
@@ -27,6 +28,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.15",
     "@types/bun": "1.4.4",
     "drizzle-kit": "0.31.11"
   }

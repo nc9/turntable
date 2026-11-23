@@ -7,6 +7,10 @@ import type {
   ApproversOverview,
   Artifact,
   ConsumeResult,
+  OrgQuotas,
+  QuotaLimits,
+  QuotaMetric,
+  LogNotice,
   KeyPolicy,
   PolicyStatement,
   EnrolStatement,
@@ -624,6 +628,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     done: boolean;
     steps: GeneratedLog["steps"];
     cuts: GeneratedLog["cuts"];
+    notices: Omit<LogNotice, "attemptId">[];
   } | null {
     const a = attempts.get(attemptId);
     if (!a || a.startedAt == null) return null;
@@ -637,8 +642,28 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       durationMs,
     });
     const finished = a.finishedAt != null;
+    // A system notice, out of band from the log text: attempts whose log was cut also had a cache
+    // archive with entries at denied paths dropped.
+    const notices: Omit<LogNotice, "attemptId">[] =
+      log.cuts.length > 0
+        ? [
+            {
+              kind: "notice",
+              atOffset: 0,
+              source: "cache",
+              text: "cache: 3 entries dropped (denied paths)",
+            },
+          ]
+        : [];
     if (finished)
-      return { log, available: log.bytes.length, done: true, steps: log.steps, cuts: log.cuts };
+      return {
+        log,
+        available: log.bytes.length,
+        done: true,
+        steps: log.steps,
+        cuts: log.cuts,
+        notices,
+      };
     const p = Math.min(1, Math.max(0, (now() - a.startedAt) / durationMs));
     const lines = Math.floor(log.lineCount * p);
     const available = lines === 0 ? 0 : (log.lineEnds[lines - 1] ?? 0);
@@ -648,6 +673,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
       done: false,
       steps: log.steps.filter((st) => st.logOffset <= available),
       cuts: log.cuts.filter((c) => c.atOffset <= available),
+      notices,
     };
   }
 
@@ -969,6 +995,56 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     });
   }
 
+  // Quotas: a few limits and usage that moves with the fixture's running attempts.
+  const quotaLimits: QuotaLimits = {
+    maxConcurrent: 4,
+    maxRunsPerHour: 30,
+    maxSandboxMinutesPerDay: 600,
+    maxLogBytes: null,
+    maxStoredBytes: 5_000_000_000,
+  };
+  function getQuotas(): OrgQuotas {
+    const running = [...attempts.values()].filter((a) => a.state === "running").length;
+    const used: Record<QuotaMetric, number> = {
+      concurrent: running,
+      runs_per_hour: 12,
+      sandbox_minutes: 522,
+      log_bytes: 48_000_000,
+      stored_bytes: 1_200_000_000,
+    };
+    const limitOf: Record<QuotaMetric, number | null> = {
+      concurrent: quotaLimits.maxConcurrent,
+      runs_per_hour: quotaLimits.maxRunsPerHour,
+      sandbox_minutes: quotaLimits.maxSandboxMinutesPerDay,
+      log_bytes: quotaLimits.maxLogBytes,
+      stored_bytes: quotaLimits.maxStoredBytes,
+    };
+    const what: Record<QuotaMetric, string> = {
+      concurrent: "concurrent attempts",
+      runs_per_hour: "runs started in the last hour",
+      sandbox_minutes: "sandbox minutes in the last 24 hours",
+      log_bytes: "stored log bytes",
+      stored_bytes: "stored artifact bytes",
+    };
+    return {
+      limits: { ...quotaLimits },
+      usage: (Object.keys(used) as QuotaMetric[]).map((metric) => {
+        const limit = limitOf[metric];
+        const u = used[metric];
+        return {
+          metric,
+          used: u,
+          limit,
+          percent: limit === null || limit === 0 ? null : Math.floor((u / limit) * 100),
+          held:
+            limit !== null && u >= limit
+              ? `new work is held: ${what[metric]} reached its limit (${u} of ${limit})`
+              : null,
+        };
+      }),
+    };
+  }
+
   function approversOverview(): ApproversOverview {
     return {
       keyPolicy: {
@@ -1227,6 +1303,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
     approversOverview,
     getArtifacts,
     checkArtifactConsumption,
+    getQuotas,
     keyPolicyChallenge,
     approveKeyPolicy,
     approvalChallenge,

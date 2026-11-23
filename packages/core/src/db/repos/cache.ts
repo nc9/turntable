@@ -58,8 +58,8 @@ export function reserveCacheEntry(
       const [p] = await tx.run((h) =>
         h.orm
           .select({
-            n: sql<number>`count(*)`,
-            bytes: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)`,
+            n: sql<number>`count(*)`.mapWith(Number),
+            bytes: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)`.mapWith(Number),
           })
           .from(s.cacheEntries)
           .where(
@@ -197,7 +197,7 @@ export function findCacheEntry(
 export function cacheClassUsage(db: Db, orgId: string, klass: string): Promise<number> {
   return db.run(async (h) => {
     const [row] = await h.orm
-      .select({ n: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)` })
+      .select({ n: sql<number>`coalesce(sum(${s.cacheEntries.size}), 0)`.mapWith(Number) })
       .from(s.cacheEntries)
       .where(and(eq(s.cacheEntries.orgId, orgId), eq(s.cacheEntries.klass, klass)));
     return Number(row?.n ?? 0);

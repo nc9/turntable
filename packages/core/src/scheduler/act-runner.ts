@@ -1,8 +1,8 @@
 // The production AttemptRunner: plans the claimed job from the workflow at the run's sha and runs
 // it with act in a provider sandbox. It shares executeJob with `longshore run`, so a job behaves
 // the same from the CLI and from the worker.
-import { scrubbedEnv } from "@longshore/provider-sdk";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm as rmAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,8 +29,17 @@ import { SecretRegistry } from "@longshore/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
 import { prefixedOut } from "../run/prefixed-out";
 import { buildActEvent } from "../run/act-event";
-import { snapshotRepo } from "../run/repo-archive";
-import { makeSafeReader } from "../run/safe-read";
+import { assertCloneHost, isRepoPart } from "../run/checkout";
+import {
+  type CheckoutConfig,
+  DEFAULT_CHECKOUT_CONFIG,
+  readChildTarball,
+  runCheckoutChild,
+  Semaphore,
+  sweepOldCheckouts,
+} from "../run/checkout-child";
+import { DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { tarballReader } from "../run/tarball-reader";
 import { resolvePlanActions } from "../pins";
 import type { ForgeToken } from "../pins/forge-token";
 import {
@@ -58,7 +67,11 @@ export interface Checkout {
 
 export interface RepoSource {
   /** `repo` is undefined for a local run (`longshore run`), which has no bound repo. */
-  checkout(run: Run, repo: { owner: string; repo: string } | undefined): Promise<Checkout>;
+  checkout(
+    run: Run,
+    repo: { owner: string; repo: string } | undefined,
+    opts?: { signal?: AbortSignal | undefined },
+  ): Promise<Checkout>;
 }
 
 /**
@@ -82,20 +95,6 @@ export function localRepoSource(o: {
   };
 }
 
-const SAFE_PART = /^[A-Za-z0-9_.-]+$/;
-
-async function git(cwd: string, argv: string[]): Promise<void> {
-  const p = Bun.spawn(["git", ...argv], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    // No prompts, no credentials, no system config: this only ever reads public repos.
-    env: scrubbedEnv({ HOME: cwd, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" }),
-  });
-  const [err, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
-  if (code !== 0) throw new Error(`git ${argv[0]} failed: ${err.trim().split("\n")[0]}`);
-}
-
 /** A remote URL with a user or password in it would be stored in the repo's config. */
 export function assertNoCredentials(u: string): void {
   let parsed: URL | undefined;
@@ -110,45 +109,97 @@ export function assertNoCredentials(u: string): void {
 }
 
 /**
- * Fetches exactly the run's commit from a public repo with git (a depth-1 fetch by sha) and packs
- * it the way `longshore run` does: the committed tree plus .git.
+ * Fetches exactly the run's commit from a public repo (see run/git-fetch.ts: git's smart-HTTP
+ * protocol at depth 1, every object verified), writes the tree and the `.git` git would have made,
+ * and packs them the way `longshore run` does. It runs no `git` or `tar` binary, and it runs in a
+ * CHILD process of this same binary (run/checkout-child.ts), because it parses hostile input: one
+ * deadline, a memory ceiling where the system can enforce one, at most `concurrency` at a time,
+ * and killed when the attempt is cancelled. The child writes the tree and a tarball to a private
+ * temporary directory; this process reads workflow files through the safe reader and hands the
+ * tarball on.
  */
 export function gitRepoSource(
-  o: { cloneUrl?: (owner: string, repo: string) => string } = {},
+  o: {
+    cloneUrl?: (owner: string, repo: string) => string;
+    /** Hosts besides github.com a clone URL may name. */
+    allowHosts?: readonly string[];
+    config?: Partial<CheckoutConfig>;
+    /** The program that runs a checkout, default this binary (a test seam). */
+    command?: string[];
+  } = {},
 ): RepoSource {
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
+  const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...o.config };
+  const turns = new Semaphore(cfg.concurrency);
+  const lim = { ...DEFAULT_FETCH_LIMITS, ...cfg.limits };
+  // What an earlier process left in the temporary directory is cleared once, at start.
+  if (!sweptOnce) {
+    sweptOnce = true;
+    void sweepOldCheckouts().catch(() => {});
+  }
   return {
-    async checkout(run, bound) {
+    async checkout(run, bound, opts) {
       if (!bound) throw new Error("run has no repo binding");
       const { owner, repo } = bound;
-      if (!SAFE_PART.test(owner) || !SAFE_PART.test(repo) || run.sha === null) {
+      if (!isRepoPart(owner) || !isRepoPart(repo) || run.sha === null) {
         throw new Error("run has no sha or the repo binding is not a plain owner/name");
       }
+      const sha = run.sha.toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(sha))
+        throw new Error("the run's commit is not a 40 character sha");
+      // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
+      // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
+      // Never with credentials in the URL.
+      const clone = url(owner, repo);
+      assertNoCredentials(clone);
+      assertCloneHost(clone, o.allowHosts);
+      const release = await turns.acquire(opts?.signal);
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
+      const out = join(tmpdir(), `tt-src-${crypto.randomUUID()}.tgz`);
+      // Removed in the background: a recursive delete of a large tree must not hold the event loop.
+      const cleanup = async (): Promise<void> => {
+        await Promise.all([
+          rmAsync(dir, { recursive: true, force: true }),
+          rmAsync(out, { force: true }),
+        ]).catch(() => {});
+      };
       try {
-        await git(dir, ["init", "-q"]);
-        // Like actions/checkout, leave `origin` pointing at the repo, so a step that runs
-        // `git fetch origin <sha>` works (it needs egress, and fails closed without it).
-        // Never with credentials in the URL.
-        const remote = o.cloneUrl ? url(owner, repo) : `https://github.com/${owner}/${repo}`;
-        assertNoCredentials(remote);
-        await git(dir, ["remote", "add", "origin", remote]);
-        await git(dir, ["fetch", "-q", "--depth", "1", url(owner, repo), run.sha]);
-        await git(dir, ["checkout", "-q", "--detach", "FETCH_HEAD"]);
-        const snap = await snapshotRepo(dir);
-        return {
-          tarball: snap.tarball,
-          // Repo files are untrusted: no traversal, no symlinks, size-capped.
-          readFile: makeSafeReader(dir),
-          dispose: () => rmSync(dir, { recursive: true, force: true }),
-        };
+        const res = await runCheckoutChild({
+          owner,
+          repo,
+          sha,
+          ...(o.cloneUrl ? { url: clone } : {}),
+          dir,
+          out,
+          allowHosts: o.allowHosts ?? [],
+          config: cfg,
+          signal: opts?.signal,
+          ...(o.command ? { command: o.command } : {}),
+        });
+        // The child is not trusted: what it says it fetched, and the file it wrote, are checked.
+        if (res.sha !== sha)
+          throw new Error("the checkout is of a different commit than the one asked for");
+        const tarball = await readChildTarball(out, {
+          maxBytes: lim.maxTarballBytes,
+          expectBytes: res.tarballBytes,
+        });
+        // Planned from the bytes that will be delivered, never from the directory the child also wrote.
+        const readFile = await tarballReader(tarball, {
+          maxUnpackedBytes: 2 * lim.maxInflatedBytes + 64 * 1024 * 1024,
+        });
+        void cleanup(); // the tree and the file are not needed any more
+        return { tarball, readFile, dispose: () => {} };
       } catch (err) {
-        rmSync(dir, { recursive: true, force: true });
+        await cleanup();
         throw err;
+      } finally {
+        release();
       }
     },
   };
 }
+
+let sweptOnce = false;
 
 export type ActRunnerOptions = {
   db: Db;
@@ -334,6 +385,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     const checkout = await o.source.checkout(
       dbRun,
       repo ? { owner: repo.owner, repo: repo.repo } : undefined,
+      { signal: ctx.signal },
     );
     try {
       const workflowYaml = checkout.readFile(dbRun.workflowPath);

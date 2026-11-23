@@ -4,6 +4,7 @@ import type {
   WireApprovalStatus,
   WireArtifacts,
   WireConsumption,
+  WireQuotas,
   WireApprovers,
   WireChallenge,
   WireEnrolmentApproval,
@@ -245,8 +246,9 @@ test("job_steps and job_cuts", () => {
     }),
   );
   const cuts = ok(op("/jobs/{job_id}/cuts", "get"));
-  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true }));
+  expectKeys(cuts, keysOf<WireCuts>({ job_id: true, attempt: true, cuts: true, notices: true }));
   expectKeys(cuts.properties!.cuts!.items!, ["at_offset", "omitted_bytes", "reason"]);
+  expectKeys(cuts.properties!.notices!.items!, ["at_offset", "source", "text"]);
 });
 
 test("failure_digest", () => {
@@ -401,6 +403,23 @@ test("artifacts: provenance and consumption shapes the adapter reads", () => {
     "trust_class",
     "sha256",
   ]);
+});
+
+test("quotas: get and set return the shape the adapter reads", () => {
+  // Read only: there is no API operation that sets quotas.
+  expect(Object.keys(spec.paths["/quotas"] ?? {})).toEqual(["get"]);
+  for (const [path, method] of [["/quotas", "get"]] as const) {
+    const out = ok(op(path, method));
+    expectKeys(out, keysOf<WireQuotas>({ limits: true, usage: true }));
+    expectKeys(out.properties!.limits!, [
+      "max_concurrent",
+      "max_runs_per_hour",
+      "max_sandbox_minutes_per_day",
+      "max_log_bytes",
+      "max_stored_bytes",
+    ]);
+    expectKeys(out.properties!.usage!.items!, ["metric", "used", "limit", "percent", "held"]);
+  }
 });
 
 test("human approvals: status, approvers, challenges, enrolment and the signature routes", () => {

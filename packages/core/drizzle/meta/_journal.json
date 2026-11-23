@@ -211,6 +211,41 @@
       "when": 1795389779259,
       "tag": "0029_lean_wendell_rand",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1795395479398,
+      "tag": "0030_instance_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1795396725281,
+      "tag": "0031_job_log_notices",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1795399832552,
+      "tag": "0032_quota_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1795400535433,
+      "tag": "0033_outbound_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1795401789505,
+      "tag": "0034_oidc_audiences",
+      "breakpoints": true
     }
   ]
 }

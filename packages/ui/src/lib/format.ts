@@ -38,6 +38,19 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MiB`;
 }
 
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+/** `18.4 MB`; decimal units, as storage is usually sold. Log offsets use `formatBytes` (binary). */
+export function formatSize(n: number): string {
+  let v = n;
+  let i = 0;
+  while (v >= 1000 && i < SIZE_UNITS.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${i === 0 || v >= 100 ? Math.round(v) : Math.round(v * 10) / 10} ${SIZE_UNITS[i]}`;
+}
+
 export function shortSha(sha: string | null): string {
   return sha ? sha.slice(0, 7) : "-";
 }

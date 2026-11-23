@@ -1,0 +1,29 @@
+---
+title: Instance administrator
+description: A token for the person who runs the instance, for the few settings that belong to no org.
+---
+
+Some settings are not an org's to change: the limits that stop one org taking the instance (quotas), and the instance's own health. Until now they were reachable only on the host. The **instance administrator** is a separate principal for them, over REST.
+
+## What it is
+
+- A token with the prefix `lsi_`, a different shape from every org token (`ls_`), so the two are told apart before any lookup and a leaked one is recognisable.
+- Minted only on the host, with `longshore token create --instance --name <name> [--expires-days 30]` (1 to 90 days; the secret is shown once, only its hash is stored, in its own table). No org token of any role and no operation can mint, list or revoke one: `token list --instance` and `token revoke <id> --instance` are host commands too. Minting and revoking are audited in the system org's chain.
+- It holds **no org grant**. It cannot read a run, a log or a secret, and every org operation refuses it. It can call the instance operations, and nothing else.
+- Accepted over **REST only**. The MCP endpoint and the realtime socket do not treat an `lsi_` token as a credential, and none of the instance operations is an MCP tool.
+
+## What it can call
+
+| Operation | Route | Does |
+| --- | --- | --- |
+| `instance_whoami` | `GET /api/v1/instance/whoami` | Checks the token: its id, label and expiry. |
+| `instance_list_orgs` | `GET /api/v1/instance/orgs` | Lists the orgs' slugs and names (not the internal system org). |
+| `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
+
+`max_concurrent` can only lower an org's concurrency below the instance's per-org cap (`--org-cap`): a value above it is refused, and removing it falls back to the cap. Instance operations take no `org` or `project` field. A change is audited twice: in the system org's chain (who held the token) and in the target org's own chain (so its operators see who changed their limits).
+
+The full doctor report joins this set once the doctor operation lands: it is read-only and needs the same principal.
+
+## What stops an org reaching it
+
+An instance operation takes the instance administrator and no one else: an org token of any role, a project-scoped token and a person (a member of any role) all get `forbidden`, whatever org they name. The reverse holds too: the instance token gets `forbidden` on every org operation. The [tenant isolation](/tenant-isolation) suite checks both for every principal it builds.

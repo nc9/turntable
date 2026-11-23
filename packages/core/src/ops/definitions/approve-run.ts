@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ApproveError, approveRun, getApproveRunMinRole } from "../../db/repos";
+import { ApproveError, approveRun, getApproveRunMinRole, getRun, parseTrust } from "../../db/repos";
 import { JOB_STATES } from "../../db/schema";
-import { principalLabel } from "../principal";
+import { principalLabel, orgRole } from "../principal";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
-import { roleSatisfies } from "../roles";
+import { type Role, roleSatisfies } from "../roles";
 
 export const approveRunOp = defineOp({
   name: "approve_run",
@@ -38,13 +38,18 @@ export const approveRunOp = defineOp({
   // The dispatcher checks the lowest role an org may allow; the handler applies the org's choice.
   auth: { type: "token", minRole: "operator" },
   roleNote:
-    "Requires role release_operator, or operator if the org lowered it (approve_run_min_role).",
+    "Requires role release_operator, or operator if the org lowered it (approve_run_min_role). A release tag run needs release_operator whatever the org chose.",
   untrustedOutput: false,
   scope: "org",
   http: { method: "POST", path: "/runs/{run_id}/approve" },
   async handler(ctx, input) {
-    const needed = await getApproveRunMinRole(ctx.db, ctx.scope.orgId);
-    if (!roleSatisfies(ctx.principal.role, needed)) {
+    let needed: Role = await getApproveRunMinRole(ctx.db, ctx.scope.orgId);
+    // A release tag run held because no ruleset protects the tag is a release decision: it needs a
+    // release operator whatever the org lowered approve_run to for pull requests.
+    const held = await getRun(ctx.db, ctx.scope, input.run_id);
+    if (held?.ref.startsWith("refs/tags/") && parseTrust(held)?.class === "release")
+      needed = "release_operator";
+    if (!roleSatisfies(orgRole(ctx.principal), needed)) {
       throw new OpError("forbidden", `approve_run requires role ${needed} in this org`);
     }
     try {

@@ -1,3 +1,4 @@
+import { parse as parseYaml } from "yaml";
 import { buildActEvent } from "../src/run/act-event";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -48,6 +49,7 @@ done
 R=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$R/seen" "$R/outputs"
 cp "$W" "$R/seen/$J.yml"
+cp "$W" "$R/seen/$J.$$.all.yml"
 ev() { printf '{"jobID":"%s","level":"info","msg":"%s","step":"%s","stepid":["--setup-job"],"time":"t"%s}\n' "$1" "$2" "$3" "$4"; }
 ev stubjob "stub" "Set up job" ',"stepResult":"success"'
 ev "$J" "Run" "Set up job" ""
@@ -1665,5 +1667,121 @@ jobs:
     } finally {
       small.dispose();
     }
+  });
+});
+
+describe("a job split across sandboxes", () => {
+  const SUITES = `name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - id: setup
+        name: Setup
+        run: echo setup
+      - name: Rules tests
+        run: echo rules
+      - name: Rest tests
+        run: echo rest
+      - name: Audit engine tests
+        run: echo audit
+  gate:
+    needs: [tests]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo gate
+`;
+  const SPLITS = [
+    {
+      job: "tests",
+      shards: [
+        { steps: ["Audit engine tests"] },
+        { steps: ["Rules tests"] },
+        { steps: ["Rest tests"] },
+      ],
+    },
+  ];
+
+  test("three shards run in three sandboxes, each with only its own suite, and the dependent waits for all of them", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(gh, CFG({ splits: SPLITS }));
+    const [run] = await listRuns(db, scope);
+    const jobs = await listJobs(db, scope, run!.id);
+    expect(jobs.map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests[0]",
+      "tests[1]",
+      "tests[2]",
+    ]);
+    expect(jobs.filter((j) => j.name === "Tests")).toHaveLength(3);
+    const specs: string[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec.name);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    const after = await listJobs(db, scope, run!.id);
+    expect(after.map((j) => [j.jobKey, j.state]).toSorted()).toEqual([
+      ["gate", "success"],
+      ["tests[0]", "success"],
+      ["tests[1]", "success"],
+      ["tests[2]", "success"],
+    ]);
+    expect(new Set(specs).size).toBe(4); // one sandbox per shard, and one for the dependent
+    // each shard's workflow runs exactly one suite
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(join(root, "seen")).filter(
+      (f) => f.startsWith("tests.") && f.endsWith(".all.yml"),
+    );
+    expect(files).toHaveLength(3);
+    const ran = files.map((f) => {
+      const wf = parseYaml(readFileSync(join(root, "seen", f), "utf8")) as {
+        jobs: { tests: { steps: { name: string; if?: unknown }[] } };
+      };
+      return wf.jobs.tests.steps
+        .filter((s) => s.name.endsWith(" tests") && s.if !== false)
+        .map((s) => s.name);
+    });
+    expect(ran.map((r) => r.length)).toEqual([1, 1, 1]);
+    expect(new Set(ran.flat()).size).toBe(3);
+    // the gate ran after every shard finished
+    const finished = Math.max(
+      ...after.filter((j) => j.jobKey.startsWith("tests[")).map((j) => j.finishedAt ?? 0),
+    );
+    expect(after.find((j) => j.jobKey === "gate")!.startedAt!).toBeGreaterThanOrEqual(finished);
+  });
+
+  test("with no rule the same workflow runs as one job, as before", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(gh, CFG());
+    const [run] = await listRuns(db, scope);
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests",
+    ]);
+  });
+
+  test("a rule that cannot apply is recorded on the run, and the job runs whole", async () => {
+    const gh = makeGithub();
+    gh.state.files.set("*", SUITES);
+    await ingest(
+      gh,
+      CFG({ splits: [{ job: "missing", shards: [{ steps: ["a"] }, { steps: ["b"] }] }] }),
+    );
+    const [run] = await listRuns(db, scope);
+    expect(JSON.parse(run!.plan!).splitNotices.join()).toContain("no such job");
+    expect((await listJobs(db, scope, run!.id)).map((j) => j.jobKey).toSorted()).toEqual([
+      "gate",
+      "tests",
+    ]);
   });
 });

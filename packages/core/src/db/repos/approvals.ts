@@ -4,6 +4,7 @@ import { DEFAULT_KEY_POLICY, keyPolicyViolation, type KeyPolicy } from "../../ap
 import { approverIdentity } from "../../approvals/identity";
 import { and, asc, desc, eq, gt, isNull, lte } from "drizzle-orm";
 import type { Db } from "..";
+import { isUniqueViolation } from "../errors";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
 import { ulid } from "../ulid";
@@ -262,7 +263,7 @@ export function insertApprover(
     try {
       await h.orm.insert(s.approvers).values(row);
     } catch (e) {
-      if (String(e).includes("UNIQUE")) throw new ApprovalConflict("that key is already enrolled");
+      if (isUniqueViolation(e)) throw new ApprovalConflict("that key is already enrolled");
       throw e;
     }
     return row;
@@ -551,8 +552,7 @@ export function insertRecord(db: Db, orgId: string, r: NewRecord, now: number): 
         expiresAt: r.expiresAt,
       });
     } catch (e) {
-      if (String(e).includes("UNIQUE"))
-        throw new ApprovalConflict("this statement was already submitted");
+      if (isUniqueViolation(e)) throw new ApprovalConflict("this statement was already submitted");
       throw e;
     }
   });

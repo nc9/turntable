@@ -27,6 +27,7 @@ import { executeJob } from "../src/run/job-exec";
 import type { RunStore } from "../src/run/store";
 import { SecretRegistry } from "@longshore/redact";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
+import { onPostgres } from "./pg-mode";
 
 const FIXTURE = join(import.meta.dir, "../../act-runner/tests/fixtures");
 const T0 = 1_800_000_000_000;
@@ -279,87 +280,91 @@ test("after takeover the dead worker is fenced out of the log", async () => {
   ).toBeUndefined();
 });
 
-test("kill -9 the worker while the job runs, let the job finish, reboot: success with the full log", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "tt-kill9-attach-"));
-  const path = join(dir, "longshore.db");
-  try {
-    db = openDatabase(path);
-    const org = await createOrg(db, { slug: "k", name: "k" });
-    const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
-    scope = { orgId: org.id, projectId: project.id };
-    await bindRepo(db, scope, { forge: "github", owner: "acme", repo: "web" });
-    const q = await queued();
+test.skipIf(onPostgres)(
+  "kill -9 the worker while the job runs, let the job finish, reboot: success with the full log",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tt-kill9-attach-"));
+    const path = join(dir, "longshore.db");
+    try {
+      db = openDatabase(path);
+      const org = await createOrg(db, { slug: "k", name: "k" });
+      const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
+      scope = { orgId: org.id, projectId: project.id };
+      await bindRepo(db, scope, { forge: "github", owner: "acme", repo: "web" });
+      const q = await queued();
 
-    // the job runs in a sandbox that outlives the worker (a separate process tree)
-    const { sandboxId, execId } = await startJob("success.jsonl", "sleep 0.6");
-    const child = Bun.spawn(
-      [
-        "bun",
-        "run",
-        join(import.meta.dir, "helpers/kill9-attach-worker.ts"),
-        path,
-        "800",
+      // the job runs in a sandbox that outlives the worker (a separate process tree)
+      const { sandboxId, execId } = await startJob("success.jsonl", "sleep 0.6");
+      const child = Bun.spawn(
+        [
+          "bun",
+          "run",
+          join(import.meta.dir, "helpers/kill9-attach-worker.ts"),
+          path,
+          "800",
+          sandboxId,
+          execId,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = child.stdout.getReader();
+      let said = "";
+      const deadline = Date.now() + 15_000;
+      while (!said.includes("claimed") && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        said += new TextDecoder().decode(value);
+      }
+      expect(said).toContain(`claimed ${q.attempt.id}`);
+      expect((await listAttempts(db, scope, q.job.id))[0]).toMatchObject({
+        state: "running",
         sandboxId,
         execId,
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const reader = child.stdout.getReader();
-    let said = "";
-    const deadline = Date.now() + 15_000;
-    while (!said.includes("claimed") && Date.now() < deadline) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      said += new TextDecoder().decode(value);
-    }
-    expect(said).toContain(`claimed ${q.attempt.id}`);
-    expect((await listAttempts(db, scope, q.job.id))[0]).toMatchObject({
-      state: "running",
-      sandboxId,
-      execId,
-    });
-    expect(await logOf(q.attempt.id)).toBe("partial output from the dead worker\n");
+      });
+      expect(await logOf(q.attempt.id)).toBe("partial output from the dead worker\n");
 
-    child.kill("SIGKILL");
-    await child.exited;
-    await untilDone(sandboxId, execId); // the job finishes while no controller is alive
-    await Bun.sleep(900); // the lease lapses
+      child.kill("SIGKILL");
+      await child.exited;
+      await untilDone(sandboxId, execId); // the job finishes while no controller is alive
+      await Bun.sleep(900); // the lease lapses
 
-    // reboot: a new process opens the same database and reconciles on boot
-    db.close();
-    db = openDatabase(path);
-    const sched = new Scheduler({
-      db,
-      providers: () => provider,
-      runner: createActRunner({
+      // reboot: a new process opens the same database and reconciles on boot
+      db.close();
+      db = openDatabase(path);
+      const sched = new Scheduler({
         db,
-        source,
-        pollMs: 25,
-      }),
-      leaseMs: 60_000,
-    });
-    const report = await reconcileExpired(db, () => provider, {
-      owner: sched.owner,
-      leaseMs: 60_000,
-      adopt: (c, r) => sched.adopt(c, r),
-    });
-    expect(report.adopted).toHaveLength(1);
-    expect(report.adopted[0]?.probe).toBe("exec exited");
-    await sched.idle();
+        providers: () => provider,
+        runner: createActRunner({
+          db,
+          source,
+          pollMs: 25,
+        }),
+        leaseMs: 60_000,
+      });
+      const report = await reconcileExpired(db, () => provider, {
+        owner: sched.owner,
+        leaseMs: 60_000,
+        adopt: (c, r) => sched.adopt(c, r),
+      });
+      expect(report.adopted).toHaveLength(1);
+      expect(report.adopted[0]?.probe).toBe("exec exited");
+      await sched.idle();
 
-    expect((await listAttempts(db, scope, q.job.id))[0]).toMatchObject({
-      state: "success",
-      exitCode: 0,
-      leaseOwner: null,
-    });
-    expect((await getRun(db, scope, q.run.id))?.status).toBe("success");
-    const log = await logOf(q.attempt.id);
-    expect(log).not.toContain("partial output from the dead worker");
-    expect(log).toContain("✓ Set up job");
-    expect(log).toContain("job success");
-    expect((await listSteps(db, scope, q.attempt.id)).length).toBeGreaterThan(0);
-  } finally {
-    db?.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 40_000);
+      expect((await listAttempts(db, scope, q.job.id))[0]).toMatchObject({
+        state: "success",
+        exitCode: 0,
+        leaseOwner: null,
+      });
+      expect((await getRun(db, scope, q.run.id))?.status).toBe("success");
+      const log = await logOf(q.attempt.id);
+      expect(log).not.toContain("partial output from the dead worker");
+      expect(log).toContain("✓ Set up job");
+      expect(log).toContain("job success");
+      expect((await listSteps(db, scope, q.attempt.id)).length).toBeGreaterThan(0);
+    } finally {
+      db?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  40_000,
+);

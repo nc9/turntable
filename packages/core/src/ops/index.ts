@@ -16,6 +16,7 @@ import { cancel } from "./definitions/cancel";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
+import { instanceListOrgs, instanceWhoami, setQuotas } from "./definitions/instance";
 import { getQuotas } from "./definitions/quotas";
 import { createApiToken } from "./definitions/create-api-token";
 import { events } from "./definitions/events";
@@ -45,6 +46,15 @@ import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
 import { jobSteps } from "./definitions/job-steps";
 import { listRuns } from "./definitions/list-runs";
+import {
+  createWebhookOp,
+  disableWebhookOp,
+  enableWebhookOp,
+  webhookEndpointsOp,
+  rotateWebhookSecretOp,
+  webhookDeliveriesOp,
+} from "./definitions/webhooks";
+import { setOidcAudiencesOp } from "./definitions/oidc-audiences";
 import { createRegistry } from "./registry";
 
 export { authenticate, dispatch, type DispatchEnv, type DispatchResult } from "./dispatch";
@@ -78,6 +88,9 @@ export const registry = createRegistry([
   listArtifacts,
   checkArtifactConsumption,
   getQuotas,
+  instanceWhoami,
+  instanceListOrgs,
+  setQuotas,
   acceptActionMoveOp,
   setSecretOp,
   rotateSecretOp,
@@ -108,4 +121,11 @@ export const registry = createRegistry([
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  setOidcAudiencesOp,
+  createWebhookOp,
+  webhookEndpointsOp,
+  rotateWebhookSecretOp,
+  disableWebhookOp,
+  enableWebhookOp,
+  webhookDeliveriesOp,
 ]);

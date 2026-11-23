@@ -13,6 +13,8 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { getEnvPolicy, plannedEnvironment } from "./approvals";
+import { supersedeOlderRuns } from "./poll";
 import { effectiveStates } from "./readiness";
 import { type Scope, scoped } from "./scope";
 
@@ -35,6 +37,21 @@ export function parseTrust(run: {
     const t = JSON.parse(run.trust) as { class?: unknown; workflowHash?: unknown };
     return typeof t.class === "string" && typeof t.workflowHash === "string"
       ? { class: t.class, workflowHash: t.workflowHash }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The workflow's own concurrency group, from the plan the poller stored. */
+function realGroup(plan: string | null): { group: string; cancelInProgress: boolean } | undefined {
+  if (plan === null) return undefined;
+  try {
+    const c = (
+      JSON.parse(plan) as { concurrency?: { group?: unknown; cancelInProgress?: unknown } }
+    ).concurrency;
+    return typeof c?.group === "string" && c.group !== ""
+      ? { group: c.group, cancelInProgress: c.cancelInProgress === true }
       : undefined;
   } catch {
     return undefined;
@@ -69,12 +86,36 @@ export function approveRun(
       (j) => j.state === "awaiting_approval" && j.approvalKind === "untrusted_author",
     );
     if (jobs.length === 0) throw new ApproveError("no job of this run is waiting for approval");
+    let released = 0;
     for (const job of jobs) {
+      // A held run that is NOT untrusted (a release tag no ruleset protects) still has its
+      // environment's own gate to pass: approving the hold does not stand in for the quorum.
+      // The job stays waiting, now for the environment. (An untrusted run's jobs are released
+      // whole, as before.)
+      const environment = plannedEnvironment(job.planned);
+      if (
+        trust.class !== "untrusted_pr" &&
+        environment !== undefined &&
+        (await getEnvPolicy(tx, scope.orgId, environment)).gated
+      ) {
+        await tx.orm
+          .update(s.jobs)
+          .set({ approvalKind: "environment" })
+          .where(
+            scoped(
+              scope,
+              { orgId: s.jobs.orgId, projectId: s.jobs.projectId },
+              eq(s.jobs.id, job.id),
+            ),
+          );
+        continue;
+      }
       await transitionJob(tx, scope, job.id, "queued");
       const waiting = (await listAttempts(tx, scope, job.id)).findLast(
         (a) => a.state === "awaiting_approval",
       );
       if (waiting) await updateAttempt(tx, scope, waiting.id, { state: "queued" });
+      released += 1;
     }
     const approval: RunApproval = {
       by: input.by,
@@ -89,9 +130,27 @@ export function approveRun(
       .where(
         scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, runId)),
       );
+    // A held run waited in a group of its own, so that a run that may never start could not cancel
+    // or queue behind real work. Approved, it joins the workflow's real group.
+    if (run.concurrencyGroup?.startsWith("held:")) {
+      const real = realGroup(run.plan);
+      await tx.orm
+        .update(s.runs)
+        .set({ concurrencyGroup: real?.group ?? null })
+        .where(
+          scoped(scope, { orgId: s.runs.orgId, projectId: s.runs.projectId }, eq(s.runs.id, runId)),
+        );
+      // Older runs are cancelled only when jobs actually start now; one still waiting on its
+      // environment's own gate has taken no one's place yet.
+      if (real && released > 0) {
+        const joined = await getRun(tx, scope, runId);
+        if (joined)
+          await supersedeOlderRuns(tx, scope, joined, real.cancelInProgress ? "all" : "pending");
+      }
+    }
     const all = await listJobs(tx, scope, runId);
     const status = aggregateRunStatus(effectiveStates(all));
     await setRunStatus(tx, scope, runId, status);
-    return { released: jobs.length, approval, state: status };
+    return { released, approval, state: status };
   });
 }

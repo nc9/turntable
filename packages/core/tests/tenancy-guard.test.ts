@@ -15,7 +15,10 @@ import * as schema from "../src/db/schema";
  */
 const SRC = join(import.meta.dir, "../src");
 const ALLOWED_FILES = new Set([
-  "db/schema.ts", // defines the tables
+  "db/schema.ts", // selects the tables of the dialect
+  "db/schema.sqlite.ts", // defines the tables
+  "db/schema.pg.ts", // the same tables for Postgres (generated)
+  "db/migrations.pg.generated.ts", // data
   "db/migrations.generated.ts", // data
 ]);
 const ALLOWED_DIRS = ["db/repos/"];
