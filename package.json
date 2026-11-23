@@ -48,7 +48,7 @@
     "test:prereqs": "bun test packages/core/tests/release-prereqs.test.ts packages/core/tests/legacy-names.test.ts",
     "test:github": "bun test packages/core/tests/secrets.test.ts packages/core/tests/github-installations.test.ts packages/core/tests/github-webhook.test.ts packages/core/tests/github-app.test.ts packages/core/tests/github-serve.test.ts",
     "test:trust": "bun test packages/core/tests/trust.test.ts packages/core/tests/workflow-taint.test.ts",
-    "test:oidc": "bun test packages/core/tests/oidc.test.ts",
+    "test:oidc": "bun test packages/core/tests/oidc.test.ts packages/core/tests/job-oidc.test.ts packages/core/tests/job-oidc-runner.test.ts",
     "test:tenant": "bun test packages/core/tests/tenant-isolation.test.ts",
     "pg:test": "bun run scripts/run-tests-pg.ts",
     "test:pg-parity": "bun test packages/core/tests/pg-parity.test.ts",
