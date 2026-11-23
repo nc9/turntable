@@ -1,7 +1,7 @@
 // `longshore quotas show|set`: the instance operator's tool, on the host, against the data
 // directory (like `token`, `policy` and `approvals`). Quotas limit tenants, so they are not
-// settable over the API by the tenant's own tokens: only someone who can run this on the server
-// can change them. Reading them is `get_quotas` (REST and MCP, org-level reader token).
+// settable over the API by the tenant's own tokens: only someone who can run this on the server,
+// or hold an instance token (`set_quotas`, REST only), can change them. Reading them is `get_quotas` (REST and MCP, org-level reader token).
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";

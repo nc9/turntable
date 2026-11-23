@@ -10,6 +10,11 @@ export type OpRegistry = {
   /** Ops that take no token: the signed statement in the request is the credential. */
   signatureOps(): Op[];
   /**
+   * Ops only the instance administrator can call (an `lsi_` token over REST). No org token of any
+   * role reaches them, and they are not MCP tools.
+   */
+  instanceOps(): Op[];
+  /**
    * Ops worth listing for an agent: token ops that at least one token role can actually call. An
    * op that needs a role no token holds (create_api_token needs admin) can only be refused, so
    * listing it in the MCP tools or the OpenAPI document is noise and an invitation.
@@ -40,6 +45,7 @@ export function createRegistry(ops: readonly Op[]): OpRegistry {
     mcpOps: () => documented().filter((op) => op.mcp),
     get: (name) => byName.get(name),
     tokenOps: () => ops.filter((op) => op.auth.type === "token"),
+    instanceOps: () => ops.filter((op) => op.auth.type === "instance"),
     // Only signature ops that take a signed statement are routed and documented. Others (such
     // as sign_release, which only refuses) have no unauthenticated route.
     signatureOps: () =>
