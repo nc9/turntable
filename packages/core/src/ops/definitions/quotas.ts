@@ -13,7 +13,7 @@ const quotasShape = z.object({
   max_stored_bytes: limit.nullable(),
 });
 
-const view = z.object({
+export const quotaViewSchema = z.object({
   limits: quotasShape,
   usage: z.array(
     z.object({
@@ -32,7 +32,7 @@ const view = z.object({
   ),
 });
 
-async function build(
+export async function quotaView(
   ctx: { db: Parameters<typeof getOrgQuotas>[0]; now: () => number },
   orgId: string,
 ) {
@@ -58,12 +58,13 @@ export const getQuotas = defineOp({
     "attempts now, runs started in the last hour, sandbox minutes in the last 24 hours, stored " +
     "log bytes, stored artifact and cache bytes), the percent used, and for a limit that is reached the " +
     "reason new work is held. A held limit stops new claims; running attempts finish. Events " +
-    "(`infra.error` with `error_class` `quota_warning` at 80% and `quota_reached` at 100%) fire " +
+    "(`quota.warning` at 80% and `quota.reached` at 100%) fire " +
     "once per window. Read-only. Needs an org-level token (a project-scoped one is refused). " +
-    "Limits are set by the instance operator on the host (`longshore quotas set`), never over " +
-    "the API: a tenant must not be able to raise its own.",
+    "Limits are set by the instance operator, on the host (`longshore quotas set`) or with an " +
+    "instance token over REST (`set_quotas`), never by the org's own tokens: a tenant must not " +
+    "be able to raise its own.",
   input: z.object({}),
-  output: view,
+  output: quotaViewSchema,
   effect: "read",
   auth: { type: "token", minRole: "reader" },
   untrustedOutput: false,
@@ -74,6 +75,6 @@ export const getQuotas = defineOp({
     // request) is refused rather than answered with an org-wide figure.
     if (ctx.scope.projectId || (ctx.principal.kind === "token" && ctx.principal.projectId))
       throw new OpError("forbidden", "an org-level token is required to read quotas");
-    return build(ctx, ctx.scope.orgId);
+    return quotaView(ctx, ctx.scope.orgId);
   },
 });

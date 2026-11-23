@@ -24,15 +24,22 @@ afterEach(async () => {
 test("daytona is selectable and its options are validated strictly", () => {
   expect(createProvider("daytona", { apiKeyEnv: "X" }).info.name).toBe("daytona");
   expect(() => createProvider("daytona", { nope: 1 })).toThrow(/unknown daytona provider option/);
-  expect(() => createProvider("daytona", { maxLive: 4 })).toThrow(
-    /maxLive must be an integer from 1 to 3/,
+  expect(() => createProvider("daytona", { maxLive: 11 })).toThrow(
+    /maxLive must be an integer from 1 to 10/,
   );
+  expect(() => createProvider("daytona", { maxLive: 10 })).not.toThrow();
   expect(() => createProvider("daytona", { maxLive: 0 })).toThrow();
   expect(() => createProvider("daytona", { maxLive: "2" })).toThrow();
   expect(() => createProvider("daytona", { ttlSeconds: 3600 })).toThrow(/ttlSeconds/);
   // The org CPU check: true is the defaults, an object sets its parts, false turns that check off.
   for (const ok of [true, false, {}, { cpuLimit: 150, region: "eu", sandboxClass: "container" }]) {
     expect(() => createProvider("daytona", { ownerCiPreflight: ok })).not.toThrow();
+  }
+  for (const ok of ["org-usage", "own-fleet"]) {
+    expect(() => createProvider("daytona", { quotaMode: ok })).not.toThrow();
+  }
+  for (const bad of ["own", "", 1, true]) {
+    expect(() => createProvider("daytona", { quotaMode: bad })).toThrow(/quotaMode/);
   }
   for (const bad of [
     "yes",
@@ -166,6 +173,25 @@ test(
     expect(mock.usage.calls).toBe(before);
   },
 );
+
+test("the daytona fleet is config: validated when the provider is built, the default is longshore-dev", () => {
+  const key = { apiKeyEnv: "X" };
+  const fleetOf = (cfg: Record<string, unknown>) =>
+    (createProvider("daytona", { ...key, ...cfg }) as unknown as { fleet: { name: string } }).fleet
+      .name;
+  expect(fleetOf({})).toBe("longshore-dev");
+  expect(fleetOf({ fleet: "longshore-shadow" })).toBe("longshore-shadow");
+  for (const bad of [
+    "shadow",
+    "Longshore-shadow",
+    "longshore-",
+    "longshore-".padEnd(31, "a"),
+    "",
+  ]) {
+    expect(() => createProvider("daytona", { ...key, fleet: bad }), bad).toThrow();
+  }
+  expect(() => createProvider("daytona", { ...key, fleet: 5 })).toThrow(/fleet/);
+});
 
 test("daytona owner-CI labels are config, none by default, and the label wait needs them", () => {
   const key = { apiKeyEnv: "X" };

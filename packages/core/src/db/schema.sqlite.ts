@@ -40,6 +40,8 @@ export const EVENT_TYPES = [
   "attempt.cut",
   "approval.required",
   "infra.error",
+  "quota.warning",
+  "quota.reached",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -423,6 +425,26 @@ export const apiTokens = sqliteTable(
   ],
 );
 
+/**
+ * Instance-administrator tokens (#205). Not tenant-owned: no org_id, no role, no project. They
+ * hold no org grant at all; the one thing they can call is an `instance` op. Minted only by the
+ * host CLI (`longshore token create --instance`), stored as a hash, prefix `lsi_`.
+ */
+export const instanceTokens = sqliteTable(
+  "instance_tokens",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: integer("last_used_at", { mode: "number" }),
+    expiresAt: integer("expires_at", { mode: "number" }),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [unique("instance_tokens_hash_unique").on(t.tokenHash)],
+);
+
 /** Append-only record of write and destructive operations, including denied attempts. */
 export const auditLog = sqliteTable(
   "audit_log",
@@ -568,6 +590,33 @@ export const logCuts = sqliteTable(
       columns: [t.attemptId, t.orgId, t.projectId],
       foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
     }),
+  ],
+);
+
+/**
+ * System notices on an attempt's log: lines the control plane wants a reader to see next to the
+ * log (the cache dropped entries, a hold reason), recorded apart from the log text like cuts, so
+ * the job's output can never forge one. `at_offset` is the stored log length when it was added.
+ */
+export const logNotices = sqliteTable(
+  "log_notices",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    projectId: text("project_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    atOffset: integer("at_offset").notNull(),
+    /** Short machine-readable source, for example `cache`. */
+    source: text("source").notNull(),
+    text: text("text").notNull(),
+    createdAt: integer("created_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.attemptId, t.orgId, t.projectId],
+      foreignColumns: [jobAttempts.id, jobAttempts.orgId, jobAttempts.projectId],
+    }),
+    index("log_notices_attempt_idx").on(t.attemptId, t.atOffset),
   ],
 );
 

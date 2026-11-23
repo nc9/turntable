@@ -203,8 +203,7 @@ export function quotaStatuses(q: OrgQuotas, u: QuotaUsage): QuotaStatus[] {
 /**
  * Emits one event when a limit first crosses 80% and one when it is reached, per window (hourly
  * and daily metrics re-arm each window; byte gauges re-arm when they fall back under 80%). The
- * event is an `infra.error` with `error_class` `quota_warning` or `quota_reached`: the event type
- * list is a CHECK constraint, and changing it means a table rebuild migration.
+ * event is `quota.warning` or `quota.reached`, scoped to the org (no project, no run).
  */
 export async function emitQuotaNotices(
   db: Db,
@@ -247,9 +246,8 @@ export async function emitQuotaNotices(
           db,
           { orgId },
           {
-            type: "infra.error",
+            type: level === "warning" ? "quota.warning" : "quota.reached",
             payload: {
-              error_class: `quota_${level === "warning" ? "warning" : "reached"}`,
               metric: st.metric,
               used: st.used,
               limit: st.limit,

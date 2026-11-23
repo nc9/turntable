@@ -61,7 +61,7 @@ No token role reaches `admin`, so a token can never create tokens.
 | `failure_digest` | read | reader | Why a job (or a run's failed jobs) failed: the failing step and the first error, about 2 KiB, extracted and redacted. |
 | `checks_for_sha` | read | reader | `GREEN`, `PENDING`, `RED` or `NONE` for a commit. A queued run is `PENDING`, never `NONE`. |
 | `job_steps` | read | reader | The steps of a job attempt with results, timing and the log offset where each starts. |
-| `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap. |
+| `job_cuts` | read | reader | Where a job log had bytes omitted by the output cap, plus system notices (for example cache entries dropped). |
 | `events` | read | reader | The event feed from a cursor, with optional long-poll (`wait_ms`, up to 30 s). |
 | `ingest_status` | read | reader | What the GitHub poller is doing: per repo last poll, outcome, next poll, failures and runs created, plus the API rate-limit budget. |
 | `whoami` | read | reader | Who the credential is: kind, token name, role, org and project slugs, expiry. Call it first. |
@@ -158,7 +158,7 @@ Local access to the data directory is the trust root. The command writes through
 Agents learn what happened through an event feed, the `events` operation (`GET /api/v1/events`):
 
 - **Cursor.** Every event has a monotonic `cursor`. Pass the last one back as `after` (the response's `next_after`) and you resume exactly where you stopped. Start from `after=0` for everything, or `after=now` for the tip: no events, and `next_after` is the newest cursor.
-- **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required` and `infra.error`. Filter with `types` (a comma-separated list in a query string).
+- **Types.** `run.queued`, `run.started`, `run.finished`, `job.state_changed`, `attempt.step`, `attempt.cut`, `approval.required`, `infra.error`, `quota.warning` and `quota.reached`. `infra.error` is for real infrastructure faults (a sandbox that failed); the two `quota.*` types are an org's quota notices, at 80% and at 100% of a limit, once per window, with the `metric`, `used`, `limit` and `percent` in the payload. They belong to the org (no project, no run), so a token sees only its own org's, and a project-scoped token sees only events of its project, which never includes them. Filter with `types` (a comma-separated list in a query string).
 - **Long-poll.** With `wait_ms` (up to 30000) and nothing new, the call waits for an event instead of returning empty. Waiters are capped per org (20) and across the instance (100); beyond either cap a call returns at once, so fall back to polling. The per-org cap keeps one tenant from using every slot.
 - **Transactional.** An event is written in the same transaction as the change it describes, and waiters are woken only after commit. A rolled-back change leaves no event.
 - **Scope.** A token sees events for its org, or only its project when it is project-scoped.
@@ -181,11 +181,11 @@ Planned: delivery by SSE, and signed outbound webhooks that push events to a URL
 | `project:<slug>` | Events of one project. |
 | `run:<id>` | Events of one run, job and attempt changes included. |
 | `attempt:<id>:log` | Redacted log text from `from_offset`, plus the attempt's cuts. |
-| `attempt:<id>:steps` | The attempt's steps and cuts, re-sent in full when they change. |
+| `attempt:<id>:steps` | The attempt's steps, cuts and notices, re-sent in full when they change. |
 
 Omit `after` to start from now. With a cursor the server replays from the feed, then goes live, with no gap and no duplicate. Each subscribe is authorized by running the matching read operation (`events`, `get_run`, `job_log`, `job_steps`, `job_cuts`) as the token, so a socket can never read what REST would refuse.
 
-**Server messages.** `subscribed`, `event`, `log` (with `offset` and `bytes`, and `eof` on the last chunk of a finished attempt), `steps`, `cuts` and `error`. Steps and cuts are metadata delivered apart from the log text.
+**Server messages.** `subscribed`, `event`, `log` (with `offset` and `bytes`, and `eof` on the last chunk of a finished attempt), `steps`, `cuts` and `error`. Steps, cuts and notices are metadata delivered apart from the log text.
 
 **Limits and drops.** A client whose unsent data passes the buffer limit is closed with code 4408 and should resume from its last cursor and offset. Other close codes: 4401 token no longer valid, 4429 too many connections or subscriptions, 4400 protocol error, 4000 idle. Messages are text frames of at most 4 KiB. The web UI reconnects with backoff, resumes each topic, and falls back to polling when no socket can be opened.
 
@@ -251,7 +251,7 @@ A plugin manifest is in `claude-plugin/` for publishing the channel through a ma
 | `--token-file` | `LONGSHORE_TOKEN_FILE` | required, mode 0600 |
 | `--project a,b` | `LONGSHORE_CHANNEL_PROJECTS` | all projects the token sees |
 | `--branch main,release/*` | `LONGSHORE_CHANNEL_BRANCHES` | all branches. `*` is a glob. A run with no known branch never matches a branch filter. |
-| `--types` | `LONGSHORE_CHANNEL_TYPES` | `run.finished,approval.required` |
+| `--types` | `LONGSHORE_CHANNEL_TYPES` | `run.finished,approval.required` (add `quota.warning,quota.reached` for quota notices) |
 | `--conclusions` | `LONGSHORE_CHANNEL_CONCLUSIONS` | `failure,infra_error` (for `run.finished`) |
 | `--state-file` | `LONGSHORE_CHANNEL_STATE_FILE` | a file under `$XDG_STATE_HOME/longshore` |
 

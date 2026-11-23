@@ -10,6 +10,16 @@ import {
 } from "@longshore/provider-sdk";
 import { type ApiKeySource, readApiKey } from "./key";
 
+/** The key was refused (401 or 403). The status is kept so a caller can tell a missing permission from a bad key. */
+export class DaytonaKeyRejectedError extends InfraError {
+  readonly status: number;
+  constructor(status: number) {
+    super(`Daytona rejected the API key (${status}); check the configured key`);
+    this.name = "DaytonaKeyRejectedError";
+    this.status = status;
+  }
+}
+
 export const DEFAULT_BASE_URL = "https://app.daytona.io/api";
 
 /** Most we will buffer from any one response: API JSON (a page of 200 sandboxes is far smaller). */
@@ -109,9 +119,7 @@ export class DaytonaApi {
     const where = `${method} ${new URL(full).pathname}`;
     if (res.status === 404) throw new SandboxNotFoundError(`Daytona: not found (${where})`);
     if (res.status === 401 || res.status === 403) {
-      throw new InfraError(
-        `Daytona rejected the API key (${res.status}); check the configured key`,
-      );
+      throw new DaytonaKeyRejectedError(res.status);
     }
     if (res.status === 429) {
       throw new TransientInfraError(`Daytona rate limit (${where}); retry later`);

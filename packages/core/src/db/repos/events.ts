@@ -286,6 +286,80 @@ export function addCut(
   });
 }
 
+// ---- system notices ----
+
+export const MAX_NOTICES_PER_ATTEMPT = 50;
+const MAX_NOTICE_TEXT = 300;
+
+/**
+ * Adds a system notice to an attempt's log, out of band from the log text. Returns false when the
+ * attempt is not in scope or already has the most it may. The text is capped and stripped of
+ * control characters. Wakes the attempt's live log tails.
+ */
+export function addNotice(
+  db: Db,
+  scope: Scope,
+  input: { attemptId: string; source: string; text: string },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const { projectId } = requireProject(scope);
+    const [attempt] = await tx.orm
+      .select({ id: s.jobAttempts.id })
+      .from(s.jobAttempts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, input.attemptId),
+        ),
+      )
+      .limit(1);
+    if (!attempt) return false;
+    const [have] = await tx.orm
+      .select({ n: sql<number>`count(*)` })
+      .from(s.logNotices)
+      .where(eq(s.logNotices.attemptId, input.attemptId));
+    if (Number(have?.n ?? 0) >= MAX_NOTICES_PER_ATTEMPT) return false;
+    // Where the stored log ends now: a reader can place the notice in the stream.
+    const [end] = await tx.orm
+      .select({
+        n: sql<number>`coalesce(max(${s.logChunks.offset} + length(${s.logChunks.bytes})), 0)`,
+      })
+      .from(s.logChunks)
+      .where(eq(s.logChunks.attemptId, input.attemptId));
+    await tx.orm.insert(s.logNotices).values({
+      id: ulid(),
+      orgId: scope.orgId,
+      projectId,
+      attemptId: input.attemptId,
+      atOffset: Number(end?.n ?? 0),
+      source: input.source.slice(0, 40),
+      // eslint-disable-next-line no-control-regex
+      text: input.text.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, MAX_NOTICE_TEXT),
+    });
+    notifyLogAppended(tx, scope.orgId, input.attemptId);
+    return true;
+  });
+}
+
+export type LogNotice = typeof s.logNotices.$inferSelect;
+
+export function listNotices(db: Db, scope: Scope, attemptId: string): Promise<LogNotice[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.logNotices)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.logNotices.orgId, projectId: s.logNotices.projectId },
+          eq(s.logNotices.attemptId, attemptId),
+        ),
+      )
+      .orderBy(asc(s.logNotices.atOffset), asc(s.logNotices.id)),
+  );
+}
+
 export function listCuts(db: Db, scope: Scope, attemptId: string): Promise<LogCut[]> {
   return db.run((h) =>
     h.orm

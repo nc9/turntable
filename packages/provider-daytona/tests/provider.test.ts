@@ -365,6 +365,104 @@ describe("live cap and waiting", () => {
   });
 });
 
+describe("fleets: two instances in one account never touch each other", () => {
+  const A = "longshore-dev";
+  const B = "longshore-shadow";
+
+  test("a fleet's sandboxes carry its own label and name prefix, and nothing of the default's", async () => {
+    const p = make({ fleet: B, runId: "r1" });
+    const { id } = await p.create(spec({ labels: {} }));
+    const sent = created()[0]!.body as { name: string; labels: Record<string, string> };
+    expect(sent.name.startsWith("longshore-shadow-")).toBe(true);
+    expect(sent.labels).toEqual({ "longshore-shadow": "1", "longshore-run": "r1" });
+    expect(sent.labels["longshore-dev"]).toBeUndefined();
+    // its own label is the reserved one, not the default's
+    expect(() => p.buildCreateBody(spec({ labels: { "longshore-shadow": "0" } }))).toThrow(
+      SpecError,
+    );
+    await p.destroy(id);
+  });
+
+  test("fleet A never counts, lists, verifies or deletes fleet B's sandboxes, and the reverse", async () => {
+    const a = make({ fleet: A, maxLive: 1 });
+    const b = make({ fleet: B, maxLive: 1 });
+    const mineA = await a.create(spec({ name: "x", labels: { grp: "g" } }));
+    // B is not held up by A's live sandbox: separate budgets
+    const mineB = await b.create(spec({ name: "x", labels: { grp: "g" } }));
+    expect(await a.count({})).toBe(1);
+    expect(await b.count({})).toBe(1);
+    expect((await a.list({ labels: { grp: "g" } })).map((s) => s.id)).toEqual([mineA.id]);
+    expect((await b.list({ labels: { grp: "g" } })).map((s) => s.id)).toEqual([mineB.id]);
+    // refused by id even though the id is known
+    await expect(a.destroy(mineB.id)).rejects.toBeInstanceOf(SpecError);
+    await expect(b.destroy(mineA.id)).rejects.toBeInstanceOf(SpecError);
+    await expect(
+      a.exec.start(mineB.id, { argv: ["true"], timeoutSeconds: 5 }),
+    ).rejects.toBeInstanceOf(SpecError);
+    // a sweep by label reaches only its own fleet
+    expect(await a.destroyByLabels({ grp: "g" })).toBe(1);
+    expect(mock.sandboxes.has(mineB.id)).toBe(true);
+    expect(mock.sandboxes.has(mineA.id)).toBe(false);
+    expect(await b.destroyByLabels({ grp: "g" })).toBe(1);
+    expect(mock.sandboxes.has(mineB.id)).toBe(false);
+    // every list a fleet made named its own label and never the other's
+    const queries = mock.requests.filter((r) => r.method === "GET" && r.path === "/api/sandbox");
+    expect(queries.some((q) => q.query.includes("longshore-shadow"))).toBe(true);
+    expect(queries.some((q) => q.query.includes("longshore-dev"))).toBe(true);
+  });
+
+  test("a fleet whose name extends another's is not mistaken for it: both the label and the prefix must match", async () => {
+    const short = make({ fleet: "longshore-dev" });
+    const long = make({ fleet: "longshore-dev-2" });
+    const mineLong = await long.create(spec({ name: "x", labels: { grp: "g" } }));
+    // the long fleet's name starts with the short one's prefix, but it lacks the short label
+    expect(mock.sandboxes.get(mineLong.id)!.name.startsWith("longshore-dev-")).toBe(true);
+    expect(await short.count({})).toBe(0);
+    expect(await short.list({})).toEqual([]);
+    expect(await short.destroyByLabels({ grp: "g" })).toBe(0);
+    await expect(short.destroy(mineLong.id)).rejects.toBeInstanceOf(SpecError);
+    expect(mock.sandboxes.has(mineLong.id)).toBe(true);
+    await long.destroy(mineLong.id);
+  });
+
+  test("a sandbox with the default's name prefix but another fleet's label is not the default's", async () => {
+    const other = mock.addForeign("longshore-dev-sneaky", { "longshore-shadow": "1" });
+    const p = make();
+    expect(await p.count({})).toBe(0);
+    await expect(p.destroy(other)).rejects.toBeInstanceOf(SpecError);
+    expect(mock.sandboxes.has(other)).toBe(true);
+  });
+
+  test("the default is unchanged: no option means longshore-dev", async () => {
+    const p = make();
+    expect(p.fleet.name).toBe("longshore-dev");
+    const { id } = await p.create(spec({ labels: {} }));
+    const sent = created()[0]!.body as { name: string; labels: Record<string, string> };
+    expect(sent.name.startsWith("longshore-dev-")).toBe(true);
+    expect(sent.labels["longshore-dev"]).toBe("1");
+    await p.destroy(id);
+  });
+
+  test("a fleet name is validated: lower case, longshore- first, at most 30 characters", () => {
+    for (const bad of [
+      "shadow",
+      "Longshore-shadow",
+      "longshore-",
+      "longshore--x",
+      "longshore-x-",
+      "longshore-x y",
+      "longshore-é",
+      "other-longshore-x",
+      "longshore-".padEnd(31, "a"),
+      "",
+    ]) {
+      expect(() => make({ fleet: bad }), bad).toThrow(RangeError);
+    }
+    expect(make({ fleet: "longshore-".padEnd(30, "a") }).fleet.name).toHaveLength(30);
+    expect(make({ fleet: "longshore-shadow" }).fleet.name).toBe("longshore-shadow");
+  });
+});
+
 describe("only ever our own sandboxes", () => {
   test("list, count and destroyByLabels never see or delete a foreign sandbox", async () => {
     const theirs = mock.addForeign("acme-ci-1", { "acme-ci": "1", grp: "g" });
@@ -420,7 +518,7 @@ describe("only ever our own sandboxes", () => {
 });
 
 describe("eventually consistent listings", () => {
-  test("create returns only once the sandbox is listed; destroy only once it is gone from the listing", async () => {
+  test("counts are right at once despite a lagging listing", async () => {
     await mock.stop();
     mock = startMock({ listLagMs: 150 });
     const p = make({ maxLive: 2 });
@@ -429,6 +527,105 @@ describe("eventually consistent listings", () => {
     await p.destroy(a.id);
     expect(await p.count({ labels: { g: "1" } })).toBe(0); // and gone at once
     expect(await p.destroyByLabels({ g: "1" })).toBe(0);
+  });
+});
+
+describe("the own-fleet count comes from recorded ids, not from listings", () => {
+  const broken = async () => {
+    await mock.stop();
+    mock = startMock({ listBroken: true });
+  };
+
+  test("a listing that returns nothing for new sandboxes does not hide them from the count or the cap", async () => {
+    await broken();
+    const p = make({ maxLive: 1, capacityWaitMs: 60 });
+    expect(p.diagnose().counting).toEqual({ mode: "recorded-ids", tracked: 0 });
+    const a = await p.create(spec({ name: "a" }));
+    // The mock's label-filtered list is empty (as Daytona's was, even a minute later).
+    expect(
+      (
+        await fetch(`${mock.url}/sandbox?labels=${encodeURIComponent('{"longshore-dev":"1"}')}`, {
+          headers: { authorization: "Bearer test-key-not-a-secret" },
+        }).then((r) => r.json() as Promise<{ items: unknown[] }>)
+      ).items,
+    ).toEqual([]);
+    expect(await p.count({})).toBe(1);
+    expect(p.diagnose().counting).toEqual({ mode: "recorded-ids", tracked: 1 });
+    await expect(p.create(spec({ name: "b" }))).rejects.toThrow(/already 1 live sandboxes of ours/);
+    await p.destroy(a.id);
+    expect(await p.count({})).toBe(0);
+  });
+
+  test("a listing that still shows a deleted sandbox as started does not count it", async () => {
+    await broken();
+    const p = make({ maxLive: 1 });
+    const a = await p.create(spec({ name: "a" }));
+    await p.destroy(a.id);
+    const stale = await fetch(`${mock.url}/sandbox`, {
+      headers: { authorization: "Bearer test-key-not-a-secret" },
+    }).then((r) => r.json() as Promise<{ items: { id: string; state: string }[] }>);
+    expect(stale.items.map((s) => [s.id, s.state])).toEqual([[a.id, "started"]]); // the lie
+    expect(await p.count({})).toBe(0);
+    const b = await p.create(spec({ name: "b" })); // the cap is free again
+    await p.destroy(b.id);
+  });
+
+  test("an id the get says is gone leaves the set, so a crashed worker's sandbox stops counting", async () => {
+    await broken();
+    const p = make({ maxLive: 1 });
+    const a = await p.create(spec({ name: "a" }));
+    mock.sandboxes.delete(a.id); // gone behind our back (its own ttl)
+    expect(await p.count({})).toBe(0);
+    expect(p.diagnose().counting.tracked).toBe(0);
+  });
+
+  test("a boot with a recorded live sandbox adopts it, counts it, and cleans it up", async () => {
+    await broken();
+    const before = make({ maxLive: 1 });
+    const a = await before.create(spec({ name: "a" }));
+    // The process restarts: a fresh provider knows nothing, and the listing cannot tell it.
+    const after = make({ maxLive: 1, capacityWaitMs: 60 });
+    expect(await after.count({})).toBe(0);
+    after.adopt([a.id, "not a valid id!", "x".repeat(300)]);
+    expect(after.diagnose().counting.tracked).toBe(1);
+    expect(await after.count({})).toBe(1);
+    await expect(after.create(spec({ name: "b" }))).rejects.toThrow(/max 1/);
+    await after.destroy(a.id);
+    expect(mock.sandboxes.size).toBe(0);
+    expect(await after.count({})).toBe(0);
+  });
+
+  test("adopting an id that is not ours, or a stranger's, never acts on it", async () => {
+    await broken();
+    const foreign = mock.addForeign("someone-elses", { project: "other" });
+    const p = make({ maxLive: 1 });
+    p.adopt([foreign, "no-such-sandbox"]);
+    expect(await p.count({})).toBe(0); // not ours: dropped, not counted
+    expect(p.diagnose().counting.tracked).toBe(0);
+    expect(mock.sandboxes.has(foreign)).toBe(true);
+    expect(mock.requests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  test("destroyByLabels works from the recorded ids when the listing is blind", async () => {
+    await broken();
+    const p = make({ maxLive: 3 });
+    await p.create(spec({ name: "a", labels: { g: "1" } }));
+    await p.create(spec({ name: "b", labels: { g: "1" } }));
+    await p.create(spec({ name: "c", labels: { g: "2" } }));
+    expect(await p.destroyByLabels({ g: "1" })).toBe(2);
+    expect(await p.count({})).toBe(1);
+    expect(mock.sandboxes.size).toBe(1);
+    await p.destroyByLabels({ g: "2" });
+    expect(mock.sandboxes.size).toBe(0);
+  });
+
+  test("a failing listing never fails a count: the recorded ids carry it", async () => {
+    const p = make({ maxLive: 2 });
+    const a = await p.create(spec({ name: "a" }));
+    mock.setHugeList(true);
+    expect(await p.count({})).toBe(1);
+    mock.setHugeList(false);
+    await p.destroy(a.id);
   });
 });
 
@@ -550,7 +747,8 @@ describe("api key and errors", () => {
     const p = make({ fetch: counter.fetch });
     mock.setHugeList(true);
     const before = counter.read.bytes;
-    const err = await p.count({}).catch((e: unknown) => e);
+    // The healthcheck reads the listing strictly; count() only uses it as a best-effort extra.
+    const err = await p.healthcheck().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(InfraError);
     // stopped at the first chunk that crossed the 16 MiB cap
     const got = counter.read.bytes - before;
@@ -926,6 +1124,61 @@ describe("the org-wide CPU check before a create", () => {
     // The operator opts out explicitly.
     const off = make({ ownerCiPreflight: false });
     await off.destroy((await off.create(spec())).id);
+  });
+
+  test("403 on the usage read (a customer-scoped key) falls back to the own-fleet budget, logged once", async () => {
+    primed();
+    mock.usage.status = 403;
+    const logs: string[] = [];
+    const p = make({ log: (m) => logs.push(m) });
+    expect(p.diagnose().quotaMode).toBe("org-usage");
+    await p.destroy((await p.create(spec())).id);
+    await p.destroy((await p.create(spec())).id);
+    expect(logs.filter((m) => m.includes("own-fleet budget mode"))).toHaveLength(1);
+    expect(logs.find((m) => m.includes("own-fleet"))).toContain("org usage forbidden (403)");
+    expect(usageReads()).toBe(1); // not asked again once refused
+    expect(p.diagnose()).toMatchObject({
+      quotaMode: "own-fleet",
+      reason: "org usage forbidden (403)",
+    });
+  });
+
+  test("only 403 falls back: 401, 404, 5xx and an unreadable body still refuse the create", async () => {
+    primed();
+    for (const status of [401, 404, 500, 503]) {
+      mock.usage.status = status;
+      await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    }
+    mock.usage.status = 200;
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container" }];
+    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(0);
+  });
+
+  test("own-fleet mode waits at maxLive and never reads the org usage", async () => {
+    primed();
+    mock.usage.rows = [row(999)]; // would block org-usage mode; irrelevant here
+    const p = make({ quotaMode: "own-fleet", maxLive: 1, capacityWaitMs: 80 });
+    expect(p.diagnose()).toMatchObject({
+      quotaMode: "own-fleet",
+      reason: "configured",
+      maxLive: 1,
+    });
+    const first = await p.create(spec());
+    await expect(p.create(spec())).rejects.toThrow(/already 1 live sandboxes of ours \(max 1\)/);
+    await p.destroy(first.id);
+    await p.destroy((await p.create(spec())).id);
+    expect(usageReads()).toBe(0);
+  });
+
+  test("a 403 fallback still holds the cap on our own fleet", async () => {
+    primed();
+    mock.usage.status = 403;
+    const p = make({ maxLive: 1, capacityWaitMs: 80 });
+    await p.create(spec());
+    await expect(p.create(spec())).rejects.toThrow(/max 1/);
   });
 
   test("an empty account skips the check, says so, and learns the org id from the sandbox it creates", async () => {
