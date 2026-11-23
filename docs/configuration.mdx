@@ -144,7 +144,7 @@ A setting has one effective value, resolved in this order, first match wins:
 3. The database, set with `instance_set_setting` or `set_setting`.
 4. The default.
 
-A value from the environment or from `turntable.toml` is locked: the set operations refuse it and name where it was set. The `get` and `list` operations return the value, its source (`env`, `toml`, `db` or `default`) and its lock. A setting that raises a limit or widens what a run may do is not changeable over MCP.
+A value from the environment or from `turntable.toml` is locked: the set operations refuse it and name where it was set. The `get` and `list` operations return the value, its source (`env`, `toml`, `db` or `default`) and its lock. A setting that raises a limit or widens what a run may do is not changeable over MCP. An org or project setting flagged `instanceAdminOnly` (the Role column shows it) can be changed by the instance administrator only: `set_setting` refuses every org token, whatever its role, with "only the instance administrator can change <key>", and `instance_set_setting` sets it with `target_org` and, for a project setting, `target_project`. `set_project_settings` and `turntable policy set` are thin aliases with the same rules.
 
 `turntable.toml` has the instance settings at the top level, then `[orgs.<slug>]` and `[orgs.<slug>.projects.<slug>]` sections for org and project settings. An unknown key or a bad value stops the boot, naming the key and the file. The file is optional: with none, the compiled binary boots from an empty directory.
 
@@ -160,7 +160,7 @@ Only some settings are on the registry so far; the rest are still read straight 
 | Key | Scope | Type | Default | Role | MCP | Environment | TOML | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `backup_keep` | instance | whole number, 1 to 10000 | `10` | instance_admin | no: instance settings are changed by the instance administrator, never by an agent | `TURNTABLE_BACKUP_KEEP` | `[backup] keep` | How many backups to keep under `<data-dir>/backups`, newest first. |
-| `untrusted_run_approval` | project | one of "human", "no_agents", "any" | `"no_agents"` | instance_admin | no: it decides whether agents may approve runs, so only a person changes it | none | `orgs.<slug>.projects.<slug>.untrusted_run_approval` | Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`. |
+| `untrusted_run_approval` | project | one of "human", "no_agents", "any" | `"no_agents"` | instance_admin (`instanceAdminOnly`) | no: it decides whether agents may approve runs, so only a person changes it | none | `orgs.<slug>.projects.<slug>.untrusted_run_approval` | Who may approve a run held for an untrusted author: `human` (an enrolled approver's signature only; not selectable yet), `no_agents` (not over MCP, not with an agent token) or `any`. |
 
 {/* settings:end */}
 

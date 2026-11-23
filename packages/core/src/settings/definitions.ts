@@ -30,9 +30,9 @@ export const untrustedRunApprovalSetting = defineSetting({
   type: z.enum(UNTRUSTED_RUN_APPROVALS),
   default: "no_agents",
   // Today's rule: every change is the instance administrator's, so no org token may set it.
-  // `role` is the ladder's top; `operatorOnly` is what enforces it.
+  // `role` is the ladder's top; `instanceAdminOnly` is what enforces it.
   role: "owner",
-  operatorOnly: true,
+  instanceAdminOnly: true,
   // Raising it to `any` lets agents approve: a value in an agent's context is not a human decision.
   mcpEditable: false,
   mcpReason: "it decides whether agents may approve runs, so only a person changes it",

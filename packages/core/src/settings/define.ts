@@ -29,7 +29,7 @@ export type SettingSpec<T> = {
    * `set_setting` refuses every org token and the instance op that aliases the setting is the
    * way in. For settings that widen what a tenant's runs may do.
    */
-  operatorOnly?: boolean;
+  instanceAdminOnly?: boolean;
   /**
    * Whether `set_setting` may change it over MCP. False for anything that raises a limit or
    * widens what a run may do: a value in an agent's context is not a human decision (#188).

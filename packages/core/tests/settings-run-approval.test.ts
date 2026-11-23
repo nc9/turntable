@@ -85,13 +85,13 @@ async function held(tenant: Tenant) {
 }
 
 describe("the definition", () => {
-  test("is a project setting, MCP may not edit it, only the operator may, and has no env var", () => {
+  test("is a project setting, MCP may not edit it, only the instance administrator may, and has no env var", () => {
     const d = settingsRegistry.get(KEY)!;
     expect(d).toMatchObject({
       scope: "project",
       default: "no_agents",
       mcpEditable: false,
-      operatorOnly: true,
+      instanceAdminOnly: true,
       env: [],
       toml: "untrusted_run_approval",
     });
@@ -203,7 +203,70 @@ describe("a toml lock refuses every way in, naming the file", () => {
 describe("the same refusals on every path", () => {
   test("set_setting by an org token is refused: only the instance administrator raises it", async () => {
     const r = await asToken(rt(), "set_setting", { key: KEY, value: "any" });
-    expect(!r.ok && r.error.message).toMatch(/instance administrator/);
+    expect(!r.ok && r.error.message).toBe(`only the instance administrator can change ${KEY}`);
+  });
+
+  test("set_setting refuses an admin token of the project's own org, and the lock is reported first", async () => {
+    const { secret } = await mintToken(db, a.scope, "release_operator", { kind: "person" });
+    const env = { registry, db, settings: rt() } as DispatchEnv;
+    const r = await dispatch(env, { kind: "bearer", token: secret }, "set_setting", {
+      key: KEY,
+      value: "any",
+    });
+    expect(!r.ok && r.error.message).toMatch(/only the instance administrator/);
+    const locked = await dispatch(
+      { ...env, settings: lock("no_agents", "org-a", a.projectSlug) },
+      { kind: "bearer", token: secret },
+      "set_setting",
+      { key: KEY, value: "any" },
+    );
+    expect(!locked.ok && locked.error.message).toMatch(/locked/);
+  });
+
+  test("instance_set_setting sets it on a project of org A with target_org and target_project", async () => {
+    const r = await dispatch(
+      { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
+      { kind: "bearer", token: instanceSecret },
+      "instance_set_setting",
+      { key: KEY, value: "any", target_org: "org-a", target_project: a.projectSlug },
+    );
+    expect(r.ok).toBe(true);
+    expect(
+      await resolveSetting(rt(), db, KEY, { orgId: a.orgId, projectId: a.projectId }),
+    ).toMatchObject({ value: "any", source: "db" });
+    // org B's project is untouched
+    expect(
+      await resolveSetting(rt(), db, KEY, { orgId: b.orgId, projectId: b.projectId }),
+    ).toMatchObject({ value: "no_agents", source: "default" });
+    const missing = await dispatch(
+      { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
+      { kind: "bearer", token: instanceSecret },
+      "instance_set_setting",
+      { key: KEY, value: "any", target_org: "org-a" },
+    );
+    expect(!missing.ok && missing.error.message).toMatch(/target_project/);
+  });
+
+  test("instance_set_setting is not reachable by org A's admin token or over MCP", async () => {
+    const { secret } = await mintToken(db, a.scope, "release_operator", { kind: "person" });
+    const input = { key: KEY, value: "any", target_org: "org-a", target_project: a.projectSlug };
+    const viaOrg = await dispatch(
+      { registry, db, settings: rt(), allowInstance: true } as DispatchEnv,
+      { kind: "bearer", token: secret },
+      "instance_set_setting",
+      input,
+    );
+    expect(viaOrg.ok).toBe(false);
+    const viaMcp = await dispatch(
+      { registry, db, settings: rt(), allowInstance: true, viaMcp: true } as DispatchEnv,
+      { kind: "bearer", token: instanceSecret },
+      "instance_set_setting",
+      input,
+    );
+    expect(viaMcp.ok).toBe(false);
+    expect(
+      (await resolveSetting(rt(), db, KEY, { orgId: a.orgId, projectId: a.projectId })).source,
+    ).toBe("default");
   });
 
   test("set_setting over MCP is refused with the reason", async () => {

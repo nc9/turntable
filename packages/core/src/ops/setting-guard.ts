@@ -43,8 +43,8 @@ export async function guardSettingChange(
   }
   const p = caller.principal;
   if (p && p.kind !== "instance") {
-    if (def.operatorOnly) {
-      throw new OpError("forbidden", `changing ${def.key} requires the instance administrator`);
+    if (def.instanceAdminOnly) {
+      throw new OpError("forbidden", `only the instance administrator can change ${def.key}`);
     }
     if (def.scope !== "instance" && !roleSatisfies(p.role, def.role as never)) {
       throw new OpError("forbidden", `changing ${def.key} requires role ${def.role}`);

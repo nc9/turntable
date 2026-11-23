@@ -58,7 +58,9 @@ describe("configuration reference", () => {
       const row = doc.split("\n").find((l) => l.startsWith(`| \`${d.key}\` |`));
       expect(row, `no row for setting ${d.key}`).toBeDefined();
       expect(row).toContain(`| ${d.scope} |`);
-      expect(row).toContain(`| ${d.operatorOnly ? "instance_admin" : d.role} |`);
+      expect(row).toContain(
+        d.instanceAdminOnly ? "| instance_admin (`instanceAdminOnly`) |" : `| ${d.role} |`,
+      );
       expect(row).toContain(d.mcpEditable ? "| yes |" : "| no: ");
       for (const e of d.env) expect(row).toContain(`\`${e}\``);
       expect(row).toContain(d.toml.split(".").at(-1)!);

@@ -6,7 +6,13 @@
 // is locked: the set refuses and says where it was set. Secrets are never settings.
 import { z } from "zod";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
-import { appendAudit, getOrgById, getProject } from "../../db/repos";
+import {
+  appendAudit,
+  getOrgById,
+  getOrgBySlug,
+  getProject,
+  getProjectBySlug,
+} from "../../db/repos";
 import { putStoredSetting } from "../../db/repos/settings";
 import type { SettingScope } from "../../db/schema";
 import type { SettingDef } from "../../settings/define";
@@ -55,7 +61,7 @@ function view(def: SettingDef, r: Resolved, showFile: boolean): SettingView {
       : r.source === "env" || showFile
         ? (r.origin ?? r.source)
         : r.source,
-    role: def.operatorOnly ? "instance_admin" : def.role,
+    role: def.instanceAdminOnly ? "instance_admin" : def.role,
     mcp_editable: def.mcpEditable,
   };
 }
@@ -70,6 +76,26 @@ async function subjectOf(ctx: OpContext, def: SettingDef): Promise<SettingSubjec
     throw new OpError("invalid_input", `${def.key} is a project setting: a project is required`);
   }
   const project = await getProject(ctx.db, { orgId: org.id }, ctx.scope.projectId);
+  if (!project) throw new OpError("not_found", "no such project");
+  return { orgId: org.id, orgSlug: org.slug, projectId: project.id, projectSlug: project.slug };
+}
+
+/** The org or project an instance administrator names for an org or project setting. */
+async function targetSubject(
+  ctx: OpContext,
+  def: SettingDef,
+  t: { org: string; project?: string | undefined },
+): Promise<SettingSubject> {
+  const org = await getOrgBySlug(ctx.db, t.org);
+  if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+  if (def.scope === "org") return { orgId: org.id, orgSlug: org.slug };
+  if (!t.project) {
+    throw new OpError(
+      "invalid_input",
+      `${def.key} is a project setting: target_project is required`,
+    );
+  }
+  const project = await getProjectBySlug(ctx.db, { orgId: org.id }, t.project);
   if (!project) throw new OpError("not_found", "no such project");
   return { orgId: org.id, orgSlug: org.slug, projectId: project.id, projectSlug: project.slug };
 }
@@ -98,9 +124,10 @@ async function setSetting(
   def: SettingDef,
   i: { value?: unknown; unset?: boolean | undefined },
   showFile: boolean,
+  target?: { org: string; project?: string | undefined },
 ): Promise<SettingView> {
   const rt = runtimeOf(ctx);
-  const subject = await subjectOf(ctx, def);
+  const subject = target ? await targetSubject(ctx, def, target) : await subjectOf(ctx, def);
   const { before, next } = await guardSettingChange(
     rt,
     ctx.db,
@@ -120,14 +147,23 @@ async function setSetting(
   const after = await resolveSetting(rt, ctx.db, def.key, subject);
   // The old and new effective values, in the chain of the scope it changed. Never a secret: no
   // setting can be one.
-  await appendAudit(ctx.db, ctx.scope, {
+  const entry = {
     principalKind: ctx.principal.kind,
     principalId: ctx.principal.id,
     op: "setting_changed",
     effect: "write",
     outcome: "ok",
     input: { key: def.key, from: before.value, to: after.value, source: after.source },
-  });
+  } as const;
+  await appendAudit(ctx.db, ctx.scope, entry);
+  // An instance administrator changing a tenant's setting: the tenant's own chain shows it too.
+  if (target && subject.orgId) {
+    await appendAudit(
+      ctx.db,
+      { orgId: subject.orgId, ...(subject.projectId ? { projectId: subject.projectId } : {}) },
+      entry,
+    );
+  }
   return view(def, after, showFile);
 }
 
@@ -220,6 +256,21 @@ export const setSettingOp = defineOp({
   },
 });
 
+const instanceSetInput = setInput.extend({
+  target_org: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe("Slug of the org, for an org or project setting."),
+  target_project: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe("Slug of the project, for a project setting."),
+});
+
 export const instanceGetSettingOp = defineOp({
   name: "instance_get_setting",
   summary: "One instance setting: effective value, source and lock.",
@@ -270,8 +321,11 @@ export const instanceSetSettingOp = defineOp({
     "the environment or turntable.toml sets it (the error says which): change it there. The " +
     "old and new values are audited in the system org's chain. Only the instance administrator " +
     "can call it. Not an MCP tool: instance settings are the operator's, and a value in an " +
-    "agent's context is not an operator's decision.",
-  input: setInput,
+    "agent's context is not an operator's decision. An org or project setting that only the " +
+    "instance administrator may change (`instance_admin` role in `list_settings`, such as " +
+    "`untrusted_run_approval`) is set here with `target_org` and, for a project setting, " +
+    "`target_project`; the change is audited in the system org's chain and the target's.",
+  input: instanceSetInput,
   output: settingView,
   effect: "write",
   auth: { type: "instance", minRole: "admin" },
@@ -280,6 +334,16 @@ export const instanceSetSettingOp = defineOp({
   http: { method: "POST", path: "/instance/settings" },
   mcp: false,
   async handler(ctx, i) {
+    const def = runtimeOf(ctx).registry.get(i.key);
+    if (def && def.scope !== "instance" && def.instanceAdminOnly) {
+      if (!i.target_org) {
+        throw new OpError(
+          "invalid_input",
+          `${i.key} is an ${def.scope} setting: target_org is required`,
+        );
+      }
+      return setSetting(ctx, def, i, true, { org: i.target_org, project: i.target_project });
+    }
     return setSetting(ctx, lookup(ctx, i.key, ["instance"]), i, true);
   },
 });
