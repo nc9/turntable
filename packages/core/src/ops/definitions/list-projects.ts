@@ -19,6 +19,10 @@ export const listProjects = defineOp({
         id: z.string(),
         slug: z.string(),
         name: z.string(),
+        oidc_audiences: z
+          .array(z.string())
+          .nullable()
+          .describe("The OIDC audiences its jobs may mint for; null means any audience."),
         repos: z.array(z.object({ forge: z.string(), owner: z.string(), repo: z.string() })),
       }),
     ),
@@ -37,7 +41,7 @@ export const listProjects = defineOp({
     const page = rows.slice(0, input.limit);
     const last = page.at(-1);
     return {
-      projects: page,
+      projects: page.map(({ oidcAudiences, ...p }) => ({ ...p, oidc_audiences: oidcAudiences })),
       next_cursor: rows.length > input.limit && last ? encodeCursorRaw(last.id) : null,
     };
   },

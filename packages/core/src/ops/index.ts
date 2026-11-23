@@ -54,6 +54,7 @@ import {
   rotateWebhookSecretOp,
   webhookDeliveriesOp,
 } from "./definitions/webhooks";
+import { setOidcAudiencesOp } from "./definitions/oidc-audiences";
 import { createRegistry } from "./registry";
 
 export { authenticate, dispatch, type DispatchEnv, type DispatchResult } from "./dispatch";
@@ -120,6 +121,7 @@ export const registry = createRegistry([
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  setOidcAudiencesOp,
   createWebhookOp,
   webhookEndpointsOp,
   rotateWebhookSecretOp,

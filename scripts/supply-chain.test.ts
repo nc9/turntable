@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { addedPackages, checkAges, parseAllowlist, type PublishedAt } from "./dep-age";
+import {
+  addedPackages,
+  checkAges,
+  fetchBaseLock,
+  parseAllowlist,
+  type PublishedAt,
+} from "./dep-age";
 import { parseLock, resolveDep } from "./lockfile";
 import {
   groupCommits,
@@ -219,5 +225,32 @@ describe("release notes", () => {
     expect(files.length).toBeGreaterThan(0);
     expect(files.every((f) => /^\d{4}_.+\.sql$/.test(f))).toBe(true);
     expect(files).toEqual(files.toSorted());
+  });
+});
+
+describe("dep-age base lockfile by sha", () => {
+  const SHA = "a".repeat(40);
+  test("fetches raw.githubusercontent.com/<repo>/<sha>/bun.lock", async () => {
+    let url = "";
+    const text = await fetchBaseLock("acme/web", SHA, (async (u: string) => {
+      url = u;
+      return new Response("LOCKTEXT");
+    }) as never);
+    expect(text).toBe("LOCKTEXT");
+    expect(url).toBe(`https://raw.githubusercontent.com/acme/web/${SHA}/bun.lock`);
+  });
+  test("anything but a 200 is an error, never an empty base", async () => {
+    await expect(
+      fetchBaseLock("acme/web", SHA, (async () => new Response("no", { status: 404 })) as never),
+    ).rejects.toThrow(/HTTP 404/);
+  });
+  test("a repo or sha that is not what it should be is refused before any request", async () => {
+    const never = (async () => {
+      throw new Error("must not fetch");
+    }) as never;
+    await expect(fetchBaseLock("acme", SHA, never)).rejects.toThrow(/owner\/name/);
+    await expect(fetchBaseLock("../x/y", SHA, never)).rejects.toThrow(/owner\/name/);
+    await expect(fetchBaseLock("acme/web", "main", never)).rejects.toThrow(/40-character/);
+    await expect(fetchBaseLock("acme/web", `${SHA}/../x`, never)).rejects.toThrow(/40-character/);
   });
 });

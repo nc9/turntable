@@ -149,6 +149,12 @@ export const projects = sqliteTable(
      * Default 0: a release job restores nothing (it consumes nothing a lower class could write).
      */
     cacheReleaseRestore: integer("cache_release_restore").notNull().default(0),
+    /**
+     * The audiences a job of this project may ask the org's OIDC issuer for (JSON array text).
+     * Null (default): any audience, as before. Set, a mint for another audience is refused and
+     * audited.
+     */
+    oidcAudiences: text("oidc_audiences"),
     createdAt: createdAt(),
   },
   (t) => [

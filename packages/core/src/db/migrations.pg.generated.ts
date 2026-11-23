@@ -164,5 +164,12 @@ export const migrations: Migration[] = [
       "CREATE INDEX \"outbound_webhook_endpoints_org_idx\" ON \"outbound_webhook_endpoints\" USING btree (\"org_id\",\"state\");",
       "ALTER TABLE \"events\" ADD CONSTRAINT \"events_type_check\" CHECK (type IN ('run.queued', 'run.started', 'run.finished', 'job.state_changed', 'attempt.step', 'attempt.cut', 'approval.required', 'infra.error', 'quota.warning', 'quota.reached', 'webhook.disabled'));"
     ]
+  },
+  {
+    "tag": "0005_oidc_audiences",
+    "when": 1795401790162,
+    "statements": [
+      "ALTER TABLE \"projects\" ADD COLUMN \"oidc_audiences\" text;"
+    ]
   }
 ];

@@ -3005,6 +3005,20 @@
                           "name": {
                             "type": "string"
                           },
+                          "oidc_audiences": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The OIDC audiences its jobs may mint for; null means any audience."
+                          },
                           "repos": {
                             "type": "array",
                             "items": {
@@ -3033,6 +3047,7 @@
                           "id",
                           "slug",
                           "name",
+                          "oidc_audiences",
                           "repos"
                         ],
                         "additionalProperties": false
