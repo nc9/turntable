@@ -9,3 +9,4 @@ packages/core/tests/settings-run-approval.test.ts
 packages/core/tests/settings-approval-policy.test.ts
 packages/core/tests/untrusted-run-human-approval.test.ts
 packages/core/tests/human-needs-approver.test.ts
+packages/core/tests/anchor-cutover-row-guard.test.ts
