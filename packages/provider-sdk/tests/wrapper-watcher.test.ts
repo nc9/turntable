@@ -39,6 +39,24 @@ const processes = (): string[] =>
     .split("\n")
     .map((l) => l.trim());
 
+/** Every process with pid, parent, group, state and age, for saying WHO survived. */
+const detailed = (): string[] =>
+  Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid=,pgid=,stat=,etime=,command="])
+    .stdout.toString()
+    .split("\n")
+    .map((l) => l.trim());
+
+/** Waits up to `ms` for `pick(detailed())` to be empty; returns what was still there. */
+async function gone(pick: (lines: string[]) => string[], ms: number): Promise<string[]> {
+  const end = Date.now() + ms;
+  let left = pick(detailed());
+  while (left.length > 0 && Date.now() < end) {
+    await Bun.sleep(100);
+    left = pick(detailed());
+  }
+  return left;
+}
+
 describe.each(SHELLS)("the timeout watcher under %s", (shell) => {
   test("a command past its timeout is stopped, marked timedout, and the exec ends", async () => {
     const t0 = Date.now();
@@ -69,12 +87,33 @@ describe.each(SHELLS)("the timeout watcher under %s", (shell) => {
       const d = await runExec(shell, "true", base + i);
       expect(existsSync(join(d, "timedout"))).toBe(false);
     }
-    // Give a process that was just signalled a moment to be reaped.
-    await Bun.sleep(300);
-    const left = processes().filter(
-      (l) => /^sleep \d+$/.test(l) && Number(l.slice(6)) >= base && Number(l.slice(6)) < base + N,
-    );
-    for (const l of left) Bun.spawnSync(["pkill", "-x", "-f", l]); // do not leak from a failing test
+    // The watcher holds no long sleep, so nothing carrying one of our timeouts may remain.
+    const ours = (lines: string[]): string[] =>
+      lines.filter((l) => {
+        const m = /\bsleep (\d+)$/.exec(l);
+        return m !== null && Number(m[1]) >= base && Number(m[1]) < base + N;
+      });
+    const left = await gone(ours, 3000);
+    if (left.length > 0)
+      console.log(`${shell}: survivors (pid ppid pgid stat etime command):`, left);
+    for (const l of left) Bun.spawnSync(["pkill", "-f", `${l.split(/\s+/).slice(5).join(" ")}$`]);
     expect(left).toEqual([]);
   }, 60_000);
+
+  test("a watcher whose command ran a while before finishing is gone too, and takes no sleep with it", async () => {
+    // The command outlives the watcher's first second, so the watcher is certainly inside its
+    // wait when the exec ends. Under dash without a terminal (no job control) the old watcher was
+    // in the wrapper's own process group, nothing could signal its group, and the sleep it had
+    // already started stayed for the whole timeout.
+    const T = 1_000_000 + Math.floor(Math.random() * 8_000_000);
+    const d = await runExec(shell, "sleep 2", T);
+    expect(existsSync(join(d, "timedout"))).toBe(false);
+    const mine = (lines: string[]): string[] =>
+      lines.filter((l) => l.includes(` tw ${d} `) || new RegExp(`\\bsleep ${T}$`).test(l));
+    const left = await gone(mine, 3000);
+    if (left.length > 0)
+      console.log(`${shell}: survivors (pid ppid pgid stat etime command):`, left);
+    for (const l of left) Bun.spawnSync(["kill", "-9", l.split(/\s+/)[0]!]);
+    expect(left).toEqual([]);
+  }, 30_000);
 });

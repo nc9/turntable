@@ -74,19 +74,32 @@ wr cpid "$CP"
 HB=$!
 TW=
 if [ "$T" -gt 0 ] 2>/dev/null; then
-  # The timeout watcher is its own process (group), started the way the command is, so that the
-  # end of the exec can take it AND its sleep down with one group KILL. A subshell with a TERM trap
-  # raced: a TERM landing between starting the sleep and recording its pid left the sleep behind
-  # for the whole timeout, on every exec that finished fast.
-  WATCH='D=$1; T=$2; CP=$3
+  # The timeout watcher is its own process group where the sandbox can make one (see own above),
+  # so the end of the exec can take it down with one group KILL; and it ENDS BY ITSELF as well, so
+  # nothing depends on that kill reaching it. It used to be one long sleep of the whole timeout,
+  # which leaked for that long whenever the kill missed: no group to hit (dash without a terminal,
+  # before perl was used), or a child forked at the very instant of a group KILL. Now it holds no
+  # long sleep: it counts the timeout in one-second steps and stops as soon as the wrapper is gone.
+  WATCH='D=$1; T=$2; CP=$3; RP=$4
 sigall() { kill -s "$1" -- "-$CP" 2>/dev/null || kill -s "$1" "$CP" 2>/dev/null; }
-sleep "$T"
+i=0
+while [ "$i" -lt "$T" ]; do
+  kill -0 "$RP" 2>/dev/null || exit 0
+  sleep 1
+  i=$((i + 1))
+done
+kill -0 "$RP" 2>/dev/null || exit 0
 : > "$D/timedout"
 sigall TERM
-sleep 5
+i=0
+while [ "$i" -lt 5 ]; do
+  kill -0 "$RP" 2>/dev/null || exit 0
+  sleep 1
+  i=$((i + 1))
+done
 sigall KILL'
   [ "$G" = jobs ] && set -m 2>/dev/null
-  own sh -c "$WATCH" tw "$D" "$T" "$CP" </dev/null >/dev/null 2>&1 &
+  own sh -c "$WATCH" tw "$D" "$T" "$CP" "$RP" </dev/null >/dev/null 2>&1 &
   [ "$G" = jobs ] && set +m 2>/dev/null
   TW=$!
 fi
