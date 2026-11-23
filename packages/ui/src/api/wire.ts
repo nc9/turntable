@@ -384,6 +384,8 @@ export type WireSetting = {
   role: string;
   mcp_editable: boolean;
   strictness: string[] | null;
+  /** What is at risk in changing it; null for most settings. */
+  warning: string | null;
 };
 
 export type WireSettings = { settings: WireSetting[]; next_cursor: string | null };

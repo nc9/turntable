@@ -46,6 +46,17 @@ export type SettingSpec<T> = {
   /** Required when `mcpEditable` is false: shown to the caller who is refused. */
   mcpReason?: string;
   description: string;
+  /**
+   * Shown with the setting wherever it is displayed (the web UI's settings panel): what is at
+   * risk in changing it. For settings whose change can weaken a protection.
+   */
+  warning?: string;
+  /**
+   * The parts of a change that weaken a protection, in words, empty when none. A change that
+   * returns any is audited with them (in every chain the change is written to) and emits an
+   * event, on every path that writes the value.
+   */
+  loosens?: (before: T, after: T) => string[];
   /** Environment variables that set it. The first is the canonical name. */
   env?: readonly string[];
   /** Turns the raw text of an environment variable into a value for `type`; text by default. */

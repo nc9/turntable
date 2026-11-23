@@ -6,7 +6,8 @@ import { allowHostsFromEnv } from "@turntable/net";
 import type { Provider } from "@turntable/provider-sdk";
 import { checkoutConfigFromEnv } from "./run/checkout-child";
 import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
-import { githubFacts } from "./github/api";
+import { githubFacts, type GithubFacts } from "./github/api";
+import { adoptPolledBindings } from "./github/installations";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
@@ -23,6 +24,7 @@ import {
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
+import { setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
@@ -39,8 +41,12 @@ import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { JobOidc } from "./oidc/job-delivery";
-import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
+import { artifactTargetOf, githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
+import { ArtifactGrants } from "./artifacts/grants";
+import { jobArtifactProvider } from "./artifacts/job";
+import { createArtifactService, type ArtifactService } from "./artifacts/service";
+import { FsArtifactStore } from "./artifacts/store";
 import { CacheGrants } from "./cache/grants";
 import { jobCacheProvider } from "./cache/job";
 import { createCacheService, type CacheService } from "./cache/service";
@@ -167,6 +173,8 @@ Environment:
   TURNTABLE_TOKEN_FILE  token file for "turntable mcp" (mode 0600; never pass a token on the command line)
   TURNTABLE_WEBAUTHN_RP_ID, TURNTABLE_WEBAUTHN_ORIGINS  WebAuthn relying party for human approvals (default: the public URL)
   TURNTABLE_CACHE_URL  base URL jobs reach the control-plane cache at (enables it; see docs/cache.mdx)
+  TURNTABLE_ARTIFACTS_URL  base URL jobs reach the control plane at for upload/download-artifact (enables it; see docs/compatibility.mdx)
+  TURNTABLE_ARTIFACT_MAX_GIB, TURNTABLE_ARTIFACT_RETENTION_DAYS  largest artifact (default 2) and how long blobs are kept (default 90)
   TURNTABLE_CACHE_QUOTA_GIB, TURNTABLE_CACHE_MAX_ENTRY_GIB  per-org cache quota (default 10) and largest entry (default 2)
   TURNTABLE_PUBLIC_URL  default for --public-url: the server's public base URL, linked from check runs
   TURNTABLE_TRUSTED_PROXIES  comma-separated addresses and CIDR ranges of the proxies in front of the server;
@@ -203,6 +211,7 @@ async function startBackground(
     auth?: AppAuth;
     vault?: SecretVault;
     cache?: CacheService;
+    artifacts?: ArtifactService;
     jobOidc?: JobOidc;
   } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
@@ -321,6 +330,9 @@ async function startBackground(
             proxy: secretsProxy,
             ...(jobTokens ? { github: githubTargetOf(db) } : {}),
             ...(extras.jobOidc ? { oidc: (c, k) => extras.jobOidc!.proxyTarget(c, k) } : {}),
+            ...(extras.artifacts
+              ? { artifacts: () => artifactTargetOf(extras.artifacts!.resultsUrl) }
+              : {}),
           })
         : r;
     scheduler = new Scheduler({
@@ -352,6 +364,7 @@ async function startBackground(
                 ...(jobTokens ? { jobTokens } : {}),
                 ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
+                ...(extras.artifacts ? { artifacts: jobArtifactProvider(extras.artifacts) } : {}),
                 ...(v.image ? { image: v.image } : {}),
                 ...(sandboxSizes ? { sizes: sandboxSizes } : {}),
               }),
@@ -516,6 +529,8 @@ async function serve(args: string[]): Promise<void> {
   // key, a bad value or an unreadable file stops the boot here, before anything is opened. No file
   // is fine.
   const settings = loadSettingsRuntime({ config: values.config });
+  // The approval engine and the release lane read the approval policy from the same runtime.
+  setAmbientSettings(settings);
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid --port: ${values.port}`);
@@ -666,6 +681,37 @@ async function serve(args: string[]): Promise<void> {
     console.log(`[turntable] job cache on, sandboxes reach it at ${cacheUrl}`);
   }
 
+  // The artifact store for jobs: what upload-artifact and download-artifact talk to, and what the
+  // release lane signs from. Off unless a URL the sandboxes can reach is given.
+  let artifacts: ArtifactService | undefined;
+  const artifactsUrl = process.env.TURNTABLE_ARTIFACTS_URL?.trim();
+  if (artifactsUrl) {
+    const num = (name: string, dflt: number): number => {
+      const n = Number(process.env[name] ?? dflt);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid ${name}`);
+      return n;
+    };
+    artifacts = createArtifactService({
+      db,
+      store: new FsArtifactStore(join(dataDir, "artifacts")),
+      grants: new ArtifactGrants(),
+      maxArtifactBytes: Math.floor(num("TURNTABLE_ARTIFACT_MAX_GIB", 2) * 1024 ** 3),
+      retentionMs: Math.floor(num("TURNTABLE_ARTIFACT_RETENTION_DAYS", 90) * 86_400_000),
+      baseUrl: artifactsUrl,
+      onNotice: (g, m) => {
+        console.log(`[turntable] ${m} (attempt ${g.attemptId})`);
+        void addNotice(db, g.scope, { attemptId: g.attemptId, source: "artifacts", text: m }).catch(
+          () => {},
+        );
+      },
+      // A grant works only while its attempt is running, whatever else the token says.
+      isActive: async (g) => (await getAttempt(db, g.scope, g.attemptId))?.state === "running",
+    });
+    const sweep = setInterval(() => void artifacts?.sweep().catch(() => {}), 5 * 60_000);
+    sweep.unref();
+    console.log(`[turntable] job artifacts on, sandboxes reach them at ${artifactsUrl}`);
+  }
+
   const allowedOrigins = [
     ...(values["allowed-origin"] ?? []),
     ...(process.env.TURNTABLE_ALLOWED_ORIGINS?.split(",") ?? []),
@@ -675,6 +721,7 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  let appFacts: GithubFacts | undefined;
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
@@ -742,6 +789,7 @@ async function serve(args: string[]): Promise<void> {
       revoke: () => auth.dropCached(),
     });
     const ghFacts = githubFacts(auth);
+    appFacts = ghFacts;
     webhooks = createWebhookHandler({
       db,
       store,
@@ -853,8 +901,10 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(appFacts ? { githubFacts: appFacts } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
+        ...(artifacts ? { artifacts } : {}),
         backup:
           DIALECT === "pg"
             ? { dialect: "pg" }
@@ -877,6 +927,14 @@ async function serve(args: string[]): Promise<void> {
     : undefined;
   if (server)
     console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  // Installations synced before polled repos were adopted: adopt now, after listening, so a slow
+  // or failing GitHub never holds up startup or healthz.
+  if (appFacts) {
+    const facts = appFacts;
+    void adoptPolledBindings(db, facts, (m) => console.log(`[turntable] ${m}`)).catch((err) =>
+      console.warn(`[turntable] adopt sweep failed: ${err instanceof Error ? err.message : err}`),
+    );
+  }
 
   const background = await startBackground(
     db,
@@ -890,6 +948,7 @@ async function serve(args: string[]): Promise<void> {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
       ...(cache ? { cache } : {}),
+      ...(artifacts ? { artifacts } : {}),
       ...(jobOidc ? { jobOidc } : {}),
     },
   );

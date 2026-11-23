@@ -1,4 +1,4 @@
-import { Lock } from "lucide-react";
+import { Lock, TriangleAlert } from "lucide-react";
 import type { Setting } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -129,6 +129,15 @@ function Row({ s, p }: { s: Setting; p: SettingsPanelProps }) {
         ) : null}
       </div>
       <p className="mt-1 text-[13px] text-dim">{s.description}</p>
+      {s.warning ? (
+        <p
+          data-warning={s.key}
+          className="mt-1.5 inline-flex items-start gap-1.5 text-[13px] font-medium text-st-approval"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          {s.warning}
+        </p>
+      ) : null}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <div className="w-full max-w-xs">
           <Editor

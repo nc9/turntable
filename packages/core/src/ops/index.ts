@@ -22,6 +22,8 @@ import {
   instanceListOrgs,
   instanceWhoami,
   rotateInstanceTokenOp,
+  createOrgOp,
+  createOrgTokenOp,
   setQuotas,
 } from "./definitions/instance";
 import { getQuotas } from "./definitions/quotas";
@@ -53,6 +55,7 @@ import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
 import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
+import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { jobCuts } from "./definitions/job-cuts";
 import { jobLog } from "./definitions/job-log";
@@ -111,6 +114,8 @@ export const registry = createRegistry([
   getQuotas,
   instanceWhoami,
   rotateInstanceTokenOp,
+  createOrgOp,
+  createOrgTokenOp,
   instanceListOrgs,
   setQuotas,
   dbBackupOp,
@@ -144,6 +149,7 @@ export const registry = createRegistry([
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  resyncInstallation,
   setOidcAudiencesOp,
   getProjectSettings,
   setProjectSettings,

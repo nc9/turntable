@@ -24,6 +24,7 @@ import {
   consumeChallenge,
   getEnrolment,
   appendAudit,
+  effectiveKeyPolicy,
   getEnvPolicy,
   getOrgById,
   getProject,
@@ -260,7 +261,7 @@ export async function applyEnvironmentApproval(
   const policy = await getEnvPolicy(c.db, c.scope.orgId, statement.environment);
   if (approverIdentity(v.key) === null)
     throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
-  const keyPolicy = await getKeyPolicy(c.db, c.scope.orgId);
+  const keyPolicy = effectiveKeyPolicy(await getKeyPolicy(c.db, c.scope.orgId), policy);
   const violation = keyPolicyViolation(keyPolicy, v.key);
   if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
   const blocked = authorBlocked(policy, v.key.forgeLogin, run);

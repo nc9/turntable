@@ -6,13 +6,7 @@
 // is locked: the set refuses and says where it was set. Secrets are never settings.
 import { z } from "zod";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
-import {
-  appendAudit,
-  getOrgById,
-  getOrgBySlug,
-  getProject,
-  getProjectBySlug,
-} from "../../db/repos";
+import { getOrgById, getOrgBySlug, getProject, getProjectBySlug } from "../../db/repos";
 import { getStoredSetting, putStoredSetting } from "../../db/repos/settings";
 import type { SettingScope } from "../../db/schema";
 import type { SettingDef } from "../../settings/define";
@@ -26,6 +20,7 @@ import {
 } from "../../settings/resolve";
 import { defineOp, type OpContext } from "../define";
 import { guardSettingChange } from "../setting-guard";
+import { recordSettingChange } from "../setting-audit";
 import { OpError } from "../errors";
 
 const settingView = z.object({
@@ -46,6 +41,12 @@ const settingView = z.object({
     .nullable()
     .describe(
       "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise.",
+    ),
+  warning: z
+    .string()
+    .nullable()
+    .describe(
+      "What is at risk in changing it, for a setting whose change can weaken a protection.",
     ),
 });
 type SettingView = z.infer<typeof settingView>;
@@ -74,6 +75,7 @@ function view(def: SettingDef, r: Resolved, showFile: boolean): SettingView {
     role: def.instanceAdminOnly && !def.strictness ? "instance_admin" : def.role,
     mcp_editable: def.mcpEditable,
     strictness: def.strictness ? [...def.strictness] : null,
+    warning: def.warning ?? null,
   };
 }
 
@@ -142,53 +144,60 @@ async function setSetting(
   // Check and write against the row as read: an org tighten and an instance-administrator write
   // take different locks, so a write the guard allowed against an older value could otherwise land
   // after a stricter one and loosen it. The write is a compare-and-set; if the row moved, the
-  // guard runs again on the new value (and may now refuse).
-  let before: Resolved | undefined;
-  for (let attempt = 0; before === undefined; attempt++) {
-    if (attempt === SET_ATTEMPTS) {
-      throw new OpError("conflict", `${def.key} was changed by someone else; try again`);
+  // guard runs again on the new value (and may now refuse). The write, its audit rows and any
+  // event commit together: a loosened policy is never stored without the trail.
+  const after = await ctx.db.transaction(async (tx) => {
+    for (let attempt = 0; ; attempt++) {
+      if (attempt === SET_ATTEMPTS) {
+        throw new OpError("conflict", `${def.key} was changed by someone else; try again`);
+      }
+      const store = storeTarget(def, subject);
+      const stored = await getStoredSetting(tx, store, def.key);
+      const { before, next } = await guardSettingChange(
+        rt,
+        tx,
+        def,
+        subject,
+        { principal: ctx.principal, viaMcp: ctx.viaMcp },
+        i,
+      );
+      const written = await putStoredSetting(
+        tx,
+        store,
+        def.key,
+        next,
+        ctx.principal.id,
+        ctx.now(),
+        { raw: stored?.raw },
+      );
+      if (!written) continue;
+      const resolved = await resolveSetting(rt, tx, def.key, subject);
+      // The old and new effective values, in the chain of the scope it changed. Never a secret: no
+      // setting can be one. An instance administrator changing a tenant's setting: the tenant's
+      // own chain shows it too.
+      await recordSettingChange(tx, {
+        def,
+        orgId: subject.orgId,
+        chains: [
+          ctx.scope,
+          ...(target && subject.orgId
+            ? [
+                {
+                  orgId: subject.orgId,
+                  ...(subject.projectId ? { projectId: subject.projectId } : {}),
+                },
+              ]
+            : []),
+        ],
+        principalKind: ctx.principal.kind,
+        principalId: ctx.principal.id,
+        from: before.value,
+        to: resolved.value,
+        source: resolved.source,
+      });
+      return resolved;
     }
-    const target = storeTarget(def, subject);
-    const stored = await getStoredSetting(ctx.db, target, def.key);
-    const checked = await guardSettingChange(
-      rt,
-      ctx.db,
-      def,
-      subject,
-      { principal: ctx.principal, viaMcp: ctx.viaMcp },
-      i,
-    );
-    const written = await putStoredSetting(
-      ctx.db,
-      target,
-      def.key,
-      checked.next,
-      ctx.principal.id,
-      ctx.now(),
-      { raw: stored?.raw },
-    );
-    if (written) before = checked.before;
-  }
-  const after = await resolveSetting(rt, ctx.db, def.key, subject);
-  // The old and new effective values, in the chain of the scope it changed. Never a secret: no
-  // setting can be one.
-  const entry = {
-    principalKind: ctx.principal.kind,
-    principalId: ctx.principal.id,
-    op: "setting_changed",
-    effect: "write",
-    outcome: "ok",
-    input: { key: def.key, from: before.value, to: after.value, source: after.source },
-  } as const;
-  await appendAudit(ctx.db, ctx.scope, entry);
-  // An instance administrator changing a tenant's setting: the tenant's own chain shows it too.
-  if (target && subject.orgId) {
-    await appendAudit(
-      ctx.db,
-      { orgId: subject.orgId, ...(subject.projectId ? { projectId: subject.projectId } : {}) },
-      entry,
-    );
-  }
+  });
   return view(def, after, showFile);
 }
 

@@ -1,3 +1,4 @@
+import type { ArtifactService } from "./artifacts/service";
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
 import type { BackupConfig } from "./db/backup";
@@ -15,6 +16,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
+import type { GithubFacts } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { DoctorReport } from "./doctor/types";
@@ -23,29 +25,20 @@ import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { createEventStream } from "./realtime/sse";
 import type { WebhookService } from "./webhooks/service";
+import { pageCsp, renderPage, servePageAsset } from "./pages/server-pages";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 
-const PLACEHOLDER_HTML = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Turntable</title>
-  </head>
-  <body>
-    <h1>Turntable</h1>
-    <p>Pre-alpha. The web UI is not built yet.</p>
-    <p>From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>TURNTABLE_UI_DIR</code> to a built bundle).</p>
-  </body>
-</html>
-`;
+const PLACEHOLDER_HTML = renderPage({
+  title: "Turntable",
+  body: `<p>Pre-alpha. The web UI is not built yet.</p>
+<p class="tt-muted">From source: run <code>bun run --cwd packages/ui build</code> and restart <code>serve</code> (or set <code>TURNTABLE_UI_DIR</code> to a built bundle).</p>`,
+});
 
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
-  "content-security-policy":
-    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  "content-security-policy": pageCsp(),
 } as const;
 
 /** Handler for `/api/v1/*`; resolves to undefined for any other path. */
@@ -72,6 +65,8 @@ export async function handleRequest(
       headers: { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8" },
     });
   }
+  const asset = servePageAsset(req);
+  if (asset) return asset;
   const ui = serveUi(url, req.method, SECURITY_HEADERS);
   if (ui) return ui;
   if (url.pathname === "/") {
@@ -98,6 +93,8 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /** GitHub API facts, for `resync_installation`. */
+  githubFacts?: GithubFacts;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
@@ -110,6 +107,8 @@ export type ServeOptions = {
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
+  /** The artifact service for jobs (the twirp API and `/_artifacts/...`), when a URL is configured. */
+  artifacts?: ArtifactService;
   /** Outbound webhook management ops, when a master key is configured. */
   outboundWebhooks?: WebhookService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
@@ -126,6 +125,7 @@ export function startServer(options: ServeOptions) {
     db: options.db,
     vault: options.vault,
     claims: options.claims?.starter,
+    githubFacts: options.githubFacts,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
@@ -171,6 +171,8 @@ export function startServer(options: ServeOptions) {
     if (idp) return idp;
     const cached = await options.cache?.handle(req);
     if (cached) return cached;
+    const artifact = await options.artifacts?.handle(req);
+    if (artifact) return artifact;
     const upgraded = await realtime.handle(req, srv);
     if (upgraded === "upgraded") return undefined;
     if (upgraded) return upgraded;

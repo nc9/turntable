@@ -448,6 +448,7 @@ test("list_settings and set_setting: the setting fields and the request body", (
     role: true,
     mcp_editable: true,
     strictness: true,
+    warning: true,
   });
   expectKeys(body.properties!.settings!.items!, fields);
   const set = op("/settings", "post");

@@ -147,6 +147,7 @@ export function mapSetting(w: WireSetting): Setting {
     role: w.role as Setting["role"],
     mcpEditable: w.mcp_editable,
     ...(w.strictness ? { strictness: w.strictness } : {}),
+    warning: w.warning,
   };
 }
 

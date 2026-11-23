@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createFixture } from "../src/api/fixture/adapter";
 import { createFixtureSettings } from "../src/api/fixture/settings";
-import { createHttpApi } from "../src/api/http-adapter";
+import { createHttpApi, mapSetting } from "../src/api/http-adapter";
 import type { Setting } from "../src/api/types";
 import type { WireSetting } from "../src/api/wire";
 import { SettingsPanel, type SettingsPanelProps } from "../src/features/settings/settings-panel";
@@ -23,6 +23,7 @@ const wire = (over: Partial<WireSetting> = {}): WireSetting => ({
   role: "admin",
   mcp_editable: false,
   strictness: null,
+  warning: null,
   ...over,
 });
 
@@ -37,6 +38,7 @@ const setting = (over: Partial<Setting> = {}): Setting => ({
   lockedBy: null,
   role: "admin",
   mcpEditable: false,
+  warning: null,
   ...over,
 });
 
@@ -152,6 +154,16 @@ describe("rendering", () => {
     const html = panel({ settings: [setting({ source: "toml", locked: true, lockedBy: "toml" })] });
     expect(html).toContain("Set in turntable.toml");
     expect(html).toMatch(/<input[^>]*disabled=""/);
+  });
+
+  test("a setting that can weaken a protection shows its warning, and others show none", () => {
+    const text = "Lowering this weakens human approval.";
+    const html = panel({ settings: [setting({ key: "approval_policy", warning: text })] });
+    expect(html).toContain('data-warning="approval_policy"');
+    expect(html).toContain(text);
+    expect(panel()).not.toContain("data-warning");
+    expect(mapSetting(wire({ warning: text })).warning).toBe(text);
+    expect(mapSetting(wire()).warning).toBeNull();
   });
 
   test("a refusal is shown verbatim", () => {

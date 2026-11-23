@@ -85,6 +85,13 @@
       "when": 1795432629361,
       "tag": "0011_attempt_sandbox_ttl",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795434274826,
+      "tag": "0012_approval_policy_settings",
+      "breakpoints": true
     }
   ]
 }

@@ -250,6 +250,88 @@ describe("what is signed", () => {
   });
 });
 
+describe("a lane that unpacked a zip signs the files in it", () => {
+  const verified = (over: {
+    subjects: readonly { name: string; sha256: string }[];
+    archives?: readonly { name: string; sha256: string }[];
+  }) => ({
+    sha: SHA,
+    repo: "acme/web",
+    ref: "refs/tags/v1.2.3",
+    ...over,
+  });
+  const fileDigest = sha256Hex(new TextEncoder().encode("the unpacked binary"));
+  const archive = { name: "turntable-linux-x64", sha256: sha256Hex(BINARY) };
+
+  test("the statement names the files, after the zip's own digest matched the recorded row", async () => {
+    const run = await releaseRun();
+    const out = await service().signRelease(a.scope, {
+      ...req(run.id),
+      verified: verified({
+        subjects: [{ name: "bin/turntable", sha256: fileDigest }],
+        archives: [archive],
+      }),
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.subjects).toEqual([{ name: "bin/turntable", sha256: fileDigest }]);
+    const key = await local.publicKey(builtinKeyRef(a.orgId, "release"));
+    const v = verifyArtifact({
+      artifact: new TextEncoder().encode("the unpacked binary"),
+      envelope: out.envelope,
+      publicKeyPem: key.publicKeyPem,
+    });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect(v.statement.subject).toEqual([
+      { name: "bin/turntable", digest: { sha256: fileDigest } },
+    ]);
+  });
+
+  test("refused when the zip digest is not the recorded one, when names repeat, or when nothing was unpacked", async () => {
+    const run = await releaseRun();
+    const bad = async (over: Parameters<typeof verified>[0]) =>
+      service().signRelease(a.scope, { ...req(run.id), verified: verified(over) });
+    const files = [{ name: "bin/turntable", sha256: fileDigest }];
+    expect(
+      await bad({ subjects: files, archives: [{ ...archive, sha256: "e".repeat(64) }] }),
+    ).toMatchObject({
+      ok: false,
+      reason: "verification_mismatch",
+    });
+    expect(await bad({ subjects: [...files, ...files], archives: [archive] })).toMatchObject({
+      ok: false,
+      reason: "verification_mismatch",
+    });
+    // Without an archive the subjects must be the recorded artifacts, nothing extra.
+    expect(
+      await bad({ subjects: [{ name: "turntable-linux-x64", sha256: archive.sha256 }, ...files] }),
+    ).toMatchObject({ ok: false, reason: "verification_mismatch" });
+    expect(await bad({ subjects: [], archives: [archive] })).toMatchObject({
+      ok: false,
+      reason: "verification_mismatch",
+    });
+    // An archive the request did not name is not a recorded artifact of this request.
+    expect(
+      await bad({ subjects: files, archives: [{ name: "sbom.json", sha256: "d".repeat(64) }] }),
+    ).toMatchObject({ ok: false, reason: "verification_mismatch" });
+  });
+
+  test("a raw artifact beside an archive must still be a subject, by its own digest", async () => {
+    const run = await releaseRun();
+    const files = [{ name: "bin/turntable", sha256: fileDigest }];
+    const both = (subjects: { name: string; sha256: string }[]) =>
+      service().signRelease(a.scope, {
+        ...req(run.id, ["turntable-linux-x64", "sbom.json"]),
+        verified: verified({ subjects, archives: [archive] }),
+      });
+    expect(await both(files)).toMatchObject({ ok: false, reason: "verification_mismatch" });
+    expect(await both([...files, { name: "sbom.json", sha256: "d".repeat(64) }])).toMatchObject({
+      ok: true,
+    });
+  });
+});
+
 describe("policy refusals (nothing reaches the signer)", () => {
   test.each([
     ["wrong class: a trusted pull request", { klass: "trusted_pr" }, "not_release_class"],
