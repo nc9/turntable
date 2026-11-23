@@ -163,6 +163,7 @@ export class InstallationClaims {
         startedBy,
         expiresAt,
         ...(opts.expectedLogin ? { expectedLogin: opts.expectedLogin } : {}),
+        ...(opts.installationId ? { installationId: opts.installationId } : {}),
       },
     );
     const state = `v1.${body}.${b64u(sig)}`;
@@ -267,13 +268,24 @@ export class InstallationClaims {
     if (!/^\d{1,20}$/.test(q.installationId)) throw new ClaimError(400, "bad installation id");
     let st = await this.verify(q.state);
     // The configure redirect (`update`) carries no `state`. The claim is then found by the nonce in
-    // the browser-binding cookie, which only the confirmation page sets; every other proof is the same.
+    // the browser-binding cookie, which only the confirmation page sets. That cookie is Lax, so it
+    // also rides on a link an attacker sends: the claim is therefore pinned to the installation it
+    // was started for, and any other installation id is refused before an owner check or a token
+    // exchange. A claim started without an installation can only finish through the signed state.
     if (!st && q.action === "update" && q.state === "" && q.cookieNonce) {
       const c = await getInstallationClaim(this.#o.db, q.cookieNonce);
-      if (c && c.usedAt === null && c.expiresAt > this.#now()) {
-        st = { o: c.orgId, p: c.startedBy, n: c.nonce, e: c.expiresAt };
+      if (
+        c &&
+        c.usedAt === null &&
+        c.expiresAt > this.#now() &&
+        c.installationId !== null &&
+        c.installationId === q.installationId
+      ) {
+        st = { o: c.orgId, p: c.startedBy, n: c.nonce, e: c.expiresAt, i: c.installationId };
       }
     }
+    // A signed state that names an installation only claims that one.
+    if (st?.i !== undefined && st.i !== q.installationId) st = undefined;
     if (!st) throw new ClaimError(400, "this claim link is invalid or has expired; start again");
     const refuse = async (status: number, message: string, extra: object = {}): Promise<never> => {
       await this.#audit(st, "error:forbidden", {

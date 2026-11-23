@@ -132,7 +132,14 @@ describe("the installation claim flow", () => {
     let now = 1_700_000_000_000;
     const claims = new InstallationClaims({ db: s.db, store: s.store, now: () => now });
     const users = new Map<string, FakeClaimUser>([["code-b", ownerOf100]]);
-    const user = fakeUserVerifier(users);
+    const inner = fakeUserVerifier(users);
+    const exchanges: string[] = [];
+    const user = {
+      verify: (code: string) => {
+        exchanges.push(code);
+        return inner.verify(code);
+      },
+    };
     const handler = createClaimHandler({ claims, facts: f.facts, user, log: () => {} });
     const stateOf = (url: string): string => new URL(url, "http://x").searchParams.get("state")!;
     const nonceOf = (state: string): string => {
@@ -186,6 +193,7 @@ describe("the installation claim flow", () => {
       f,
       claims,
       users,
+      exchanges,
       handler,
       nonceOf,
       stateOf,
@@ -449,6 +457,43 @@ describe("the installation claim flow", () => {
       expect(ok?.outcome).toBe("ok");
     });
 
+    test("a victim's live claim cannot be completed with another installation's redirect", async () => {
+      const h = await harness();
+      h.f.installations.set(
+        "200",
+        inst("200", "42", { account: { login: "mallory", id: "66", type: "User" } }),
+      );
+      h.users.set("code-m", {
+        id: "66",
+        login: "mallory",
+        installations: [
+          { id: "200", accountId: "66", accountLogin: "mallory", accountType: "User" },
+        ],
+        adminOf: [],
+      });
+      const { nonce } = await configure(h, "100"); // pinned to A = 100
+      const res = await h.callback(
+        { installation_id: "200", setup_action: "update", code: "code-m" },
+        nonce,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).not.toContain("200");
+      expect(h.exchanges).toEqual([]); // no GitHub token exchange
+      expect(await getInstallation(h.db, "200")).toBeUndefined();
+      // the claim is unspent and unbound: the real owner can still finish it
+      expect((await h.callback(upd, nonce)).status).toBe(200);
+      expect((await getInstallation(h.db, "100"))?.orgId).toBe(h.tenantB.id);
+      expect(await getInstallation(h.db, "200")).toBeUndefined();
+    });
+
+    test("a claim started without an installation id is refused on the update path", async () => {
+      const h = await harness();
+      const { nonce } = await configure(h);
+      expect((await h.callback(upd, nonce)).status).toBe(400);
+      expect(h.exchanges).toEqual([]);
+      expect(await getInstallation(h.db, "100")).toBeUndefined();
+    });
+
     test("refused without the cookie, with a wrong cookie, and on a reused nonce", async () => {
       const h = await harness();
       const { nonce } = await configure(h, "100");
@@ -473,7 +518,8 @@ describe("the installation claim flow", () => {
       h.users.set("member", { ...ownerOf100, adminOf: [] });
       const { nonce } = await configure(h, "100");
       expect((await h.callback({ ...upd, code: "member" }, nonce)).status).toBe(403);
-      expect((await h.callback({ ...upd, installation_id: "200" }, nonce)).status).toBe(403);
+      // the pin is 100: another installation id is refused before any owner check
+      expect((await h.callback({ ...upd, installation_id: "200" }, nonce)).status).toBe(400);
       expect(await getInstallation(h.db, "100")).toBeUndefined();
       // the refusals did not burn the claim
       expect((await h.callback(upd, nonce)).status).toBe(200);

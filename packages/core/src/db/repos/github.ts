@@ -507,7 +507,14 @@ export type InstallationClaim = typeof s.installationClaims.$inferSelect;
 export function createInstallationClaim(
   db: Db,
   scope: Scope,
-  input: { nonce: string; startedBy: string; expiresAt: number; expectedLogin?: string },
+  input: {
+    nonce: string;
+    startedBy: string;
+    expiresAt: number;
+    expectedLogin?: string;
+    /** Pins the claim to one installation (the update path); until used, `installation_id` is the pin. */
+    installationId?: string;
+  },
 ): Promise<void> {
   return db.run(async (h) => {
     await h.orm.insert(s.installationClaims).values({
@@ -516,6 +523,7 @@ export function createInstallationClaim(
       startedBy: input.startedBy,
       expiresAt: input.expiresAt,
       expectedLogin: input.expectedLogin ?? null,
+      installationId: input.installationId ?? null,
     });
   });
 }
