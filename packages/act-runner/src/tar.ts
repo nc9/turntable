@@ -273,68 +273,123 @@ export function writeTar(entries: Iterable<TarWriteEntry>): Uint8Array {
   return Buffer.concat(parts);
 }
 
+/**
+ * What happens when a file or directory vanishes between being listed and being read (a
+ * background `git gc` removing its lock file, say). GNU tar says "file removed before we read it"
+ * and goes on; so does this: the entry is skipped and `onVanished` is told (the default logs the
+ * first one of a pack at debug). Only ENOENT is forgiven, and never for an entry the caller named
+ * itself: that one missing is an error.
+ */
+export interface WalkHooks {
+  onVanished?: (rel: string) => void;
+  /** Called with each path just before it is read. For tests: it can delete something mid-walk. */
+  beforeRead?: (rel: string) => void;
+}
+
+const isGone = (e: unknown): boolean => (e as NodeJS.ErrnoException | null)?.code === "ENOENT";
+
+function vanishedLogger(hooks: WalkHooks | undefined): (rel: string) => void {
+  let logged = false;
+  return (rel) => {
+    hooks?.onVanished?.(rel);
+    if (logged || hooks?.onVanished) return;
+    logged = true;
+    console.debug(`tar: ${JSON.stringify(rel)} vanished before it was read; skipped`);
+  };
+}
+
 /** Packs entries from a directory (default: all of it), the way `tar czf - -C dir entries...` does. */
-export function tarDirectorySync(dir: string, entries: string[] = ["."]): Uint8Array {
+export function tarDirectorySync(
+  dir: string,
+  entries: string[] = ["."],
+  hooks?: WalkHooks,
+): Uint8Array {
   const out: TarWriteEntry[] = [];
-  const add = (rel: string): void => {
+  const vanished = vanishedLogger(hooks);
+  const add = (rel: string, top: boolean): void => {
     const full = rel === "." ? dir : join(dir, rel);
-    const st = lstatSync(full);
     const name = rel === "." ? "." : rel;
-    const mtime = Math.floor(st.mtimeMs / 1000);
-    if (st.isDirectory()) {
-      out.push({ path: name, type: "dir", mode: st.mode & 0o7777, mtime });
-      for (const child of readdirSync(full).toSorted())
-        add(rel === "." ? child : `${rel}/${child}`);
-    } else if (st.isSymbolicLink()) {
-      out.push({
-        path: name,
-        type: "symlink",
-        mode: 0o777,
-        mtime,
-        linkTarget: readlinkSync(full, { encoding: "buffer" }),
-      });
-    } else if (st.isFile()) {
-      out.push({
-        path: name,
-        type: "file",
-        mode: st.mode & 0o7777,
-        mtime,
-        data: readFileSync(full),
-      });
+    try {
+      hooks?.beforeRead?.(rel);
+      const st = lstatSync(full);
+      const mtime = Math.floor(st.mtimeMs / 1000);
+      if (st.isDirectory()) {
+        const children = readdirSync(full).toSorted();
+        out.push({ path: name, type: "dir", mode: st.mode & 0o7777, mtime });
+        for (const child of children) add(rel === "." ? child : `${rel}/${child}`, false);
+      } else if (st.isSymbolicLink()) {
+        out.push({
+          path: name,
+          type: "symlink",
+          mode: 0o777,
+          mtime,
+          linkTarget: readlinkSync(full, { encoding: "buffer" }),
+        });
+      } else if (st.isFile()) {
+        out.push({
+          path: name,
+          type: "file",
+          mode: st.mode & 0o7777,
+          mtime,
+          data: readFileSync(full),
+        });
+      }
+    } catch (e) {
+      if (top || !isGone(e)) throw e;
+      vanished(rel);
     }
   };
-  for (const e of entries) add(e.replace(/^\.\//, "").replace(/\/+$/, "") || ".");
+  for (const e of entries) add(e.replace(/^\.\//, "").replace(/\/+$/, "") || ".", true);
   return writeTar(out);
 }
 
 /** A gzip tarball of `tarDirectorySync`. */
-export function tarGzDirectory(dir: string, entries: string[] = ["."]): Uint8Array {
-  return gzipSync(tarDirectorySync(dir, entries));
+export function tarGzDirectory(
+  dir: string,
+  entries: string[] = ["."],
+  hooks?: WalkHooks,
+): Uint8Array {
+  return gzipSync(tarDirectorySync(dir, entries, hooks));
 }
 
 /** The entries of a directory, depth first and in name order, reading each file only as it is yielded. */
-function* walkDirectory(dir: string, entries: string[] = ["."]): Generator<TarWriteEntry> {
-  function* add(rel: string): Generator<TarWriteEntry> {
+function* walkDirectory(
+  dir: string,
+  entries: string[] = ["."],
+  hooks?: WalkHooks,
+): Generator<TarWriteEntry> {
+  const vanished = vanishedLogger(hooks);
+  function* add(rel: string, top: boolean): Generator<TarWriteEntry> {
     const full = rel === "." ? dir : join(dir, rel);
-    const st = lstatSync(full);
-    const mtime = Math.max(0, Math.floor(st.mtimeMs / 1000));
-    if (st.isDirectory()) {
-      yield { path: rel, type: "dir", mode: st.mode & 0o777, mtime };
-      for (const child of readdirSync(full).toSorted())
-        yield* add(rel === "." ? child : `${rel}/${child}`);
-    } else if (st.isSymbolicLink()) {
-      yield {
-        path: rel,
-        type: "symlink",
-        mode: 0o777,
-        mtime,
-        linkTarget: readlinkSync(full, { encoding: "buffer" }),
-      };
-    } else if (st.isFile()) {
-      yield { path: rel, type: "file", mode: st.mode & 0o777, mtime, data: readFileSync(full) };
+    let entry: TarWriteEntry | undefined;
+    let children: string[] = [];
+    try {
+      hooks?.beforeRead?.(rel);
+      const st = lstatSync(full);
+      const mtime = Math.max(0, Math.floor(st.mtimeMs / 1000));
+      if (st.isDirectory()) {
+        children = readdirSync(full).toSorted();
+        entry = { path: rel, type: "dir", mode: st.mode & 0o777, mtime };
+      } else if (st.isSymbolicLink()) {
+        entry = {
+          path: rel,
+          type: "symlink",
+          mode: 0o777,
+          mtime,
+          linkTarget: readlinkSync(full, { encoding: "buffer" }),
+        };
+      } else if (st.isFile()) {
+        entry = { path: rel, type: "file", mode: st.mode & 0o777, mtime, data: readFileSync(full) };
+      }
+    } catch (e) {
+      if (top || !isGone(e)) throw e;
+      vanished(rel);
+      return;
     }
+    if (entry) yield entry;
+    for (const child of children) yield* add(rel === "." ? child : `${rel}/${child}`, false);
   }
-  for (const e of entries) yield* add(e.replace(/^\.\//, "").replace(/\/+$/, "") || ".");
+  for (const e of entries) yield* add(e.replace(/^\.\//, "").replace(/\/+$/, "") || ".", true);
 }
 
 /**
@@ -348,14 +403,19 @@ function* walkDirectory(dir: string, entries: string[] = ["."]): Generator<TarWr
 export async function tarGzDirectoryToFile(
   dir: string,
   outPath: string,
-  opts: { maxBytes: number; entries?: string[]; checkpoint?: () => void } = {
+  opts: {
+    maxBytes: number;
+    entries?: string[];
+    checkpoint?: () => void;
+    hooks?: WalkHooks;
+  } = {
     maxBytes: 512 * 1024 * 1024,
   },
 ): Promise<{ bytes: number; entries: number }> {
   let count = 0;
   let written = 0;
   async function* chunks(): AsyncGenerator<Uint8Array> {
-    for (const e of walkDirectory(dir, opts.entries)) {
+    for (const e of walkDirectory(dir, opts.entries, opts.hooks)) {
       opts.checkpoint?.();
       count += 1;
       for (const c of entryChunks(e)) yield c;

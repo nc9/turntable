@@ -160,10 +160,24 @@ describe("the repo archive and the checkout", () => {
   const tmp = mkdtempSync(join(tmpdir(), "ls-parity-"));
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
   const git = (cwd: string, ...args: string[]): string =>
-    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
-      cwd,
-      encoding: "utf8",
-    });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        ...args,
+      ],
+      {
+        cwd,
+        encoding: "utf8",
+      },
+    );
 
   const makeRepo = (name: string): string => {
     const dir = join(tmp, name);
