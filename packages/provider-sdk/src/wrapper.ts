@@ -64,25 +64,29 @@ wr cpid "$CP"
 HB=$!
 TW=
 if [ "$T" -gt 0 ] 2>/dev/null; then
-  (
-    # Killing this subshell must also end its sleep, or every finished exec leaves a
-    # sleep behind.
-    trap 'kill "$SP" 2>/dev/null; exit 0' TERM
-    sleep "$T" &
-    SP=$!
-    wait "$SP"
-    : > "$D/timedout"
-    sigall TERM
-    sleep 5 &
-    SP=$!
-    wait "$SP"
-    sigall KILL
-  ) </dev/null >/dev/null 2>&1 &
+  # The timeout watcher is its own process (group), started the way the command is, so that the
+  # end of the exec can take it AND its sleep down with one group KILL. A subshell with a TERM trap
+  # raced: a TERM landing between starting the sleep and recording its pid left the sleep behind
+  # for the whole timeout, on every exec that finished fast.
+  WATCH='D=$1; T=$2; CP=$3
+sigall() { kill -s "$1" -- "-$CP" 2>/dev/null || kill -s "$1" "$CP" 2>/dev/null; }
+sleep "$T"
+: > "$D/timedout"
+sigall TERM
+sleep 5
+sigall KILL'
+  if command -v setsid >/dev/null 2>&1; then
+    setsid sh -c "$WATCH" tw "$D" "$T" "$CP" </dev/null >/dev/null 2>&1 &
+  else
+    set -m 2>/dev/null
+    sh -c "$WATCH" tw "$D" "$T" "$CP" </dev/null >/dev/null 2>&1 &
+    set +m 2>/dev/null
+  fi
   TW=$!
 fi
 wait "$CP"
 rc=$?
-[ -n "$TW" ] && kill "$TW" 2>/dev/null
+[ -n "$TW" ] && { kill -s KILL -- "-$TW" 2>/dev/null || kill -s KILL "$TW" 2>/dev/null; }
 kill "$HB" 2>/dev/null
 kill -s KILL -- "-$CP" 2>/dev/null
 sz=$(( $(wc -c < "$D/out") ))
