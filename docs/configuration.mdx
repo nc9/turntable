@@ -87,7 +87,7 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
 | `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
-The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
+The auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. Our own sandboxes are those with the fleet's label and name prefix, `longshore-dev` unless you set `fleet`. See [Providers](/providers#daytona).
 
 ### Egress
 
