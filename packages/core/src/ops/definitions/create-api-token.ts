@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   appendEvent,
+  countActiveChildTokens,
   findApiTokenById,
   getOrgById,
   insertApiToken,
@@ -14,6 +15,9 @@ import { roleSatisfies } from "../roles";
 import { assertMintable, generateToken, hashToken } from "../tokens";
 
 const DAY_MS = 86_400_000;
+
+/** A token may have at most this many active children (a leaked token cannot fan out without bound). */
+export const MAX_ACTIVE_CHILD_TOKENS = 20;
 
 export const createApiToken = defineOp({
   name: "create_api_token",
@@ -29,7 +33,7 @@ export const createApiToken = defineOp({
     "its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, " +
     "never the reverse or another project), and it expires no later than the caller does. " +
     "`kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); " +
-    "an agent token may mint only agent tokens, with a role of at most operator. Fixed at mint " +
+    "an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children (conflict beyond that). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint " +
     "time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent " +
     "tokens as run approvers, so mint a person token only for a human. Writes and is audited " +
     "(the audit entry names the minting token), and emits an `org.token_minted` event. Not an " +
@@ -85,6 +89,15 @@ export const createApiToken = defineOp({
       const parent = await findApiTokenById(ctx.db, p.id);
       if (!parent || parent.revokedAt !== null || parent.orgId !== ctx.scope.orgId) {
         throw new OpError("forbidden", "the calling token is no longer valid");
+      }
+      if (
+        (await countActiveChildTokens(ctx.db, { orgId: ctx.scope.orgId }, p.id, ctx.now())) >=
+        MAX_ACTIVE_CHILD_TOKENS
+      ) {
+        throw new OpError(
+          "conflict",
+          `a token may have at most ${MAX_ACTIVE_CHILD_TOKENS} active children: revoke one first`,
+        );
       }
       if (parent.expiresAt !== null && expiresAt > parent.expiresAt) {
         throw new OpError(

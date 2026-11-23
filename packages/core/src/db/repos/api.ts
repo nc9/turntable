@@ -165,6 +165,68 @@ export function onApiTokenRevoked(listener: RevokedListener): () => void {
   return () => revokedListeners.delete(listener);
 }
 
+// ---- token lineage (#437) ----
+// A token minted by another token records `createdBy = "token:<parentId>"` (only create_api_token
+// writes that prefix, from the authenticated principal; every other minting path writes `cli:`,
+// `bootstrap:`, `instance:`, `member:` or a test label), so the parent link needs no column.
+
+/** The parent token id a row was minted by, or null for a root token. */
+export function parentTokenId(row: { createdBy: string }): string | null {
+  return row.createdBy.startsWith("token:") ? row.createdBy.slice("token:".length) : null;
+}
+
+/** Tokens minted by `parentId` that are neither revoked nor expired. */
+export function countActiveChildTokens(
+  db: Db,
+  scope: Scope,
+  parentId: string,
+  now: number,
+): Promise<number> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ n: sql<number>`count(*)` })
+      .from(s.apiTokens)
+      .where(
+        scoped(
+          scope,
+          TOKEN_COLS,
+          eq(s.apiTokens.createdBy, `token:${parentId}`),
+          isNull(s.apiTokens.revokedAt),
+          or(isNull(s.apiTokens.expiresAt), gt(s.apiTokens.expiresAt, now)),
+        ),
+      );
+    return Number(row?.n ?? 0);
+  });
+}
+
+/** A token and every token it minted, transitively (the root first), revoked or not. */
+export function tokenSubtree(db: Db, orgId: string, rootId: string): Promise<ApiToken[]> {
+  return db.run(async (h) => {
+    const all = await h.orm.select().from(s.apiTokens).where(scoped({ orgId }, TOKEN_COLS));
+    const byParent = new Map<string, ApiToken[]>();
+    for (const t of all) {
+      const p = parentTokenId(t);
+      if (p !== null) byParent.set(p, [...(byParent.get(p) ?? []), t]);
+    }
+    const out: ApiToken[] = [];
+    const seen = new Set<string>([rootId]);
+    const root = all.find((t) => t.id === rootId);
+    if (!root) return out;
+    const queue = [root];
+    while (queue.length > 0) {
+      const t = queue.shift()!;
+      out.push(t);
+      for (const c of byParent.get(t.id) ?? []) {
+        if (!seen.has(c.id)) {
+          seen.add(c.id);
+          queue.push(c);
+        }
+      }
+    }
+    return out;
+  });
+}
+
 /** Revokes a token. Returns false when it is not in scope or was already revoked. */
 export function revokeApiToken(db: Db, scope: Scope, id: string, at: number): Promise<boolean> {
   return db.run(async (h) => {

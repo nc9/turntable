@@ -169,3 +169,81 @@ describe("per-org serialisation of revoke", () => {
     expect(failed && !failed.ok && failed.error.code).toBe("conflict");
   });
 });
+
+describe("rotation and cascade", () => {
+  const bearer = (token: string) => ({ kind: "bearer", token }) as Credential;
+  const mint = async (parent: string, over: Record<string, unknown> = {}) => {
+    const r = await as(parent, { name: "c", role: "reader", ...over });
+    if (!r.ok) throw new Error(r.error.message);
+    return r.output as { id: string; token: string };
+  };
+  const alive = async (token: string) => (await dispatch(env, bearer(token), "list_runs", {})).ok;
+  const revoke = (token: string, input: Record<string, unknown>) =>
+    dispatch(env, bearer(token), "revoke_api_token", { reason: "t", ...input });
+
+  test("rotation: self-revoke by default keeps the successor", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret);
+    const r = await revoke(parent.secret, { token_id: parent.id });
+    expect(r.ok).toBe(true);
+    expect(await alive(parent.secret)).toBe(false);
+    expect(await alive(child.token)).toBe(true);
+  });
+
+  test("self-revoke with cascade revokes the child and a grandchild, each audited", async () => {
+    const parent = await orgWide("operator");
+    await orgWide("reader");
+    const child = await mint(parent.secret, { role: "operator" });
+    const grand = await mint(child.token);
+    const r = await revoke(parent.secret, { token_id: parent.id, cascade: true });
+    expect(r.ok).toBe(true);
+    expect(await alive(child.token)).toBe(false);
+    expect(await alive(grand.token)).toBe(false);
+    const rows = (await listAudit(db, { orgId: a.orgId }, { limit: 50 })).filter(
+      (x) => x.op === "revoke_api_token",
+    );
+    const text = JSON.stringify(rows);
+    expect(text).toContain("parent revoked");
+    expect(text).toContain(grand.id);
+    expect(text).not.toContain(child.token);
+    expect(text).not.toContain(grand.token);
+  });
+
+  test("an admin member's revoke always cascades", async () => {
+    const parent = await orgWide("operator");
+    await orgWide("reader");
+    const child = await mint(parent.secret);
+    const r = await dispatch(env, { kind: "principal", principal: a.admin }, "revoke_api_token", {
+      token_id: parent.id,
+      reason: "t",
+    });
+    expect(r.ok).toBe(true);
+    expect(await alive(child.token)).toBe(false);
+  });
+
+  test("the lockout guard counts what survives the cascade", async () => {
+    const parent = await orgWide("operator");
+    await mint(parent.secret);
+    const r = await revoke(parent.secret, { token_id: parent.id, cascade: true });
+    expect(code(r)).toBe("conflict");
+    expect(await alive(parent.secret)).toBe(true);
+  });
+
+  test("a token may have at most 20 active children", async () => {
+    const parent = await orgWide("operator");
+    for (let i = 0; i < 20; i++) await mint(parent.secret);
+    expect(code(await as(parent.secret, { name: "x", role: "reader" }))).toBe("conflict");
+  });
+
+  test("list_api_tokens shows created_by_token_id", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret);
+    const r = await dispatch(env, bearer(parent.secret), "list_api_tokens", {});
+    expect(r.ok).toBe(true);
+    const rows = (r.ok ? r.output : { tokens: [] }) as {
+      tokens: { id: string; created_by_token_id: string | null }[];
+    };
+    expect(rows.tokens.find((t) => t.id === child.id)?.created_by_token_id).toBe(parent.id);
+    expect(rows.tokens.find((t) => t.id === parent.id)?.created_by_token_id).toBeNull();
+  });
+});

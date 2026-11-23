@@ -15,6 +15,8 @@ import {
   listApiTokens,
   revokeApiToken,
   type Scope,
+  tokenSubtree,
+  lockOrgTokens,
 } from "../db/repos";
 import { AGENT_ROLES, type AgentRole, TOKEN_KINDS, type TokenKind } from "../db/schema";
 import { systemOrgId } from "../audit/failures";
@@ -179,7 +181,12 @@ export async function revokeTokenFromCli(
   if (!row) throw new Error(`no token with id ${id}`);
   const scope: Scope = { orgId: row.orgId, ...(row.projectId ? { projectId: row.projectId } : {}) };
   await db.transaction(async (tx) => {
-    if (!(await revokeApiToken(tx, scope, row.id, now()))) {
+    await lockOrgTokens(tx, row.orgId);
+    const { rootChanged } = await revokeTokenCascade(tx, row.orgId, row.id, now(), {
+      kind: "cli",
+      id: "local",
+    });
+    if (!rootChanged) {
       throw new Error(`token ${id} is already revoked`);
     }
     await appendAudit(tx, scope, {
@@ -197,6 +204,67 @@ export async function revokeTokenFromCli(
     }
   });
   return { id: row.id, name: row.name };
+}
+
+/**
+ * What revoking `rootId` would take with it: the token and every token it minted, transitively
+ * (#437). `active` is the subset that is usable now; `survivors` counts the org's usable tokens
+ * outside the subtree, so a caller can tell whether the revoke would leave the org with none.
+ */
+export async function planTokenCascade(
+  db: Db,
+  orgId: string,
+  rootId: string,
+  now: number,
+  cascade: boolean,
+): Promise<{ subtree: { id: string; name: string }[]; activeInTree: number; survivors: number }> {
+  const all = await tokenSubtree(db, orgId, rootId);
+  const subtree = cascade ? all : all.slice(0, 1);
+  const usable = (t: { revokedAt: number | null; expiresAt: number | null }) =>
+    t.revokedAt === null && (t.expiresAt === null || t.expiresAt > now);
+  const activeInTree = subtree.filter(usable).length;
+  const total = await countActiveApiTokens(db, { orgId }, now);
+  return {
+    subtree: subtree.map((t) => ({ id: t.id, name: t.name })),
+    activeInTree,
+    survivors: total - activeInTree,
+  };
+}
+
+/**
+ * Revokes a token and, when `cascade`, in the same transaction every token it minted (transitively), and audits
+ * each child as `parent revoked` with the parent id (never a secret). Call it inside the revoking
+ * transaction after `lockOrgTokens`. Returns whether the root changed and the child ids revoked.
+ */
+export async function revokeTokenCascade(
+  tx: Db,
+  orgId: string,
+  rootId: string,
+  now: number,
+  by: { kind: string; id: string },
+  cascade = true,
+): Promise<{ rootChanged: boolean; children: string[] }> {
+  const subtree = cascade ? await tokenSubtree(tx, orgId, rootId) : [];
+  const rootChanged = await revokeApiToken(tx, { orgId }, rootId, now);
+  const children: string[] = [];
+  for (const t of subtree) {
+    if (t.id === rootId) continue;
+    if (!(await revokeApiToken(tx, { orgId }, t.id, now))) continue;
+    children.push(t.id);
+    await appendAudit(
+      tx,
+      { orgId },
+      {
+        principalKind: by.kind,
+        principalId: by.id,
+        op: "revoke_api_token",
+        effect: "destructive",
+        outcome: "ok",
+        input: { id: t.id, name: t.name, reason: "parent revoked", parent_id: rootId },
+      },
+    );
+  }
+  return { rootChanged, children };
 }
 
 /**
