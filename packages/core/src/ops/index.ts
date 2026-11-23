@@ -11,6 +11,7 @@ import {
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
+import { dbBackupOp } from "./definitions/db-backup";
 import { approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
@@ -98,6 +99,7 @@ export const registry = createRegistry([
   instanceWhoami,
   instanceListOrgs,
   setQuotas,
+  dbBackupOp,
   acceptActionMoveOp,
   setSecretOp,
   rotateSecretOp,

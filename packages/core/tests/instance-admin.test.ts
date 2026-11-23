@@ -217,6 +217,7 @@ describe("no org principal reaches an instance op, and the instance token reache
         .toSorted(),
     ).toEqual([
       "create_project",
+      "db_backup",
       "instance_list_orgs",
       "instance_whoami",
       "set_project_settings",
