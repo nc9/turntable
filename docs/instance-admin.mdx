@@ -18,6 +18,7 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | --- | --- | --- |
 | `instance_whoami` | `GET /api/v1/instance/whoami` | Checks the token: its id, label and expiry. |
 | `instance_list_orgs` | `GET /api/v1/instance/orgs` | Lists the orgs' slugs and names (not the internal system org). |
+| `instance_github_app_status` | `GET /api/v1/instance/github-app` | Reports the GitHub App: whether one is configured, its id, slug, owner login, owning org and creation time, `sealed` (a boolean, never the material), installation counts by status, and the ids of installations a webhook named that no org has claimed (up to 100). See [Hosted](/hosted#checking-the-github-app). |
 | `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
 | `set_project_settings` | `POST /api/v1/instance/project-settings` | Sets one project's `sandbox_snapshot` and `max_concurrent` (`target_org`, `target_project`; null removes one). See [Providers](/providers#per-project-snapshot-and-concurrency-cap). |
 | `create_org` | `POST /api/v1/instance/orgs` | Creates an empty org (`slug`, `name`); a slug in use, or the internal system org's, is a conflict, and a slug of any other shape is refused. |
