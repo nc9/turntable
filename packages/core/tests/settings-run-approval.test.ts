@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { createJob, createRun, type Db, listAudit } from "../src/db";
-import { putStoredSetting } from "../src/db/repos/settings";
+import { lockSettingKey, putStoredSetting } from "../src/db/repos/settings";
 import { UNTRUSTED_RUN_APPROVALS } from "../src/db/schema";
 import { setSettingOp } from "../src/ops/definitions/settings";
 import type { OpContext } from "../src/ops/define";
@@ -452,6 +452,47 @@ describe("strictness: an org tightens, only the instance administrator loosens (
     expect((await setAsInstance("any")).ok).toBe(true);
     expect((await raced("any", { value: "no_agents" })).ok).toBe(true);
     expect(await effective()).toBe("no_agents");
+  });
+
+  // #369: the admin's write and the owner's tighten take different locks (the instance's and the
+  // org's audit chain), and a key can be written at more than one scope. Both now take the
+  // per-(org, key) lock first, so the owner's guard reads the effective value after the admin's
+  // write commits, or the owner gets a conflict. The admin holds its transaction open after the
+  // write, which is where an unlocked owner would read the old value and then overwrite it.
+  test("an owner's tighten queues behind an admin's human on the same key, across scopes", async () => {
+    expect((await setAsInstance("any")).ok).toBe(true);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let wrote: () => void = () => {};
+    const adminWrote = new Promise<void>((r) => (wrote = r));
+    const admin = db.transaction(async (tx) => {
+      await lockSettingKey(tx, a.orgId, KEY);
+      await putStoredSetting(
+        tx,
+        storeTarget(untrustedRunApprovalSetting, { orgId: a.orgId, projectId: a.projectId }),
+        KEY,
+        "human",
+        "admin",
+        Date.now(),
+      );
+      wrote();
+      await gate;
+    });
+    await adminWrote;
+    let ownerDone = false;
+    const owner = orgSet({ value: "no_agents" }).then((r) => {
+      ownerDone = true;
+      return r;
+    });
+    await Bun.sleep(100);
+    expect(ownerDone).toBe(false);
+    release();
+    await admin;
+    const r = await owner;
+    expect(await effective()).toBe("human");
+    expect(!r.ok && r.error.message).toBe(
+      `only the instance administrator can loosen ${KEY} (current: human)`,
+    );
   });
 
   test("setting the same value is allowed", async () => {
