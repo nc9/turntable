@@ -463,7 +463,8 @@ export function listUnreportedSkips(
 /**
  * Takes the exclusive claim to post an attempt's skipped check: one conditional UPDATE, atomic on
  * both dialects. It wins only while the attempt has no check and no live claim (none, or one
- * older than `ttlMs`, whose holder is presumed dead). The winner alone creates the check.
+ * older than `ttlMs`, whose holder is presumed dead). The winner alone creates the check, and
+ * gets back its claim stamp (`now`) to release with. `null` means the claim was not won.
  */
 export function claimSkippedCheck(
   db: Db,
@@ -471,7 +472,7 @@ export function claimSkippedCheck(
   attemptId: string,
   now: number,
   ttlMs: number,
-): Promise<boolean> {
+): Promise<number | null> {
   return db.run(async (h) => {
     const rows = await h.orm
       .update(s.jobAttempts)
@@ -491,12 +492,21 @@ export function claimSkippedCheck(
         ),
       )
       .returning({ id: s.jobAttempts.id });
-    return rows.length > 0;
+    return rows.length > 0 ? now : null;
   });
 }
 
-/** Drops a claim whose post failed, so the next sweep retries without waiting out the TTL. */
-export function releaseSkippedCheckClaim(db: Db, scope: Scope, attemptId: string): Promise<void> {
+/**
+ * Drops a claim whose post failed, so the next sweep retries without waiting out the TTL. It
+ * clears only the claim stamped `claimedAt`: if this holder stalled past the TTL and another
+ * worker retook the claim, that live claim is left alone.
+ */
+export function releaseSkippedCheckClaim(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  claimedAt: number,
+): Promise<void> {
   return db.run(async (h) => {
     await h.orm
       .update(s.jobAttempts)
@@ -505,7 +515,11 @@ export function releaseSkippedCheckClaim(db: Db, scope: Scope, attemptId: string
         scoped(
           scope,
           { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
-          and(eq(s.jobAttempts.id, attemptId), isNull(s.jobAttempts.checkRunId)),
+          and(
+            eq(s.jobAttempts.id, attemptId),
+            isNull(s.jobAttempts.checkRunId),
+            eq(s.jobAttempts.skipCheckClaimedAt, claimedAt),
+          ),
         ),
       );
   });

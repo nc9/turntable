@@ -2,6 +2,7 @@
 // died before posting must expire and be retried (#298).
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  claimSkippedCheck,
   createAttempt,
   createJob,
   createRun,
@@ -9,6 +10,7 @@ import {
   getAttemptCheckRunId,
   listAttempts,
   listJobs,
+  releaseSkippedCheckClaim,
   setProjectChecksMode,
 } from "../src/db";
 import { CheckReporter, SKIP_CLAIM_TTL_MS, type TokenMinter } from "../src/checks/reporter";
@@ -150,5 +152,26 @@ describe("claiming a skipped check", () => {
     expect(await claimedAt()).toBeNull();
     await rep(g.api, () => now).sweepSkipped();
     expect(g.creates()).toBe(1);
+  });
+
+  test("a stalled holder's failed post cannot release the claim another worker retook", async () => {
+    const { attemptId } = await skippedJob();
+    const t0 = Date.now();
+    const a = await claimSkippedCheck(db, world.scope, attemptId, t0, SKIP_CLAIM_TTL_MS);
+    expect(a).toBe(t0);
+    // A stalls past the TTL; B retakes the claim
+    const t1 = t0 + SKIP_CLAIM_TTL_MS + 1;
+    const b = await claimSkippedCheck(db, world.scope, attemptId, t1, SKIP_CLAIM_TTL_MS);
+    expect(b).toBe(t1);
+    // A's post fails and it releases with its own stamp: B's live claim must survive
+    await releaseSkippedCheckClaim(db, world.scope, attemptId, a!);
+    expect(await claimedAt()).toBe(t1);
+    // so a third sweep C cannot claim
+    expect(
+      await claimSkippedCheck(db, world.scope, attemptId, t1 + 1, SKIP_CLAIM_TTL_MS),
+    ).toBeNull();
+    // B's own release still works
+    await releaseSkippedCheckClaim(db, world.scope, attemptId, b!);
+    expect(await claimedAt()).toBeNull();
   });
 });

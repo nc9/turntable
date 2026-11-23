@@ -250,11 +250,12 @@ export class CheckReporter {
     // One claim per check: for a split job, on its lowest-id attempt, whichever shard we hold.
     const claimOn = [...latest.values()].map((a) => a.id).toSorted()[0] ?? attempt.id;
     const now = (this.#o.now ?? Date.now)();
-    if (!(await claimSkippedCheck(db, scope, claimOn, now, SKIP_CLAIM_TTL_MS))) return "waiting";
+    const claimedAt = await claimSkippedCheck(db, scope, claimOn, now, SKIP_CLAIM_TTL_MS);
+    if (claimedAt === null) return "waiting";
     try {
       return await this.#postClaimed(claim, target, all, latest, mine);
     } catch (err) {
-      await releaseSkippedCheckClaim(db, scope, claimOn).catch(() => {});
+      await releaseSkippedCheckClaim(db, scope, claimOn, claimedAt).catch(() => {});
       throw err;
     }
   }
