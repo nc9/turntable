@@ -178,6 +178,13 @@ describe("manifest", () => {
     expect(m.public).toBe(false);
   });
 
+  test("public follows the claim flow", () => {
+    const o = { name: "Turntable", url: "https://ci.example.com", redirectUrl: "http://x/cb" };
+    expect(buildManifest(o).public).toBe(false);
+    expect(buildManifest({ ...o, claimFlow: false }).public).toBe(false);
+    expect(buildManifest({ ...o, claimFlow: true }).public).toBe(true);
+  });
+
   test("the page posts the manifest to GitHub with the state, and escapes it", () => {
     const html = manifestPage({ name: 'a"<b>' }, "st4te", "my-org");
     expect(html).toContain(
