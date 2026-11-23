@@ -8,7 +8,7 @@ Some settings are not an org's to change: the limits that stop one org taking th
 ## What it is
 
 - A token with the prefix `tti_`, a different shape from every org token (`tt_`), so the two are told apart before any lookup and a leaked one is recognisable.
-- Minted only on the host, with `turntable token create --instance --name <name> [--expires-days 30]` (1 to 90 days; the secret is shown once, only its hash is stored, in its own table). No org token of any role and no operation can mint, list or revoke one: `token list --instance` and `token revoke <id> --instance` are host commands too. Minting and revoking are audited in the system org's chain.
+- Minted only on the host, with `turntable token create --instance --name <name> [--expires-days 30]` (1 to 90 days; the secret is shown once, only its hash is stored, in its own table). No org token of any role can mint, list or revoke one: `token list --instance` and `token revoke <id> --instance` are host commands too. The one operation that touches them is rotation (below). Minting, revoking and rotating are audited in the system org's chain.
 - It holds **no org grant**. It cannot read a run, a log or a secret, and every org operation refuses it. It can call the instance operations, and nothing else.
 - Accepted over **REST only**. The MCP endpoint and the realtime socket do not treat a `tti_` token as a credential, and none of the instance operations is an MCP tool.
 
@@ -21,11 +21,36 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
 | `set_project_settings` | `POST /api/v1/instance/project-settings` | Sets one project's `sandbox_snapshot` and `max_concurrent` (`target_org`, `target_project`; null removes one). See [Providers](/providers#per-project-snapshot-and-concurrency-cap). |
 | `create_project` | `POST /api/v1/instance/projects` | Creates an empty project in an existing org (`target_org`, `slug`, `name`); a slug already used there is a conflict. See [Hosted](/hosted#adding-a-second-repo-to-a-running-instance). |
+| `rotate_instance_token` | `POST /api/v1/instance/tokens/rotate` | Mints a new instance token (the secret is in the response once) and revokes the one that made the call. Also `turntable token rotate <id> --instance`. See [Bootstrapping with no shell](#bootstrapping-with-no-shell). |
 | `db_backup` | `POST /api/v1/instance/db-backup` | Backs up the SQLite database into `<data-dir>/backups/` and returns the path, size and sha256. See [Backups](#backups). |
 
 `max_concurrent` can only lower an org's concurrency below the instance's per-org cap (`--org-cap`): a value above it is refused, and removing it falls back to the cap. Instance operations take no `org` or `project` field. A change is audited twice: in the system org's chain (who held the token) and in the target org's own chain (so its operators see who changed their limits).
 
 The full doctor report joins this set once the doctor operation lands: it is read-only and needs the same principal.
+
+## Bootstrapping with no shell
+
+A distroless image has no shell, so `token create --instance` cannot run on it. Set the sha256 of a token instead. The token never leaves your machine.
+
+```sh
+# 1. On your own machine: the token goes to stdout, its hash to stderr.
+turntable token generate --instance > instance-token.txt
+# Without the binary: t="tti_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"; printf %s "$t" | sha256sum
+
+# 2. On the server, set ONLY the hash. Never the token.
+TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256=<the hash>
+
+# 3. After the first boot, call the rotation once with the token, keep the new secret, and unset the variable.
+curl -fsS -X POST -H "Authorization: Bearer $(cat instance-token.txt)" "$URL/api/v1/instance/tokens/rotate"
+```
+
+- **Only when there is none.** On boot the hash is registered only if the instance has no *unrevoked* instance token. Otherwise it is ignored, with one log line: `instance bootstrap hash ignored: an instance token exists`. It can never re-bootstrap over an existing token. An expired token that was never revoked still counts as existing. If every token is revoked, the hash registers again, unless that same hash was already used and revoked: a revoked token is never brought back.
+- **Idempotent.** The same hash on every boot is the same row, never a duplicate.
+- **Short-lived.** The token expires in 30 days at most. `TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS` (1 to 30) can lower that and never raise it. It is audited as `instance_bootstrap_token_registered` in the system org's chain, without the hash.
+- **Never logged.** Neither the hash nor a token appears in any log line. A malformed hash stops the boot with a message that does not repeat the value. The old name `LONGSHORE_INSTANCE_BOOTSTRAP_TOKEN_SHA256` still works, with a deprecation warning.
+- **Rotate, then remove the variable.** Rotation is an instance operation over REST and the CLI, never on MCP: instance tokens are not MCP credentials. It mints a new token (secret shown once, hash stored) and revokes the caller's token, in one transaction. After that the variable does nothing, so remove it.
+
+An instance token has no `kind` field: it is minted by the operator, never by an agent, so it is the person kind in effect.
 
 ## Backups
 

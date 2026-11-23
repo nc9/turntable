@@ -24,6 +24,7 @@ export const CLI_COMMANDS: Readonly<Record<string, string>> = {
   incident_unfreeze: "incident unfreeze",
   incident_status: "incident status",
   db_backup: "db backup",
+  rotate_instance_token: "token rotate --instance",
   doctor: "doctor",
 };
 

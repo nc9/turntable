@@ -46,7 +46,8 @@ import { jobCacheProvider } from "./cache/job";
 import { createCacheService, type CacheService } from "./cache/service";
 import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
-import { generateToken, hashToken } from "./ops/tokens";
+import { bootstrapExpiryDays, bootstrapInstanceToken } from "./ops/instance-bootstrap";
+import { generateInstanceToken, generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
 import {
   resolvePollConfig,
@@ -105,7 +106,8 @@ Usage:
                          (an instance-administrator token: REST only, for quotas; list and revoke take --instance too)
   turntable token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          [--kind <agent|person>] --name <name> [--expires-days 90] [--data-dir ./data]
-  turntable token generate
+  turntable token generate [--instance]
+  turntable token rotate <id> --instance [--name <name>] [--expires-days 30] [--data-dir ./data]
   turntable token list --org <slug> [--project <slug>] [--data-dir ./data]
   turntable token revoke <id> [--data-dir ./data]
   turntable run <workflow-path> -j <job> [--repo <dir>] [--image <ref>] [--data-dir ./data] [--event push] [--egress none|open]
@@ -132,6 +134,9 @@ Environment:
   PORT  default for --port (Railway and similar hosts set it)
   TURNTABLE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "turntable token generate"; on boot, an
                     org with no tokens gets one operator token with this hash
+  TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "turntable token generate --instance"; on boot, an
+                    instance with no unrevoked instance token gets one (30 days at most). Rotate it, then remove the variable
+  TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS  lifetime of that token, 1 to 30 (default 30)
   TURNTABLE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
   TURNTABLE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create TURNTABLE_MASTER_KEY_FILE on first boot when it is
                     absent (a host with no shell); never overwrites an existing file
@@ -605,6 +610,22 @@ async function serve(args: string[]): Promise<void> {
     );
   }
 
+  // First-boot instance-administrator access: see ops/instance-bootstrap.ts. Never logs the hash.
+  const instanceBootstrapHash = process.env.TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256?.trim();
+  if (instanceBootstrapHash) {
+    const r = await bootstrapInstanceToken(db, {
+      sha256: instanceBootstrapHash,
+      expiresInDays: bootstrapExpiryDays(process.env.TURNTABLE_INSTANCE_BOOTSTRAP_EXPIRY_DAYS),
+    });
+    console.log(
+      r.status === "created"
+        ? `instance bootstrap: registered an instance token (expires ${iso(r.expiresAt)}). Rotate it, then remove TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256.`
+        : r.reason === "an instance token exists"
+          ? "instance bootstrap hash ignored: an instance token exists"
+          : "instance bootstrap hash ignored: that token was already used and revoked",
+    );
+  }
+
   // The control-plane cache for jobs (#38). Off unless a URL the sandboxes can reach is given.
   let cache: CacheService | undefined;
   const cacheUrl = process.env.TURNTABLE_CACHE_URL?.trim();
@@ -906,16 +927,19 @@ async function token(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: rest,
     options,
-    allowPositionals: sub === "revoke",
+    allowPositionals: sub === "revoke" || sub === "rotate",
     strict: true,
   });
   const open = () => openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
   if (sub === "generate") {
     // No database: the token goes to stdout, its hash to stderr. Keep the token; set only the
     // hash (TURNTABLE_BOOTSTRAP_TOKEN_SHA256) on the server.
-    const secret = generateToken();
+    const secret = values.instance ? generateInstanceToken() : generateToken();
+    const variable = values.instance
+      ? "TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256"
+      : "TURNTABLE_BOOTSTRAP_TOKEN_SHA256";
     console.error(
-      `sha256: ${hashToken(secret)}\nSet TURNTABLE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
+      `sha256: ${hashToken(secret)}\nSet ${variable} to that hash on the server and keep the token below; it is not stored anywhere else.`,
     );
     console.log(secret);
     return;
@@ -927,8 +951,12 @@ async function token(args: string[]): Promise<void> {
         "--instance takes no --org, --project, --role or --kind: it holds no org grant",
       );
     }
-    const { createInstanceTokenFromCli, listInstanceTokensFromCli, revokeInstanceTokenFromCli } =
-      await import("./ops/instance-token-cli");
+    const {
+      createInstanceTokenFromCli,
+      listInstanceTokensFromCli,
+      revokeInstanceTokenFromCli,
+      rotateInstanceTokenFromCli,
+    } = await import("./ops/instance-token-cli");
     const db = open();
     try {
       if (sub === "create") {
@@ -953,8 +981,24 @@ async function token(args: string[]): Promise<void> {
           throw new Error("usage: turntable token revoke <id> --instance [--data-dir ./data]");
         const done = await revokeInstanceTokenFromCli(db, id);
         console.error(`revoked instance token ${done.id} (${done.name})`);
+      } else if (sub === "rotate") {
+        const [id] = positionals;
+        if (!id)
+          throw new Error(
+            "usage: turntable token rotate <id> --instance [--name <name>] [--data-dir ./data]",
+          );
+        const r = await rotateInstanceTokenFromCli(db, {
+          oldId: id,
+          name: values.name,
+          expiresInDays:
+            values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
+        });
+        console.error(
+          `created instance token ${r.id}, expires ${iso(r.expiresAt)}, and revoked ${r.revokedId}. The new token is shown once. Remove TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256 if it is set.`,
+        );
+        console.log(r.secret);
       } else {
-        throw new Error("--instance works with create, list and revoke");
+        throw new Error("--instance works with create, list, revoke and rotate");
       }
     } finally {
       db.close();
