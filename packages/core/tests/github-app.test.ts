@@ -185,6 +185,12 @@ describe("manifest", () => {
     expect(buildManifest({ ...o, claimFlow: true }).public).toBe(true);
   });
 
+  test("setup_on_update only in claim mode", () => {
+    const o = { name: "Turntable", url: "https://ci.example.com", redirectUrl: "http://x/cb" };
+    expect(buildManifest(o).setup_on_update).toBeUndefined();
+    expect(buildManifest({ ...o, claimFlow: true }).setup_on_update).toBe(true);
+  });
+
   test("the page posts the manifest to GitHub with the state, and escapes it", () => {
     const html = manifestPage({ name: 'a"<b>' }, "st4te", "my-org");
     expect(html).toContain(

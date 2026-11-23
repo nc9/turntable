@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createOrg, getInstallation, listAudit, listProjects, listRepos, type Db } from "../src/db";
 import {
   CLAIM_PATH,
+  CLAIM_TTL_MS,
   ClaimError,
   InstallationClaims,
   CLAIM_COOKIE,
@@ -402,6 +403,94 @@ describe("the installation claim flow", () => {
     expect((await h.callback({ ...q, code: "other" })).status).toBe(403);
     expect(await getInstallation(h.db, "100")).toBeUndefined();
     expect((await h.callback({ ...q, code: "code-b" })).status).toBe(200); // case-insensitive match
+  });
+
+  describe("claiming an existing installation from its configure page", () => {
+    // What GitHub's "Redirect on update" sends: no state, the cookie from the confirmation page.
+    const configure = async (h: Awaited<ReturnType<typeof harness>>, installationId?: string) => {
+      const { url } = await h.claims.start(h.tenantB.id, "token:t1", {
+        ...(installationId ? { installationId } : {}),
+      });
+      const state = h.stateOf(url);
+      const { csrf, token } = await h.open(url);
+      const go = await h.submit(state, { csrf, token });
+      return { state, go, nonce: h.nonceOf(state) };
+    };
+    const upd = { installation_id: "100", setup_action: "update", code: "code-b" };
+
+    test("the confirm page sends the user to the installation's configure page", async () => {
+      const h = await harness();
+      const { go } = await configure(h, "100");
+      expect(go.status).toBe(303);
+      expect(go.headers.get("location")).toBe(
+        "https://github.com/organizations/acme/settings/installations/100",
+      );
+      h.f.installations.set(
+        "101",
+        inst("101", "42", { account: { login: "alice", id: "31", type: "User" } }),
+      );
+      expect((await configure(h, "101")).go.headers.get("location")).toBe(
+        "https://github.com/settings/installations/101",
+      );
+      // an installation the App does not have is refused at the confirm page
+      expect((await configure(h, "999")).go.status).toBe(404);
+    });
+
+    test("update with every proof claims the installation and its repos", async () => {
+      const h = await harness();
+      const { nonce } = await configure(h, "100");
+      const res = await h.callback(upd, nonce);
+      expect(res.status).toBe(200);
+      expect((await getInstallation(h.db, "100"))?.orgId).toBe(h.tenantB.id);
+      expect((await listRepos(h.db, { orgId: h.tenantB.id })).length).toBe(1);
+      const ok = (await listAudit(h.db, { orgId: h.tenantB.id })).find(
+        (r) => r.op === "claim_installation",
+      );
+      expect(ok?.outcome).toBe("ok");
+    });
+
+    test("refused without the cookie, with a wrong cookie, and on a reused nonce", async () => {
+      const h = await harness();
+      const { nonce } = await configure(h, "100");
+      expect((await h.callback(upd, null)).status).toBe(400); // no state and no cookie
+      expect((await h.callback(upd, "not-the-nonce")).status).toBe(400);
+      expect(await getInstallation(h.db, "100")).toBeUndefined();
+      // an install (not update) without a state is still refused
+      expect((await h.callback({ ...upd, setup_action: "install" }, nonce)).status).toBe(400);
+      expect((await h.callback(upd, nonce)).status).toBe(200);
+      expect((await h.callback(upd, nonce)).status).toBe(400);
+    });
+
+    test("refused after the claim expired", async () => {
+      const h = await harness();
+      const { nonce } = await configure(h, "100");
+      h.advance(CLAIM_TTL_MS + 1);
+      expect((await h.callback(upd, nonce)).status).toBe(400);
+    });
+
+    test("refused for an org member who is not an admin, and for a user without access", async () => {
+      const h = await harness();
+      h.users.set("member", { ...ownerOf100, adminOf: [] });
+      const { nonce } = await configure(h, "100");
+      expect((await h.callback({ ...upd, code: "member" }, nonce)).status).toBe(403);
+      expect((await h.callback({ ...upd, installation_id: "200" }, nonce)).status).toBe(403);
+      expect(await getInstallation(h.db, "100")).toBeUndefined();
+      // the refusals did not burn the claim
+      expect((await h.callback(upd, nonce)).status).toBe(200);
+    });
+
+    test("an installation held by another org is never moved", async () => {
+      const h = await harness();
+      const first = await configure(h, "100");
+      expect((await h.callback(upd, first.nonce)).status).toBe(200);
+      const other = await createOrg(h.db, { slug: "tenant-c", name: "Tenant C" });
+      const { url } = await h.claims.start(other.id, "token:t2", { installationId: "100" });
+      const { csrf, token } = await h.open(url);
+      await h.submit(h.stateOf(url), { csrf, token });
+      const res = await h.callback(upd, h.nonceOf(h.stateOf(url)));
+      expect(res.status).toBe(409);
+      expect((await getInstallation(h.db, "100"))?.orgId).toBe(h.tenantB.id);
+    });
   });
 
   test("a state is single use", async () => {
