@@ -577,3 +577,51 @@ describe("tokens", () => {
     expect(!r.ok && r.error.message).toBe(`changing ${KEY} requires role owner`);
   });
 });
+
+describe("strictness keys resolve from the project row only (#369)", () => {
+  // `lockSettingKey` serialises the writers of one (org, key) and the one-way check reads the
+  // effective value once. Both assume a strictness key has a single stored scope. If a key gains
+  // org scope or inheritance, the lock and the check must be reworked first.
+  const WHY =
+    "a strictness key must resolve from the project row only. Giving it org scope or inheritance needs the per-key lock (lockSettingKey) and the one-way check reworked first, see #369";
+  const strict = settingsRegistry.settings.filter((d) => d.strictness);
+
+  test("the registry has at least one strictness key", () => {
+    expect(strict.length).toBeGreaterThan(0);
+  });
+
+  for (const def of strict) {
+    test(`${def.key}: the effective value comes from the project row, not an org or instance row`, async () => {
+      expect(def.scope, WHY).toBe("project");
+      const order = def.strictness!;
+      const other = order.find((v) => v !== def.default)!;
+      const subject = { orgId: a.orgId, orgSlug: "org-a", projectId: a.projectId };
+      const plain = rt();
+      // Rows at the other scopes, set to a value the default is not, must change nothing.
+      await putStoredSetting(
+        db,
+        { kind: "org", id: a.orgId, orgId: a.orgId },
+        def.key,
+        other,
+        "t",
+        1,
+      );
+      await putStoredSetting(db, { kind: "instance", id: "", orgId: null }, def.key, other, "t", 1);
+      const inherited = await resolveSetting(plain, db, def.key, subject);
+      expect(inherited, WHY).toMatchObject({ value: def.default, source: "default" });
+      // The project row is what counts.
+      await putStoredSetting(
+        db,
+        { kind: "project", id: a.projectId, orgId: a.orgId },
+        def.key,
+        order[order.length - 1],
+        "t",
+        1,
+      );
+      expect(await resolveSetting(plain, db, def.key, subject), WHY).toMatchObject({
+        value: order[order.length - 1],
+        source: "db",
+      });
+    });
+  }
+});
