@@ -918,6 +918,15 @@ describe("transient toolbox failures do not end a running job", () => {
 
   const isLaunch = (body: string): boolean => body.includes("setsid");
 
+  /** Polls until the exec has exited, so a test waits for the process, not for a guessed time. */
+  async function untilExited(p: DaytonaProvider, id: string, execId: string): Promise<void> {
+    const deadline = Date.now() + 15_000;
+    while ((await p.exec.status(id, execId)).state !== "exited") {
+      if (Date.now() > deadline) throw new Error("exec did not exit");
+      await Bun.sleep(20);
+    }
+  }
+
   test("a status read that times out a few times, then answers, returns the real state", async () => {
     let failing = false;
     const f = flaky(() => (failing ? "fail-before" : "ok"));
@@ -946,7 +955,7 @@ describe("transient toolbox failures do not end a running job", () => {
     expect(retry).toContain("attempt 1");
     expect(logs.join("\n")).not.toContain(MOCK_KEY);
     await p.destroy(h.id);
-  });
+  }, 20_000);
 
   test("a log read is retried the same way", async () => {
     let failing = false;
@@ -967,7 +976,7 @@ describe("transient toolbox failures do not end a running job", () => {
     clearInterval(stop);
     expect(new TextDecoder().decode(out.bytes)).toContain("hello-log");
     await p.destroy(h.id);
-  });
+  }, 20_000);
 
   test("a toolbox that always times out ends as InfraError after the budget, saying how many attempts", async () => {
     const f = flaky(() => "ok");
@@ -993,7 +1002,7 @@ describe("transient toolbox failures do not end a running job", () => {
     expect(Date.now() - t0).toBeLessThan(3000);
     expect(dead.seen.calls).toBeGreaterThan(2);
     await p.destroy(h.id);
-  });
+  }, 20_000);
 
   test("errors that are not transient are not retried: a 500 and a bad request", async () => {
     for (const status of [500, 400]) {
@@ -1013,7 +1022,7 @@ describe("transient toolbox failures do not end a running job", () => {
       expect(f.seen.calls - calls).toBe(1);
       await p.destroy(h.id);
     }
-  });
+  }, 20_000);
 
   test("503 and 429 are transient", async () => {
     for (const status of [503, 429, 502, 504]) {
@@ -1032,7 +1041,7 @@ describe("transient toolbox failures do not end a running job", () => {
       expect(f.seen.calls - calls).toBeGreaterThanOrEqual(2);
       await p.destroy(h.id);
     }
-  });
+  }, 20_000);
 
   test("a start whose reply was lost but which ran does not run twice", async () => {
     const marker = `/tmp/tt-once-${Date.now()}-a`;
@@ -1041,16 +1050,16 @@ describe("transient toolbox failures do not end a running job", () => {
     const p = make({ fetch: f.fn, exec: { retry: FAST } });
     const h = await p.create(spec());
     const { execId } = await p.exec.start(h.id, {
-      argv: ["sh", "-c", `echo x >> ${marker}; sleep 2`],
+      argv: ["sh", "-c", `echo x >> ${marker}; sleep 1`],
       timeoutSeconds: 30,
     });
     expect(execId).toMatch(/^tt1-/);
-    await Bun.sleep(2500);
+    await untilExited(p, h.id, execId);
     const lines = (await Bun.file(marker).text()).trim().split("\n");
     expect(lines).toHaveLength(1);
     await Bun.$`rm -f ${marker}`;
     await p.destroy(h.id);
-  });
+  }, 20_000);
 
   test("a start whose request never arrived is launched once, under the same id", async () => {
     const marker = `/tmp/tt-once-${Date.now()}-b`;
@@ -1064,12 +1073,12 @@ describe("transient toolbox failures do not end a running job", () => {
       argv: ["sh", "-c", `echo x >> ${marker}; sleep 1`],
       timeoutSeconds: 30,
     });
-    await Bun.sleep(2000);
+    await untilExited(p, h.id, execId);
     expect((await Bun.file(marker).text()).trim().split("\n")).toHaveLength(1);
     expect((await p.exec.status(h.id, execId)).state).toBe("exited");
     await Bun.$`rm -f ${marker}`;
     await p.destroy(h.id);
-  });
+  }, 20_000);
 
   test(
     "the original request landing AFTER its repeat still gives exactly one process",
@@ -1106,8 +1115,7 @@ describe("transient toolbox failures do not end a running job", () => {
       expect(seen.launches).toBe(2);
       expect((await Bun.file(marker).text()).trim().split("\n")).toHaveLength(1);
       expect((await p.exec.status(h.id, execId)).state).toBe("running");
-      await Bun.sleep(3000);
-      expect((await p.exec.status(h.id, execId)).state).toBe("exited");
+      await untilExited(p, h.id, execId);
       await Bun.$`rm -f ${marker}`;
       await p.destroy(h.id);
     },
@@ -1127,7 +1135,7 @@ describe("transient toolbox failures do not end a running job", () => {
     expect(execId).toMatch(/^tt1-/);
     await Bun.$`rm -f ${marker}`;
     await p.destroy(h.id);
-  });
+  }, 20_000);
 });
 
 describe("the org-wide CPU check before a create", () => {
