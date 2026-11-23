@@ -33,6 +33,16 @@ export async function tarballReader(
   const dec = new TextDecoder();
   return (path) => {
     assertRepoRelative(path);
+    // Only the canonical spelling of a path is looked up. Anything else (`a//b`, `./a`, `a/./b`,
+    // `a/`, an empty name) is refused loudly rather than read as "no such file": the planner and
+    // the extractor must never be asked about two spellings of one file.
+    if (
+      path === "" ||
+      path.startsWith("/") ||
+      path.endsWith("/") ||
+      path.split("/").some((s) => s === "" || s === "." || s === "..")
+    )
+      throw new UnsafePathError(path, "is not a canonical repository path");
     const parts = path.split("/");
     for (let i = 1; i < parts.length; i += 1) {
       const parent = entries.get(parts.slice(0, i).join("/"));

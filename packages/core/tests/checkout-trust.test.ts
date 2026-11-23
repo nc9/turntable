@@ -139,25 +139,27 @@ describe("the child's output is not trusted", () => {
     ).rejects.toThrow();
   });
 
-  test("readChildTarball checks the kind, the owner, the cap and the size, and never follows a link", () => {
+  test("readChildTarball checks the kind, the owner, the cap and the size, and never follows a link", async () => {
     const f = join(tmp, "good.tgz");
     writeFileSync(f, new Uint8Array(100));
-    expect(readChildTarball(f, { maxBytes: 1000, expectBytes: 100 })).toHaveLength(100);
-    expect(() => readChildTarball(f, { maxBytes: 50, expectBytes: 100 })).toThrow(
+    expect(await readChildTarball(f, { maxBytes: 1000, expectBytes: 100 })).toHaveLength(100);
+    await expect(readChildTarball(f, { maxBytes: 50, expectBytes: 100 })).rejects.toThrow(
       /larger than the cap/,
     );
-    expect(() => readChildTarball(f, { maxBytes: 1000, expectBytes: 99 })).toThrow(/not the size/);
-    expect(() =>
+    await expect(readChildTarball(f, { maxBytes: 1000, expectBytes: 99 })).rejects.toThrow(
+      /not the size/,
+    );
+    await expect(
       readChildTarball(f, { maxBytes: 1000, expectBytes: 100, uid: (process.getuid?.() ?? 0) + 1 }),
-    ).toThrow(/not owned/);
+    ).rejects.toThrow(/not owned/);
     const dirPath = join(tmp, "adir");
     mkdirSync(dirPath);
-    expect(() => readChildTarball(dirPath, { maxBytes: 1000, expectBytes: 0 })).toThrow(
+    await expect(readChildTarball(dirPath, { maxBytes: 1000, expectBytes: 0 })).rejects.toThrow(
       /not a regular file/,
     );
     const link = join(tmp, "link.tgz");
     symlinkSync(f, link);
-    expect(() => readChildTarball(link, { maxBytes: 1000, expectBytes: 100 })).toThrow(
+    await expect(readChildTarball(link, { maxBytes: 1000, expectBytes: 100 })).rejects.toThrow(
       /not a regular file/,
     );
   });
@@ -180,6 +182,14 @@ describe("reading from the tarball keeps the safe reader's rules", () => {
     expect(() => read("../x")).toThrow(UnsafePathError);
     expect(() => read("b-big.txt")).toThrow(/larger than/);
     expect(() => read("c-later.txt")).toThrow(/more text than a checkout keeps/);
+  });
+
+  test("a path that is not in its canonical spelling is refused loudly, never read as missing", async () => {
+    const tgz = await archive({ "a/b": "x" });
+    const read = await tarballReader(tgz, { maxUnpackedBytes: 1e6 });
+    expect(read("a/b")).toBe("x");
+    for (const p of ["a//b", "./a/b", "a/./b", "a/", "", "/a/b", "a/b/"])
+      expect(() => read(p), JSON.stringify(p)).toThrow(UnsafePathError);
   });
 
   test("the scan lists everything and keeps only small files; a bomb and too many entries are stopped", async () => {

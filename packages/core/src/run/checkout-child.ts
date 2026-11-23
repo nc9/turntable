@@ -8,16 +8,8 @@
 //     tarball caps) still bound what the child can ask for;
 //   - the child holds no secret: its environment is scrubbed, and it gets everything it needs as
 //     arguments.
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  readSync,
-} from "node:fs";
-import { readdir, rm, stat } from "node:fs/promises";
+import { constants, readFileSync } from "node:fs";
+import { lstat, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrubbedEnv } from "@longshore/provider-sdk";
@@ -281,35 +273,37 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
  * without following links and checked again through the descriptor, and what it holds must be as
  * long as the child said. Returns the bytes.
  */
-export function readChildTarball(
+export async function readChildTarball(
   path: string,
   o: { maxBytes: number; expectBytes: number; uid?: number | undefined },
-): Uint8Array {
+): Promise<Uint8Array> {
   const uid = o.uid ?? process.getuid?.();
-  const before = lstatSync(path);
+  const before = await lstat(path);
   if (!before.isFile()) throw new Error("the checkout's tarball is not a regular file");
   if (uid !== undefined && before.uid !== uid)
     throw new Error("the checkout's tarball is not owned by this user");
   if (before.size > o.maxBytes) throw new Error("the checkout's tarball is larger than the cap");
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fh = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const st = fstatSync(fd);
+    const st = await fh.stat();
     if (!st.isFile() || st.ino !== before.ino || st.dev !== before.dev)
       throw new Error("the checkout's tarball changed while it was opened");
+    if (uid !== undefined && st.uid !== uid)
+      throw new Error("the checkout's tarball is not owned by this user");
     if (st.size > o.maxBytes) throw new Error("the checkout's tarball is larger than the cap");
     if (st.size !== o.expectBytes)
       throw new Error("the checkout's tarball is not the size the child reported");
     const buf = Buffer.alloc(st.size);
     let off = 0;
     while (off < st.size) {
-      const n = readSync(fd, buf, off, st.size - off, off);
-      if (n === 0) break;
-      off += n;
+      const { bytesRead } = await fh.read(buf, off, st.size - off, off);
+      if (bytesRead === 0) break;
+      off += bytesRead;
     }
     if (off !== st.size) throw new Error("the checkout's tarball was cut short");
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
   } finally {
-    closeSync(fd);
+    await fh.close();
   }
 }
 

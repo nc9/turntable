@@ -179,7 +179,7 @@ export function gitRepoSource(
         // The child is not trusted: what it says it fetched, and the file it wrote, are checked.
         if (res.sha !== sha)
           throw new Error("the checkout is of a different commit than the one asked for");
-        const tarball = readChildTarball(out, {
+        const tarball = await readChildTarball(out, {
           maxBytes: lim.maxTarballBytes,
           expectBytes: res.tarballBytes,
         });

@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { scanTarGz, tarGzDirectoryToFile, TarFormatError } from "../src/tar";
+import { scanTarGz, tarGzDirectoryToFile, TarFormatError, writeTar } from "../src/tar";
 
 const tmp = mkdtempSync(join(tmpdir(), "ls-tarscan-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -163,6 +163,64 @@ describe("names: only canonical ones, nothing normalised and accepted", () => {
     await refuses(arc(file("f")), /root directory/, "no root");
     await refuses(arc(ROOT, ROOT), /repeated|root|segment/, "two roots");
     await refuses(arc(dir("a/"), ROOT), /root directory/, "root not first");
+  });
+});
+
+describe("size caps: names, pax bodies and the total of all names", () => {
+  test("the writer refuses a name or link target over 4096 bytes, as the scanner would", () => {
+    const w = (path: string, link?: string): Uint8Array =>
+      writeTar([
+        { path: "./", type: "dir", mode: 0o755 },
+        ...(link === undefined
+          ? [{ path, type: "file" as const, mode: 0o644, data: new Uint8Array(1) }]
+          : [{ path, type: "symlink" as const, mode: 0o777, linkTarget: link }]),
+      ]);
+    expect(() => w("f".repeat(4097))).toThrow(/4096/);
+    expect(() => w("l", "t".repeat(4097))).toThrow(/4096/);
+    expect(() => w("f".repeat(4096))).not.toThrow();
+  });
+
+  test("the scanner refuses a pax path over 4096 bytes and a pax linkpath over 4096 bytes", async () => {
+    const longPath = "p".repeat(4097);
+    await refuses(
+      arc(
+        ROOT,
+        pax(rec("path", longPath)),
+        file("x", "1", { name: Buffer.from(longPath.slice(0, 100)) }),
+      ),
+      /4096/,
+      "long path",
+    );
+    const target = "t".repeat(4097);
+    await refuses(
+      arc(
+        ROOT,
+        pax(rec("linkpath", target)),
+        sym("l", target, { link: Buffer.from(target.slice(0, 100)) }),
+      ),
+      /4096/,
+      "long linkpath",
+    );
+  });
+
+  test("a pax body over 1 MiB is refused", async () => {
+    await refuses(
+      arc(ROOT, pax("x".repeat(1024 * 1024 + 1)), file("x")),
+      /bad size/,
+      "huge pax body",
+    );
+  });
+
+  test("the names of all entries together are capped", async () => {
+    const parts: Buffer[][] = [ROOT];
+    // 3000 entries with ~4000-byte names would be 12 MB: use a lowered check via many long names
+    const long = "n".repeat(3900);
+    const n = Math.ceil((32 * 1024 * 1024) / 3900) + 2;
+    for (let i = 0; i < n; i += 1) {
+      const name = `${long}${i}`;
+      parts.push(pax(rec("path", name)), file("x", "", { name: Buffer.from(name.slice(0, 100)) }));
+    }
+    await refuses(arc(...parts), /add up to too much/, "total names");
   });
 });
 

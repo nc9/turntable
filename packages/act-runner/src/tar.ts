@@ -235,6 +235,9 @@ function entryChunks(e: TarWriteEntry): Uint8Array[] {
       ? enc.encode(e.linkTarget)
       : (e.linkTarget ?? new Uint8Array());
   const data = e.type === "file" ? (e.data ?? new Uint8Array()) : new Uint8Array();
+  // scanTarGz takes names up to PATH_MAX and no more: the writer refuses first.
+  if (enc.encode(path).length > MAX_NAME_BYTES || link.length > MAX_NAME_BYTES)
+    throw new Error("tar: a name or link target is longer than 4096 bytes");
   const long: Record<string, string> = {};
   if (enc.encode(path).length > 100) long.path = path;
   if (link.length > 100) {
@@ -419,10 +422,15 @@ function strictOctal(h: Uint8Array, off: number, len: number, what: string): num
   return Number.parseInt(s, 8);
 }
 const utf8 = new TextDecoder("utf-8", { fatal: true });
-const PAX_VALUE_CAP = 64 * 1024;
+const PAX_VALUE_CAP = 1024 * 1024;
+/** A path (or link target) over this many bytes is not one a filesystem takes (PATH_MAX). */
+const MAX_NAME_BYTES = 4096;
+/** All names and link targets together: a listing of millions of entries cannot be used to exhaust memory. */
+const MAX_TOTAL_NAME_BYTES = 32 * 1024 * 1024;
 
 /** A path as our writer writes it: no absolute path, no empty, `.` or `..` segment, no `./` prefix, no doubled slash. */
 function canonical(path: string, dir: boolean): string[] {
+  if (Buffer.byteLength(path) > MAX_NAME_BYTES) bad("an entry name is longer than 4096 bytes");
   let p = path;
   if (dir) {
     if (!p.endsWith("/") || p.endsWith("//"))
@@ -509,6 +517,7 @@ export async function scanTarGz(
   let captured = 0;
   let pending: Buffer = Buffer.alloc(0);
   let zeroBlocks = 0;
+  let nameBytes_ = 0;
   let pax: { path?: string; linkpath?: string } | undefined;
   let first = true;
   type Cur = {
@@ -625,6 +634,9 @@ export async function scanTarGz(
       else if (p.type !== "dir") bad("an entry is under a symlink or a file");
     }
     if (out.size >= o.maxEntries) bad("too many entries");
+    if (link.length > MAX_NAME_BYTES) bad("a link target is longer than 4096 bytes");
+    nameBytes_ += Buffer.byteLength(key) + link.length;
+    if (nameBytes_ > MAX_TOTAL_NAME_BYTES) bad("the names in the archive add up to too much");
     const wantData = type === "file" && size <= o.captureUpTo && captured + size <= o.captureTotal;
     if (wantData) captured += size;
     cur = {
