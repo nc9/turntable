@@ -1,5 +1,6 @@
 import { Lock } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
+import { SettingsSection } from "@/features/settings/settings-section";
 import { useScope } from "@/features/shell/scope";
 
 export function SettingsPage() {
@@ -15,7 +16,7 @@ export function SettingsPage() {
     <div className="mx-auto w-full max-w-3xl px-4 pb-16 pt-6 sm:px-5">
       <h1 className="text-xl font-semibold tracking-tight">Project settings</h1>
       <p className="mt-0.5 text-sm text-dim">
-        Read-only for now. Editing arrives with the configuration API.
+        The project's identity is read-only. Its settings below show where each value comes from.
       </p>
       <dl className="mt-6 divide-y divide-line overflow-hidden rounded-xl border border-line">
         {rows.map(([k, v]) => (
@@ -28,6 +29,12 @@ export function SettingsPage() {
           </div>
         ))}
       </dl>
+      {scope.project ? (
+        <div className="mt-8">
+          <h2 className="mb-3 text-sm font-semibold">Settings</h2>
+          <SettingsSection key={scope.project.id} project={scope.project.slug} />
+        </div>
+      ) : null}
       <p className="mt-6 text-sm text-dim">
         Secrets, environments and approval rules will live here. Secret values are never shown in
         the UI.

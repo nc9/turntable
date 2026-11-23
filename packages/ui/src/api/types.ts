@@ -484,3 +484,23 @@ export type QuotaUsage = {
 };
 
 export type OrgQuotas = { limits: QuotaLimits; usage: QuotaUsage[] };
+
+export type SettingScope = "org" | "project";
+export type SettingSource = "env" | "toml" | "db" | "default";
+
+/** One org or project setting from `list_settings`: its effective value, source and lock. */
+export type Setting = {
+  key: string;
+  scope: SettingScope;
+  description: string;
+  value: unknown;
+  default: unknown;
+  source: SettingSource;
+  /** Set by the environment or `turntable.toml`: it cannot be changed here. */
+  locked: boolean;
+  /** For a locked value, the variable name, or `toml` (the file path is not shared). */
+  lockedBy: string | null;
+  /** The least role that may change it. */
+  role: Whoami["role"];
+  mcpEditable: boolean;
+};

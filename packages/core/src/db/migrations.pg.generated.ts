@@ -206,8 +206,15 @@ export const migrations: Migration[] = [
     ]
   },
   {
+    "tag": "0010_untrusted_run_approval_to_settings",
+    "when": 1795426897008,
+    "statements": [
+      "-- #321: untrusted_run_approval moves onto the settings registry. Every project's current value\n-- is copied into the settings table, so the resolver reads what the column held. The column\n-- stays (nothing reads or writes it any more), so rolling the binary back loses nothing but\n-- changes made after this ran.\nINSERT INTO \"settings\" (\"scope_kind\", \"scope_id\", \"org_id\", \"key\", \"value\", \"updated_by\", \"updated_at\")\nSELECT 'project', \"id\", \"org_id\", 'untrusted_run_approval', '\"' || \"untrusted_run_approval\" || '\"', 'migration', (extract(epoch from now()) * 1000)::bigint\nFROM \"projects\"\nWHERE NOT EXISTS (\n\tSELECT 1 FROM \"settings\"\n\tWHERE \"settings\".\"scope_kind\" = 'project' AND \"settings\".\"scope_id\" = \"projects\".\"id\" AND \"settings\".\"key\" = 'untrusted_run_approval'\n);"
+    ]
+  },
+  {
     "tag": "0011_attempt_sandbox_ttl",
-    "when": 1795427015421,
+    "when": 1795432629361,
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"sandbox_ttl_seconds\" bigint;"
     ]

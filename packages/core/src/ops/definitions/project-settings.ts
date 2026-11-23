@@ -10,7 +10,9 @@ import {
 } from "../../db/repos";
 import { UNTRUSTED_RUN_APPROVALS } from "../../db/schema";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
-import { HUMAN_MODE_UNAVAILABLE } from "../approval-policy";
+import { settingsRegistry, untrustedRunApprovalSetting } from "../../settings/definitions";
+import { createSettingsRuntime } from "../../settings/resolve";
+import { effectiveApproval, guardSettingChange } from "../setting-guard";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 
@@ -52,6 +54,13 @@ export const getProjectSettings = defineOp({
   async handler(ctx) {
     if (!ctx.scope.projectId) throw new OpError("invalid_input", "a project is required");
     const s = await getProjectSandboxSettings(ctx.db, ctx.scope);
+    // The effective policy: a value in the environment or turntable.toml wins over the stored one.
+    s.untrustedRunApproval = await effectiveApproval(
+      ctx.settings,
+      ctx.db,
+      ctx.scope.orgId,
+      ctx.scope.projectId,
+    );
     return {
       project: ctx.scope.projectId,
       sandbox_snapshot: s.sandboxSnapshot,
@@ -113,18 +122,36 @@ export const setProjectSettings = defineOp({
         `max_concurrent ${i.max_concurrent} is above the instance's per-org cap of ${cap}; it can only lower it`,
       );
     }
-    if (i.untrusted_run_approval === "human")
-      throw new OpError("invalid_input", HUMAN_MODE_UNAVAILABLE);
     const scope = { orgId: org.id, projectId: project.id };
+    const rt = ctx.settings ?? createSettingsRuntime(settingsRegistry);
+    // A thin alias of set_setting: the same lock, role, MCP and value refusals, so selecting
+    // `human` is refused by the registry and a turntable.toml value locks the field.
+    if (i.untrusted_run_approval !== undefined) {
+      await guardSettingChange(
+        rt,
+        ctx.db,
+        untrustedRunApprovalSetting,
+        { orgId: org.id, orgSlug: org.slug, projectId: project.id, projectSlug: project.slug },
+        { principal: ctx.principal, viaMcp: ctx.viaMcp },
+        { value: i.untrusted_run_approval },
+      );
+    }
     const from = await getProjectSandboxSettings(ctx.db, scope);
-    const to = await setProjectSandboxSettings(ctx.db, scope, {
-      ...(i.sandbox_snapshot !== undefined ? { sandboxSnapshot: i.sandbox_snapshot } : {}),
-      ...(i.max_concurrent !== undefined ? { maxConcurrent: i.max_concurrent } : {}),
-      ...(i.untrusted_run_approval !== undefined
-        ? { untrustedRunApproval: i.untrusted_run_approval }
-        : {}),
-    });
+    from.untrustedRunApproval = await effectiveApproval(rt, ctx.db, org.id, project.id);
+    const to = await setProjectSandboxSettings(
+      ctx.db,
+      scope,
+      {
+        ...(i.sandbox_snapshot !== undefined ? { sandboxSnapshot: i.sandbox_snapshot } : {}),
+        ...(i.max_concurrent !== undefined ? { maxConcurrent: i.max_concurrent } : {}),
+        ...(i.untrusted_run_approval !== undefined
+          ? { untrustedRunApproval: i.untrusted_run_approval }
+          : {}),
+      },
+      { id: ctx.principal.id, now: ctx.now() },
+    );
     if (!to) throw new OpError("not_found", "no such project");
+    to.untrustedRunApproval = await effectiveApproval(rt, ctx.db, org.id, project.id);
     // The org's own chain says it too: its operators should see who changed their project.
     await appendAudit(ctx.db, scope, {
       principalKind: "instance",

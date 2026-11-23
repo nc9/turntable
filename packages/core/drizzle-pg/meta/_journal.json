@@ -73,9 +73,16 @@
       "breakpoints": true
     },
     {
+      "idx": 10,
+      "version": "7",
+      "when": 1795426897008,
+      "tag": "0010_untrusted_run_approval_to_settings",
+      "breakpoints": true
+    },
+    {
       "idx": 11,
       "version": "7",
-      "when": 1795427015421,
+      "when": 1795432629361,
       "tag": "0011_attempt_sandbox_ttl",
       "breakpoints": true
     }

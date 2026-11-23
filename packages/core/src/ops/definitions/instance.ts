@@ -13,6 +13,7 @@ import {
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
+import { rotateInstanceToken } from "../instance-token-cli";
 import { quotaView, quotaViewSchema } from "./quotas";
 
 const iso = (ms: number | null | undefined): string | null =>
@@ -134,5 +135,56 @@ export const setQuotas = defineOp({
       },
     );
     return quotaView(ctx, org.id);
+  },
+});
+
+export const rotateInstanceTokenOp = defineOp({
+  name: "rotate_instance_token",
+  summary:
+    "Replace the instance administrator token in use with a new one (instance administrator only).",
+  description:
+    "Mints a new instance token with the same name (or the one given) and revokes the token that " +
+    "made this call, in one step. The new secret is returned once; only its hash is stored, so it " +
+    "cannot be shown again. Use it once after a first boot with " +
+    "TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256, then remove that variable. The audit entry names " +
+    "the two token ids and never a secret or a hash. Only the instance administrator can call it. " +
+    "Not an MCP tool: instance tokens are not MCP credentials.",
+  input: z.object({
+    name: z.string().min(1).max(80).optional().describe("Label of the new token."),
+    expires_days: z.int().min(1).max(90).optional().describe("Lifetime in days. Default 30."),
+  }),
+  output: z.object({
+    id: z.string(),
+    secret: z.string().describe("The new token. Shown once."),
+    expires_at: z.string(),
+    revoked_id: z.string(),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/tokens/rotate" },
+  mcp: false,
+  oneTimeSecretFields: ["secret"],
+  auditDetail: (o) => ({ id: o.id, revoked_id: o.revoked_id }),
+  async handler(ctx, i) {
+    try {
+      const r = await rotateInstanceToken(ctx.db, {
+        oldId: ctx.principal.id,
+        name: i.name,
+        expiresInDays: i.expires_days,
+        createdBy: `instance:${ctx.principal.id}`,
+        now: ctx.now,
+      });
+      return {
+        id: r.id,
+        secret: r.secret,
+        expires_at: new Date(r.expiresAt).toISOString(),
+        revoked_id: r.revokedId,
+      };
+    } catch (err) {
+      if (err instanceof Error) throw new OpError("invalid_input", err.message);
+      throw err;
+    }
   },
 });

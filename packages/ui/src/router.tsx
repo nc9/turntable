@@ -11,6 +11,7 @@ import { ApproveEnvironmentPage } from "@/features/runs/approve-environment-page
 import { ApproversPage } from "@/features/runs/approvers-page";
 import { QuotasPage } from "@/features/runs/quotas-page";
 import { UsagePage } from "@/features/runs/usage-page";
+import { OrgSettingsPage } from "@/features/settings/org-settings-page";
 import { SettingsPage } from "@/features/runs/settings-page";
 
 export type RunsSearch = {
@@ -102,6 +103,12 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const orgSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/settings",
+  component: OrgSettingsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   orgRoute,
@@ -113,6 +120,7 @@ const routeTree = rootRoute.addChildren([
   approversRoute,
   quotasRoute,
   usageRoute,
+  orgSettingsRoute,
   settingsRoute,
 ]);
 

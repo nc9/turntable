@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "adcb4576-9707-46fb-a6b1-8f29ea1e96a1",
-  "prevId": "3d51e8bf-0e78-4e7c-8e73-56d1548f330a",
+  "id": "b3303027-2288-482d-94cf-d83a6708e44f",
+  "prevId": "3158d1d1-641b-4568-bcc3-af101a320e66",
   "tables": {
     "action_pins": {
       "name": "action_pins",

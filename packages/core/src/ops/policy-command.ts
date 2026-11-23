@@ -1,3 +1,4 @@
+import { loadSettingsRuntime } from "../settings/boot";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openDatabase } from "../db";
@@ -56,6 +57,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       "sandbox-snapshot": { type: "string" },
       "max-concurrent": { type: "string" },
       "untrusted-run-approval": { type: "string" },
+      config: { type: "string" },
       "checks-mode": { type: "string" },
       "oidc-audiences": { type: "string" },
       ingest: { type: "string" },
@@ -94,7 +96,11 @@ async function ownPolicy(args: string[]): Promise<void> {
           `signing ${x.project}: release refs ${x.releaseRefs.join(", ")}; key ${x.signingKey ?? "(none)"}; approval environment ${x.environment}`,
         );
       }
-      for (const x of await showSandbox(db, values.org))
+      for (const x of await showSandbox(
+        db,
+        values.org,
+        loadSettingsRuntime({ config: values.config }),
+      ))
         console.log(
           `sandbox ${x.project}: snapshot ${x.settings.sandboxSnapshot ?? "(default)"}; max concurrent ${x.settings.maxConcurrent ?? "(no project limit)"}; untrusted run approval ${x.settings.untrustedRunApproval}`,
         );
@@ -135,11 +141,17 @@ async function ownPolicy(args: string[]): Promise<void> {
       values["max-concurrent"] !== undefined ||
       values["untrusted-run-approval"] !== undefined
     ) {
-      const r = await setSandboxPolicy(db, values.org, values.project, {
-        sandboxSnapshot: values["sandbox-snapshot"],
-        maxConcurrent: values["max-concurrent"],
-        untrustedRunApproval: values["untrusted-run-approval"],
-      });
+      const r = await setSandboxPolicy(
+        db,
+        values.org,
+        values.project,
+        {
+          sandboxSnapshot: values["sandbox-snapshot"],
+          maxConcurrent: values["max-concurrent"],
+          untrustedRunApproval: values["untrusted-run-approval"],
+        },
+        loadSettingsRuntime({ config: values.config }),
+      );
       console.error(
         `sandbox ${r.project}: snapshot ${r.from.sandboxSnapshot ?? "(default)"} -> ${r.to.sandboxSnapshot ?? "(default)"}; max concurrent ${r.from.maxConcurrent ?? "none"} -> ${r.to.maxConcurrent ?? "none"}; untrusted run approval ${r.from.untrustedRunApproval} -> ${r.to.untrustedRunApproval}`,
       );

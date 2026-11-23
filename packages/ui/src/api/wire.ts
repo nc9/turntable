@@ -371,3 +371,18 @@ export type WireQuotas = {
     held: string | null;
   }[];
 };
+
+export type WireSetting = {
+  key: string;
+  scope: "instance" | "org" | "project";
+  description: string;
+  value: unknown;
+  default: unknown;
+  source: "env" | "toml" | "db" | "default";
+  locked: boolean;
+  locked_by: string | null;
+  role: string;
+  mcp_editable: boolean;
+};
+
+export type WireSettings = { settings: WireSetting[]; next_cursor: string | null };

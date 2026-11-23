@@ -16,8 +16,20 @@ export type SettingSpec<T> = {
   /** Validates every value, whichever layer it came from. */
   type: z.ZodType<T>;
   default: T;
+  /**
+   * A value `type` accepts but that may not be selected yet: returns the reason. Enforced on
+   * every path that sets a value (the ops, the CLI, the config file and the environment), never
+   * on reading what is already stored, so a stored value still fails closed.
+   */
+  refuse?: (value: T) => string | undefined;
   /** The least role that may change it: `instance_admin` for instance settings, else an org role. */
   role: SettingRole;
+  /**
+   * An org or project setting only the instance administrator may change, whatever `role` says:
+   * `set_setting` refuses every org token and the instance op that aliases the setting is the
+   * way in. For settings that widen what a tenant's runs may do.
+   */
+  instanceAdminOnly?: boolean;
   /**
    * Whether `set_setting` may change it over MCP. False for anything that raises a limit or
    * widens what a run may do: a value in an agent's context is not a human decision (#188).

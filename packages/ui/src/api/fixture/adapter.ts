@@ -8,6 +8,7 @@ import type {
   Topic,
 } from "../realtime";
 import type { CheckSummary, RunDetail, Whoami } from "../types";
+import { createFixtureSettings } from "./settings";
 import { createRng } from "./prng";
 import { createWorld, type World } from "./world";
 
@@ -64,6 +65,8 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         minLat + lagRng.next() * (maxLat - minLat),
       ),
     );
+
+  const settings = createFixtureSettings(() => options.role ?? "owner");
 
   const timer = setInterval(() => {
     world.tick();
@@ -160,6 +163,8 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     getArtifacts: ({ runId }) => delay(() => world.getArtifacts(runId)),
     checkArtifactConsumption: (a) => delay(() => world.checkArtifactConsumption(a)),
     getQuotas: () => delay(() => world.getQuotas()),
+    listSettings: (a) => delay(() => settings.list(a?.project)),
+    setSetting: (a) => delay(() => settings.set(a)),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
     approveEnvironment: ({ statement, signature }) =>
