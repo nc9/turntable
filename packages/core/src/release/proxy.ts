@@ -350,10 +350,25 @@ export class ReleaseProxy {
     // release finalized, expired or replaced by a newer one gets nothing more, and its
     // registration ends.
     if ((await getFreeze(this.#o.db, live)).frozen) return { ok: false, reason: "frozen" };
+    // The request is refused here and the refusal is written to the job. The registration itself is
+    // ended by `sweepApprovals`, not from inside this call: revoking closes the attempt's open
+    // tunnels, which would cut the connection this refusal is about to be written on (the job
+    // would see a reset instead of the reason). Nothing more is handed out meanwhile, because
+    // every request re-checks.
     const gone = this.#approvalGone(live);
     if (gone) {
-      this.release(scope.attemptId);
-      await this.#revokedAudit(scope.attemptId, live, gone);
+      await appendAudit(
+        this.#o.db,
+        { orgId: live.orgId, projectId: live.projectId },
+        {
+          principalKind: "attempt",
+          principalId: scope.attemptId,
+          op: "release_proxy_refuse",
+          effect: "use",
+          outcome: gone,
+          input: { run: live.runId, rule: rule.id },
+        },
+      );
       return { ok: false, reason: gone };
     }
     if (rule.secret === RELEASE_GITHUB_SECRET) {
