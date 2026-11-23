@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { sql, type SQL } from "drizzle-orm";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobCa } from "@longshore/proxy";
+import { DIALECT } from "../src/db/dialect";
 import { createOrg, openDatabase, setGithubApp, type Db } from "../src/db";
 import { dispatch, registry } from "../src/ops";
-import { migrations } from "../src/db/migrations.generated";
+import { embeddedMigrationTags } from "../src/db/read-only";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../src/github/app-auth";
 import { SecretStore } from "../src/secrets/store";
 import {
@@ -27,6 +29,7 @@ import { ForwardedObserver } from "../src/doctor/observe";
 import { channelProbe, readerOf } from "../src/doctor/real";
 import {
   forApi,
+  report,
   type DoctorFs,
   type DoctorInputs,
   type FileFacts,
@@ -72,6 +75,14 @@ const goodFiles = (): Record<
   [KEY]: { size: 32, mode: 0o600 },
 });
 
+const onPostgres = DIALECT === "pg";
+
+/** Runs a write against the test database on either dialect (the doctor itself only reads). */
+async function edit(q: SQL): Promise<void> {
+  const orm = db.orm as unknown as { run?(q: SQL): unknown; execute?(q: SQL): Promise<unknown> };
+  await (onPostgres ? orm.execute!(q) : orm.run!(q));
+}
+
 let db: Db;
 let masterKey: Buffer;
 let orgId: string;
@@ -106,8 +117,8 @@ const base = (over: Partial<DoctorInputs> = {}): DoctorInputs => ({
   hosted: false,
   fs: fakeFs(goodFiles()),
   proc: { uid: 65532, gid: 65532 },
-  sqlite: readerOf(db),
-  expectedMigrations: migrations.map((m) => m.tag),
+  db: readerOf(db),
+  expectedMigrations: embeddedMigrationTags(),
   masterKey: () => masterKey,
   providerChecks: async () => [
     {
@@ -222,61 +233,56 @@ describe("the master key", () => {
 });
 
 describe("the database", () => {
-  test("up to date: reachable and every migration applied", () => {
-    const cs = checkDatabase(inputs);
+  test("up to date: reachable and every migration applied", async () => {
+    const cs = await checkDatabase(inputs);
     expect(one(cs, "database").status).toBe("pass");
     expect(one(cs, "migrations").status).toBe("pass");
   });
-  test("pending migrations warn, and a database from a newer version fails", () => {
-    const sqlite = (db.orm as unknown as { $client: { run(s: string, p?: unknown[]): void } })
-      .$client;
-    const last = migrations.at(-1)!.tag;
-    sqlite.run("DELETE FROM __longshore_migrations WHERE tag = ?", [last]);
-    expect(one(checkDatabase(inputs), "migrations")).toMatchObject({ status: "warn" });
-    sqlite.run("INSERT INTO __longshore_migrations (tag, applied_at) VALUES (?, ?)", [last, 1]);
-    sqlite.run("INSERT INTO __longshore_migrations (tag, applied_at) VALUES (?, ?)", [
-      "9999_from_the_future",
-      1,
-    ]);
-    const newer = one(checkDatabase(inputs), "migrations");
+  test("pending migrations warn, and a database from a newer version fails", async () => {
+    const last = embeddedMigrationTags().at(-1)!;
+    await edit(sql`DELETE FROM __longshore_migrations WHERE tag = ${last}`);
+    expect(one(await checkDatabase(inputs), "migrations")).toMatchObject({ status: "warn" });
+    await edit(sql`INSERT INTO __longshore_migrations (tag, applied_at) VALUES (${last}, 1)`);
+    await edit(
+      sql`INSERT INTO __longshore_migrations (tag, applied_at) VALUES ('9999_from_the_future', 1)`,
+    );
+    const newer = one(await checkDatabase(inputs), "migrations");
     expect(newer).toMatchObject({ status: "fail" });
     expect(newer.fix).toContain("backup");
   });
-  test("no file yet warns; an unopenable one fails", () => {
+  test("no file yet warns; an unopenable one fails", async () => {
     expect(
-      checkDatabase(base({ sqlite: undefined, openError: MISSING_DATABASE }))[0],
+      (await checkDatabase(base({ db: undefined, openError: MISSING_DATABASE })))[0],
     ).toMatchObject({ status: "warn" });
     expect(
-      checkDatabase(base({ sqlite: undefined, openError: "database is locked" }))[0],
+      (await checkDatabase(base({ db: undefined, openError: "database is locked" })))[0],
     ).toMatchObject({ status: "fail" });
   });
 });
 
 describe("the GitHub App", () => {
-  test("credentials present and opening pass", () => {
-    expect(checkGithubApp(inputs)).toMatchObject({ status: "pass" });
+  test("credentials present and opening pass", async () => {
+    expect(await checkGithubApp(inputs)).toMatchObject({ status: "pass" });
   });
   test("no App warns, and fails when hosted", async () => {
-    const empty = openDatabase(":memory:");
-    expect(checkGithubApp(base({ sqlite: readerOf(empty) }))).toMatchObject({ status: "warn" });
-    expect(checkGithubApp(base({ sqlite: readerOf(empty), hosted: true }))).toMatchObject({
-      status: "fail",
-    });
+    await edit(sql`DELETE FROM github_apps`);
+    expect(await checkGithubApp(inputs)).toMatchObject({ status: "warn" });
+    expect(await checkGithubApp(base({ hosted: true }))).toMatchObject({ status: "fail" });
   });
-  test("a missing webhook secret fails and names which", () => {
-    const sqlite = (db.orm as unknown as { $client: { run(s: string, p?: unknown[]): void } })
-      .$client;
-    sqlite.run("DELETE FROM secrets WHERE name = ?", [SECRET_WEBHOOK]);
-    const c = checkGithubApp(inputs);
+  test("a missing webhook secret fails and names which", async () => {
+    await edit(sql`DELETE FROM secrets WHERE name = ${SECRET_WEBHOOK}`);
+    const c = await checkGithubApp(inputs);
     expect(c).toMatchObject({ status: "fail" });
     expect(c.summary).toContain("webhook secret missing");
   });
-  test("a different master key cannot open the records: unreadable, and no value shown", () => {
-    const c = checkGithubApp(base({ masterKey: () => randomBytes(32) }));
+  test("a different master key cannot open the records: unreadable, and no value shown", async () => {
+    const c = await checkGithubApp(base({ masterKey: () => randomBytes(32) }));
     expect(c).toMatchObject({ status: "fail" });
     expect(c.summary).toContain("unreadable");
     expect(c.summary).not.toContain(WEBHOOK);
-    expect(checkGithubApp(base({ masterKey: () => undefined }))).toMatchObject({ status: "fail" });
+    expect(await checkGithubApp(base({ masterKey: () => undefined }))).toMatchObject({
+      status: "fail",
+    });
   });
 });
 
@@ -441,19 +447,17 @@ describe("the https redirect", () => {
 });
 
 describe("quotas", () => {
-  test("a build without the table says so", () => {
-    const noTable = { all: () => [] as Record<string, unknown>[] };
-    expect(checkQuotas(base({ sqlite: noTable }))).toMatchObject({ status: "pass" });
+  test("a build without the table says so", async () => {
+    const noTable = { all: async () => [], hasTable: async () => false };
+    expect(await checkQuotas(base({ db: noTable }))).toMatchObject({ status: "pass" });
   });
-  test("none set warns when hosted, set passes", () => {
-    const raw = (db.orm as unknown as { $client: { run(s: string, p?: unknown[]): void } }).$client;
-    expect(checkQuotas(inputs)).toMatchObject({ status: "pass" });
-    expect(checkQuotas(base({ hosted: true }))).toMatchObject({ status: "warn" });
-    raw.run(
-      "INSERT INTO org_quotas (org_id, max_concurrent, updated_by, updated_at) VALUES (?, ?, ?, ?)",
-      [orgId, 4, "test", 0],
+  test("none set warns when hosted, set passes", async () => {
+    expect(await checkQuotas(inputs)).toMatchObject({ status: "pass" });
+    expect(await checkQuotas(base({ hosted: true }))).toMatchObject({ status: "warn" });
+    await edit(
+      sql`INSERT INTO org_quotas (org_id, max_concurrent, updated_by, updated_at) VALUES (${orgId}, 4, 'test', 0)`,
     );
-    expect(checkQuotas(base({ hosted: true }))).toMatchObject({ status: "pass" });
+    expect(await checkQuotas(base({ hosted: true }))).toMatchObject({ status: "pass" });
   });
 });
 
@@ -583,7 +587,9 @@ describe("the operation and the command", () => {
       cred: Parameters<typeof dispatch>[1],
       doctor?: () => Promise<Awaited<ReturnType<typeof runDoctor>>>,
     ) => dispatch({ registry, db: wdb, ...(doctor ? { doctor } : {}) }, cred, "doctor", {});
-    const ok = await run(owner(a.scope.orgId), () => runDoctor(inputs));
+    // A canned report: on Postgres under test, seedWorld's fresh open empties the shared `db`.
+    const canned = report([{ id: "x", area: "keys", status: "pass", summary: "fine" }]);
+    const ok = await run(owner(a.scope.orgId), async () => canned);
     expect(ok.ok && (ok.output as { status: string }).status).toBe("pass");
     const unwired = await run(owner(a.scope.orgId));
     expect(unwired.ok && (unwired.output as { status: string }).status).toBe("warn");
@@ -622,8 +628,11 @@ describe("the operation and the command", () => {
             detail: leak,
           },
         ],
-        sqlite: {
-          all() {
+        db: {
+          all: async () => {
+            throw new Error(leak);
+          },
+          hasTable: async () => {
             throw new Error(leak);
           },
         },
@@ -670,44 +679,49 @@ describe("the operation and the command", () => {
     expect(calls).toBe(2);
   });
 
-  test("the command prints a report, changes nothing, and exits 1 on a failure", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ls-doctor-cli-"));
-    try {
-      const lines: string[] = [];
-      const log = console.log;
-      console.log = (m: string) => void lines.push(String(m));
-      let code: number;
+  // SQLite only: it relies on a data directory with no database file in it. A Postgres process is
+  // pointed at a server by URL, not by a file in the data directory.
+  test.skipIf(onPostgres)(
+    "the command prints a report, changes nothing, and exits 1 on a failure",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ls-doctor-cli-"));
       try {
-        code = await doctorCommand(
-          [
-            "--data-dir",
-            join(dir, "data"),
-            "--json",
-            "--provider",
-            "daytona",
-            "--provider-config",
-            join(dir, "nope.json"),
-          ],
-          { LONGSHORE_MASTER_KEY_FILE: join(dir, "absent.key") },
-        );
+        const lines: string[] = [];
+        const log = console.log;
+        console.log = (m: string) => void lines.push(String(m));
+        let code: number;
+        try {
+          code = await doctorCommand(
+            [
+              "--data-dir",
+              join(dir, "data"),
+              "--json",
+              "--provider",
+              "daytona",
+              "--provider-config",
+              join(dir, "nope.json"),
+            ],
+            { LONGSHORE_MASTER_KEY_FILE: join(dir, "absent.key") },
+          );
+        } finally {
+          console.log = log;
+        }
+        const r = JSON.parse(lines.join("\n")) as {
+          status: string;
+          checks: { id: string; status: string }[];
+        };
+        expect(r.status).toBe("fail");
+        expect(code).toBe(1);
+        expect(r.checks.find((c) => c.id === "master_key")?.status).toBe("fail");
+        expect(r.checks.find((c) => c.id === "database")?.status).toBe("warn");
+        expect(r.checks.some((c) => c.id.endsWith(".config") && c.status === "fail")).toBe(true);
+        // nothing was created: no database, no data directory
+        expect(readdirSync(dir)).toEqual([]);
       } finally {
-        console.log = log;
+        rmSync(dir, { recursive: true, force: true });
       }
-      const r = JSON.parse(lines.join("\n")) as {
-        status: string;
-        checks: { id: string; status: string }[];
-      };
-      expect(r.status).toBe("fail");
-      expect(code).toBe(1);
-      expect(r.checks.find((c) => c.id === "master_key")?.status).toBe("fail");
-      expect(r.checks.find((c) => c.id === "database")?.status).toBe("warn");
-      expect(r.checks.some((c) => c.id.endsWith(".config") && c.status === "fail")).toBe(true);
-      // nothing was created: no database, no data directory
-      expect(readdirSync(dir)).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 
   test("the report reads as lines with fixes under each problem", () => {
     const text = renderReport({

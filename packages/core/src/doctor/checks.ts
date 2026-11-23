@@ -1,4 +1,5 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { open, secretAad } from "../secrets/crypto";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../github/app-auth";
 import { type DoctorCheck, type DoctorInputs, report, type DoctorReport } from "./types";
@@ -172,9 +173,9 @@ export function checkMasterKey(i: DoctorInputs): DoctorCheck {
   );
 }
 
-export function checkDatabase(i: DoctorInputs): DoctorCheck[] {
+export async function checkDatabase(i: DoctorInputs): Promise<DoctorCheck[]> {
   const area = "database";
-  if (!i.sqlite && i.openError === MISSING_DATABASE) {
+  if (!i.db && i.openError === MISSING_DATABASE) {
     return [
       warn(
         "database",
@@ -184,7 +185,7 @@ export function checkDatabase(i: DoctorInputs): DoctorCheck[] {
       ),
     ];
   }
-  if (!i.sqlite) {
+  if (!i.db) {
     return [
       fail(
         "database",
@@ -197,7 +198,7 @@ export function checkDatabase(i: DoctorInputs): DoctorCheck[] {
   }
   const out: DoctorCheck[] = [];
   try {
-    i.sqlite.all("SELECT 1 AS ok");
+    await i.db.all(sql`SELECT 1 AS ok`);
     out.push(pass("database", area, "the database answers"));
   } catch (e) {
     return [
@@ -212,7 +213,9 @@ export function checkDatabase(i: DoctorInputs): DoctorCheck[] {
   }
   let applied: string[];
   try {
-    applied = i.sqlite.all("SELECT tag FROM __longshore_migrations").map((r) => String(r.tag));
+    applied = (await i.db.all(sql`SELECT tag FROM __longshore_migrations`)).map((r) =>
+      String(r.tag),
+    );
   } catch {
     out.push(
       warn(
@@ -252,7 +255,7 @@ export function checkDatabase(i: DoctorInputs): DoctorCheck[] {
 }
 
 /** The GitHub App's credentials: the app is registered, and its key and webhook secret open. */
-export function checkGithubApp(i: DoctorInputs): DoctorCheck {
+export async function checkGithubApp(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "github";
   const none = (): DoctorCheck =>
     i.hosted
@@ -268,16 +271,17 @@ export function checkGithubApp(i: DoctorInputs): DoctorCheck {
           "no GitHub App is configured: only polling and local runs are possible",
           "Run `longshore github-app create --url <public url>` to receive webhooks and report checks.",
         );
-  if (!i.sqlite)
+  if (!i.db)
     return fail(
       "github_app",
       area,
       "not checked: the database is not open",
       "Fix the database first.",
     );
+  const db = i.db;
   let app: { org_id: string } | undefined;
   try {
-    app = i.sqlite.all("SELECT org_id FROM github_apps ORDER BY created_at LIMIT 1")[0] as
+    app = (await i.db.all(sql`SELECT org_id FROM github_apps ORDER BY created_at LIMIT 1`))[0] as
       | { org_id: string }
       | undefined;
   } catch {
@@ -292,11 +296,11 @@ export function checkGithubApp(i: DoctorInputs): DoctorCheck {
       "the App exists but the master key is not available to check its credentials",
       "Set LONGSHORE_MASTER_KEY_FILE to the key the App was created with.",
     );
-  const opens = (name: string): "ok" | "missing" | "unreadable" => {
-    const row = i.sqlite!.all(
-      "SELECT ciphertext FROM secrets WHERE org_id = ? AND name = ?",
-      app!.org_id,
-      name,
+  const opens = async (name: string): Promise<"ok" | "missing" | "unreadable"> => {
+    const row = (
+      await db.all(
+        sql`SELECT ciphertext FROM secrets WHERE org_id = ${app!.org_id} AND name = ${name}`,
+      )
     )[0];
     if (!row) return "missing";
     try {
@@ -309,9 +313,9 @@ export function checkGithubApp(i: DoctorInputs): DoctorCheck {
     }
   };
   const state = {
-    "app id": opens(SECRET_APP_ID),
-    "private key": opens(SECRET_PRIVATE_KEY),
-    "webhook secret": opens(SECRET_WEBHOOK),
+    "app id": await opens(SECRET_APP_ID),
+    "private key": await opens(SECRET_PRIVATE_KEY),
+    "webhook secret": await opens(SECRET_WEBHOOK),
   };
   const bad = Object.entries(state).filter(([, v]) => v !== "ok");
   if (bad.length === 0)
@@ -537,15 +541,13 @@ export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
       );
 }
 
-export function checkQuotas(i: DoctorInputs): DoctorCheck {
+export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "limits";
-  if (!i.sqlite)
+  if (!i.db)
     return fail("quotas", area, "not checked: the database is not open", "Fix the database first.");
-  const table = i.sqlite.all(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'org_quotas'",
-  );
-  if (table.length === 0) return pass("quotas", area, "this build has no per-org quotas");
-  const n = Number(i.sqlite.all("SELECT count(*) AS n FROM org_quotas")[0]?.n ?? 0);
+  if (!(await i.db.hasTable("org_quotas")))
+    return pass("quotas", area, "this build has no per-org quotas");
+  const n = Number((await i.db.all(sql`SELECT count(*) AS n FROM org_quotas`))[0]?.n ?? 0);
   if (n > 0) return pass("quotas", area, `${n} org(s) have quotas set`);
   return i.hosted
     ? warn(

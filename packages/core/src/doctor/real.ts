@@ -1,6 +1,6 @@
-// The real environment for doctor: the filesystem, a read-only SQLite handle, the configured
+// The real environment for doctor: the filesystem, a read-only database handle, the configured
 // provider and the release channel.
-import { Database } from "bun:sqlite";
+import { sql, type SQL } from "drizzle-orm";
 import {
   closeSync,
   openSync,
@@ -13,7 +13,8 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { controlPost, type ControlTarget } from "@longshore/net";
-import { migrations } from "../db/migrations.generated";
+import { DIALECT } from "../db/dialect";
+import { embeddedMigrationTags, openReadOnly } from "../db/read-only";
 import { loadMasterKey } from "../secrets/crypto";
 import { createProvider } from "../scheduler/providers";
 import { resolveProviderConfig } from "../serve-config";
@@ -25,7 +26,7 @@ import type {
   DoctorFs,
   DoctorInputs,
   ForwardedSnapshot,
-  SqliteReader,
+  DbReader,
 } from "./types";
 
 export function realFs(): DoctorFs {
@@ -69,14 +70,36 @@ export function realFs(): DoctorFs {
   };
 }
 
-/** A SQLite handle for reading: one that can write is never handed to a check. */
-export function readOnlyReader(db: Database): SqliteReader {
-  return { all: (sql, ...params) => db.query(sql).all(...params) as Record<string, unknown>[] };
-}
-
-/** The server's own handle, as a reader: it can run queries and nothing else. */
-export function readerOf(db: { orm: unknown }): SqliteReader {
-  return readOnlyReader((db.orm as { $client: Database }).$client);
+/**
+ * The server's own handle, as a reader: it can run queries and nothing else. It goes through the
+ * ORM, so it is the same code on SQLite and Postgres.
+ */
+export function readerOf(db: { orm: unknown }): DbReader {
+  const orm = db.orm as {
+    all?(q: SQL): Record<string, unknown>[];
+    execute?(q: SQL): Promise<Record<string, unknown>[] | { rows: Record<string, unknown>[] }>;
+  };
+  const all = async (q: SQL): Promise<Record<string, unknown>[]> => {
+    if (DIALECT === "pg") {
+      const r = await orm.execute!(q);
+      return Array.isArray(r) ? r : r.rows;
+    }
+    return orm.all!(q);
+  };
+  return {
+    all,
+    async hasTable(name) {
+      const rows =
+        DIALECT === "pg"
+          ? await all(
+              sql`SELECT 1 AS found FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ${name}`,
+            )
+          : await all(
+              sql`SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ${name}`,
+            );
+      return rows.length > 0;
+    },
+  };
 }
 
 /** The provider as the server would build it, asked only to diagnose itself. */
@@ -223,22 +246,23 @@ export interface RealOptions {
   providerConfig?: string | undefined;
   observed?: ForwardedSnapshot | undefined;
   /** An already open handle (the server's own); else the database file is opened read-only. */
-  sqlite?: SqliteReader | undefined;
+  db?: DbReader | undefined;
 }
 
 export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): void } {
   const dir = resolve(o.dataDir);
-  let sqlite = o.sqlite;
+  let reader = o.db;
   let openError: string | undefined;
-  let handle: Database | undefined;
-  if (!sqlite) {
+  let close = (): void => {};
+  if (!reader) {
     const path = join(dir, "longshore.db");
-    if (!existsSync(path)) {
+    if (DIALECT !== "pg" && !existsSync(path)) {
       openError = MISSING_DATABASE;
     } else {
       try {
-        handle = new Database(path, { readonly: true, strict: true });
-        sqlite = readOnlyReader(handle);
+        const handle = openReadOnly(path);
+        reader = readerOf(handle);
+        close = handle.close;
       } catch (e) {
         openError = String(e instanceof Error ? e.message : e);
       }
@@ -252,9 +276,9 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       hosted: o.hosted,
       fs: realFs(),
       proc: { uid: process.getuid?.() ?? -1, gid: process.getgid?.() ?? -1 },
-      sqlite,
+      db: reader,
       openError,
-      expectedMigrations: migrations.map((m) => m.tag),
+      expectedMigrations: embeddedMigrationTags(),
       masterKey: () => {
         if (!keyFile) return undefined;
         try {
@@ -272,6 +296,6 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       observed: o.observed,
       now: Date.now,
     },
-    close: () => handle?.close(),
+    close,
   };
 }

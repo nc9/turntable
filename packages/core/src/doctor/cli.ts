@@ -6,7 +6,7 @@ import { runDoctor } from "./checks";
 import { realInputs } from "./real";
 import type { DoctorReport } from "./types";
 
-export const DOCTOR_USAGE = `Usage: longshore doctor [--data-dir ./data] [--provider docker|daytona] [--provider-config <file>] [--hosted] [--json] [--strict]
+export const DOCTOR_USAGE = `Usage: longshore doctor [--data-dir ./data] [--provider docker|daytona] [--provider-config <file>] [--database-url postgres://...] [--hosted] [--json] [--strict]
 
 Checks that this instance is ready to go live, and says what to fix: privileges and the data
 directory, the master key, the database and its migrations, the GitHub App, the sandbox provider
@@ -36,6 +36,7 @@ export async function doctorCommand(
       "data-dir": { type: "string" },
       provider: { type: "string" },
       "provider-config": { type: "string" },
+      "database-url": { type: "string" },
       hosted: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       strict: { type: "boolean", default: false },

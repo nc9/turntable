@@ -2,6 +2,8 @@
 // says pass, warn or fail with a hint for fixing it. Nothing here creates, starts or changes
 // anything, and nothing carries a secret value: a check says a key is present and has the right
 // shape, never what it is.
+import type { SQL } from "drizzle-orm";
+
 export type CheckStatus = "pass" | "warn" | "fail";
 
 export interface DoctorCheck {
@@ -60,9 +62,10 @@ export interface DoctorFs {
   read(path: string, maxBytes: number): Buffer | undefined;
 }
 
-/** The part of a SQLite handle the checks use (read-only queries). */
-export interface SqliteReader {
-  all(sql: string, ...params: string[]): Record<string, unknown>[];
+/** The part of the database the checks use: read-only queries, on either dialect. */
+export interface DbReader {
+  all(query: SQL): Promise<Record<string, unknown>[]>;
+  hasTable(name: string): Promise<boolean>;
 }
 
 export type ChannelProbe = { ok: true } | { ok: false; reason: string; detail?: string };
@@ -81,7 +84,7 @@ export interface DoctorInputs {
   fs: DoctorFs;
   proc: { uid: number; gid: number };
   /** Undefined when the database could not be opened: `openError` says why. */
-  sqlite: SqliteReader | undefined;
+  db: DbReader | undefined;
   openError?: string | undefined;
   /** The migration tags this binary carries. */
   expectedMigrations: readonly string[];

@@ -773,7 +773,7 @@ async function serve(args: string[]): Promise<void> {
       provider: values.provider,
       providerConfig: values["provider-config"],
       observed: forwarded.snapshot(),
-      sqlite: readerOf(db),
+      db: readerOf(db),
     });
     try {
       return await runDoctor(inputs);
