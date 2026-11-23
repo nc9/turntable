@@ -45,7 +45,7 @@ const SETUP_TOKEN = ["setup", "token", randomBytes(12).toString("hex")].join("-"
 const conv = (id: number): ManifestConversion => ({
   id,
   slug: `turntable-${id}`,
-  name: "Turntable",
+  name: "Turntable CI",
   owner: { login: "acme" },
   html_url: `https://github.com/apps/turntable-${id}`,
   client_id: `Iv1.client${id}`,
