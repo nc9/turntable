@@ -6,7 +6,13 @@
 // Left out because they need Docker, a compiled binary or a live service, and have their own CI
 // jobs: the suites named in GATED. (`test:golden` is the release golden path: it is slower and
 // runs as its own CI job.)
-const GATED = new Set(["test:docker", "test:act-e2e", "test:run-e2e", "test:golden"]);
+const GATED = new Set([
+  "test:docker",
+  "test:act-e2e",
+  "test:run-e2e",
+  "test:golden",
+  "test:vault-e2e",
+]);
 
 const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
   scripts: Record<string, string>;
