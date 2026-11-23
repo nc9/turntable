@@ -54,20 +54,16 @@ const fieldsOf = (r: AuditRow): ChainFields => ({
   createdAt: r.createdAt,
 });
 
-/**
- * Walks an org's chain and checks it end to end:
- *  - positions are consecutive from 1 (no row removed or inserted),
- *  - every entry links to the one before and its hash recomputes,
- *  - every checkpoint matches the entry at its position and carries a valid signature,
- *  - nothing a checkpoint covers is missing (truncation).
- * `publicKeys` maps a key id to its public key PEM. Checkpoints signed by an unknown key fail.
- */
-export async function verifyAudit(
-  db: Db,
-  orgId: string,
-  publicKeys: ReadonlyMap<string, string>,
-  opts: VerifyOptions = {},
-): Promise<VerifyReport> {
+export interface ChainWalk {
+  problems: string[];
+  /** Entry hash by position. */
+  hashes: Map<number, string>;
+  entries: number;
+  headSeq: number;
+}
+
+/** Walks an org's chain: consecutive positions, links and recomputed hashes. */
+export async function walkChain(db: Db, orgId: string): Promise<ChainWalk> {
   const problems: string[] = [];
   const hashes = new Map<number, string>();
   let prev = GENESIS_HASH;
@@ -100,7 +96,58 @@ export async function verifyAudit(
       after = seq;
     }
   }
-  const headSeq = expectedSeq - 1;
+  return { problems, hashes, entries, headSeq: expectedSeq - 1 };
+}
+
+/**
+ * How one signed anchor stands against a chain: `ok`; `rolled_back` when it is validly signed but
+ * covers a position past the chain's head; `bad_signature` when no key vouches for it; `mismatch`
+ * when the entry at its position has another hash.
+ */
+export type AnchorStanding = "ok" | "rolled_back" | "bad_signature" | "mismatch";
+
+/**
+ * The public keys an anchor may be signed under: the one named by its key id, or every trusted
+ * key when it names none (an exported anchor body carries no key id).
+ */
+export function anchorCandidates(
+  an: AnchorCheckpoint,
+  publicKeys: ReadonlyMap<string, string>,
+): string[] {
+  if (an.keyId === "") return [...publicKeys.values()];
+  const key = publicKeys.get(an.keyId);
+  return key === undefined ? [] : [key];
+}
+
+export function anchorStanding(
+  an: AnchorCheckpoint,
+  hashes: ReadonlyMap<number, string>,
+  headSeq: number,
+  keys: readonly string[] | string | undefined,
+): AnchorStanding {
+  const list = typeof keys === "string" ? [keys] : (keys ?? []);
+  const sigOk = list.some((k) => checkpointSignatureValid(k, an as AuditCheckpoint));
+  if (!sigOk) return "bad_signature";
+  const at = hashes.get(an.seq);
+  if (at === undefined) return an.seq > headSeq ? "rolled_back" : "mismatch";
+  return at === an.hash ? "ok" : "mismatch";
+}
+
+/**
+ * Walks an org's chain and checks it end to end:
+ *  - positions are consecutive from 1 (no row removed or inserted),
+ *  - every entry links to the one before and its hash recomputes,
+ *  - every checkpoint matches the entry at its position and carries a valid signature,
+ *  - nothing a checkpoint covers is missing (truncation).
+ * `publicKeys` maps a key id to its public key PEM. Checkpoints signed by an unknown key fail.
+ */
+export async function verifyAudit(
+  db: Db,
+  orgId: string,
+  publicKeys: ReadonlyMap<string, string>,
+  opts: VerifyOptions = {},
+): Promise<VerifyReport> {
+  const { problems, hashes, entries, headSeq } = await walkChain(db, orgId);
 
   const cps = await listCheckpoints(db, orgId);
   for (const cp of cps) {
@@ -130,15 +177,10 @@ export async function verifyAudit(
   }
   const anchors = (opts.anchors ?? []).filter((a) => a.orgId === orgId);
   for (const an of anchors) {
-    // An exported anchor carries no key id (the sink body is minimal): any trusted key may sign it.
-    const candidates = an.keyId === "" ? [...publicKeys.values()] : [publicKeys.get(an.keyId)];
-    const sigOk = candidates.some(
-      (key) =>
-        key !== undefined &&
-        checkpointSignatureValid(key, { ...an, signature: an.signature } as AuditCheckpoint),
-    );
-    if (!sigOk)
+    const standing = anchorStanding(an, hashes, headSeq, anchorCandidates(an, publicKeys));
+    if (standing === "bad_signature")
       problems.push(`anchor checkpoint ${an.seq} has no valid signature under a trusted key`);
+    // A bad signature does not hide a position problem: both are reported.
     const at = hashes.get(an.seq);
     if (at === undefined) {
       problems.push(
@@ -185,4 +227,29 @@ export async function verifyAudit(
     anchored: anchors.length > 0,
     problems,
   };
+}
+
+export type AnchorVerdict = "ok" | "rolled_back" | "mismatch";
+
+/**
+ * Checks an org's chain against exported anchors, with no pinned key file: the chain must be
+ * intact, every anchor must carry a valid signature under one of `publicKeys` (all of them when it names no key id), and each must match the
+ * entry at its position. A valid anchor past the head is a rollback; anything else wrong is a
+ * mismatch, which wins over a rollback.
+ */
+export async function verifyAnchors(
+  db: Db,
+  orgId: string,
+  publicKeys: ReadonlyMap<string, string>,
+  anchors: readonly AnchorCheckpoint[],
+): Promise<AnchorVerdict> {
+  const walk = await walkChain(db, orgId);
+  if (walk.problems.length > 0) return "mismatch";
+  let rolledBack = false;
+  for (const an of anchors) {
+    const st = anchorStanding(an, walk.hashes, walk.headSeq, anchorCandidates(an, publicKeys));
+    if (st === "rolled_back") rolledBack = true;
+    else if (st !== "ok") return "mismatch";
+  }
+  return rolledBack ? "rolled_back" : "ok";
 }
