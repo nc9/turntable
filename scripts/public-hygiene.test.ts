@@ -15,6 +15,14 @@ const ALLOWED = new Set([
   "packages/act-runner/tests/fixtures/vendored-setup-bun.yml",
 ]);
 
+/**
+ * One line of the README may name the customer: the dogfooding statement that links the public
+ * repository (the maintainer asked for it). Nothing else of theirs: no hosted URL, account or id.
+ */
+const ALLOWED_LINES: Record<string, RegExp> = {
+  "README.md": new RegExp(["github.com/squir", "relscan/squir", "relscan"].join("")),
+};
+
 const SKIP = new Set(["node_modules", "dist", ".git", "coverage", ".tsbuildinfo"]);
 const TEXT = /\.(ts|tsx|js|mjs|json|md|mdx|yml|yaml|toml|sh|css|html|txt|sql|dockerfile)$/i;
 
@@ -52,7 +60,8 @@ describe("public hygiene", () => {
       const rel = f.slice(root.length + 1);
       if (ALLOWED.has(rel)) continue;
       const text = readFileSync(f, "utf8");
-      const line = text.split("\n").findIndex((l) => NAME.test(l));
+      const only = ALLOWED_LINES[rel];
+      const line = text.split("\n").findIndex((l) => NAME.test(l) && !only?.test(l));
       if (line >= 0) hits.push(`${rel}:${line + 1}`);
     }
     expect(hits).toEqual([]);
