@@ -71,7 +71,7 @@ const SKIP_WINDOW_MS = 3 * 24 * 3600_000;
  */
 export const SKIP_CLAIM_TTL_MS = 5 * 60_000;
 /** Most skipped attempts one sweep looks at. */
-const SKIP_BATCH = 200;
+export const SKIP_BATCH = 200;
 
 type PostTarget = {
   mode: Exclude<ChecksMode, "off">;
@@ -117,10 +117,11 @@ export class CheckReporter {
     // between the sweep that missed a skip and the one that posts it.
     void this.#enqueue("sweep:skipped", async () => {
       try {
+        let more: boolean;
         do {
           this.#resweep = false;
-          await this.sweepSkipped();
-        } while (this.#resweep);
+          more = await this.sweepSkipped();
+        } while (more || this.#resweep);
       } finally {
         this.#sweeping = false;
       }
@@ -134,22 +135,30 @@ export class CheckReporter {
    * of the sweep or a reconcile never posts a second one for the same job. Two workers racing are
    * kept apart by an exclusive claim on the attempt (a conditional update): only its holder
    * posts, and a claim whose holder died expires after SKIP_CLAIM_TTL_MS and is retaken.
+   *
+   * Returns true when the batch was full and settled at least one attempt (posted or dismissed),
+   * so more unreported skips may remain. Each such pass shrinks the backlog, so repeating it ends;
+   * a full batch that settled nothing (all waiting, failing or dismissed) returns false.
    */
-  async sweepSkipped(): Promise<void> {
+  async sweepSkipped(): Promise<boolean> {
     const now = (this.#o.now ?? Date.now)();
     const rows = await listUnreportedSkips(this.#o.db, {
       since: now - SKIP_WINDOW_MS,
       limit: SKIP_BATCH,
     });
+    let settled = 0;
     for (const row of rows) {
       if (this.#dismissed.has(row.attempt.id)) continue;
       const scope = { orgId: row.attempt.orgId, projectId: row.attempt.projectId };
       const claim: Claim = { attempt: row.attempt, job: row.job, run: row.run, scope };
       // The shards of a job share one chain and one check, as for a job that ran.
       await this.#enqueue(chainKey(claim), async () => {
-        if ((await this.#postSkipped(claim)) === "nothing") this.#dismissed.add(row.attempt.id);
+        const outcome = await this.#postSkipped(claim);
+        if (outcome === "nothing") this.#dismissed.add(row.attempt.id);
+        if (outcome !== "waiting") settled++;
       });
     }
+    return rows.length >= SKIP_BATCH && settled > 0;
   }
 
   /** Resolves when everything queued so far has been attempted (tests, shutdown). */
