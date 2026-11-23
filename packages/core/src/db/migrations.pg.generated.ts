@@ -121,8 +121,8 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0001_romantic_squirrel_girl",
-    "when": 1795394425562,
+    "tag": "0001_instance_tokens",
+    "when": 1795395479805,
     "statements": [
       "CREATE TABLE \"instance_tokens\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"name\" text NOT NULL,\n\t\"token_hash\" text NOT NULL,\n\t\"created_by\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"last_used_at\" bigint,\n\t\"expires_at\" bigint,\n\t\"revoked_at\" bigint,\n\tCONSTRAINT \"instance_tokens_hash_unique\" UNIQUE(\"token_hash\")\n);"
     ]
