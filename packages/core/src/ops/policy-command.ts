@@ -7,6 +7,8 @@ import {
   POLICY_USAGE,
   setCacheReleaseRestorePolicy,
   setChecksModePolicy,
+  setOidcAudiencesPolicy,
+  showOidcAudiences,
   setIngestPolicy,
   showIngest,
   setSigningPolicy,
@@ -26,6 +28,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       project: { type: "string" },
       egress: { type: "string" },
       "checks-mode": { type: "string" },
+      "oidc-audiences": { type: "string" },
       ingest: { type: "string" },
       workflow: { type: "string" },
       "default-branch": { type: "string" },
@@ -61,6 +64,10 @@ async function ownPolicy(args: string[]): Promise<void> {
       }
       for (const c of await showChecksMode(db, values.org))
         console.log(`checks-mode ${c.project}: ${c.mode}`);
+      for (const o of await showOidcAudiences(db, values.org))
+        console.log(
+          `oidc-audiences ${o.project}: ${o.audiences ? o.audiences.join(", ") || "(none allowed)" : "any"}`,
+        );
       for (const i of await showIngest(db, values.org)) {
         console.log(
           `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"})` : "off"}`,
@@ -117,6 +124,17 @@ async function ownPolicy(args: string[]): Promise<void> {
         values["cache-release-restore"],
       )) {
         console.error(`cache-release-restore ${r.project}: ${r.from} -> ${r.to}`);
+      }
+    } else if (values["oidc-audiences"] !== undefined) {
+      for (const r of await setOidcAudiencesPolicy(
+        db,
+        values.org,
+        values.project,
+        values["oidc-audiences"],
+      )) {
+        console.error(
+          `oidc-audiences ${r.project}: ${r.from ? r.from.join(",") : "any"} -> ${r.to ? r.to.join(",") : "any"}`,
+        );
       }
     } else if (values["checks-mode"] !== undefined) {
       for (const r of await setChecksModePolicy(
