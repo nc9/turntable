@@ -1,6 +1,7 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
+import { ingestStatus, POLL_RESERVE } from "../poll/status";
 import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
 import { anchorKeyMessage } from "../secrets/master-key";
@@ -657,6 +658,51 @@ export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
     : pass("quotas", area, "no quotas are set: every org is unlimited (fine for one operator)");
 }
 
+/** The failures in a row at which a repo's polling is reported as unhealthy. */
+export const POLL_FAILURE_WARN = 3;
+/** The intervals without a successful poll at which a repo is reported as stalled. */
+export const POLL_STALE_INTERVALS = 3;
+
+/**
+ * Poll health from the in-process poller snapshot: fixed sentences, no repo names or error text.
+ * A process with no poller (or none polling yet) passes: there is nothing to be unhealthy.
+ */
+export function checkPollHealth(now: number = Date.now()): DoctorCheck {
+  const area = "ingest";
+  const repos = [...ingestStatus.repos.values()];
+  // Silent stalls (a dead loop, a skipped binding) never raise a failure count: look at success age.
+  const stalled = repos.filter((r) => {
+    const since = r.lastSuccessAt ?? ingestStatus.startedAt;
+    return (
+      since !== null &&
+      ingestStatus.running &&
+      now - since > POLL_STALE_INTERVALS * r.intervalSeconds * 1000
+    );
+  }).length;
+  const failing = repos.filter((r) => r.consecutiveFailures >= POLL_FAILURE_WARN).length;
+  const anonymousLow = repos.some(
+    (r) =>
+      r.authMode === "anonymous" &&
+      r.rateLimit?.remaining !== undefined &&
+      r.rateLimit.remaining <= POLL_RESERVE,
+  );
+  if (failing > 0 || anonymousLow || stalled > 0) {
+    return warn(
+      "poll_health",
+      area,
+      [
+        failing > 0 ? "some repos have failed to poll several times in a row" : "",
+        stalled > 0 ? "some repos have not polled successfully within 3 intervals" : "",
+        anonymousLow ? "the anonymous GitHub budget is nearly spent" : "",
+      ]
+        .filter(Boolean)
+        .join("; "),
+      "Run `instance_ingest_status` for each repo's error class and budget; set a poll token or install the GitHub App to raise the budget.",
+    );
+  }
+  return pass("poll_health", area, "no repo is failing to poll and the poll budget has room");
+}
+
 /** Every check, in a fixed order. A check that throws is reported as a fail, never as a crash. */
 export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
   const safe = async (
@@ -693,6 +739,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("https_redirect", "network", () => checkHttpsRedirect(i))),
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
+    ...(await safe("poll_health", "ingest", () => checkPollHealth())),
   ];
   return report(all);
 }
