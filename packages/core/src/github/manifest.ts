@@ -12,6 +12,7 @@ import {
   retireAppInstallations,
   setGithubApp,
 } from "../db/repos";
+import { esc, pageHeaders, pageResponse, renderPage, servePageAsset } from "../pages/server-pages";
 import type { SecretStore } from "../secrets/store";
 import { SECRET_APP_ID, SECRET_CLIENT, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "./app-auth";
 import { WEBHOOK_PATH } from "./webhook";
@@ -60,13 +61,6 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
   };
 }
 
-const escapeHtml = (s: string): string =>
-  s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
 /** The page with the form. `ghOrg` creates the App under an organization instead of a user. */
 export function manifestPage(
   manifest: Record<string, unknown>,
@@ -76,18 +70,15 @@ export function manifestPage(
   const action = ghOrg
     ? `https://github.com/organizations/${encodeURIComponent(ghOrg)}/settings/apps/new`
     : "https://github.com/settings/apps/new";
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Create the Turntable GitHub App</title></head>
-<body>
-<h1>Create the Turntable GitHub App</h1>
-<p>This sends the App manifest below to GitHub. You approve it there; GitHub then returns here.</p>
-<form method="post" action="${escapeHtml(action)}?state=${encodeURIComponent(state)}">
-<input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">
-<button type="submit">Create the App on GitHub</button>
+  return renderPage({
+    title: "Create the Turntable GitHub App",
+    body: `<p>This sends the App manifest below to GitHub. You approve it there; GitHub then returns here.</p>
+<form method="post" action="${esc(action)}?state=${encodeURIComponent(state)}">
+<input type="hidden" name="manifest" value="${esc(JSON.stringify(manifest))}">
+<button class="tt-button" type="submit">Create the App on GitHub</button>
 </form>
-<pre>${escapeHtml(JSON.stringify(manifest, null, 2))}</pre>
-</body></html>
-`;
+<pre><code>${esc(JSON.stringify(manifest, null, 2))}</code></pre>`,
+  });
 }
 
 export interface ManifestConversion {
@@ -252,17 +243,11 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
     rejectDone = rej;
   });
   let used = false;
-  const html = (status: number, body: string): Response =>
-    new Response(body, {
-      status,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store",
-        "referrer-policy": "no-referrer",
-        "content-security-policy":
-          "default-src 'none'; style-src 'unsafe-inline'; form-action https://github.com",
-      },
-    });
+  /** The form page carries its own document; the result pages are a title and a message. */
+  const doc = (status: number, document: string): Response =>
+    new Response(document, { status, headers: pageHeaders({ formAction: "https://github.com" }) });
+  const note = (status: number, title: string, body: string): Response =>
+    pageResponse({ status, title, body, formAction: "https://github.com" });
 
   let bound = 0;
   const server = Bun.serve({
@@ -275,9 +260,11 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
       if (host !== `127.0.0.1:${bound}` && host !== `localhost:${bound}`) {
         return new Response("bad host", { status: 400 });
       }
+      const asset = servePageAsset(req);
+      if (asset) return asset;
       const redirect = `http://127.0.0.1:${bound}/callback`;
       if (req.method === "GET" && url.pathname === "/") {
-        return html(
+        return doc(
           200,
           manifestPage(
             buildManifest({ name: o.name, url: o.url, redirectUrl: redirect }),
@@ -290,8 +277,9 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
         const given = Buffer.from(url.searchParams.get("state") ?? "");
         const want = Buffer.from(state);
         if (used || given.length !== want.length || !timingSafeEqual(given, want)) {
-          return html(
+          return note(
             400,
+            "Invalid link",
             "<p>Invalid or reused state. Start again with turntable github-app create.</p>",
           );
         }
@@ -304,13 +292,18 @@ export function startManifestFlow(o: ManifestFlowOptions): ManifestFlow {
           );
           const app = await storeApp(o.db, o.store, o.orgId, conv);
           resolveDone({ appId: app.appId, slug: app.slug, htmlUrl: app.htmlUrl });
-          return html(
+          return note(
             200,
-            `<p>The App <b>${escapeHtml(app.slug)}</b> was created and its credentials were stored. You can close this tab.</p>`,
+            "App created",
+            `<p>The App <strong>${esc(app.slug)}</strong> was created and its credentials were stored. You can close this tab.</p>`,
           );
         } catch (e) {
           rejectDone(e);
-          return html(500, "<p>Could not finish creating the App. See the terminal.</p>");
+          return note(
+            500,
+            "Could not create the App",
+            "<p>Could not finish creating the App. See the terminal.</p>",
+          );
         }
       }
       return new Response("not found", { status: 404 });

@@ -8,6 +8,7 @@ export const ERROR_STATUS = {
   method_not_allowed: 405,
   conflict: 409,
   payload_too_large: 413,
+  rate_limited: 429,
   internal: 500,
   unavailable: 503,
 } as const;
