@@ -49,7 +49,7 @@ describe("autoInitMasterKey", () => {
     writeFileSync(key, Buffer.alloc(32, 7), { mode: 0o600 });
     const before = statSync(key).mtimeMs;
     expect(autoInitMasterKey(key, data)).toBe("exists");
-    expect([...readFileSync(key)]).toEqual(new Array(32).fill(7));
+    expect([...readFileSync(key)]).toEqual(Array.from({ length: 32 }, () => 7));
     expect(statSync(key).mtimeMs).toBe(before);
     // Even a file of the wrong size is left for loadMasterKey to refuse; it is not replaced.
     const odd = join(data, "odd.key");
@@ -188,7 +188,7 @@ describe("serve with a missing master key file", () => {
       LONGSHORE_MASTER_KEY_FILE: key,
     });
     expect(r.listening).toBe(true);
-    expect([...readFileSync(key)]).toEqual(new Array(32).fill(9));
+    expect([...readFileSync(key)]).toEqual(Array.from({ length: 32 }, () => 9));
   });
 
   test("the opt-in without a key path is an error", async () => {
