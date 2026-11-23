@@ -148,9 +148,7 @@ export async function executeJob(
 
   const steps = new Map<string, StepRecord>();
   const hidden = new Set<string>();
-  /** What each open step printed (a bounded tail), for the missing-tool notice. */
-  const stepOutput = new Map<string, string>();
-  const OUTPUT_KEEP = 8 * 1024;
+  const watch = new MissingToolWatch();
   const onAct = (e: ActEvent): void => {
     // The generated output-export step is plumbing, not part of the user's job.
     if ((e.type === "step-start" || e.type === "step-end") && e.name === EXPORT_STEP_NAME) {
@@ -158,11 +156,6 @@ export async function executeJob(
       return;
     }
     if ((e.type === "output" || e.type === "command") && hidden.has(e.stepKey)) return;
-    if (e.type === "output") {
-      const kept = stepOutput.get(e.stepKey) ?? "";
-      // The tail is what shows the last error; keep a bounded window of it.
-      stepOutput.set(e.stepKey, `${kept}${e.text}`.slice(-OUTPUT_KEEP));
-    }
     if (e.type === "step-start") {
       const rec: StepRecord = {
         stepKey: e.stepKey,
@@ -186,13 +179,8 @@ export async function executeJob(
     log.push(renderEvent(e));
     // A failed step whose output ends in a shell "not found" says which tool the image lacks. The
     // result is act's, unchanged.
-    if (e.type === "step-end" && e.result === "failure") {
-      const tool = missingTool(stepOutput.get(e.stepKey) ?? "");
-      if (tool) log.push(missingToolNotice(tool));
-    }
-    if (e.type === "step-end") {
-      stepOutput.delete(e.stepKey);
-    }
+    const tool = watch.see(e);
+    if (tool) log.push(missingToolNotice(tool));
   };
 
   const settle = async (
@@ -202,6 +190,7 @@ export async function executeJob(
     outputs?: Record<string, string>,
   ): Promise<JobOutcome> => {
     clearInterval(idle);
+    watch.clear();
     await log.close();
     return finish(state, reason, code, outputs);
   };
@@ -401,6 +390,52 @@ export async function executeJob(
         env.out(`warning: could not destroy sandbox ${sandboxId}: ${String(e)}\n`);
       }
     }
+  }
+}
+
+const OUTPUT_KEEP = 8 * 1024;
+
+/**
+ * Finds the tool a failed step's image lacks, from a bounded tail of what the step printed. Output
+ * can arrive after the step's end, so the tail of a failed step is kept until `clear`, and the tool
+ * is reported at most once per step whichever order the events come in.
+ */
+export class MissingToolWatch {
+  readonly #tails = new Map<string, string>();
+  readonly #failed = new Set<string>();
+  readonly #noticed = new Set<string>();
+
+  /** Feeds one event; returns the missing tool to announce, once per step. */
+  see(e: ActEvent): string | undefined {
+    if (e.type === "output") {
+      if (this.#noticed.has(e.stepKey)) return undefined;
+      const kept = this.#tails.get(e.stepKey) ?? "";
+      // The tail is what shows the last error; keep a bounded window of it.
+      this.#tails.set(e.stepKey, `${kept}${e.text}`.slice(-OUTPUT_KEEP));
+      return this.#failed.has(e.stepKey) ? this.#check(e.stepKey) : undefined;
+    }
+    if (e.type !== "step-end") return undefined;
+    if (e.result !== "failure") {
+      this.#tails.delete(e.stepKey);
+      return undefined;
+    }
+    this.#failed.add(e.stepKey);
+    return this.#noticed.has(e.stepKey) ? undefined : this.#check(e.stepKey);
+  }
+
+  /** Drops every tail; call when the job settles. */
+  clear(): void {
+    this.#tails.clear();
+    this.#failed.clear();
+    this.#noticed.clear();
+  }
+
+  #check(key: string): string | undefined {
+    const tool = missingTool(this.#tails.get(key) ?? "");
+    if (!tool) return undefined;
+    this.#noticed.add(key);
+    this.#tails.delete(key);
+    return tool;
   }
 }
 
