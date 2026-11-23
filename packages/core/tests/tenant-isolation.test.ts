@@ -48,8 +48,10 @@ import { createRestApi } from "../src/ops/rest";
 import { createRealtime, type WsData } from "../src/realtime/server";
 import type { ServerMessage } from "../src/realtime/protocol";
 import { handleRequest } from "../src/server";
+import { OnePasswordBackend } from "../src/secrets/backends/onepassword";
 import { SecretVault } from "../src/secrets/vault";
 import { WebhookService } from "../src/webhooks/service";
+import { account as opAccount, config as opConfig, FakeOnePassword } from "./op-fake";
 import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
 
 // Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
@@ -63,6 +65,9 @@ const A_LOG = "A-LOG-LINE-7d21e0 do not show";
 const A_SHA = "c0ffee".repeat(6) + "c0ff"; // 40 hex
 const A_SECRET = "a-only-secret";
 const A_RULE = "a-only-rule";
+const OP_VAULT = "a-only-vault";
+const OP_NAME = "a-only-op-secret";
+const OP_REF = `op://${OP_VAULT}/item/field`;
 
 type Who = { label: string; cred: Credential; role: string };
 
@@ -94,7 +99,21 @@ type World = {
 
 async function buildWorld(): Promise<World> {
   const db = openDatabase(":memory:");
-  const vault = new SecretVault({ db, masterKey: randomBytes(32) });
+  const a = await seedTenant(db, "org-a");
+  const b = await seedTenant(db, "org-b");
+  // A fake 1Password with one account that serves a test vault for org A only, so binding a
+  // reference succeeds as A and is refused for B.
+  const vault = new SecretVault({
+    db,
+    masterKey: randomBytes(32),
+    backends: [
+      new OnePasswordBackend({
+        config: opConfig([opAccount({ name: "test-a", vaults: [OP_VAULT], orgs: [a.orgId] })]),
+        factory: new FakeOnePassword().factory,
+        log: () => {},
+      }),
+    ],
+  });
   const masterKey = randomBytes(32);
   const webhooks = new WebhookService({ db, masterKey });
   const env = {
@@ -104,8 +123,6 @@ async function buildWorld(): Promise<World> {
     webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
   };
-  const a = await seedTenant(db, "org-a");
-  const b = await seedTenant(db, "org-b");
 
   // A second project of A with distinct, recognisable data.
   const proj = await createProject(
@@ -503,6 +520,11 @@ const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => voi
       forge_login: "mallory-gh",
       ed25519_public_key: generateEd25519().publicSpki,
     }),
+  // The fake 1Password account serves this vault for org A only.
+  // A name no sealed secret holds (set_secret runs first and would block a bind), so the bind
+  // succeeds and the unbind after it has a reference to remove.
+  bind_secret_reference: (_w, i) => Object.assign(i, { name: OP_NAME, reference: OP_REF }),
+  unbind_secret_reference: (_w, i) => void (i.name = OP_NAME),
   create_webhook: (_w, i) => void (i.url = "https://hooks.example.test/x"),
   get_release_request: (w, i) => Object.assign(i, { id: w.fx.releaseId }),
   submit_approval: (w, i) =>
