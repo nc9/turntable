@@ -260,6 +260,8 @@ export interface RealOptions {
   db?: DbReader | undefined;
   /** The keys the server took at boot (TURNTABLE_MASTER_KEY is deleted from its environment). */
   masterKeys?: MasterKeys | undefined;
+  /** See `DoctorInputs.humanApprovalGaps`; only the server, which has the settings layers, sets it. */
+  humanApprovalGaps?: (() => Promise<number>) | undefined;
 }
 
 export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): void } {
@@ -293,6 +295,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       db: reader,
       openError,
       expectedMigrations: embeddedMigrationTags(),
+      humanApprovalGaps: o.humanApprovalGaps,
       masterKeyEnv: o.masterKeys ? o.masterKeys.source === "env" : Boolean(envKey),
       masterKey: () => {
         if (o.masterKeys) return o.masterKeys.key;

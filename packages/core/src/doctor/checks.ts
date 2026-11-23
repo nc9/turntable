@@ -658,6 +658,22 @@ export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
     : pass("quotas", area, "no quotas are set: every org is unlimited (fine for one operator)");
 }
 
+export async function checkHumanApprovalApprovers(i: DoctorInputs): Promise<DoctorCheck> {
+  const area = "approvals";
+  const id = "human_approval_approvers";
+  if (!i.humanApprovalGaps)
+    return pass(id, area, "not checked here: the running server's doctor checks it");
+  const n = await i.humanApprovalGaps();
+  return n > 0
+    ? warn(
+        id,
+        area,
+        "a project requires human approval but its org has no active approver whose key satisfies the key policy: its held runs cannot be approved",
+        "Enrol an approver (`turntable approvals bootstrap`), relax the org key policy, or set untrusted_run_approval to no_agents.",
+      )
+    : pass(id, area, "every project on human approval has an approver that counts");
+}
+
 /** The failures in a row at which a repo's polling is reported as unhealthy. */
 export const POLL_FAILURE_WARN = 3;
 /** The intervals without a successful poll at which a repo is reported as stalled. */
@@ -740,6 +756,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
+    ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
   ];
   return report(all);
 }

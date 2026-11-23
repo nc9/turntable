@@ -109,5 +109,10 @@ export interface DoctorInputs {
   channel: (() => Promise<ChannelProbe>) | undefined;
   /** What the running server has seen of forwarded headers; absent from the command line. */
   observed: ForwardedSnapshot | undefined;
+  /**
+   * How many projects resolve to `human` run approval while their org has no approver that
+   * counts. Absent from the command line, which has no settings layers to resolve.
+   */
+  humanApprovalGaps?: (() => Promise<number>) | undefined;
   now: () => number;
 }

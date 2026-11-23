@@ -2,6 +2,8 @@
 // untrusted author through approve_run, the token `kind` it reads, and who may change either.
 // Every policy value against every caller: MCP, REST with an agent and a person token, a
 // kind-less legacy token, and the local CLI person. Runs on both dialects.
+import { generateEd25519 } from "../src/approvals/keys";
+import { insertApprover } from "../src/db/repos";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
@@ -325,6 +327,19 @@ describe("changing the setting", () => {
   });
 
   test("human is selectable through the op and the host CLI, audited with old and new", async () => {
+    await insertApprover(
+      db,
+      a.scope.orgId,
+      {
+        person: "p",
+        forgeLogin: "p-gh",
+        kind: "ed25519",
+        publicKey: generateEd25519().publicSpki,
+        alg: "EdDSA",
+        createdBy: "test",
+      },
+      1,
+    );
     const r = await asInstance({ untrusted_run_approval: "human" });
     expect(r.ok && (r.output as { untrusted_run_approval: string }).untrusted_run_approval).toBe(
       "human",

@@ -1,6 +1,8 @@
 // `untrusted_run_approval` on the settings registry (#321): the resolver's layers decide who may
 // approve, a turntable.toml value locks it for every path, and `set_setting`, `set_project_settings`
 // and `turntable policy set` refuse the same things. Runs on both dialects (TURNTABLE_TEST_DB).
+import { generateEd25519 } from "../src/approvals/keys";
+import { insertApprover } from "../src/db/repos";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
@@ -284,6 +286,19 @@ describe("the same refusals on every path", () => {
   });
 
   test("human is selectable: op, alias and CLI, and the registry no longer refuses it", async () => {
+    await insertApprover(
+      db,
+      a.scope.orgId,
+      {
+        person: "p",
+        forgeLogin: "p-gh",
+        kind: "ed25519",
+        publicKey: generateEd25519().publicSpki,
+        alg: "EdDSA",
+        createdBy: "test",
+      },
+      1,
+    );
     expect(untrustedRunApprovalSetting.refuse).toBeUndefined();
     const inst = await asInstance(rt(), {
       target_project: a.projectSlug,

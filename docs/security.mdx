@@ -259,6 +259,8 @@ Each environment needs a number of distinct people. The default is 2 for `produc
 
 **A signed statement binds its tenant.** The org and project slugs are part of what is signed, and a statement is refused unless they are those of the org and project it is submitted to.
 
+**`human` needs an approver.** Selecting `untrusted_run_approval = human` (`set_setting`, `set_project_settings`, `turntable policy set`) is refused with `human_requires_approver` unless the org has an active approver that counts: not revoked, with a forge login, and a key that satisfies the org key policy. A value of `human` in `turntable.toml` or the environment cannot be checked per org at boot, so keeping an approver enrolled is the operator's responsibility; the `human_approval_approvers` doctor check warns when a project is on `human` and its org has none (for example after a revocation or a tightened key policy).
+
 ### Enrolling approvers
 
 **The two-person rule is only as strong as enrolment.** The enrolment quorum is the production policy's count, capped by how many other people could sign. With one person enrolled the cap is one, so a lone approver can enrol a second identity alone, and "two people" can then be one person holding two keys. Until at least as many people are enrolled as an environment requires, the rule is not a guarantee. Turntable says so: `approvers_overview` returns a warning, the Approvers page shows it, and `turntable approvals bootstrap` and `list` print it. Enrol the second real person promptly, and treat the first bootstrap as a setup step, not a steady state.

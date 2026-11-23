@@ -160,3 +160,10 @@ export async function yieldProjects(db: Db): Promise<Set<string>> {
   );
   return new Set(rows.filter((r) => r.value === JSON.stringify("yield")).map((r) => r.id));
 }
+
+/** Every project's id and org, instance-wide (the doctor's read of what resolves to what). */
+export async function allProjectRefs(db: Db): Promise<{ id: string; orgId: string }[]> {
+  return db.run((h) =>
+    h.orm.select({ id: s.projects.id, orgId: s.projects.orgId }).from(s.projects),
+  );
+}
