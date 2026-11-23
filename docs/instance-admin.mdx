@@ -20,6 +20,7 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | `instance_list_orgs` | `GET /api/v1/instance/orgs` | Lists the orgs' slugs and names (not the internal system org). |
 | `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
 | `set_project_settings` | `POST /api/v1/instance/project-settings` | Sets one project's `sandbox_snapshot` and `max_concurrent` (`target_org`, `target_project`; null removes one). See [Providers](/providers#per-project-snapshot-and-concurrency-cap). |
+| `create_project` | `POST /api/v1/instance/projects` | Creates an empty project in an existing org (`target_org`, `slug`, `name`); a slug already used there is a conflict. See [Hosted](/hosted#adding-a-second-repo-to-a-running-instance). |
 
 `max_concurrent` can only lower an org's concurrency below the instance's per-org cap (`--org-cap`): a value above it is refused, and removing it falls back to the cap. Instance operations take no `org` or `project` field. A change is audited twice: in the system org's chain (who held the token) and in the target org's own chain (so its operators see who changed their limits).
 

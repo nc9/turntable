@@ -18,7 +18,11 @@ import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins"
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
 import { instanceListOrgs, instanceWhoami, setQuotas } from "./definitions/instance";
 import { getQuotas } from "./definitions/quotas";
-import { getProjectSettings, setProjectSettings } from "./definitions/project-settings";
+import {
+  createProjectOp,
+  getProjectSettings,
+  setProjectSettings,
+} from "./definitions/project-settings";
 import { createApiToken } from "./definitions/create-api-token";
 import { events } from "./definitions/events";
 import { failureDigest } from "./definitions/failure-digest";
@@ -125,6 +129,7 @@ export const registry = createRegistry([
   setOidcAudiencesOp,
   getProjectSettings,
   setProjectSettings,
+  createProjectOp,
   createWebhookOp,
   webhookEndpointsOp,
   rotateWebhookSecretOp,

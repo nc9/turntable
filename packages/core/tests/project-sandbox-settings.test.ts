@@ -13,6 +13,7 @@ import {
   type Db,
   getProjectSandboxSettings,
   listAudit,
+  listProjects,
   projectsWithCaps,
   setProjectSandboxSettings,
   type Scope,
@@ -299,6 +300,73 @@ describe("the operations", () => {
     });
     expect(r4.ok).toBe(false);
     expect(JSON.stringify(r3) + JSON.stringify(r4)).not.toContain("snap-b");
+  });
+});
+
+describe("create_project", () => {
+  test("an instance token makes a project (audited in both chains), then it can be given settings; conflicts and bad slugs are refused", async () => {
+    const r = await asInstance("create_project", {
+      target_org: "org-a",
+      slug: "dogfood",
+      name: "Dogfood",
+    });
+    expect(r.ok && r.output).toMatchObject({ org: "org-a", project: "dogfood", name: "Dogfood" });
+    expect((await listProjects(db, { orgId: a.orgId })).map((p) => p.slug)).toContain("dogfood");
+    const s = await asInstance("set_project_settings", {
+      target_org: "org-a",
+      target_project: "dogfood",
+      sandbox_snapshot: "daytona-large",
+      max_concurrent: 4,
+    });
+    expect(s.ok && s.output).toMatchObject({
+      sandbox_snapshot: "daytona-large",
+      max_concurrent: 4,
+    });
+    const sys = (await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 50 })).find(
+      (x) => x.op === "create_project",
+    );
+    expect(sys).toMatchObject({ principalKind: "instance", outcome: "ok" });
+    const own = (await listAudit(db, { orgId: a.orgId }, { limit: 50 })).find(
+      (x) => x.op === "create_project",
+    );
+    expect(own).toMatchObject({ principalKind: "instance", outcome: "ok" });
+    const dup = await asInstance("create_project", {
+      target_org: "org-a",
+      slug: "dogfood",
+      name: "again",
+    });
+    expect(!dup.ok && dup.error.code).toBe("conflict");
+    // the same slug in another org is a different project
+    expect(
+      (await asInstance("create_project", { target_org: "org-b", slug: "dogfood", name: "b" })).ok,
+    ).toBe(true);
+    for (const slug of ["Bad", "-x", "a_b", "a b", "x".repeat(64)]) {
+      const bad = await asInstance("create_project", { target_org: "org-a", slug, name: "x" });
+      expect(!bad.ok && bad.error.code, slug).toBe("invalid_input");
+    }
+    const none = await asInstance("create_project", { target_org: "nope", slug: "x", name: "x" });
+    expect(!none.ok && none.error.code).toBe("not_found");
+  });
+
+  test("no org token of any role, no member, and no MCP session can create a project", async () => {
+    const creds: Credential[] = [];
+    for (const t of [a, b])
+      for (const role of AGENT_ROLES)
+        creds.push({
+          kind: "bearer",
+          token: (await mintToken(db, { orgId: t.orgId }, role)).secret,
+        });
+    creds.push({ kind: "principal", principal: a.admin });
+    for (const cred of creds) {
+      const r = await dispatch(env, cred, "create_project", {
+        target_org: "org-a",
+        slug: "sneaky",
+        name: "x",
+      });
+      expect(!r.ok && r.error.code).toBe("forbidden");
+    }
+    expect(mcpTools(registry).map((x) => x.name)).not.toContain("create_project");
+    expect((await listProjects(db, { orgId: a.orgId })).map((p) => p.slug)).not.toContain("sneaky");
   });
 });
 

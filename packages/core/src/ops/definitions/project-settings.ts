@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   appendAudit,
+  createProject,
   getOrgBySlug,
   getProjectBySlug,
   getProjectSandboxSettings,
@@ -115,5 +116,56 @@ export const setProjectSettings = defineOp({
       sandbox_snapshot: to.sandboxSnapshot,
       max_concurrent: to.maxConcurrent,
     };
+  },
+});
+
+const PROJECT_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+export const createProjectOp = defineOp({
+  name: "create_project",
+  summary: "Create a project in an org (instance administrator only).",
+  description:
+    "Creates an empty project in an existing org: a slug (lower-case letters, digits and `-`, " +
+    "up to 63) and a display name. A project is what a repo is ingested into, what carries a " +
+    "sandbox snapshot and a concurrency cap (`set_project_settings`) and the policy of its " +
+    "runs, so it is made by the instance operator: on a hosted instance with no shell this is " +
+    "how a second repo gets its own project. A slug already used in the org is a conflict. " +
+    "Audited in the system org's chain and the org's own. Not an MCP tool.",
+  input: z.object({
+    target_org: z.string().min(1).max(64).describe("Slug of the org."),
+    slug: z.string().min(1).max(63).describe("Slug of the new project."),
+    name: z.string().min(1).max(120).describe("Display name. Untrusted text elsewhere."),
+  }),
+  output: z.object({ org: z.string(), project: z.string(), id: z.string(), name: z.string() }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/projects" },
+  mcp: false,
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    if (!PROJECT_SLUG.test(i.slug))
+      throw new OpError(
+        "invalid_input",
+        "a project slug is lower-case letters, digits and - (up to 63, starting alphanumeric)",
+      );
+    if (await getProjectBySlug(ctx.db, { orgId: org.id }, i.slug))
+      throw new OpError("conflict", "a project with that slug already exists in the org");
+    const project = await createProject(ctx.db, { orgId: org.id }, { slug: i.slug, name: i.name });
+    await appendAudit(
+      ctx.db,
+      { orgId: org.id, projectId: project.id },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "create_project",
+        effect: "write",
+        outcome: "ok",
+        input: { target_org: org.slug, slug: i.slug },
+      },
+    );
+    return { org: org.slug, project: project.slug, id: project.id, name: project.name };
   },
 });

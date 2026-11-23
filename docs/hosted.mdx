@@ -72,6 +72,39 @@ longshore policy set --ingest off --org acme --project web
 
 The settings are the poll knobs that belong to a repo: `--workflow`, `--default-branch` (fixed when ingest is turned on: given, or asked from GitHub once for the bound repository, and stored; the poller never asks again to decide it, so a repo admin changing GitHub's default branch cannot move what counts as protected. If GitHub later reports another branch, that is logged and audited as `ingest_default_branch_drift` and the stored one stays in use), `--pr-mode`, `--authors`, `--merge-queue`, and `--var NAME=value` (repeatable). Vars are non-secret variables for `${{ vars.NAME }}` in a workflow's `if:` and expressions, as GitHub's repository variables are: they are stored in the clear, shown by `policy show`, written to the audit chain, and replaced as a set each time ingest is turned on (a name may not start with `GITHUB_`; at most 50, values up to 1024 bytes). `--splits-json` takes rules that run a job as several shards, see [Compatibility](/compatibility#splitting-a-job-across-sandboxes); a poll-config repo takes `splits` too. A poll-config repo takes the same as `vars`. Longshore's own project sets `LONGSHORE_CI=true`, which is how the repository's CI workflow turns off the jobs that need a docker daemon or service containers when Longshore runs it, and turns on the PGlite stand-in for its Postgres job. The poller reads the bindings at start, every minute, and when a signed webhook names a repo it does not know (it looks once, then polls). A repo in the static poll config wins over its binding. A repo bound to several projects is ingested into the first only. The poll config still needs at least one repo entry to run the poller at all, plus the token (`tokenEnv`) and limits, which the bound repos share.
 
+## Adding a second repo to a running instance
+
+A repo is ingested into a project, and the poll config names that project, so the project must exist first. On an instance with no shell, the instance administrator makes it over REST (an instance token, see [Instance administrator](/instance-admin)):
+
+```sh
+# 1. the project, in an existing org (a slug already used in the org is a conflict)
+curl -sS -X POST "$LONGSHORE_URL/api/v1/instance/projects" \
+  -H "authorization: Bearer $(cat "$TOKEN_FILE")" -H 'content-type: application/json' \
+  -d '{"target_org":"local","slug":"dogfood","name":"Dogfood"}'
+
+# 2. its sandbox snapshot and concurrency cap (both optional; null removes one)
+curl -sS -X POST "$LONGSHORE_URL/api/v1/instance/project-settings" \
+  -H "authorization: Bearer $(cat "$TOKEN_FILE")" -H 'content-type: application/json' \
+  -d '{"target_org":"local","target_project":"dogfood","sandbox_snapshot":"daytona-large","max_concurrent":4}'
+```
+
+3. Add the repo to the poll config, into that project, with the non-secret `vars` its workflow reads:
+
+```json
+{
+  "repo": "owner/name",
+  "org": "local",
+  "project": "dogfood",
+  "workflow": ".github/workflows/ci.yml",
+  "defaultBranch": "main",
+  "prMode": "allowlist",
+  "authors": ["octocat"],
+  "vars": { "LONGSHORE_CI": "true" }
+}
+```
+
+The cap divides the instance's sandboxes between projects: with a global cap of 10 and `max_concurrent` 4 on this project, the other projects of the org always have 6. A project cap can only lower the per-org cap (`--org-cap`, `LONGSHORE_ORG_CAP`), so that must be at least as high as the largest cap you set. The snapshot only changes where this project's sandboxes start; see [Providers](/providers#per-project-snapshot-and-concurrency-cap) for the order against size classes and the provider default.
+
 ## Trusted proxies
 
 The webhook failure rate limit is keyed on the real client address. Name the proxies in front of the server, as addresses and CIDR ranges, in `LONGSHORE_TRUSTED_PROXIES` (for example `10.0.0.0/8,fd00::/8`). The client is the right-most `X-Forwarded-For` hop that is not one of them, and the header is read only when the socket peer is itself trusted. With none configured the limiter keys on the socket peer, so a spoofed header gains nothing. A correctly signed delivery is never rate limited. `LONGSHORE_TRUST_FORWARDED_FOR` is no longer read.
