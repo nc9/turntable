@@ -15,6 +15,7 @@ import {
   listAudit,
   listJobs,
   revokeApprover,
+  setEnvPolicy,
   setKeyPolicy,
   setProjectSandboxSettings,
   type Scope,
@@ -51,7 +52,7 @@ async function approverIn(t: Tenant, forgeLogin: string | null = "alice-gh"): Pr
 }
 
 /** A run held for an untrusted author, with the sha and workflow hash approve_run is given. */
-async function held(t: Tenant, cls = "untrusted_pr") {
+async function held(t: Tenant, cls = "untrusted_pr", actor?: string) {
   seq += 1;
   const sha = createHash("sha1").update(`human-${seq}`).digest("hex");
   const workflowHash = createHash("sha256").update(`wf-human-${seq}`).digest("hex");
@@ -60,6 +61,7 @@ async function held(t: Tenant, cls = "untrusted_pr") {
     event: "pull_request",
     ref: "refs/pull/7/head",
     sha,
+    ...(actor ? { actor } : {}),
     trust: JSON.stringify({ class: cls, workflowHash }),
   });
   const job = (await createJob(db, t.scope, {
@@ -369,5 +371,44 @@ describe("the other policies behave as before", () => {
     });
     expect(code(bad)).toBe("unauthenticated");
     expect(await states(a.scope, h.runId)).toEqual(["awaiting_approval"]);
+  });
+});
+
+describe("the approver is not the run's author (#408)", () => {
+  const signed = async (h: Held, p: Person) => {
+    const tok = await token(a);
+    const c = await challenge(tok, h, p);
+    return approve(tok, h, { statement: c.statement, signature: sig(p, c.canonical) });
+  };
+
+  test("an approver whose linked login is the author is refused, whatever the case", async () => {
+    const alice = await approverIn(a, "Alice-GH");
+    for (const actor of ["alice-gh", "ALICE-GH"]) {
+      const h = await held(a, "untrusted_pr", actor);
+      const r = await signed(h, alice);
+      expect(code(r)).toBe("forbidden");
+      expect(!r.ok && r.error.message).toMatch(/approver_is_author/);
+      expect(await states(a.scope, h.runId)).toEqual(["awaiting_approval"]);
+    }
+  });
+
+  test("the org policy allowing author approval lets the author approve", async () => {
+    const alice = await approverIn(a, "alice-gh");
+    await setEnvPolicy(db, a.orgId, {
+      environment: "production",
+      required: 1,
+      allowAuthorApproval: true,
+      by: "t",
+      now: clock,
+    });
+    const h = await held(a, "untrusted_pr", "Alice-GH");
+    expect((await signed(h, alice)).ok).toBe(true);
+    expect(await states(a.scope, h.runId)).toEqual(["queued"]);
+  });
+
+  test("a different approver is unaffected", async () => {
+    const alice = await approverIn(a, "alice-gh");
+    const h = await held(a, "untrusted_pr", "mallory");
+    expect((await signed(h, alice)).ok).toBe(true);
   });
 });
