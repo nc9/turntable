@@ -62,6 +62,14 @@ import {
   webhookDeliveriesOp,
 } from "./definitions/webhooks";
 import { setOidcAudiencesOp } from "./definitions/oidc-audiences";
+import {
+  getSettingOp,
+  instanceGetSettingOp,
+  instanceListSettingsOp,
+  instanceSetSettingOp,
+  listSettingsOp,
+  setSettingOp,
+} from "./definitions/settings";
 import { createRegistry } from "./registry";
 
 export { authenticate, dispatch, type DispatchEnv, type DispatchResult } from "./dispatch";
@@ -140,4 +148,10 @@ export const registry = createRegistry([
   disableWebhookOp,
   enableWebhookOp,
   webhookDeliveriesOp,
+  getSettingOp,
+  listSettingsOp,
+  setSettingOp,
+  instanceGetSettingOp,
+  instanceListSettingsOp,
+  instanceSetSettingOp,
 ]);

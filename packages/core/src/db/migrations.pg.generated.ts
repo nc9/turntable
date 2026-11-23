@@ -186,5 +186,12 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"skip_check_claimed_at\" bigint;"
     ]
+  },
+  {
+    "tag": "0008_settings_registry",
+    "when": 1795424568879,
+    "statements": [
+      "CREATE TABLE \"settings\" (\n\t\"scope_kind\" text NOT NULL,\n\t\"scope_id\" text DEFAULT '' NOT NULL,\n\t\"key\" text NOT NULL,\n\t\"value\" text NOT NULL,\n\t\"updated_by\" text NOT NULL,\n\t\"updated_at\" bigint NOT NULL,\n\tCONSTRAINT \"settings_scope_kind_scope_id_key_pk\" PRIMARY KEY(\"scope_kind\",\"scope_id\",\"key\"),\n\tCONSTRAINT \"settings_scope_kind_check\" CHECK (scope_kind IN ('instance', 'org', 'project'))\n);"
+    ]
   }
 ];

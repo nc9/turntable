@@ -14,9 +14,15 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import type { BackupWorkerReply, BackupWorkerRequest } from "./backup-worker";
 import { BUSY_TIMEOUT_MS } from "./sqlite-wal";
 import { migrations } from "./migrations.generated";
+import { DEFAULT_BACKUP_KEEP, settingsRegistry } from "../settings/definitions";
+import {
+  createSettingsRuntime,
+  resolveSettingBeforeDb,
+  type SettingsRuntime,
+} from "../settings/resolve";
 
 export const BACKUPS_DIR = "backups";
-export const DEFAULT_BACKUP_KEEP = 10;
+export { DEFAULT_BACKUP_KEEP };
 /** Free space required beside the backup, as a multiple of the database's size. */
 export const BACKUP_SPACE_FACTOR = 2;
 
@@ -275,13 +281,14 @@ export async function backupBeforeMigrate(
   return result;
 }
 
-/** `TURNTABLE_BACKUP_KEEP`: how many backups to keep. Unset means the default; junk is refused. */
-export function backupKeepFromEnv(env: Record<string, string | undefined>): number {
-  const raw = env.TURNTABLE_BACKUP_KEEP?.trim();
-  if (!raw) return DEFAULT_BACKUP_KEEP;
-  const n = Number(raw);
-  if (!/^\d+$/.test(raw) || n < 1 || n > 10_000) {
-    throw new Error("TURNTABLE_BACKUP_KEEP must be a whole number from 1 to 10000");
-  }
-  return n;
+/**
+ * How many backups to keep, before the database is open: the environment (`TURNTABLE_BACKUP_KEEP`),
+ * then `turntable.toml`, then the default. A value that is not a whole number from 1 to 10000 is
+ * refused, naming where it was set. The database layer is read by `db_backup` itself.
+ */
+export function backupKeepFromEnv(
+  env: Record<string, string | undefined>,
+  settings: SettingsRuntime = createSettingsRuntime(settingsRegistry, env),
+): number {
+  return resolveSettingBeforeDb(settings, "backup_keep").value as number;
 }

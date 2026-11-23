@@ -1411,3 +1411,30 @@ export const outboundDeliveries = sqliteTable(
     index("outbound_webhook_deliveries_endpoint_idx").on(t.orgId, t.endpointId, t.createdAt),
   ],
 );
+
+// ---- settings registry (#321) ----
+
+export const SETTING_SCOPES = ["instance", "org", "project"] as const;
+export type SettingScope = (typeof SETTING_SCOPES)[number];
+
+/**
+ * The database layer of the settings registry: a value set through the ops or the UI. The layers
+ * above it (environment, `turntable.toml`) are never stored here. `scope_id` is the org or project
+ * id, and empty for the instance. `value` is JSON, validated against the registry on every read.
+ * Secrets are never settings, so nothing here is sealed.
+ */
+export const settings = sqliteTable(
+  "settings",
+  {
+    scopeKind: text("scope_kind").notNull(),
+    scopeId: text("scope_id").notNull().default(""),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.scopeKind, t.scopeId, t.key] }),
+    check("settings_scope_kind_check", inList("scope_kind", SETTING_SCOPES)),
+  ],
+);

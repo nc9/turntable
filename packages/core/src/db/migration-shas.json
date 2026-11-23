@@ -148,6 +148,10 @@
     {
       "tag": "0036_skip_check_claim",
       "sha256": "2264b3d75c95951266a4386646b98624399fd351318df93d0e72c487cba8d782"
+    },
+    {
+      "tag": "0037_settings_registry",
+      "sha256": "87ecd22c830d6061e50830b5fd7b028d2c463bbec2c9e9ec6df7f16c7d2fe346"
     }
   ],
   "pg": [
@@ -182,6 +186,10 @@
     {
       "tag": "0007_skip_check_claim",
       "sha256": "0696ab60f4c478429f3b665fe9244fc70b206652dddf97a5c800b8a570310ca8"
+    },
+    {
+      "tag": "0008_settings_registry",
+      "sha256": "837897defe7355deb457e660b6dd1ae1d945af6f27f8854ba0b741752ec61452"
     }
   ]
 }

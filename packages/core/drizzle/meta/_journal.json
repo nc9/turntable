@@ -260,6 +260,13 @@
       "when": 1795419761142,
       "tag": "0036_skip_check_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1795424568361,
+      "tag": "0037_settings_registry",
+      "breakpoints": true
     }
   ]
 }

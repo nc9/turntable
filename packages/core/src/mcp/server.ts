@@ -51,7 +51,7 @@ export function createMcpServer(env: DispatchEnv, token: string): Server {
   const tools = mcpTools(env.registry);
   const known = new Set(tools.map((t) => t.name));
   const call = (name: string, input: Record<string, unknown>) =>
-    dispatch(env, { kind: "bearer", token }, name, input);
+    dispatch({ ...env, viaMcp: true }, { kind: "bearer", token }, name, input);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((t) => ({

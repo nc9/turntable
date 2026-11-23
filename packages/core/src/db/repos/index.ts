@@ -18,6 +18,7 @@ export * from "./api";
 export * from "./approve";
 export * from "./artifacts";
 export * from "./quotas";
+export * from "./settings";
 export * from "./project-settings";
 export * from "./approvals";
 export * from "./proxy-rules";

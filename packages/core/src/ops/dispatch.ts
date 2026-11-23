@@ -2,6 +2,7 @@
 // all happen here; adapters (REST, MCP, CLI) only translate transport and never decide access.
 import { auditFailure, systemOrgId } from "../audit/failures";
 import type { BackupConfig } from "../db/backup";
+import type { SettingsRuntime } from "../settings/resolve";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -51,6 +52,10 @@ export type DispatchEnv = {
   attestationAnchors?: TrustAnchors | undefined;
   /** The readiness checks, for the `doctor` operation. */
   doctor?: (() => Promise<DoctorReport>) | undefined;
+  /** The settings registry and its environment and file layers (boot builds it). */
+  settings?: SettingsRuntime | undefined;
+  /** Set by the MCP adapter alone: the call is an agent's, so MCP-off settings are refused. */
+  viaMcp?: boolean | undefined;
 };
 
 export type DispatchResult =
@@ -333,6 +338,8 @@ export async function dispatch(
       backup: env.backup,
       attestationAnchors: env.attestationAnchors,
       doctor: env.doctor,
+      settings: env.settings,
+      viaMcp: env.viaMcp,
     });
     const target = op;
     if (!audited) {

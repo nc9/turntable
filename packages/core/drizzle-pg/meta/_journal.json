@@ -57,6 +57,13 @@
       "when": 1795419761704,
       "tag": "0007_skip_check_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795424568879,
+      "tag": "0008_settings_registry",
+      "breakpoints": true
     }
   ]
 }

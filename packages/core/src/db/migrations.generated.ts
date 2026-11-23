@@ -429,5 +429,12 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `job_attempts` ADD `skip_check_claimed_at` integer;"
     ]
+  },
+  {
+    "tag": "0037_settings_registry",
+    "when": 1795424568361,
+    "statements": [
+      "CREATE TABLE `settings` (\n\t`scope_kind` text NOT NULL,\n\t`scope_id` text DEFAULT '' NOT NULL,\n\t`key` text NOT NULL,\n\t`value` text NOT NULL,\n\t`updated_by` text NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tPRIMARY KEY(`scope_kind`, `scope_id`, `key`),\n\tCONSTRAINT \"settings_scope_kind_check\" CHECK(scope_kind IN ('instance', 'org', 'project'))\n);"
+    ]
   }
 ];

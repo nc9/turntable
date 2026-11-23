@@ -125,6 +125,12 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `disable_webhook` | `POST /api/v1/webhooks/{webhook_id}/disable` | no |  | write | admin | token | Stop sending to a webhook endpoint. |
 | `enable_webhook` | `POST /api/v1/webhooks/{webhook_id}/enable` | no |  | write | admin | token | Resume a disabled webhook endpoint. |
 | `webhook_deliveries` | `GET /api/v1/webhook-deliveries` | no |  | read | admin | token | The delivery log of a webhook endpoint. |
+| `get_setting` | `GET /api/v1/settings/{key}` | yes |  | read | reader | token | One org or project setting: effective value, source and lock. |
+| `list_settings` | `GET /api/v1/settings` | yes |  | read | reader | token | Every org setting (and project setting, with a project) with source and lock. |
+| `set_setting` | `POST /api/v1/settings` | yes |  | write | operator (per org policy) | token | Set an org or project setting (database layer). |
+| `instance_get_setting` | none | no |  | read | admin | instance | One instance setting: effective value, source and lock. |
+| `instance_list_settings` | none | no |  | read | admin | instance | Every instance setting with source and lock. |
+| `instance_set_setting` | none | no |  | write | admin | instance | Set an instance setting (database layer, instance administrator only). |
 
 {/* ops:end */}
 

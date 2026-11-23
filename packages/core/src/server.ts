@@ -1,6 +1,7 @@
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
 import type { BackupConfig } from "./db/backup";
+import type { SettingsRuntime } from "./settings/resolve";
 import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
@@ -103,6 +104,8 @@ export type ServeOptions = {
   instanceOrgCap?: number | undefined;
   /** What `db_backup` needs: the data dir and database file, or the Postgres marker. */
   backup?: BackupConfig;
+  /** The settings registry with its environment and turntable.toml layers (settings/boot.ts). */
+  settings?: SettingsRuntime;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
@@ -128,6 +131,7 @@ export function startServer(options: ServeOptions) {
     instanceOrgCap: options.instanceOrgCap,
     doctor: options.doctor,
     backup: options.backup,
+    settings: options.settings,
   };
   const api = createRestApi(env, {
     trustForwardedProto:

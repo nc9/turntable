@@ -8,6 +8,7 @@ import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import type { DoctorReport } from "../doctor/types";
 import type { BackupConfig } from "../db/backup";
+import type { SettingsRuntime } from "../settings/resolve";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
 
@@ -49,6 +50,10 @@ export type OpContext = {
   attestationAnchors?: TrustAnchors | undefined;
   /** Runs the readiness checks against the running server; absent where there is no server. */
   doctor?: (() => Promise<DoctorReport>) | undefined;
+  /** The settings registry with its environment and file layers; the shipped registry, bare, when absent. */
+  settings?: SettingsRuntime | undefined;
+  /** True when the call came in over MCP: `set_setting` refuses settings MCP may not change. */
+  viaMcp?: boolean | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {

@@ -7338,6 +7338,395 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/settings/{key}": {
+      "get": {
+        "operationId": "get_setting",
+        "summary": "One org or project setting: effective value, source and lock.",
+        "description": "Returns the effective value of one org or project setting, which layer it comes from (`env`, `toml`, `db` or `default`) and whether it is locked. A locked value is set by the instance's environment or config file and cannot be changed here. A project setting needs the project. Read-only.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "The setting's key.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": ["instance", "org", "project"]
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "value": {},
+                    "default": {},
+                    "source": {
+                      "type": "string",
+                      "enum": ["env", "toml", "db", "default"],
+                      "description": "Which layer the value comes from."
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "True when the environment or turntable.toml sets it: it cannot be changed here."
+                    },
+                    "locked_by": {
+                      "description": "For a locked value, the variable or file.",
+                      "type": ["string", "null"]
+                    },
+                    "role": {
+                      "type": "string",
+                      "description": "The least role that may change it."
+                    },
+                    "mcp_editable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "scope",
+                    "description",
+                    "value",
+                    "default",
+                    "source",
+                    "locked",
+                    "locked_by",
+                    "role",
+                    "mcp_editable"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/settings": {
+      "get": {
+        "operationId": "list_settings",
+        "summary": "Every org setting (and project setting, with a project) with source and lock.",
+        "description": "Lists the org settings, and the project settings when a project is given or the token is scoped to one. Each has its effective value, default, source (`env`, `toml`, `db` or `default`), lock, the role that may change it and whether MCP may. Read-only.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Most settings to return. Default 50.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "`next_cursor` of the previous page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "settings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": ["instance", "org", "project"]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "value": {},
+                          "default": {},
+                          "source": {
+                            "type": "string",
+                            "enum": ["env", "toml", "db", "default"],
+                            "description": "Which layer the value comes from."
+                          },
+                          "locked": {
+                            "type": "boolean",
+                            "description": "True when the environment or turntable.toml sets it: it cannot be changed here."
+                          },
+                          "locked_by": {
+                            "description": "For a locked value, the variable or file.",
+                            "type": ["string", "null"]
+                          },
+                          "role": {
+                            "type": "string",
+                            "description": "The least role that may change it."
+                          },
+                          "mcp_editable": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "scope",
+                          "description",
+                          "value",
+                          "default",
+                          "source",
+                          "locked",
+                          "locked_by",
+                          "role",
+                          "mcp_editable"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next_cursor": {
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["settings", "next_cursor"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
+      },
+      "post": {
+        "operationId": "set_setting",
+        "summary": "Set an org or project setting (database layer).",
+        "description": "Sets, or with `unset` removes, the stored value of one org or project setting. It is refused when the setting is locked (the environment or turntable.toml sets it; the error says which), when your role is below the setting's own, and over MCP for a setting that raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). The old and new values are audited. Returns the setting as `get_setting` does.\n\nRequired role: operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The setting's key."
+                  },
+                  "value": {
+                    "description": "The new value, of the type `list_settings` shows."
+                  },
+                  "unset": {
+                    "description": "True to remove the stored value, so the default applies again.",
+                    "type": "boolean"
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["key"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": ["instance", "org", "project"]
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "value": {},
+                    "default": {},
+                    "source": {
+                      "type": "string",
+                      "enum": ["env", "toml", "db", "default"],
+                      "description": "Which layer the value comes from."
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "True when the environment or turntable.toml sets it: it cannot be changed here."
+                    },
+                    "locked_by": {
+                      "description": "For a locked value, the variable or file.",
+                      "type": ["string", "null"]
+                    },
+                    "role": {
+                      "type": "string",
+                      "description": "The least role that may change it."
+                    },
+                    "mcp_editable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "scope",
+                    "description",
+                    "value",
+                    "default",
+                    "source",
+                    "locked",
+                    "locked_by",
+                    "role",
+                    "mcp_editable"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/approvers/key-policy": {
       "post": {
         "operationId": "approve_key_policy",
@@ -8394,7 +8783,7 @@
       "post": {
         "operationId": "db_backup",
         "summary": "Back up the SQLite database into the data dir (instance administrator only).",
-        "description": "Writes a consistent copy of the SQLite database (VACUUM INTO) to a new file under `<data-dir>/backups/`, named with the time and the binary version, and returns its path, size and sha256. Use it before an upgrade that applies migrations. It keeps the newest `keep` backups (default from TURNTABLE_BACKUP_KEEP, else 10) and refuses when free space is below twice the database size. On Postgres it refuses: use pg_dump. Restoring is stop, replace the file, start. The copy runs on a worker thread, so the server keeps serving while it runs. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "description": "Writes a consistent copy of the SQLite database (VACUUM INTO) to a new file under `<data-dir>/backups/`, named with the time and the binary version, and returns its path, size and sha256. Use it before an upgrade that applies migrations. It keeps the newest `keep` backups (the `backup_keep` setting: TURNTABLE_BACKUP_KEEP, turntable.toml, a value set with `instance_set_setting`, else 10) and refuses when free space is below twice the database size. On Postgres it refuses: use pg_dump. Restoring is stop, replace the file, start. The copy runs on a worker thread, so the server keeps serving while it runs. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": false,
@@ -8661,6 +9050,314 @@
                     }
                   },
                   "required": ["org", "project", "id", "name"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/settings/{key}": {
+      "get": {
+        "operationId": "instance_get_setting",
+        "summary": "One instance setting: effective value, source and lock.",
+        "description": "Returns the effective value of one instance setting, which layer it comes from (`env`, `toml`, `db` or `default`) and, for a locked one, the variable or file that sets it. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's. Read-only.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "The setting's key.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": ["instance", "org", "project"]
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "value": {},
+                    "default": {},
+                    "source": {
+                      "type": "string",
+                      "enum": ["env", "toml", "db", "default"],
+                      "description": "Which layer the value comes from."
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "True when the environment or turntable.toml sets it: it cannot be changed here."
+                    },
+                    "locked_by": {
+                      "description": "For a locked value, the variable or file.",
+                      "type": ["string", "null"]
+                    },
+                    "role": {
+                      "type": "string",
+                      "description": "The least role that may change it."
+                    },
+                    "mcp_editable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "scope",
+                    "description",
+                    "value",
+                    "default",
+                    "source",
+                    "locked",
+                    "locked_by",
+                    "role",
+                    "mcp_editable"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/settings": {
+      "get": {
+        "operationId": "instance_list_settings",
+        "summary": "Every instance setting with source and lock.",
+        "description": "Lists the instance settings with their effective value, default, source (`env`, `toml`, `db` or `default`) and lock. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's. Read-only.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "settings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": ["instance", "org", "project"]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "value": {},
+                          "default": {},
+                          "source": {
+                            "type": "string",
+                            "enum": ["env", "toml", "db", "default"],
+                            "description": "Which layer the value comes from."
+                          },
+                          "locked": {
+                            "type": "boolean",
+                            "description": "True when the environment or turntable.toml sets it: it cannot be changed here."
+                          },
+                          "locked_by": {
+                            "description": "For a locked value, the variable or file.",
+                            "type": ["string", "null"]
+                          },
+                          "role": {
+                            "type": "string",
+                            "description": "The least role that may change it."
+                          },
+                          "mcp_editable": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "scope",
+                          "description",
+                          "value",
+                          "default",
+                          "source",
+                          "locked",
+                          "locked_by",
+                          "role",
+                          "mcp_editable"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["settings"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      },
+      "post": {
+        "operationId": "instance_set_setting",
+        "summary": "Set an instance setting (database layer, instance administrator only).",
+        "description": "Sets, or with `unset` removes, the stored value of one instance setting. Refused when the environment or turntable.toml sets it (the error says which): change it there. The old and new values are audited in the system org's chain. Only the instance administrator can call it. Not an MCP tool: instance settings are the operator's, and a value in an agent's context is not an operator's decision.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The setting's key."
+                  },
+                  "value": {
+                    "description": "The new value, of the type `list_settings` shows."
+                  },
+                  "unset": {
+                    "description": "True to remove the stored value, so the default applies again.",
+                    "type": "boolean"
+                  }
+                },
+                "required": ["key"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": ["instance", "org", "project"]
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "value": {},
+                    "default": {},
+                    "source": {
+                      "type": "string",
+                      "enum": ["env", "toml", "db", "default"],
+                      "description": "Which layer the value comes from."
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "True when the environment or turntable.toml sets it: it cannot be changed here."
+                    },
+                    "locked_by": {
+                      "description": "For a locked value, the variable or file.",
+                      "type": ["string", "null"]
+                    },
+                    "role": {
+                      "type": "string",
+                      "description": "The least role that may change it."
+                    },
+                    "mcp_editable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "scope",
+                    "description",
+                    "value",
+                    "default",
+                    "source",
+                    "locked",
+                    "locked_by",
+                    "role",
+                    "mcp_editable"
+                  ],
                   "additionalProperties": false
                 }
               }

@@ -23,6 +23,7 @@ import {
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
+import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
@@ -90,7 +91,7 @@ Usage:
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
                    [--org-cap 2] [--lease-seconds 30] [--image <ref>] [--hosted]
                    [--isolation-override <reason>]]
-                  [--poll <config.json>]
+                  [--poll <config.json>] [--config <turntable.toml>]
   turntable oidc status|rotate|export --org <slug> (see turntable oidc)
   turntable secret set|rotate|delete|list --org <slug> --name <NAME> (--value-file <path> | --value-stdin)
   turntable audit init-key|adopt|verify|checkpoint|export-key|export (see turntable audit)
@@ -150,6 +151,7 @@ Environment:
   TURNTABLE_BACKUP_BEFORE_MIGRATE  set to 1 to back up the SQLite database (under <data-dir>/backups) at boot,
                     when migrations are pending and before they run; a failed backup stops the boot
   TURNTABLE_BACKUP_KEEP  how many backups to keep (default 10), for "db backup" and the db_backup operation
+  TURNTABLE_CONFIG  path of a turntable.toml of settings (default for --config); the environment beats the file
   TURNTABLE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); TURNTABLE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   TURNTABLE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
@@ -501,9 +503,14 @@ async function serve(args: string[]): Promise<void> {
         type: "string",
         ...(d.isolationOverride ? { default: d.isolationOverride } : {}),
       },
+      config: { type: "string", ...(d.config ? { default: d.config } : {}) },
     },
     strict: true,
   });
+  // The settings layers above the database: the environment and turntable.toml (#321). An unknown
+  // key, a bad value or an unreadable file stops the boot here, before anything is opened. No file
+  // is fine.
+  const settings = loadSettingsRuntime({ config: values.config });
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid --port: ${values.port}`);
@@ -563,7 +570,7 @@ async function serve(args: string[]): Promise<void> {
       dbPath: join(dataDir, "turntable.db"),
       dataDir,
       version: VERSION,
-      keep: backupKeepFromEnv(process.env),
+      keep: backupKeepFromEnv(process.env, settings),
       log: (m) => console.log(`[turntable] ${m}`),
     });
   }
@@ -834,8 +841,9 @@ async function serve(args: string[]): Promise<void> {
                 dialect: "sqlite",
                 dataDir,
                 dbPath: join(dataDir, "turntable.db"),
-                keep: backupKeepFromEnv(process.env),
+                keep: backupKeepFromEnv(process.env, settings),
               },
+        settings,
         instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
           ? Number(values["org-cap"])
           : undefined,
