@@ -117,7 +117,7 @@ export const untrustedRunApprovalSetting = defineSetting({
   mcpEditable: false,
   mcpReason: "it decides whether agents may approve runs, so only a person changes it",
   description:
-    "Who may approve a run held for an untrusted author: `human` (an enrolled approver's signed statement only), `no_agents` (not over MCP, not with an agent token) or `any`.",
+    "Who may approve a run held for an untrusted author: `human` (an enrolled approver's signed statement only; assumes the org `hardware` key policy, since a key file on a machine where agents run lets an agent sign), `no_agents` (not over MCP, not with an agent token) or `any`.",
   toml: "untrusted_run_approval",
 });
 

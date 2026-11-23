@@ -14,7 +14,11 @@ import { runDoctor } from "../src/doctor/checks";
 import { dispatch, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { setSandboxPolicy } from "../src/ops/policy-cli";
-import { countHumanWithoutApprover, HUMAN_REQUIRES_APPROVER } from "../src/ops/setting-guard";
+import {
+  countHumanWithAnyKeyPolicy,
+  countHumanWithoutApprover,
+  HUMAN_REQUIRES_APPROVER,
+} from "../src/ops/setting-guard";
 import { settingsRegistry } from "../src/settings/definitions";
 import { loadSettingsRuntime } from "../src/settings/boot";
 import { seedWorld, type Tenant } from "./ops-helpers";
@@ -151,5 +155,53 @@ describe("doctor human_approval_approvers", () => {
     expect((await check(rt(toml))).status).toBe("warn");
     await enrol();
     expect((await check(rt(toml))).status).toBe("pass");
+  });
+});
+
+describe("doctor human_approval_key_policy", () => {
+  const check = async (settings = rt()) => {
+    const { realInputs } = await import("../src/doctor/real");
+    const { inputs } = realInputs({
+      env: {},
+      dataDir: "/nonexistent",
+      hosted: false,
+      humanAnyKeyPolicy: () => countHumanWithAnyKeyPolicy(settings, db),
+    });
+    const r = await runDoctor({ ...inputs, db: undefined, openError: "missing" });
+    return r.checks.find((c) => c.id === "human_approval_key_policy")!;
+  };
+  const toml = `[orgs.org-a.projects.app]\nuntrusted_run_approval = "human"\n`;
+
+  test("passes with no project on human", async () => {
+    expect((await check()).status).toBe("pass");
+  });
+
+  test("warns with human and the any policy, with a fixed sentence", async () => {
+    await enrol();
+    expect((await setHuman()).ok).toBe(true);
+    const c = await check();
+    expect(c.status).toBe("warn");
+    expect(JSON.stringify(c)).not.toMatch(/org-a|app\b|p-gh/);
+  });
+
+  test("passes with human and the hardware policy", async () => {
+    await enrol();
+    expect((await setHuman()).ok).toBe(true);
+    expect((await check()).status).toBe("warn");
+    await setKeyPolicy(db, a.scope.orgId, { mode: "hardware", presets: [], aaguids: [] }, "t", 3);
+    expect((await check()).status).toBe("pass");
+  });
+
+  test("a turntable.toml value of human counts", async () => {
+    expect((await check(rt(toml))).status).toBe("warn");
+  });
+
+  test("the command line reports not checked", async () => {
+    const { realInputs } = await import("../src/doctor/real");
+    const { inputs } = realInputs({ env: {}, dataDir: "/nonexistent", hosted: false });
+    const r = await runDoctor({ ...inputs, db: undefined, openError: "missing" });
+    const c = r.checks.find((x) => x.id === "human_approval_key_policy")!;
+    expect(c.status).toBe("pass");
+    expect(c.summary).toContain("not checked");
   });
 });
