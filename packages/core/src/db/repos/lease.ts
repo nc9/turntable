@@ -91,14 +91,14 @@ export type ClaimOptions = {
   onlyRun?: string;
   /**
    * Anti-thrash (#355): a job preempted `max` times within `windowMs` is no longer preempted until
-   * it finishes. Default 3 per hour; the scheduler passes the `preempt_max_per_job` and
-   * `preempt_window_minutes` settings.
+   * it finishes. `max` 0 means no limit, which is the default; the scheduler passes the
+   * `preempt_max_per_job` and `preempt_window_minutes` settings.
    */
   preemptLimit?: { max: number; windowMs: number };
 };
 
 /** The defaults of `preemptLimit`, mirrored by the settings of the same names. */
-export const DEFAULT_PREEMPT_LIMIT = { max: 3, windowMs: 60 * 60_000 } as const;
+export const DEFAULT_PREEMPT_LIMIT = { max: 0, windowMs: 60 * 60_000 } as const;
 
 const usageCache = new WeakMap<Db, Map<string, { at: number; usage: QuotaUsage }>>();
 async function cachedUsage(db: Db, orgId: string, now: number, ttl: number): Promise<QuotaUsage> {
@@ -403,7 +403,8 @@ export const PREEMPTED = "preempted";
 /**
  * The newest running attempt of a `yield` project (highest id), optionally only in one org. Local
  * runs count only inside their own process's claim, as in `claimNextAttempt`. A job already
- * preempted `limit.max` times inside the window is skipped (anti-thrash): it runs to its end.
+ * preempted `limit.max` times inside the window is skipped (anti-thrash): it runs to its end. A
+ * `max` of 0 turns that off.
  */
 async function newestYieldAttempt(
   tx: Db,
@@ -415,18 +416,21 @@ async function newestYieldAttempt(
     now: number;
   },
 ): Promise<JobAttempt | undefined> {
-  const spent = await tx.orm
-    .select({ jobId: s.jobAttempts.jobId })
-    .from(s.jobAttempts)
-    .where(
-      and(
-        eq(s.jobAttempts.errorClass, PREEMPTED),
-        inArray(s.jobAttempts.projectId, [...yieldIds]),
-        gte(s.jobAttempts.finishedAt, within.now - within.limit.windowMs),
-      ),
-    )
-    .groupBy(s.jobAttempts.jobId)
-    .having(sql`count(*) >= ${within.limit.max}`);
+  const spent =
+    within.limit.max < 1
+      ? []
+      : await tx.orm
+          .select({ jobId: s.jobAttempts.jobId })
+          .from(s.jobAttempts)
+          .where(
+            and(
+              eq(s.jobAttempts.errorClass, PREEMPTED),
+              inArray(s.jobAttempts.projectId, [...yieldIds]),
+              gte(s.jobAttempts.finishedAt, within.now - within.limit.windowMs),
+            ),
+          )
+          .groupBy(s.jobAttempts.jobId)
+          .having(sql`count(*) >= ${within.limit.max}`);
   const [row] = await tx.orm
     .select({ attempt: s.jobAttempts })
     .from(s.jobAttempts)

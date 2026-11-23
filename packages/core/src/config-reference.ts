@@ -656,9 +656,9 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
   {
     name: "TURNTABLE_PREEMPT_MAX_PER_JOB",
     area: "Server",
-    default: "3",
+    default: "0",
     description:
-      "How many times one `yield` job may be preempted inside the window before it is no longer preempted until it finishes (1 to 1000). The environment name of the `preempt_max_per_job` setting, which `turntable.toml` and `instance_set_setting` also set. See [Providers](/providers#scheduling-class-yield-to-other-projects).",
+      "How many times one `yield` job may be preempted inside the window before it is no longer preempted until it finishes (0 to 1000; 0 means no limit). Enabling it bounds wasted yield minutes but can make normal work wait for a capped yield job; on a shared hosted instance, enable it only with the affected tenants' agreement. The environment name of the `preempt_max_per_job` setting, which `turntable.toml` and `instance_set_setting` also set. See [Providers](/providers#scheduling-class-yield-to-other-projects).",
   },
   {
     name: "TURNTABLE_PREEMPT_WINDOW_MINUTES",

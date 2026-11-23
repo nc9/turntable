@@ -385,6 +385,37 @@ test("anti-thrash: after N preemptions of one job in the window it is no longer 
   expect((await listAttempts(db, yielding, y.jobId)).at(-2)!.errorClass).toBe("preempted");
 });
 
+test("anti-thrash is off by default: a job is preempted as often as normal work needs it", async () => {
+  const N = Date.now();
+  const y = await queue(yielding);
+  const off = { max: 0, windowMs: HOUR };
+  for (let i = 0; i < 5; i++) {
+    const { n, c } = await preemptOnce(y, N, off);
+    expect(c!.attempt.id).toBe(n.attemptId);
+    await finishOk(normal, n.attemptId);
+  }
+  const attempts = await listAttempts(db, yielding, y.jobId);
+  expect(attempts.filter((a) => a.errorClass === "preempted").length).toBe(5);
+  // The claim default (no `preemptLimit`) is the same: no cap.
+  const sixth = await claimNextAttempt(db, {
+    owner: "w1",
+    leaseMs: 1000,
+    now: N,
+    globalCap: 1,
+    perOrgCap: 1000,
+  });
+  expect(sixth!.attempt.jobId).toBe(y.jobId);
+  const n = await queue(normal);
+  const c = await claimNextAttempt(db, {
+    owner: "w1",
+    leaseMs: 1000,
+    now: N,
+    globalCap: 1,
+    perOrgCap: 1000,
+  });
+  expect(c!.attempt.id).toBe(n.attemptId);
+});
+
 test("anti-thrash: another job of the same project is still preempted", async () => {
   const N = Date.now();
   const limit = { max: 1, windowMs: HOUR };

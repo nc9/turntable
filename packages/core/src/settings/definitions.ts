@@ -204,21 +204,22 @@ export const schedulingClassSetting = defineSetting({
 /**
  * Anti-thrash for `yield` projects (#355): after this many preemptions of one job inside the
  * window, the job is no longer preempted until it finishes (the window runs out first, or it ends).
+ * 0, the default, means no limit: normal work waits only for a teardown.
  */
-export const DEFAULT_PREEMPT_MAX_PER_JOB = 3;
+export const DEFAULT_PREEMPT_MAX_PER_JOB = 0;
 export const DEFAULT_PREEMPT_WINDOW_MINUTES = 60;
 
 export const preemptMaxPerJobSetting = defineSetting({
   key: "preempt_max_per_job",
   scope: "instance",
-  type: z.int().min(1).max(1000),
+  type: z.int().min(0).max(1000),
   default: DEFAULT_PREEMPT_MAX_PER_JOB,
   role: "instance_admin",
   instanceAdminOnly: true,
   mcpEditable: false,
   mcpReason: "it decides how much a yield job may be disturbed, so only a person changes it",
   description:
-    "How many times one `yield` job may be preempted inside `preempt_window_minutes` (1 to 1000). After that the job is not preempted again until it finishes: normal work waits for it, and the job runs to the end.",
+    "How many times one `yield` job may be preempted inside `preempt_window_minutes` (0 to 1000). 0 means no limit and is the default. With 1 or more, the job is not preempted again after that until it finishes: normal work waits for it and the job runs to the end. Trade-off: the cap bounds wasted yield minutes but can make normal work wait for a capped yield job, so on a shared hosted instance enable it only with the affected tenants' agreement.",
   env: ["TURNTABLE_PREEMPT_MAX_PER_JOB"],
   envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
   toml: "scheduler.preempt_max_per_job",
@@ -234,7 +235,7 @@ export const preemptWindowMinutesSetting = defineSetting({
   mcpEditable: false,
   mcpReason: "it decides how much a yield job may be disturbed, so only a person changes it",
   description:
-    "The window, in minutes, over which `preempt_max_per_job` counts the preemptions of one job (1 to 10080).",
+    "The window, in minutes, over which `preempt_max_per_job` counts the preemptions of one job (1 to 10080). Used only when `preempt_max_per_job` is 1 or more.",
   env: ["TURNTABLE_PREEMPT_WINDOW_MINUTES"],
   envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
   toml: "scheduler.preempt_window_minutes",
