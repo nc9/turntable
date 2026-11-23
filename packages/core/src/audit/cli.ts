@@ -212,7 +212,7 @@ export async function auditCommand(args: string[]): Promise<number> {
 
 /**
  * Checkpoints from an export file (JSONL, entries ignored), the bodies an anchor sink received
- * (`{org_id, sequence, head_hash, time, signature}` per line, or the `{org, lines}` of the audit export), or a saved single checkpoint.
+ * (v2 `{version: 2, org_id, sequence, head_hash, time, key_id, signature}` per line, or the keyless v1 body without `key_id`, or the `{org, lines}` of the audit export), or a saved single checkpoint.
  */
 export function readAnchorFile(path: string): AnchorCheckpoint[] {
   const out: AnchorCheckpoint[] = [];
@@ -221,15 +221,27 @@ export function readAnchorFile(path: string): AnchorCheckpoint[] {
       for (const l of o.lines) take(l as Partial<AnchorCheckpoint> & { type?: string });
       return;
     }
-    const ex = o as { org_id?: unknown; sequence?: unknown; head_hash?: unknown; time?: unknown };
+    const ex = o as {
+      org_id?: unknown;
+      sequence?: unknown;
+      head_hash?: unknown;
+      time?: unknown;
+      version?: unknown;
+      key_id?: unknown;
+    };
     if (typeof ex.org_id === "string" && typeof ex.sequence === "number" && o.signature) {
-      // The minimal body an anchor sink receives: no key id, so verify tries the trusted keys.
+      // v2 names its key and is checked under it alone. A v1 body has none (keyId ""): verify
+      // tries the trusted keys and accepts it only at or before the org's v2 cutover. A v2 body
+      // without a key id is not read as v1, or stripping the id would downgrade it.
+      if (ex.version === 2 && (typeof ex.key_id !== "string" || ex.key_id === "")) {
+        throw new Error(`${path}: a v2 anchor body needs a key_id`);
+      }
       out.push({
         orgId: ex.org_id,
         seq: ex.sequence,
         hash: String(ex.head_hash),
         signedAt: Number(ex.time),
-        keyId: "",
+        keyId: ex.version === 2 ? String(ex.key_id) : "",
         signature: o.signature,
       });
       return;

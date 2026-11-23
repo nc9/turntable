@@ -10439,7 +10439,7 @@
       "post": {
         "operationId": "instance_audit_verify",
         "summary": "Check orgs' audit chains against exported anchors, for the instance administrator.",
-        "description": "Takes anchor bodies exported from the audit export sink (`{version: 1, org_id, sequence, head_hash, time, signature}`, up to 1000) and, per org, walks its audit chain and checks each anchor's signature and hash. The result per org is `ok`, `rolled_back` (the chain ends behind a validly signed anchor) or `mismatch` (a hash or signature disagrees, the chain is broken, or the org is unknown), with a fixed sentence and never a raw error. Signatures are checked under the org's audit key from the secret store: for a key pinned outside the server use `turntable audit verify --pubkey`. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "description": "Takes anchor bodies exported from the audit export sink (v2: `{version: 2, org_id, sequence, head_hash, time, key_id, signature}`, up to 1000; a keyless `version: 1` body is accepted only at or before the org's v2 cutover) and, per org, walks its audit chain and checks each anchor's signature, under the key its `key_id` names and no other, and its hash. The result per org is `ok`, `rolled_back` (the chain ends behind a validly signed anchor) or `mismatch` (a hash or signature disagrees, the chain is broken, or the org is unknown), with a fixed sentence and never a raw error; `reasons` classifies a refused anchor (`unknown_key`: the key id is not a trusted key of the org; `keyless_after_cutover`). Signatures are checked under the org's audit key from the secret store: for a key pinned outside the server use `turntable audit verify --pubkey`. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -10453,45 +10453,97 @@
                     "maxItems": 1000,
                     "type": "array",
                     "items": {
-                      "type": "object",
-                      "properties": {
-                        "version": {
-                          "type": "number",
-                          "const": 1
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "org_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            },
+                            "sequence": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "head_hash": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "time": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "signature": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "version": {
+                              "type": "number",
+                              "const": 1
+                            }
+                          },
+                          "required": [
+                            "org_id",
+                            "sequence",
+                            "head_hash",
+                            "time",
+                            "signature",
+                            "version"
+                          ]
                         },
-                        "org_id": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 64
-                        },
-                        "sequence": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 9007199254740991
-                        },
-                        "head_hash": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 128
-                        },
-                        "time": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        "signature": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 512
+                        {
+                          "type": "object",
+                          "properties": {
+                            "org_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            },
+                            "sequence": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "head_hash": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "time": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "signature": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "version": {
+                              "type": "number",
+                              "const": 2
+                            },
+                            "key_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            }
+                          },
+                          "required": [
+                            "org_id",
+                            "sequence",
+                            "head_hash",
+                            "time",
+                            "signature",
+                            "version",
+                            "key_id"
+                          ]
                         }
-                      },
-                      "required": [
-                        "version",
-                        "org_id",
-                        "sequence",
-                        "head_hash",
-                        "time",
-                        "signature"
                       ]
                     },
                     "description": "Exported anchor bodies; time is the signing time in epoch milliseconds."
@@ -10530,9 +10582,16 @@
                           },
                           "message": {
                             "type": "string"
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": ["unknown_key", "keyless_after_cutover"]
+                            }
                           }
                         },
-                        "required": ["org_id", "result", "anchors", "message"],
+                        "required": ["org_id", "result", "anchors", "message", "reasons"],
                         "additionalProperties": false
                       }
                     }
