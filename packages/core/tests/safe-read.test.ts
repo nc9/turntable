@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CHECKOUT_COMMAND, serveGitRepo } from "./git-http-server";
 import { gitRepoSource } from "../src/scheduler";
 import {
   assertRepoRelative,
@@ -148,7 +149,12 @@ describe("a hostile repo through the real checkout path", () => {
       return (await new Response(p.stdout).text()).trim();
     })();
 
-    const source = gitRepoSource({ cloneUrl: () => `file://${repo}` });
+    const server = serveGitRepo(repo);
+    const source = gitRepoSource({
+      cloneUrl: () => server.url,
+      allowHosts: ["127.0.0.1"],
+      command: CHECKOUT_COMMAND,
+    });
     const checkout = await source.checkout({ sha } as never, { owner: "acme", repo: "web" });
     try {
       expect(checkout.readFile("ci.yml")).toBe("name: ci\n");
@@ -159,6 +165,7 @@ describe("a hostile repo through the real checkout path", () => {
       expect(leaked).toBeUndefined();
       expect(() => checkout.readFile("../../../../etc/hosts")).toThrow(UnsafePathError);
     } finally {
+      server.stop();
       checkout.dispose?.();
     }
   }, 30_000);

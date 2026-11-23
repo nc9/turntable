@@ -252,5 +252,5 @@ jobs:
           load: true
           push: false
           tags: longshore:smoke
-      - name: Run the image (healthz, UI, CSP, PORT, bootstrap token, git fetch by sha)
+      - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token, a real worker checkout)
         run: scripts/smoke-image.sh longshore:smoke
