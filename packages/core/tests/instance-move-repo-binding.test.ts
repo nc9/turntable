@@ -133,6 +133,8 @@ describe("move_repo_binding", () => {
       nextPollAt: null,
       consecutiveFailures: 0,
       runsCreated: 0,
+      authMode: null,
+      rateLimit: undefined,
     });
     const r = await move();
     expect(r.ok).toBe(true);
@@ -181,6 +183,8 @@ describe("move_repo_binding", () => {
       nextPollAt: null,
       consecutiveFailures: 0,
       runsCreated: 0,
+      authMode: null,
+      rateLimit: undefined,
     });
     const r = await move();
     expect(
