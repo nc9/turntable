@@ -33,6 +33,17 @@ DAYTONA_API_KEY=...
 GITHUB_POLL_TOKEN=...
 ```
 
+## The master key on a host with no shell
+
+`longshore keys init` needs a shell, and Railway has none. Set `LONGSHORE_MASTER_KEY_FILE` to a path on the volume (for example `/data/master.key`) and `LONGSHORE_MASTER_KEY_AUTOINIT=1` (or start with `--init-master-key`). If the file is **absent** at start, Longshore creates it once with 32 random bytes and mode 0600, and records `master_key_created` in the system org's audit chain. The log names the path and never the key.
+
+- It never overwrites. If the file exists it is used as it is, even if it is the wrong size (the server then refuses to start, as it always does).
+- Two replicas starting together are safe: the file is written whole to a private temporary file and linked into place, so exactly one creates it and the other reads a complete file.
+- It is refused when the key's directory or the data dir can be read or written by other users and is not owned by the server process. A directory the process owns is tightened to remove the access, and the log says so.
+- Without the opt-in an absent file is an error, as before.
+
+**The volume now holds the key, so a volume backup is also a copy of the key.** Anyone who can read a backup of the volume can read every stored secret in it. Back the key up on its own, somewhere else (a secrets manager), and keep volume backups under the same access rules. Losing the file loses every secret sealed with it. Turn the opt-in off once the key exists if you want a missing file to be an error again.
+
 ## Webhooks wake the poller
 
 A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.
@@ -64,6 +75,51 @@ The settings are the poll knobs that belong to a repo: `--workflow`, `--default-
 ## Trusted proxies
 
 The webhook failure rate limit is keyed on the real client address. Name the proxies in front of the server, as addresses and CIDR ranges, in `LONGSHORE_TRUSTED_PROXIES` (for example `10.0.0.0/8,fd00::/8`). The client is the right-most `X-Forwarded-For` hop that is not one of them, and the header is read only when the socket peer is itself trusted. With none configured the limiter keys on the socket peer, so a spoofed header gains nothing. A correctly signed delivery is never rate limited. `LONGSHORE_TRUST_FORWARDED_FOR` is no longer read.
+
+## Live verification runbook
+
+Run this once, by hand, against live GitHub. The automated tests use a fake GitHub, so each step below checks what they cannot. Use a throwaway GitHub organization you own and a test Longshore org. Do not use a production App.
+
+Before you start: an instance on a public https URL with `LONGSHORE_MASTER_KEY_FILE` set, `LONGSHORE_CLAIM_INSTALLATIONS=1`, `LONGSHORE_TRUSTED_PROXIES` naming your platform's proxy range, and an org-level token with `release_operator` or admin.
+
+### 1. Manifest flow
+
+1. Run `longshore github-app create --url <public url> --org <github org>`, and open the printed loopback address.
+2. Press the button and approve on GitHub. Expect a redirect back to the loopback page that reports success.
+3. Run `longshore github-app status`. Expect the App listed with no secret in the output.
+4. On GitHub, open the App settings. Check these: the permissions are the four in [GitHub App](/github-app), the events are `push`, `pull_request` and `check_run`, the webhook URL is `<public url>/api/v1/webhooks/github`, and the setup URL is `<public url>/api/v1/github/setup`.
+5. Turn on **Request user authorization (OAuth) during installation**. The manifest cannot set it.
+
+### 2. Webhook delivery
+
+1. In the App's **Advanced** tab, redeliver the `ping` delivery. Expect `202` in GitHub's delivery log.
+2. Send one delivery with a wrong signature, for example with `curl` and a made-up `X-Hub-Signature-256`. Expect `401`.
+3. Repeat the bad delivery until you get `429`. Then redeliver a real one from GitHub. Expect `202`: a correctly signed delivery is never rate limited.
+
+### 3. Claim callback
+
+Use two GitHub accounts: an admin of the test organization (A), and a member who is not an admin (B).
+
+1. Call `start_installation_claim` with the test org's token and open the link as A, in a fresh browser profile. Expect a confirmation page naming the Longshore org.
+2. Confirm. Install the App on the test organization. Expect a redirect back to the setup URL and a success page.
+3. Check that the installation and its repositories now appear as projects of that org, and that the org's audit chain has a `claim_installation` entry with A's GitHub id and login.
+4. Start a second claim for another Longshore org and open it as A. Complete it for the same installation. Expect a refusal: a held installation is never taken.
+5. Start a claim as org X, but open the link as B and install or configure the App. Expect a refusal (B is not an admin) and an audited failed attempt. The link must still work afterwards for A.
+6. Open a claim link, then paste it into a different browser profile and confirm there. Expect a refusal (no cookie).
+7. Trigger a push on a bound repository. Expect a delivery that is stored as processed, not ignored. Trigger one on a repository of an unclaimed installation. Expect it stored as ignored.
+
+### 4. Secret rotation
+
+1. Run `longshore github-app rotate-webhook-secret`. Expect success.
+2. On GitHub, look at the App's webhook settings. The secret there changed (GitHub shows it as set).
+3. Redeliver a recent delivery signed before the rotation. Expect `202`: the old secret stays valid for 24 hours.
+4. Push to a bound repository. Expect `202` and a stored delivery.
+5. Wait out the 24 hours and redeliver the old one. Expect `401`.
+6. Run the rotation once with GitHub unreachable or the App's key revoked. Expect an error and no local change: the next real delivery still verifies.
+
+### Report back
+
+Record the date, the App id, and the pass or fail of each numbered step in the tracking issue, without secrets or installation ids. Then remove the "Known gaps" entry below.
 
 ## Known gaps
 

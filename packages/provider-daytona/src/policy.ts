@@ -11,7 +11,7 @@ export const NAME_PREFIX = "longshore-dev-";
 
 /** Live sandboxes of ours at once. The default is 2; options can lower it, never past the ceiling. */
 export const DEFAULT_MAX_LIVE = 2;
-export const HARD_MAX_LIVE = 3;
+export const HARD_MAX_LIVE = 5;
 
 /** Auto-stop, auto-delete and the hard TTL are never longer than this. */
 export const MAX_TTL_SECONDS = 30 * 60;
@@ -78,27 +78,77 @@ export const LIVE_STATES: readonly string[] = ALL_STATES.filter((s) => !FREE_STA
 export const isLive = (state: string | undefined): boolean =>
   state !== undefined && !FREE_STATES.includes(state);
 
-/** A DNS-label-safe sandbox name that always starts with the required prefix. */
-export function ownName(requested: string): string {
-  const slug = requested
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9-]+/g, "-")
-    .replaceAll(/^-+|-+$/g, "")
-    .slice(0, 63 - NAME_PREFIX.length);
-  return `${NAME_PREFIX}${slug === "" ? "sandbox" : slug}`;
+/** The default fleet: the one every config had before `fleet` was an option. */
+export const DEFAULT_FLEET = "longshore-dev";
+
+/**
+ * A fleet is one instance's own set of sandboxes in a shared Daytona account: the label `<name>=1`
+ * and the name prefix `<name>-`. Everything that counts, lists, verifies or deletes "ours" goes
+ * through one, so two instances with different fleets (a developer's machine and a hosted shadow
+ * in the same org) can never see, count or delete each other's sandboxes. A sandbox is ours only
+ * with BOTH the label and the prefix, so a fleet whose name extends another's
+ * (`longshore-dev-2` next to `longshore-dev`) is not mistaken for it by either test.
+ */
+export interface Fleet {
+  readonly name: string;
+  /** The label key every sandbox of the fleet carries, with `OWN_LABEL_VALUE`. */
+  readonly label: string;
+  readonly prefix: string;
+  ownName(requested: string): string;
+  isOwnName(name: string): boolean;
+  isOwn(s: { name?: string | undefined; labels?: Record<string, string> | undefined }): boolean;
 }
 
-export const isOwnName = (name: string): boolean => name.startsWith(NAME_PREFIX);
+const FLEET_NAME = /^longshore-[a-z0-9]+(-[a-z0-9]+)*$/;
 
-/** True when the sandbox's labels say it is ours AND its name has our prefix. */
-export function isOwn(s: {
+/** A fleet name: lower case, `longshore-` first, letters digits and single hyphens, at most 30 characters. */
+export function parseFleetName(name: string): string {
+  if (name.length > 30) throw new RangeError("fleet must be at most 30 characters");
+  if (!FLEET_NAME.test(name)) {
+    throw new RangeError(
+      "fleet must be lower case, start with longshore-, and use only letters, digits and single hyphens (for example longshore-shadow)",
+    );
+  }
+  return name;
+}
+
+export function makeFleet(name: string = DEFAULT_FLEET): Fleet {
+  const fleet = parseFleetName(name);
+  const prefix = `${fleet}-`;
+  const isOwnName = (n: string): boolean => n.startsWith(prefix);
+  return {
+    name: fleet,
+    label: fleet,
+    prefix,
+    isOwnName,
+    ownName(requested) {
+      const slug = requested
+        .toLowerCase()
+        .replaceAll(/[^a-z0-9-]+/g, "-")
+        .replaceAll(/^-+|-+$/g, "")
+        .slice(0, 63 - prefix.length);
+      return `${prefix}${slug === "" ? "sandbox" : slug}`;
+    },
+    isOwn(s) {
+      return (
+        s.labels?.[fleet] === OWN_LABEL_VALUE && typeof s.name === "string" && isOwnName(s.name)
+      );
+    },
+  };
+}
+
+const DEFAULT = makeFleet();
+
+/** A DNS-label-safe sandbox name that always starts with the default fleet's prefix. */
+export const ownName = (requested: string): string => DEFAULT.ownName(requested);
+
+export const isOwnName = (name: string): boolean => DEFAULT.isOwnName(name);
+
+/** True when the sandbox's labels say it is the DEFAULT fleet's AND its name has that prefix. */
+export const isOwn = (s: {
   name?: string | undefined;
   labels?: Record<string, string> | undefined;
-}): boolean {
-  return (
-    s.labels?.[OWN_LABEL] === OWN_LABEL_VALUE && typeof s.name === "string" && isOwnName(s.name)
-  );
-}
+}): boolean => DEFAULT.isOwn(s);
 
 export function clampMaxLive(requested: number | undefined): number {
   const n = requested ?? DEFAULT_MAX_LIVE;

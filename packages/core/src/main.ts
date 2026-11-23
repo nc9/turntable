@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { Provider } from "@longshore/provider-sdk";
 import { type Db, ensureInstance, getAttempt, openDatabase } from "./db";
@@ -22,6 +22,9 @@ import { startCheckpointer } from "./audit/checkpoint";
 import { jsonlSink, startExporter, webhookSink, type AuditSink } from "./audit/export";
 import { bootstrapToken } from "./ops/bootstrap";
 import { loadMasterKey } from "./secrets/crypto";
+import { autoInitMasterKey, autoInitRequested } from "./secrets/autoinit";
+import { appendAudit } from "./db/repos";
+import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
@@ -61,6 +64,7 @@ const USAGE = `longshore ${VERSION}
 
 Usage:
   longshore serve [--roles web,worker,poller|all|release] [--port 8080] [--host 127.0.0.1] [--data-dir ./data]
+                  [--database-url postgres://...]
                   [--allowed-origin <origin>]
                   [--public-url <base url>]
                   [--worker [--provider docker|daytona] [--provider-config <file>] [--global-cap 4]
@@ -76,6 +80,8 @@ Usage:
   longshore github-app create --url <public base url> [--org <github org>] [--name Longshore]
                               [--longshore-org local] [--master-key-file <path>]
   longshore github-app rotate-webhook-secret | status [--master-key-file <path>] [--data-dir ./data]
+  longshore token create --instance --name <name> [--expires-days 30] [--data-dir ./data]
+                         (an instance-administrator token: REST only, for quotas; list and revoke take --instance too)
   longshore token create --org <slug> [--project <slug>] --role <reader|operator|release_operator>
                          --name <name> [--expires-days 90] [--data-dir ./data]
   longshore token generate
@@ -102,6 +108,8 @@ Environment:
   LONGSHORE_BOOTSTRAP_TOKEN_SHA256  sha256 of a token from "longshore token generate"; on boot, an
                     org with no tokens gets one operator token with this hash
   LONGSHORE_BOOTSTRAP_ORG  org for the bootstrap token (default local)
+  LONGSHORE_MASTER_KEY_AUTOINIT  set to 1 (or serve --init-master-key) to create LONGSHORE_MASTER_KEY_FILE on first boot when it is
+                    absent (a host with no shell); never overwrites an existing file
   LONGSHORE_MASTER_KEY_FILE  32-byte master key file for the encrypted secret store (longshore keys init);
                     required for the GitHub App and its webhook endpoint
   LONGSHORE_AUDIT_EXPORT_DIR  rotate audit entries and checkpoints to JSONL files here
@@ -113,6 +121,8 @@ Environment:
   LONGSHORE_TRUST_FORWARDED_PROTO  set to 1 behind a TLS-terminating proxy you control: plain-http requests it
                     forwards get a 301 to https (GET and HEAD; 400 otherwise), and secret values
                     sent over x-forwarded-proto: https are accepted
+  LONGSHORE_DATABASE_URL  Postgres connection URL (default for --database-url); every subcommand that opens
+                    the database uses it. Without it the database is SQLite in the data dir
   LONGSHORE_HSTS_MAX_AGE  Strict-Transport-Security max-age in seconds for https responses (default 31536000;
                     0 or off disables); LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0 drops includeSubDomains
   LONGSHORE_DROP_PRIVILEGES  <uid>:<gid>; when started as root, chown the data dir to it and drop to it
@@ -412,8 +422,11 @@ async function serve(args: string[]): Promise<void> {
       port: { type: "string", default: d.port },
       host: { type: "string", default: d.host },
       "data-dir": { type: "string", default: d.dataDir },
+      // Read before anything else loads (db/dialect.ts); declared so strict parsing accepts it.
+      "database-url": { type: "string" },
       "allowed-origin": { type: "string", multiple: true },
       "public-url": { type: "string" },
+      "init-master-key": { type: "boolean", default: false },
       roles: { type: "string" },
       worker: { type: "boolean", default: d.worker },
       "global-cap": { type: "string", default: d.globalCap },
@@ -467,8 +480,38 @@ async function serve(args: string[]): Promise<void> {
     console.log(`dropped privileges to ${process.env.LONGSHORE_DROP_PRIVILEGES}`);
   if (privilege === "root_allowed")
     console.warn("warning: running as root (LONGSHORE_ALLOW_ROOT=1)");
+  // A platform with no shell cannot run `keys init`: when asked to, create the key file once, here,
+  // before anything reads it. Never overwrites; without the opt-in an absent file stays an error.
+  let masterKeyCreated: string | undefined;
+  const keyPath = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
+  if (keyPath && autoInitRequested(process.env, values["init-master-key"])) {
+    if (
+      autoInitMasterKey(resolve(keyPath), dataDir, (m) => console.log(`[longshore] ${m}`)) ===
+      "created"
+    ) {
+      masterKeyCreated = resolve(keyPath);
+    }
+  } else if (!keyPath && autoInitRequested(process.env, values["init-master-key"])) {
+    throw new Error(
+      "--init-master-key (LONGSHORE_MASTER_KEY_AUTOINIT) needs LONGSHORE_MASTER_KEY_FILE",
+    );
+  }
   const db = openDatabase(join(dataDir, "longshore.db"));
   await ensureInstance(db);
+  if (masterKeyCreated) {
+    await appendAudit(
+      db,
+      { orgId: await systemOrgId(db) },
+      {
+        principalKind: "system",
+        principalId: "first-boot",
+        op: "master_key_created",
+        effect: "write",
+        outcome: "ok",
+        input: { file: basename(masterKeyCreated) },
+      },
+    );
+  }
 
   // First-boot access without a shell: see ops/bootstrap.ts.
   const bootstrapHash = process.env.LONGSHORE_BOOTSTRAP_TOKEN_SHA256?.trim();
@@ -647,6 +690,9 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(claims ? { claims } : {}),
         ...(cache ? { cache } : {}),
+        instanceOrgCap: Number.isInteger(Number(values["org-cap"]))
+          ? Number(values["org-cap"])
+          : undefined,
         trustForwardedProto: process.env.LONGSHORE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
       })
@@ -695,6 +741,7 @@ async function token(args: string[]): Promise<void> {
     role: { type: "string" },
     name: { type: "string" },
     "expires-days": { type: "string" },
+    instance: { type: "boolean", default: false },
     "data-dir": { type: "string", default: "./data" },
   } as const;
   const { values, positionals } = parseArgs({
@@ -712,6 +759,45 @@ async function token(args: string[]): Promise<void> {
       `sha256: ${hashToken(secret)}\nSet LONGSHORE_BOOTSTRAP_TOKEN_SHA256 to that hash on the server and keep the token below; it is not stored anywhere else.`,
     );
     console.log(secret);
+    return;
+  }
+  if (values.instance) {
+    // An instance-administrator token (lsi_): not tied to an org, minted only here.
+    if (values.org || values.project || values.role) {
+      throw new Error("--instance takes no --org, --project or --role: it holds no org grant");
+    }
+    const { createInstanceTokenFromCli, listInstanceTokensFromCli, revokeInstanceTokenFromCli } =
+      await import("./ops/instance-token-cli");
+    const db = open();
+    try {
+      if (sub === "create") {
+        if (!values.name) throw new Error("--name is required");
+        const created = await createInstanceTokenFromCli(db, {
+          name: values.name,
+          expiresInDays:
+            values["expires-days"] === undefined ? undefined : Number(values["expires-days"]),
+        });
+        console.error(
+          `created instance token ${created.id}, expires ${iso(created.expiresAt)}. It is shown once. It can call the instance operations over REST and nothing else.`,
+        );
+        console.log(created.secret);
+      } else if (sub === "list") {
+        console.log(["ID", "NAME", "STATUS", "LAST USED", "EXPIRES"].join("\t"));
+        for (const r of await listInstanceTokensFromCli(db)) {
+          console.log([r.id, r.name, r.status, iso(r.lastUsedAt), iso(r.expiresAt)].join("\t"));
+        }
+      } else if (sub === "revoke") {
+        const [id] = positionals;
+        if (!id)
+          throw new Error("usage: longshore token revoke <id> --instance [--data-dir ./data]");
+        const done = await revokeInstanceTokenFromCli(db, id);
+        console.error(`revoked instance token ${done.id} (${done.name})`);
+      } else {
+        throw new Error("--instance works with create, list and revoke");
+      }
+    } finally {
+      db.close();
+    }
     return;
   }
   if (sub === "create") {

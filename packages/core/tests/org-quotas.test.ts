@@ -24,7 +24,7 @@ import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
 import { parseLimit, quotasCommand } from "../src/quotas/cli";
 import { mcpTools } from "../src/ops/mcp";
-import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { mintToken, seedWorld, type Tenant, rawExec } from "./ops-helpers";
 
 let db: Db;
 let a: Tenant;
@@ -36,10 +36,11 @@ beforeEach(async () => {
   ({ db, a, b } = await seedWorld());
   // seedWorld leaves one queued-or-running attempt per tenant: start from a clean slate.
   await db.run(async (h) => {
-    await h.orm.run(
+    await rawExec(
+      h.orm,
       sql`update job_attempts set state = 'success', started_at = null, finished_at = null`,
     );
-    await h.orm.run(sql`update jobs set state = 'success'`);
+    await rawExec(h.orm, sql`update jobs set state = 'success'`);
   });
 });
 
@@ -259,14 +260,16 @@ describe("who can read and set quotas", () => {
     expect(theirs.ok && (theirs.output as any).limits.max_concurrent).toBeNull();
   });
 
-  test("there is no operation that sets quotas: not for an operator token, not over MCP, not over REST", async () => {
-    expect(registry.ops.map((o) => o.name)).not.toContain("set_quotas");
+  test("an org's own tokens cannot set quotas: not an operator token, not over MCP; set_quotas is the instance administrator's alone", async () => {
+    // set_quotas exists, but it is an instance operation: no org token of any role reaches it
+    expect(registry.get("set_quotas")?.auth.type).toBe("instance");
     const op = (await mintToken(db, { orgId: a.orgId }, "operator")).secret;
     const env = { registry, db, now: () => NOW };
     const r = await dispatch(env, { kind: "bearer", token: op }, "set_quotas", {
+      target_org: "org-a",
       max_concurrent: 99,
     });
-    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error.code).toBe("forbidden");
     expect(await getOrgQuotas(db, a.orgId)).toMatchObject({ maxConcurrent: null });
     const names = mcpTools(registry).map((t) => t.name);
     expect(names).toContain("get_quotas");

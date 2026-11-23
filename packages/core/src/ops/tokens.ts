@@ -3,6 +3,23 @@ import { createHash, randomBytes } from "node:crypto";
 /** Prefix of every Longshore API token, so scanners and humans can recognise one. */
 export const TOKEN_PREFIX = "ls_";
 
+/**
+ * Prefix of an instance-administrator token. A different prefix from every org token, so the two
+ * are told apart before any lookup, and a scanner or a human can tell what a leaked one is.
+ */
+export const INSTANCE_TOKEN_PREFIX = "lsi_";
+
+/** A new instance token: `lsi_` plus 32 random bytes, base64url. Shown once; only its hash is kept. */
+export function generateInstanceToken(): string {
+  return `${INSTANCE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+}
+
+export function looksLikeInstanceToken(value: string): boolean {
+  return (
+    value.startsWith(INSTANCE_TOKEN_PREFIX) && value.length === INSTANCE_TOKEN_PREFIX.length + 43
+  );
+}
+
 /** Tokens minted before the rename. Still accepted: they are stored as hashes, nothing else changes. */
 const LEGACY_TOKEN_PREFIX = "tt_";
 
@@ -42,8 +59,11 @@ export function assertMintable(
   request: { role: AgentRole; projectId: string | undefined },
 ): void {
   if (creator.kind === "member") return;
-  if (creator.kind === "approver") {
-    throw new OpError("forbidden", "an approver key cannot create tokens");
+  if (creator.kind === "approver" || creator.kind === "instance") {
+    throw new OpError(
+      "forbidden",
+      `${creator.kind === "approver" ? "an approver key" : "an instance token"} cannot create tokens`,
+    );
   }
   if (ROLE_RANK[request.role] > ROLE_RANK[creator.role]) {
     throw new OpError("forbidden", "a token cannot create a token with a higher role than its own");

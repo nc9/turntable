@@ -31,15 +31,17 @@ import {
   transitionJob,
   updateAttempt,
 } from "../src/db";
+import { onPostgres } from "./pg-mode";
 
 /** Tables that legitimately have no org_id. Adding to this list needs a reason. */
 const NO_ORG_ID = new Set([
   "instance", // instance-level config
   "orgs", // the tenant itself
   "users", // global identity; membership is org_members
+  "instance_tokens", // the instance administrator: holds no org grant by design (#205)
 ]);
 
-test("every table except the allowlist has an org_id column", () => {
+test.skipIf(onPostgres)("every table except the allowlist has an org_id column", () => {
   const tables = Object.values(schema).filter((v) => v instanceof SQLiteTable);
   expect(tables.length).toBeGreaterThanOrEqual(10);
   const missing = tables

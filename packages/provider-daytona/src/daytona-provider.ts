@@ -16,7 +16,13 @@ import {
   type ShellRunner,
   type WrappedExecOptions,
 } from "@longshore/provider-sdk";
-import { type DaytonaSandbox, DaytonaApi, DEFAULT_BASE_URL, readJson } from "./api";
+import {
+  type DaytonaSandbox,
+  DaytonaApi,
+  DaytonaKeyRejectedError,
+  DEFAULT_BASE_URL,
+  readJson,
+} from "./api";
 import {
   mustNotReachFor,
   networkSettingFor,
@@ -34,15 +40,14 @@ import {
   type RegionUsageRow,
   LIVE_STATES,
   MAX_TTL_SECONDS,
-  OWN_LABEL,
   OWN_LABEL_VALUE,
   RUN_LABEL,
   clampMaxLive,
   type OwnerCiLabels,
   isForeignCi,
   isLive,
-  isOwn,
-  ownName,
+  makeFleet,
+  type Fleet,
 } from "./policy";
 
 export type UsageRecord = {
@@ -98,6 +103,15 @@ export interface DaytonaProviderOptions {
    */
   ownerCiPreflight?: OwnerCiPreflight | false;
   /**
+   * How the account's capacity is judged. `org-usage` (the default) reads the org's CPU in use and
+   * needs a key that may read `/organizations/<id>/usage`; if Daytona answers that read with 403
+   * (a customer-scoped key with sandbox write and delete only) it falls back to `own-fleet` and
+   * says so once. `own-fleet` never reads the org: it counts our own live sandboxes by our label
+   * and waits while that is `maxLive` or more. Only a 403 falls back; any other failure of the
+   * read (404, 5xx, network, an unreadable body) still refuses the create.
+   */
+  quotaMode?: "org-usage" | "own-fleet";
+  /**
    * How the account owner's CI sandboxes are recognised (a label key and its values). Default:
    * none, so no label check. It only matters together with `ownerCiLabelWaitAt`.
    */
@@ -107,6 +121,14 @@ export interface DaytonaProviderOptions {
    * (`ownerCiPreflight`) is the gate that does not need to know anyone's labels.
    */
   ownerCiLabelWaitAt?: number;
+  /**
+   * This instance's fleet in a shared account: the label `<fleet>=1` and the name prefix
+   * `<fleet>-`. Everything that counts, lists, verifies or deletes sandboxes is limited to it, so
+   * instances with different fleets (a dev machine and a hosted shadow) never touch each other's
+   * sandboxes or count against each other's `maxLive`. Lower case, starts with `longshore-`, at
+   * most 30 characters. Default `longshore-dev`.
+   */
+  fleet?: string;
   /** The interpreter that runs the proxy relay in a proxied sandbox. Default `node`. */
   relayInterpreter?: string;
   /**
@@ -183,6 +205,9 @@ export class DaytonaProvider implements Provider {
 
   private readonly opts: DaytonaProviderOptions;
 
+  /** The fleet whose sandboxes are ours (see policy.ts). */
+  readonly fleet: Fleet;
+
   constructor(opts: DaytonaProviderOptions) {
     this.opts = opts;
     this.api = new DaytonaApi({
@@ -191,6 +216,7 @@ export class DaytonaProvider implements Provider {
       ...(opts.fetch ? { fetch: opts.fetch } : {}),
     });
     this.runId = opts.runId ?? crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+    this.fleet = makeFleet(opts.fleet);
     this.maxLive = clampMaxLive(opts.maxLive);
     const ttl = opts.maxTtlSeconds ?? MAX_TTL_SECONDS;
     if (!Number.isInteger(ttl) || ttl < 60 || ttl > MAX_TTL_SECONDS) {
@@ -317,9 +343,9 @@ export class DaytonaProvider implements Provider {
     const cached = this.known.get(id);
     if (cached && !fresh) return cached;
     const sb = await this.api.json<DaytonaSandbox>("GET", `/sandbox/${encodeURIComponent(id)}`);
-    if (!isOwn(sb)) {
+    if (!this.fleet.isOwn(sb)) {
       throw new SpecError(
-        `refusing to touch sandbox ${id}: it is not labelled ${OWN_LABEL}=${OWN_LABEL_VALUE}`,
+        `refusing to touch sandbox ${id}: it is not labelled ${this.fleet.label}=${OWN_LABEL_VALUE}`,
       );
     }
     if (!sb.toolboxProxyUrl) throw new InfraError("Daytona sandbox has no toolbox URL");
@@ -374,8 +400,10 @@ export class DaytonaProvider implements Provider {
   }
 
   private async ownLive(): Promise<number> {
-    const all = await this.listAll({ labels: JSON.stringify({ [OWN_LABEL]: OWN_LABEL_VALUE }) });
-    return all.filter((s) => isOwn(s) && isLive(s.state)).length;
+    const all = await this.listAll({
+      labels: JSON.stringify({ [this.fleet.label]: OWN_LABEL_VALUE }),
+    });
+    return all.filter((s) => this.fleet.isOwn(s) && isLive(s.state)).length;
   }
 
   /**
@@ -387,11 +415,29 @@ export class DaytonaProvider implements Provider {
     // Off unless both the labels and a threshold are configured: no request is made.
     if (!this.opts.ownerCiLabels || this.opts.ownerCiLabelWaitAt === undefined) return 0;
     const live = await this.listAll({ states: LIVE_STATES });
-    return live.filter((s) => !isOwn(s) && isForeignCi(s, this.opts.ownerCiLabels)).length;
+    return live.filter((s) => !this.fleet.isOwn(s) && isForeignCi(s, this.opts.ownerCiLabels))
+      .length;
   }
 
   private orgId: string | undefined;
   private warnedNoOrg = false;
+  /** Set once the usage read answered 403: from then on the own-fleet budget is the only gate. */
+  private usageForbidden = false;
+
+  /** What gates a create, for status and the logs. */
+  diagnose(): { quotaMode: "off" | "org-usage" | "own-fleet"; reason: string; maxLive: number } {
+    const base = { maxLive: this.maxLive };
+    if (this.opts.ownerCiPreflight === false) {
+      return { quotaMode: "off", reason: "ownerCiPreflight is false", ...base };
+    }
+    if (this.opts.quotaMode === "own-fleet") {
+      return { quotaMode: "own-fleet", reason: "configured", ...base };
+    }
+    if (this.usageForbidden) {
+      return { quotaMode: "own-fleet", reason: "org usage forbidden (403)", ...base };
+    }
+    return { quotaMode: "org-usage", reason: "default", ...base };
+  }
 
   /**
    * The org's CPU in use against the limit: `{ ok: true }` when there is room for `vcpu` more (or
@@ -403,6 +449,8 @@ export class DaytonaProvider implements Provider {
   ): Promise<{ ok: true } | { ok: false; cpu: number; limit: number }> {
     const o = this.opts.ownerCiPreflight;
     if (o === false) return { ok: true };
+    // Own-fleet budget: the caller already waits while our live count is at maxLive.
+    if (this.opts.quotaMode === "own-fleet" || this.usageForbidden) return { ok: true };
     const limit = o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT;
     if (this.orgId === undefined) {
       const first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
@@ -428,6 +476,15 @@ export class DaytonaProvider implements Provider {
         timeoutMs: 20_000,
       });
     } catch (e) {
+      // A key without the permission to read usage (403): the one failure that falls back, to
+      // the own-fleet budget. A 401 is a bad key and still fails, like everything below.
+      if (e instanceof DaytonaKeyRejectedError && e.status === 403) {
+        this.usageForbidden = true;
+        this.opts.log?.(
+          `daytona: org usage forbidden (403); own-fleet budget mode, maxLive ${this.maxLive}`,
+        );
+        return { ok: true };
+      }
       // Fail closed: a check that cannot be made is not a check that passed. An operator whose
       // deployment has no usage endpoint opts out with `ownerCiPreflight: false`.
       if (e instanceof SandboxNotFoundError) {
@@ -521,15 +578,15 @@ export class DaytonaProvider implements Provider {
     if (spec.template !== undefined)
       throw new SpecError("templates are not supported by this provider");
     const labels: Record<string, string> = { ...spec.labels };
-    if (labels[OWN_LABEL] !== undefined && labels[OWN_LABEL] !== OWN_LABEL_VALUE) {
-      throw new SpecError(`the ${OWN_LABEL} label is reserved`);
+    if (labels[this.fleet.label] !== undefined && labels[this.fleet.label] !== OWN_LABEL_VALUE) {
+      throw new SpecError(`the ${this.fleet.label} label is reserved`);
     }
-    labels[OWN_LABEL] = OWN_LABEL_VALUE;
+    labels[this.fleet.label] = OWN_LABEL_VALUE;
     labels[RUN_LABEL] = labels[RUN_LABEL] || this.runId;
 
     const minutes = Math.ceil(ttlSeconds / 60);
     const body: Record<string, unknown> = {
-      name: ownName(spec.name),
+      name: this.fleet.ownName(spec.name),
       labels,
       public: false,
       // One of the three mutually exclusive network settings: block all, or the proxy endpoint
@@ -573,7 +630,7 @@ export class DaytonaProvider implements Provider {
         timeoutMs: 120_000,
       });
       try {
-        if (!isOwn(sb))
+        if (!this.fleet.isOwn(sb))
           throw new InfraError("Daytona created a sandbox without our label; refusing to continue");
         // The org id for the next create's usage check, when the account had no sandbox to ask.
         this.orgId ??= sb.organizationId;
@@ -709,9 +766,9 @@ export class DaytonaProvider implements Provider {
       if (e instanceof SandboxNotFoundError) return;
       throw e;
     }
-    if (!isOwn(sb)) {
+    if (!this.fleet.isOwn(sb)) {
       throw new SpecError(
-        `refusing to delete sandbox ${id}: it is not labelled ${OWN_LABEL}=${OWN_LABEL_VALUE}`,
+        `refusing to delete sandbox ${id}: it is not labelled ${this.fleet.label}=${OWN_LABEL_VALUE}`,
       );
     }
     try {
@@ -737,8 +794,10 @@ export class DaytonaProvider implements Provider {
   private async waitListed(id: string, present: boolean): Promise<void> {
     const deadline = this.now() + 90_000;
     for (;;) {
-      const all = await this.listAll({ labels: JSON.stringify({ [OWN_LABEL]: OWN_LABEL_VALUE }) });
-      const here = all.some((s) => s.id === id && isOwn(s) && isLive(s.state));
+      const all = await this.listAll({
+        labels: JSON.stringify({ [this.fleet.label]: OWN_LABEL_VALUE }),
+      });
+      const here = all.some((s) => s.id === id && this.fleet.isOwn(s) && isLive(s.state));
       if (here === present) return;
       if (this.now() >= deadline) {
         throw new InfraError(
@@ -776,12 +835,12 @@ export class DaytonaProvider implements Provider {
   async list(filter: { labels?: Labels }): Promise<SandboxInfo[]> {
     // Our own label is always part of the query and is checked again on every result, so a
     // listing can never include (and a delete can never reach) a sandbox that is not ours.
-    const want = { ...filter.labels, [OWN_LABEL]: OWN_LABEL_VALUE };
+    const want = { ...filter.labels, [this.fleet.label]: OWN_LABEL_VALUE };
     const all = await this.listAll({ labels: JSON.stringify(want) });
     return all
       .filter(
         (s) =>
-          isOwn(s) &&
+          this.fleet.isOwn(s) &&
           isLive(s.state) &&
           Object.entries(want).every(([k, v]) => s.labels?.[k] === v),
       )

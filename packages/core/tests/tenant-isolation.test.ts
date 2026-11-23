@@ -13,6 +13,7 @@
 //    proven able to see.
 // It also runs the same inputs through REST and MCP, and the realtime WebSocket.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { getTableConfig as pgTableConfig, PgTable } from "drizzle-orm/pg-core";
 import { getTableConfig, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { randomBytes } from "node:crypto";
 import { generateEd25519, signEd25519 } from "../src/approvals/keys";
@@ -49,6 +50,10 @@ import type { ServerMessage } from "../src/realtime/protocol";
 import { handleRequest } from "../src/server";
 import { SecretVault } from "../src/secrets/vault";
 import { mintToken, seedTenant, type Tenant } from "./ops-helpers";
+
+// Two worlds are open at once (the hostile one and the control one): on PGlite, which is one
+// connection, each needs its own instance.
+process.env.LONGSHORE_TEST_PGLITE_ISOLATED = "1";
 
 // ---- the world ----
 
@@ -525,8 +530,9 @@ function inputFor(
 async function fingerprint(w: World, orgId: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const t of Object.values(schema)) {
-    if (!(t instanceof SQLiteTable)) continue;
-    const cfg = getTableConfig(t);
+    // The schema module hands out the tables of the dialect the suite runs on.
+    if (!(t instanceof SQLiteTable) && !(t instanceof PgTable)) continue;
+    const cfg = t instanceof PgTable ? pgTableConfig(t) : getTableConfig(t);
     const col = cfg.columns.find((c) => c.name === "org_id");
     if (!col) continue;
     const rows = (await w.db.run((h) => h.orm.select().from(t))) as Record<string, unknown>[];
@@ -701,6 +707,23 @@ describe("generated from the registry: every op, every B principal, A's ids and 
     ];
     expect(mustSee.filter((n) => !seen.has(n))).toEqual([]);
     expect(["set_secret", "set_proxy_rule"].filter((n) => !wrote.has(n))).toEqual([]);
+  });
+
+  test("no org principal of any role reaches an instance op (the instance administrator is not an org)", async () => {
+    const before = await fingerprint(hostile, hostile.a.orgId);
+    const ops = registry.instanceOps();
+    expect(ops.length).toBeGreaterThan(0);
+    for (const who of [...hostile.aWho, ...hostile.bWho]) {
+      for (const op of ops) {
+        const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+        const out = await call(hostile, who, op, input);
+        expect(out.ok, `${who.label} on ${op.name}`).toBe(false);
+        expect(out.code, `${who.label} on ${op.name}`).toBe("forbidden");
+      }
+    }
+    // and none of it changed org A
+    const after = await fingerprint(hostile, hostile.a.orgId);
+    expect(Object.keys(after).filter((t) => after[t] !== before[t])).toEqual([]);
   });
 
   test("signature ops cannot be called with a token at all", async () => {

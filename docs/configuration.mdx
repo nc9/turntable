@@ -59,9 +59,10 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `baseUrl` | Daytona cloud | The API URL. |
 | `snapshot` | account default | An existing snapshot to start sandboxes from. Used even when the job names an image. Longshore never creates snapshots. |
 | `target` | account default | The Daytona region. |
-| `maxLive` | `2` | Live sandboxes of ours at once. At most `3`. |
+| `maxLive` | `2` | Live sandboxes of ours at once. At most `5`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
+| `quotaMode` | `"org-usage"` | `"org-usage"` reads the org's CPU in use (see `ownerCiPreflight`); if Daytona answers that read with 403 (a key scoped to sandbox write and delete) it falls back to `"own-fleet"` and logs it once. `"own-fleet"` never reads the org: it counts our own live sandboxes by our label and waits while that is `maxLive` or more. Only a 403 falls back. |
 | `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
 | `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
 | `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
@@ -121,7 +122,7 @@ Responses carry a strict content security policy. Every API call needs a bearer 
 
 ## Per-org quotas
 
-An org can live under limits. Quotas limit tenants, so the **instance operator** sets them, on the host: `longshore quotas set --org <slug> --max-concurrent 3 ... [--data-dir ./data]` (`none` removes a limit; `longshore quotas show --org <slug>` prints them with usage). There is no API operation that sets them, so an org's own tokens, operators and agents cannot raise their limits. They are read with `get_quotas` (REST and MCP, an org-level token; a project-scoped token is refused), which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
+An org can live under limits. Quotas limit tenants, so the **instance operator** sets them, on the host or with an [instance token](/instance-admin) over REST: `longshore quotas set --org <slug> --max-concurrent 3 ... [--data-dir ./data]` (`none` removes a limit; `longshore quotas show --org <slug>` prints them with usage). The only API operation that sets them is `set_quotas`, which takes the instance token and no org token, so an org's own tokens, operators and agents cannot raise their limits. They are read with `get_quotas` (REST and MCP, an org-level token; a project-scoped token is refused), which shows each limit, the usage against it and, for a limit that is reached, why new work is held:
 
 - `max_concurrent`: attempts running at once. It can only lower this org's cap: the effective cap is the smaller of it and the instance's per-org cap (`--org-cap`), whatever a stored row says. Raise `--org-cap` to raise everyone's.
 - `max_runs_per_hour`: runs that start in a rolling hour. A run that has already started finishes its jobs; new runs wait.
