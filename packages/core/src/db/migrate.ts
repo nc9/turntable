@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { migrateLegacyMigrationsTable } from "./legacy-names";
+import { checkMigrationShas, migrationSha } from "./migration-sha";
 
 export type Migration = {
   tag: string;
@@ -8,22 +9,42 @@ export type Migration = {
 };
 
 /**
- * Applies pending migrations in order, each inside a transaction, and records them in
- * `__turntable_migrations`. Migrations are data (see migrations.generated.ts), so this works
+ * Applies pending migrations in order, each inside a transaction, and records them, with the sha256 of their SQL, in
+ * `__turntable_migrations`. An applied migration whose SQL has since changed refuses the boot. Migrations are data (see migrations.generated.ts), so this works
  * from a compiled binary. Rebuild migrations (new CHECK constraints) are supported: see below. A Postgres dialect would reuse the `Migration` shape with its own
  * runner.
  */
 export function applyMigrations(sqlite: Database, migrations: Migration[]): string[] {
   migrateLegacyMigrationsTable(sqlite);
-  sqlite.run(
-    "CREATE TABLE IF NOT EXISTS __turntable_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
-  );
-  const done = new Set(
+  // `sha256` was added after the table: an older table gets the column, its rows are stamped below.
+  // One IMMEDIATE transaction, so two processes booting together do not both see the column
+  // missing and then both add it.
+  sqlite
+    .transaction(() => {
+      sqlite.run(
+        "CREATE TABLE IF NOT EXISTS __turntable_migrations (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+      );
+      const columns = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(__turntable_migrations)")
+        .all();
+      if (!columns.some((c) => c.name === "sha256")) {
+        sqlite.run("ALTER TABLE __turntable_migrations ADD COLUMN sha256 TEXT");
+      }
+    })
+    .immediate();
+  const recorded = new Map(
     sqlite
-      .query<{ tag: string }, []>("SELECT tag FROM __turntable_migrations")
+      .query<{ tag: string; sha256: string | null }, []>(
+        "SELECT tag, sha256 FROM __turntable_migrations",
+      )
       .all()
-      .map((row) => row.tag),
+      .map((row) => [row.tag, row.sha256] as const),
   );
+  // Refuse before anything runs if an applied migration's SQL changed since it was applied.
+  for (const row of checkMigrationShas(recorded, migrations)) {
+    sqlite.run("UPDATE __turntable_migrations SET sha256 = ? WHERE tag = ?", [row.sha, row.tag]);
+  }
+  const done = new Set(recorded.keys());
   const applied: string[] = [];
   for (const migration of migrations.toSorted((a, b) => a.when - b.when)) {
     if (done.has(migration.tag)) continue;
@@ -45,10 +66,10 @@ export function applyMigrations(sqlite: Database, migrations: Migration[]): stri
               `migration ${migration.tag} left ${broken.length} foreign key violation(s); rolled back`,
             );
           }
-          sqlite.run("INSERT INTO __turntable_migrations (tag, applied_at) VALUES (?, ?)", [
-            migration.tag,
-            Date.now(),
-          ]);
+          sqlite.run(
+            "INSERT INTO __turntable_migrations (tag, applied_at, sha256) VALUES (?, ?, ?)",
+            [migration.tag, Date.now(), migrationSha(migration)],
+          );
         })
         .immediate();
     } finally {

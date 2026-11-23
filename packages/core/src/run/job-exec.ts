@@ -11,7 +11,7 @@ import {
   type ActionFetcher,
   type JobPlan,
 } from "@turntable/act-runner";
-import type { Provider, ProxyEndpoint } from "@turntable/provider-sdk";
+import type { Provider, ProxyEndpoint, SandboxResources } from "@turntable/provider-sdk";
 import { Redactor, SecretRegistry, redactString } from "@turntable/redact";
 import { renderEvent, stepLabel } from "./render";
 import type { JobIds, RunStore, StepRecord } from "./store";
@@ -50,6 +50,8 @@ export interface JobEnv {
   out: (text: string) => void;
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
   egress?: "none" | "open";
+  /** The sandbox's size, from the operator's size map (see scheduler/sandbox-size.ts). Absent: the provider's default. */
+  sandbox?: { resources?: SandboxResources; snapshot?: string };
   registry: SecretRegistry;
   signal?: AbortSignal | undefined;
   idleFlushMs?: number;
@@ -244,7 +246,11 @@ export async function executeJob(
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
         labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
         image: env.image,
-        ...(env.snapshot ? { snapshot: env.snapshot } : {}),
+        ...(env.sandbox?.resources ? { resources: env.sandbox.resources } : {}),
+        // The project's snapshot (set by the instance operator) beats a size class's, which beats the provider's.
+        ...((env.snapshot ?? env.sandbox?.snapshot)
+          ? { snapshot: (env.snapshot ?? env.sandbox?.snapshot) as string }
+          : {}),
         ttlSeconds: (env.timeoutSeconds ?? 3600) + 900,
         network:
           proxied && pick

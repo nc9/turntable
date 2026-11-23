@@ -11,8 +11,10 @@ import {
   requestEnrolment,
   submitApproval,
 } from "./definitions/approvals";
+import { dbBackupOp } from "./definitions/db-backup";
 import { approveRunOp } from "./definitions/approve-run";
 import { cancel } from "./definitions/cancel";
+import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
@@ -85,6 +87,7 @@ export const registry = createRegistry([
   approveRunOp,
   signRelease,
   whoami,
+  doctor,
   listOrgs,
   listProjects,
   ingestStatusOp,
@@ -96,6 +99,7 @@ export const registry = createRegistry([
   instanceWhoami,
   instanceListOrgs,
   setQuotas,
+  dbBackupOp,
   acceptActionMoveOp,
   setSecretOp,
   rotateSecretOp,

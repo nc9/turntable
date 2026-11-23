@@ -9,6 +9,7 @@ import {
   shellQuote,
   type Labels,
   type Provider,
+  type ProviderCheck,
   type ProviderInfo,
   type SandboxHandle,
   type SandboxInfo,
@@ -499,7 +500,7 @@ export class DaytonaProvider implements Provider {
   private warnedNoOrg = false;
   /** Set once the usage read answered 403: from then on the own-fleet budget is the only gate. */
   private usageForbidden = false;
-  /** The limits the last usage check judged against, for diagnose(). */
+  /** The limits the last usage check judged against, for capacityStatus(). */
   private readonly limitsUsed: {
     cpu?: number;
     diskGiB?: number | undefined;
@@ -509,7 +510,7 @@ export class DaytonaProvider implements Provider {
   } = {};
 
   /** What gates a create, for status and the logs. */
-  diagnose(): {
+  capacityStatus(): {
     quotaMode: "off" | "org-usage" | "own-fleet";
     reason: string;
     maxLive: number;
@@ -685,6 +686,154 @@ export class DaytonaProvider implements Provider {
 
   async healthcheck(): Promise<void> {
     await this.api.json("GET", "/sandbox", { query: { limit: 1 }, timeoutMs: 20_000 });
+  }
+
+  /**
+   * Readiness checks that only read: the key, the account, the org usage endpoint the CPU check
+   * relies on, and the snapshot a sandbox would start from. Nothing is created, started or
+   * deleted, and no output carries the key.
+   */
+  async diagnose(): Promise<ProviderCheck[]> {
+    const out: ProviderCheck[] = [];
+    const reason = (e: unknown): string =>
+      e instanceof SpecError || e instanceof InfraError
+        ? e.message.replaceAll(/\bBearer\s+\S+/g, "Bearer [redacted]").slice(0, 200)
+        : "request failed";
+    let first: { items?: DaytonaSandbox[] } | undefined;
+    try {
+      first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
+        query: { limit: 1 },
+        timeoutMs: 20_000,
+      });
+      out.push({
+        id: "daytona.api",
+        status: "pass",
+        summary: "the Daytona API key works and the API answers",
+      });
+    } catch (e) {
+      const unreadable = e instanceof SpecError && !(e instanceof SandboxNotFoundError);
+      out.push({
+        id: "daytona.api",
+        status: "fail",
+        summary: "the Daytona API is not usable",
+        detail: reason(e),
+        fix: unreadable
+          ? "Check the key file or variable named in the provider config: it must hold only the key, readable by the server's user."
+          : "Check that the server can reach the Daytona API and that the key is current.",
+      });
+      return out;
+    }
+    const pre = this.opts.ownerCiPreflight;
+    if (pre === false) {
+      out.push({
+        id: "daytona.usage",
+        status: "warn",
+        summary: "the org CPU check is turned off",
+        fix: "Remove ownerCiPreflight: false from the provider config unless this account has no usage endpoint.",
+      });
+    } else if (this.opts.quotaMode === "own-fleet") {
+      out.push({
+        id: "daytona.usage",
+        status: "pass",
+        summary: `own-fleet budget (quotaMode: own-fleet): the org usage is not read, ${this.maxLive} sandboxes of ours at most`,
+      });
+    } else {
+      this.orgId ??= first.items?.find((s) => s.organizationId)?.organizationId;
+      if (this.orgId === undefined) {
+        out.push({
+          id: "daytona.usage",
+          status: "warn",
+          summary:
+            "the account has no sandbox to learn the org id from, so the org usage endpoint was not checked",
+          fix: "It is checked on the first create; re-run doctor after one job has run.",
+        });
+      } else {
+        try {
+          const usage = await this.api.json<{ regionUsage?: RegionUsageRow[] }>(
+            "GET",
+            `/organizations/${encodeURIComponent(this.orgId)}/usage`,
+            { timeoutMs: 20_000 },
+          );
+          const u = orgUsage(
+            usage.regionUsage,
+            pre?.region ?? DEFAULT_ORG_REGION,
+            pre?.sandboxClass ?? DEFAULT_ORG_CLASS,
+          );
+          const diskLimit = pre?.diskLimitGiB ?? u.quota.disk;
+          const memLimit = pre?.memLimitGiB ?? u.quota.mem;
+          const extra = [
+            diskLimit !== undefined && u.disk !== undefined
+              ? `${u.disk} of ${diskLimit} GiB disk`
+              : undefined,
+            memLimit !== undefined && u.mem !== undefined
+              ? `${u.mem} of ${memLimit} GiB memory`
+              : undefined,
+          ].filter((x): x is string => x !== undefined);
+          out.push(
+            u.cpu === undefined
+              ? {
+                  id: "daytona.usage",
+                  status: "fail",
+                  summary: "the org usage reply has no CPU reading, so no sandbox will be created",
+                  fix: "Check the region and sandbox class in ownerCiPreflight, or turn the check off.",
+                }
+              : {
+                  id: "daytona.usage",
+                  status: "pass",
+                  summary: `the org usage endpoint answers (${[
+                    `${u.cpu} vCPU in use of ${pre?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT}`,
+                    ...extra,
+                  ].join(", ")})`,
+                },
+          );
+        } catch (e) {
+          if (e instanceof DaytonaKeyRejectedError && e.status === 403) {
+            out.push({
+              id: "daytona.usage",
+              status: "warn",
+              summary: `org usage forbidden (403): own-fleet budget mode, ${this.maxLive} sandboxes of ours at most; the org's CPU is not checked`,
+              fix: 'Set quotaMode: "own-fleet" to say so explicitly, or use a key that may read the org usage.',
+            });
+          } else {
+            out.push({
+              id: "daytona.usage",
+              status: "fail",
+              summary:
+                e instanceof SandboxNotFoundError
+                  ? "the org usage endpoint answered 404, so no sandbox will be created (the CPU check fails closed)"
+                  : "the org usage endpoint failed",
+              ...(e instanceof SandboxNotFoundError ? {} : { detail: reason(e) }),
+              fix: "Set ownerCiPreflight: false in the provider config if this deployment has no usage endpoint.",
+            });
+          }
+        }
+      }
+    }
+    const snap = this.opts.snapshot;
+    if (snap === undefined) {
+      out.push({
+        id: "daytona.snapshot",
+        status: "pass",
+        summary: "no snapshot is named: sandboxes start from the account's default snapshot",
+      });
+    } else {
+      try {
+        await this.api.json("GET", `/snapshots/${encodeURIComponent(snap)}`, { timeoutMs: 20_000 });
+        out.push({ id: "daytona.snapshot", status: "pass", summary: `snapshot ${snap} exists` });
+      } catch (e) {
+        out.push({
+          id: "daytona.snapshot",
+          status: "fail",
+          summary:
+            e instanceof SandboxNotFoundError
+              ? `snapshot ${snap} does not exist`
+              : `snapshot ${snap} could not be read`,
+          ...(e instanceof SandboxNotFoundError ? {} : { detail: reason(e) }),
+          fix: "Create the snapshot in the Daytona account, or fix the name in the provider config. Turntable never creates snapshots.",
+        });
+      }
+    }
+    return out;
   }
 
   /** Validates a spec against the account rules and builds the Daytona request body. */

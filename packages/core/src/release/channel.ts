@@ -22,7 +22,7 @@ const ID = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_SKEW_MS = 60_000;
 const MAX_BODY = 4096;
 
-export type ChannelOp = "register" | "revoke";
+export type ChannelOp = "register" | "revoke" | "health";
 
 /** The MAC of a request: HMAC-SHA256 over the version, the operation, the fields and the time. */
 export function channelMac(
@@ -117,7 +117,10 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
 
   async function handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
-    if (req.method !== "POST" || (path !== "/v1/register" && path !== "/v1/revoke"))
+    if (
+      req.method !== "POST" ||
+      (path !== "/v1/register" && path !== "/v1/revoke" && path !== "/v1/health")
+    )
       return json(404, { ok: false, reason: "not_found" });
     const raw = await req.text();
     if (raw.length > MAX_BODY) return json(413, { ok: false, reason: "too_large" });
@@ -130,6 +133,11 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
     const str = (k: string): string | undefined =>
       typeof b[k] === "string" && ID.test(b[k] as string) ? (b[k] as string) : undefined;
     const ts = typeof b.ts === "number" ? b.ts : Number.NaN;
+    // A side-effect-free liveness and key check, for `turntable doctor`: it reads and changes nothing.
+    if (path === "/v1/health") {
+      if (!authentic("health", [], ts, b.mac)) return json(401, { ok: false, reason: "bad_mac" });
+      return json(200, { ok: true });
+    }
     if (path === "/v1/revoke") {
       const attemptId = str("attemptId");
       if (!attemptId) return json(400, { ok: false, reason: "malformed" });
