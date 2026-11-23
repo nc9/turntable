@@ -8540,6 +8540,83 @@
       }
     },
     "/instance/orgs": {
+      "post": {
+        "operationId": "create_org",
+        "summary": "Create an empty org (instance administrator only).",
+        "description": "Creates an org with a slug (lower-case letters, digits and `-`, up to 63, starting alphanumeric) and a display name. The org starts with no projects and no tokens: give it its first token with `create_org_token`. A slug already in use is a conflict, and the internal system org is never a target. On a hosted instance with no shell this is how a second tenant is added. Audited in the system org's chain and in the new org's own. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63,
+                    "description": "Slug of the new org."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Display name. Untrusted text elsewhere."
+                  }
+                },
+                "required": ["slug", "name"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "slug", "name"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      },
       "get": {
         "operationId": "instance_list_orgs",
         "summary": "Every org on the instance, for the instance administrator.",
@@ -8614,6 +8691,118 @@
         "x-turntable-effect": "read",
         "x-turntable-instance-only": true,
         "x-turntable-untrusted-output": true
+      }
+    },
+    "/instance/orgs/tokens": {
+      "post": {
+        "operationId": "create_org_token",
+        "summary": "Mint an org's first token (instance administrator only).",
+        "description": "Mints the first token of an org that has none: it is refused as a conflict once the org has any token that is neither revoked nor expired, so it cannot be used to add access to an org that already has some (the same one-shot rule as the env bootstrap). The role is at most `release_operator`; `kind` defaults to `person` (the operator's own token, which may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is returned once in `token` and cannot be read again: only its hash is stored, and the audit entries never hold it. After this the org manages its own tokens. The system org is never a target. Audited in the system org's chain and in the org's own. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "description": "A label for the token."
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": ["reader", "operator", "release_operator"],
+                    "description": "At most release_operator."
+                  },
+                  "kind": {
+                    "default": "person",
+                    "description": "person: a human's own token (default). agent: an MCP client or script.",
+                    "type": "string",
+                    "enum": ["agent", "person"]
+                  },
+                  "expires_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Lifetime in days."
+                  }
+                },
+                "required": ["target_org", "name", "role", "expires_days"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "org": {
+                      "type": "string",
+                      "description": "Org slug."
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": ["reader", "operator", "release_operator"]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["agent", "person"]
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "The secret. Shown once, store it now."
+                    }
+                  },
+                  "required": ["id", "name", "org", "role", "kind", "expires_at", "token"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
       }
     },
     "/instance/quotas": {

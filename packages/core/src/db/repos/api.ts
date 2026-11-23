@@ -1,6 +1,6 @@
 // Repos for agent access (tokens, audit) and the read queries behind the operations registry.
 // Like index.ts, this is part of the only code allowed to name tenant tables.
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { AgentRole, JobState, TokenKind } from "../schema";
@@ -62,6 +62,24 @@ export function findApiTokenByHash(db: Db, tokenHash: string): Promise<ApiToken 
       .where(eq(s.apiTokens.tokenHash, tokenHash))
       .limit(1);
     return row;
+  });
+}
+
+/** How many tokens of the org are usable at `now`: not revoked, not expired. Project-scoped ones count. */
+export function countActiveApiTokens(db: Db, scope: Scope, now: number): Promise<number> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ n: sql<number>`count(*)` })
+      .from(s.apiTokens)
+      .where(
+        scoped(
+          scope,
+          TOKEN_COLS,
+          isNull(s.apiTokens.revokedAt),
+          or(isNull(s.apiTokens.expiresAt), gt(s.apiTokens.expiresAt, now)),
+        ),
+      );
+    return Number(row?.n ?? 0);
   });
 }
 
