@@ -7580,6 +7580,20 @@
                     "mcp_editable": {
                       "type": "boolean"
                     },
+                    "strictness": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise."
+                    },
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
@@ -7596,6 +7610,7 @@
                     "locked_by",
                     "role",
                     "mcp_editable",
+                    "strictness",
                     "warning"
                   ],
                   "additionalProperties": false
@@ -7721,6 +7736,20 @@
                           "mcp_editable": {
                             "type": "boolean"
                           },
+                          "strictness": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise."
+                          },
                           "warning": {
                             "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                             "type": ["string", "null"]
@@ -7737,6 +7766,7 @@
                           "locked_by",
                           "role",
                           "mcp_editable",
+                          "strictness",
                           "warning"
                         ],
                         "additionalProperties": false
@@ -7777,7 +7807,7 @@
       "post": {
         "operationId": "set_setting",
         "summary": "Set an org or project setting (database layer).",
-        "description": "Sets, or with `unset` removes, the stored value of one org or project setting. It is refused when the setting is locked (the environment or turntable.toml sets it; the error says which), when your role is below the setting's own, and over MCP for a setting that raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). The old and new values are audited. Returns the setting as `get_setting` does.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Sets, or with `unset` removes, the stored value of one org or project setting. It is refused when the setting is locked (the environment or turntable.toml sets it; the error says which), when your role is below the setting's own, and over MCP for a setting that raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). A setting with a `strictness` order may be tightened by its role but only loosened by the instance administrator, and unsetting counts as setting the default. The old and new values are audited. Returns the setting as `get_setting` does.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -7858,6 +7888,20 @@
                     "mcp_editable": {
                       "type": "boolean"
                     },
+                    "strictness": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise."
+                    },
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
@@ -7874,6 +7918,7 @@
                     "locked_by",
                     "role",
                     "mcp_editable",
+                    "strictness",
                     "warning"
                   ],
                   "additionalProperties": false
@@ -9598,6 +9643,20 @@
                     "mcp_editable": {
                       "type": "boolean"
                     },
+                    "strictness": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise."
+                    },
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
@@ -9614,6 +9673,7 @@
                     "locked_by",
                     "role",
                     "mcp_editable",
+                    "strictness",
                     "warning"
                   ],
                   "additionalProperties": false
@@ -9695,6 +9755,20 @@
                           "mcp_editable": {
                             "type": "boolean"
                           },
+                          "strictness": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise."
+                          },
                           "warning": {
                             "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                             "type": ["string", "null"]
@@ -9711,6 +9785,7 @@
                           "locked_by",
                           "role",
                           "mcp_editable",
+                          "strictness",
                           "warning"
                         ],
                         "additionalProperties": false
@@ -9829,6 +9904,20 @@
                     "mcp_editable": {
                       "type": "boolean"
                     },
+                    "strictness": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise."
+                    },
                     "warning": {
                       "description": "What is at risk in changing it, for a setting whose change can weaken a protection.",
                       "type": ["string", "null"]
@@ -9845,6 +9934,7 @@
                     "locked_by",
                     "role",
                     "mcp_editable",
+                    "strictness",
                     "warning"
                   ],
                   "additionalProperties": false

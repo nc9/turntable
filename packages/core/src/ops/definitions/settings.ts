@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
 import { getOrgById, getOrgBySlug, getProject, getProjectBySlug } from "../../db/repos";
-import { putStoredSetting } from "../../db/repos/settings";
+import { getStoredSetting, putStoredSetting } from "../../db/repos/settings";
 import type { SettingScope } from "../../db/schema";
 import type { SettingDef } from "../../settings/define";
 import { settingsRegistry } from "../../settings/definitions";
@@ -36,6 +36,12 @@ const settingView = z.object({
   locked_by: z.string().nullable().describe("For a locked value, the variable or file."),
   role: z.string().describe("The least role that may change it."),
   mcp_editable: z.boolean(),
+  strictness: z
+    .array(z.string())
+    .nullable()
+    .describe(
+      "For a setting that may only be tightened by its role: the values from least to most strict. Null otherwise.",
+    ),
   warning: z
     .string()
     .nullable()
@@ -44,6 +50,9 @@ const settingView = z.object({
     ),
 });
 type SettingView = z.infer<typeof settingView>;
+
+/** Times a set re-checks after losing a race to another writer. */
+const SET_ATTEMPTS = 3;
 
 const runtimeOf = (ctx: OpContext) => ctx.settings ?? createSettingsRuntime(settingsRegistry);
 
@@ -62,8 +71,10 @@ function view(def: SettingDef, r: Resolved, showFile: boolean): SettingView {
       : r.source === "env" || showFile
         ? (r.origin ?? r.source)
         : r.source,
-    role: def.instanceAdminOnly ? "instance_admin" : def.role,
+    // With a strictness order the role is the least that may tighten; loosening is the instance's.
+    role: def.instanceAdminOnly && !def.strictness ? "instance_admin" : def.role,
     mcp_editable: def.mcpEditable,
+    strictness: def.strictness ? [...def.strictness] : null,
     warning: def.warning ?? null,
   };
 }
@@ -130,50 +141,62 @@ async function setSetting(
 ): Promise<SettingView> {
   const rt = runtimeOf(ctx);
   const subject = target ? await targetSubject(ctx, def, target) : await subjectOf(ctx, def);
-  const { before, next } = await guardSettingChange(
-    rt,
-    ctx.db,
-    def,
-    subject,
-    { principal: ctx.principal, viaMcp: ctx.viaMcp },
-    i,
-  );
-  // The write, its audit rows and any event commit together: a loosened policy is never stored
-  // without the trail.
+  // Check and write against the row as read: an org tighten and an instance-administrator write
+  // take different locks, so a write the guard allowed against an older value could otherwise land
+  // after a stricter one and loosen it. The write is a compare-and-set; if the row moved, the
+  // guard runs again on the new value (and may now refuse). The write, its audit rows and any
+  // event commit together: a loosened policy is never stored without the trail.
   const after = await ctx.db.transaction(async (tx) => {
-    await putStoredSetting(
-      tx,
-      storeTarget(def, subject),
-      def.key,
-      next,
-      ctx.principal.id,
-      ctx.now(),
-    );
-    const resolved = await resolveSetting(rt, tx, def.key, subject);
-    // The old and new effective values, in the chain of the scope it changed. Never a secret: no
-    // setting can be one. An instance administrator changing a tenant's setting: the tenant's own
-    // chain shows it too.
-    await recordSettingChange(tx, {
-      def,
-      orgId: subject.orgId,
-      chains: [
-        ctx.scope,
-        ...(target && subject.orgId
-          ? [
-              {
-                orgId: subject.orgId,
-                ...(subject.projectId ? { projectId: subject.projectId } : {}),
-              },
-            ]
-          : []),
-      ],
-      principalKind: ctx.principal.kind,
-      principalId: ctx.principal.id,
-      from: before.value,
-      to: resolved.value,
-      source: resolved.source,
-    });
-    return resolved;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt === SET_ATTEMPTS) {
+        throw new OpError("conflict", `${def.key} was changed by someone else; try again`);
+      }
+      const store = storeTarget(def, subject);
+      const stored = await getStoredSetting(tx, store, def.key);
+      const { before, next } = await guardSettingChange(
+        rt,
+        tx,
+        def,
+        subject,
+        { principal: ctx.principal, viaMcp: ctx.viaMcp },
+        i,
+      );
+      const written = await putStoredSetting(
+        tx,
+        store,
+        def.key,
+        next,
+        ctx.principal.id,
+        ctx.now(),
+        { raw: stored?.raw },
+      );
+      if (!written) continue;
+      const resolved = await resolveSetting(rt, tx, def.key, subject);
+      // The old and new effective values, in the chain of the scope it changed. Never a secret: no
+      // setting can be one. An instance administrator changing a tenant's setting: the tenant's
+      // own chain shows it too.
+      await recordSettingChange(tx, {
+        def,
+        orgId: subject.orgId,
+        chains: [
+          ctx.scope,
+          ...(target && subject.orgId
+            ? [
+                {
+                  orgId: subject.orgId,
+                  ...(subject.projectId ? { projectId: subject.projectId } : {}),
+                },
+              ]
+            : []),
+        ],
+        principalKind: ctx.principal.kind,
+        principalId: ctx.principal.id,
+        from: before.value,
+        to: resolved.value,
+        source: resolved.source,
+      });
+      return resolved;
+    }
   });
   return view(def, after, showFile);
 }
@@ -251,6 +274,8 @@ export const setSettingOp = defineOp({
     "refused when the setting is locked (the environment or turntable.toml sets it; the error " +
     "says which), when your role is below the setting's own, and over MCP for a setting that " +
     "raises a limit or widens what runs may do (`mcp_editable` is false in `list_settings`). " +
+    "A setting with a `strictness` order may be tightened by its role but only loosened by the " +
+    "instance administrator, and unsetting counts as setting the default. " +
     "The old and new values are audited. Returns the setting as `get_setting` does.",
   roleNote:
     "Requires role operator, and the setting's own role (shown by `list_settings`); a few " +
