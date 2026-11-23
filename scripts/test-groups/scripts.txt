@@ -12,3 +12,4 @@ scripts/config-reference.test.ts
 scripts/skills.test.ts
 scripts/page-css.test.ts
 scripts/test-groups.test.ts
+scripts/compare-test-groups.test.ts
