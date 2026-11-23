@@ -139,6 +139,24 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/project-settings" \
 
 The cap divides the instance's sandboxes between projects: with a global cap of 10 and `max_concurrent` 4 on this project, the other projects of the org always have 6. A project cap can only lower the per-org cap (`--org-cap`, `TURNTABLE_ORG_CAP`), so that must be at least as high as the largest cap you set. The snapshot only changes where this project's sandboxes start, and it is used for every trust class in the project, untrusted pull requests included, so never bake credentials or private code into it. `max_concurrent: 0` pauses the project. See [Providers](/providers#per-project-snapshot-and-concurrency-cap) for the order against size classes and the provider default.
 
+## Sandbox sizes: set `untrustedClass` explicitly
+
+If you map `runs-on` labels to sandbox sizes (see [Sandbox size per job](/providers#sandbox-size-per-job)), set `untrustedClass` on any hosted or multi-tenant instance, and make it a small class. A run classified `untrusted_pr` (a fork or any other untrusted pull request) ignores the labels its workflow asks for and gets `untrustedClass`. When `untrustedClass` is unset it falls back to `default`, so on an instance whose `default` is large, a stranger's code gets large sandboxes.
+
+```json
+{
+  "classes": {
+    "small": { "cpus": 2, "memoryMb": 4096 },
+    "large": { "cpus": 4, "memoryMb": 8192, "snapshot": "daytona-large" }
+  },
+  "labels": { "ubuntu-latest-4-cores": "large" },
+  "default": "large",
+  "untrustedClass": "small"
+}
+```
+
+Here trusted jobs that name no mapped label get `large`, while every untrusted run gets `small`, whatever its labels say. Set it through `TURNTABLE_SANDBOX_SIZES_JSON` or `TURNTABLE_SANDBOX_SIZES_FILE`.
+
 ## Trusted proxies
 
 The webhook failure rate limit is keyed on the real client address. Name the proxies in front of the server, as addresses and CIDR ranges, in `TURNTABLE_TRUSTED_PROXIES` (for example `10.0.0.0/8,fd00::/8`). The client is the right-most `X-Forwarded-For` hop that is not one of them, and the header is read only when the socket peer is itself trusted. With none configured the limiter keys on the socket peer, so a spoofed header gains nothing. A correctly signed delivery is never rate limited. `TURNTABLE_TRUST_FORWARDED_FOR` is no longer read.
