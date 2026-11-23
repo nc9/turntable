@@ -80,6 +80,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `get_action_pins` | `GET /api/v1/action-pins` | yes |  | read | reader | token | The remembered tag-to-sha pins of a project, with any unaccepted tag moves. |
 | `get_artifacts` | `GET /api/v1/runs/{run_id}/artifacts` | yes |  | read | reader | token | The artifacts a run recorded, with their provenance. |
 | `check_artifact_consumption` | `POST /api/v1/artifacts/check-consumption` | yes |  | read | reader | token | Whether a run may consume artifacts of other runs, and as what. |
+| `github_app_status` | `GET /api/v1/github/app` | yes |  | read | release_operator | token | Whether this org owns the GitHub App, and its own installations and bound repos. |
+| `instance_github_app_status` | none | no |  | read | admin | instance | The GitHub App's state on this instance, for the instance administrator. |
 | `get_quotas` | `GET /api/v1/quotas` | yes |  | read | reader | token | The org's quotas, what is used against each, and why work is held. |
 | `instance_whoami` | none | no |  | read | admin | instance | Who the instance administrator token is. |
 | `rotate_instance_token` | none | no | `turntable token rotate --instance` | write | admin | instance | Replace the instance administrator token in use with a new one (instance administrator only). |
