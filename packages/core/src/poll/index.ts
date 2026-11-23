@@ -23,3 +23,4 @@ export {
 export { backoffMs } from "./backoff";
 export { ingestStatus, resetIngestStatus, type RepoStatus } from "./status";
 export { Poller } from "./poller";
+export { minAnonymousIntervalSeconds, requestsPerPoll } from "./config";

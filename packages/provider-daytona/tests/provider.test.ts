@@ -928,6 +928,61 @@ describe("the org-wide CPU check before a create", () => {
     await off.destroy((await off.create(spec())).id);
   });
 
+  test("403 on the usage read (a customer-scoped key) falls back to the own-fleet budget, logged once", async () => {
+    primed();
+    mock.usage.status = 403;
+    const logs: string[] = [];
+    const p = make({ log: (m) => logs.push(m) });
+    expect(p.diagnose().quotaMode).toBe("org-usage");
+    await p.destroy((await p.create(spec())).id);
+    await p.destroy((await p.create(spec())).id);
+    expect(logs.filter((m) => m.includes("own-fleet budget mode"))).toHaveLength(1);
+    expect(logs.find((m) => m.includes("own-fleet"))).toContain("org usage forbidden (403)");
+    expect(usageReads()).toBe(1); // not asked again once refused
+    expect(p.diagnose()).toMatchObject({
+      quotaMode: "own-fleet",
+      reason: "org usage forbidden (403)",
+    });
+  });
+
+  test("only 403 falls back: 401, 404, 5xx and an unreadable body still refuse the create", async () => {
+    primed();
+    for (const status of [401, 404, 500, 503]) {
+      mock.usage.status = status;
+      await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    }
+    mock.usage.status = 200;
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container" }];
+    await expect(make({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(InfraError);
+    expect(
+      mock.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox"),
+    ).toHaveLength(0);
+  });
+
+  test("own-fleet mode waits at maxLive and never reads the org usage", async () => {
+    primed();
+    mock.usage.rows = [row(999)]; // would block org-usage mode; irrelevant here
+    const p = make({ quotaMode: "own-fleet", maxLive: 1, capacityWaitMs: 80 });
+    expect(p.diagnose()).toMatchObject({
+      quotaMode: "own-fleet",
+      reason: "configured",
+      maxLive: 1,
+    });
+    const first = await p.create(spec());
+    await expect(p.create(spec())).rejects.toThrow(/already 1 live sandboxes of ours \(max 1\)/);
+    await p.destroy(first.id);
+    await p.destroy((await p.create(spec())).id);
+    expect(usageReads()).toBe(0);
+  });
+
+  test("a 403 fallback still holds the cap on our own fleet", async () => {
+    primed();
+    mock.usage.status = 403;
+    const p = make({ maxLive: 1, capacityWaitMs: 80 });
+    await p.create(spec());
+    await expect(p.create(spec())).rejects.toThrow(/max 1/);
+  });
+
   test("an empty account skips the check, says so, and learns the org id from the sandbox it creates", async () => {
     mock.usage.rows = [row(999)];
     const logs: string[] = [];
