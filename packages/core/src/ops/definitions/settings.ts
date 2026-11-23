@@ -100,6 +100,20 @@ async function setSetting(
   i: { value?: unknown; unset?: boolean | undefined },
   showFile: boolean,
 ): Promise<SettingView> {
+  // Refusals, most specific reason first, on every transport: a lock (a TOML value on a setting
+  // MCP may not edit is still a lock), then the caller's role, then MCP. The subject comes from
+  // the caller's own org, never from input.
+  const rt = runtimeOf(ctx);
+  const subject = await subjectOf(ctx, def);
+  const before = await resolveSetting(rt, ctx.db, def.key, subject);
+  if (before.locked) {
+    throw new OpError(
+      "conflict",
+      `${def.key} is locked: it is set by ${
+        before.source === "env" ? `the environment (${before.origin})` : "turntable.toml"
+      }; change it there`,
+    );
+  }
   // Who: the setting's own role, on top of the op's. An instance setting's caller is the
   // instance administrator by construction.
   if (def.scope !== "instance" && !roleSatisfies(orgRole(ctx.principal), def.role as never)) {
@@ -114,17 +128,6 @@ async function setSetting(
   const unset = i.unset === true;
   if (unset === (i.value !== undefined)) {
     throw new OpError("invalid_input", "give either a value to set or unset: true, not both");
-  }
-  const rt = runtimeOf(ctx);
-  const subject = await subjectOf(ctx, def);
-  const before = await resolveSetting(rt, ctx.db, def.key, subject);
-  if (before.locked) {
-    throw new OpError(
-      "conflict",
-      `${def.key} is locked: it is set by ${
-        before.source === "env" ? `the environment (${before.origin})` : "turntable.toml"
-      }; change it there`,
-    );
   }
   let next: unknown;
   if (!unset) {

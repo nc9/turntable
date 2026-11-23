@@ -15,7 +15,7 @@ import {
 } from "../src/settings/resolve";
 import { loadTomlSettings, SettingsConfigError } from "../src/settings/toml";
 import { systemOrgId } from "../src/audit/failures";
-import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { mintToken, seedTenant, seedWorld, type Tenant } from "./ops-helpers";
 
 // A registry with one setting per scope and per MCP rule, beside the shipped instance one.
 const orgLimit = defineSetting({
@@ -28,6 +28,7 @@ const orgLimit = defineSetting({
   mcpReason: "it raises a limit",
   description: "A limit an org admin may raise, never an agent.",
   env: ["TT_TEST_ORG_LIMIT"],
+  envParse: Number,
   toml: "limits.org",
 });
 const orgLabel = defineSetting({
@@ -469,6 +470,71 @@ describe("set_setting and the instance twin", () => {
       next.ok && (next.output as { settings: { key: string }[] }).settings.map((s) => s.key),
     ).toEqual(["project_note"]);
     expect(next.ok && (next.output as { next_cursor: string | null }).next_cursor).toBeNull();
+  });
+
+  test("refusal order: a lock, then the role, then MCP, on every transport", async () => {
+    const operator = await mintToken(db, a.scope, "operator");
+    const op: Credential = { kind: "bearer", token: operator.secret };
+    const set = (r: SettingsRuntime, cred: Credential, viaMcp: boolean) =>
+      run(r, cred, "set_setting", { key: "org_limit", value: 9 }, { viaMcp });
+    for (const viaMcp of [false, true]) {
+      // Locked by the environment, and the caller has neither the role nor MCP: the lock is named.
+      const env = errOf(await set(rt({ TT_TEST_ORG_LIMIT: "3" }), op, viaMcp));
+      expect(env).toMatchObject({ code: "conflict" });
+      expect(env?.message).toContain("TT_TEST_ORG_LIMIT");
+      // A TOML value on a setting that is not mcpEditable is still a lock.
+      const file = errOf(await set(rt({}, "[orgs.org-a.limits]\norg = 3"), op, viaMcp));
+      expect(file).toMatchObject({ code: "conflict" });
+      expect(file?.message).toContain("turntable.toml");
+      // Not locked: the role comes before MCP.
+      const role = errOf(await set(rt(), op, viaMcp));
+      expect(role).toMatchObject({ code: "forbidden" });
+      expect(role?.message).toContain("requires role admin");
+    }
+    // Allowed role, not locked, on MCP: the MCP reason.
+    expect(errOf(await set(rt(), admin(), true))?.message).toContain("over MCP");
+    expect((await set(rt(), admin(), false)).ok).toBe(true);
+  });
+
+  test("tenancy: another org's token cannot read or write this org's settings or projects", async () => {
+    const r = rt();
+    // Org C beside A and B, in the same database.
+    const other = await seedTenant(db, "org-c");
+    await run(r, admin(), "set_setting", { key: "org_label", value: "secret-a" });
+    await run(r, admin(), "set_setting", {
+      key: "project_note",
+      value: "note-a",
+      project: a.projectSlug,
+    });
+    const tokenC = await mintToken(db, other.scope, "operator");
+    const c: Credential = { kind: "bearer", token: tokenC.secret };
+    // Org C asks for org A's project by id and by slug-like values, and for a project that does not
+    // exist: every one is the same refusal.
+    const nonexistent = await run(r, c, "get_setting", { key: "project_note", project: "nope" });
+    const refusal = errOf(nonexistent);
+    expect(refusal).toBeDefined();
+    for (const project of [a.projectId, "nope-at-all"]) {
+      for (const [op, input] of [
+        ["get_setting", { key: "project_note", project }],
+        ["set_setting", { key: "project_note", value: "evil", project }],
+        ["list_settings", { project }],
+      ] as const) {
+        expect(errOf(await run(r, c, op, input))).toEqual(refusal);
+      }
+    }
+    // Org C's own reads and writes see their own values only.
+    const own = await run(r, c, "get_setting", { key: "org_label" });
+    expect(own.ok && own.output).toMatchObject({ value: "none", source: "default" });
+    await run(r, c, "set_setting", { key: "org_label", value: "c-value" });
+    const mine = await run(r, admin(), "get_setting", { key: "org_label" });
+    expect(mine.ok && mine.output).toMatchObject({ value: "secret-a", source: "db" });
+    const note = await resolveSetting(r, db, "project_note", {
+      orgId: a.orgId,
+      orgSlug: "org-a",
+      projectId: a.projectId,
+      projectSlug: a.projectSlug,
+    });
+    expect(note).toMatchObject({ value: "note-a" });
   });
 
   test("an org token's view of a locked file value does not leak the file path", async () => {
