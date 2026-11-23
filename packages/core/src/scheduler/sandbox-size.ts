@@ -43,7 +43,7 @@ export const sandboxSizesSchema = z
   .strict()
   .superRefine((c, ctx) => {
     const known = (n: string | undefined, path: (string | number)[]): void => {
-      if (n !== undefined && !(n in c.classes))
+      if (n !== undefined && !Object.hasOwn(c.classes, n))
         ctx.addIssue({ code: "custom", path, message: `unknown size class ${n}` });
     };
     known(c.default, ["default"]);
@@ -71,10 +71,27 @@ export function parseSandboxSizes(text: string, source: string): SandboxSizes {
 
 export type SandboxSize = { resources?: SandboxResources; snapshot?: string; class?: string };
 
+const own = <T>(m: Readonly<Record<string, T>>, k: string | undefined): T | undefined =>
+  k !== undefined && Object.hasOwn(m, k) ? m[k] : undefined;
+
+const CLASSES = new Set(["protected", "release", "trusted_pr", "untrusted_pr"]);
+
+/**
+ * Whether a job counts as untrusted for sizing: its OWN effective class (after the demotion
+ * rule), not its run's. An unknown, missing or unrecognised class is untrusted (fail closed); only
+ * a local run (the operator's own checkout) is exempt.
+ */
+export function untrustedForSize(klass: string | null | undefined, local = false): boolean {
+  if (local) return false;
+  return klass === undefined || klass === null || !CLASSES.has(klass) || klass === "untrusted_pr";
+}
+
 /**
  * The size a job's sandbox gets. Labels are checked in order and the first mapped one wins (GitHub
- * lists a runner's labels as a set; an operator maps the ones they mean). An untrusted run ignores
- * its labels. `{}` means "no opinion": the provider's own default size.
+ * lists a runner's labels as a set; an operator maps the ones they mean). An untrusted job ignores
+ * its labels. Lookups are own-key only (a label of `constructor` or `__proto__` is not a mapping),
+ * and a lookup that fails falls back to `default`, never to "no opinion" when a map exists.
+ * `{}` means the provider's own default size: no map, or no default and no match.
  */
 export function sizeFor(
   cfg: SandboxSizes | undefined,
@@ -82,13 +99,19 @@ export function sizeFor(
   o: { untrusted?: boolean } = {},
 ): SandboxSize {
   if (!cfg) return {};
-  const name =
+  const pick = (
+    name: string | undefined,
+  ): [string, SandboxSizes["classes"][string]] | undefined => {
+    const c = own(cfg.classes, name);
+    return name !== undefined && c ? [name, c] : undefined;
+  };
+  const defaultPick = pick(cfg.default);
+  const chosen =
     o.untrusted === true
-      ? (cfg.untrustedClass ?? cfg.default)
-      : (labels.map((l) => cfg.labels[l]).find((n) => n !== undefined) ?? cfg.default);
-  if (name === undefined) return {};
-  const c = cfg.classes[name];
-  if (!c) return {};
+      ? (pick(cfg.untrustedClass) ?? defaultPick)
+      : (labels.map((l) => pick(own(cfg.labels, l))).find((x) => x !== undefined) ?? defaultPick);
+  if (!chosen) return {};
+  const [name, c] = chosen;
   const clamp = (v: number | undefined, max: number | undefined): number | undefined =>
     v === undefined ? undefined : max === undefined ? v : Math.min(v, max);
   const cpus = clamp(c.cpus, cfg.maxCpus);

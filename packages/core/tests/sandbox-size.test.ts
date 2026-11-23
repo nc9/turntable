@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { planWorkflow } from "@longshore/act-runner";
-import { parseSandboxSizes, sizeFor } from "../src/scheduler/sandbox-size";
+import { parseSandboxSizes, sizeFor, untrustedForSize } from "../src/scheduler/sandbox-size";
 import { resolveSandboxSizes } from "../src/serve-config";
 
 const CFG = JSON.stringify({
@@ -66,6 +66,36 @@ describe("the size map", () => {
     );
     // with no untrustedClass it falls back to the default, never to the label
     expect(sizeFor(noUntrusted, ["big"], { untrusted: true })).toMatchObject({ class: "s" });
+  });
+
+  test("labels that are inherited object keys are not mappings: they get the default", () => {
+    for (const label of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(sizeFor(cfg, [label]), label).toMatchObject({ class: "small" });
+      expect(sizeFor(cfg, [label], { untrusted: true }), label).toMatchObject({ class: "small" });
+    }
+    // a config that maps `__proto__` is not read as a mapping either (the key is dropped), and a
+    // class or default named like an inherited key does not exist
+    const odd =
+      '{"classes":{"a":{"cpus":1},"b":{"cpus":8}},"labels":{"__proto__":"b"},"default":"a"}';
+    expect(sizeFor(parseSandboxSizes(odd, "t"), ["__proto__"])).toMatchObject({ class: "a" });
+    expect(() =>
+      parseSandboxSizes('{"classes":{"a":{"cpus":1}},"default":"constructor"}', "t"),
+    ).toThrow("unknown size class constructor");
+    expect(() =>
+      parseSandboxSizes('{"classes":{"a":{"cpus":1}},"labels":{"x":"toString"}}', "t"),
+    ).toThrow("unknown size class toString");
+  });
+
+  test("a job is untrusted for sizing by its own effective class, and an unknown class fails closed", () => {
+    expect(untrustedForSize("untrusted_pr")).toBe(true);
+    expect(untrustedForSize(undefined)).toBe(true);
+    expect(untrustedForSize(null)).toBe(true);
+    expect(untrustedForSize("")).toBe(true);
+    expect(untrustedForSize("something_new")).toBe(true);
+    for (const k of ["protected", "release", "trusted_pr"]) expect(untrustedForSize(k)).toBe(false);
+    // a local run (the operator's own checkout) is exempt, whatever it records
+    expect(untrustedForSize(undefined, true)).toBe(false);
+    expect(untrustedForSize("untrusted_pr", true)).toBe(false);
   });
 
   test("a bad config is refused with the reason: unknown class, bad numbers, unknown keys, not JSON", () => {

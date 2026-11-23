@@ -56,7 +56,7 @@ import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
-import { type SandboxSizes, sizeFor } from "./sandbox-size";
+import { type SandboxSizes, sizeFor, untrustedForSize } from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -332,6 +332,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     githubToken?: string,
     secrets: readonly string[] = [],
     oidc?: { requestUrl: string; requestToken: string },
+    /** The job's effective class (after demotion); on a re-attach, the one recorded for the attempt. */
+    effectiveClass?: string | null,
   ): Promise<AttemptOutcome> => {
     const registry = ctx.redact ?? new SecretRegistry();
     // A real token in the environment is something the log must never show.
@@ -342,7 +344,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     for (const v of secrets) registry.register(v);
     const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
     const size = sizeFor(o.sizes, planned?.runsOn ?? [], {
-      untrusted: parseTrust(ctx.run)?.class === "untrusted_pr",
+      untrusted: untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local),
     });
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
@@ -706,6 +708,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           githubToken,
           jobCache ? [jobCache.secret] : [],
           oidcVars,
+          jobKlass,
         );
       } finally {
         jobCache?.release();

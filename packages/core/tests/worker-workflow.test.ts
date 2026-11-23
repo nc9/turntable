@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { buildActEvent } from "../src/run/act-event";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "../src/db";
+import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
 import {
   setEgressPolicy,
@@ -464,6 +466,54 @@ jobs:
     expect(byKey("light").spec.snapshot).toBeUndefined();
     // a class past maxCpus is clamped to it
     expect(byKey("odd").spec.resources).toEqual({ cpus: 8 });
+  });
+
+  test("the size follows the class the job runs as (recorded on its attempt): an approved untrusted run gets untrustedClass, a trusted one keeps its label's size", async () => {
+    const sizesCfg = parseSandboxSizes(
+      JSON.stringify({
+        classes: { small: { cpus: 1 }, large: { cpus: 4 } },
+        labels: { "ubuntu-latest-4-cores": "large" },
+        default: "small",
+        untrustedClass: "small",
+      }),
+      "t",
+    );
+    const runWith = async (klass: string) => {
+      db = openDatabase(":memory:");
+      scope = await ensureLocalTenant(db);
+      const gh = makeGithub();
+      gh.state.files.set(
+        "*",
+        "name: s\non:\n  push:\n    branches: [main]\njobs:\n  big:\n    runs-on: ubuntu-latest-4-cores\n    steps:\n      - run: echo hi\n",
+      );
+      await ingest(gh);
+      const [r0] = await listRuns(db, scope);
+      const trust = JSON.parse(r0!.trust!);
+      await db.run(async (h) => {
+        await h.orm
+          .update(s.runs)
+          .set({
+            trust: JSON.stringify({ ...trust, class: klass }),
+            approval: JSON.stringify({ head_sha: r0!.sha, workflow_hash: trust.workflowHash }),
+          })
+          .where(eq(s.runs.id, r0!.id));
+      });
+      const real = world.provider();
+      const specs: Parameters<Provider["create"]>[0][] = [];
+      const provider: Provider = Object.assign(Object.create(real) as Provider, {
+        create: (spec: Parameters<Provider["create"]>[0]) => {
+          specs.push(spec);
+          return real.create(spec);
+        },
+      });
+      await drain(await makeScheduler(gh, provider, { sizes: sizesCfg }));
+      const [job] = await listJobs(db, scope, r0!.id);
+      const attempt = (await listAttempts(db, scope, job!.id)).at(-1);
+      return { cpus: specs[0]?.resources?.cpus, recorded: attempt?.trustClass };
+    };
+    expect(await runWith("trusted_pr")).toEqual({ cpus: 4, recorded: "trusted_pr" });
+    expect(await runWith("protected")).toEqual({ cpus: 4, recorded: "protected" });
+    expect(await runWith("untrusted_pr")).toEqual({ cpus: 1, recorded: "untrusted_pr" });
   });
 
   test("with no size map the spec carries no resources: the provider's own default", async () => {
