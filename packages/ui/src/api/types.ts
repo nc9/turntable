@@ -485,7 +485,7 @@ export type QuotaUsage = {
 
 export type OrgQuotas = { limits: QuotaLimits; usage: QuotaUsage[] };
 
-export type SettingScope = "org" | "project";
+export type SettingScope = "instance" | "org" | "project";
 export type SettingSource = "env" | "toml" | "db" | "default";
 
 /** One org or project setting from `list_settings`: its effective value, source and lock. */

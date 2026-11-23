@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import { ConnectScreen } from "./connect";
 import { useConnectionStatus } from "@/db/sync";
 import { CommandPalette } from "./command-palette";
+import { InstanceShell, isInstancePath } from "@/features/instance/instance-shell";
 import { useScope } from "./scope";
 
 function Logo() {
@@ -533,6 +534,10 @@ function ShellInner() {
 /** Shows the connect screen until a token is held (real API only); the fixture needs none. */
 export function Shell() {
   const auth = useAuth();
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  // The instance area has its own sign-in: no org session is needed or used there, and an org
+  // session does not open it.
+  if (isInstancePath(path)) return <InstanceShell />;
   if (chooseBackend() === "http" && !auth.token) return <ConnectScreen />;
   return <ShellInner />;
 }

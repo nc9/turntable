@@ -66,6 +66,18 @@ The image is distroless, so there is no shell to copy the database with. `db_bac
 - **Access and audit:** instance administrator only (a `tti_` token over REST, or the host CLI), never an MCP tool. Each backup is audited in the system org's chain.
 - **Restore:** stop the server, replace `turntable.db` with the backup file (and delete the old `turntable.db-wal` and `turntable.db-shm`), start it. There is no live restore.
 
+## In the web UI
+
+The web UI has an instance-administrator area at `/-/instance`. It is a separate sign-in, not part of an org session.
+
+- **Its own sign-in.** Paste a `tti_` token on the "Instance administrator" screen. The token is checked with `instance_whoami`, kept in this tab only (its own `sessionStorage` key, never a URL or `localStorage`) and used for instance routes only. It is never sent to an org route, to `/mcp` or to the realtime socket, and the org token is never sent to an instance route. An org session does not open the area, and the area needs no org session.
+- **Every action is an instance operation.** Nothing is decided in the browser. A refusal (a locked setting, a value above the per-org cap, a conflicting slug) is shown word for word as the server wrote it.
+- **Settings.** Generated from `instance_list_settings`, as the org and project pages are from `list_settings`: effective value, a source badge (`env`, `toml`, `ui/db`, `default`), the lock text for a value set by the environment or `turntable.toml`, and a reset to default. A save is `instance_set_setting`.
+- **Orgs and quotas.** The org list is `instance_list_orgs`. Leave a limit blank to keep it, type `none` to remove it, or give a number; the form is `set_quotas` and shows the limits it returns.
+- **Projects.** `create_project`, and a project's sandbox snapshot and concurrency cap through `set_project_settings`. There is no instance-wide project list operation, so the project slug is typed (projects made in the session are suggested).
+- **Backups.** Runs `db_backup` and shows the path, size and sha256 it returns. The file stays on the host: the page never offers a download.
+- **Token.** Rotation runs `rotate_instance_token` after a confirmation. The new secret is shown once, with a copy button, and the page warns that the old token is revoked, so this session must sign in with the new one. The secret is held in memory only, never stored, and is gone when the screen is left.
+
 ## What stops an org reaching it
 
 An instance operation takes the instance administrator and no one else: an org token of any role, a project-scoped token and a person (a member of any role) all get `forbidden`, whatever org they name. The reverse holds too: the instance token gets `forbidden` on every org operation. The [tenant isolation](/tenant-isolation) suite checks both for every principal it builds.

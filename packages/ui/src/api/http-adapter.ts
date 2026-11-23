@@ -137,8 +137,7 @@ function challengeOf<S>(w: WireChallenge): ApprovalChallenge<S> {
 export function mapSetting(w: WireSetting): Setting {
   return {
     key: w.key,
-    // The org ops never return an instance setting; anything else reads as an org setting.
-    scope: w.scope === "project" ? "project" : "org",
+    scope: w.scope,
     description: w.description,
     value: w.value,
     default: w.default,
