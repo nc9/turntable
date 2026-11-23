@@ -20,6 +20,7 @@ import {
   type DaytonaSandbox,
   DaytonaApi,
   DaytonaKeyRejectedError,
+  DaytonaQuotaExceededError,
   DEFAULT_BASE_URL,
   readJson,
 } from "./api";
@@ -34,8 +35,10 @@ import type { ApiKeySource } from "./key";
 import {
   DEFAULT_ORG_CLASS,
   DEFAULT_ORG_CPU_LIMIT,
+  DEFAULT_SANDBOX_DISK_GIB,
+  DEFAULT_SANDBOX_MEM_GIB,
+  orgUsage,
   DEFAULT_ORG_REGION,
-  cpuInUse,
   type OwnerCiPreflight,
   type RegionUsageRow,
   LIVE_STATES,
@@ -183,6 +186,24 @@ function unframe(result: string): { exitCode: number; stdout: Uint8Array; stderr
     Uint8Array.from(Buffer.from(s ?? "", "base64"));
   return { exitCode: code, stdout: b64(lines[out + 1]), stderr: b64(lines[err + 1]) };
 }
+
+/** What one new sandbox takes from the org's quotas. */
+interface SandboxNeed {
+  cpu: number;
+  memGiB: number;
+  diskGiB: number;
+}
+
+type OrgRoom =
+  | { ok: true }
+  | {
+      ok: false;
+      resource: "cpu" | "disk" | "memory";
+      used: number;
+      limit: number;
+      need: number;
+      unit: string;
+    };
 
 export class DaytonaProvider implements Provider {
   readonly info: ProviderInfo;
@@ -478,6 +499,14 @@ export class DaytonaProvider implements Provider {
   private warnedNoOrg = false;
   /** Set once the usage read answered 403: from then on the own-fleet budget is the only gate. */
   private usageForbidden = false;
+  /** The limits the last usage check judged against, for diagnose(). */
+  private readonly limitsUsed: {
+    cpu?: number;
+    diskGiB?: number | undefined;
+    memGiB?: number | undefined;
+    diskFrom?: string;
+    memFrom?: string;
+  } = {};
 
   /** What gates a create, for status and the logs. */
   diagnose(): {
@@ -485,8 +514,31 @@ export class DaytonaProvider implements Provider {
     reason: string;
     maxLive: number;
     counting: { mode: "recorded-ids"; tracked: number };
+    limits: {
+      cpu: number;
+      diskGiB: number | null;
+      memGiB: number | null;
+      diskFrom: string;
+      memFrom: string;
+    };
   } {
-    const base = { maxLive: this.maxLive, counting: this.countingMode() };
+    const o = this.opts.ownerCiPreflight;
+    const base = {
+      maxLive: this.maxLive,
+      counting: this.countingMode(),
+      // What the org check judges against: the configured values until a usage read has said more.
+      limits: {
+        cpu: this.limitsUsed.cpu ?? (o === false ? 0 : (o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT)),
+        diskGiB: this.limitsUsed.diskGiB ?? (o === false ? null : (o?.diskLimitGiB ?? null)),
+        memGiB: this.limitsUsed.memGiB ?? (o === false ? null : (o?.memLimitGiB ?? null)),
+        diskFrom:
+          this.limitsUsed.diskFrom ??
+          (o !== false && o?.diskLimitGiB !== undefined ? "config" : "not read yet"),
+        memFrom:
+          this.limitsUsed.memFrom ??
+          (o !== false && o?.memLimitGiB !== undefined ? "config" : "not read yet"),
+      },
+    };
     if (this.opts.ownerCiPreflight === false) {
       return { quotaMode: "off", reason: "ownerCiPreflight is false", ...base };
     }
@@ -504,14 +556,13 @@ export class DaytonaProvider implements Provider {
    * the check does not apply), else the reading. Reading errors are thrown: an unreadable usage is
    * never taken for room.
    */
-  private async orgRoom(
-    vcpu: number,
-  ): Promise<{ ok: true } | { ok: false; cpu: number; limit: number }> {
+  private async orgRoom(need: SandboxNeed): Promise<OrgRoom> {
     const o = this.opts.ownerCiPreflight;
     if (o === false) return { ok: true };
     // Own-fleet budget: the caller already waits while our live count is at maxLive.
     if (this.opts.quotaMode === "own-fleet" || this.usageForbidden) return { ok: true };
     const limit = o?.cpuLimit ?? DEFAULT_ORG_CPU_LIMIT;
+    this.limitsUsed.cpu = limit;
     if (this.orgId === undefined) {
       const first = await this.api.json<{ items?: DaytonaSandbox[] }>("GET", "/sandbox", {
         query: { limit: 1 },
@@ -554,17 +605,54 @@ export class DaytonaProvider implements Provider {
       }
       throw e;
     }
-    const cpu = cpuInUse(
+    const u = orgUsage(
       usage.regionUsage,
       o?.region ?? DEFAULT_ORG_REGION,
       o?.sandboxClass ?? DEFAULT_ORG_CLASS,
     );
-    if (cpu === undefined) throw new InfraError("Daytona usage reply has no CPU reading");
-    return cpu + vcpu <= limit ? { ok: true } : { ok: false, cpu, limit };
+    if (u.cpu === undefined) throw new InfraError("Daytona usage reply has no CPU reading");
+    if (u.cpu + need.cpu > limit) {
+      return { ok: false, resource: "cpu", used: u.cpu, limit, need: need.cpu, unit: "vCPU" };
+    }
+    // Disk and memory: the configured limit, else the quota the reply reports, else not checked.
+    // A reading the reply does not carry is skipped, never taken for room or for full.
+    const diskLimit = o?.diskLimitGiB ?? u.quota.disk;
+    const memLimit = o?.memLimitGiB ?? u.quota.mem;
+    this.limitsUsed.diskGiB = diskLimit;
+    this.limitsUsed.memGiB = memLimit;
+    this.limitsUsed.diskFrom =
+      o?.diskLimitGiB !== undefined
+        ? "config"
+        : u.quota.disk !== undefined
+          ? "usage reply"
+          : "none";
+    this.limitsUsed.memFrom =
+      o?.memLimitGiB !== undefined ? "config" : u.quota.mem !== undefined ? "usage reply" : "none";
+    if (diskLimit !== undefined && u.disk !== undefined && u.disk + need.diskGiB > diskLimit) {
+      return {
+        ok: false,
+        resource: "disk",
+        used: u.disk,
+        limit: diskLimit,
+        need: need.diskGiB,
+        unit: "GiB disk",
+      };
+    }
+    if (memLimit !== undefined && u.mem !== undefined && u.mem + need.memGiB > memLimit) {
+      return {
+        ok: false,
+        resource: "memory",
+        used: u.mem,
+        limit: memLimit,
+        need: need.memGiB,
+        unit: "GiB memory",
+      };
+    }
+    return { ok: true };
   }
 
   /** Waits until we are under our own cap and the owner's CI is not busy, or gives up. */
-  private async waitForCapacity(vcpu = 1): Promise<void> {
+  private async waitForCapacity(need: SandboxNeed): Promise<void> {
     const deadline = this.now() + this.capacityWaitMs;
     // With no threshold configured the label gate never holds (the count is 0 and never read).
     const foreignAt = this.opts.ownerCiLabelWaitAt ?? Number.POSITIVE_INFINITY;
@@ -572,13 +660,15 @@ export class DaytonaProvider implements Provider {
       const [own, foreign, room] = await Promise.all([
         this.ownLive(),
         this.foreignLive(),
-        this.orgRoom(vcpu),
+        this.orgRoom(need),
       ]);
       if (own < this.maxLive && foreign < foreignAt && room.ok) return;
       if (this.now() >= deadline) {
         if (!room.ok && own < this.maxLive && foreign < foreignAt) {
           throw new InfraError(
-            `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.cpu} vCPU in use (waiting above ${room.limit}, this sandbox needs ${vcpu})`,
+            room.resource === "cpu"
+              ? `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.used} vCPU in use (waiting above ${room.limit}, this sandbox needs ${room.need})`
+              : `waited ${Math.round(this.capacityWaitMs / 1000)}s: the org has ${room.used} of ${room.limit} ${room.unit} in use (this sandbox needs ${room.need})`,
           );
         }
         throw new InfraError(
@@ -683,12 +773,42 @@ export class DaytonaProvider implements Provider {
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const body = this.buildCreateBody(spec); // refuse a bad spec before queueing anything
     const run = async (): Promise<SandboxHandle> => {
-      await this.waitForCapacity(spec.resources?.cpus ?? 1);
-      const startedAt = this.now();
-      const sb = await this.api.json<DaytonaSandbox>("POST", "/sandbox", {
-        json: body,
-        timeoutMs: 120_000,
-      });
+      const need: SandboxNeed = {
+        cpu: spec.resources?.cpus ?? 1,
+        memGiB: spec.resources?.memoryMb
+          ? Math.ceil(spec.resources.memoryMb / 1024)
+          : DEFAULT_SANDBOX_MEM_GIB,
+        diskGiB: spec.resources?.diskGb ?? DEFAULT_SANDBOX_DISK_GIB,
+      };
+      // A quota 400 on create ("Total disk limit exceeded") is capacity, not a bad request: the
+      // account is full, so wait (the same budget as every other capacity wait) and try again.
+      const quotaDeadline = this.now() + this.capacityWaitMs;
+      let warned = false;
+      let startedAt = 0;
+      let sb: DaytonaSandbox;
+      for (;;) {
+        await this.waitForCapacity(need);
+        startedAt = this.now();
+        try {
+          sb = await this.api.json<DaytonaSandbox>("POST", "/sandbox", {
+            json: body,
+            timeoutMs: 120_000,
+          });
+          break;
+        } catch (e) {
+          if (!(e instanceof DaytonaQuotaExceededError)) throw e;
+          if (this.now() >= quotaDeadline) {
+            throw new InfraError(`waited ${Math.round(this.capacityWaitMs / 1000)}s: ${e.message}`);
+          }
+          if (!warned) {
+            warned = true;
+            this.opts.log?.(
+              `daytona: ${e.message}; waiting for room (up to ${Math.round(this.capacityWaitMs / 1000)}s)`,
+            );
+          }
+          await this.sleep(this.pollMs);
+        }
+      }
       // Recorded the moment it exists, before anything can fail, so it is counted and cleaned up.
       this.recorded.add(sb.id);
       try {

@@ -32,7 +32,13 @@ test("daytona is selectable and its options are validated strictly", () => {
   expect(() => createProvider("daytona", { maxLive: "2" })).toThrow();
   expect(() => createProvider("daytona", { ttlSeconds: 3600 })).toThrow(/ttlSeconds/);
   // The org CPU check: true is the defaults, an object sets its parts, false turns that check off.
-  for (const ok of [true, false, {}, { cpuLimit: 150, region: "eu", sandboxClass: "container" }]) {
+  for (const ok of [
+    true,
+    false,
+    {},
+    { cpuLimit: 150, region: "eu", sandboxClass: "container" },
+    { diskLimitGiB: 1500, memLimitGiB: 400 },
+  ]) {
     expect(() => createProvider("daytona", { ownerCiPreflight: ok })).not.toThrow();
   }
   for (const ok of ["org-usage", "own-fleet"]) {
@@ -52,6 +58,9 @@ test("daytona is selectable and its options are validated strictly", () => {
     { region: "US East" },
     { sandboxClass: 3 },
     { limit: 5 },
+    { diskLimitGiB: 0 },
+    { memLimitGiB: 1.5 },
+    { diskLimitGiB: "2000" },
   ]) {
     expect(() => createProvider("daytona", { ownerCiPreflight: bad })).toThrow();
   }

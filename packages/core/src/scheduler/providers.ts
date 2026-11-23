@@ -176,11 +176,13 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
   if (v === false) return false;
   if (typeof v !== "object" || v === null || Array.isArray(v)) {
     throw new Error(
-      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, region, sandboxClass }",
+      "daytona provider option ownerCiPreflight must be true, false or { cpuLimit, diskLimitGiB, memLimitGiB, region, sandboxClass }",
     );
   }
   const o = v as Record<string, unknown>;
-  const unknown = Object.keys(o).filter((k) => !["cpuLimit", "region", "sandboxClass"].includes(k));
+  const unknown = Object.keys(o).filter(
+    (k) => !["cpuLimit", "region", "sandboxClass", "diskLimitGiB", "memLimitGiB"].includes(k),
+  );
   if (unknown.length > 0) {
     throw new Error(`unknown ownerCiPreflight option(s): ${unknown.join(", ")}`);
   }
@@ -195,6 +197,14 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
       throw new Error("ownerCiPreflight.cpuLimit must be an integer from 1 to 10000");
     }
     out.cpuLimit = o.cpuLimit;
+  }
+  for (const k of ["diskLimitGiB", "memLimitGiB"] as const) {
+    const x = o[k];
+    if (x === undefined) continue;
+    if (typeof x !== "number" || !Number.isInteger(x) || x < 1 || x > 1_000_000) {
+      throw new Error(`ownerCiPreflight.${k} must be an integer from 1 to 1000000`);
+    }
+    out[k] = x;
   }
   for (const k of ["region", "sandboxClass"] as const) {
     const x = o[k];

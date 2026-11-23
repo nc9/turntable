@@ -57,7 +57,11 @@ export function startMock(
   const ghosts = new Map<string, MockSandbox>();
   let seq = 0;
   /** Extra sandboxes that belong to someone else; the provider must never touch them. */
-  const failNext: { createStatus?: number | undefined } = {};
+  const failNext: {
+    createStatus?: number | undefined;
+    /** Answer the next `times` creates with this status and message (a quota 400, say). */
+    createReply?: { status: number; message: string; times: number } | undefined;
+  } = {};
   /** What the org usage endpoint answers. `status` other than 200 makes it fail. */
   const usage: { rows: unknown[]; status: number; calls: number } = {
     rows: [],
@@ -139,6 +143,13 @@ export function startMock(
           });
         }
         if (!id && req.method === "POST") {
+          if (failNext.createReply && failNext.createReply.times > 0) {
+            failNext.createReply.times -= 1;
+            return Response.json(
+              { message: failNext.createReply.message },
+              { status: failNext.createReply.status },
+            );
+          }
           if (failNext.createStatus) {
             const st = failNext.createStatus;
             failNext.createStatus = undefined;
