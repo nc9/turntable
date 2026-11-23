@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { splitRuleProblem } from "@longshore/act-runner";
 import { z } from "zod";
 
 /**
@@ -41,6 +42,32 @@ export const varsSchema = z
     z.string().max(1024),
   )
   .refine((v) => Object.keys(v).length <= 50, { message: "at most 50 variables" });
+
+/**
+ * Operator rules that run one job as several shards, each in its own sandbox, without changing
+ * the workflow: `[{ "job": "tests", "shards": [{ "steps": ["Rules tests"] }, { "steps": ["Audit
+ * engine tests"] }] }]`. Steps are named by their `name:` or `#<n>` (counted from 1); a step no
+ * shard names runs in every shard. Never read from the repository.
+ */
+export const splitsSchema = z
+  .array(
+    z
+      .object({
+        job: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/, "a job id"),
+        shards: z
+          .array(z.object({ steps: z.array(z.string().min(1).max(200)).min(1).max(20) }).strict())
+          .min(2)
+          .max(8),
+      })
+      .strict()
+      .refine((r) => splitRuleProblem(r) === undefined, {
+        message: "a step is in two shards, or a step name is not a name or #<number>",
+      }),
+  )
+  .max(10)
+  .refine((all) => new Set(all.map((r) => r.job)).size === all.length, {
+    message: "a job has two split rules",
+  });
 
 const repoName = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "owner/name");
 
@@ -126,6 +153,8 @@ export const pollConfigSchema = z
             maxRunsPerHour: z.int().min(1).max(1000).default(30),
             /** Non-secret `vars.*` for this repo's workflows. */
             vars: varsSchema.optional(),
+            /** Jobs to run as several shards (see splitsSchema). */
+            splits: splitsSchema.optional(),
           })
           .strict(),
       )
@@ -163,6 +192,8 @@ export const ingestSettingsSchema = z
     egress: z.enum(["none", "open", "allowlist"]).optional(),
     /** Non-secret `vars.*` for the workflows (set with `policy set --ingest on --var NAME=value`). */
     vars: varsSchema.optional(),
+    /** Jobs to run as several shards (set with `policy set --ingest on --splits-json`). */
+    splits: splitsSchema.optional(),
   })
   .strict();
 export type IngestSettings = z.infer<typeof ingestSettingsSchema>;

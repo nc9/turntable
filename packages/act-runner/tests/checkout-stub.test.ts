@@ -39,7 +39,7 @@ async function delivered(): Promise<{ dir: string; shas: string[] }> {
   mkdirSync(dir, { recursive: true });
   const r = await sh(
     dir,
-    `git init -q -b main && 
+    `git init -q -b main && git config gc.auto 0 && git config maintenance.auto false && 
      echo one > a.txt && git add -A && git commit -qm one && git tag v1 &&
      echo two > a.txt && git commit -qam two &&
      git checkout -q -b dev && echo dev > d.txt && git add -A && git commit -qm dev &&
@@ -170,13 +170,13 @@ describe("submodules, from the delivered repository only", () => {
     mkdirSync(sub);
     await sh(
       sub,
-      "git init -q -b main && echo inner > inner.txt && git add -A && git commit -qm inner",
+      "git init -q -b main && git config gc.auto 0 && git config maintenance.auto false && echo inner > inner.txt && git add -A && git commit -qm inner",
     );
     const dir = join(tmp, `super-${++n}`);
     mkdirSync(dir);
     const r = await sh(
       dir,
-      `git init -q -b main && echo top > top.txt && git add -A && git commit -qm top &&
+      `git init -q -b main && git config gc.auto 0 && git config maintenance.auto false && echo top > top.txt && git add -A && git commit -qm top &&
        git -c protocol.file.allow=always submodule add -q ${sub} vendor/lib && git commit -qm sub`,
     );
     if (r.code !== 0) throw new Error(r.err);

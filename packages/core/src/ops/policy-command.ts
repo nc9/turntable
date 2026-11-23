@@ -34,6 +34,16 @@ function parseVars(raw: string[] | undefined): Record<string, string> | undefine
   return out;
 }
 
+/** `--splits-json '<json>'` into the value the settings schema validates; bad JSON is an error. */
+function parseSplits(raw: string | undefined): unknown {
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("--splits-json is not valid JSON");
+  }
+}
+
 async function ownPolicy(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -52,6 +62,7 @@ async function ownPolicy(args: string[]): Promise<void> {
       "cache-release-restore": { type: "string" },
       "tag-refs": { type: "string" },
       var: { type: "string", multiple: true },
+      "splits-json": { type: "string" },
       "release-refs": { type: "string" },
       "signing-key": { type: "string" },
       "signing-environment": { type: "string" },
@@ -85,7 +96,7 @@ async function ownPolicy(args: string[]): Promise<void> {
         );
       for (const i of await showIngest(db, values.org)) {
         console.log(
-          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"}, vars ${Object.keys(i.ingest.vars ?? {}).join(",") || "(none)"})` : "off"}`,
+          `ingest ${i.project}: ${i.ingest ? `on (${i.ingest.workflow}, pr-mode ${i.ingest.prMode}, authors ${i.ingest.authors.join(",") || "(none)"}, merge queue ${i.ingest.mergeQueue}, tag refs ${i.ingest.tagRefs.join(",") || "(none)"}, vars ${Object.keys(i.ingest.vars ?? {}).join(",") || "(none)"}, splits ${(i.ingest.splits ?? []).map((s) => `${s.job}x${s.shards.length}`).join(",") || "(none)"})` : "off"}`,
         );
       }
     } else if (
@@ -120,6 +131,7 @@ async function ownPolicy(args: string[]): Promise<void> {
           .filter(Boolean),
         mergeQueue: values["merge-queue"],
         vars: parseVars(values.var),
+        splits: parseSplits(values["splits-json"]),
         tagRefs: values["tag-refs"]
           ?.split(",")
           .map((x) => x.trim())
