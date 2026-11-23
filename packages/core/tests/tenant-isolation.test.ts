@@ -709,6 +709,23 @@ describe("generated from the registry: every op, every B principal, A's ids and 
     expect(["set_secret", "set_proxy_rule"].filter((n) => !wrote.has(n))).toEqual([]);
   });
 
+  test("no org principal of any role reaches an instance op (the instance administrator is not an org)", async () => {
+    const before = await fingerprint(hostile, hostile.a.orgId);
+    const ops = registry.instanceOps();
+    expect(ops.length).toBeGreaterThan(0);
+    for (const who of [...hostile.aWho, ...hostile.bWho]) {
+      for (const op of ops) {
+        const input = op.name === "set_quotas" ? { target_org: "org-a", max_log_bytes: 1 } : {};
+        const out = await call(hostile, who, op, input);
+        expect(out.ok, `${who.label} on ${op.name}`).toBe(false);
+        expect(out.code, `${who.label} on ${op.name}`).toBe("forbidden");
+      }
+    }
+    // and none of it changed org A
+    const after = await fingerprint(hostile, hostile.a.orgId);
+    expect(Object.keys(after).filter((t) => after[t] !== before[t])).toEqual([]);
+  });
+
   test("signature ops cannot be called with a token at all", async () => {
     for (const op of registry.ops.filter((o) => o.auth.type === "signature")) {
       for (const who of hostile.bWho) {

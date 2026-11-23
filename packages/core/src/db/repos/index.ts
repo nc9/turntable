@@ -31,6 +31,7 @@ export * from "./pins";
 export * from "./verdicts";
 export * from "./events";
 export * from "./lease";
+export * from "./instance-tokens";
 export * from "./poll";
 export * from "./readiness";
 export * from "./usage";

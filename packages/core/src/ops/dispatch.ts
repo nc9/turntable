@@ -1,15 +1,17 @@
 // The single enforcement point for operations. Authentication, scope, role, validation and audit
 // all happen here; adapters (REST, MCP, CLI) only translate transport and never decide access.
-import { auditFailure } from "../audit/failures";
+import { auditFailure, systemOrgId } from "../audit/failures";
 import type { Db } from "../db";
 import {
   appendAudit,
   findApiTokenByHash,
+  findInstanceTokenByHash,
   getOrgById,
   getOrgBySlug,
   getProjectBySlug,
   type Scope,
   touchApiToken,
+  touchInstanceToken,
 } from "../db/repos";
 import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
@@ -18,10 +20,10 @@ import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
 import { authenticateSigned } from "./signed";
-import type { Credential, Principal } from "./principal";
+import { type Credential, orgRole, type Principal } from "./principal";
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
-import { hashToken, looksLikeToken } from "./tokens";
+import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
 
 export type DispatchEnv = {
   registry: OpRegistry;
@@ -30,6 +32,13 @@ export type DispatchEnv = {
   /** Set when the server has a master key; the vault ops need it. */
   vault?: SecretVault | undefined;
   claims?: InstallationClaims | undefined;
+  /**
+   * Let an `lsi_` instance token authenticate. Set only by the REST adapter: MCP and the realtime
+   * socket leave it off, so an instance token is simply not a credential there.
+   */
+  allowInstance?: boolean | undefined;
+  /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
+  instanceOrgCap?: number | undefined;
   /** WebAuthn relying party for human approvals (LONGSHORE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
@@ -79,6 +88,7 @@ export async function authenticate(env: DispatchEnv, credential: Credential): Pr
   // A signed request is authenticated against its input, by authenticateSigned.
   if (credential.kind === "signed") throw new AuthFailure();
   const token = credential.token;
+  if (looksLikeInstanceToken(token)) return authenticateInstance(env, token);
   // One message for every failure, so a caller cannot tell a wrong token from a revoked one.
   if (!looksLikeToken(token)) throw new AuthFailure();
   const row = await findApiTokenByHash(env.db, hashToken(token));
@@ -102,6 +112,23 @@ export async function authenticate(env: DispatchEnv, credential: Credential): Pr
     projectId: row.projectId,
     role: row.role as Extract<Principal, { kind: "token" }>["role"],
   };
+}
+
+/**
+ * An `lsi_` token. Accepted only when the adapter allows it, from the instance_tokens table (never
+ * api_tokens), and the principal it gives holds no org grant. Failures look like any bad token.
+ */
+async function authenticateInstance(env: DispatchEnv, token: string): Promise<Principal> {
+  if (env.allowInstance !== true) throw new AuthFailure();
+  const row = await findInstanceTokenByHash(env.db, hashToken(token));
+  const now = (env.now ?? Date.now)();
+  if (!row || row.revokedAt !== null || (row.expiresAt !== null && row.expiresAt <= now)) {
+    throw new AuthFailure(await systemOrgId(env.db), row?.id);
+  }
+  if (row.lastUsedAt === null || now - row.lastUsedAt > TOUCH_INTERVAL_MS) {
+    await touchInstanceToken(env.db, row.id, now).catch(() => {});
+  }
+  return { kind: "instance", id: row.id, orgId: await systemOrgId(env.db), role: "instance_admin" };
 }
 
 const NO_SUCH_SCOPE = "org or project not found";
@@ -245,7 +272,20 @@ export async function dispatch(
       throw new OpError("invalid_input", "input must be a JSON object");
     }
     const raw = rawInput as Record<string, unknown>;
-    const scope = await resolveScope(env.db, principal, op, raw);
+    // Instance ops and org ops never meet: an instance op takes the instance administrator and
+    // no one else (an org token of any role is refused), and the administrator, who holds no org
+    // grant, is refused every org op. The instance op's scope is the system org, where its audit
+    // entries go.
+    if (op.auth.type === "instance" && principal.kind !== "instance") {
+      throw new OpError("forbidden", `${op.name} is for the instance administrator`);
+    }
+    if (op.auth.type !== "instance" && principal.kind === "instance") {
+      throw new OpError("forbidden", "an instance token holds no org grant");
+    }
+    const scope: Scope =
+      principal.kind === "instance"
+        ? { orgId: principal.orgId }
+        : await resolveScope(env.db, principal, op, raw);
     const audited = op.effect !== "read";
     const audit = (outcome: string, input: unknown) =>
       appendAudit(env.db, scope, {
@@ -257,7 +297,11 @@ export async function dispatch(
         input: redactInput(op!, input),
       }).catch(() => {});
 
-    if (op.auth.type !== "signature" && !roleSatisfies(principal.role, op.auth.minRole)) {
+    if (
+      op.auth.type !== "signature" &&
+      op.auth.type !== "instance" &&
+      !roleSatisfies(orgRole(principal), op.auth.minRole)
+    ) {
       if (audited) await audit("error:forbidden", raw);
       throw new OpError("forbidden", `${op.name} requires role ${op.auth.minRole}`);
     }
@@ -276,6 +320,7 @@ export async function dispatch(
       vault: env.vault,
       claims: env.claims,
       webauthn: env.webauthn,
+      instanceOrgCap: env.instanceOrgCap,
       attestationAnchors: env.attestationAnchors,
     });
     const target = op;

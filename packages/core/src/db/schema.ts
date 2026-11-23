@@ -19,6 +19,7 @@ export const jobs = (DIALECT === "pg" ? pg.jobs : sqlite.jobs) as unknown as typ
 export const jobAttempts = (DIALECT === "pg" ? pg.jobAttempts : sqlite.jobAttempts) as unknown as typeof sqlite.jobAttempts;
 export const logChunks = (DIALECT === "pg" ? pg.logChunks : sqlite.logChunks) as unknown as typeof sqlite.logChunks;
 export const apiTokens = (DIALECT === "pg" ? pg.apiTokens : sqlite.apiTokens) as unknown as typeof sqlite.apiTokens;
+export const instanceTokens = (DIALECT === "pg" ? pg.instanceTokens : sqlite.instanceTokens) as unknown as typeof sqlite.instanceTokens;
 export const auditLog = (DIALECT === "pg" ? pg.auditLog : sqlite.auditLog) as unknown as typeof sqlite.auditLog;
 export const auditCheckpoints = (DIALECT === "pg" ? pg.auditCheckpoints : sqlite.auditCheckpoints) as unknown as typeof sqlite.auditCheckpoints;
 export const auditExportCursors = (DIALECT === "pg" ? pg.auditExportCursors : sqlite.auditExportCursors) as unknown as typeof sqlite.auditExportCursors;

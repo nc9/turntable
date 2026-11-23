@@ -423,6 +423,26 @@ export const apiTokens = sqliteTable(
   ],
 );
 
+/**
+ * Instance-administrator tokens (#205). Not tenant-owned: no org_id, no role, no project. They
+ * hold no org grant at all; the one thing they can call is an `instance` op. Minted only by the
+ * host CLI (`longshore token create --instance`), stored as a hash, prefix `lsi_`.
+ */
+export const instanceTokens = sqliteTable(
+  "instance_tokens",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: integer("last_used_at", { mode: "number" }),
+    expiresAt: integer("expires_at", { mode: "number" }),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [unique("instance_tokens_hash_unique").on(t.tokenHash)],
+);
+
 /** Append-only record of write and destructive operations, including denied attempts. */
 export const auditLog = sqliteTable(
   "audit_log",

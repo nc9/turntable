@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
-import { DaytonaProvider, HARD_MAX_LIVE, type OwnerCiPreflight } from "@longshore/provider-daytona";
+import {
+  DaytonaProvider,
+  HARD_MAX_LIVE,
+  type OwnerCiPreflight,
+  parseFleetName,
+} from "@longshore/provider-daytona";
 import { DockerProvider } from "@longshore/provider-docker";
 import type { Provider } from "@longshore/provider-sdk";
 import {
@@ -110,6 +115,7 @@ const DAYTONA_KEYS = new Set([
   "capacityWaitSeconds",
   "ownerCiPreflight",
   "quotaMode",
+  "fleet",
   "ownerCiLabels",
   "ownerCiLabelWaitAt",
   "allowDomainListConfinement",
@@ -204,7 +210,7 @@ function ownerCiPreflightOf(v: unknown): OwnerCiPreflight | false | undefined {
 /**
  * Daytona, for a shared account. The key is never in the config: `apiKeyFile` names a file that
  * holds it (or `apiKeyEnv` an environment variable; default `DAYTONA_API_KEY`). The label and name
- * prefix `longshore-dev`, the 30 minute backstops, the owner-CI preflight and the ceiling of 5 live
+ * prefix come from `fleet` (default `longshore-dev`), the 30 minute backstops, the owner-CI preflight and the ceiling of 5 live
  * sandboxes (the default is 2) are fixed in the provider and cannot be configured away.
  */
 function createDaytona(config: Record<string, unknown>): Provider {
@@ -235,6 +241,8 @@ function createDaytona(config: Record<string, unknown>): Provider {
   const baseUrl = str(config, "baseUrl");
   const snapshot = str(config, "snapshot");
   const target = str(config, "target");
+  const fleet = str(config, "fleet");
+  if (fleet !== undefined) parseFleetName(fleet);
   const maxLive = int(config, "maxLive", 1, HARD_MAX_LIVE);
   const ttl = int(config, "ttlSeconds", 60, 1800);
   const wait = int(config, "capacityWaitSeconds", 1, 3600);
@@ -243,6 +251,7 @@ function createDaytona(config: Record<string, unknown>): Provider {
     ...(baseUrl ? { baseUrl } : {}),
     ...(snapshot ? { snapshot } : {}),
     ...(target ? { target } : {}),
+    ...(fleet ? { fleet } : {}),
     ...(maxLive !== undefined ? { maxLive } : {}),
     ...(wait !== undefined ? { capacityWaitMs: wait * 1000 } : {}),
     // The scheduler asks for job timeout plus slack, usually past 30 minutes: clamp instead of
