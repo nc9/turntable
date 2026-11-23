@@ -21,6 +21,7 @@ import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { DoctorReport } from "./doctor/types";
 import type { ForwardedObserver } from "./doctor/observe";
+import type { SecretStore } from "./secrets/store";
 import type { SecretVault } from "./secrets/vault";
 import { createRealtime, type WsData } from "./realtime/server";
 import { createEventStream } from "./realtime/sse";
@@ -113,6 +114,8 @@ export type ServeOptions = {
   outboundWebhooks?: WebhookService;
   /** Trust x-forwarded-proto from a proxy you control (for value-bearing requests). */
   trustForwardedProto?: boolean;
+  /** The secret store, for `instance_audit_verify`'s public keys. */
+  auditStore?: SecretStore | undefined;
   /** The readiness checks, served by the `doctor` operation. */
   doctor?: () => Promise<DoctorReport>;
   /** Counts the forwarded headers requests carry, for doctor to compare with the settings. */
@@ -130,6 +133,7 @@ export function startServer(options: ServeOptions) {
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
     doctor: options.doctor,
+    auditStore: options.auditStore,
     backup: options.backup,
     settings: options.settings,
   };

@@ -62,7 +62,7 @@
     "test:ingest": "bun test packages/core/tests/ingest-bindings.test.ts packages/core/tests/ingest-vars.test.ts packages/core/tests/job-shards-config.test.ts packages/core/tests/shard-paths-ingest.test.ts packages/core/tests/poll-tags.test.ts packages/core/tests/poll-installation-token.test.ts",
     "test:doctor": "bun test packages/core/tests/doctor.test.ts packages/core/tests/read-only.test.ts",
     "test:vault": "bun test packages/core/tests/vault.test.ts packages/core/tests/vault-ops.test.ts packages/core/tests/vault-cli.test.ts packages/core/tests/env-scrub.test.ts",
-    "test:audit": "bun test packages/core/tests/audit-chain.test.ts packages/core/tests/audit-coverage.test.ts packages/core/tests/audit-cli.test.ts packages/core/tests/audit-hardening.test.ts",
+    "test:audit": "bun test packages/core/tests/audit-chain.test.ts packages/core/tests/audit-coverage.test.ts packages/core/tests/audit-cli.test.ts packages/core/tests/audit-hardening.test.ts packages/core/tests/instance-audit-verify.test.ts",
     "test:transport": "bun test packages/core/tests/transport.test.ts packages/core/tests/server.test.ts",
     "test:privileges": "bun test packages/core/tests/privileges.test.ts",
     "test:pins": "bun test packages/core/tests/action-pins.test.ts packages/core/tests/cache.test.ts packages/core/tests/forge-token.test.ts",

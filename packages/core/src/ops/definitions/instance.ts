@@ -21,7 +21,9 @@ import {
   orgTokenHistory,
   setOrgQuotas,
 } from "../../db/repos";
+import { loadAuditKey } from "../../audit/checkpoint";
 import { SYSTEM_ORG_SLUG, systemOrgId } from "../../audit/failures";
+import { verifyAnchors, type AnchorCheckpoint } from "../../audit/verify";
 import { AGENT_ROLES, FORGES, TOKEN_KINDS } from "../../db/schema";
 import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
@@ -542,5 +544,121 @@ export const instanceDoctorOp = defineOp({
   mcp: false,
   async handler(ctx) {
     return doctorForApi(ctx.doctor);
+  },
+});
+
+/** The most anchor bodies one call takes. */
+export const AUDIT_VERIFY_MAX_ANCHORS = 1000;
+
+const VERDICT_SENTENCE = {
+  ok: "Every anchor matches the chain and carries a valid signature.",
+  rolled_back:
+    "The chain ends behind a signed anchor: entries were removed or the database was restored from an older copy.",
+  mismatch:
+    "The chain or an anchor does not check out: a hash or a signature disagrees, or the org has no audit chain.",
+} as const;
+
+export const instanceAuditVerifyOp = defineOp({
+  name: "instance_audit_verify",
+  summary: "Check orgs' audit chains against exported anchors, for the instance administrator.",
+  description:
+    "Takes anchor bodies exported from the audit export sink (`{version: 1, org_id, sequence, " +
+    "head_hash, time, signature}`, up to 1000) and, per org, walks its audit chain and checks each " +
+    "anchor's signature and hash. The result per org is `ok`, `rolled_back` (the chain ends behind " +
+    "a validly signed anchor) or `mismatch` (a hash or signature disagrees, the chain is broken, " +
+    "or the org is unknown), with a fixed sentence and never a raw error. Signatures are checked " +
+    "under the org's audit key from the secret store: for a key pinned outside the server use " +
+    "`turntable audit verify --pubkey`. Only the instance administrator can call it. Read-only. " +
+    "Not an MCP tool.",
+  input: z.object({
+    anchors: z
+      .array(
+        z.object({
+          version: z.literal(1),
+          org_id: z.string().min(1).max(64),
+          sequence: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
+          head_hash: z.string().min(1).max(128),
+          time: z.int().min(0).max(Number.MAX_SAFE_INTEGER),
+          signature: z.string().min(1).max(512),
+        }),
+      )
+      .min(1)
+      .max(AUDIT_VERIFY_MAX_ANCHORS)
+      .describe("Exported anchor bodies; time is the signing time in epoch milliseconds."),
+  }),
+  output: z.object({
+    orgs: z.array(
+      z.object({
+        org_id: z.string(),
+        result: z.enum(["ok", "rolled_back", "mismatch"]),
+        anchors: z.int(),
+        message: z.string(),
+      }),
+    ),
+  }),
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/audit-verify" },
+  mcp: false,
+  async handler(ctx, i) {
+    const store = ctx.auditStore;
+    if (!store) {
+      throw new OpError(
+        "unavailable",
+        "audit keys are not available: start the server with TURNTABLE_MASTER_KEY_FILE",
+      );
+    }
+    const byOrg = new Map<string, AnchorCheckpoint[]>();
+    for (const a of i.anchors) {
+      const list = byOrg.get(a.org_id) ?? [];
+      // The body names no key id: the signature is tried under the org's key.
+      list.push({
+        orgId: a.org_id,
+        seq: a.sequence,
+        hash: a.head_hash,
+        signedAt: a.time,
+        keyId: "",
+        signature: a.signature,
+      });
+      byOrg.set(a.org_id, list);
+    }
+    const orgs: {
+      org_id: string;
+      result: keyof typeof VERDICT_SENTENCE;
+      anchors: number;
+      message: string;
+    }[] = [];
+    for (const [orgId, anchors] of byOrg) {
+      let result: keyof typeof VERDICT_SENTENCE = "mismatch";
+      if (await getOrgById(ctx.db, orgId)) {
+        const key = await loadAuditKey(store, orgId).catch(() => undefined);
+        result = await verifyAnchors(ctx.db, orgId, key ? [key.publicKeyPem] : [], anchors);
+      }
+      orgs.push({
+        org_id: orgId,
+        result,
+        anchors: anchors.length,
+        message: VERDICT_SENTENCE[result],
+      });
+    }
+    // The dispatcher writes nothing for a read, so the call is recorded here, in the system chain.
+    await appendAudit(
+      ctx.db,
+      { orgId: await systemOrgId(ctx.db) },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_audit_verify",
+        effect: "read",
+        outcome: "ok",
+        input: {
+          anchors: i.anchors.length,
+          results: Object.fromEntries(orgs.map((o) => [o.org_id, o.result])),
+        },
+      },
+    );
+    return { orgs };
   },
 });

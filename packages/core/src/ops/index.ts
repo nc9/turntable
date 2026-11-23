@@ -20,6 +20,7 @@ import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins"
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
 import {
   instanceDoctorOp,
+  instanceAuditVerifyOp,
   instanceListOrgs,
   instanceWhoami,
   rotateInstanceTokenOp,
@@ -124,6 +125,7 @@ export const registry = createRegistry([
   moveRepoBindingOp,
   instanceListOrgs,
   instanceDoctorOp,
+  instanceAuditVerifyOp,
   setQuotas,
   dbBackupOp,
   acceptActionMoveOp,

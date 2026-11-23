@@ -6,6 +6,7 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import type { DoctorReport } from "../doctor/types";
 import type { BackupConfig } from "../db/backup";
@@ -37,6 +38,8 @@ export type OpContext = {
   now: () => number;
   /** The secrets vault; absent when the server has no master key. Vault ops refuse without it. */
   vault?: SecretVault | undefined;
+  /** The secret store holding the orgs' audit signing keys; absent without a master key. */
+  auditStore?: SecretStore | undefined;
   /** Starts installation claims (hosted); absent without a master key. */
   claims?: InstallationClaims | undefined;
   /** GitHub App API facts for `resync_installation`; absent when no App is configured. */

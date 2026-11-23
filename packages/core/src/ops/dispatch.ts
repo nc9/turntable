@@ -22,6 +22,7 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import { OpError } from "./errors";
 import { authenticateSigned } from "./signed";
@@ -61,6 +62,8 @@ export type DispatchEnv = {
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
+  /** The secret store, for ops that read an org's audit public key; absent without a master key. */
+  auditStore?: SecretStore | undefined;
   /** The readiness checks, for the `doctor` operation. */
   doctor?: (() => Promise<DoctorReport>) | undefined;
   /** The settings registry and its environment and file layers (boot builds it). */
@@ -353,6 +356,7 @@ export async function dispatch(
       backup: env.backup,
       attestationAnchors: env.attestationAnchors,
       doctor: env.doctor,
+      auditStore: env.auditStore,
       settings: env.settings,
       viaMcp: env.viaMcp,
     });
