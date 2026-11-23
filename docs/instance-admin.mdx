@@ -24,12 +24,14 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | `create_org` | `POST /api/v1/instance/orgs` | Creates an empty org (`slug`, `name`); a slug in use, or the internal system org's, is a conflict, and a slug of any other shape is refused. |
 | `create_org_token` | `POST /api/v1/instance/orgs/tokens` | Mints an org's first token (`target_org`, `name`, `role` up to `release_operator`, `kind` default `person`, `expires_days` 1 to 365, required). Refused as a conflict when the org has any token that is neither revoked nor expired. The secret is in the response once. |
 | `create_project` | `POST /api/v1/instance/projects` | Creates an empty project in an existing org (`target_org`, `slug`, `name`); a slug already used there is a conflict. See [Hosted](/hosted#adding-a-second-repo-to-a-running-instance). |
+| `move_repo_binding` | `POST /api/v1/instance/repo-bindings/move` | Moves a repo's binding to a project of another org (`owner`, `repo`, `to_org`, `to_project`, optional `forge_repo_id`) in one transaction, keeping its installation. Refused, with one message that names no other org, when the target project is not in the target org, when the binding's installation is not mapped to the target org, or when `forge_repo_id` differs from the binding's. Run history and queued or running attempts stay with the old project and finish there. The response lists the poll entries of the running config that still name the old project. Audited in the system chain and in both orgs' chains. See [Moving a polled repo to another org](/hosted#moving-a-polled-repo-to-another-org). |
 | `rotate_instance_token` | `POST /api/v1/instance/tokens/rotate` | Mints a new instance token (the secret is in the response once) and revokes the one that made the call. Also `turntable token rotate <id> --instance`. See [Bootstrapping with no shell](#bootstrapping-with-no-shell). |
+| `instance_doctor` | `GET /api/v1/instance/doctor` | The readiness report: pass, warn or fail per check, with fixed sentences only. Read-only, audited as a read in the system chain. |
 | `db_backup` | `POST /api/v1/instance/db-backup` | Backs up the SQLite database into `<data-dir>/backups/` and returns the path, size and sha256. See [Backups](#backups). |
 
 `max_concurrent` can only lower an org's concurrency below the instance's per-org cap (`--org-cap`): a value above it is refused, and removing it falls back to the cap. Instance operations take no `org` or `project` field. A change is audited twice: in the system org's chain (who held the token) and in the target org's own chain (so its operators see who changed their limits).
 
-The full doctor report joins this set once the doctor operation lands: it is read-only and needs the same principal.
+`instance_doctor` returns the checks of `turntable doctor` (see [Doctor](/doctor)) as names and states only: each check's id, area, status, a fixed summary and a fixed fix. Raw error text and secret values are never in it, so a hosted instance with no shell can confirm a master-key rotation from it.
 
 ## Adding a tenant on a hosted instance
 

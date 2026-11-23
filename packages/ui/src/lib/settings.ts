@@ -37,6 +37,18 @@ export function editability(
   return { editable: true, reason: null };
 }
 
+/** Position in the setting's strictness order; a value it does not list ranks strictest. */
+function strictRank(s: Setting, v: unknown): number {
+  const order = s.strictness ?? [];
+  const i = order.indexOf(v as string);
+  return i < 0 ? order.length : i;
+}
+
+/** Whether an org user may pick `value`: never one looser than the effective value. */
+export function loosens(s: Setting, value: unknown): boolean {
+  return s.strictness !== undefined && strictRank(s, value) < strictRank(s, s.value);
+}
+
 export type SettingKind = "boolean" | "number" | "text" | "json";
 
 /** The editor to offer, from the shape of the default: the list op does not send the type. */

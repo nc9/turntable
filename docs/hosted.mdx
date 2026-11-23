@@ -65,10 +65,11 @@ Rotation re-encrypts every sealed row at boot, so it needs only variables and a 
 2. Set `TURNTABLE_MASTER_KEY` to the new key and `TURNTABLE_MASTER_KEY_PREVIOUS` to the key in use now. To move off a key file, set the file's contents as the previous key (`TURNTABLE_MASTER_KEY_PREVIOUS_FILE=/data/master.key` works too) and remove `TURNTABLE_MASTER_KEY_FILE` and `TURNTABLE_MASTER_KEY_AUTOINIT`.
 3. Deploy. At boot, every sealed row is re-encrypted under the new key in one transaction: the secrets table (GitHub App credentials, audit signing keys, OIDC keys), vault versions and outbound webhook secrets. Each is opened again under the new key and compared before the commit, and the audit anchor state files are re-sealed with it. The system org's audit chain records `master_key_rewrap` with a count per table. If any row opens under neither key, nothing is changed and the server does not start; the log names the table and row, never a value. Fix the variables and deploy again.
 4. Take a new backup. It is the first one that holds nothing the old key opens.
-5. **Keep `TURNTABLE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed (`turntable doctor` green, no `AnchorCorrupt`, no "audit anchor ... previous master key" line in the log), and only then remove it.** Removing it earlier on a host that has not finished the re-wrap leaves rows the new key cannot open. If the old key was a file on the volume, delete the file. Leaving the previous key set is harmless (rows already under the new key are skipped), but it keeps the old key in the environment.
+5. **Keep `TURNTABLE_MASTER_KEY_PREVIOUS` set until a clean boot is confirmed (`turntable doctor` green, or `instance_doctor` with no shell, no `AnchorCorrupt`, no "audit anchor ... previous master key" line in the log), and only then remove it.** Removing it earlier on a host that has not finished the re-wrap leaves rows the new key cannot open. If the old key was a file on the volume, retire it (see below). Leaving the previous key set is harmless (rows already under the new key are skipped), but it keeps the old key in the environment.
 
 If you boot on a new key without the previous one, an audit anchor that does not open is reported at boot and by `doctor` as "not sealed under the current master key (most likely the previous one)", with the fix: set `TURNTABLE_MASTER_KEY_PREVIOUS` and restart.
 6. **Rotate the secrets themselves.** The old key and every backup taken before step 4 still open the values inside those backups. Rotate the GitHub App private key and the webhook secret (`turntable github-app rotate-webhook-secret`, or create the App again), and every vault secret, so what the old backups hold is dead. Deleting the old backups is your decision; the rotation is what makes them safe.
+7. **Retire the old key file (no shell).** If the old key was a file on the volume (`/data/master.key`), it still sits there and in every later backup. Set `TURNTABLE_MASTER_KEY_RETIRE_FILE=/data/master.key` together with `TURNTABLE_MASTER_KEY` and the previous key (`TURNTABLE_MASTER_KEY_PREVIOUS_FILE=/data/master.key`, or the same bytes in `TURNTABLE_MASTER_KEY_PREVIOUS`), and deploy. After the re-wrap, the boot deletes the file only if the process runs on `TURNTABLE_MASTER_KEY`, every sealed row opens under it (a read-only check), the file equals the previous key you gave, and the path is a regular file (not a symlink) inside the data directory. Otherwise one log line names the condition that failed and the file stays. A deletion is audited as `master_key_file_retired` with the path, never a key. A file that is already gone is logged once and is not an error. Then **remove `TURNTABLE_MASTER_KEY_RETIRE_FILE` and `TURNTABLE_MASTER_KEY_PREVIOUS[_FILE]`**. Backups taken before the rotation still hold the old file's key: step 6 is what makes them safe.
 
 Cache blobs are not re-wrapped: a cache entry sealed under the old key stops opening and is a miss. The release lane has its own key and is not touched by this; see below.
 
@@ -174,7 +175,26 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/orgs/tokens" \
   -d '{"target_org":"acme","name":"acme operator","role":"operator","expires_days":90}'
 ```
 
-Then add its projects as below. This is how a tenant is moved out of the bootstrap org before its GitHub App installation is claimed.
+Then add its projects as below. This is how a tenant is moved out of the bootstrap org before its GitHub App installation is claimed; the repo's binding moves with [`move_repo_binding`](#moving-a-polled-repo-to-another-org).
+
+## Moving a polled repo to another org
+
+A repo is bound to one project on the whole instance, so a repo polled in one org (the bootstrap org, say) cannot simply be pointed at a project in another. Pointing the poll entry at the new project alone is not enough: the repo stays bound to the old one. The instance administrator moves the binding with `move_repo_binding`:
+
+1. Create the target org, its project and its first token (`create_org`, `create_project`, `create_org_token`), as above.
+2. Move the binding. The response names the poll entries that still point at the old project:
+
+   ```bash
+   curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/repo-bindings/move" \
+     -H "Authorization: Bearer $TURNTABLE_INSTANCE_TOKEN" -H "Content-Type: application/json" \
+     -d '{"owner":"acme","repo":"web","to_org":"acme","to_project":"web"}'
+   ```
+
+3. Change the poll entry's `org` and `project` (`TURNTABLE_POLL_JSON`) to the new ones and restart. Until then the poller skips that repo and logs one warning per interval: it makes no GitHub call and tries no bind. The poller's record of seen shas follows the repo, so the first poll at the new project does not run the same head again, and a new sha creates exactly one run.
+4. Claim the installation into the new org (see [claiming an installation](#one-instance-several-orgs-claiming-an-installation)). The installation sync adopts the moved binding, so checks are posted from then on. If the binding already has an installation, the move is refused unless that installation is mapped to the target org.
+5. Pause the old project (`set_project_settings` with `max_concurrent` 0) once its queue has drained, or when it is no longer wanted.
+
+Run history stays with the old project and is readable only in the old org. Attempts queued or running there when the binding moves are not touched: they finish in the old project. Only runs ingested after the move land in the new one. The move is audited in the system org's chain and in both orgs' chains, with the old and new org and project ids.
 
 ## Moving a polled repo to the GitHub App
 

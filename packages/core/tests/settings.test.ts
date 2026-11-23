@@ -135,6 +135,37 @@ describe("definitions", () => {
   });
 });
 
+describe("strictness", () => {
+  const mode = {
+    key: "x_mode",
+    scope: "org" as const,
+    type: z.enum(["loose", "strict"]),
+    default: "loose" as const,
+    role: "admin" as const,
+    instanceAdminOnly: true,
+    mcpEditable: false,
+    mcpReason: "a person decides",
+    description: "A test setting with an order of strictness.",
+    toml: "x_mode",
+  };
+
+  test("is accepted with instanceAdminOnly and refused without it or with a bad order", () => {
+    expect(defineSetting({ ...mode, strictness: ["loose", "strict"] }).strictness).toEqual([
+      "loose",
+      "strict",
+    ]);
+    expect(() =>
+      defineSetting({ ...mode, instanceAdminOnly: false, strictness: ["loose", "strict"] }),
+    ).toThrow(/needs instanceAdminOnly/);
+    expect(() => defineSetting({ ...mode, strictness: ["loose", "loose"] })).toThrow(/distinct/);
+    expect(() => defineSetting({ ...mode, strictness: ["loose", "wild"] })).toThrow(/not valid/);
+    expect(() =>
+      defineSetting({ ...mode, strictness: ["strict", "loose"], default: "loose" }),
+    ).not.toThrow();
+    expect(() => defineSetting({ ...mode, strictness: ["strict", "strict2"] })).toThrow();
+  });
+});
+
 describe("turntable.toml", () => {
   test("no file at all is fine: an empty layer", () => {
     const layer = loadTomlSettings(undefined, testRegistry);

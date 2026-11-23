@@ -241,7 +241,7 @@ export function countPolledSince(
     const [row] = await h.orm
       .select({ n: count() })
       .from(s.pollSeen)
-      .leftJoin(s.runs, eq(s.runs.id, s.pollSeen.runId))
+      .leftJoin(s.runs, and(eq(s.runs.id, s.pollSeen.runId), eq(s.runs.orgId, s.pollSeen.orgId)))
       .where(
         and(
           scoped(
@@ -627,6 +627,7 @@ export function markPollSkipped(
         workflowPath: input.workflowPath,
         event: input.event,
         sha: input.sha,
+        // Sentinel for "no run" (a binding move writes "moved", see MOVED_RUN_ID in repos/github.ts).
         runId: "skipped",
         ...(input.now === undefined ? {} : { createdAt: input.now }),
       })

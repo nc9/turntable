@@ -1,9 +1,45 @@
 import { z } from "zod";
-import { forApi } from "../../doctor/types";
+import { forApi, type DoctorReport } from "../../doctor/types";
 import { OpError } from "../errors";
 import { defineOp } from "../define";
 
 const STATUS = z.enum(["pass", "warn", "fail"]);
+
+export const doctorOutput = z.object({
+  status: STATUS.describe("The worst status of any check."),
+  counts: z.object({ pass: z.int(), warn: z.int(), fail: z.int() }),
+  checks: z.array(
+    z.object({
+      id: z.string(),
+      area: z.string(),
+      status: STATUS,
+      summary: z.string(),
+      fix: z.string().optional().describe("What to do about it, when it is not a pass."),
+    }),
+  ),
+});
+
+/** The report for the API: fixed sentences only, or one warning when no server runs the checks. */
+export async function doctorForApi(
+  run: (() => Promise<DoctorReport>) | undefined,
+): Promise<z.infer<typeof doctorOutput>> {
+  if (!run) {
+    return {
+      status: "warn",
+      counts: { pass: 0, warn: 1, fail: 0 },
+      checks: [
+        {
+          id: "doctor",
+          area: "doctor",
+          status: "warn",
+          summary: "this server does not serve doctor over its API",
+          fix: "Run `turntable doctor` on the host.",
+        },
+      ],
+    };
+  }
+  return forApi(await run());
+}
 
 export const doctor = defineOp({
   name: "doctor",
@@ -18,19 +54,7 @@ export const doctor = defineOp({
     "finding is pass, warn or fail with a one-line fix. It changes nothing and never returns a " +
     "secret value, only whether one is present and well formed.",
   input: z.object({}),
-  output: z.object({
-    status: STATUS.describe("The worst status of any check."),
-    counts: z.object({ pass: z.int(), warn: z.int(), fail: z.int() }),
-    checks: z.array(
-      z.object({
-        id: z.string(),
-        area: z.string(),
-        status: STATUS,
-        summary: z.string(),
-        fix: z.string().optional().describe("What to do about it, when it is not a pass."),
-      }),
-    ),
-  }),
+  output: doctorOutput,
   effect: "read",
   // Instance-wide facts (master key, App credentials, provider, proxy TLS, release channel): no
   // agent token and no org role below owner may read them. Tokens never hold owner, so this is
@@ -45,21 +69,6 @@ export const doctor = defineOp({
     if (ctx.principal.kind !== "member" || ctx.principal.role !== "owner") {
       throw new OpError("forbidden", "doctor is for the instance operator");
     }
-    if (!ctx.doctor) {
-      return {
-        status: "warn" as const,
-        counts: { pass: 0, warn: 1, fail: 0 },
-        checks: [
-          {
-            id: "doctor",
-            area: "doctor",
-            status: "warn" as const,
-            summary: "this server does not serve doctor over its API",
-            fix: "Run `turntable doctor` on the host.",
-          },
-        ],
-      };
-    }
-    return forApi(await ctx.doctor());
+    return doctorForApi(ctx.doctor);
   },
 });
