@@ -14,6 +14,8 @@ const SQLITE_ONLY = new Map<string, string>([
   ["legacy-names.test.ts", "renames SQLite files and the SQLite migrations table"],
   ["migration-parity.test.ts", "compares the SQLite SQL files with the embedded module"],
   ["migration-rebuild.test.ts", "SQLite table-rebuild migrations"],
+  ["events-quota-migration.test.ts", "applies the SQLite migrations to a bun:sqlite database"],
+  ["migration-sequence-guard.test.ts", "applies the SQLite migrations to a bun:sqlite database"],
   ["tenancy-guard.test.ts", "reads the SQLite schema objects"],
   ["github-serve.test.ts", "starts a server process with its own database"],
 ]);
