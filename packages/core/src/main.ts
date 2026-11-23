@@ -32,6 +32,7 @@ import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
 import { WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
+import { JobOidc } from "./oidc/job-delivery";
 import { githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
 import { JobTokens, publicRepoCheck } from "./github/job-token";
 import { CacheGrants } from "./cache/grants";
@@ -169,7 +170,12 @@ async function startBackground(
     "isolation-override"?: string | undefined;
   },
   observer?: CheckReporter,
-  extras: { auth?: AppAuth; vault?: SecretVault; cache?: CacheService } = {},
+  extras: {
+    auth?: AppAuth;
+    vault?: SecretVault;
+    cache?: CacheService;
+    jobOidc?: JobOidc;
+  } = {},
 ): Promise<{ stop(): Promise<void>; nudge(repo: string): boolean }> {
   const log = (m: string) => console.log(`[longshore] ${m}`);
   // Loaded first: the worker uses the poll token to resolve actions for the repos it watches.
@@ -279,6 +285,7 @@ async function startBackground(
         ? withSecretsProxy(r, {
             proxy: secretsProxy,
             ...(jobTokens ? { github: githubTargetOf(db) } : {}),
+            ...(extras.jobOidc ? { oidc: (c, k) => extras.jobOidc!.proxyTarget(c, k) } : {}),
           })
         : r;
     scheduler = new Scheduler({
@@ -308,6 +315,7 @@ async function startBackground(
                 }),
                 canary: true,
                 ...(jobTokens ? { jobTokens } : {}),
+                ...(extras.jobOidc ? { jobOidc: extras.jobOidc } : {}),
                 ...(extras.cache ? { cache: jobCacheProvider(db, extras.cache) } : {}),
                 ...(v.image ? { image: v.image } : {}),
               }),
@@ -605,6 +613,7 @@ async function serve(args: string[]): Promise<void> {
   let appAuth: AppAuth | undefined;
   let vault: SecretVault | undefined;
   let oidc: OidcHandler | undefined;
+  let jobOidc: JobOidc | undefined;
   let outboundWebhooks: WebhookService | undefined;
   const keyFile = process.env.LONGSHORE_MASTER_KEY_FILE?.trim();
   if (keyFile) {
@@ -639,6 +648,8 @@ async function serve(args: string[]): Promise<void> {
         allowClasses: parseAllowClasses(process.env.LONGSHORE_OIDC_ALLOW_CLASSES),
       });
       oidc = createOidcHandler({ db, issuer, masterKey });
+      // Jobs that ask for an ID token get GitHub's variables, behind the secrets proxy.
+      jobOidc = new JobOidc({ db, issuer, masterKey });
     }
     const auth = new AppAuth({ db, store });
     // Check runs: a per-project setting (off by default); the reporter does nothing for a project
@@ -750,6 +761,7 @@ async function serve(args: string[]): Promise<void> {
       ...(appAuth ? { auth: appAuth } : {}),
       ...(vault ? { vault } : {}),
       ...(cache ? { cache } : {}),
+      ...(jobOidc ? { jobOidc } : {}),
     },
   );
 

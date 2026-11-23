@@ -75,6 +75,8 @@ export interface JobEnv {
    * attaches the real one.
    */
   githubToken?: string;
+  /** GitHub's OIDC request variables for the steps; the token is a placeholder (see oidc/job-delivery). */
+  oidc?: { requestUrl: string; requestToken: string };
 }
 
 export interface JobOutcome {
@@ -338,6 +340,7 @@ export async function executeJob(
             ? { proxy: { url: proxyUrl, caPem: proxied.credential.caPem } }
             : {}),
           ...(env.githubToken !== undefined ? { githubToken: env.githubToken } : {}),
+          ...(env.oidc ? { oidc: env.oidc } : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },

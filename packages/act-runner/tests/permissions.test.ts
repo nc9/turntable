@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { declaredPermissions, DEFAULT_PERMISSIONS } from "../src/permissions";
+import { declaredPermissions, DEFAULT_PERMISSIONS, wantsIdToken } from "../src/permissions";
 
 const wf = (body: string): string => `name: t\non: push\n${body}`;
 
@@ -44,5 +44,28 @@ describe("declaredPermissions", () => {
       declaredPermissions(wf("permissions: 7\njobs:\n  a:\n    runs-on: x\n    steps: []\n"), "a"),
     ).toMatchObject({ permissions: {}, declared: true });
     expect(declaredPermissions("a: [", "a").permissions).toEqual({ ...DEFAULT_PERMISSIONS });
+  });
+});
+
+describe("wantsIdToken", () => {
+  const job = "jobs:\n  a:\n    runs-on: x\n    steps: []\n";
+  test("only an explicit id-token: write asks for a token", () => {
+    expect(wantsIdToken(wf(job), "a")).toBe(false);
+    expect(wantsIdToken(wf(`permissions:\n  id-token: write\n${job}`), "a")).toBe(true);
+    expect(wantsIdToken(wf(`permissions:\n  id-token: read\n${job}`), "a")).toBe(false);
+    expect(wantsIdToken(wf(`permissions: write-all\n${job}`), "a")).toBe(true);
+    expect(wantsIdToken(wf(`permissions: read-all\n${job}`), "a")).toBe(false);
+  });
+  test("a job's own block replaces the workflow's, in both directions", () => {
+    const withJob = (p: string) =>
+      `jobs:\n  a:\n    runs-on: x\n    permissions:\n      ${p}\n    steps: []\n`;
+    expect(
+      wantsIdToken(wf(`permissions:\n  id-token: write\n${withJob("contents: read")}`), "a"),
+    ).toBe(false);
+    expect(wantsIdToken(wf(withJob("id-token: write")), "a")).toBe(true);
+  });
+  test("broken YAML asks for nothing; the workflow's block applies to a job with none", () => {
+    expect(wantsIdToken("a: [", "a")).toBe(false);
+    expect(wantsIdToken(wf(`permissions:\n  id-token: write\n${job}`), "nope")).toBe(true);
   });
 });
