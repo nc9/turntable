@@ -137,7 +137,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -169,22 +171,37 @@
                             "description": "Branch or tag ref as the forge reported it."
                           },
                           "sha": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "workflow_name": {
                             "description": "Workflow display name, from the forge.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "commit_message": {
                             "description": "Head commit message (capped), from the forge.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "actor": {
                             "description": "Forge login of whoever triggered the run.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "head_branch": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "pr_number": {
                             "anyOf": [
@@ -216,7 +233,12 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["protected", "release", "trusted_pr", "untrusted_pr"]
+                                "enum": [
+                                  "protected",
+                                  "release",
+                                  "trusted_pr",
+                                  "untrusted_pr"
+                                ]
                               },
                               {
                                 "type": "null"
@@ -228,10 +250,16 @@
                             "type": "string"
                           },
                           "started_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "finished_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "duration_ms": {
                             "anyOf": [
@@ -270,10 +298,16 @@
                     },
                     "next_cursor": {
                       "description": "Pass as cursor to get the next page; null on the last page.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["runs", "next_cursor"],
+                  "required": [
+                    "runs",
+                    "next_cursor"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -349,7 +383,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -376,22 +412,37 @@
                       "description": "Branch or tag ref as the forge reported it."
                     },
                     "sha": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "workflow_name": {
                       "description": "Workflow display name, from the forge.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "commit_message": {
                       "description": "Head commit message (capped), from the forge.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "actor": {
                       "description": "Forge login of whoever triggered the run.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "head_branch": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "pr_number": {
                       "anyOf": [
@@ -423,7 +474,12 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "enum": ["protected", "release", "trusted_pr", "untrusted_pr"]
+                          "enum": [
+                            "protected",
+                            "release",
+                            "trusted_pr",
+                            "untrusted_pr"
+                          ]
                         },
                         {
                           "type": "null"
@@ -435,10 +491,16 @@
                       "type": "string"
                     },
                     "started_at": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "finished_at": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "duration_ms": {
                       "anyOf": [
@@ -459,7 +521,12 @@
                           "properties": {
                             "class": {
                               "type": "string",
-                              "enum": ["protected", "release", "trusted_pr", "untrusted_pr"]
+                              "enum": [
+                                "protected",
+                                "release",
+                                "trusted_pr",
+                                "untrusted_pr"
+                              ]
                             },
                             "reasons": {
                               "type": "array",
@@ -484,7 +551,13 @@
                               "type": "string"
                             }
                           },
-                          "required": ["class", "reasons", "facts", "workflow_hash", "decided_at"],
+                          "required": [
+                            "class",
+                            "reasons",
+                            "facts",
+                            "workflow_hash",
+                            "decided_at"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -510,7 +583,12 @@
                               "type": "string"
                             }
                           },
-                          "required": ["by", "at", "head_sha", "workflow_hash"],
+                          "required": [
+                            "by",
+                            "at",
+                            "head_sha",
+                            "workflow_hash"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -572,7 +650,10 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["untrusted_author", "environment"]
+                                "enum": [
+                                  "untrusted_author",
+                                  "environment"
+                                ]
                               },
                               {
                                 "type": "null"
@@ -593,10 +674,16 @@
                             ]
                           },
                           "started_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "finished_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "duration_ms": {
                             "anyOf": [
@@ -612,7 +699,10 @@
                           },
                           "infra_error_reason": {
                             "description": "Set when the latest attempt ended in infra_error: the result is not trustworthy.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "attempts": {
                             "type": "array",
@@ -657,13 +747,22 @@
                                 },
                                 "error_class": {
                                   "description": "Why an infra_error happened, when it did.",
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "started_at": {
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "finished_at": {
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "duration_ms": {
                                   "anyOf": [
@@ -679,15 +778,24 @@
                                 },
                                 "sandbox_created_at": {
                                   "description": "When the provider's create returned: the sandbox is billed from here.",
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "sandbox_destroyed_at": {
                                   "description": "When the provider confirmed the destroy; null if never confirmed.",
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "sandbox_seconds": {
                                   "description": "Exact sandbox time (create to confirmed destroy); null until both are known. Unlike duration_ms it excludes time waiting for provider capacity.",
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 }
                               },
                               "required": [
@@ -709,7 +817,10 @@
                           },
                           "log_path": {
                             "description": "REST path of the latest attempt's log (job_log); null before any attempt.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -816,7 +927,12 @@
             "schema": {
               "default": "tail",
               "type": "string",
-              "enum": ["head", "tail", "range", "grep"]
+              "enum": [
+                "head",
+                "tail",
+                "range",
+                "grep"
+              ]
             }
           },
           {
@@ -941,7 +1057,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -968,7 +1086,12 @@
                     },
                     "mode": {
                       "type": "string",
-                      "enum": ["head", "tail", "range", "grep"]
+                      "enum": [
+                        "head",
+                        "tail",
+                        "range",
+                        "grep"
+                      ]
                     },
                     "matches": {
                       "type": "integer",
@@ -1114,7 +1237,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -1149,7 +1274,11 @@
                           },
                           "stage": {
                             "type": "string",
-                            "enum": ["pre", "main", "post"]
+                            "enum": [
+                              "pre",
+                              "main",
+                              "post"
+                            ]
                           },
                           "index": {
                             "type": "integer",
@@ -1163,7 +1292,12 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["success", "failure", "skipped", "cancelled"]
+                                "enum": [
+                                  "success",
+                                  "failure",
+                                  "skipped",
+                                  "cancelled"
+                                ]
                               },
                               {
                                 "type": "null"
@@ -1172,10 +1306,16 @@
                             "description": "Null while the step runs."
                           },
                           "started_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "finished_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "duration_ms": {
                             "anyOf": [
@@ -1211,7 +1351,11 @@
                       }
                     }
                   },
-                  "required": ["job_id", "attempt", "steps"],
+                  "required": [
+                    "job_id",
+                    "attempt",
+                    "steps"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -1298,7 +1442,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -1342,7 +1488,11 @@
                             "type": "string"
                           }
                         },
-                        "required": ["at_offset", "omitted_bytes", "reason"],
+                        "required": [
+                          "at_offset",
+                          "omitted_bytes",
+                          "reason"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -1364,12 +1514,21 @@
                             "type": "string"
                           }
                         },
-                        "required": ["at_offset", "source", "text"],
+                        "required": [
+                          "at_offset",
+                          "source",
+                          "text"
+                        ],
                         "additionalProperties": false
                       }
                     }
                   },
-                  "required": ["job_id", "attempt", "cuts", "notices"],
+                  "required": [
+                    "job_id",
+                    "attempt",
+                    "cuts",
+                    "notices"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -1455,7 +1614,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -1517,7 +1678,11 @@
                                   },
                                   "stage": {
                                     "type": "string",
-                                    "enum": ["pre", "main", "post"]
+                                    "enum": [
+                                      "pre",
+                                      "main",
+                                      "post"
+                                    ]
                                   },
                                   "index": {
                                     "type": "integer",
@@ -1528,7 +1693,12 @@
                                     "anyOf": [
                                       {
                                         "type": "string",
-                                        "enum": ["success", "failure", "skipped", "cancelled"]
+                                        "enum": [
+                                          "success",
+                                          "failure",
+                                          "skipped",
+                                          "cancelled"
+                                        ]
                                       },
                                       {
                                         "type": "null"
@@ -1536,7 +1706,12 @@
                                     ]
                                   }
                                 },
-                                "required": ["name", "stage", "index", "result"],
+                                "required": [
+                                  "name",
+                                  "stage",
+                                  "index",
+                                  "result"
+                                ],
                                 "additionalProperties": false
                               },
                               {
@@ -1549,7 +1724,12 @@
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["failure_marker", "annotation", "error_pattern", "tail"]
+                                "enum": [
+                                  "failure_marker",
+                                  "annotation",
+                                  "error_pattern",
+                                  "tail"
+                                ]
                               },
                               {
                                 "type": "null"
@@ -1567,7 +1747,10 @@
                           },
                           "infra_error_reason": {
                             "description": "Set for infra_error: the sandbox failed, the excerpt says nothing about the code.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -1585,7 +1768,10 @@
                       }
                     }
                   },
-                  "required": ["failing_jobs", "digests"],
+                  "required": [
+                    "failing_jobs",
+                    "digests"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -1720,7 +1906,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -1762,16 +1950,28 @@
                           },
                           "project": {
                             "description": "Project slug; null for org-level events.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "run_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "job_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "attempt_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "payload": {
                             "type": "object",
@@ -1805,7 +2005,10 @@
                       "description": "Pass as `after` to get the events after this response."
                     }
                   },
-                  "required": ["events", "next_after"],
+                  "required": [
+                    "events",
+                    "next_after"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -1891,7 +2094,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -1905,7 +2110,12 @@
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["GREEN", "PENDING", "RED", "NONE"]
+                      "enum": [
+                        "GREEN",
+                        "PENDING",
+                        "RED",
+                        "NONE"
+                      ]
                     },
                     "counts": {
                       "type": "object",
@@ -1967,12 +2177,22 @@
                             ]
                           }
                         },
-                        "required": ["id", "project", "workflow_path", "state"],
+                        "required": [
+                          "id",
+                          "project",
+                          "workflow_path",
+                          "state"
+                        ],
                         "additionalProperties": false
                       }
                     }
                   },
-                  "required": ["sha", "state", "counts", "runs"],
+                  "required": [
+                    "sha",
+                    "state",
+                    "counts",
+                    "runs"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -2080,7 +2300,12 @@
                       "description": "Jobs already finished, left as they were."
                     }
                   },
-                  "required": ["run_id", "state", "cancelled_jobs", "unchanged_jobs"],
+                  "required": [
+                    "run_id",
+                    "state",
+                    "cancelled_jobs",
+                    "unchanged_jobs"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -2172,7 +2397,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["reason"],
+                "required": [
+                  "reason"
+                ],
                 "additionalProperties": false
               }
             }
@@ -2266,7 +2493,11 @@
                       }
                     }
                   },
-                  "required": ["run_id", "state", "reruns"],
+                  "required": [
+                    "run_id",
+                    "state",
+                    "reruns"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -2340,7 +2571,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["head_sha", "workflow_hash"],
+                "required": [
+                  "head_sha",
+                  "workflow_hash"
+                ],
                 "additionalProperties": false
               }
             }
@@ -2459,7 +2693,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -2470,14 +2706,20 @@
                   "properties": {
                     "kind": {
                       "type": "string",
-                      "enum": ["token", "member"]
+                      "enum": [
+                        "token",
+                        "member"
+                      ]
                     },
                     "id": {
                       "type": "string"
                     },
                     "name": {
                       "description": "The token's label; null for a person.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "role": {
                       "type": "string",
@@ -2497,13 +2739,27 @@
                     },
                     "project": {
                       "description": "Project slug the grant is limited to; null for the org.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "expires_at": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["kind", "id", "name", "role", "org", "project", "expires_at"],
+                  "required": [
+                    "kind",
+                    "id",
+                    "name",
+                    "role",
+                    "org",
+                    "project",
+                    "expires_at"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -2591,7 +2847,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -2615,16 +2873,26 @@
                             "type": "string"
                           }
                         },
-                        "required": ["id", "slug", "name"],
+                        "required": [
+                          "id",
+                          "slug",
+                          "name"
+                        ],
                         "additionalProperties": false
                       }
                     },
                     "next_cursor": {
                       "description": "Pass as cursor to get the next page; null on the last page.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["orgs", "next_cursor"],
+                  "required": [
+                    "orgs",
+                    "next_cursor"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -2712,7 +2980,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -2750,21 +3020,36 @@
                                   "type": "string"
                                 }
                               },
-                              "required": ["forge", "owner", "repo"],
+                              "required": [
+                                "forge",
+                                "owner",
+                                "repo"
+                              ],
                               "additionalProperties": false
                             }
                           }
                         },
-                        "required": ["id", "slug", "name", "repos"],
+                        "required": [
+                          "id",
+                          "slug",
+                          "name",
+                          "repos"
+                        ],
                         "additionalProperties": false
                       }
                     },
                     "next_cursor": {
                       "description": "Pass as cursor to get the next page; null on the last page.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["projects", "next_cursor"],
+                  "required": [
+                    "projects",
+                    "next_cursor"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -2830,7 +3115,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -2873,16 +3160,28 @@
                               ]
                             },
                             "reset_at": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "resource": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "observed_at": {
                               "type": "string"
                             }
                           },
-                          "required": ["limit", "remaining", "reset_at", "resource", "observed_at"],
+                          "required": [
+                            "limit",
+                            "remaining",
+                            "reset_at",
+                            "resource",
+                            "observed_at"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -2903,13 +3202,20 @@
                             "type": "string"
                           },
                           "last_poll_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "last_outcome": {
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["ok", "rate_limited", "error"]
+                                "enum": [
+                                  "ok",
+                                  "rate_limited",
+                                  "error"
+                                ]
                               },
                               {
                                 "type": "null"
@@ -2917,10 +3223,16 @@
                             ]
                           },
                           "last_error": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "next_poll_at": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "consecutive_failures": {
                             "type": "integer",
@@ -2947,7 +3259,11 @@
                       }
                     }
                   },
-                  "required": ["running", "rate_limit", "repos"],
+                  "required": [
+                    "running",
+                    "rate_limit",
+                    "repos"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3013,7 +3329,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -3038,7 +3356,10 @@
                           },
                           "pending_sha": {
                             "description": "Set while a moved tag awaits acceptance.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "first_seen": {
                             "type": "integer",
@@ -3063,7 +3384,9 @@
                       }
                     }
                   },
-                  "required": ["pins"],
+                  "required": [
+                    "pins"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3139,7 +3462,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -3166,13 +3491,19 @@
                           },
                           "digest_source": {
                             "type": "string",
-                            "enum": ["reported", "computed"]
+                            "enum": [
+                              "reported",
+                              "computed"
+                            ]
                           },
                           "trust_class": {
                             "type": "string"
                           },
                           "run_sha": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "attempt_id": {
                             "type": "string"
@@ -3195,7 +3526,9 @@
                       }
                     }
                   },
-                  "required": ["artifacts"],
+                  "required": [
+                    "artifacts"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3246,7 +3579,12 @@
                   "consumer_class": {
                     "description": "Instead of a run: ask whether a build of this class may take them.",
                     "type": "string",
-                    "enum": ["untrusted_pr", "trusted_pr", "protected", "release"]
+                    "enum": [
+                      "untrusted_pr",
+                      "trusted_pr",
+                      "protected",
+                      "release"
+                    ]
                   },
                   "sources": {
                     "minItems": 1,
@@ -3266,7 +3604,10 @@
                           "maxLength": 200
                         }
                       },
-                      "required": ["run_id", "name"]
+                      "required": [
+                        "run_id",
+                        "name"
+                      ]
                     }
                   },
                   "quarantine": {
@@ -3287,7 +3628,10 @@
                           "maxLength": 200
                         }
                       },
-                      "required": ["run_id", "name"]
+                      "required": [
+                        "run_id",
+                        "name"
+                      ]
                     }
                   },
                   "org": {
@@ -3303,7 +3647,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["sources"],
+                "required": [
+                  "sources"
+                ],
                 "additionalProperties": false
               }
             }
@@ -3317,7 +3663,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -3339,16 +3687,29 @@
                           },
                           "decision": {
                             "type": "string",
-                            "enum": ["allow", "quarantine", "deny"]
+                            "enum": [
+                              "allow",
+                              "quarantine",
+                              "deny"
+                            ]
                           },
                           "reason": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "trust_class": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "sha256": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -3363,7 +3724,9 @@
                       }
                     }
                   },
-                  "required": ["results"],
+                  "required": [
+                    "results"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3549,19 +3912,32 @@
                           },
                           "held": {
                             "description": "Why new work is held because of this limit.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "estimated": {
                             "type": "boolean",
                             "description": "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count."
                           }
                         },
-                        "required": ["metric", "used", "limit", "percent", "held", "estimated"],
+                        "required": [
+                          "metric",
+                          "used",
+                          "limit",
+                          "percent",
+                          "held",
+                          "estimated"
+                        ],
                         "additionalProperties": false
                       }
                     }
                   },
-                  "required": ["limits", "usage"],
+                  "required": [
+                    "limits",
+                    "usage"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3632,7 +4008,11 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["repo", "ref", "sha"],
+                "required": [
+                  "repo",
+                  "ref",
+                  "sha"
+                ],
                 "additionalProperties": false
               }
             }
@@ -3659,7 +4039,12 @@
                       "type": "string"
                     }
                   },
-                  "required": ["repo", "ref", "previous_sha", "sha"],
+                  "required": [
+                    "repo",
+                    "ref",
+                    "previous_sha",
+                    "sha"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3732,7 +4117,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["name"],
+                "required": [
+                  "name"
+                ],
                 "additionalProperties": false
               }
             }
@@ -3755,7 +4142,10 @@
                       "maximum": 9007199254740991
                     }
                   },
-                  "required": ["name", "versions_removed"],
+                  "required": [
+                    "name",
+                    "versions_removed"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -3854,13 +4244,22 @@
                           },
                           "project_id": {
                             "description": "Null: the whole org.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "environment": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "ref_pattern": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "trust_classes": {
                             "type": "array",
@@ -3913,7 +4312,12 @@
                                   "description": "End of the rotation overlap; null for the current one."
                                 }
                               },
-                              "required": ["version", "created_at", "created_by", "valid_until"],
+                              "required": [
+                                "version",
+                                "created_at",
+                                "created_by",
+                                "valid_until"
+                              ],
                               "additionalProperties": false
                             }
                           },
@@ -3959,10 +4363,16 @@
                     },
                     "next_cursor": {
                       "description": "Pass as cursor to get the next page; null on the last page.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["entries", "next_cursor"],
+                  "required": [
+                    "entries",
+                    "next_cursor"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4057,7 +4467,10 @@
                             "maxLength": 200
                           }
                         },
-                        "required": ["type", "name"]
+                        "required": [
+                          "type",
+                          "name"
+                        ]
                       },
                       {
                         "type": "object",
@@ -4072,7 +4485,10 @@
                             "maxLength": 100
                           }
                         },
-                        "required": ["type", "username"]
+                        "required": [
+                          "type",
+                          "username"
+                        ]
                       }
                     ]
                   },
@@ -4089,7 +4505,14 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["name", "secret", "host", "methods", "path_prefix", "inject"],
+                "required": [
+                  "name",
+                  "secret",
+                  "host",
+                  "methods",
+                  "path_prefix",
+                  "inject"
+                ],
                 "additionalProperties": false
               }
             }
@@ -4146,10 +4569,17 @@
                                   "type": "string"
                                 },
                                 "format": {
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 }
                               },
-                              "required": ["type", "name", "format"],
+                              "required": [
+                                "type",
+                                "name",
+                                "format"
+                              ],
                               "additionalProperties": false
                             },
                             {
@@ -4163,7 +4593,10 @@
                                   "type": "string"
                                 }
                               },
-                              "required": ["type", "username"],
+                              "required": [
+                                "type",
+                                "username"
+                              ],
                               "additionalProperties": false
                             }
                           ]
@@ -4191,7 +4624,10 @@
                       "additionalProperties": false
                     }
                   },
-                  "required": ["created", "rule"],
+                  "required": [
+                    "created",
+                    "rule"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4319,10 +4755,17 @@
                                     "type": "string"
                                   },
                                   "format": {
-                                    "type": ["string", "null"]
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   }
                                 },
-                                "required": ["type", "name", "format"],
+                                "required": [
+                                  "type",
+                                  "name",
+                                  "format"
+                                ],
                                 "additionalProperties": false
                               },
                               {
@@ -4336,7 +4779,10 @@
                                     "type": "string"
                                   }
                                 },
-                                "required": ["type", "username"],
+                                "required": [
+                                  "type",
+                                  "username"
+                                ],
                                 "additionalProperties": false
                               }
                             ]
@@ -4366,10 +4812,16 @@
                     },
                     "next_cursor": {
                       "description": "Pass as cursor to get the next page; null on the last page.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["rules", "next_cursor"],
+                  "required": [
+                    "rules",
+                    "next_cursor"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4426,7 +4878,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["name"],
+                "required": [
+                  "name"
+                ],
                 "additionalProperties": false
               }
             }
@@ -4444,7 +4898,9 @@
                       "type": "boolean"
                     }
                   },
-                  "required": ["deleted"],
+                  "required": [
+                    "deleted"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4493,7 +4949,9 @@
                     "description": "An exact host (github.com) or *.suffix for any subdomain (*.githubusercontent.com)."
                   },
                   "ports": {
-                    "default": [443],
+                    "default": [
+                      443
+                    ],
                     "description": "Ports a tunnel to this host may use. Default [443].",
                     "minItems": 1,
                     "maxItems": 10,
@@ -4517,7 +4975,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["host"],
+                "required": [
+                  "host"
+                ],
                 "additionalProperties": false
               }
             }
@@ -4546,7 +5006,11 @@
                       }
                     }
                   },
-                  "required": ["added", "host", "ports"],
+                  "required": [
+                    "added",
+                    "host",
+                    "ports"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4649,16 +5113,25 @@
                             }
                           }
                         },
-                        "required": ["host", "ports"],
+                        "required": [
+                          "host",
+                          "ports"
+                        ],
                         "additionalProperties": false
                       }
                     },
                     "next_cursor": {
                       "description": "Pass as cursor to get the next page; null on the last page.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["hosts", "next_cursor"],
+                  "required": [
+                    "hosts",
+                    "next_cursor"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4717,7 +5190,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["host"],
+                "required": [
+                  "host"
+                ],
                 "additionalProperties": false
               }
             }
@@ -4735,7 +5210,9 @@
                       "type": "boolean"
                     }
                   },
-                  "required": ["deleted"],
+                  "required": [
+                    "deleted"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4811,7 +5288,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -4824,14 +5303,23 @@
                       "type": "string"
                     },
                     "head_sha": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "workflow_hash": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "author": {
                       "description": "Forge login of the run's author. Untrusted text.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "environments": {
                       "type": "array",
@@ -4862,7 +5350,10 @@
                                 },
                                 "method": {
                                   "type": "string",
-                                  "enum": ["webauthn", "ed25519"]
+                                  "enum": [
+                                    "webauthn",
+                                    "ed25519"
+                                  ]
                                 },
                                 "approved_at": {
                                   "type": "string"
@@ -4871,7 +5362,12 @@
                                   "type": "string"
                                 }
                               },
-                              "required": ["person", "method", "approved_at", "expires_at"],
+                              "required": [
+                                "person",
+                                "method",
+                                "approved_at",
+                                "expires_at"
+                              ],
                               "additionalProperties": false
                             }
                           }
@@ -4887,7 +5383,13 @@
                       }
                     }
                   },
-                  "required": ["run_id", "head_sha", "workflow_hash", "author", "environments"],
+                  "required": [
+                    "run_id",
+                    "head_sha",
+                    "workflow_hash",
+                    "author",
+                    "environments"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -4953,7 +5455,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -4974,28 +5478,43 @@
                             "type": "string"
                           },
                           "forge_login": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "kind": {
                             "type": "string",
-                            "enum": ["webauthn", "ed25519"]
+                            "enum": [
+                              "webauthn",
+                              "ed25519"
+                            ]
                           },
                           "passkey_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "created_at": {
                             "type": "string"
                           },
                           "not_counting": {
                             "description": "Why this key counts toward no approval or quorum (no forge login, or it does not satisfy the key policy); null when it does.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "attested": {
                             "type": "boolean",
                             "description": "A pinned vendor attestation chain verified at enrolment."
                           },
                           "aaguid": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -5017,7 +5536,10 @@
                       "properties": {
                         "mode": {
                           "type": "string",
-                          "enum": ["any", "hardware"]
+                          "enum": [
+                            "any",
+                            "hardware"
+                          ]
                         },
                         "presets": {
                           "type": "array",
@@ -5032,7 +5554,11 @@
                           }
                         }
                       },
-                      "required": ["mode", "presets", "aaguids"],
+                      "required": [
+                        "mode",
+                        "presets",
+                        "aaguids"
+                      ],
                       "additionalProperties": false
                     },
                     "pending_enrolments": {
@@ -5047,11 +5573,17 @@
                             "type": "string"
                           },
                           "forge_login": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "kind": {
                             "type": "string",
-                            "enum": ["webauthn", "ed25519"]
+                            "enum": [
+                              "webauthn",
+                              "ed25519"
+                            ]
                           },
                           "key_fingerprint": {
                             "type": "string"
@@ -5101,10 +5633,18 @@
                           },
                           "source": {
                             "type": "string",
-                            "enum": ["configured", "default"]
+                            "enum": [
+                              "configured",
+                              "default"
+                            ]
                           }
                         },
-                        "required": ["environment", "required", "allow_author_approval", "source"],
+                        "required": [
+                          "environment",
+                          "required",
+                          "allow_author_approval",
+                          "source"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -5200,7 +5740,11 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["run_id", "environment", "approver"],
+                "required": [
+                  "run_id",
+                  "environment",
+                  "approver"
+                ],
                 "additionalProperties": false
               }
             }
@@ -5233,11 +5777,17 @@
                       "description": "base64url of the statement hash: the WebAuthn challenge."
                     },
                     "rp_id": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "passkey_id": {
                       "description": "The approver's passkey id (WebAuthn credential id).",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "challenge_expires_at": {
                       "type": "string"
@@ -5316,7 +5866,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["enrolment_id", "approver"],
+                "required": [
+                  "enrolment_id",
+                  "approver"
+                ],
                 "additionalProperties": false
               }
             }
@@ -5349,11 +5902,17 @@
                       "description": "base64url of the statement hash: the WebAuthn challenge."
                     },
                     "rp_id": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "passkey_id": {
                       "description": "The approver's passkey id (WebAuthn credential id).",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "challenge_expires_at": {
                       "type": "string"
@@ -5446,11 +6005,19 @@
                     },
                     "attestation": {
                       "type": "string",
-                      "enum": ["none", "direct"],
+                      "enum": [
+                        "none",
+                        "direct"
+                      ],
                       "description": "The attestation conveyance to request in navigator.credentials.create: direct under the hardware key policy."
                     }
                   },
-                  "required": ["challenge", "rp_id", "expires_at", "attestation"],
+                  "required": [
+                    "challenge",
+                    "rp_id",
+                    "expires_at",
+                    "attestation"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -5494,7 +6061,10 @@
                 "properties": {
                   "mode": {
                     "type": "string",
-                    "enum": ["any", "hardware"]
+                    "enum": [
+                      "any",
+                      "hardware"
+                    ]
                   },
                   "presets": {
                     "maxItems": 10,
@@ -5530,7 +6100,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["mode", "approver"],
+                "required": [
+                  "mode",
+                  "approver"
+                ],
                 "additionalProperties": false
               }
             }
@@ -5563,11 +6136,17 @@
                       "description": "base64url of the statement hash: the WebAuthn challenge."
                     },
                     "rp_id": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "passkey_id": {
                       "description": "The approver's passkey id (WebAuthn credential id).",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "challenge_expires_at": {
                       "type": "string"
@@ -5656,7 +6235,11 @@
                         "maxLength": 16384
                       }
                     },
-                    "required": ["challenge", "client_data_json", "attestation_object"],
+                    "required": [
+                      "challenge",
+                      "client_data_json",
+                      "attestation_object"
+                    ],
                     "additionalProperties": false
                   },
                   "org": {
@@ -5672,7 +6255,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["person", "forge_login"],
+                "required": [
+                  "person",
+                  "forge_login"
+                ],
                 "additionalProperties": false
               }
             }
@@ -5691,7 +6277,10 @@
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["webauthn", "ed25519"]
+                      "enum": [
+                        "webauthn",
+                        "ed25519"
+                      ]
                     },
                     "key_fingerprint": {
                       "type": "string"
@@ -5705,7 +6294,13 @@
                       "type": "string"
                     }
                   },
-                  "required": ["enrolment_id", "kind", "key_fingerprint", "required", "expires_at"],
+                  "required": [
+                    "enrolment_id",
+                    "kind",
+                    "key_fingerprint",
+                    "required",
+                    "expires_at"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -5825,7 +6420,10 @@
                             "pattern": "^[A-Za-z0-9_-]{1,8192}$"
                           }
                         },
-                        "required": ["kind", "signature"],
+                        "required": [
+                          "kind",
+                          "signature"
+                        ],
                         "additionalProperties": false
                       },
                       {
@@ -5876,7 +6474,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["statement", "signature"],
+                "required": [
+                  "statement",
+                  "signature"
+                ],
                 "additionalProperties": false
               }
             }
@@ -5984,7 +6585,9 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["reason"],
+                "required": [
+                  "reason"
+                ],
                 "additionalProperties": false
               }
             }
@@ -6004,7 +6607,10 @@
                     },
                     "level": {
                       "type": "string",
-                      "enum": ["org", "project"],
+                      "enum": [
+                        "org",
+                        "project"
+                      ],
                       "description": "Which flag was set: the org's or the project's."
                     },
                     "reason": {
@@ -6126,13 +6732,19 @@
                     },
                     "level": {
                       "type": "string",
-                      "enum": ["org", "project"]
+                      "enum": [
+                        "org",
+                        "project"
+                      ]
                     },
                     "still_frozen_by": {
                       "anyOf": [
                         {
                           "type": "string",
-                          "enum": ["org", "project"]
+                          "enum": [
+                            "org",
+                            "project"
+                          ]
                         },
                         {
                           "type": "null"
@@ -6141,7 +6753,11 @@
                       "description": "Set when the org's freeze still holds the scope."
                     }
                   },
-                  "required": ["was_frozen", "level", "still_frozen_by"],
+                  "required": [
+                    "was_frozen",
+                    "level",
+                    "still_frozen_by"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -6207,7 +6823,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -6223,7 +6841,10 @@
                       "anyOf": [
                         {
                           "type": "string",
-                          "enum": ["org", "project"]
+                          "enum": [
+                            "org",
+                            "project"
+                          ]
                         },
                         {
                           "type": "null"
@@ -6231,7 +6852,10 @@
                       ]
                     },
                     "reason": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "frozen_at": {
                       "anyOf": [
@@ -6247,7 +6871,10 @@
                       "description": "Epoch milliseconds."
                     },
                     "frozen_by": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "rotation_required_count": {
                       "type": "integer",
@@ -6276,7 +6903,12 @@
                             "description": "Epoch milliseconds."
                           }
                         },
-                        "required": ["name", "reason", "flagged_by", "flagged_at"],
+                        "required": [
+                          "name",
+                          "reason",
+                          "flagged_by",
+                          "flagged_at"
+                        ],
                         "additionalProperties": false
                       },
                       "description": "The flagged secrets by name. Empty unless the caller is release_operator or above."
@@ -6384,7 +7016,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -6422,16 +7056,28 @@
                             "type": "string"
                           },
                           "run_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "job_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "attempt_id": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "destination": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "version": {
                             "anyOf": [
@@ -6446,7 +7092,10 @@
                             ]
                           },
                           "trust_class": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -6462,7 +7111,14 @@
                       }
                     }
                   },
-                  "required": ["name", "since", "until", "total", "truncated", "uses"],
+                  "required": [
+                    "name",
+                    "since",
+                    "until",
+                    "total",
+                    "truncated",
+                    "uses"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -6583,7 +7239,11 @@
                       "type": "number"
                     }
                   },
-                  "required": ["days", "total_seconds", "total_minutes"],
+                  "required": [
+                    "days",
+                    "total_seconds",
+                    "total_minutes"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -6658,7 +7318,11 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["run_id", "tag", "artifacts"],
+                "required": [
+                  "run_id",
+                  "tag",
+                  "artifacts"
+                ],
                 "additionalProperties": false
               }
             }
@@ -6689,11 +7353,20 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["pending", "claimed", "signed", "refused", "error"]
+                      "enum": [
+                        "pending",
+                        "claimed",
+                        "signed",
+                        "refused",
+                        "error"
+                      ]
                     },
                     "reason": {
                       "description": "Why the release lane refused, as a short code.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "created_at": {
                       "type": "integer",
@@ -6714,7 +7387,10 @@
                     },
                     "key_id": {
                       "description": "The id of the key that signed, when it signed.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -6820,11 +7496,20 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["pending", "claimed", "signed", "refused", "error"]
+                      "enum": [
+                        "pending",
+                        "claimed",
+                        "signed",
+                        "refused",
+                        "error"
+                      ]
                     },
                     "reason": {
                       "description": "Why the release lane refused, as a short code.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "created_at": {
                       "type": "integer",
@@ -6845,7 +7530,10 @@
                     },
                     "key_id": {
                       "description": "The id of the key that signed, when it signed.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -6941,7 +7629,10 @@
                       "maximum": 9007199254740991
                     }
                   },
-                  "required": ["url", "expires_at"],
+                  "required": [
+                    "url",
+                    "expires_at"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -7005,7 +7696,10 @@
                         "properties": {
                           "mode": {
                             "type": "string",
-                            "enum": ["any", "hardware"]
+                            "enum": [
+                              "any",
+                              "hardware"
+                            ]
                           },
                           "presets": {
                             "maxItems": 10,
@@ -7024,7 +7718,11 @@
                             }
                           }
                         },
-                        "required": ["mode", "presets", "aaguids"],
+                        "required": [
+                          "mode",
+                          "presets",
+                          "aaguids"
+                        ],
                         "additionalProperties": false
                       },
                       "new": {
@@ -7032,7 +7730,10 @@
                         "properties": {
                           "mode": {
                             "type": "string",
-                            "enum": ["any", "hardware"]
+                            "enum": [
+                              "any",
+                              "hardware"
+                            ]
                           },
                           "presets": {
                             "maxItems": 10,
@@ -7051,7 +7752,11 @@
                             }
                           }
                         },
-                        "required": ["mode", "presets", "aaguids"],
+                        "required": [
+                          "mode",
+                          "presets",
+                          "aaguids"
+                        ],
                         "additionalProperties": false
                       },
                       "allowlist_hash": {
@@ -7100,7 +7805,10 @@
                             "pattern": "^[A-Za-z0-9_-]{1,8192}$"
                           }
                         },
-                        "required": ["kind", "signature"],
+                        "required": [
+                          "kind",
+                          "signature"
+                        ],
                         "additionalProperties": false
                       },
                       {
@@ -7151,7 +7859,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["statement", "signature"],
+                "required": [
+                  "statement",
+                  "signature"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7183,7 +7894,10 @@
                       "properties": {
                         "mode": {
                           "type": "string",
-                          "enum": ["any", "hardware"]
+                          "enum": [
+                            "any",
+                            "hardware"
+                          ]
                         },
                         "presets": {
                           "type": "array",
@@ -7198,11 +7912,20 @@
                           }
                         }
                       },
-                      "required": ["mode", "presets", "aaguids"],
+                      "required": [
+                        "mode",
+                        "presets",
+                        "aaguids"
+                      ],
                       "additionalProperties": false
                     }
                   },
-                  "required": ["approvals", "required", "applied", "policy"],
+                  "required": [
+                    "approvals",
+                    "required",
+                    "applied",
+                    "policy"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -7318,7 +8041,10 @@
                             "pattern": "^[A-Za-z0-9_-]{1,8192}$"
                           }
                         },
-                        "required": ["kind", "signature"],
+                        "required": [
+                          "kind",
+                          "signature"
+                        ],
                         "additionalProperties": false
                       },
                       {
@@ -7369,7 +8095,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["statement", "signature"],
+                "required": [
+                  "statement",
+                  "signature"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7527,7 +8256,10 @@
                             "pattern": "^[A-Za-z0-9_-]{1,8192}$"
                           }
                         },
-                        "required": ["kind", "signature"],
+                        "required": [
+                          "kind",
+                          "signature"
+                        ],
                         "additionalProperties": false
                       },
                       {
@@ -7578,7 +8310,10 @@
                     "maxLength": 64
                   }
                 },
-                "required": ["statement", "signature"],
+                "required": [
+                  "statement",
+                  "signature"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7609,10 +8344,19 @@
                       "type": "boolean"
                     },
                     "approver_id": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["enrolment_id", "approvals", "required", "activated", "approver_id"],
+                  "required": [
+                    "enrolment_id",
+                    "approvals",
+                    "required",
+                    "activated",
+                    "approver_id"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -7658,10 +8402,17 @@
                       "type": "string"
                     },
                     "expires_at": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["id", "name", "expires_at"],
+                  "required": [
+                    "id",
+                    "name",
+                    "expires_at"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -7704,7 +8455,9 @@
                 "description": "Always `true` on this operation: the body carries untrusted text.",
                 "schema": {
                   "type": "string",
-                  "enum": ["true"]
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             },
@@ -7725,12 +8478,17 @@
                             "type": "string"
                           }
                         },
-                        "required": ["slug", "name"],
+                        "required": [
+                          "slug",
+                          "name"
+                        ],
                         "additionalProperties": false
                       }
                     }
                   },
-                  "required": ["orgs"],
+                  "required": [
+                    "orgs"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -7839,7 +8597,9 @@
                     ]
                   }
                 },
-                "required": ["target_org"],
+                "required": [
+                  "target_org"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7973,15 +8733,32 @@
                           },
                           "held": {
                             "description": "Why new work is held because of this limit.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "estimated": {
+                            "type": "boolean",
+                            "description": "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count."
                           }
                         },
-                        "required": ["metric", "used", "limit", "percent", "held"],
+                        "required": [
+                          "metric",
+                          "used",
+                          "limit",
+                          "percent",
+                          "held",
+                          "estimated"
+                        ],
                         "additionalProperties": false
                       }
                     }
                   },
-                  "required": ["limits", "usage"],
+                  "required": [
+                    "limits",
+                    "usage"
+                  ],
                   "additionalProperties": false
                 }
               }
@@ -8022,11 +8799,16 @@
     "schemas": {
       "Error": {
         "type": "object",
-        "required": ["error"],
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": [
+              "code",
+              "message"
+            ],
             "properties": {
               "code": {
                 "type": "string",
