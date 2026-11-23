@@ -23,9 +23,13 @@ const ALLOWED = new Set([
  * Built at runtime, like NAME.
  */
 const BARE = ["squir", "relscan"].join("");
-const REPO_URL = new RegExp(`github\\.com/${BARE}/${BARE}`, "gi");
-const REPO_SLUG = new RegExp(`${BARE}/${BARE}`, "gi");
-const BARE_NAME = new RegExp(BARE, "gi");
+// Each token is taken out only as a whole: never followed by a word character or `-` (`name-ci`)
+// or by `.` and a word character (`name.example`), and the bare name never preceded by a word
+// character, `.`, `/` or `-` (`ci.name`, `/name`). A sentence-final `name.` still counts as whole.
+const END = "(?![\\w-]|\\.\\w)";
+const REPO_URL = new RegExp(`github\\.com/${BARE}/${BARE}${END}`, "gi");
+const REPO_SLUG = new RegExp(`(?<![\\w./-])${BARE}/${BARE}${END}`, "gi");
+const BARE_NAME = new RegExp(`(?<![\\w./-])${BARE}${END}`, "gi");
 const MAX_README_LINES = 2;
 
 /** `file:line` of each place `text` (the content of `rel`) names the customer when it may not. */
@@ -107,6 +111,16 @@ describe("public hygiene", () => {
     test("the repo URL in any other file fails", () => {
       expect(hygieneHits("docs/x.mdx", real)).toEqual(["docs/x.mdx:1"]);
       expect(hygieneHits("CHANGELOG.md", real)).toEqual(["CHANGELOG.md:1"]);
+    });
+    test("the bare name passes only as a standalone word on the allowed line", () => {
+      expect(hygieneHits("README.md", `${real} Thanks to ${BARE}.`)).toEqual([]); // sentence-final
+      for (const bad of [
+        `https://ci.${BARE}.example`, // a hosted URL
+        `${BARE}-ci`, // a private-looking name
+        `/${BARE}`, // a path
+        `github.com/${BARE}/${BARE}-ci`, // a private repo under the same owner
+      ])
+        expect(hygieneHits("README.md", `${real} ${bad}`), bad).toEqual(["README.md:1"]);
     });
     test("two such README lines pass and a third fails", () => {
       expect(hygieneHits("README.md", [real, real].join("\n"))).toEqual([]);
