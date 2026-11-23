@@ -196,9 +196,11 @@ describe("no org principal reaches an instance op, and the instance token reache
               ? { target_org: "org-a", max_log_bytes: 1 }
               : op.name === "set_project_settings"
                 ? { target_org: "org-a", target_project: "app", max_concurrent: 1 }
-                : op.name === "create_project"
-                  ? { target_org: "org-a", slug: "sneaky", name: "x" }
-                  : {};
+                : op.name === "instance_set_setting"
+                  ? { key: "backup_keep", value: 1 }
+                  : op.name === "create_project"
+                    ? { target_org: "org-a", slug: "sneaky", name: "x" }
+                    : {};
           const r = await dispatch(env, cred, op.name, input);
           expect(r.ok, `${label} on ${op.name}`).toBe(false);
           if (!r.ok) expect(r.error.code, `${label} on ${op.name}`).toBe("forbidden");
@@ -218,7 +220,10 @@ describe("no org principal reaches an instance op, and the instance token reache
     ).toEqual([
       "create_project",
       "db_backup",
+      "instance_get_setting",
       "instance_list_orgs",
+      "instance_list_settings",
+      "instance_set_setting",
       "instance_whoami",
       "set_project_settings",
       "set_quotas",

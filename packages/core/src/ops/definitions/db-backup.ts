@@ -3,6 +3,7 @@
 // audited in the system org's chain by the dispatcher. The caller names no path: the file is
 // always new, under `<data-dir>/backups/`.
 import { z } from "zod";
+import { resolveSetting } from "../../settings/resolve";
 import { BackupError, backupSqlite, PG_BACKUP_MESSAGE } from "../../db/backup";
 import { VERSION } from "../../version";
 import { defineOp } from "../define";
@@ -15,7 +16,7 @@ export const dbBackupOp = defineOp({
     "Writes a consistent copy of the SQLite database (VACUUM INTO) to a new file under " +
     "`<data-dir>/backups/`, named with the time and the binary version, and returns its path, " +
     "size and sha256. Use it before an upgrade that applies migrations. It keeps the newest " +
-    "`keep` backups (default from TURNTABLE_BACKUP_KEEP, else 10) and refuses when free space " +
+    "`keep` backups (the `backup_keep` setting: TURNTABLE_BACKUP_KEEP, turntable.toml, a value set with `instance_set_setting`, else 10) and refuses when free space " +
     "is below twice the database size. On Postgres it refuses: use pg_dump. Restoring is " +
     "stop, replace the file, start. The copy runs on a worker thread, so the server keeps serving while it runs. Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
@@ -49,12 +50,19 @@ export const dbBackupOp = defineOp({
     const cfg = ctx.backup;
     if (cfg?.dialect === "pg") throw new OpError("invalid_input", PG_BACKUP_MESSAGE);
     if (!cfg) throw new OpError("unavailable", "this server was not set up to take backups");
+    // The effective retention: env, then turntable.toml, then the stored setting, then the default.
+    // Without a settings runtime (a server that was not given one) the boot value stands.
+    const keep =
+      i.keep ??
+      (ctx.settings
+        ? ((await resolveSetting(ctx.settings, ctx.db, "backup_keep")).value as number)
+        : cfg.keep);
     try {
       const r = await backupSqlite({
         dbPath: cfg.dbPath,
         dataDir: cfg.dataDir,
         version: VERSION,
-        keep: i.keep ?? cfg.keep,
+        keep,
         now: ctx.now,
         afterCopy: cfg.afterCopy,
       });

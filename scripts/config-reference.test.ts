@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_VARS, NOT_CONFIGURATION } from "../packages/core/src/config-reference";
+import { settingsRegistry } from "../packages/core/src/settings/definitions";
 import { applyReference } from "./config-reference";
 
 const root = join(import.meta.dir, "..");
@@ -49,5 +50,18 @@ describe("configuration reference", () => {
     const doc = readFileSync(join(root, "docs/configuration.mdx"), "utf8");
     expect(applyReference(doc)).toBe(doc);
     for (const v of CONFIG_VARS) expect(doc).toContain(`\`${v.name}\``);
+  });
+
+  test("every setting of the registry is listed with its scope, role, MCP rule and names", () => {
+    const doc = readFileSync(join(root, "docs/configuration.mdx"), "utf8");
+    for (const d of settingsRegistry.settings) {
+      const row = doc.split("\n").find((l) => l.startsWith(`| \`${d.key}\` |`));
+      expect(row, `no row for setting ${d.key}`).toBeDefined();
+      expect(row).toContain(`| ${d.scope} |`);
+      expect(row).toContain(`| ${d.role} |`);
+      expect(row).toContain(d.mcpEditable ? "| yes |" : "| no: ");
+      for (const e of d.env) expect(row).toContain(`\`${e}\``);
+      expect(row).toContain(d.toml.split(".").at(-1)!);
+    }
   });
 });

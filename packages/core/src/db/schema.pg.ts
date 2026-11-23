@@ -1449,3 +1449,38 @@ export const outboundDeliveries = pgTable(
     index("outbound_webhook_deliveries_endpoint_idx").on(t.orgId, t.endpointId, t.createdAt),
   ],
 );
+
+// ---- settings registry (#321) ----
+
+export const SETTING_SCOPES = ["instance", "org", "project"] as const;
+export type SettingScope = (typeof SETTING_SCOPES)[number];
+
+/**
+ * The database layer of the settings registry: a value set through the ops or the UI. The layers
+ * above it (environment, `turntable.toml`) are never stored here. `scope_id` is the org or project
+ * id, and empty for the instance. `value` is JSON, validated against the registry on every read.
+ * Secrets are never settings, so nothing here is sealed.
+ */
+export const settings = pgTable(
+  "settings",
+  {
+    scopeKind: text("scope_kind").notNull(),
+    scopeId: text("scope_id").notNull().default(""),
+    /** The owning org. Null only for instance scope; an org row's `scope_id` is this org. */
+    orgId: text("org_id").references(() => orgs.id),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.scopeKind, t.scopeId, t.key] }),
+    check("settings_scope_kind_check", inList("scope_kind", SETTING_SCOPES)),
+    // Instance scope iff no org; an org row is about its own org. That a project row's org is the
+    // project's org needs the projects table: putStoredSetting checks it at write time.
+    check(
+      "settings_org_id_check",
+      sql`(${t.scopeKind} = 'instance' AND ${t.orgId} IS NULL) OR (${t.scopeKind} = 'org' AND ${t.orgId} IS NOT NULL AND ${t.scopeId} = ${t.orgId}) OR (${t.scopeKind} = 'project' AND ${t.orgId} IS NOT NULL)`,
+    ),
+  ],
+);

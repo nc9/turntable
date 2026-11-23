@@ -604,6 +604,10 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
   doctor:
     "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
+  get_setting:
+    "the shipped registry has no org or project setting yet, so no key reaches a value for A either; the cross-tenant test with a test registry is in settings.test.ts (tenancy: another org's token ...)",
+  set_setting:
+    "as get_setting: no shipped org or project setting to set; settings.test.ts covers the cross-tenant write",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

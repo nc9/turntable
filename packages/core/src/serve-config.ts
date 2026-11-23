@@ -34,6 +34,7 @@ export function serveDefaults(env: Env): {
   providerConfig: string | undefined;
   hosted: boolean;
   isolationOverride: string | undefined;
+  config: string | undefined;
 } {
   const t = (n: string): string | undefined => env[n]?.trim() || undefined;
   return {
@@ -52,6 +53,7 @@ export function serveDefaults(env: Env): {
       t("TURNTABLE_PROVIDER_CONFIG") ?? (t(PROVIDER_JSON_ENV) ? ENV_PROVIDER_SOURCE : undefined),
     hosted: flag(env.TURNTABLE_HOSTED),
     isolationOverride: t("TURNTABLE_ISOLATION_OVERRIDE"),
+    config: t("TURNTABLE_CONFIG"),
   };
 }
 

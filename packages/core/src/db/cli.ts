@@ -15,8 +15,9 @@ import {
   type BackupResult,
 } from "./backup";
 import { DIALECT } from "./dialect";
+import { loadSettingsRuntime } from "../settings/boot";
 
-export const DB_USAGE = `Usage: turntable db backup [--data-dir ./data] [--keep <n>]
+export const DB_USAGE = `Usage: turntable db backup [--data-dir ./data] [--keep <n>] [--config <turntable.toml>]
 
 Writes a consistent copy of the SQLite database to <data-dir>/backups/turntable-<time>-<version>.db
 and prints its path, size and sha256. Keeps the newest --keep backups (default
@@ -37,6 +38,7 @@ export async function dbCommand(args: string[]): Promise<number> {
       options: {
         "data-dir": { type: "string", default: process.env.TURNTABLE_DATA_DIR ?? "./data" },
         keep: { type: "string" },
+        config: { type: "string" },
         // Read before anything else loads (db/dialect.ts); declared so strict parsing accepts it.
         "database-url": { type: "string" },
       },
@@ -56,7 +58,10 @@ export async function dbCommand(args: string[]): Promise<number> {
   const dbPath = join(dataDir, "turntable.db");
   let result: BackupResult;
   try {
-    const keep = values.keep === undefined ? backupKeepFromEnv(process.env) : Number(values.keep);
+    const keep =
+      values.keep === undefined
+        ? backupKeepFromEnv(process.env, loadSettingsRuntime({ config: values.config }))
+        : Number(values.keep);
     result = await backupSqlite({ dbPath, dataDir, version: VERSION, keep });
   } catch (e) {
     console.error(

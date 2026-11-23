@@ -544,6 +544,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       'A JSON array of `{ "name", "path", "sha256" }`: external provider plugins, each loaded only if the file at `path` has that digest. Never in hosted mode. See [Providers](/providers).',
   },
   {
+    name: "TURNTABLE_CONFIG",
+    area: "Server",
+    flag: "--config",
+    description:
+      "Path of a `turntable.toml` of settings. An unknown key or a bad value stops the boot, naming the key and the file; no file is fine. The environment beats the file. See [Settings registry](#settings-registry).",
+  },
+  {
     name: "TURNTABLE_BACKUP_BEFORE_MIGRATE",
     area: "Server",
     description:
@@ -553,7 +560,8 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     name: "TURNTABLE_BACKUP_KEEP",
     area: "Server",
     default: "10",
-    description: "How many backups to keep under `<data-dir>/backups`.",
+    description:
+      "How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",

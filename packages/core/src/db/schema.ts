@@ -54,3 +54,4 @@ export const quotaNotices = (DIALECT === "pg" ? pg.quotaNotices : sqlite.quotaNo
 export const outboundEndpoints = (DIALECT === "pg" ? pg.outboundEndpoints : sqlite.outboundEndpoints) as unknown as typeof sqlite.outboundEndpoints;
 export const outboundSecrets = (DIALECT === "pg" ? pg.outboundSecrets : sqlite.outboundSecrets) as unknown as typeof sqlite.outboundSecrets;
 export const outboundDeliveries = (DIALECT === "pg" ? pg.outboundDeliveries : sqlite.outboundDeliveries) as unknown as typeof sqlite.outboundDeliveries;
+export const settings = (DIALECT === "pg" ? pg.settings : sqlite.settings) as unknown as typeof sqlite.settings;

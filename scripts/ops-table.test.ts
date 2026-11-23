@@ -43,6 +43,12 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: projects are made by the operator, never an agent",
   db_backup:
     "instance administrator ops are REST only: it writes a copy of the whole database, never an agent's act",
+  instance_get_setting:
+    "instance administrator ops are REST only: instance settings (and where a locked one is set) are the operator's",
+  instance_list_settings:
+    "instance administrator ops are REST only: instance settings (and where a locked one is set) are the operator's",
+  instance_set_setting:
+    "instance administrator ops are REST only: instance settings are the operator's, never changed from an agent's context",
 };
 
 describe("the operations table", () => {
