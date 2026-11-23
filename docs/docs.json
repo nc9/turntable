@@ -8,7 +8,7 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["introduction", "overview", "quickstart", "configuration", "doctor"]
+        "pages": ["introduction", "overview", "quickstart", "configuration", "doctor", "skills"]
       },
       {
         "group": "Concepts",

@@ -66,10 +66,18 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 describe("public hygiene", () => {
-  test("no customer name in packages, docs, scripts, examples, images or the workflows, outside the vendored fixtures", () => {
-    const dirs = ["packages", "docs", "scripts", "examples", "images", ".github"].map((d) =>
-      join(root, d),
-    );
+  test("no customer name in packages, docs, scripts, examples, images, skills, the plugin manifest or the workflows, outside the vendored fixtures", () => {
+    const dirs = [
+      "packages",
+      "docs",
+      "scripts",
+      "examples",
+      "images",
+      "skills",
+      ".github",
+      "claude-plugin",
+      ".claude-plugin",
+    ].map((d) => join(root, d));
     const files = [
       ...dirs.flatMap((d) => {
         try {
