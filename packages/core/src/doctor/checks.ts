@@ -674,6 +674,22 @@ export async function checkHumanApprovalApprovers(i: DoctorInputs): Promise<Doct
     : pass(id, area, "every project on human approval has an approver that counts");
 }
 
+export async function checkHumanApprovalKeyPolicy(i: DoctorInputs): Promise<DoctorCheck> {
+  const area = "approvals";
+  const id = "human_approval_key_policy";
+  if (!i.humanAnyKeyPolicy)
+    return pass(id, area, "not checked here: the running server's doctor checks it");
+  const n = await i.humanAnyKeyPolicy();
+  return n > 0
+    ? warn(
+        id,
+        area,
+        "a project requires human approval but its org key policy is any: a key file on a machine where agents run lets an agent sign an approval",
+        "Set the org key policy to hardware, or set untrusted_run_approval to no_agents.",
+      )
+    : pass(id, area, "every project on human approval has the hardware key policy");
+}
+
 /** The failures in a row at which a repo's polling is reported as unhealthy. */
 export const POLL_FAILURE_WARN = 3;
 /** The intervals without a successful poll at which a repo is reported as stalled. */
@@ -757,6 +773,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
+    ...(await safe("human_approval_key_policy", "approvals", () => checkHumanApprovalKeyPolicy(i))),
   ];
   return report(all);
 }

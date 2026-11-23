@@ -162,6 +162,28 @@ export async function effectiveApproval(
 }
 
 /**
+ * How many projects resolve to `human` while their org's key policy is `any`: an ed25519 key file
+ * on a machine where agents run lets an agent sign a statement, so `human` assumes `hardware`.
+ */
+export async function countHumanWithAnyKeyPolicy(
+  rt: SettingsRuntime | undefined,
+  db: Db,
+): Promise<number> {
+  const anyPolicy = new Map<string, boolean>();
+  let n = 0;
+  for (const p of await allProjectRefs(db)) {
+    if ((await effectiveApproval(rt, db, p.orgId, p.id)) !== "human") continue;
+    let any = anyPolicy.get(p.orgId);
+    if (any === undefined) {
+      any = (await getKeyPolicy(db, p.orgId)).mode === "any";
+      anyPolicy.set(p.orgId, any);
+    }
+    if (any) n += 1;
+  }
+  return n;
+}
+
+/**
  * How many projects resolve to `human` while their org has no approver that counts (revoked
  * since, or the key policy tightened). A value from `turntable.toml` or the environment is not
  * refused at boot, so this is where it shows.
