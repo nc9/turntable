@@ -1,6 +1,6 @@
 ---
 title: Readiness check
-description: "turntable doctor": a read-only check an operator runs before going live, with a fix for everything it finds.
+description: "`turntable doctor`: a read-only check an operator runs before going live, with a fix for everything it finds."
 ---
 
 `turntable doctor` checks that an instance is ready to go live and says what to fix. It reads the same `TURNTABLE_*` environment as `turntable serve`, opens the database read-only, creates nothing, starts nothing, and never prints a secret: it says a key is present and well formed, never what it is.
