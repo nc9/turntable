@@ -45,6 +45,10 @@ GITHUB_POLL_TOKEN=...
 
 **The volume now holds the key, so a volume backup is also a copy of the key.** Anyone who can read a backup of the volume can read every stored secret in it. Back the key up on its own, somewhere else (a secrets manager), and keep volume backups under the same access rules. Losing the file loses every secret sealed with it. Turn the opt-in off once the key exists if you want a missing file to be an error again.
 
+## Instance administrator access on a host with no shell
+
+To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is active, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
+
 ## Webhooks wake the poller
 
 A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.

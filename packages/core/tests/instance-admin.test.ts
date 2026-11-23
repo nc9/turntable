@@ -76,8 +76,11 @@ describe("minting is host-only and the token is stored hashed", () => {
     const made = rows.find((r) => r.op === "create_instance_token");
     expect(made).toMatchObject({ principalKind: "cli", outcome: "ok" });
     expect(made!.input).not.toContain(secret);
-    // no registered op creates or lists instance tokens
-    expect(registry.ops.map((o) => o.name).filter((n) => /instance_token/.test(n))).toEqual([]);
+    // no registered op creates, lists or revokes instance tokens; the one exception is rotation
+    // (#330), which an instance administrator calls over REST and which is never an MCP tool
+    expect(registry.ops.map((o) => o.name).filter((n) => /instance_token/.test(n))).toEqual([
+      "rotate_instance_token",
+    ]);
   });
 
   test("a bad name or expiry is refused; list shows status and never a secret; revoke ends it", async () => {
@@ -225,6 +228,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_list_settings",
       "instance_set_setting",
       "instance_whoami",
+      "rotate_instance_token",
       "set_project_settings",
       "set_quotas",
     ]);
