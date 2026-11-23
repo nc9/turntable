@@ -1,7 +1,15 @@
 // The setup skills must not drift from the code: every operation, TURNTABLE_* variable and
 // `turntable <command>` they name has to exist. Also checks the frontmatter.
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { CONFIG_VARS, NOT_CONFIGURATION } from "../packages/core/src/config-reference";
 import { registry } from "../packages/core/src/ops";
@@ -46,6 +54,7 @@ const NOT_OPERATIONS = new Set([
   "pg_dump",
   "pull_request",
   "check_run",
+  "request_oauth_on_install",
 ]);
 
 describe("setup skills", () => {
@@ -83,6 +92,15 @@ describe("setup skills", () => {
       expect(text).not.toContain("—");
     });
   }
+
+  test("the plugin reaches the skills through a symlink and the marketplace points at the plugin", () => {
+    expect(lstatSync(join(root, "claude-plugin/skills")).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(root, "claude-plugin/skills"))).toBe("../skills");
+    expect(realpathSync(join(root, "claude-plugin/skills"))).toBe(join(root, "skills"));
+    const market = JSON.parse(readFileSync(join(root, ".claude-plugin/marketplace.json"), "utf8"));
+    expect(market.plugins[0].source).toBe("./claude-plugin");
+    expect(existsSync(join(root, "claude-plugin/.claude-plugin/plugin.json"))).toBe(true);
+  });
 
   test("the checker catches a made-up name", () => {
     const fake = ["`not_a_real_op`", "TURNTABLE_NOPE_VAR", "`turntable frobnicate now`"].join("\n");

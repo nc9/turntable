@@ -4,7 +4,7 @@
   "plugins": [
     {
       "name": "turntable",
-      "source": "./",
+      "source": "./claude-plugin",
       "description": "Setup skills for self-hosting Turntable, and a channel for CI events."
     }
   ]

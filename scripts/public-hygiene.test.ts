@@ -75,6 +75,7 @@ describe("public hygiene", () => {
       "images",
       "skills",
       ".github",
+      "claude-plugin",
       ".claude-plugin",
     ].map((d) => join(root, d));
     const files = [

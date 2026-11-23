@@ -21,8 +21,8 @@ Every instance has its own App. There is no shared App. The docs are the source 
 
 - Own the App from an organization you control, with 2FA required. App names are global on GitHub: pick a unique one.
 - **Private:** installed only on the account that owns it. No claim mode needed.
-- **Public:** other accounts install it. Claim mode is mandatory. After #337 the manifest makes the App public when claim mode is on. Before it, turn on "Make public" by hand, and only after claim mode is set.
-- Claim mode also needs **Request user authorization (OAuth) during installation**. The manifest sets the setup URL, not that option: turn it on in the App's settings.
+- **Public:** other accounts install it. Claim mode is mandatory. The manifest makes the App public when claim mode is on. An App created before that, or by the loopback command, is private: turn on "Make public" by hand, and only after claim mode is set.
+- Claim mode also needs **Request user authorization (OAuth) during installation** and the setup URL. The claim-mode manifest sets both (`request_oauth_on_install`). Check that they are on, and set them by hand only on an App created without claim mode.
 
 ## 2. Create it
 
@@ -48,9 +48,10 @@ After the App exists, remove `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` from the 
 
 ## 4. Install and claim
 
-1. The human installs the App and chooses **Only select repositories**.
-2. In claim mode, an org token with `release_operator` or admin calls `start_installation_claim` over REST (`POST /api/v1/github/installation-claims`). It is not an MCP tool: a human opens the returned link in a browser and confirms, then installs. The claimer must be an admin of the GitHub org.
-3. Repos polled before the install are adopted into the installation after #336. Until then, check that checks post and see the table below.
+1. In claim mode, an org token with `release_operator` or admin calls `start_installation_claim` over REST (`POST /api/v1/github/installation-claims`) first. It is not an MCP tool. It returns a link to the instance.
+2. The human opens the link in a browser and confirms the org named on the page. The page sends them to GitHub to install the App: they install it through this link, not from the App's public page, and choose **Only select repositories**. The claimer must be an admin of the GitHub org.
+3. GitHub's setup redirect returns to the instance, which completes the claim. Without claim mode, the human just installs the App.
+4. Repos polled before the install are adopted into the installation after #336. Until then, check that checks post and see the table below.
 
 ## 5. Verify
 

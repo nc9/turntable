@@ -15,7 +15,7 @@ Each skill opens with its secret rules: the agent never reads or prints a token,
 
 ## Install in Claude Code
 
-The repo is a Claude Code plugin marketplace with one plugin, `turntable`. Its manifest is `.claude-plugin/plugin.json` at the repo root, so the plugin picks up `skills/` by default and also carries the [event channel](/agent-interface#claude-code-channel).
+The repo is a Claude Code plugin marketplace with one plugin, `turntable`. The plugin lives in `claude-plugin/`, and its `skills` entry is a symlink to the repo's `skills/`. When Claude Code installs from a git marketplace it copies the link's target into its cache, so the skills arrive. A marketplace added from a local directory skips such a link, so copy the skills from `skills/` in that case. The plugin also carries the [event channel](/agent-interface#claude-code-channel).
 
 ```sh
 /plugin marketplace add nc9/turntable
