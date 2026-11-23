@@ -13,6 +13,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INSTALL_SHIMS_SH, launcherArgv, SHIM_NAMES, STEP_ENV, STEP_SHIM } from "../src/step-env";
 
+/**
+ * The real tool, never an interpreter shim of a Turntable job these tests may themselves run in
+ * (hosted dogfood): there `sh` on PATH is the outer job's shim, and a copy of it in a hermetic dir
+ * finds no real `sh` and exits 127 (#420). A shim dir is one holding `step-shim`.
+ */
+function realTool(name: string): string | null {
+  const path = (process.env.PATH ?? "")
+    .split(":")
+    .filter((d) => d !== "" && !existsSync(join(d, "step-shim")))
+    .join(":");
+  return Bun.which(name, { PATH: path });
+}
+
 const tmp = mkdtempSync(join(tmpdir(), "ls-shim-"));
 const shims = join(tmp, "shims");
 const bin = join(tmp, "bin");
@@ -328,7 +341,7 @@ describe("the watchdog (act's step-timeout kill hits only the shim)", () => {
       "rm",
       "kill",
     ]) {
-      const found = Bun.which(tool);
+      const found = realTool(tool);
       if (found && !existsSync(join(minimal, tool))) symlinkSync(found, join(minimal, tool));
     }
     const p = Bun.spawn([join(shims, "bash")], {
@@ -414,7 +427,7 @@ describe("only interpreters that exist are shimmed", () => {
     const d = join(tmp, name);
     mkdirSync(d, { recursive: true });
     for (const t of TOOLS) {
-      const real = Bun.which(t);
+      const real = realTool(t);
       if (real) symlinkSync(real, join(d, t));
     }
     for (const [n, body] of Object.entries(extra)) {
@@ -493,5 +506,26 @@ describe("only interpreters that exist are shimmed", () => {
     await install(d, bin2);
     await install(d, `${d}:${bin2}`);
     expect(existsSync(join(d, "node"))).toBe(false);
+  });
+});
+
+describe("realTool skips an outer Turntable shim dir (#420)", () => {
+  test("a dir holding step-shim on PATH is never where a tool resolves from", () => {
+    const outer = mkdtempSync(join(tmpdir(), "tt-outer-shims-"));
+    writeFileSync(join(outer, "step-shim"), "#!/bin/sh\nexit 127\n");
+    chmodSync(join(outer, "step-shim"), 0o755);
+    symlinkSync("step-shim", join(outer, "sh"));
+    const before = process.env.PATH;
+    try {
+      process.env.PATH = `${outer}:${before ?? ""}`;
+      // The control: a plain lookup over the same PATH takes the shim.
+      expect(Bun.which("sh", { PATH: process.env.PATH })).toBe(join(outer, "sh"));
+      const real = realTool("sh");
+      expect(real).not.toBeNull();
+      expect(real!.startsWith(outer)).toBe(false);
+    } finally {
+      process.env.PATH = before;
+      rmSync(outer, { recursive: true, force: true });
+    }
   });
 });

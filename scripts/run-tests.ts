@@ -17,7 +17,10 @@ const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json())
 const suites = Object.keys(pkg.scripts).filter((k) => k.startsWith("test:") && !GATED.has(k));
 if (suites.length === 0) throw new Error("no test:* suites found");
 
-const proc = Bun.spawn(["bun", "run", "--sequential", ...suites], {
+// --no-exit-on-error: run every suite even after one fails, so a single run shows every failing
+// suite (a hosted dogfood run once stopped at the first and hid the rest, #420). The exit code
+// is still non-zero when any suite fails.
+const proc = Bun.spawn(["bun", "run", "--sequential", "--no-exit-on-error", ...suites], {
   stdout: "inherit",
   stderr: "inherit",
 });
