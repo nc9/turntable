@@ -50,6 +50,13 @@
       "when": 1795402135242,
       "tag": "0006_project_sandbox_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795419761704,
+      "tag": "0007_skip_check_claim",
+      "breakpoints": true
     }
   ]
 }

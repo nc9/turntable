@@ -1,0 +1,1 @@
+ALTER TABLE "job_attempts" ADD COLUMN "skip_check_claimed_at" bigint;

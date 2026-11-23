@@ -1,5 +1,5 @@
 // Poll ingest persistence. Part of the only code that names tenant tables.
-import { and, count, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import {
@@ -458,6 +458,57 @@ export function listUnreportedSkips(
       .orderBy(desc(s.jobAttempts.id))
       .limit(opts.limit),
   );
+}
+
+/**
+ * Takes the exclusive claim to post an attempt's skipped check: one conditional UPDATE, atomic on
+ * both dialects. It wins only while the attempt has no check and no live claim (none, or one
+ * older than `ttlMs`, whose holder is presumed dead). The winner alone creates the check.
+ */
+export function claimSkippedCheck(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  now: number,
+  ttlMs: number,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({ skipCheckClaimedAt: now })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          and(
+            eq(s.jobAttempts.id, attemptId),
+            isNull(s.jobAttempts.checkRunId),
+            or(
+              isNull(s.jobAttempts.skipCheckClaimedAt),
+              lt(s.jobAttempts.skipCheckClaimedAt, now - ttlMs),
+            ),
+          ),
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    return rows.length > 0;
+  });
+}
+
+/** Drops a claim whose post failed, so the next sweep retries without waiting out the TTL. */
+export function releaseSkippedCheckClaim(db: Db, scope: Scope, attemptId: string): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .update(s.jobAttempts)
+      .set({ skipCheckClaimedAt: null })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          and(eq(s.jobAttempts.id, attemptId), isNull(s.jobAttempts.checkRunId)),
+        ),
+      );
+  });
 }
 
 export function setAttemptCheckRunId(

@@ -5,6 +5,7 @@ import { redactString } from "@turntable/redact";
 import { foldShardStates } from "@turntable/act-runner";
 import type { Db } from "../db";
 import {
+  claimSkippedCheck,
   getAttemptCheckRunId,
   getOrgById,
   getProjectChecksMode,
@@ -13,6 +14,7 @@ import {
   listUnreportedSkips,
   listProjects,
   listRepos,
+  releaseSkippedCheckClaim,
   setAttemptCheckRunId,
   type ChecksMode,
 } from "../db/repos";
@@ -63,8 +65,20 @@ export const SUMMARY_EXCERPT_BYTES = 1024;
 
 /** Skipped jobs older than this are not looked for (a check on a week-old commit is moot). */
 const SKIP_WINDOW_MS = 3 * 24 * 3600_000;
+/**
+ * A claim to post a skipped check is retaken after this long: its holder died before posting. It
+ * is far longer than one post (a retried create takes seconds) so a live holder is not robbed.
+ */
+export const SKIP_CLAIM_TTL_MS = 5 * 60_000;
 /** Most skipped attempts one sweep looks at. */
 const SKIP_BATCH = 200;
+
+type PostTarget = {
+  mode: Exclude<ChecksMode, "off">;
+  token: string;
+  repo: string;
+  sha: string;
+};
 
 export class CheckReporter {
   readonly #o: CheckReporterOptions;
@@ -103,7 +117,9 @@ export class CheckReporter {
    * Posts one check run per job that ended skipped without an attempt (a false `if:`, a failed or
    * skipped need, every shard path-skipped), under the same checks-mode gate as every other check.
    * Idempotent: the check is created by external id and its id stored on the attempt, so a rerun
-   * of the sweep, a reconcile or a second worker never posts a second one for the same job.
+   * of the sweep or a reconcile never posts a second one for the same job. Two workers racing are
+   * kept apart by an exclusive claim on the attempt (a conditional update): only its holder
+   * posts, and a claim whose holder died expires after SKIP_CLAIM_TTL_MS and is retaken.
    */
   async sweepSkipped(): Promise<void> {
     const now = (this.#o.now ?? Date.now)();
@@ -169,11 +185,7 @@ export class CheckReporter {
    * token minted for the one repository with `checks: write` only. Undefined when nothing is to
    * be posted (checks off, a local run, a repo not installed through the App).
    */
-  async #target(
-    claim: Claim,
-  ): Promise<
-    { mode: Exclude<ChecksMode, "off">; token: string; repo: string; sha: string } | undefined
-  > {
+  async #target(claim: Claim): Promise<PostTarget | undefined> {
     const { db } = this.#o;
     const { scope, run } = claim;
     const mode: ChecksMode = await getProjectChecksMode(db, scope);
@@ -208,7 +220,6 @@ export class CheckReporter {
     if ((await getAttemptCheckRunId(db, scope, attempt.id)) !== null) return "posted";
     const target = await this.#target(claim);
     if (!target) return "nothing";
-    const { mode, token } = target;
     const all = await listJobs(db, scope, run.id);
     const mine = shardGroup(job.planned);
     const members = mine ? all.filter((j) => shardGroup(j.planned)?.id === mine.id) : [job];
@@ -236,6 +247,29 @@ export class CheckReporter {
         return "waiting";
       }
     }
+    // One claim per check: for a split job, on its lowest-id attempt, whichever shard we hold.
+    const claimOn = [...latest.values()].map((a) => a.id).toSorted()[0] ?? attempt.id;
+    const now = (this.#o.now ?? Date.now)();
+    if (!(await claimSkippedCheck(db, scope, claimOn, now, SKIP_CLAIM_TTL_MS))) return "waiting";
+    try {
+      return await this.#postClaimed(claim, target, all, latest, mine);
+    } catch (err) {
+      await releaseSkippedCheckClaim(db, scope, claimOn).catch(() => {});
+      throw err;
+    }
+  }
+
+  /** Creates the skipped check; the caller holds the claim. */
+  async #postClaimed(
+    claim: Claim,
+    target: PostTarget,
+    all: Awaited<ReturnType<typeof listJobs>>,
+    latest: Map<string, Claim["attempt"]>,
+    mine: { id: string } | undefined,
+  ): Promise<"posted"> {
+    const { db } = this.#o;
+    const { scope, run, job, attempt } = claim;
+    const { mode, token } = target;
     const externalId = mine ? `shards-${run.id}-${mine.id}` : `skipped-${job.id}`;
     const name = checkName(mode, job);
     const runUrl = await this.#runUrl(claim);
