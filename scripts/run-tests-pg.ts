@@ -18,6 +18,8 @@ const SQLITE_ONLY = new Map<string, string>([
   ["migration-sequence-guard.test.ts", "applies the SQLite migrations to a bun:sqlite database"],
   ["tenancy-guard.test.ts", "reads the SQLite schema objects"],
   ["github-serve.test.ts", "starts a server process with its own database"],
+  ["master-key-autoinit.test.ts", "starts a server process with its own database"],
+  ["events-quota-migration.test.ts", "applies the SQLite migrations by hand with bun:sqlite"],
 ]);
 
 const url = process.env.LONGSHORE_TEST_DB;
