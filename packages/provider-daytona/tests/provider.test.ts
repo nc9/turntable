@@ -553,7 +553,7 @@ describe("disk and memory quotas, and a quota 400 on create", () => {
     const creating = p.create(spec());
     await Bun.sleep(120);
     expect(posts()).toBe(0);
-    expect(p.diagnose().limits).toMatchObject({ diskGiB: 2000, diskFrom: "usage reply" });
+    expect(p.capacityStatus().limits).toMatchObject({ diskGiB: 2000, diskFrom: "usage reply" });
     mock.usage.rows = [row({ currentDiskUsage: 1997 })]; // 1997 + 3 = 2000: fits exactly
     const h = await creating;
     expect(posts()).toBe(1);
@@ -583,26 +583,26 @@ describe("disk and memory quotas, and a quota 400 on create", () => {
     mock.usage.rows = [row({ currentDiskUsage: 1500 })];
     const tight = make({ ownerCiPreflight: { diskLimitGiB: 1500 }, capacityWaitMs: 50 });
     await expect(tight.create(spec())).rejects.toThrow(/1500 of 1500 GiB disk/);
-    expect(tight.diagnose().limits).toMatchObject({ diskGiB: 1500, diskFrom: "config" });
+    expect(tight.capacityStatus().limits).toMatchObject({ diskGiB: 1500, diskFrom: "config" });
     // A reply with no quota fields and no configured limit: disk is not judged at all.
     mock.usage.rows = [
       { regionId: "us", sandboxClass: "container", currentCpuUsage: 1, currentDiskUsage: 99999 },
     ];
     const open = make();
     await open.destroy((await open.create(spec())).id);
-    expect(open.diagnose().limits).toMatchObject({ diskGiB: null, diskFrom: "none" });
+    expect(open.capacityStatus().limits).toMatchObject({ diskGiB: null, diskFrom: "none" });
   });
 
-  test("diagnose reports the limits before any read, from the config", () => {
+  test("capacityStatus reports the limits before any read, from the config", () => {
     const p = make({ ownerCiPreflight: { cpuLimit: 150, diskLimitGiB: 1800, memLimitGiB: 300 } });
-    expect(p.diagnose().limits).toEqual({
+    expect(p.capacityStatus().limits).toEqual({
       cpu: 150,
       diskGiB: 1800,
       memGiB: 300,
       diskFrom: "config",
       memFrom: "config",
     });
-    expect(make().diagnose().limits).toMatchObject({ cpu: 200, diskGiB: null, memGiB: null });
+    expect(make().capacityStatus().limits).toMatchObject({ cpu: 200, diskGiB: null, memGiB: null });
   });
 
   test("a quota 400 on create waits and retries, logging once, then succeeds", async () => {
@@ -627,7 +627,7 @@ describe("disk and memory quotas, and a quota 400 on create", () => {
     const err = (await p.create(spec()).catch((e: unknown) => e)) as Error;
     expect(err).toBeInstanceOf(InfraError);
     expect(err.message).toContain("Total CPU limit exceeded");
-    expect(p.diagnose().counting.tracked).toBe(0);
+    expect(p.capacityStatus().counting.tracked).toBe(0);
   });
 
   test("any other 400 still fails at once, as a spec error, with no retry", async () => {
@@ -649,7 +649,7 @@ describe("the own-fleet count comes from recorded ids, not from listings", () =>
   test("a listing that returns nothing for new sandboxes does not hide them from the count or the cap", async () => {
     await broken();
     const p = make({ maxLive: 1, capacityWaitMs: 60 });
-    expect(p.diagnose().counting).toEqual({ mode: "recorded-ids", tracked: 0 });
+    expect(p.capacityStatus().counting).toEqual({ mode: "recorded-ids", tracked: 0 });
     const a = await p.create(spec({ name: "a" }));
     // The mock's label-filtered list is empty (as Daytona's was, even a minute later).
     expect(
@@ -660,7 +660,7 @@ describe("the own-fleet count comes from recorded ids, not from listings", () =>
       ).items,
     ).toEqual([]);
     expect(await p.count({})).toBe(1);
-    expect(p.diagnose().counting).toEqual({ mode: "recorded-ids", tracked: 1 });
+    expect(p.capacityStatus().counting).toEqual({ mode: "recorded-ids", tracked: 1 });
     await expect(p.create(spec({ name: "b" }))).rejects.toThrow(/already 1 live sandboxes of ours/);
     await p.destroy(a.id);
     expect(await p.count({})).toBe(0);
@@ -686,7 +686,7 @@ describe("the own-fleet count comes from recorded ids, not from listings", () =>
     const a = await p.create(spec({ name: "a" }));
     mock.sandboxes.delete(a.id); // gone behind our back (its own ttl)
     expect(await p.count({})).toBe(0);
-    expect(p.diagnose().counting.tracked).toBe(0);
+    expect(p.capacityStatus().counting.tracked).toBe(0);
   });
 
   test("a boot with a recorded live sandbox adopts it, counts it, and cleans it up", async () => {
@@ -697,7 +697,7 @@ describe("the own-fleet count comes from recorded ids, not from listings", () =>
     const after = make({ maxLive: 1, capacityWaitMs: 60 });
     expect(await after.count({})).toBe(0);
     after.adopt([a.id, "not a valid id!", "x".repeat(300)]);
-    expect(after.diagnose().counting.tracked).toBe(1);
+    expect(after.capacityStatus().counting.tracked).toBe(1);
     expect(await after.count({})).toBe(1);
     await expect(after.create(spec({ name: "b" }))).rejects.toThrow(/max 1/);
     await after.destroy(a.id);
@@ -711,7 +711,7 @@ describe("the own-fleet count comes from recorded ids, not from listings", () =>
     const p = make({ maxLive: 1 });
     p.adopt([foreign, "no-such-sandbox"]);
     expect(await p.count({})).toBe(0); // not ours: dropped, not counted
-    expect(p.diagnose().counting.tracked).toBe(0);
+    expect(p.capacityStatus().counting.tracked).toBe(0);
     expect(mock.sandboxes.has(foreign)).toBe(true);
     expect(mock.requests.some((r) => r.method === "DELETE")).toBe(false);
   });
@@ -1249,13 +1249,13 @@ describe("the org-wide CPU check before a create", () => {
     mock.usage.status = 403;
     const logs: string[] = [];
     const p = make({ log: (m) => logs.push(m) });
-    expect(p.diagnose().quotaMode).toBe("org-usage");
+    expect(p.capacityStatus().quotaMode).toBe("org-usage");
     await p.destroy((await p.create(spec())).id);
     await p.destroy((await p.create(spec())).id);
     expect(logs.filter((m) => m.includes("own-fleet budget mode"))).toHaveLength(1);
     expect(logs.find((m) => m.includes("own-fleet"))).toContain("org usage forbidden (403)");
     expect(usageReads()).toBe(1); // not asked again once refused
-    expect(p.diagnose()).toMatchObject({
+    expect(p.capacityStatus()).toMatchObject({
       quotaMode: "own-fleet",
       reason: "org usage forbidden (403)",
     });
@@ -1279,7 +1279,7 @@ describe("the org-wide CPU check before a create", () => {
     primed();
     mock.usage.rows = [row(999)]; // would block org-usage mode; irrelevant here
     const p = make({ quotaMode: "own-fleet", maxLive: 1, capacityWaitMs: 80 });
-    expect(p.diagnose()).toMatchObject({
+    expect(p.capacityStatus()).toMatchObject({
       quotaMode: "own-fleet",
       reason: "configured",
       maxLive: 1,
@@ -1330,5 +1330,104 @@ describe("the org-wide CPU check before a create", () => {
     await expect(makeLabeled({ capacityWaitMs: 50 }).create(spec())).rejects.toBeInstanceOf(
       InfraError,
     );
+  });
+});
+
+describe("diagnose: read-only readiness checks", () => {
+  const byId = (cs: { id: string; status: string; summary: string; fix?: string }[]) =>
+    Object.fromEntries(cs.map((c) => [c.id, c]));
+  const mutating = (): number => mock.requests.filter((r) => r.method !== "GET").length;
+
+  test("a usage read that answers 403 is a warning (own-fleet budget), not a failure; quotaMode own-fleet passes", async () => {
+    mock.addForeign("someone-elses", { project: "other" }, "stopped");
+    mock.usage.status = 403;
+    const cs = byId(await make({ maxLive: 3 }).diagnose());
+    expect(cs["daytona.usage"]).toMatchObject({ status: "warn" });
+    expect(cs["daytona.usage"]!.summary).toContain("own-fleet budget mode, 3 sandboxes");
+    const forced = byId(await make({ quotaMode: "own-fleet" }).diagnose());
+    expect(forced["daytona.usage"]).toMatchObject({ status: "pass" });
+    expect(mutating()).toBe(0);
+  });
+
+  test("the usage line reports disk and memory against the reply's quotas", async () => {
+    mock.addForeign("someone-elses", { project: "other" }, "stopped");
+    mock.usage.rows = [
+      {
+        regionId: "us",
+        sandboxClass: "container",
+        currentCpuUsage: 10,
+        currentDiskUsage: 100,
+        totalDiskQuota: 2000,
+        currentMemoryUsage: 8,
+        totalMemoryQuota: 400,
+      },
+    ];
+    const cs = byId(await make().diagnose());
+    expect(cs["daytona.usage"]!.summary).toContain("10 vCPU in use of 200");
+    expect(cs["daytona.usage"]!.summary).toContain("100 of 2000 GiB disk");
+    expect(cs["daytona.usage"]!.summary).toContain("8 of 400 GiB memory");
+  });
+
+  test("a healthy account passes every check, and nothing but GETs is sent", async () => {
+    mock.addForeign("someone-elses", { project: "other" }, "stopped");
+    mock.usage.rows = [{ regionId: "us", sandboxClass: "container", currentCpuUsage: 10 }];
+    mock.snapshots.add("turntable-medium");
+    const cs = byId(await make({ snapshot: "turntable-medium" }).diagnose());
+    expect(cs["daytona.api"]!.status).toBe("pass");
+    expect(cs["daytona.usage"]!.status).toBe("pass");
+    expect(cs["daytona.snapshot"]).toMatchObject({ status: "pass" });
+    expect(cs["daytona.snapshot"]!.summary).toContain("turntable-medium");
+    expect(mutating()).toBe(0);
+    // no sandbox was created
+    expect(
+      mock.requests.some((r) => r.path.startsWith("/api/sandbox") && r.method === "POST"),
+    ).toBe(false);
+  });
+
+  test("a bad key fails the API check and stops, without echoing the key", async () => {
+    const p = make({ apiKey: () => "not-the-mock-key-0000" });
+    const cs = await p.diagnose();
+    expect(cs).toHaveLength(1);
+    expect(cs[0]).toMatchObject({ id: "daytona.api", status: "fail" });
+    expect(JSON.stringify(cs)).not.toContain("not-the-mock-key-0000");
+  });
+
+  test("an unreadable key file is said plainly, with a fix", async () => {
+    const cs = await make({ apiKey: { file: "/nonexistent/key-file" } }).diagnose();
+    expect(cs[0]).toMatchObject({ id: "daytona.api", status: "fail" });
+    expect(cs[0]!.fix).toContain("key");
+    // The upstream error text is in `detail`, not in the summary the API returns.
+    expect(cs[0]!.summary).toBe("the Daytona API is not usable");
+    expect(typeof cs[0]!.detail).toBe("string");
+  });
+
+  test("a usage endpoint that answers 404 fails, because no sandbox would be created", async () => {
+    mock.addForeign("someone-elses", { project: "other" }, "stopped");
+    mock.usage.status = 404;
+    const cs = byId(await make().diagnose());
+    expect(cs["daytona.usage"]).toMatchObject({ status: "fail" });
+    expect(cs["daytona.usage"]!.fix).toContain("ownerCiPreflight");
+  });
+
+  test("an empty account cannot tell the org id: a warning, not a failure", async () => {
+    const cs = byId(await make().diagnose());
+    expect(cs["daytona.usage"]).toMatchObject({ status: "warn" });
+  });
+
+  test("the org check turned off is a warning", async () => {
+    const cs = byId(await make({ ownerCiPreflight: false }).diagnose());
+    expect(cs["daytona.usage"]).toMatchObject({ status: "warn" });
+  });
+
+  test("a snapshot that does not exist fails, with no snapshot created", async () => {
+    const cs = byId(await make({ snapshot: "missing-one" }).diagnose());
+    expect(cs["daytona.snapshot"]).toMatchObject({ status: "fail" });
+    expect(cs["daytona.snapshot"]!.summary).toContain("does not exist");
+    expect(mutating()).toBe(0);
+  });
+
+  test("no snapshot named uses the account's default", async () => {
+    const cs = byId(await make().diagnose());
+    expect(cs["daytona.snapshot"]).toMatchObject({ status: "pass" });
   });
 });

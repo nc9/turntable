@@ -6,6 +6,7 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
+import type { DoctorReport } from "../doctor/types";
 import type { BackupConfig } from "../db/backup";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
@@ -46,6 +47,8 @@ export type OpContext = {
   webauthn?: RelyingParty | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent (tests inject their own). */
   attestationAnchors?: TrustAnchors | undefined;
+  /** Runs the readiness checks against the running server; absent where there is no server. */
+  doctor?: (() => Promise<DoctorReport>) | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {

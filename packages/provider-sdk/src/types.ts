@@ -213,9 +213,27 @@ export interface ProviderFiles {
   get(sandboxId: string, path: string, maxBytes: number): Promise<Uint8Array>;
 }
 
+/** One readiness finding from a provider, for `turntable doctor`. Never carries a credential. */
+export interface ProviderCheck {
+  id: string;
+  status: "pass" | "warn" | "fail";
+  /** A fixed sentence: never carries text from an upstream error. */
+  summary: string;
+  /** The upstream error text, for the local CLI only; the API never returns it. */
+  detail?: string;
+  /** What to do about it, when it is not a pass. */
+  fix?: string;
+}
+
 export interface Provider {
   readonly info: ProviderInfo;
   healthcheck(): Promise<void>;
+  /**
+   * Read-only readiness checks for an operator before going live: credentials readable, the
+   * account reachable, what the provider is configured to start from. It must not create, start,
+   * change or delete anything, and must not put a credential in its output.
+   */
+  diagnose?(): Promise<ProviderCheck[]>;
   create(spec: SandboxSpec): Promise<SandboxHandle>;
   /** Idempotent: a missing sandbox is success. */
   destroy(sandboxId: string): Promise<void>;

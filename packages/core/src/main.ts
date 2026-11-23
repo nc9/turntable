@@ -70,6 +70,10 @@ import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, resolveRoles } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
+import { cachedDoctor } from "./doctor/cache";
+import { runDoctor } from "./doctor/checks";
+import { ForwardedObserver } from "./doctor/observe";
+import { readerOf, realInputs } from "./doctor/real";
 import { serveRelease } from "./release/serve";
 import { startServer } from "./server";
 import { enableDevUi, hasUi } from "./ui-assets";
@@ -119,6 +123,7 @@ Usage:
                     [--branch main] [--types run.finished,approval.required] [--state-file <path>]
   turntable fetch-source <owner/name> <sha> [--file <path>]   check that a commit can be fetched, as a worker does
   turntable parity --run <id> --repo <owner/name> --app-id <n> [--json]   compare a run with another CI's checks
+  turntable doctor [--data-dir ./data] [--json] [--strict]   read-only readiness check before going live
   turntable verify <artifact> --provenance <file> --pubkey <file> [--name <subject>]
   turntable version
 
@@ -788,6 +793,26 @@ async function serve(args: string[]): Promise<void> {
         "TURNTABLE_UI_DIR is not used: it needs a run from source (the compiled binary serves only its embedded UI) and a directory with an index.html",
       );
   }
+  // The readiness checks behind the `doctor` operation, with what this server has seen of
+  // forwarded headers. Read-only: the handle it is given can only run queries.
+  const forwarded = new ForwardedObserver();
+  const hostedMode = values.hosted === true || process.env.TURNTABLE_HOSTED === "1";
+  const doctorRun = cachedDoctor(async () => {
+    const { inputs, close } = realInputs({
+      env: process.env,
+      dataDir,
+      hosted: hostedMode,
+      provider: values.provider,
+      providerConfig: values["provider-config"],
+      observed: forwarded.snapshot(),
+      db: readerOf(db),
+    });
+    try {
+      return await runDoctor(inputs);
+    } finally {
+      close();
+    }
+  });
   const server = roles.has("web")
     ? startServer({
         port,
@@ -816,6 +841,9 @@ async function serve(args: string[]): Promise<void> {
           : undefined,
         trustForwardedProto: process.env.TURNTABLE_TRUST_FORWARDED_PROTO === "1",
         transport: transportOptionsFromEnv(process.env),
+        // Hosted: doctor reports instance-wide facts, so it is CLI-only (`turntable doctor` on the host).
+        ...(hostedMode ? {} : { doctor: doctorRun }),
+        forwarded,
       })
     : undefined;
   if (server)
@@ -1045,6 +1073,10 @@ async function main(argv: string[]): Promise<void> {
     case "usage": {
       const { usageCommand } = await import("./usage/cli");
       process.exit(await usageCommand(rest));
+    }
+    case "doctor": {
+      const { doctorCommand } = await import("./doctor/cli");
+      process.exit(await doctorCommand(rest));
     }
     case "artifacts": {
       const { artifactsCommand } = await import("./artifacts/cli");
