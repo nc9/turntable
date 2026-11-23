@@ -18,6 +18,25 @@ export interface GroupCall {
 }
 
 /** The group a package.json script calls, or undefined when it is not a group call. */
+/**
+ * `test:*` suites `bun run test` leaves out: they need Docker, a compiled binary or a live service,
+ * and each runs in its own CI step (scripts/test-wiring.test.ts checks both). A Docker suite left in
+ * the aggregate runs wherever `check` runs, including a hosted sandbox with no Docker daemon, where
+ * it fails as infra_error (#412). `test:pg-only` runs in the postgres job through `pg:test`.
+ */
+export const GATED: ReadonlySet<string> = new Set([
+  "test:docker",
+  "test:act-e2e",
+  "test:missing-tool-e2e",
+  "test:proxy-e2e",
+  "test:cache-e2e",
+  "test:artifacts-e2e",
+  "test:vault-e2e",
+  "test:run-e2e",
+  "test:golden",
+  "test:pg-only",
+]);
+
 export function parseGroupCall(cmd: string): GroupCall | undefined {
   const m = GROUP_CALL.exec(cmd.trim());
   if (!m) return undefined;

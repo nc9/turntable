@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { readGroup, testScripts, parseGroupCall } from "./test-groups";
+import { GATED, readGroup, testScripts, parseGroupCall } from "./test-groups";
 
 const root = join(import.meta.dir, "..");
 
@@ -121,5 +121,40 @@ describe("the check itself", () => {
     expect(problems(files, named, { "packages/a/tests/y.test.ts": " " }).join("\n")).toContain(
       "no reason",
     );
+  });
+});
+
+// A suite that sets a TT_*_E2E flag needs Docker or a live service. Left in the `bun run test`
+// aggregate, it also runs in `check` wherever that job runs, including a hosted sandbox with no
+// Docker daemon, where it fails as infra_error (#412). Gated, it must have a CI step of its own,
+// or it never runs anywhere.
+describe("gated suites (#412)", () => {
+  const scripts = testScripts(root);
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  /** Suites run another way than `bun run <name>` in ci.yml, with how. */
+  const RUN_ELSEWHERE: Record<string, string> = {
+    "test:pg-only": "the postgres jobs run it through `bun run pg:test`",
+  };
+
+  test("every suite that sets a TT_*_E2E flag is gated out of the aggregate", () => {
+    const e2e = Object.entries(scripts)
+      .filter(([, cmd]) =>
+        (parseGroupCall(cmd)?.env ?? []).some((e) => /^TT_[A-Z0-9_]*E2E=1$/.test(e)),
+      )
+      .map(([k]) => k);
+    expect(e2e.length).toBeGreaterThan(0);
+    expect(e2e.filter((k) => !GATED.has(k))).toEqual([]);
+  });
+
+  test("every gated suite exists and has its own CI step", () => {
+    const missing = [...GATED].filter((k) => !(k in scripts));
+    expect(missing).toEqual([]);
+    const noStep = [...GATED].filter((k) => {
+      if (k in RUN_ELSEWHERE) return false;
+      const step = new RegExp(`^\\s+(?:- )?run: bun run ${k.replace(/[-:]/g, "\\$&")}\\s*$`, "m");
+      return !step.test(ci);
+    });
+    expect(noStep).toEqual([]);
+    expect(ci).toMatch(/^\s+run: bun run pg:test\s*$/m);
   });
 });
