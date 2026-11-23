@@ -41,6 +41,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",
   create_project:
     "instance administrator ops are REST only: projects are made by the operator, never an agent",
+  db_backup:
+    "instance administrator ops are REST only: it writes a copy of the whole database, never an agent's act",
 };
 
 describe("the operations table", () => {

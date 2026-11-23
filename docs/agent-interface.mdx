@@ -72,6 +72,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `approve_run` | `POST /api/v1/runs/{run_id}/approve` | yes |  | write | operator (per org policy) | token | Approve a run held for an untrusted author, bound to its head sha and workflow hash. |
 | `sign_release` | none | no |  | write | owner | signature | Sign the recorded artifacts of a release run (human-signed assertion required). |
 | `whoami` | `GET /api/v1/whoami` | yes |  | read | reader | token | Who this credential is: kind, token name, role, org and project grant. |
+| `doctor` | `GET /api/v1/doctor` | no | `turntable doctor` | read | owner (per org policy) | token | Read-only readiness check of this instance: pass, warn or fail, with a fix for each. |
 | `list_orgs` | `GET /api/v1/orgs` | yes |  | read | reader | token | The orgs this credential can see: just its own. |
 | `list_projects` | `GET /api/v1/projects` | yes |  | read | reader | token | Projects in the caller's scope, each with its bound repos. |
 | `ingest_status` | `GET /api/v1/ingest/status` | yes |  | read | reader | token | What the GitHub poller is doing: per repo state and the API rate-limit budget. |
@@ -83,6 +84,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_whoami` | none | no |  | read | admin | instance | Who the instance administrator token is. |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
+| `db_backup` | none | no | `turntable db backup` | write | admin | instance | Back up the SQLite database into the data dir (instance administrator only). |
 | `accept_action_move` | `POST /api/v1/action-pins/accept-move` | no |  | write | operator | token | Accept a moved action tag: re-pin it to the commit it now points at. |
 | `set_secret` | `POST /api/v1/secrets` | no | `turntable secret set` | write | release_operator | token | Store a scoped secret value (new, or a new version of an existing scope). |
 | `rotate_secret` | `POST /api/v1/secrets/rotate` | no | `turntable secret rotate` | write | release_operator | token | Give an existing secret a new value; keep the old one usable for an overlap window. |

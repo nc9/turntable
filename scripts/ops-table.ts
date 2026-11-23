@@ -23,6 +23,8 @@ export const CLI_COMMANDS: Readonly<Record<string, string>> = {
   incident_freeze: "incident freeze",
   incident_unfreeze: "incident unfreeze",
   incident_status: "incident status",
+  db_backup: "db backup",
+  doctor: "doctor",
 };
 
 const cell = (s: string): string => s.replaceAll("|", "\\|").replaceAll("\n", " ");
