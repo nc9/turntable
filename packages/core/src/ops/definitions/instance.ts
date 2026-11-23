@@ -38,6 +38,7 @@ import { AGENT_ROLES, FORGES, TOKEN_KINDS } from "../../db/schema";
 import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
+import { ClaimError } from "../../github/claim";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
@@ -529,6 +530,102 @@ export const moveRepoBindingOp = defineOp({
         )
         .map((r) => ({ repo: r.repo, org: r.org, project: r.project })),
     };
+  },
+});
+
+export const instanceStartInstallationClaimOp = defineOp({
+  name: "instance_start_installation_claim",
+  summary:
+    "Start a GitHub installation claim for an org that cannot (instance administrator only).",
+  description:
+    "Starts the same claim as `start_installation_claim`, for the org `target_org`, when none of that " +
+    "org's tokens can (all below release_operator, or `create_org_token` is one-shot or in its " +
+    "re-mint delay). `github_login` is required: only that GitHub user can complete it, and the " +
+    "ownership check by exactly that login is unchanged (the person must still install the App " +
+    "and own the installation). With `installation_id` the claim is pinned to that installation. " +
+    "The link carries a signed single-use state for the target org, expires in 15 minutes and " +
+    "returns `{url, expires_at}`. `reason` is required and kept in the audit. Audited in the " +
+    "system org's chain and in the target org's own, and the org's feed gets an " +
+    "`org.installation_claim_started_by_instance` event so a tenant sees the operator start a " +
+    "claim for it. The system org is never a target. Only the instance administrator can call " +
+    "it. Not an MCP tool.",
+  input: z.object({
+    target_org: z.string().min(1).max(64).describe("Slug of the target org."),
+    github_login: z
+      .string()
+      .regex(/^[A-Za-z0-9-]{1,39}$/)
+      .describe("Only this GitHub user can complete the claim."),
+    installation_id: z
+      .string()
+      .regex(/^\d{1,20}$/)
+      .optional()
+      .describe("Pin the claim to an existing installation."),
+    reason: z.string().min(1).max(500).describe("Why the operator starts it. Kept in the audit."),
+  }),
+  output: z.object({
+    url: z.string().describe("Give this to the GitHub user to open in a browser."),
+    expires_at: z.int(),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/installation-claims" },
+  mcp: false,
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    if (!ctx.claims) {
+      throw new OpError(
+        "unavailable",
+        "installation claims are not configured: start the server with TURNTABLE_MASTER_KEY_FILE and a GitHub App",
+      );
+    }
+    let r: { url: string; expiresAt: number };
+    try {
+      r = await ctx.claims.start(org.id, `instance:${ctx.principal.id}`, {
+        expectedLogin: i.github_login,
+        ...(i.installation_id ? { installationId: i.installation_id } : {}),
+      });
+    } catch (e) {
+      if (e instanceof ClaimError) throw new OpError("unavailable", e.message);
+      throw e;
+    }
+    const pinned = i.installation_id !== undefined;
+    // The system chain gets the dispatcher's entry; the org's own chain and feed say it too.
+    await appendAudit(
+      ctx.db,
+      { orgId: org.id },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_start_installation_claim",
+        effect: "write",
+        outcome: "ok",
+        input: {
+          target_org: org.slug,
+          github_login: i.github_login,
+          installation_pinned: pinned,
+          ...(i.installation_id ? { installation_id: i.installation_id } : {}),
+          reason: i.reason,
+        },
+      },
+    );
+    await appendEvent(
+      ctx.db,
+      { orgId: org.id },
+      {
+        type: "org.installation_claim_started_by_instance",
+        payload: {
+          github_login: i.github_login,
+          reason: i.reason,
+          installation_pinned: pinned,
+          by: ctx.principal.id,
+          expires_at: iso(r.expiresAt),
+        },
+      },
+    );
+    return { url: r.url, expires_at: r.expiresAt };
   },
 });
 

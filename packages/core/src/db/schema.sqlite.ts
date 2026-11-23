@@ -51,6 +51,7 @@ export const EVENT_TYPES = [
   "approval.policy_loosened",
   "org.token_reminted",
   "org.tokens_exhausted",
+  "org.installation_claim_started_by_instance",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

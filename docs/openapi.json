@@ -1737,7 +1737,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 16,
+              "maxItems": 17,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1757,7 +1757,8 @@
                   "approvers.depleted",
                   "approval.policy_loosened",
                   "org.token_reminted",
-                  "org.tokens_exhausted"
+                  "org.tokens_exhausted",
+                  "org.installation_claim_started_by_instance"
                 ]
               }
             }
@@ -1866,7 +1867,8 @@
                               "approvers.depleted",
                               "approval.policy_loosened",
                               "org.token_reminted",
-                              "org.tokens_exhausted"
+                              "org.tokens_exhausted",
+                              "org.installation_claim_started_by_instance"
                             ]
                           },
                           "project": {
@@ -10261,6 +10263,95 @@
                     "to",
                     "poll_entries_to_update"
                   ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/installation-claims": {
+      "post": {
+        "operationId": "instance_start_installation_claim",
+        "summary": "Start a GitHub installation claim for an org that cannot (instance administrator only).",
+        "description": "Starts the same claim as `start_installation_claim`, for the org `target_org`, when none of that org's tokens can (all below release_operator, or `create_org_token` is one-shot or in its re-mint delay). `github_login` is required: only that GitHub user can complete it, and the ownership check by exactly that login is unchanged (the person must still install the App and own the installation). With `installation_id` the claim is pinned to that installation. The link carries a signed single-use state for the target org, expires in 15 minutes and returns `{url, expires_at}`. `reason` is required and kept in the audit. Audited in the system org's chain and in the target org's own, and the org's feed gets an `org.installation_claim_started_by_instance` event so a tenant sees the operator start a claim for it. The system org is never a target. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the target org."
+                  },
+                  "github_login": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]{1,39}$",
+                    "description": "Only this GitHub user can complete the claim."
+                  },
+                  "installation_id": {
+                    "description": "Pin the claim to an existing installation.",
+                    "type": "string",
+                    "pattern": "^\\d{1,20}$"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator starts it. Kept in the audit."
+                  }
+                },
+                "required": ["target_org", "github_login", "reason"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "Give this to the GitHub user to open in a browser."
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["url", "expires_at"],
                   "additionalProperties": false
                 }
               }
