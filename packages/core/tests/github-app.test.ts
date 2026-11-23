@@ -216,7 +216,13 @@ describe("manifest", () => {
     const { db, org, store } = await setup("1");
     const out = await storeApp(db, store, org.id, conv);
     expect(JSON.stringify(out)).not.toContain("secret");
-    expect(out).toEqual({ appId: "4242", slug: "longshore-x", htmlUrl: conv.html_url });
+    expect(out).toEqual({
+      appId: "4242",
+      slug: "longshore-x",
+      htmlUrl: conv.html_url,
+      replaced: [],
+      retired: { installations: 0, repos: 0 },
+    });
     expect(await store.get(org.id, SECRET_PRIVATE_KEY)).toBe(conv.pem);
     expect(await store.get(org.id, SECRET_WEBHOOK)).toBe(conv.webhook_secret);
     expect(await store.get(org.id, SECRET_CLIENT)).toBe(conv.client_secret);

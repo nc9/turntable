@@ -17,6 +17,7 @@ Every `serve` option has a variable (a flag, when given, wins):
 | `LONGSHORE_POLL`, `LONGSHORE_POLL_JSON` | `--poll` |
 | `LONGSHORE_IMAGE`, `LONGSHORE_GLOBAL_CAP`, `LONGSHORE_ORG_CAP`, `LONGSHORE_LEASE_SECONDS` | `--image`, `--global-cap`, `--org-cap`, `--lease-seconds` |
 | `LONGSHORE_HOSTED=1`, `LONGSHORE_ISOLATION_OVERRIDE` | `--hosted`, `--isolation-override` |
+| `LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256` | Turns on [creating the GitHub App from the instance](#creating-the-github-app-on-an-instance-with-no-shell). Not a serve option. |
 
 With no files, the two configs can be JSON in a variable (`LONGSHORE_PROVIDER_CONFIG_JSON`, `LONGSHORE_POLL_JSON`). A config never carries a secret. The Daytona provider names the variable that holds its API key (`"apiKeyEnv": "DAYTONA_API_KEY"`, the default), and the poll config names the variable that holds the poll token (`"tokenEnv": "GITHUB_POLL_TOKEN"`) instead of a file. A token pasted into the config is refused.
 
@@ -49,6 +50,39 @@ GITHUB_POLL_TOKEN=...
 A signed `push` or `pull_request` webhook for a repo the poller is configured for polls that repo now instead of at the next interval. The payload contributes only the repo name, to choose which configured repo to poll: the poll re-fetches every fact from the GitHub API and applies the trust decision exactly as for any run (class from re-fetched facts, an untrusted pull request held for approval). A repo not in the poll config is ignored, polls of one repo never overlap, two wakes are at least 5 seconds apart, and a repo that is backing off after errors or a rate limit is not woken early. Without webhooks the poller still polls on its interval.
 
 Check runs post as `shadow / <job>`, always neutral, while the project's checks mode is `shadow`.
+
+## Creating the GitHub App on an instance with no shell
+
+`longshore github-app create` serves a page on the machine that holds the data directory, which a platform with no shell cannot do. The instance can run the same manifest flow itself.
+
+1. On your own machine, make a setup token and keep it: `longshore token generate` prints a token and its sha256. Set only the hash on the instance, together with its public URL, and redeploy:
+
+   ```
+   LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256=<the sha256>
+   LONGSHORE_PUBLIC_URL=https://ci.example.com
+   LONGSHORE_MASTER_KEY_FILE=/data/master.key
+   ```
+
+   Without the hash the routes do not exist.
+2. Open `<public url>/api/v1/instance/github-app/manifest`, enter the token, the slug of the Longshore org that will own the App, and a name (and a GitHub organization, to create it there instead of under your account). You can also `POST` the same fields (`org`, `name`, `gh_org`, `rotate`) with `Authorization: Bearer <token>`.
+3. The reply is a page that sends the manifest to GitHub. Approve it there. GitHub sends the browser back to `<public url>/api/v1/github/app-callback`, which exchanges the one-time code and seals the App's id, private key, webhook secret and client secret in the encrypted store. They are never printed, logged or shown, and the page says only the App's name and where to install it.
+4. Install the App on your repositories, then remove `LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256` from the variables.
+
+The manifest asks for the least it needs: `checks` write; `contents`, `metadata` and `pull_requests` read; events `push`, `pull_request` and `check_run`. Merge queue runs are found by the poller, and a `merge_group` webhook is not subscribed to, because GitHub requires another permission for it. With `LONGSHORE_CLAIM_INSTALLATIONS=1` the manifest also carries the setup URL and asks for user authorization on install, which the [claim flow](#one-instance-several-orgs-claiming-an-installation) needs.
+
+How it is protected:
+
+- **The setup token is the only credential.** Only its hash is configured and it is compared in constant time. It is checked first: a correct token is never throttled, so noise from elsewhere cannot lock you out. Failed attempts are audited and capped at 10 a minute per client address (the real client when you name your proxies in `LONGSHORE_TRUSTED_PROXIES`, otherwise the socket peer).
+- **The state is signed and single use.** It is an HMAC over the org, a nonce, an expiry and the replace flag, under a key sealed in the owning org's store. The nonce is stored and consumed before the code is exchanged, so a link works once, and it expires after 15 minutes.
+- **Only the starting browser can finish.** The page sets a `HttpOnly`, `SameSite=Lax` cookie holding a random secret that never appears in a URL; the signed state carries only a MAC of it. Someone who sees the state (browser history, a referer, GitHub's redirect) does not have the secret and cannot complete the flow with their own App's code. A link opened in another browser, or a forged callback, creates nothing.
+- **The App must be the one asked for.** The signed state carries the requested name and GitHub organization. After the code is exchanged and before anything is stored, the instance checks that the App has that name (without regard to case) and owner, that its page is on `github.com`, and, reading it back with its own credentials, that its permissions and events are no broader than the manifest's and that its webhook points at this instance. Otherwise nothing is sealed and the attempt is audited as `error:app_mismatch` with a reason class. Because the name is checked, do not edit it on GitHub's page; if you do, start again. Error text from GitHub is never logged or audited.
+- **Storing is atomic and serialised.** The four secrets, the App row, and the removal of a replaced App are written in one transaction, and "an App already exists" is checked again inside it. Starts and callbacks run one at a time, and a start is refused while another flow is unexpired and unfinished, so concurrent attempts can never mix one App's key with another's id.
+- **A second create is refused.** Once an App exists, starting again is refused (and audited) unless the request asks to replace it, and a replace must name the same owning org. A replace swaps the App and its credentials, drops cached installation tokens, and is audited as `github_app_replace`. The old App's installations are marked deleted and the repository bindings they granted are removed (the count is audited and shown on the result page); install the new App again.
+- **Everything is audited** in the owning org's chain (`github_app_manifest_start`, `github_app_create` or `github_app_replace`, and each refusal). Attempts with a wrong token go to the system chain.
+
+- **The route closes itself.** It closes after the first success until the instance restarts, and 6 hours after the instance starts. The owning org must be the bootstrap org (`LONGSHORE_BOOTSTRAP_ORG`, default `local`) or the system org, never a customer org, because the App's owner holds every installation of it. Request bodies are capped at 4 KiB before they are parsed.
+
+This is gated by the setup token until the instance admin role exists.
 
 ## One instance, several orgs: claiming an installation
 
@@ -123,4 +157,4 @@ Record the date, the App id, and the pass or fail of each numbered step in the t
 
 ## Known gaps
 
-- The manifest flow, the claim flow's OAuth exchange and secret rotation have been exercised against a fake GitHub only. Each needs one run against live GitHub.
+- The manifest flow (the local one and the hosted one), the claim flow's OAuth exchange and secret rotation have been exercised against a fake GitHub only. Each needs one run against live GitHub.
