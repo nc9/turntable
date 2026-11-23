@@ -285,6 +285,8 @@ export class Poller {
         cfg,
       );
       this.#failures.delete(repo);
+      if (res.skipped)
+        return finish("error", "bound to another project; poll entry is stale", intervalMs);
       status.runsCreated += res.created.length;
       if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
       if (res.created.length > 0) this.#o.onQueued?.();

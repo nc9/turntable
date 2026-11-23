@@ -24,6 +24,7 @@ import {
   rotateInstanceTokenOp,
   createOrgOp,
   createOrgTokenOp,
+  moveRepoBindingOp,
   setQuotas,
 } from "./definitions/instance";
 import { getQuotas } from "./definitions/quotas";
@@ -116,6 +117,7 @@ export const registry = createRegistry([
   rotateInstanceTokenOp,
   createOrgOp,
   createOrgTokenOp,
+  moveRepoBindingOp,
   instanceListOrgs,
   setQuotas,
   dbBackupOp,

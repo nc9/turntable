@@ -8972,6 +8972,159 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/repo-bindings/move": {
+      "post": {
+        "operationId": "move_repo_binding",
+        "summary": "Move a repo's binding to a project in another org (instance administrator only).",
+        "description": "Moves the one binding of a repo (`forge`, `owner`, `repo`) to `to_project` of `to_org`, in one transaction, and keeps its installation. A repo is bound to one project on the whole instance, so this is how a tenant's repo leaves the bootstrap org before its installation is claimed. Refused, with one message that names no other org, when the target project is not in the target org, when the binding's installation is not mapped to the target org, or when `forge_repo_id` is given and differs from the binding's. Run history stays with the old project, and its queued and running attempts finish there; only later ingest lands in the new project. The poller's seen markers of the repo are copied to the new project, so a poll at the same head creates no second run. A static poll entry still naming the old project is skipped by the poller (one warning per interval) until it is changed and the instance restarted: the response lists the entries of the running poll config that still name the old project. Audited in the system org's chain and in both orgs' chains, with the old and new ids. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "forge": {
+                    "default": "github",
+                    "type": "string",
+                    "enum": ["github"]
+                  },
+                  "owner": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "forge_repo_id": {
+                    "description": "Forge's numeric repo id; refused if the binding holds a different one.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "to_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the target org."
+                  },
+                  "to_project": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63,
+                    "description": "Slug of the target project in that org."
+                  }
+                },
+                "required": ["owner", "repo", "to_org", "to_project"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "binding_id": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "type": "string"
+                    },
+                    "installation_id": {
+                      "type": ["string", "null"]
+                    },
+                    "from": {
+                      "type": "object",
+                      "properties": {
+                        "org": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["org", "project"],
+                      "additionalProperties": false
+                    },
+                    "to": {
+                      "type": "object",
+                      "properties": {
+                        "org": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["org", "project"],
+                      "additionalProperties": false
+                    },
+                    "poll_entries_to_update": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "repo": {
+                            "type": "string"
+                          },
+                          "org": {
+                            "type": "string"
+                          },
+                          "project": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["repo", "org", "project"],
+                        "additionalProperties": false
+                      },
+                      "description": "Entries of the running poll config that still name the old project."
+                    }
+                  },
+                  "required": [
+                    "binding_id",
+                    "repo",
+                    "installation_id",
+                    "from",
+                    "to",
+                    "poll_entries_to_update"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/quotas": {
       "post": {
         "operationId": "set_quotas",

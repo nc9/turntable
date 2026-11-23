@@ -205,9 +205,11 @@ describe("no org principal reaches an instance op, and the instance token reache
                     ? { target_org: "org-a", slug: "sneaky", name: "x" }
                     : op.name === "create_org"
                       ? { slug: "sneaky-org", name: "x" }
-                      : op.name === "create_org_token"
-                        ? { target_org: "org-a", name: "x", role: "reader", expires_days: 1 }
-                        : {};
+                      : op.name === "move_repo_binding"
+                        ? { owner: "acme", repo: "api", to_org: "org-a", to_project: "app" }
+                        : op.name === "create_org_token"
+                          ? { target_org: "org-a", name: "x", role: "reader", expires_days: 1 }
+                          : {};
           const r = await dispatch(env, cred, op.name, input);
           expect(r.ok, `${label} on ${op.name}`).toBe(false);
           if (!r.ok) expect(r.error.code, `${label} on ${op.name}`).toBe("forbidden");
@@ -234,6 +236,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_list_settings",
       "instance_set_setting",
       "instance_whoami",
+      "move_repo_binding",
       "rotate_instance_token",
       "set_project_settings",
       "set_quotas",

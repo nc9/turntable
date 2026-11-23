@@ -253,6 +253,69 @@ export function findGithubRepoBinding(
   });
 }
 
+/** A binding by forge and name, whichever project or org holds it (unscoped, for the instance admin and the poller). */
+export function findRepoBindingByName(
+  db: Db,
+  input: { forge: s.Forge; owner: string; repo: string },
+): Promise<RepoBinding | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(
+        and(
+          eq(s.projectRepos.forge, input.forge),
+          eq(s.projectRepos.owner, input.owner.toLowerCase()),
+          eq(s.projectRepos.repo, input.repo.toLowerCase()),
+        ),
+      )
+      .limit(1);
+    return row;
+  });
+}
+
+const SEEN_COPY_CHUNK = 100;
+
+/**
+ * Moves a binding to another project (and org) in one update, keeping its installation. The
+ * poller's seen markers of the repo are copied to the new project, so a poll at the same head does
+ * not run it again there; the old project keeps its own markers with its runs. Call it inside a
+ * transaction. False when the binding is gone.
+ */
+export function moveRepoBinding(
+  db: Db,
+  bindingId: string,
+  to: { orgId: string; projectId: string },
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const [b] = await h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(eq(s.projectRepos.id, bindingId))
+      .limit(1);
+    if (!b) return false;
+    const rows = await h.orm
+      .update(s.projectRepos)
+      .set({ orgId: to.orgId, projectId: to.projectId })
+      .where(eq(s.projectRepos.id, bindingId))
+      .returning({ id: s.projectRepos.id });
+    if (rows.length === 0) return false;
+    const seen = await h.orm
+      .select()
+      .from(s.pollSeen)
+      .where(
+        and(eq(s.pollSeen.projectId, b.projectId), eq(s.pollSeen.repo, `${b.owner}/${b.repo}`)),
+      );
+    for (let i = 0; i < seen.length; i += SEEN_COPY_CHUNK) {
+      await h.orm
+        .insert(s.pollSeen)
+        .values(seen.slice(i, i + SEEN_COPY_CHUNK).map((r) => ({ ...r, ...to })))
+        .onConflictDoNothing();
+    }
+    return true;
+  });
+}
+
 /**
  * Adopts a binding made without an installation (a polled repo) into an installation: sets its
  * installation id, and its forge repo id when it had none. The project stays. Only a binding of
