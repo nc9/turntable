@@ -73,13 +73,14 @@
     "test:tar": "bun test packages/act-runner/tests/fold-key.test.ts packages/act-runner/tests/tar.test.ts packages/act-runner/tests/tar-scan.test.ts",
     "test:checkout": "bun test packages/core/tests/checkout-child.test.ts packages/core/tests/checkout-trust.test.ts packages/core/tests/git-fetch.test.ts",
     "test:quota-ops": "bun test packages/core/tests/org-quotas.test.ts packages/core/tests/quotas-cli.test.ts packages/core/tests/instance-admin.test.ts",
-    "test:events-stream": "bun test packages/core/tests/event-stream.test.ts packages/core/tests/events-quota-migration.test.ts packages/core/tests/outbound-webhooks.test.ts",
+    "test:events-stream": "bun test packages/core/tests/event-stream.test.ts packages/core/tests/outbound-webhooks.test.ts",
     "test:artifacts-core": "bun test packages/core/tests/artifact-provenance.test.ts packages/core/tests/artifacts-cli.test.ts",
     "test:security-misc": "bun test packages/core/tests/master-key-autoinit.test.ts packages/core/tests/per-org-kek.test.ts packages/core/tests/provider-trust.test.ts packages/core/tests/sandbox-sweep.test.ts packages/core/tests/poll-unauthenticated.test.ts",
     "test:routing": "bun test packages/core/tests/merge-queue.test.ts packages/core/tests/oidc-audiences.test.ts packages/core/tests/parity.test.ts",
     "test:ui-more": "bun test packages/ui/tests/artifacts.test.ts packages/ui/tests/quotas.test.ts packages/ui/tests/sandbox.test.ts",
     "test:exec-wrapper": "bun test packages/provider-sdk/tests/wrapper-watcher.test.ts",
-    "test:pg-only": "bun test packages/core/tests/events-quota-migration-pg.test.ts packages/core/tests/pg-transactions.test.ts"
+    "test:pg-only": "bun test packages/core/tests/pg-transactions.test.ts",
+    "test:poll-usage": "bun test packages/core/tests/poll-before.test.ts packages/core/tests/usage-cli.test.ts"
   },
   "devDependencies": {
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
