@@ -534,7 +534,8 @@ describe("the App that comes back must be the one that was asked for", () => {
       now: () => now,
       fetch: (async (url: string | URL | Request, init?: RequestInit) => {
         if (String(url).endsWith("/app/hook/config")) {
-          seen.push(String((init?.headers as Record<string, string>).authorization));
+          const hdrs = (init?.headers ?? {}) as Record<string, string>;
+          seen.push(String(hdrs.authorization));
           return Response.json({ url: `${BASE}/api/v1/webhooks/github` });
         }
         return Response.json(first, { status: 201 });
