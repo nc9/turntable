@@ -5,7 +5,14 @@ import tls from "node:tls";
 import { eq } from "drizzle-orm";
 import { redactString } from "@turntable/redact";
 import { type Db } from "../src/db";
-import { getAttempt, getJob, getRun, listAudit, setProxyRule } from "../src/db/repos";
+import {
+  createProject,
+  getAttempt,
+  getJob,
+  getRun,
+  listAudit,
+  setProxyRule,
+} from "../src/db/repos";
 import * as s from "../src/db/schema";
 import { resetFailureThrottle } from "../src/audit/failures";
 import { dispatch, registry, type Credential, type DispatchEnv } from "../src/ops";
@@ -110,11 +117,49 @@ describe("binding a reference", () => {
 
   test("refuses an unparseable reference, an unserved vault and a missing backend", async () => {
     await expect(bind({}, "nope")).rejects.toThrow();
-    await expect(bind({}, "op://unknown/i/f")).rejects.toThrow("no configured onepassword account");
+    await expect(bind({}, "op://unknown/i/f")).rejects.toThrow("no account available to this org");
     const bare = new SecretVault({ db, masterKey: randomBytes(32) });
     await expect(
       bare.bindReference(a.orgId, "t", { name: "X" }, "onepassword", REF),
     ).rejects.toThrow("no onepassword backend");
+  });
+
+  test("tenant isolation: another org gets the same error as for an unserved vault", async () => {
+    const caught = async (v: SecretVault, org: string, ref: string) => {
+      try {
+        await v.bindReference(org, "t", { name: "X" }, "onepassword", ref);
+      } catch (err) {
+        return err as Error & { code?: unknown };
+      }
+      throw new Error("expected a refusal");
+    };
+    const unserved = await caught(vault, b.orgId, "op://nobody-serves-this/i/f");
+    const notYours = await caught(vault, b.orgId, REF);
+    expect(notYours.message).toBe(unserved.message);
+    expect(notYours.code).toBe(unserved.code);
+    expect(notYours.constructor).toBe(unserved.constructor);
+    expect(notYours.message).not.toContain("ci");
+    expect((await bind()).created).toBe(true);
+  });
+
+  test("project-scoped: a project the account is not bound to cannot bind its vault", async () => {
+    const p2 = await createProject(db, { orgId: a.orgId }, { slug: "other", name: "Other" });
+    build([account({ name: "ci", vaults: ["ci"], projects: [a.projectId] })]);
+    const bindIn = (projectId: string, ref = REF) =>
+      vault.bindReference(a.orgId, "t", { name: "X", projectId }, "onepassword", ref);
+    expect((await bindIn(a.projectId)).created).toBe(true);
+    const err = await bindIn(p2.id).catch((e: Error) => e);
+    const unserved = await bindIn(p2.id, "op://nobody-serves-this/i/f").catch((e: Error) => e);
+    expect((err as Error).message).toBe((unserved as Error).message);
+    expect((err as Error).message).toContain("no account available to this org");
+    // an org-level bind is allowed: the account serves a project of this org
+    expect(
+      (await vault.bindReference(a.orgId, "t", { name: "Y" }, "onepassword", REF)).created,
+    ).toBe(true);
+    // another org's project is not this org's
+    await expect(
+      vault.bindReference(b.orgId, "t", { name: "Z", projectId: a.projectId }, "onepassword", REF),
+    ).rejects.toThrow("no account available to this org");
   });
 
   test("never converts a sealed secret, and set/rotate refuse an external one", async () => {
@@ -193,8 +238,8 @@ describe("use", () => {
   });
 
   test("an account bound to another org's projects does not serve this org", async () => {
-    build([account({ name: "ci", orgs: [b.orgId], trustClasses: ["protected"] })]);
     await bind();
+    build([account({ name: "ci", orgs: [b.orgId], trustClasses: ["protected"] })]);
     await start(a, "protected");
     expect(await vault.use(useReq(a))).toEqual({ ok: false, reason: "account_not_bound" });
     expect(fake.calls).toHaveLength(0);

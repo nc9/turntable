@@ -334,7 +334,8 @@ export const doctorSecretsOp = defineOp({
   description:
     "For each configured store, lists the service accounts (names and the vaults they serve, " +
     "never a token), the reads made in the last hour and the remaining hourly quota when a " +
-    "limit is configured, and resolves the operator-named canary reference live to report " +
+    "limit is configured (the daily per-account limit is not tracked: see the 1Password " +
+    "account), and resolves the operator-named canary reference live to report " +
     "whether the store is reachable. The canary's value is never returned. Needs admin. " +
     "Read-only apart from that one read.",
   input: z.object({}),

@@ -29,6 +29,17 @@ export interface NewVaultSecret {
   createdBy: string;
 }
 
+/** The ids of the projects that belong to the org. */
+export function listOrgProjectIds(db: Db, orgId: string): Promise<string[]> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ id: s.projects.id })
+      .from(s.projects)
+      .where(eq(s.projects.orgId, orgId));
+    return rows.map((r) => r.id);
+  });
+}
+
 export function findVaultSecret(
   db: Db,
   orgId: string,

@@ -24,6 +24,7 @@ import {
   getVersionCiphertext,
   insertVaultSecret,
   upsertExternalVaultSecret,
+  listOrgProjectIds,
   listVaultSecrets,
   listVaultVersions,
   scopeKeyOf,
@@ -355,8 +356,8 @@ export class SecretVault {
   /**
    * Points a secret name at a reference in an external store, instead of a sealed value. Creates
    * the secret, or re-points an existing external one of that exact scope (and replaces its
-   * policy); a sealed secret is never converted in place. The reference must parse and some
-   * configured account must serve its vault. No value is read here.
+   * policy); a sealed secret is never converted in place. The reference must parse and an
+   * account available to this org (or to the project) must serve its vault. No value is read here.
    */
   async bindReference(
     orgId: string,
@@ -376,8 +377,18 @@ export class SecretVault {
     } catch (err) {
       throw new VaultInputError(err instanceof Error ? err.message : "invalid reference");
     }
-    if (!backend.accountFor(ref)) {
-      throw new VaultInputError(`no configured ${source} account serves vault ${ref.vault}`);
+    // One error for "no account serves this vault" and "an account does, but not for this org":
+    // the answer never says which vault names are configured for other tenants.
+    const account = backend.accountFor(ref);
+    const orgProjects = new Set(await listOrgProjectIds(this.#db, orgId));
+    const serves =
+      account !== undefined &&
+      (account.orgs.includes(orgId) ||
+        (sc.projectId === null
+          ? account.projects.some((p) => orgProjects.has(p))
+          : orgProjects.has(sc.projectId) && account.projects.includes(sc.projectId)));
+    if (!serves) {
+      throw new VaultInputError(`no account available to this org serves that reference`);
     }
     const existing = await findVaultSecret(
       this.#db,
