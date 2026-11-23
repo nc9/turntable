@@ -114,5 +114,7 @@ export interface DoctorInputs {
    * counts. Absent from the command line, which has no settings layers to resolve.
    */
   humanApprovalGaps?: (() => Promise<number>) | undefined;
+  /** How many projects resolve to `human` while their org key policy is `any`. Server only. */
+  humanAnyKeyPolicy?: (() => Promise<number>) | undefined;
   now: () => number;
 }

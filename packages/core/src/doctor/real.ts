@@ -262,6 +262,8 @@ export interface RealOptions {
   masterKeys?: MasterKeys | undefined;
   /** See `DoctorInputs.humanApprovalGaps`; only the server, which has the settings layers, sets it. */
   humanApprovalGaps?: (() => Promise<number>) | undefined;
+  /** See `DoctorInputs.humanAnyKeyPolicy`; only the server sets it. */
+  humanAnyKeyPolicy?: (() => Promise<number>) | undefined;
 }
 
 export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): void } {
@@ -296,6 +298,7 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
       openError,
       expectedMigrations: embeddedMigrationTags(),
       humanApprovalGaps: o.humanApprovalGaps,
+      humanAnyKeyPolicy: o.humanAnyKeyPolicy,
       masterKeyEnv: o.masterKeys ? o.masterKeys.source === "env" : Boolean(envKey),
       masterKey: () => {
         if (o.masterKeys) return o.masterKeys.key;
