@@ -193,12 +193,18 @@ export class Poller {
   }
 
   #track(r: PollRepoConfig): void {
-    if (ingestStatus.repos.has(r.repo)) return;
+    const known = ingestStatus.repos.get(r.repo);
+    if (known) {
+      known.intervalSeconds = r.intervalSeconds;
+      return;
+    }
     ingestStatus.repos.set(r.repo, {
       repo: r.repo,
       org: r.org,
       project: r.project,
+      intervalSeconds: r.intervalSeconds,
       lastPollAt: null,
+      lastSuccessAt: null,
       lastOutcome: null,
       lastError: null,
       nextPollAt: null,
@@ -303,6 +309,7 @@ export class Poller {
     if (this.#running) return;
     this.#running = true;
     ingestStatus.running = true;
+    ingestStatus.startedAt = this.#now();
     if (this.#anonymous) this.#warnAnonymous();
     for (const cfg of this.#o.config.repos) void this.#loop(cfg.repo);
     if (this.#o.bindings) {
@@ -386,6 +393,7 @@ export class Poller {
       this.#failures.delete(repo);
       if (res.skipped)
         return finish("error", "bound to another project; poll entry is stale", intervalMs);
+      status.lastSuccessAt = now;
       status.runsCreated += res.created.length;
       if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
       if (res.created.length > 0) this.#o.onQueued?.();

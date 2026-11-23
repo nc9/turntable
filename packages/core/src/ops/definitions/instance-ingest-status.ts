@@ -28,7 +28,7 @@ export const instanceIngestStatusOp = defineOp({
   summary: "Poll health of every org's repos, for the instance administrator.",
   description:
     "Reports the GitHub poller's health across all orgs, with no org credential: per repo the org " +
-    "and project slug, the last poll time and outcome (ok, rate_limited or error), the error " +
+    "and project slug, the configured poll interval, the last poll time, the last successful poll time and the last outcome (ok, rate_limited or error), the error " +
     "class (rate_limited, auth, not_found, github_4xx, github_5xx, network, stale_binding or " +
     "unknown) and never the raw error text, consecutive failures, the next poll time, the auth " +
     "mode (anonymous, token or installation) and that mode's last rate-limit budget (limit, " +
@@ -51,7 +51,12 @@ export const instanceIngestStatusOp = defineOp({
         org: z.string(),
         project: z.string(),
         repo: z.string(),
+        interval_seconds: z.int(),
         last_poll_at: z.string().nullable(),
+        last_success_at: z
+          .string()
+          .nullable()
+          .describe("The last successful poll; failures and skipped polls do not move it."),
         last_outcome: z.enum(["ok", "rate_limited", "error"]).nullable(),
         error_class: z
           .enum([
@@ -111,7 +116,9 @@ export const instanceIngestStatusOp = defineOp({
         org: r.org,
         project: r.project,
         repo: r.repo,
+        interval_seconds: r.intervalSeconds,
         last_poll_at: iso(r.lastPollAt),
+        last_success_at: iso(r.lastSuccessAt),
         last_outcome: r.lastOutcome,
         error_class: classifyPollError(r),
         consecutive_failures: r.consecutiveFailures,

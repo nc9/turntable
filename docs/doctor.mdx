@@ -25,7 +25,7 @@ Each finding is `pass`, `warn` or `fail`, and each warning or failure carries a 
 | Network | Forwarded-header settings against observed traffic, and that plain http is redirected to https (here, behind a trusted proxy, or by the proxy in front) with HSTS on. |
 | Release | If a release channel is configured, the lane answers over it and accepts this process's request key (the probe is an idempotent revoke of a made-up attempt). |
 | Limits | Whether quotas are set. None set is a warning on a hosted instance, and fine for one operator. |
-| Ingest | `poll_health`: warns when a repo has failed to poll 3 times in a row, or the anonymous GitHub budget is at its floor (5 requests left). It reads the poller in this process, so it passes where no poller runs (`turntable doctor` on the command line, or a worker in another process). `instance_ingest_status` says which repo and why. |
+| Ingest | `poll_health`: warns when a repo has failed to poll 3 times in a row, has not polled successfully within 3 of its intervals (this catches a stopped loop or a skipped stale binding), or when the anonymous GitHub budget is at its floor (5 requests left). It reads the poller in this process, so it passes where no poller runs (`turntable doctor` on the command line, or a worker in another process). `instance_ingest_status` says which repo and why. |
 
 A hosted instance (`--hosted` or `TURNTABLE_HOSTED=1`) is held to a stricter standard: a missing master key, GitHub App or https redirect is a failure rather than a warning.
 

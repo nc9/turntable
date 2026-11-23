@@ -7,7 +7,11 @@ export type RepoStatus = {
   repo: string;
   org: string;
   project: string;
+  /** The configured poll interval for this repo (poll config entry or binding settings). */
+  intervalSeconds: number;
   lastPollAt: number | null;
+  /** The last poll that succeeded; a failure or a stale-binding skip never moves it. */
+  lastSuccessAt: number | null;
   lastOutcome: "ok" | "rate_limited" | "error" | null;
   /** Short, token-free description of the last failure. */
   lastError: string | null;
@@ -26,6 +30,8 @@ export type RepoStatus = {
  */
 export const ingestStatus: {
   running: boolean;
+  /** When the poller last started (ms), the baseline for a repo that never succeeded. */
+  startedAt: number | null;
   /** The budget of the fallback client (the poll token, or anonymous). */
   rateLimit: RateLimitInfo | undefined;
   /** Which of those the fallback is. */
@@ -33,6 +39,7 @@ export const ingestStatus: {
   repos: Map<string, RepoStatus>;
 } = {
   running: false,
+  startedAt: null,
   rateLimit: undefined,
   fallbackAuth: "anonymous",
   repos: new Map(),
@@ -40,6 +47,7 @@ export const ingestStatus: {
 
 export function resetIngestStatus(): void {
   ingestStatus.running = false;
+  ingestStatus.startedAt = null;
   ingestStatus.rateLimit = undefined;
   ingestStatus.fallbackAuth = "anonymous";
   ingestStatus.repos.clear();

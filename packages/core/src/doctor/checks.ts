@@ -660,14 +660,25 @@ export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
 
 /** The failures in a row at which a repo's polling is reported as unhealthy. */
 export const POLL_FAILURE_WARN = 3;
+/** The intervals without a successful poll at which a repo is reported as stalled. */
+export const POLL_STALE_INTERVALS = 3;
 
 /**
  * Poll health from the in-process poller snapshot: fixed sentences, no repo names or error text.
  * A process with no poller (or none polling yet) passes: there is nothing to be unhealthy.
  */
-export function checkPollHealth(): DoctorCheck {
+export function checkPollHealth(now: number = Date.now()): DoctorCheck {
   const area = "ingest";
   const repos = [...ingestStatus.repos.values()];
+  // Silent stalls (a dead loop, a skipped binding) never raise a failure count: look at success age.
+  const stalled = repos.filter((r) => {
+    const since = r.lastSuccessAt ?? ingestStatus.startedAt;
+    return (
+      since !== null &&
+      ingestStatus.running &&
+      now - since > POLL_STALE_INTERVALS * r.intervalSeconds * 1000
+    );
+  }).length;
   const failing = repos.filter((r) => r.consecutiveFailures >= POLL_FAILURE_WARN).length;
   const anonymousLow = repos.some(
     (r) =>
@@ -675,15 +686,17 @@ export function checkPollHealth(): DoctorCheck {
       r.rateLimit?.remaining !== undefined &&
       r.rateLimit.remaining <= POLL_RESERVE,
   );
-  if (failing > 0 || anonymousLow) {
+  if (failing > 0 || anonymousLow || stalled > 0) {
     return warn(
       "poll_health",
       area,
-      failing > 0 && anonymousLow
-        ? "some repos keep failing to poll and the anonymous GitHub budget is nearly spent"
-        : failing > 0
-          ? "some repos have failed to poll several times in a row"
-          : "the anonymous GitHub budget is nearly spent",
+      [
+        failing > 0 ? "some repos have failed to poll several times in a row" : "",
+        stalled > 0 ? "some repos have not polled successfully within 3 intervals" : "",
+        anonymousLow ? "the anonymous GitHub budget is nearly spent" : "",
+      ]
+        .filter(Boolean)
+        .join("; "),
       "Run `instance_ingest_status` for each repo's error class and budget; set a poll token or install the GitHub App to raise the budget.",
     );
   }

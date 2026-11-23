@@ -29,7 +29,9 @@ const fakeToken = () => `ghp_${"Q7".repeat(18)}`;
 const repo = (
   over: Partial<RepoStatus> & Pick<RepoStatus, "repo" | "org" | "project">,
 ): RepoStatus => ({
+  intervalSeconds: 60,
   lastPollAt: Date.UTC(2026, 10, 23, 1),
+  lastSuccessAt: Date.UTC(2026, 10, 23, 1),
   lastOutcome: "ok",
   lastError: null,
   nextPollAt: Date.UTC(2026, 10, 23, 1, 1),
@@ -209,5 +211,33 @@ describe("doctor poll_health", () => {
     expect(checkPollHealth().status).toBe("pass");
     put(repo({ repo: "x/anon", org: a.slug, project: "p1", rateLimit: rate(POLL_RESERVE) }));
     expect(checkPollHealth().status).toBe("warn");
+  });
+
+  test("warns when the last success is over 3 intervals old with zero failures, not within", () => {
+    const t0 = Date.UTC(2026, 10, 23, 1);
+    ingestStatus.running = true;
+    ingestStatus.startedAt = t0 - 3_600_000;
+    put(repo({ repo: "x/one", org: a.slug, project: "p1", lastSuccessAt: t0 }));
+    expect(checkPollHealth(t0 + 180_000).status).toBe("pass");
+    const c = checkPollHealth(t0 + 180_001);
+    expect(c.status).toBe("warn");
+    expect(JSON.stringify(c)).not.toContain("x/one");
+  });
+
+  test("a repo that never succeeded is measured from the poller start, per its own interval", () => {
+    const t0 = Date.UTC(2026, 10, 23, 1);
+    ingestStatus.running = true;
+    ingestStatus.startedAt = t0;
+    put(
+      repo({
+        repo: "x/slow",
+        org: a.slug,
+        project: "p1",
+        lastSuccessAt: null,
+        intervalSeconds: 600,
+      }),
+    );
+    expect(checkPollHealth(t0 + 1_800_000).status).toBe("pass");
+    expect(checkPollHealth(t0 + 1_800_001).status).toBe("warn");
   });
 });
