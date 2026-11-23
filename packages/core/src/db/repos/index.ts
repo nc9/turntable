@@ -513,7 +513,7 @@ export function transitionJob(
   scope: Scope,
   id: string,
   to: JobState,
-  opts: { exitCode?: number | null } = {},
+  opts: { exitCode?: number | null; reason?: string } = {},
 ): Promise<Job | undefined> {
   return db.transaction(async (h) => {
     const job = await getJob(h, scope, id);
@@ -547,7 +547,12 @@ export function transitionJob(
       type: "job.state_changed",
       runId: job.runId,
       jobId: id,
-      payload: { from, to, exit_code: opts.exitCode ?? null },
+      payload: {
+        from,
+        to,
+        exit_code: opts.exitCode ?? null,
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      },
     });
     if (to === "awaiting_approval") {
       await appendEvent(h, evScope, { type: "approval.required", runId: job.runId, jobId: id });

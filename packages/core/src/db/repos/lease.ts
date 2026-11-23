@@ -2,12 +2,27 @@
 // and finding abandoned work. Claim and reconcile are instance-level (a worker has no tenant
 // until it has claimed something), so they are intentionally unscoped; everything they return
 // carries the tenant scope the caller then uses.
-import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import type { Db } from "..";
+import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
 import * as s from "../schema";
 import {
   appendLog,
+  createAttempt,
   getRun,
   listAttempts,
   type Job,
@@ -18,6 +33,7 @@ import {
   transitionJob,
   updateAttempt,
 } from "./index";
+import { appendAudit } from "./audit";
 import { notFrozen } from "./incident";
 import {
   emitQuotaNotices,
@@ -29,7 +45,7 @@ import {
   type QuotaUsage,
 } from "./quotas";
 import { groupBlocked } from "./poll";
-import { projectsWithCaps } from "./project-settings";
+import { projectsWithCaps, yieldProjects } from "./project-settings";
 import {
   defaultReadiness,
   depStates,
@@ -159,7 +175,6 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     for (const r of running) perOrg.set(r.orgId, (perOrg.get(r.orgId) ?? 0) + Number(r.n));
     let total = 0;
     for (const n of perOrg.values()) total += n;
-    if (total >= o.globalCap) return undefined;
     // Per-project caps: a project with `max_concurrent` set holds new work once that many of its
     // attempts run. Like the org quota it can only lower the instance's per-org cap. Projects at
     // their cap are left out of both queries below, so their queued attempts neither use up the
@@ -175,22 +190,6 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     const notProjectFull =
       projectFull.length > 0 ? [notInArray(s.jobAttempts.projectId, projectFull)] : [];
 
-    const waiting = await tx.orm
-      .select({ orgId: s.jobAttempts.orgId, oldest: sql<string>`min(${s.jobAttempts.id})` })
-      .from(s.jobAttempts)
-      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
-      .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
-      .where(
-        and(
-          eq(s.jobAttempts.state, "queued"),
-          eq(s.jobs.state, "queued"),
-          isNull(s.jobAttempts.leaseOwner),
-          o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
-          notFrozen(s.runs.orgId, s.runs.projectId),
-          ...notProjectFull,
-        ),
-      )
-      .groupBy(s.jobAttempts.orgId);
     // Per-org quotas (#52). Only orgs with a limit set are looked at. A stored concurrency limit
     // lowers the instance's per-org cap for the org; the other limits hold new work when reached, and say
     // why in `get_quotas` and in an event at 80% and 100%.
@@ -199,130 +198,264 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     // instance's per-org cap (whatever a row says).
     const capOf = (orgId: string) =>
       Math.min(quotas.get(orgId)?.maxConcurrent ?? Infinity, o.perOrgCap);
-    const heldOrgs = new Set<string>();
-    const runsFull = new Map<string, Set<string>>();
-    for (const w of waiting) {
-      const q = quotas.get(w.orgId);
-      if (!q) continue;
-      const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0);
-      const statuses = quotaStatuses(q, { ...usage, concurrent: perOrg.get(w.orgId) ?? 0 });
-      await noticesOnce(tx, w.orgId, statuses, o.now, o.quotaCacheMs ?? 0);
-      if (
-        statuses.some(
-          (st) => st.metric !== "runs_per_hour" && st.metric !== "concurrent" && st.held,
+    // Scheduling classes: a `yield` project's work is claimed only when no `normal` work can be.
+    const yieldIds = await yieldProjects(tx);
+    const pass = async (
+      klass: "all" | "normal" | "yield",
+      probe: boolean,
+    ): Promise<Claim | { blockedOrg: string } | undefined> => {
+      const classFilter =
+        klass === "all" || yieldIds.size === 0
+          ? []
+          : klass === "normal"
+            ? [notInArray(s.jobAttempts.projectId, [...yieldIds])]
+            : [inArray(s.jobAttempts.projectId, [...yieldIds])];
+      if (!probe && total >= o.globalCap) return undefined;
+      const waiting = await tx.orm
+        .select({ orgId: s.jobAttempts.orgId, oldest: sql<string>`min(${s.jobAttempts.id})` })
+        .from(s.jobAttempts)
+        .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+        .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+        .where(
+          and(
+            eq(s.jobAttempts.state, "queued"),
+            eq(s.jobs.state, "queued"),
+            isNull(s.jobAttempts.leaseOwner),
+            o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+            notFrozen(s.runs.orgId, s.runs.projectId),
+            ...notProjectFull,
+            ...classFilter,
+          ),
         )
-      )
-        heldOrgs.add(w.orgId);
-      if (statuses.find((st) => st.metric === "runs_per_hour")?.held) {
-        // New runs wait; runs that already started this hour finish their jobs.
-        runsFull.set(w.orgId, await runsStartedSince(tx, w.orgId, o.now - HOUR_MS));
-      }
-    }
-    const orgs = waiting
-      .filter((w) => !heldOrgs.has(w.orgId))
-      .filter((w) => (perOrg.get(w.orgId) ?? 0) < capOf(w.orgId))
-      .toSorted(
-        (x, y) =>
-          (perOrg.get(x.orgId) ?? 0) - (perOrg.get(y.orgId) ?? 0) ||
-          x.oldest.localeCompare(y.oldest),
-      )
-      .map((w) => w.orgId);
-    const cursor = new Map<string, string>(orgs.map((id) => [id, ""]));
-    const open = new Set(orgs);
-    let scanned = 0;
-
-    while (open.size > 0 && scanned < scanLimit) {
-      for (const orgId of orgs) {
-        if (!open.has(orgId) || scanned >= scanLimit) continue;
-        const page = await tx.orm
-          .select({ attempt: s.jobAttempts, job: s.jobs })
-          .from(s.jobAttempts)
-          .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
-          .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
-          .where(
-            and(
-              eq(s.jobAttempts.orgId, orgId),
-              eq(s.jobAttempts.state, "queued"),
-              eq(s.jobs.state, "queued"),
-              isNull(s.jobAttempts.leaseOwner),
-              o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
-              notFrozen(s.runs.orgId, s.runs.projectId),
-              ...notProjectFull,
-              gt(s.jobAttempts.id, cursor.get(orgId)!),
-            ),
+        .groupBy(s.jobAttempts.orgId);
+      const heldOrgs = new Set<string>();
+      const runsFull = new Map<string, Set<string>>();
+      for (const w of waiting) {
+        const q = quotas.get(w.orgId);
+        if (!q) continue;
+        const usage = await cachedUsage(tx, w.orgId, o.now, o.quotaCacheMs ?? 0);
+        const statuses = quotaStatuses(q, { ...usage, concurrent: perOrg.get(w.orgId) ?? 0 });
+        await noticesOnce(tx, w.orgId, statuses, o.now, o.quotaCacheMs ?? 0);
+        if (
+          statuses.some(
+            (st) => st.metric !== "runs_per_hour" && st.metric !== "concurrent" && st.held,
           )
-          .orderBy(asc(s.jobAttempts.id))
-          .limit(Math.min(pageSize, scanLimit - scanned));
-        if (page.length === 0) {
-          open.delete(orgId);
-          continue;
+        )
+          heldOrgs.add(w.orgId);
+        if (statuses.find((st) => st.metric === "runs_per_hour")?.held) {
+          // New runs wait; runs that already started this hour finish their jobs.
+          runsFull.set(w.orgId, await runsStartedSince(tx, w.orgId, o.now - HOUR_MS));
         }
-        cursor.set(orgId, page.at(-1)!.attempt.id);
-        for (const c of page) {
-          scanned++;
-          const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
-          // A run waiting for its concurrency group (an older run of it is still going) starts
-          // nothing yet.
-          const candRun = await getRun(tx, scope, c.job.runId);
-          if (candRun && (await groupBlocked(tx, candRun))) continue;
-          const started = runsFull.get(orgId);
-          if (started && !started.has(c.job.runId)) continue;
-          if (needsDecision(c.job)) {
-            const siblings = await listJobs(tx, scope, c.job.runId);
-            // Resolved earlier in this scan: no longer queued.
-            const self = siblings.find((j) => j.id === c.job.id);
-            if (!self || self.state !== "queued") continue;
-            const decision = readiness(
-              c.job,
-              depStates(c.job, siblings, await latestReasons(tx, scope, c.job.runId)),
-              await getRun(tx, scope, c.job.runId),
-            ).decision;
-            if (decision === "wait") continue;
-            if (decision === "skip" || decision === "cancel") {
-              await resolveDependents(tx, scope, c.job.runId, readiness);
-              continue;
-            }
-            // strategy.max-parallel: legs of one matrix job running at once.
-            const planned = c.job.planned
-              ? (JSON.parse(c.job.planned) as { id?: string; maxParallel?: number })
-              : undefined;
-            if (planned?.maxParallel !== undefined && planned.id !== undefined) {
-              const legsRunning = siblings.filter(
-                (j) =>
-                  j.state === "running" &&
-                  j.planned !== null &&
-                  (JSON.parse(j.planned) as { id?: string }).id === planned.id,
-              ).length;
-              if (legsRunning >= planned.maxParallel) continue;
-            }
-          }
-          const claimed = await tx.orm
-            .update(s.jobAttempts)
-            .set({ leaseOwner: o.owner, leaseExpiresAt: o.now + o.leaseMs, heartbeatAt: o.now })
+      }
+      const orgs = waiting
+        .filter((w) => !heldOrgs.has(w.orgId))
+        // A probe looks past the caps: it asks what would run if there were room.
+        .filter((w) => probe || (perOrg.get(w.orgId) ?? 0) < capOf(w.orgId))
+        .toSorted(
+          (x, y) =>
+            (perOrg.get(x.orgId) ?? 0) - (perOrg.get(y.orgId) ?? 0) ||
+            x.oldest.localeCompare(y.oldest),
+        )
+        .map((w) => w.orgId);
+      const cursor = new Map<string, string>(orgs.map((id) => [id, ""]));
+      const open = new Set(orgs);
+      let scanned = 0;
+
+      while (open.size > 0 && scanned < scanLimit) {
+        for (const orgId of orgs) {
+          if (!open.has(orgId) || scanned >= scanLimit) continue;
+          const page = await tx.orm
+            .select({ attempt: s.jobAttempts, job: s.jobs })
+            .from(s.jobAttempts)
+            .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+            .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
             .where(
               and(
-                eq(s.jobAttempts.id, c.attempt.id),
+                eq(s.jobAttempts.orgId, orgId),
                 eq(s.jobAttempts.state, "queued"),
+                eq(s.jobs.state, "queued"),
                 isNull(s.jobAttempts.leaseOwner),
+                o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+                notFrozen(s.runs.orgId, s.runs.projectId),
+                ...notProjectFull,
+                ...classFilter,
+                gt(s.jobAttempts.id, cursor.get(orgId)!),
               ),
             )
-            .returning({ id: s.jobAttempts.id });
-          if (claimed.length === 0) continue;
-          await transitionJob(tx, scope, c.job.id, "running");
-          const attempt = (await updateAttempt(tx, scope, c.attempt.id, { state: "running" }))!;
-          const run = (await getRun(tx, scope, c.job.runId))!;
-          if (run.status !== "running") await setRunStatus(tx, scope, run.id, "running");
-          return {
-            attempt,
-            job: (await listJobs(tx, scope, run.id)).find((j) => j.id === c.job.id)!,
-            run: (await getRun(tx, scope, run.id))!,
-            scope,
-          };
+            .orderBy(asc(s.jobAttempts.id))
+            .limit(Math.min(pageSize, scanLimit - scanned));
+          if (page.length === 0) {
+            open.delete(orgId);
+            continue;
+          }
+          cursor.set(orgId, page.at(-1)!.attempt.id);
+          for (const c of page) {
+            scanned++;
+            const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
+            // A run waiting for its concurrency group (an older run of it is still going) starts
+            // nothing yet.
+            const candRun = await getRun(tx, scope, c.job.runId);
+            if (candRun && (await groupBlocked(tx, candRun))) continue;
+            const started = runsFull.get(orgId);
+            if (started && !started.has(c.job.runId)) continue;
+            if (needsDecision(c.job)) {
+              const siblings = await listJobs(tx, scope, c.job.runId);
+              // Resolved earlier in this scan: no longer queued.
+              const self = siblings.find((j) => j.id === c.job.id);
+              if (!self || self.state !== "queued") continue;
+              const decision = readiness(
+                c.job,
+                depStates(c.job, siblings, await latestReasons(tx, scope, c.job.runId)),
+                await getRun(tx, scope, c.job.runId),
+              ).decision;
+              if (decision === "wait") continue;
+              if (decision === "skip" || decision === "cancel") {
+                await resolveDependents(tx, scope, c.job.runId, readiness);
+                continue;
+              }
+              // strategy.max-parallel: legs of one matrix job running at once.
+              const planned = c.job.planned
+                ? (JSON.parse(c.job.planned) as { id?: string; maxParallel?: number })
+                : undefined;
+              if (planned?.maxParallel !== undefined && planned.id !== undefined) {
+                const legsRunning = siblings.filter(
+                  (j) =>
+                    j.state === "running" &&
+                    j.planned !== null &&
+                    (JSON.parse(j.planned) as { id?: string }).id === planned.id,
+                ).length;
+                if (legsRunning >= planned.maxParallel) continue;
+              }
+            }
+            if (probe) return { blockedOrg: orgId };
+            const claimed = await tx.orm
+              .update(s.jobAttempts)
+              .set({ leaseOwner: o.owner, leaseExpiresAt: o.now + o.leaseMs, heartbeatAt: o.now })
+              .where(
+                and(
+                  eq(s.jobAttempts.id, c.attempt.id),
+                  eq(s.jobAttempts.state, "queued"),
+                  isNull(s.jobAttempts.leaseOwner),
+                ),
+              )
+              .returning({ id: s.jobAttempts.id });
+            if (claimed.length === 0) continue;
+            await transitionJob(tx, scope, c.job.id, "running");
+            const attempt = (await updateAttempt(tx, scope, c.attempt.id, { state: "running" }))!;
+            const run = (await getRun(tx, scope, c.job.runId))!;
+            if (run.status !== "running") await setRunStatus(tx, scope, run.id, "running");
+            return {
+              attempt,
+              job: (await listJobs(tx, scope, run.id)).find((j) => j.id === c.job.id)!,
+              run: (await getRun(tx, scope, run.id))!,
+              scope,
+            };
+          }
         }
       }
+      return undefined;
+    };
+
+    if (yieldIds.size === 0) return (await pass("all", false)) as Claim | undefined;
+    const normal = await pass("normal", false);
+    if (normal) return normal as Claim;
+    // Nothing normal could be claimed. If a normal attempt waits only for room, free a slot by
+    // preempting the newest yield attempt holding one, then claim for the waiting attempt. One
+    // victim per call, so a fan-out of waiting normal attempts preempts one yield attempt each.
+    const blocked = await pass("normal", true);
+    if (blocked && "blockedOrg" in blocked) {
+      const orgFull = (perOrg.get(blocked.blockedOrg) ?? 0) >= capOf(blocked.blockedOrg);
+      const victim = await newestYieldAttempt(tx, yieldIds, {
+        ...(orgFull ? { orgId: blocked.blockedOrg } : {}),
+        ...(o.onlyRun ? { onlyRun: o.onlyRun } : {}),
+      });
+      if (victim) {
+        await preemptAttempt(tx, victim, blocked.blockedOrg, o.now);
+        // The slot is free for the claim below: update the counts read at the start.
+        total--;
+        perOrg.set(victim.orgId, (perOrg.get(victim.orgId) ?? 1) - 1);
+        return (await pass("normal", false)) as Claim | undefined;
+      }
     }
-    return undefined;
+    return (await pass("yield", false)) as Claim | undefined;
   });
+}
+
+/** The attempt error class of a preempted attempt: requeued, never a failure. */
+export const PREEMPTED = "preempted";
+
+/**
+ * The newest running attempt of a `yield` project (highest id), optionally only in one org. Local
+ * runs count only inside their own process's claim, as in `claimNextAttempt`.
+ */
+async function newestYieldAttempt(
+  tx: Db,
+  yieldIds: ReadonlySet<string>,
+  within: { orgId?: string; onlyRun?: string },
+): Promise<JobAttempt | undefined> {
+  const [row] = await tx.orm
+    .select({ attempt: s.jobAttempts })
+    .from(s.jobAttempts)
+    .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+    .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+    .where(
+      and(
+        eq(s.jobAttempts.state, "running"),
+        inArray(s.jobAttempts.projectId, [...yieldIds]),
+        within.orgId ? eq(s.jobAttempts.orgId, within.orgId) : undefined,
+        within.onlyRun ? eq(s.jobs.runId, within.onlyRun) : eq(s.runs.local, false),
+      ),
+    )
+    .orderBy(desc(s.jobAttempts.id))
+    .limit(1);
+  return row?.attempt;
+}
+
+/**
+ * Stops a running yield attempt so a waiting normal one can have its slot, and requeues its job.
+ * Inside the claim's transaction. The attempt ends `cancelled` with the error class `preempted`
+ * and keeps its log, steps and sandbox record; the job goes back to `queued` (through
+ * `infra_error`, the one existing way back) with a NEW attempt, so no attempt row is reused and the
+ * partial log stays readable under the old id. No `rerun_reason` is set, so it uses none of the
+ * commit's reruns. The worker is told after commit (the cancel path), and one in another process
+ * finds its lease gone at its next heartbeat.
+ */
+async function preemptAttempt(
+  tx: Db,
+  victim: JobAttempt,
+  forOrgId: string,
+  now: number,
+): Promise<void> {
+  const scope = { orgId: victim.orgId, projectId: victim.projectId };
+  await updateAttempt(tx, scope, victim.id, { state: "cancelled", errorClass: PREEMPTED });
+  await tx.orm
+    .update(s.jobAttempts)
+    .set({ leaseOwner: null, leaseExpiresAt: null })
+    .where(eq(s.jobAttempts.id, victim.id));
+  await transitionJob(tx, scope, victim.jobId, "infra_error", { reason: PREEMPTED });
+  const job = await transitionJob(tx, scope, victim.jobId, "queued", { reason: PREEMPTED });
+  await createAttempt(tx, scope, { jobId: victim.jobId, provider: victim.provider });
+  if (job) {
+    const states = effectiveStates(await listJobs(tx, scope, job.runId));
+    await setRunStatus(tx, scope, job.runId, aggregateRunStatus(states));
+  }
+  await appendAudit(tx, scope, {
+    principalKind: "system",
+    principalId: "scheduler",
+    op: "scheduler.preempt",
+    effect: "write",
+    outcome: "ok",
+    input: {
+      attempt_id: victim.id,
+      job_id: victim.jobId,
+      scheduling_class: "yield",
+      for_org_id: forOrgId,
+      at: now,
+    },
+  });
+  announceCancelled(tx, [
+    { attemptId: victim.id, sandboxId: victim.sandboxId, provider: victim.provider },
+  ]);
 }
 
 /**

@@ -5,6 +5,7 @@
 import { and, eq, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
+import { yieldProjects } from "./project-settings";
 import { type Scope, scoped } from "./scope";
 
 const DAY_MS = 86_400_000;
@@ -146,6 +147,8 @@ export interface ProjectSandboxUsage {
   projectId: string;
   slug: string;
   name: string;
+  /** The project's `scheduling_class`. Minutes of preempted attempts count to the project. */
+  schedulingClass: "normal" | "yield";
   days: SandboxDay[];
 }
 
@@ -174,11 +177,13 @@ export async function sandboxUsageByProject(
       .where(eq(s.projects.orgId, scope.orgId)),
   );
   const meta = new Map(projects.map((p) => [p.id, p]));
+  const yielding = await yieldProjects(db);
   return [...byProject.entries()]
     .map(([projectId, list]) => ({
       projectId,
       slug: meta.get(projectId)?.slug ?? projectId,
       name: meta.get(projectId)?.name ?? projectId,
+      schedulingClass: yielding.has(projectId) ? ("yield" as const) : ("normal" as const),
       days: dayRows(list, w),
     }))
     .sort((a, b) => a.slug.localeCompare(b.slug));
