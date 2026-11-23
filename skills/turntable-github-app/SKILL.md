@@ -51,7 +51,7 @@ After the App exists, remove `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` from the 
 1. In claim mode, an org token with `release_operator` or admin calls `start_installation_claim` over REST (`POST /api/v1/github/installation-claims`) first. It is not an MCP tool. It returns a link to the instance.
 2. The human opens the link in a browser and confirms the org named on the page. The page sends them to GitHub to install the App: they install it through this link, not from the App's public page, and choose **Only select repositories**. The claimer must be an admin of the GitHub org.
 3. GitHub's setup redirect returns to the instance, which completes the claim. Without claim mode, the human just installs the App.
-4. Repos polled before the install are adopted into the installation after #336. Until then, check that checks post and see the table below.
+4. Repos polled before the install are adopted into the installation: the sync binds the existing binding (same org, no installation) to it and keeps its project and run history. Check that checks post, and see the table below.
 
 ## 5. Verify
 
@@ -61,13 +61,13 @@ After the App exists, remove `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` from the 
 
 ## Troubleshooting
 
-| Symptom                       | Cause                                                                                              |
-| ----------------------------- | -------------------------------------------------------------------------------------------------- |
-| The manifest page returns 404 | `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` is unset, the route closed, or it is not yet redeployed. |
-| No checks post                | The repo binding was not adopted (see #336), or the project's checks mode is `off` or `shadow`.    |
-| Deliveries return 401         | The webhook secret is wrong. Run `turntable github-app rotate-webhook-secret`.                     |
-| An installation is ignored    | It has not been claimed. Start a claim.                                                            |
-| Deliveries return 429         | Bad signatures from one address. Set `TURNTABLE_TRUSTED_PROXIES` correctly.                        |
+| Symptom                       | Cause                                                                                                                                                            |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The manifest page returns 404 | `TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256` is unset, the route closed, or it is not yet redeployed.                                                               |
+| No checks post                | The repo is in another org or installation, or the project's checks mode is `off` or `shadow`.                                                                   |
+| Deliveries return 401         | The webhook secret is wrong. Run `turntable github-app rotate-webhook-secret`.                                                                                   |
+| An installation is ignored    | It has not been claimed. An install made without the claim link cannot be claimed yet (#361): uninstall the App, then install it again through a new claim link. |
+| Deliveries return 429         | Bad signatures from one address. Set `TURNTABLE_TRUSTED_PROXIES` correctly.                                                                                      |
 
 ## Rotate or replace
 
