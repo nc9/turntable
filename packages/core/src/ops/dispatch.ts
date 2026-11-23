@@ -97,12 +97,41 @@ export class AuthFailure extends OpError {
 
 /** The input as audited: fields that carry a secret value never go into the log. */
 export function redactInput(op: Op, input: unknown): unknown {
-  if (op.secretInputFields.length === 0 || input === null || typeof input !== "object") {
-    return input;
-  }
+  const any = op.secretInputFields.length > 0 || op.logOmitFields.length > 0;
+  if (!any || input === null || typeof input !== "object") return input;
   const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
   for (const f of op.secretInputFields) if (f in out) out[f] = "[redacted]";
+  for (const f of op.logOmitFields) if (f in out) out[f] = "[omitted]";
   return out;
+}
+
+/**
+ * The audited input of a successful call: the redacted input, plus the op's own detail. The
+ * redacted input wins: a detail key that collides with an input key is dropped (and named, never
+ * its value), so a detail can never un-redact a secret or omitted field.
+ */
+function auditedInput(op: Op, input: unknown, detail: Record<string, unknown>): object {
+  const base = redactInput(op, input);
+  const redacted =
+    base !== null && typeof base === "object" ? (base as Record<string, unknown>) : {};
+  // A detail key that names a secret, omitted or one-time-secret field is dropped even when the
+  // input left that (optional) field out: otherwise an omitted optional secret would slip through.
+  const guarded = new Set([
+    ...op.secretInputFields,
+    ...op.logOmitFields,
+    ...op.oneTimeSecretFields,
+  ]);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(detail)) {
+    if (k in redacted || guarded.has(k)) {
+      console.warn(
+        `turntable: op ${op.name} auditDetail key "${k}" collides with an input or secret field; dropped`,
+      );
+      continue;
+    }
+    out[k] = v;
+  }
+  return { ...out, ...redacted };
 }
 
 /** A short stable digest of an unrecognised token, so repeats of it share a throttle bucket. */
@@ -384,7 +413,7 @@ export async function dispatch(
             op: target.name,
             effect: target.effect,
             outcome: "ok",
-            input: { ...(redactInput(target, input) as object), ...detail },
+            input: auditedInput(target, input, detail),
           });
         },
         { lock: `audit:${scope.orgId}` },
@@ -401,7 +430,7 @@ export async function dispatch(
             op: target.name,
             effect: target.effect,
             outcome: "ok",
-            input: redactInput(target, input),
+            input: auditedInput(target, input, target.auditDetail?.(out) ?? {}),
           });
           return out;
         },
