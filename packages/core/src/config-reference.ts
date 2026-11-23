@@ -9,6 +9,7 @@ export type ConfigArea =
   | "Secrets and keys"
   | "GitHub"
   | "Secrets proxy"
+  | "Job cache"
   | "Release lane"
   | "Audit"
   | "OIDC"
@@ -33,6 +34,7 @@ export const AREA_ORDER: readonly ConfigArea[] = [
   "Secrets and keys",
   "GitHub",
   "Secrets proxy",
+  "Job cache",
   "Release lane",
   "Audit",
   "OIDC",
@@ -459,6 +461,188 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     area: "Build",
     description: "UI build default backend (`fixture` or `http`); set by `bun run dev`.",
   },
+  // ---- added with the hosted and Postgres work ----
+  {
+    name: "LONGSHORE_DATABASE_URL",
+    area: "Server",
+    flag: "--database-url",
+    default: "SQLite in the data dir",
+    description:
+      "Postgres connection URL. Every subcommand that opens the database uses it. See [Postgres](/postgres).",
+  },
+  {
+    name: "LONGSHORE_UI_DIR",
+    area: "Server",
+    default: "`packages/ui/dist`",
+    description:
+      "Serve the web UI from this directory (it needs an `index.html`). Only for a run from source: the compiled binary serves its embedded UI and ignores it with a warning.",
+  },
+  {
+    name: "LONGSHORE_MASTER_KEY_AUTOINIT",
+    area: "Secrets and keys",
+    flag: "--init-master-key",
+    default: "off",
+    description:
+      "Set to `1` to create `LONGSHORE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `LONGSHORE_MASTER_KEY_FILE`. Back the key up: without it stored secrets cannot be opened.",
+  },
+  {
+    name: "LONGSHORE_REQUIRE_ORG_KEYS",
+    area: "Secrets and keys",
+    default: "off",
+    description:
+      "Set to `1` after `longshore keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused wherever the org is known, and `keys reseal` itself refuses to run while it is set. See [Secrets vault](/secrets-vault#per-org-keys).",
+  },
+  {
+    name: "LONGSHORE_PROVIDER_PLUGINS",
+    area: "Worker and provider",
+    description:
+      'A JSON array of `{ "name", "path", "sha256" }`: external provider plugins, each loaded only if the file at `path` has that digest. Never in hosted mode. See [Providers](/providers).',
+  },
+  {
+    name: "LONGSHORE_SANDBOX_SIZES_JSON",
+    area: "Worker and provider",
+    description:
+      "The sandbox size map (JSON): which `runs-on` labels get how many CPUs and how much memory. Set only one of this and `LONGSHORE_SANDBOX_SIZES_FILE`.",
+  },
+  {
+    name: "LONGSHORE_SANDBOX_SIZES_FILE",
+    area: "Worker and provider",
+    description: "A file holding the sandbox size map. The same as `LONGSHORE_SANDBOX_SIZES_JSON`.",
+  },
+  {
+    name: "LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256",
+    area: "GitHub",
+    description:
+      "sha256 (64 hex characters) of a setup token (`longshore token generate`). Turns on creating the GitHub App from the instance, for a host with no shell. Needs `LONGSHORE_PUBLIC_URL` and a master key. The route closes after the first success and 6 hours after start; remove the variable when you are done. See [Hosted deployment](/hosted).",
+  },
+  {
+    name: "LONGSHORE_GITHUB_TOKEN_FILE",
+    area: "GitHub",
+    description:
+      "A file holding a GitHub token for `longshore parity`, to avoid the unauthenticated rate limit. Never taken from the command line.",
+  },
+  {
+    name: "LONGSHORE_CACHE_URL",
+    area: "Job cache",
+    description:
+      "The base URL jobs reach the control-plane cache at, no trailing slash. Setting it turns the cache on. See [Job cache](/cache).",
+  },
+  {
+    name: "LONGSHORE_CACHE_QUOTA_GIB",
+    area: "Job cache",
+    default: "10",
+    description: "GiB an org may hold in the cache in total, split between trust classes.",
+  },
+  {
+    name: "LONGSHORE_CACHE_MAX_ENTRY_GIB",
+    area: "Job cache",
+    default: "2",
+    description: "GiB of the largest single cache entry.",
+  },
+  {
+    name: "LONGSHORE_PUBLISH_CHANNEL_KEY_FILE",
+    area: "Release lane",
+    description:
+      "On the worker: the request key it shares with the release lane (`LONGSHORE_RELEASE_CHANNEL_KEY_FILE`), enabling compat publishing. Set it with the socket or the URL below. See [Release lane](/release-lane#how-a-job-gets-its-credential-the-release-channel).",
+  },
+  {
+    name: "LONGSHORE_PUBLISH_CHANNEL_SOCKET",
+    area: "Release lane",
+    description: "On the worker: the unix socket of the release channel (same host as the lane).",
+  },
+  {
+    name: "LONGSHORE_PUBLISH_CHANNEL_URL",
+    area: "Release lane",
+    description:
+      "On the worker: the release channel as `host:port` over mutual TLS (split hosts), instead of the socket. Needs `_TLS_CERT_FILE`, `_TLS_KEY_FILE` and `_TLS_CA_FILE` (same prefix).",
+  },
+  {
+    name: "LONGSHORE_PUBLISH_CHANNEL_TLS_CERT_FILE",
+    area: "Release lane",
+    description: "On the worker: its client certificate for the release channel.",
+  },
+  {
+    name: "LONGSHORE_PUBLISH_CHANNEL_TLS_KEY_FILE",
+    area: "Release lane",
+    description: "On the worker: the private key of that certificate.",
+  },
+  {
+    name: "LONGSHORE_PUBLISH_CHANNEL_TLS_CA_FILE",
+    area: "Release lane",
+    description: "On the worker: the CA that signed the lane's certificate.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_CHANNEL_KEY_FILE",
+    area: "Release lane",
+    description:
+      "On the lane: the request key shared with the worker. Needs the release proxy (`LONGSHORE_RELEASE_PROXY_PORT`).",
+  },
+  {
+    name: "LONGSHORE_RELEASE_CHANNEL_SOCKET",
+    area: "Release lane",
+    default: "`<data dir>/channel.sock`",
+    description: "On the lane: the unix socket the release channel listens on (mode 0600).",
+  },
+  {
+    name: "LONGSHORE_RELEASE_CHANNEL_TCP",
+    area: "Release lane",
+    description:
+      "On the lane: listen on `host:port` with mutual TLS instead of the socket, for split hosts. Needs `_TLS_CERT_FILE`, `_TLS_KEY_FILE` and `_TLS_CA_FILE` (same prefix).",
+  },
+  {
+    name: "LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE",
+    area: "Release lane",
+    description: "On the lane: its server certificate for the TCP channel.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_CHANNEL_TLS_KEY_FILE",
+    area: "Release lane",
+    description: "On the lane: the private key of that certificate.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_CHANNEL_TLS_CA_FILE",
+    area: "Release lane",
+    description: "On the lane: the CA that signs the worker's client certificate.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_PORT",
+    area: "Release lane",
+    description:
+      "On the lane: the port of its release proxy (`0` for any free port). Setting it turns the proxy on.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_BIND",
+    area: "Release lane",
+    default: "`127.0.0.1`",
+    description: "On the lane: the interface the release proxy binds.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_ADVERTISE_HOST",
+    area: "Release lane",
+    description: "On the lane: how the worker's sandboxes name the release proxy.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_ADVERTISE_PORT",
+    area: "Release lane",
+    description: "On the lane: the port sandboxes are told, when it differs from the one bound.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_ADVERTISE_ADDRESSES",
+    area: "Release lane",
+    description:
+      "On the lane: comma-separated stable addresses of the proxy, for a provider that filters by address.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_TLS_CERT_FILE",
+    area: "Release lane",
+    description:
+      "On the lane: a certificate, to serve the release proxy over TLS on a public name.",
+  },
+  {
+    name: "LONGSHORE_RELEASE_PROXY_TLS_KEY_FILE",
+    area: "Release lane",
+    description: "On the lane: the private key of that certificate.",
+  },
 ];
 
 /**
@@ -470,4 +654,6 @@ export const NOT_CONFIGURATION: readonly string[] = [
   "LONGSHORE_BUILD_TYPE", // a provenance constant
   "LONGSHORE_STEP_IO", // set by the step shim for the processes it starts
   "LONGSHORE_RELEASE", // the prefix of the release lane variables
+  "LONGSHORE_TEST_DB", // the test harness: run the suites against Postgres
+  "LONGSHORE_TEST_PGLITE_ISOLATED", // the test harness
 ];

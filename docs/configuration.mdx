@@ -36,7 +36,7 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `--provider-config` | none | A JSON file of provider options. Secrets never go in it. |
 | `--global-cap`, `--org-cap` | `4`, `2` | Most jobs at once, in total and per org. |
 | `--image` | built in | The image jobs run in (Docker). |
-| `--hosted` | off | This is a hosted, multi-tenant instance: every job needs a `microvm` or `vm` provider. Also set by `LONGSHORE_HOSTED=1`. |
+| `--hosted` | off | This is a hosted, multi-tenant instance: every job needs a `microvm` or `vm` provider. Docker and Daytona sandboxes are containers, so with `--hosted` they are refused unless `--isolation-override` gives a reason. Also set by `LONGSHORE_HOSTED=1`. |
 | `--isolation-override` | none | A reason. Lets jobs run on a provider weaker than their trust class requires. Audited and shown at the top of each affected job's log. |
 
 ### Daytona options
@@ -59,15 +59,17 @@ With `--worker`, `serve` also claims queued jobs and runs each in a sandbox from
 | `baseUrl` | Daytona cloud | The API URL. |
 | `snapshot` | account default | An existing snapshot to start sandboxes from. Used even when the job names an image. Longshore never creates snapshots. |
 | `target` | account default | The Daytona region. |
+| `fleet` | `longshore-dev` | Scopes the label, the name prefix and every count, list and delete to one fleet, so two instances on one account never touch each other's sandboxes. Lower case, starts with `longshore-`, at most 30 characters (for example `longshore-shadow`). |
 | `maxLive` | `2` | Live sandboxes of ours at once. At most `5`. |
 | `ttlSeconds` | `1800` | Longest sandbox lifetime. At most `1800`; longer requests are clamped. |
 | `capacityWaitSeconds` | `1200` | How long a job waits for capacity before it fails as an infrastructure error. |
 | `quotaMode` | `"org-usage"` | `"org-usage"` reads the org's CPU in use (see `ownerCiPreflight`); if Daytona answers that read with 403 (a key scoped to sandbox write and delete) it falls back to `"own-fleet"` and logs it once. `"own-fleet"` never reads the org: it counts our own live sandboxes by our label and waits while that is `maxLive` or more. Only a 403 falls back. |
 | `ownerCiPreflight` | `true` | The org-wide CPU check before each create. `false` turns it off, or give `{ cpuLimit, region, sandboxClass }`. |
+| `allowDomainListConfinement` | `false` | For the secrets-proxy path: accept a domain-list confinement, which rests on Daytona's filter reading the TLS server name. See [Secrets proxy](/secrets-proxy). |
 | `ownerCiLabels` | none | `{ "key": "project", "values": ["acme-ci"] }`: how the account owner's CI sandboxes are recognised. No default; with none there is no label check. |
 | `ownerCiLabelWaitAt` | off | Wait while this many sandboxes matching `ownerCiLabels` hold quota. Needs `ownerCiLabels`. Off unless set. |
 
-The `longshore-dev` label and name prefix, the auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
+The label and name prefix come from `fleet` (default `longshore-dev`). The auto-stop and auto-delete backstops and the rule that only our own sandboxes are listed or deleted are fixed. See [Providers](/providers#daytona).
 
 ### Egress
 
@@ -81,30 +83,7 @@ With `--worker` and with `longshore run`:
 
 ## Environment variables
 
-| Variable | Description |
-| --- | --- |
-| `PORT` | Default for `--port`. Hosts such as Railway set it. An invalid value is refused at startup. |
-| `LONGSHORE_BOOTSTRAP_TOKEN_SHA256` | sha256 (64 hex characters) of a token made by `longshore token generate`. On boot, if the bootstrap org has no tokens, one operator token with this hash is created (365 days). The token itself is never in the environment or the logs. |
-| `LONGSHORE_BOOTSTRAP_ORG` | Org slug for the bootstrap token. Default `local`. The org is created when missing. |
-| `LONGSHORE_MASTER_KEY_FILE` | Path to the 32-byte master key file (`longshore keys init`). Required for the GitHub App and the webhook endpoint `POST /api/v1/webhooks/github`. |
-| `LONGSHORE_REQUIRE_ORG_KEYS` | Set to `1` after `longshore keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused. See [Secrets vault](/secrets-vault). |
-| `LONGSHORE_AUDIT_EXPORT_DIR` | Directory for rotating JSONL export of audit entries and checkpoints. Needs no master key; checkpoints do (`LONGSHORE_MASTER_KEY_FILE`). See [Security](/security). |
-| `LONGSHORE_AUDIT_WEBHOOK_URL` | URL that receives audit batches as signed JSON posts. Subject to the outbound address rules. |
-| `LONGSHORE_AUDIT_WEBHOOK_SECRET_FILE` | File holding the HMAC secret for the audit webhook (never put the secret in the environment). |
-| `LONGSHORE_OIDC_BASE_URL` | Base of the per-org OIDC issuers. An org's issuer URL is `<base>/<org slug>`. Default `<public url>/oidc`; must be https (localhost excepted). Needs `LONGSHORE_MASTER_KEY_FILE`. See [OIDC](/oidc). |
-| `LONGSHORE_OIDC_ALLOW_CLASSES` | Trust classes that may get an OIDC token. Default `protected,release`. `untrusted_pr` is refused unless you list it, which you should not. |
-| `LONGSHORE_TRUST_FORWARDED_PROTO` | Set to `1` only behind a TLS-terminating proxy you control. A request the proxy forwards with `x-forwarded-proto: http` gets a 301 to the https URL (GET and HEAD) or a 400 (any other method); `x-forwarded-proto: https` marks the response secure, so it carries HSTS. Without it, forwarded headers are ignored. Loopback dev, which sends no such header, is untouched. It also lets requests that carry a secret value (`set_secret`, `rotate_secret`) in over `x-forwarded-proto: https`. |
-| `LONGSHORE_HSTS_MAX_AGE` | `Strict-Transport-Security` max-age in seconds on https responses. Default `31536000` (one year). `0` or `off` turns the header off. `LONGSHORE_HSTS_INCLUDE_SUBDOMAINS=0` drops `includeSubDomains`. |
-| `LONGSHORE_TRUSTED_PROXIES` | Comma-separated addresses and CIDR ranges of the proxies in front of the server. The webhook failure limiter keys on the right-most `X-Forwarded-For` hop that is not one of them, and reads the header only when the socket peer is itself trusted; with none set it keys on the peer. Replaces `LONGSHORE_TRUST_FORWARDED_FOR`, which is no longer read. See [Hosted deployment](/hosted). |
-| `LONGSHORE_CLAIM_INSTALLATIONS` | Set to `1` on a hosted instance: an org claims its own GitHub App installation (`start_installation_claim`, then the setup URL `/api/v1/github/setup`), and an unclaimed installation is not mapped to the App's org. |
-| `LONGSHORE_WORKER`, `LONGSHORE_PROVIDER`, `LONGSHORE_PROVIDER_CONFIG`, `LONGSHORE_POLL`, `LONGSHORE_IMAGE`, `LONGSHORE_GLOBAL_CAP`, `LONGSHORE_ORG_CAP`, `LONGSHORE_LEASE_SECONDS`, `LONGSHORE_ISOLATION_OVERRIDE`, `LONGSHORE_DATA_DIR` | The environment equivalent of each `serve` flag. A flag wins. See [Hosted deployment](/hosted). |
-| `LONGSHORE_POLL_JSON`, `LONGSHORE_PROVIDER_CONFIG_JSON` | The poll and provider configs as JSON, for hosts with no files. |
-| `LONGSHORE_NET_ALLOW_HOSTS` | Comma-separated hostnames or IP literals that the control plane may contact even though they resolve to a private or loopback address (and over plain http): for example a self-hosted Daytona on your network. Nothing else on a private range is reachable. See [Security](/security). |
-| `LONGSHORE_DROP_PRIVILEGES` | `<uid>:<gid>`, never root. When the server starts as root, it chowns the data directory to this user and drops to it before opening anything. The image sets `65532:65532`. Ignored when not root. See [Quickstart](/quickstart). |
-| `LONGSHORE_ALLOW_ROOT` | Set to `1` to let the server keep running as root. Without it, a root server with no `LONGSHORE_DROP_PRIVILEGES` refuses to start. |
-| `LONGSHORE_RELEASE_MASTER_KEY_FILE`, `LONGSHORE_RELEASE_DATA_DIR`, `LONGSHORE_RELEASE_GITHUB_TOKEN`, `LONGSHORE_RELEASE_ARTIFACT_DIR`, `LONGSHORE_RELEASE_BUILDER_ID`, `LONGSHORE_RELEASE_POLL_MS` | Configuration of `serve --roles release`, the release lane. Set on that process only; every other role ignores them. See [Release lane](/release-lane). |
-| `LONGSHORE_HOST` | Default for `--host`. The container image sets it to `0.0.0.0`. |
-| `LONGSHORE_ALLOWED_ORIGINS` | Comma-separated extra origins for the realtime WebSocket, in addition to `--allowed-origin`. |
+Every variable the server reads is listed, with its flag and default, in the [environment reference](#environment-reference) at the end of this page. It is generated from the code, so it cannot drift.
 
 ## Endpoints
 
@@ -160,6 +139,8 @@ Every environment variable Longshore reads, grouped by area. A variable that sta
 | `LONGSHORE_NET_ALLOW_HOSTS` |  |  | Comma-separated hostnames or IP literals the outbound HTTP client may reach even when they resolve to a private address (an audit webhook on a private network, a mock in tests). Everything else private is refused. |
 | `LONGSHORE_HOSTED` | `--hosted` | off | A hosted, multi-tenant instance: every job needs a `microvm` or `vm` provider and third-party provider plugins are disabled. |
 | `LONGSHORE_CLAIM_INSTALLATIONS` |  | off | Set to `1` on a hosted instance: an org claims its own GitHub App installation (`start_installation_claim`, then GitHub redirects to `/api/v1/github/setup`). |
+| `LONGSHORE_DATABASE_URL` | `--database-url` | SQLite in the data dir | Postgres connection URL. Every subcommand that opens the database uses it. See [Postgres](/postgres). |
+| `LONGSHORE_UI_DIR` |  | `packages/ui/dist` | Serve the web UI from this directory (it needs an `index.html`). Only for a run from source: the compiled binary serves its embedded UI and ignores it with a warning. |
 
 ### Worker and provider
 
@@ -177,18 +158,25 @@ Every environment variable Longshore reads, grouped by area. A variable that sta
 | `LONGSHORE_LEASE_SECONDS` | `--lease-seconds` | 30 | How long a worker holds a claimed attempt without a heartbeat. |
 | `LONGSHORE_ISOLATION_OVERRIDE` | `--isolation-override` |  | A reason. Lets jobs run on a provider weaker than their trust class requires. Audited and shown at the top of each affected job's log. |
 | `LONGSHORE_JOB_TOKENS` |  | on | Set to `off` to stop issuing a per-job GitHub token. |
+| `LONGSHORE_PROVIDER_PLUGINS` |  |  | A JSON array of `{ "name", "path", "sha256" }`: external provider plugins, each loaded only if the file at `path` has that digest. Never in hosted mode. See [Providers](/providers). |
+| `LONGSHORE_SANDBOX_SIZES_JSON` |  |  | The sandbox size map (JSON): which `runs-on` labels get how many CPUs and how much memory. Set only one of this and `LONGSHORE_SANDBOX_SIZES_FILE`. |
+| `LONGSHORE_SANDBOX_SIZES_FILE` |  |  | A file holding the sandbox size map. The same as `LONGSHORE_SANDBOX_SIZES_JSON`. |
 
 ### Secrets and keys
 
 | Variable | Flag | Default | Description |
 | --- | --- | --- | --- |
 | `LONGSHORE_MASTER_KEY_FILE` |  |  | 32-byte master key file for the encrypted secret store (`longshore keys init`). Required for the GitHub App, its webhook endpoint, the vault and OIDC. |
+| `LONGSHORE_MASTER_KEY_AUTOINIT` | `--init-master-key` | off | Set to `1` to create `LONGSHORE_MASTER_KEY_FILE` on first boot when it is absent, for a platform with no shell. It is written once, complete and private, and an existing file is never overwritten; of two replicas starting together exactly one creates it. Needs `LONGSHORE_MASTER_KEY_FILE`. Back the key up: without it stored secrets cannot be opened. |
+| `LONGSHORE_REQUIRE_ORG_KEYS` |  | off | Set to `1` after `longshore keys reseal` has run for every org: a sealed record that is not under its org's own key is then refused wherever the org is known, and `keys reseal` itself refuses to run while it is set. See [Secrets vault](/secrets-vault#per-org-keys). |
 
 ### GitHub
 
 | Variable | Flag | Default | Description |
 | --- | --- | --- | --- |
 | `LONGSHORE_GITHUB_TOKEN` |  |  | A GitHub token used to resolve and verify actions and to poll, when the run's own credential (the poll token, or an App token) is not available. |
+| `LONGSHORE_GITHUB_APP_SETUP_TOKEN_SHA256` |  |  | sha256 (64 hex characters) of a setup token (`longshore token generate`). Turns on creating the GitHub App from the instance, for a host with no shell. Needs `LONGSHORE_PUBLIC_URL` and a master key. The route closes after the first success and 6 hours after start; remove the variable when you are done. See [Hosted deployment](/hosted). |
+| `LONGSHORE_GITHUB_TOKEN_FILE` |  |  | A file holding a GitHub token for `longshore parity`, to avoid the unauthenticated rate limit. Never taken from the command line. |
 
 ### Secrets proxy
 
@@ -203,6 +191,14 @@ Every environment variable Longshore reads, grouped by area. A variable that sta
 | `LONGSHORE_PROXY_TLS_CERT_FILE` |  |  | Certificate (from a public CA) for a public TLS listener, for sandboxes in another provider's network. Set together with the key file. |
 | `LONGSHORE_PROXY_TLS_KEY_FILE` |  |  | Private key for the proxy's TLS listener. |
 
+### Job cache
+
+| Variable | Flag | Default | Description |
+| --- | --- | --- | --- |
+| `LONGSHORE_CACHE_URL` |  |  | The base URL jobs reach the control-plane cache at, no trailing slash. Setting it turns the cache on. See [Job cache](/cache). |
+| `LONGSHORE_CACHE_QUOTA_GIB` |  | 10 | GiB an org may hold in the cache in total, split between trust classes. |
+| `LONGSHORE_CACHE_MAX_ENTRY_GIB` |  | 2 | GiB of the largest single cache entry. |
+
 ### Release lane
 
 | Variable | Flag | Default | Description |
@@ -214,6 +210,25 @@ Every environment variable Longshore reads, grouped by area. A variable that sta
 | `LONGSHORE_RELEASE_ARTIFACT_DIR` |  |  | Directory laid out `<run id>/<name>` that the lane reads artifact bytes from (read-only). |
 | `LONGSHORE_RELEASE_BUILDER_ID` |  |  | The builder id recorded in provenance. |
 | `LONGSHORE_RELEASE_POLL_MS` |  | 5000 | How often the lane looks for release requests (at least 100). |
+| `LONGSHORE_PUBLISH_CHANNEL_KEY_FILE` |  |  | On the worker: the request key it shares with the release lane (`LONGSHORE_RELEASE_CHANNEL_KEY_FILE`), enabling compat publishing. Set it with the socket or the URL below. See [Release lane](/release-lane#how-a-job-gets-its-credential-the-release-channel). |
+| `LONGSHORE_PUBLISH_CHANNEL_SOCKET` |  |  | On the worker: the unix socket of the release channel (same host as the lane). |
+| `LONGSHORE_PUBLISH_CHANNEL_URL` |  |  | On the worker: the release channel as `host:port` over mutual TLS (split hosts), instead of the socket. Needs `_TLS_CERT_FILE`, `_TLS_KEY_FILE` and `_TLS_CA_FILE` (same prefix). |
+| `LONGSHORE_PUBLISH_CHANNEL_TLS_CERT_FILE` |  |  | On the worker: its client certificate for the release channel. |
+| `LONGSHORE_PUBLISH_CHANNEL_TLS_KEY_FILE` |  |  | On the worker: the private key of that certificate. |
+| `LONGSHORE_PUBLISH_CHANNEL_TLS_CA_FILE` |  |  | On the worker: the CA that signed the lane's certificate. |
+| `LONGSHORE_RELEASE_CHANNEL_KEY_FILE` |  |  | On the lane: the request key shared with the worker. Needs the release proxy (`LONGSHORE_RELEASE_PROXY_PORT`). |
+| `LONGSHORE_RELEASE_CHANNEL_SOCKET` |  | `<data dir>/channel.sock` | On the lane: the unix socket the release channel listens on (mode 0600). |
+| `LONGSHORE_RELEASE_CHANNEL_TCP` |  |  | On the lane: listen on `host:port` with mutual TLS instead of the socket, for split hosts. Needs `_TLS_CERT_FILE`, `_TLS_KEY_FILE` and `_TLS_CA_FILE` (same prefix). |
+| `LONGSHORE_RELEASE_CHANNEL_TLS_CERT_FILE` |  |  | On the lane: its server certificate for the TCP channel. |
+| `LONGSHORE_RELEASE_CHANNEL_TLS_KEY_FILE` |  |  | On the lane: the private key of that certificate. |
+| `LONGSHORE_RELEASE_CHANNEL_TLS_CA_FILE` |  |  | On the lane: the CA that signs the worker's client certificate. |
+| `LONGSHORE_RELEASE_PROXY_PORT` |  |  | On the lane: the port of its release proxy (`0` for any free port). Setting it turns the proxy on. |
+| `LONGSHORE_RELEASE_PROXY_BIND` |  | `127.0.0.1` | On the lane: the interface the release proxy binds. |
+| `LONGSHORE_RELEASE_PROXY_ADVERTISE_HOST` |  |  | On the lane: how the worker's sandboxes name the release proxy. |
+| `LONGSHORE_RELEASE_PROXY_ADVERTISE_PORT` |  |  | On the lane: the port sandboxes are told, when it differs from the one bound. |
+| `LONGSHORE_RELEASE_PROXY_ADVERTISE_ADDRESSES` |  |  | On the lane: comma-separated stable addresses of the proxy, for a provider that filters by address. |
+| `LONGSHORE_RELEASE_PROXY_TLS_CERT_FILE` |  |  | On the lane: a certificate, to serve the release proxy over TLS on a public name. |
+| `LONGSHORE_RELEASE_PROXY_TLS_KEY_FILE` |  |  | On the lane: the private key of that certificate. |
 
 ### Audit
 
