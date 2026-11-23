@@ -4,7 +4,6 @@
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
-import { asBigint, greatestOf, leastOf } from "../sql-dialect";
 import { appendEvent } from "./events";
 import { DEFAULT_SANDBOX_GRACE_MS, sandboxSeconds } from "./usage";
 
