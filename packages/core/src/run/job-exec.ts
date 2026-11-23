@@ -363,6 +363,7 @@ export async function executeJob(
         return await settle(r.state, r.reason, r.exitCode, r.outputs);
       }
       if (next.value.kind === "act") onAct(next.value.event);
+      else if (next.value.kind === "cut") log.cut(next.value.omittedBytes);
     }
   } catch (e) {
     if (cancelled) return await settle("cancelled", "cancelled by user");
@@ -385,7 +386,7 @@ export async function executeJob(
 /** Redacts text, shows it, and stores it in order with byte offsets (offsets of what is stored). */
 export class LogPipe {
   stored = 0;
-  readonly #redactor: Redactor;
+  #redactor: Redactor;
   readonly #env: JobEnv;
   readonly #attemptId: string;
   #lastPush = Date.now();
@@ -408,6 +409,26 @@ export class LogPipe {
 
   chain(fn: () => Promise<void>): void {
     this.#writes = this.#writes.then(fn);
+  }
+
+  /**
+   * Records, as metadata at the current position of the stored log, that `omittedBytes` of output
+   * were dropped. Nothing is written into the log text. What was held for redaction is flushed
+   * first and redaction starts afresh after the cut, so text from either side of the gap is
+   * never joined.
+   */
+  cut(omittedBytes: number): void {
+    this.#emit(this.#redactor.end());
+    this.#redactor = new Redactor({ registry: this.#env.registry });
+    const atOffset = this.stored;
+    this.chain(
+      () =>
+        this.#env.store.addCut?.(this.#attemptId, {
+          atOffset,
+          omittedBytes,
+          reason: "output cap",
+        }) ?? Promise.resolve(),
+    );
   }
 
   /** Flushes the held tail and waits for every pending write. */
