@@ -124,6 +124,29 @@ export const untrustedRunApprovalSetting = defineSetting({
   toml: "untrusted_run_approval",
 });
 
+/** How long after an org's last approver revocation `bootstrap_approver` stays refused. */
+export const DEFAULT_APPROVER_REBOOTSTRAP_DELAY_HOURS = 24;
+
+export const approverRebootstrapDelaySetting = defineSetting({
+  key: "approver_rebootstrap_delay_hours",
+  // An org setting whose default is the instance-wide value: an org without a stored value, an
+  // environment variable or a file entry gets the 24 hours.
+  scope: "org",
+  type: z.int().min(1).max(8760),
+  default: DEFAULT_APPROVER_REBOOTSTRAP_DELAY_HOURS,
+  role: "owner",
+  // A stolen instance token must not be able to revoke every approver and enrol its own key at
+  // once, so only the instance administrator changes the delay, and never through an agent.
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason: "it guards who may enrol an org's release approvers, so only a person changes it",
+  description:
+    "Hours after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver (at least 1). An org that never had an approver has no delay.",
+  env: ["TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "approver_rebootstrap_delay_hours",
+});
+
 /**
  * Per-environment approval policy (#345): how many distinct people an environment needs, whether
  * the author of a run may approve it, and the key-type policy (#152). A map keyed by environment
@@ -181,6 +204,7 @@ export const schedulingClassSetting = defineSetting({
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
+  approverRebootstrapDelaySetting,
   orgTokenRemintDelaySetting,
   auditAnchorSinkUrlSetting,
   auditAnchorExportIntervalSetting,

@@ -640,6 +640,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
+    name: "TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS",
+    area: "Server",
+    default: "24",
+    description:
+      "Hours (at least 1) after an org's last approver was revoked before `bootstrap_approver` may enrol a new first approver. The environment name of the `approver_rebootstrap_delay_hours` setting; set here, it applies to every org and locks the setting. See [Instance administration](/instance-admin).",
+  },
+  {
     name: "TURNTABLE_ORG_REMINT_DELAY_HOURS",
     area: "Server",
     default: "24",

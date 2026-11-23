@@ -1,10 +1,11 @@
-// The stylesheet for pages the server renders itself. The tokens, radius and fonts match
-// packages/ui/src/styles.css (Geist neutral, one blue), light and dark by prefers-color-scheme,
-// so the pages need no script. It is a string in the source, so the compiled binary carries it.
+// The stylesheet for pages the server renders itself. The tokens, radius and fonts are generated from
+// packages/ui/src/styles.css by scripts/page-css.ts (Geist neutral, one blue), light and dark by
+// prefers-color-scheme, so the pages need no script. It is a string in the source, so the compiled binary carries it.
+import { PAGE_TOKENS_CSS } from "./page-tokens.generated";
+
 export const PAGE_CSS = `@font-face{font-family:"Geist";src:url("/_pages/fonts/geist.woff2?v=__GEIST__") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
 @font-face{font-family:"Geist Mono";src:url("/_pages/fonts/geist-mono.woff2?v=__GEIST_MONO__") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
-:root{color-scheme:light dark;--font-sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;--bg:#fafafa;--bg-muted:#f2f2f2;--surface:#fff;--border:#ebebeb;--border-strong:#d4d4d4;--fg:#171717;--fg-muted:#595959;--accent:#0070f3;--accent-fg:#fff;--ring:#0070f3;--danger:#c0241a;--danger-bg:#fdecea;--radius:8px}
-@media (prefers-color-scheme:dark){:root{--bg:#0a0a0a;--bg-muted:#1a1a1a;--surface:#111;--border:#242424;--border-strong:#3a3a3a;--fg:#ededed;--fg-muted:#a1a1a1;--accent:#3291ff;--accent-fg:#0a0a0a;--ring:#3291ff;--danger:#ff6166;--danger-bg:#2d1214}}
+${PAGE_TOKENS_CSS}
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font:15px/1.55 var(--font-sans);-webkit-font-smoothing:antialiased}

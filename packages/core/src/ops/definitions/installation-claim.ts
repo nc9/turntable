@@ -14,14 +14,22 @@ export const startInstallationClaim = defineOp({
     "signed in to GitHub; Turntable then checks that they OWN the installation (an admin of the " +
     "organization, or the user the personal account belongs to) before it binds it, and audits " +
     "who claimed it. The link expires in 15 minutes. Needs an org-level token with " +
-    "release_operator or admin (a project-scoped token is refused with forbidden). Not " +
-    "available over MCP.",
+    "release_operator or admin (a project-scoped token is refused with forbidden). Pass " +
+    "installation_id for an installation made without a claim link: the link then opens its " +
+    "configure page (the App needs Redirect on update enabled). Not available over MCP.",
   input: z.object({
     github_login: z
       .string()
       .regex(/^[A-Za-z0-9-]{1,39}$/)
       .optional()
       .describe("If known, only this GitHub user can complete the claim."),
+    installation_id: z
+      .string()
+      .regex(/^\d{1,20}$/)
+      .optional()
+      .describe(
+        "Claim an installation that already exists: the link opens its configure page instead of a fresh install.",
+      ),
   }),
   output: z.object({
     url: z.string().describe("Open this in a browser to install and connect."),
@@ -47,7 +55,10 @@ export const startInstallationClaim = defineOp({
       const r = await ctx.claims.start(
         ctx.scope.orgId,
         `${ctx.principal.kind}:${ctx.principal.id}`,
-        input.github_login ? { expectedLogin: input.github_login } : {},
+        {
+          ...(input.github_login ? { expectedLogin: input.github_login } : {}),
+          ...(input.installation_id ? { installationId: input.installation_id } : {}),
+        },
       );
       return { url: r.url, expires_at: r.expiresAt };
     } catch (e) {

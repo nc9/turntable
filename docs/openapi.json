@@ -1730,7 +1730,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 14,
+              "maxItems": 16,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1746,6 +1746,8 @@
                   "quota.warning",
                   "quota.reached",
                   "webhook.disabled",
+                  "approver.bootstrapped",
+                  "approvers.depleted",
                   "approval.policy_loosened",
                   "org.token_reminted",
                   "org.tokens_exhausted"
@@ -1853,6 +1855,8 @@
                               "quota.warning",
                               "quota.reached",
                               "webhook.disabled",
+                              "approver.bootstrapped",
+                              "approvers.depleted",
                               "approval.policy_loosened",
                               "org.token_reminted",
                               "org.tokens_exhausted"
@@ -7582,7 +7586,7 @@
       "post": {
         "operationId": "start_installation_claim",
         "summary": "Get the link that connects a GitHub installation to this org.",
-        "description": "Starts a claim for this org and returns a link carrying a signed, single-use state that binds the installation to the org of the caller. The link opens a confirmation page on this Turntable instance that names the org; confirming sets a cookie that binds the flow to that browser and sends it to GitHub. The person must install (or configure) the App and be signed in to GitHub; Turntable then checks that they OWN the installation (an admin of the organization, or the user the personal account belongs to) before it binds it, and audits who claimed it. The link expires in 15 minutes. Needs an org-level token with release_operator or admin (a project-scoped token is refused with forbidden). Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "description": "Starts a claim for this org and returns a link carrying a signed, single-use state that binds the installation to the org of the caller. The link opens a confirmation page on this Turntable instance that names the org; confirming sets a cookie that binds the flow to that browser and sends it to GitHub. The person must install (or configure) the App and be signed in to GitHub; Turntable then checks that they OWN the installation (an admin of the organization, or the user the personal account belongs to) before it binds it, and audits who claimed it. The link expires in 15 minutes. Needs an org-level token with release_operator or admin (a project-scoped token is refused with forbidden). Pass installation_id for an installation made without a claim link: the link then opens its configure page (the App needs Redirect on update enabled). Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": false,
@@ -7595,6 +7599,11 @@
                     "description": "If known, only this GitHub user can complete the claim.",
                     "type": "string",
                     "pattern": "^[A-Za-z0-9-]{1,39}$"
+                  },
+                  "installation_id": {
+                    "description": "Claim an installation that already exists: the link opens its configure page instead of a fresh install.",
+                    "type": "string",
+                    "pattern": "^\\d{1,20}$"
                   },
                   "org": {
                     "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
@@ -9992,6 +10001,103 @@
                     }
                   },
                   "required": ["limits", "usage"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/approvers/bootstrap": {
+      "post": {
+        "operationId": "bootstrap_approver",
+        "summary": "Enrol an org's first approver from an offline ed25519 public key (instance administrator only).",
+        "description": "The hosted counterpart of `turntable approvals bootstrap`, for an instance with no shell. Takes the target org, the person's name and forge login, and an ed25519 public key generated offline (`turntable approvals keygen`); the private key never reaches the server. Works only while the org has no active approver and never adds to an existing set: after that, new keys need a quorum of existing approvers (request_enrolment and approve_enrolment), and the bootstrap key signs the passkey's enrolment as usual. An org whose approvers were all revoked can be bootstrapped again only after the `approver_rebootstrap_delay_hours` setting (24 by default, at least 1) has passed since the last revocation, so a stolen token cannot revoke every approver and enrol its own key at once; the refusal says when. Revoking the last approver and every bootstrap emit an event (`approvers.depleted`, `approver.bootstrapped`) that outbound webhooks can carry. Returns the approver id and the key's fingerprint. The change is audited in the system org's chain and in the target org's own, with the fingerprint and never the key. Only the instance administrator can call it: an org's own tokens, of any role, never can. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org that gets its first approver."
+                  },
+                  "person": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "A name for the human who holds the key."
+                  },
+                  "forge_login": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Their forge login, which an approval is checked against the run's author with."
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "The ed25519 public key (SPKI PEM or base64)."
+                  }
+                },
+                "required": ["target_org", "person", "forge_login", "public_key"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approver_id": {
+                      "type": "string"
+                    },
+                    "person": {
+                      "type": "string"
+                    },
+                    "key_fingerprint": {
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["approver_id", "person", "key_fingerprint", "warnings"],
                   "additionalProperties": false
                 }
               }
