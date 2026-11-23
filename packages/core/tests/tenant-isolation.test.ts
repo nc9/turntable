@@ -408,6 +408,7 @@ const FIELD: Record<string, (w: World) => unknown> = {
   id: (w) => w.aOnly.runId,
   webhook_id: (w) => w.fx.webhookId!,
   enrolment_id: (w) => w.aOnly.runId,
+  installation_id: () => "424242",
 };
 /** Fields handled by the variant, not here. */
 const VARIANT_FIELDS = new Set(["org", "project"]);
@@ -602,6 +603,8 @@ const UNREACHABLE: Record<string, string> = {
     "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
   start_installation_claim:
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
+  resync_installation:
+    "needs a configured GitHub App and an installation of A; org B is probed and gets not_found, and the ownership, rate limit and adoption are in github-resync.test.ts",
   doctor:
     "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
   get_setting:

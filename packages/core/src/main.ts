@@ -6,7 +6,8 @@ import { allowHostsFromEnv } from "@turntable/net";
 import type { Provider } from "@turntable/provider-sdk";
 import { checkoutConfigFromEnv } from "./run/checkout-child";
 import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
-import { githubFacts } from "./github/api";
+import { githubFacts, type GithubFacts } from "./github/api";
+import { adoptPolledBindings } from "./github/installations";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
 import { AppAuth } from "./github/app-auth";
@@ -675,6 +676,7 @@ async function serve(args: string[]): Promise<void> {
   // GitHub webhooks (/api/v1/webhooks/github) need the secret store, so they need a master key.
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
+  let appFacts: GithubFacts | undefined;
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
@@ -742,6 +744,7 @@ async function serve(args: string[]): Promise<void> {
       revoke: () => auth.dropCached(),
     });
     const ghFacts = githubFacts(auth);
+    appFacts = ghFacts;
     webhooks = createWebhookHandler({
       db,
       store,
@@ -853,6 +856,7 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(appFacts ? { githubFacts: appFacts } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
         backup:
@@ -877,6 +881,14 @@ async function serve(args: string[]): Promise<void> {
     : undefined;
   if (server)
     console.log(`turntable ${VERSION} listening on http://${server.hostname}:${server.port}`);
+  // Installations synced before polled repos were adopted: adopt now, after listening, so a slow
+  // or failing GitHub never holds up startup or healthz.
+  if (appFacts) {
+    const facts = appFacts;
+    void adoptPolledBindings(db, facts, (m) => console.log(`[turntable] ${m}`)).catch((err) =>
+      console.warn(`[turntable] adopt sweep failed: ${err instanceof Error ? err.message : err}`),
+    );
+  }
 
   const background = await startBackground(
     db,

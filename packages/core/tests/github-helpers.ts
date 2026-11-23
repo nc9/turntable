@@ -12,8 +12,8 @@ export const rsa = generateKeyPairSync("rsa", {
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
 });
 
-export async function setup(appId = "42") {
-  const db: Db = openDatabase(":memory:");
+export async function setup(appId = "42", open: () => Db = () => openDatabase(":memory:")) {
+  const db: Db = open();
   const org = await createOrg(db, { slug: "acme", name: "Acme" });
   const store = new SecretStore(db, randomBytes(32));
   await setGithubApp(
