@@ -1758,6 +1758,26 @@ jobs:
     });
     expect(ran.map((r) => r.length)).toEqual([1, 1, 1]);
     expect(new Set(ran.flat()).size).toBe(3);
+    // the API names each shard, the job they share and the step each owns
+    const token = (await mintToken(db, scope, "reader")).secret;
+    const got = await dispatch({ registry, db }, { kind: "bearer", token }, "get_run", {
+      run_id: run!.id,
+    });
+    const apiJobs = (got.ok ? (got.output as any) : undefined).jobs as {
+      job_key: string;
+      shard: { job: string; index: number; total: number; steps: string[] } | null;
+    }[];
+    expect(apiJobs.find((j) => j.job_key === "gate")!.shard).toBeNull();
+    expect(
+      apiJobs
+        .filter((j) => j.shard)
+        .map((j) => j.shard)
+        .toSorted((a, b) => a!.index - b!.index),
+    ).toEqual([
+      { job: "tests", index: 0, total: 3, steps: ["Audit engine tests"] },
+      { job: "tests", index: 1, total: 3, steps: ["Rules tests"] },
+      { job: "tests", index: 2, total: 3, steps: ["Rest tests"] },
+    ]);
     // the gate ran after every shard finished
     const finished = Math.max(
       ...after.filter((j) => j.jobKey.startsWith("tests[")).map((j) => j.finishedAt ?? 0),
