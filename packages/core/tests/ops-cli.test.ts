@@ -142,6 +142,7 @@ test.skipIf(onPostgres)("the CLI binary prints only the secret on stdout", async
 test("a token can never mint a token exceeding its own scope", () => {
   const orgWide = {
     kind: "token",
+    tokenKind: "agent",
     id: "t",
     orgId: "o",
     projectId: null,

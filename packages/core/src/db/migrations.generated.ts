@@ -429,5 +429,25 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `job_attempts` ADD `skip_check_claimed_at` integer;"
     ]
+  },
+  {
+    "tag": "0037_untrusted_run_approval",
+    "when": 1795424035577,
+    "statements": [
+      "PRAGMA foreign_keys=OFF;",
+      "CREATE TABLE `__new_api_tokens` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`name` text NOT NULL,\n\t`role` text NOT NULL,\n\t`kind` text DEFAULT 'agent' NOT NULL,\n\t`token_hash` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\t`expires_at` integer,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"api_tokens_role_check\" CHECK(role IN ('reader', 'operator', 'release_operator')),\n\tCONSTRAINT \"api_tokens_kind_check\" CHECK(kind IN ('agent', 'person'))\n);",
+      "INSERT INTO `__new_api_tokens`(\"id\", \"org_id\", \"project_id\", \"name\", \"role\", \"kind\", \"token_hash\", \"created_by\", \"created_at\", \"last_used_at\", \"expires_at\", \"revoked_at\") SELECT \"id\", \"org_id\", \"project_id\", \"name\", \"role\", 'agent', \"token_hash\", \"created_by\", \"created_at\", \"last_used_at\", \"expires_at\", \"revoked_at\" FROM `api_tokens`;",
+      "DROP TABLE `api_tokens`;",
+      "ALTER TABLE `__new_api_tokens` RENAME TO `api_tokens`;",
+      "PRAGMA foreign_keys=ON;",
+      "CREATE INDEX `api_tokens_org_idx` ON `api_tokens` (`org_id`);",
+      "CREATE UNIQUE INDEX `api_tokens_hash_unique` ON `api_tokens` (`token_hash`);",
+      "CREATE TABLE `__new_projects` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`slug` text NOT NULL,\n\t`name` text NOT NULL,\n\t`require_sha_pins` integer DEFAULT 0 NOT NULL,\n\t`egress` text DEFAULT 'none' NOT NULL,\n\t`release_refs` text,\n\t`signing_key` text,\n\t`signing_environment` text,\n\t`checks_mode` text DEFAULT 'off' NOT NULL,\n\t`ingest_config` text,\n\t`frozen_at` integer,\n\t`frozen_reason` text,\n\t`frozen_by` text,\n\t`cache_release_restore` integer DEFAULT 0 NOT NULL,\n\t`oidc_audiences` text,\n\t`sandbox_snapshot` text,\n\t`max_concurrent` integer,\n\t`untrusted_run_approval` text DEFAULT 'no_agents' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"projects_untrusted_run_approval_check\" CHECK(untrusted_run_approval IN ('human', 'no_agents', 'any'))\n);",
+      "INSERT INTO `__new_projects`(\"id\", \"org_id\", \"slug\", \"name\", \"require_sha_pins\", \"egress\", \"release_refs\", \"signing_key\", \"signing_environment\", \"checks_mode\", \"ingest_config\", \"frozen_at\", \"frozen_reason\", \"frozen_by\", \"cache_release_restore\", \"oidc_audiences\", \"sandbox_snapshot\", \"max_concurrent\", \"untrusted_run_approval\", \"created_at\") SELECT \"id\", \"org_id\", \"slug\", \"name\", \"require_sha_pins\", \"egress\", \"release_refs\", \"signing_key\", \"signing_environment\", \"checks_mode\", \"ingest_config\", \"frozen_at\", \"frozen_reason\", \"frozen_by\", \"cache_release_restore\", \"oidc_audiences\", \"sandbox_snapshot\", \"max_concurrent\", 'no_agents', \"created_at\" FROM `projects`;",
+      "DROP TABLE `projects`;",
+      "ALTER TABLE `__new_projects` RENAME TO `projects`;",
+      "CREATE UNIQUE INDEX `projects_org_slug_unique` ON `projects` (`org_id`,`slug`);",
+      "CREATE UNIQUE INDEX `projects_id_org_unique` ON `projects` (`id`,`org_id`);"
+    ]
   }
 ];

@@ -186,5 +186,15 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"skip_check_claimed_at\" bigint;"
     ]
+  },
+  {
+    "tag": "0008_untrusted_run_approval",
+    "when": 1795424036193,
+    "statements": [
+      "ALTER TABLE \"api_tokens\" ADD COLUMN \"kind\" text DEFAULT 'agent' NOT NULL;",
+      "ALTER TABLE \"projects\" ADD COLUMN \"untrusted_run_approval\" text DEFAULT 'no_agents' NOT NULL;",
+      "ALTER TABLE \"api_tokens\" ADD CONSTRAINT \"api_tokens_kind_check\" CHECK (kind IN ('agent', 'person'));",
+      "ALTER TABLE \"projects\" ADD CONSTRAINT \"projects_untrusted_run_approval_check\" CHECK (untrusted_run_approval IN ('human', 'no_agents', 'any'));"
+    ]
   }
 ];

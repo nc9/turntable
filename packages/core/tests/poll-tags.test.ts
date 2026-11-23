@@ -476,8 +476,10 @@ describe("whether creating the tag is protected decides if the run waits for app
     const [run] = await tagRuns();
     const trust = JSON.parse(run!.trust!);
     await setApproveRunMinRole(db, scope.orgId, "operator");
-    const op = (await mintToken(db, { orgId: scope.orgId }, "operator")).secret;
-    const rel = (await mintToken(db, { orgId: scope.orgId }, "release_operator")).secret;
+    const op = (await mintToken(db, { orgId: scope.orgId }, "operator", { kind: "person" })).secret;
+    const rel = (
+      await mintToken(db, { orgId: scope.orgId }, "release_operator", { kind: "person" })
+    ).secret;
     const call = (tok: string) =>
       dispatch({ registry, db }, { kind: "bearer", token: tok }, "approve_run", {
         run_id: run!.id,
@@ -513,7 +515,9 @@ describe("whether creating the tag is protected decides if the run waits for app
     expect((await getRun(db, scope, main.id))!.status).toBe("running");
     expect((await getRun(db, scope, held.id))!.status).toBe("awaiting_approval");
     // approval moves the held run into the workflow's group, where it supersedes the older run
-    const rel = (await mintToken(db, { orgId: scope.orgId }, "release_operator")).secret;
+    const rel = (
+      await mintToken(db, { orgId: scope.orgId }, "release_operator", { kind: "person" })
+    ).secret;
     const trust = JSON.parse(held.trust!);
     const ok = await dispatch({ registry, db }, { kind: "bearer", token: rel }, "approve_run", {
       run_id: held.id,

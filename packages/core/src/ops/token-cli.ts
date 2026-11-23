@@ -14,7 +14,7 @@ import {
   revokeApiToken,
   type Scope,
 } from "../db/repos";
-import { AGENT_ROLES, type AgentRole } from "../db/schema";
+import { AGENT_ROLES, type AgentRole, TOKEN_KINDS, type TokenKind } from "../db/schema";
 import { generateToken, hashToken } from "./tokens";
 
 /** Roles the CLI will mint: every agent role. Org roles are for people and never go on a token. */
@@ -26,6 +26,8 @@ export type TokenCreateOptions = {
   org: string;
   project?: string | undefined;
   role: string;
+  /** `agent` (default) or `person`. */
+  kind?: string | undefined;
   name: string;
   expiresInDays?: number | undefined;
   now?: (() => number) | undefined;
@@ -35,6 +37,7 @@ export type CreatedToken = {
   id: string;
   secret: string;
   role: AgentRole;
+  kind: TokenKind;
   org: string;
   project: string | null;
   expiresAt: number;
@@ -43,6 +46,10 @@ export type CreatedToken = {
 export async function createTokenFromCli(db: Db, opts: TokenCreateOptions): Promise<CreatedToken> {
   if (!(CLI_ROLES as readonly string[]).includes(opts.role)) {
     throw new Error(`unknown role ${opts.role}; use one of: ${CLI_ROLES.join(", ")}`);
+  }
+  const kind = opts.kind ?? "agent";
+  if (!(TOKEN_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(`unknown kind ${kind}; use one of: ${TOKEN_KINDS.join(", ")}`);
   }
   const name = opts.name.trim();
   if (name.length === 0 || name.length > 80) throw new Error("--name must be 1 to 80 characters");
@@ -68,6 +75,7 @@ export async function createTokenFromCli(db: Db, opts: TokenCreateOptions): Prom
     const created = await insertApiToken(tx, scope, {
       name,
       role,
+      kind: kind as TokenKind,
       tokenHash: hashToken(secret),
       createdBy: "cli:local",
       expiresAt,
@@ -78,7 +86,14 @@ export async function createTokenFromCli(db: Db, opts: TokenCreateOptions): Prom
       op: "create_api_token",
       effect: "write",
       outcome: "ok",
-      input: { name, role, org: opts.org, project: opts.project ?? null, expires_in_days: days },
+      input: {
+        name,
+        role,
+        kind,
+        org: opts.org,
+        project: opts.project ?? null,
+        expires_in_days: days,
+      },
     });
     return created;
   });
@@ -86,6 +101,7 @@ export async function createTokenFromCli(db: Db, opts: TokenCreateOptions): Prom
     id: row.id,
     secret,
     role,
+    kind: kind as TokenKind,
     org: opts.org,
     project: opts.project ?? null,
     expiresAt,
@@ -96,6 +112,7 @@ export type TokenSummary = {
   id: string;
   name: string;
   role: AgentRole;
+  kind: TokenKind;
   project: string | null;
   createdAt: number;
   lastUsedAt: number | null;
@@ -132,6 +149,8 @@ export async function listTokensFromCli(
       id: r.id,
       name: r.name,
       role: r.role as AgentRole,
+      // The column defaults to agent; anything but an explicit person reads as one (fail closed).
+      kind: r.kind === "person" ? "person" : "agent",
       project: await slugOf(r.projectId),
       createdAt: r.createdAt,
       lastUsedAt: r.lastUsedAt,

@@ -48,6 +48,8 @@ export function createMcpServer(env: DispatchEnv, token: string): Server {
     { name: "turntable", version: VERSION },
     { capabilities: { tools: {}, resources: {} }, instructions: INSTRUCTIONS },
   );
+  // Whatever the caller passed, a call through this adapter is an MCP call: approve_run reads it.
+  env = { ...env, transport: "mcp" };
   const tools = mcpTools(env.registry);
   const known = new Set(tools.map((t) => t.name));
   const call = (name: string, input: Record<string, unknown>) =>

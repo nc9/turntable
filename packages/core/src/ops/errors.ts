@@ -17,10 +17,18 @@ export type ErrorCode = keyof typeof ERROR_STATUS;
 export class OpError extends Error {
   readonly code: ErrorCode;
   readonly details: unknown;
-  constructor(code: ErrorCode, message: string, details?: unknown) {
+  /** Extra facts for the audit row of a refused write (never sent to the caller). */
+  readonly auditDetail: Record<string, unknown> | undefined;
+  constructor(
+    code: ErrorCode,
+    message: string,
+    details?: unknown,
+    auditDetail?: Record<string, unknown>,
+  ) {
     super(message);
     this.code = code;
     this.details = details;
+    this.auditDetail = auditDetail;
   }
   get status(): number {
     return ERROR_STATUS[this.code];
