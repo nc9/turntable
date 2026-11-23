@@ -31,6 +31,12 @@ const MCP_OFF: Record<string, string> = {
   sign_release: "signature op: a human-signed assertion, never a token",
   approve_environment: "signature op: a human-signed statement, never a token",
   approve_enrolment: "signature op: a human-signed statement, never a token",
+  key_policy_challenge: "changing which approver keys count is a human act, like enrolment",
+  instance_whoami:
+    "instance administrator ops are REST only: that token is never given to an agent",
+  instance_list_orgs:
+    "instance administrator ops are REST only: that token is never given to an agent",
+  set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
 };
 
 describe("the operations table", () => {
