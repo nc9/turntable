@@ -6,6 +6,7 @@ import * as s from "../src/db/schema";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import {
   BACKOFF_MS,
+  defaultSettleMs,
   MAX_ATTEMPTS,
   validateWebhookUrl,
   verifyWebhookSignature,
@@ -13,6 +14,7 @@ import {
 } from "../src/webhooks/service";
 import { fanOutOutboundEndpoint } from "../src/db/repos";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { onPostgres } from "./pg-mode";
 
 let db: Db;
 let a: Tenant;
@@ -277,7 +279,7 @@ describe("retries, the log and auto-disable", () => {
     expect(after.disabled_reason).toContain("3 consecutive");
     const events = await listEvents(db, { orgId: a.orgId }, { after: 0, limit: 100 });
     const note = events.find(
-      (e) => e.type === "infra.error" && e.payload.includes("webhook_disabled"),
+      (e) => e.type === "webhook.disabled" && e.payload.includes(c.webhook.id),
     );
     expect(note).toBeDefined();
     const n = sent.length;
@@ -356,4 +358,39 @@ test("transitions on a job still produce one event each, and the feed is what we
   await transitionJob(db, a.scope, a.jobId, "running");
   await svc.tick();
   expect(sent.map((x) => JSON.parse(x.body).type)).toEqual(["job.state_changed"]);
+});
+
+describe("events that have not settled yet (ids can commit out of order on Postgres)", () => {
+  test("the default settle window is 2 s on Postgres and none on SQLite", () => {
+    expect(defaultSettleMs()).toBe(onPostgres ? 2000 : 0);
+  });
+
+  test("an event younger than the window is held back, then delivered in order once it settles", async () => {
+    const real = Date.now();
+    let now = real;
+    const held = new WebhookService({
+      db,
+      masterKey: randomBytes(32),
+      now: () => now,
+      settleMs: 5000,
+      fetch: async (url, init) => {
+        sent.push({
+          url: String(url),
+          headers: new Headers(init?.headers),
+          body: String(init?.body),
+        });
+        return new Response("ok");
+      },
+    });
+    env = { registry, db, now: () => now, webhooks: held };
+    await op(a, "create_webhook", { url: URL_OK });
+    await emit(a, 2);
+    await held.tick();
+    expect(sent).toHaveLength(0); // too young: a gap below could still be filling
+    now = real + 6000;
+    await held.tick();
+    const cursors = sent.map((x) => JSON.parse(x.body).cursor as number);
+    expect(cursors).toHaveLength(2);
+    expect(cursors).toEqual(cursors.toSorted((x, y) => x - y));
+  });
 });

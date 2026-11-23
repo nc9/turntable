@@ -15,6 +15,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { type SafeFetch, safeFetch, blockedReason } from "@longshore/net";
 import { isIP } from "node:net";
 import type { Db } from "../db";
+import { DIALECT } from "../db/dialect";
 import {
   activeWebhookSecrets,
   addWebhookSecret,
@@ -35,6 +36,13 @@ import { open, seal } from "../secrets/crypto";
 export const SIGNATURE_HEADER = "longshore-signature";
 export const OVERLAP_MS = 24 * 3600 * 1000;
 export const DISABLE_AFTER = 20;
+/**
+ * On Postgres an event id comes from a sequence and two transactions can commit out of order, so a
+ * reader whose cursor passed id N+2 could miss N+1 committing a moment later. Readers therefore
+ * ignore events younger than this. SQLite has one writer at a time, so ids commit in order.
+ */
+export const PG_SETTLE_MS = 2000;
+export const defaultSettleMs = (): number => (DIALECT === "pg" ? PG_SETTLE_MS : 0);
 /** Delay before attempt n+1, after attempt n failed. Eight attempts, about a day in all. */
 export const BACKOFF_MS = [30_000, 120_000, 600_000, 1_800_000, 3_600_000, 7_200_000, 21_600_000];
 export const MAX_ATTEMPTS = BACKOFF_MS.length + 1;
@@ -116,7 +124,10 @@ export interface WebhookServiceOptions {
   overlapMs?: number;
   /** Deliveries in flight at once. Default 8. */
   concurrency?: number;
-  /** Ignore events newer than this (a database whose ids can commit out of order). */
+  /**
+   * Ignore events newer than this many ms (a database whose ids can commit out of order).
+   * Default: 2 s on Postgres, none on SQLite.
+   */
   settleMs?: number;
   /** Jitter source, 0 to 1. */
   random?: () => number;
@@ -193,13 +204,14 @@ export class WebhookService {
 
   /** Moves every active endpoint's cursor to the tip (at most `maxPages` pages each). */
   async fanOut(maxPages = 10): Promise<number> {
+    const settle = this.#o.settleMs ?? defaultSettleMs();
     let inserted = 0;
     for (const ep of await listActiveOutboundEndpoints(this.#o.db)) {
       for (let i = 0; i < maxPages; i++) {
         const r = await fanOutOutboundEndpoint(this.#o.db, ep.id, {
           page: 100,
           now: this.#now(),
-          ...(this.#o.settleMs ? { settleMs: this.#o.settleMs } : {}),
+          ...(settle > 0 ? { settleMs: settle } : {}),
         });
         inserted += r.inserted;
         if (r.scanned < 100) break;
@@ -359,7 +371,12 @@ export class WebhookService {
   start(intervalMs = 2000): () => void {
     const run = () => void this.tick().catch((e) => this.#o.log?.(`webhooks: ${String(e)}`));
     this.#timer = setInterval(run, intervalMs);
-    this.#off = onEventsAppended(run);
+    this.#off = onEventsAppended(() => {
+      run();
+      // An event wakes a pass at once, and a second pass once it has settled (Postgres).
+      const settle = this.#o.settleMs ?? defaultSettleMs();
+      if (settle > 0) setTimeout(run, settle + 50).unref?.();
+    });
     run();
     return () => this.stop();
   }

@@ -6,6 +6,7 @@
 // Resume: every frame's `id` is the event's cursor. A client that reconnects with `Last-Event-ID`
 // (browsers do it themselves) or `?after=` gets the events after that cursor, so nothing is lost
 // or repeated. A slow reader whose unread bytes pass the cap is closed and resumes the same way.
+import { DIALECT } from "../db/dialect";
 import { onEventsAppended } from "../db/repos";
 import { API_HEADERS } from "../ops/rest";
 import { type DispatchEnv, dispatch, resolveCallerScope } from "../ops/dispatch";
@@ -25,6 +26,11 @@ export type SseLimits = {
   maxConnections: number;
   /** Events per read. */
   page: number;
+  /**
+   * Hold back events younger than this many ms (Postgres: ids can commit out of order, so a
+   * cursor must not pass a gap that is still filling). Default 2 s on Postgres, 0 on SQLite.
+   */
+  settleMs: number;
 };
 
 export const DEFAULT_SSE_LIMITS: SseLimits = {
@@ -35,6 +41,7 @@ export const DEFAULT_SSE_LIMITS: SseLimits = {
   maxConnectionsPerOrg: 25,
   maxConnections: 500,
   page: 100,
+  settleMs: DIALECT === "pg" ? 2000 : 0,
 };
 
 type WireEvent = { cursor: number; type: string } & Record<string, unknown>;
@@ -191,6 +198,20 @@ export function createEventStream(o: {
         return true;
       };
 
+      /** The events that are old enough, in order, stopping at the first that is not. */
+      const settled = (out: EventsOut): { events: WireEvent[]; next: number; held: boolean } => {
+        if (limits.settleMs <= 0) return { events: out.events, next: out.next_after, held: false };
+        const cutoff = Date.now() - limits.settleMs;
+        const keep: WireEvent[] = [];
+        for (const ev of out.events) {
+          if (Date.parse(String(ev.created_at)) > cutoff) {
+            return { events: keep, next: keep.at(-1)?.cursor ?? cursor, held: true };
+          }
+          keep.push(ev);
+        }
+        return { events: keep, next: out.next_after, held: false };
+      };
+
       const pump = async (): Promise<void> => {
         if (pumping) {
           dirty = true;
@@ -203,8 +224,14 @@ export function createEventStream(o: {
             for (;;) {
               if (closed) return;
               const out = await read(cursor, limits.page);
-              if (!send(out.events)) return;
-              cursor = Math.max(cursor, out.next_after);
+              const ok = settled(out);
+              if (!send(ok.events)) return;
+              cursor = Math.max(cursor, ok.next);
+              if (ok.held) {
+                // Something newer is still settling: look again once it has.
+                setTimeout(() => void pump(), limits.settleMs + 50).unref?.();
+                break;
+              }
               if (out.events.length < limits.page) break;
             }
           } while (dirty);
@@ -228,8 +255,10 @@ export function createEventStream(o: {
             controller = c;
             c.enqueue(enc.encode(`retry: 3000\n: connected\n\n`));
             // What the first read returned, then everything after it.
-            if (send(first.events)) {
-              if (first.events.length > 0) cursor = Math.max(cursor, first.next_after);
+            const f = settled(first);
+            if (send(f.events)) {
+              if (f.events.length > 0) cursor = Math.max(cursor, f.next);
+              if (f.held) setTimeout(() => void pump(), limits.settleMs + 50).unref?.();
               off = onEventsAppended((org) => {
                 if (org === orgId) void pump();
               });

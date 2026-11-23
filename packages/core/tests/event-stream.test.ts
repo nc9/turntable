@@ -14,7 +14,10 @@ let stream: EventStream;
 const open: AbortController[] = [];
 
 const mk = (limits = {}) =>
-  createEventStream({ env, limits: { heartbeatMs: 50, pollMs: 40, reauthMs: 60_000, ...limits } });
+  createEventStream({
+    env,
+    limits: { heartbeatMs: 50, pollMs: 40, reauthMs: 60_000, settleMs: 0, ...limits },
+  });
 
 beforeEach(async () => {
   ({ db, a, b } = await seedWorld());
@@ -257,4 +260,17 @@ describe("the event stream", () => {
     ).map((f) => f.id);
     expect(viaSse).toEqual(viaRest);
   });
+
+  test("with a settle window, a fresh event waits for it and order is kept (Postgres id gaps)", async () => {
+    stream = mk({ settleMs: 2500 });
+    await Bun.sleep(2600); // anything the seed wrote has settled
+    const res = await connect("");
+    await emit(a, 2);
+    const early = await read(res, (f) => events(f).length >= 1, 120);
+    expect(events(early)).toHaveLength(0); // too young
+    const later = await read(res, (f) => events(f).length >= 2, 6000);
+    const ids = events(later).map((f) => Number(f.id));
+    expect(ids).toHaveLength(2);
+    expect(ids).toEqual(ids.toSorted((x, y) => x - y));
+  }, 20_000);
 });
