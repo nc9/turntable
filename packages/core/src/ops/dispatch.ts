@@ -1,6 +1,7 @@
 // The single enforcement point for operations. Authentication, scope, role, validation and audit
 // all happen here; adapters (REST, MCP, CLI) only translate transport and never decide access.
 import { auditFailure, systemOrgId } from "../audit/failures";
+import type { BackupConfig } from "../db/backup";
 import type { Db } from "../db";
 import {
   appendAudit,
@@ -40,6 +41,8 @@ export type DispatchEnv = {
   allowInstance?: boolean | undefined;
   /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
+  /** The data dir and database file `db_backup` works on; `{ dialect: "pg" }` on Postgres. */
+  backup?: BackupConfig | undefined;
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party for human approvals (TURNTABLE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
@@ -324,6 +327,7 @@ export async function dispatch(
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       instanceOrgCap: env.instanceOrgCap,
+      backup: env.backup,
       attestationAnchors: env.attestationAnchors,
     });
     const target = op;

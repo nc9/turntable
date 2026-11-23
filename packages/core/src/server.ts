@@ -1,5 +1,6 @@
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
+import type { BackupConfig } from "./db/backup";
 import { registry } from "./ops";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
@@ -98,6 +99,8 @@ export type ServeOptions = {
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
+  /** What `db_backup` needs: the data dir and database file, or the Postgres marker. */
+  backup?: BackupConfig;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
@@ -117,6 +120,7 @@ export function startServer(options: ServeOptions) {
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
+    backup: options.backup,
   };
   const api = createRestApi(env, {
     trustForwardedProto:

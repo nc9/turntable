@@ -6,6 +6,7 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretVault } from "../secrets/vault";
+import type { BackupConfig } from "../db/backup";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
 
@@ -37,6 +38,8 @@ export type OpContext = {
   claims?: InstallationClaims | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
   instanceOrgCap?: number | undefined;
+  /** Where `db_backup` may write; absent when the server was not set up for it. */
+  backup?: BackupConfig | undefined;
   /** Outbound webhooks; absent without a master key. */
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */

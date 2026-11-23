@@ -21,10 +21,23 @@ Some settings are not an org's to change: the limits that stop one org taking th
 | `set_quotas` | `POST /api/v1/instance/quotas` | Sets the named limits of one org (`target_org`), null removes one, and returns the limits with usage. |
 | `set_project_settings` | `POST /api/v1/instance/project-settings` | Sets one project's `sandbox_snapshot` and `max_concurrent` (`target_org`, `target_project`; null removes one). See [Providers](/providers#per-project-snapshot-and-concurrency-cap). |
 | `create_project` | `POST /api/v1/instance/projects` | Creates an empty project in an existing org (`target_org`, `slug`, `name`); a slug already used there is a conflict. See [Hosted](/hosted#adding-a-second-repo-to-a-running-instance). |
+| `db_backup` | `POST /api/v1/instance/db-backup` | Backs up the SQLite database into `<data-dir>/backups/` and returns the path, size and sha256. See [Backups](#backups). |
 
 `max_concurrent` can only lower an org's concurrency below the instance's per-org cap (`--org-cap`): a value above it is refused, and removing it falls back to the cap. Instance operations take no `org` or `project` field. A change is audited twice: in the system org's chain (who held the token) and in the target org's own chain (so its operators see who changed their limits).
 
 The full doctor report joins this set once the doctor operation lands: it is read-only and needs the same principal.
+
+## Backups
+
+The image is distroless, so there is no shell to copy the database with. `db_backup` (or `turntable db backup [--keep <n>] [--data-dir ./data]` on the host) writes a consistent copy of the SQLite database with `VACUUM INTO` to a new file, `<data-dir>/backups/turntable-<time>-<version>.db`, and returns its path, size and sha256. Writes in flight do not matter: the copy holds every committed row and none of the uncommitted ones, and it is integrity-checked before it is kept.
+
+- **Where it writes:** always a new file under `<data-dir>/backups/`. The operation takes no path. A backups directory that is a link, or resolves outside the data dir, is refused.
+- **Retention:** the newest `keep` files stay (`--keep`, the `keep` input, or `TURNTABLE_BACKUP_KEEP`, default 10); older `turntable-*.db` files there are deleted. Other files are left alone.
+- **Space:** refused when the free space is below twice the database size (the file plus its write-ahead log).
+- **Before a migration:** set `TURNTABLE_BACKUP_BEFORE_MIGRATE=1` and the server takes a backup at boot, only when migrations are pending on an existing database and before they run (the file name ends in `-pre-migrate`). If the backup fails, the server does not start. It is off by default.
+- **Postgres:** refused, with a pointer to `pg_dump`. Use your platform's snapshots or `pg_dump`.
+- **Access and audit:** instance administrator only (a `tti_` token over REST, or the host CLI), never an MCP tool. Each backup is audited in the system org's chain.
+- **Restore:** stop the server, replace `turntable.db` with the backup file (and delete the old `turntable.db-wal` and `turntable.db-shm`), start it. There is no live restore.
 
 ## What stops an org reaching it
 
