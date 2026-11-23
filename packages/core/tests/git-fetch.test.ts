@@ -364,3 +364,299 @@ describe("object ids", () => {
     expect(createHttpClient).toBeDefined();
   });
 });
+
+// ---- a hostile pack and a hostile server ----
+
+import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
+import { readPack } from "../src/run/git-fetch";
+
+const sizeAndType = (type: number, size: number): number[] => {
+  const out: number[] = [];
+  let b = (type << 4) | (size & 15);
+  let rest = Math.floor(size / 16);
+  while (rest > 0) {
+    out.push(b | 0x80);
+    b = rest & 0x7f;
+    rest = Math.floor(rest / 128);
+  }
+  out.push(b);
+  return out;
+};
+const ofsBytes = (distance: number): number[] => {
+  const out = [distance & 0x7f];
+  let d = Math.floor(distance / 128);
+  while (d > 0) {
+    d -= 1;
+    out.unshift(0x80 | (d & 0x7f));
+    d = Math.floor(d / 128);
+  }
+  return out;
+};
+const varint = (n: number): number[] => {
+  const out: number[] = [];
+  let v = n;
+  do {
+    let b = v % 128;
+    v = Math.floor(v / 128);
+    if (v > 0) b |= 0x80;
+    out.push(b);
+  } while (v > 0);
+  return out;
+};
+type PackItem = { header: number[]; body: Uint8Array };
+/** A pack from raw items, with a correct trailer, so only the property under test is wrong. */
+const packOf = (items: PackItem[], count = items.length): Uint8Array => {
+  const head = Buffer.alloc(12);
+  head.write("PACK", 0);
+  head.writeUInt32BE(2, 4);
+  head.writeUInt32BE(count, 8);
+  const body = Buffer.concat(
+    items.flatMap((i) => [Buffer.from(i.header), Buffer.from(deflateSync(i.body))]),
+  );
+  const all = Buffer.concat([head, body]);
+  return new Uint8Array(Buffer.concat([all, createHash("sha1").update(all).digest()]));
+};
+const blob = (data: Uint8Array, declared = data.length): PackItem => ({
+  header: sizeAndType(3, declared),
+  body: data,
+});
+/** A delta whose result is `size` bytes made of one copy of the whole base. */
+const copyDelta = (baseLen: number, size: number): Uint8Array => {
+  const ops: number[] = [...varint(baseLen), ...varint(size)];
+  let left = size;
+  while (left > 0) {
+    const n = Math.min(left, baseLen, 0xffffff);
+    ops.push(0x80 | 0x10 | 0x20 | 0x40, n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff);
+    left -= n;
+  }
+  return new Uint8Array(ops);
+};
+const ofsDelta = (distance: number, delta: Uint8Array): PackItem => ({
+  header: [...sizeAndType(6, delta.length), ...ofsBytes(distance)],
+  body: delta,
+});
+const deflatedLen = (b: Uint8Array): number => deflateSync(b).length;
+
+describe("a hostile pack is bounded before it is acted on", () => {
+  const small = { ...DEFAULT_FETCH_LIMITS };
+
+  test("a zlib bomb: a stream that inflates past its declared size is cut, a declared size over the cap is refused unread", () => {
+    const bomb = new Uint8Array(20_000_000); // 20 MB of zeros: a few KB compressed
+    expect(deflatedLen(bomb)).toBeLessThan(40_000);
+    expect(() => readPack(packOf([blob(bomb, 10)]), small)).toThrow(GitFetchError);
+    const t0 = Date.now();
+    expect(() => readPack(packOf([blob(new Uint8Array(10), 2 ** 40)]), small)).toThrow(/too large/);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // honestly declared but over the per-object cap
+    expect(() => readPack(packOf([blob(bomb)]), { ...small, maxObjectBytes: 1_000_000 })).toThrow(
+      /too large/,
+    );
+  });
+
+  test("the total unpacked size is one budget across objects, deltas included", () => {
+    const one = new Uint8Array(400).fill(7);
+    expect(() =>
+      readPack(packOf([blob(one), blob(one.map((x) => x + 1)), blob(one.map((x) => x + 2))]), {
+        ...small,
+        maxInflatedBytes: 1000,
+      }),
+    ).toThrow(/too large when unpacked/);
+    // amplification: a 1 MiB base and many tiny deltas that each expand back to 1 MiB
+    const base = new Uint8Array(1024 * 1024).fill(9);
+    const items: PackItem[] = [blob(base)];
+    for (let i = 0; i < 40; i += 1) {
+      const d = copyDelta(base.length, base.length);
+      const baseHeader = items[0]!.header.length;
+      const dist = baseHeader + deflatedLen(base);
+      // every delta points at the base: its distance grows by the deltas packed in between
+      const between = items
+        .slice(1)
+        .reduce((n, it) => n + it.header.length + deflatedLen(it.body), 0);
+      items.push(ofsDelta(dist + between, d));
+    }
+    expect(() => readPack(packOf(items), { ...small, maxInflatedBytes: 5 * 1024 * 1024 })).toThrow(
+      /too large/,
+    );
+  });
+
+  test("a delta that declares a huge result is refused before anything is allocated", () => {
+    const base = new Uint8Array(10).fill(1);
+    const d = new Uint8Array([...varint(10), ...varint(5_000_000_000), 0x90, 10]);
+    const dist = blobHeaderLen(base) + deflatedLen(base);
+    const t0 = Date.now();
+    expect(() => readPack(packOf([blob(base), ofsDelta(dist, d)]), small)).toThrow(/too large/);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  const blobHeaderLen = (b: Uint8Array): number => sizeAndType(3, b.length).length;
+
+  test("a delta chain is depth-limited, and a shorter one is fine", () => {
+    const build = (n: number): Uint8Array => {
+      const base = new TextEncoder().encode("0123456789");
+      const items: PackItem[] = [blob(base)];
+      const offsets = [12];
+      let at = 12 + blobHeaderLen(base) + deflatedLen(base);
+      for (let i = 0; i < n; i += 1) {
+        const d = copyDelta(10, 10);
+        const it = ofsDelta(at - offsets.at(-1)!, d);
+        offsets.push(at);
+        at += it.header.length + deflatedLen(d);
+        items.push(it);
+      }
+      return packOf(items);
+    };
+    expect(() => readPack(build(600), small)).toThrow(/chain is too long/);
+    expect(readPack(build(100), small).size).toBe(1); // every link rebuilds the same 10 bytes
+  });
+
+  test("an offset delta may only point at an earlier object: itself, before the first, or a missing one is refused", () => {
+    const base = new Uint8Array(10).fill(3);
+    const d = copyDelta(10, 10);
+    const first = 12;
+    const second = first + blobHeaderLen(base) + deflatedLen(base);
+    // distance 0: the delta itself
+    expect(() => readPack(packOf([blob(base), ofsDelta(0, d)]), small)).toThrow(/outside the pack/);
+    // distance past the start of the pack
+    expect(() => readPack(packOf([blob(base), ofsDelta(second + 5, d)]), small)).toThrow(
+      /outside the pack/,
+    );
+    // into the middle of an object (no object starts there)
+    expect(() => readPack(packOf([blob(base), ofsDelta(second - first - 1, d)]), small)).toThrow(
+      /outside the pack/,
+    );
+    // the valid one resolves
+    expect(readPack(packOf([blob(base), ofsDelta(second - first, d)]), small).size).toBe(1);
+  });
+
+  test("the object count is checked before anything is allocated for it, and a count that lies is an error", () => {
+    const head = Buffer.alloc(12);
+    head.write("PACK", 0);
+    head.writeUInt32BE(2, 4);
+    head.writeUInt32BE(0xffffffff, 8);
+    // a header claiming four billion objects, with a correct trailer and nothing else
+    const lying = new Uint8Array(
+      Buffer.concat([head, Buffer.alloc(20), createHash("sha1").update(head).digest()]).subarray(
+        0,
+        32,
+      ),
+    );
+    const t0 = Date.now();
+    expect(() => readPack(lying, small)).toThrow(/too many objects/);
+    expect(Date.now() - t0).toBeLessThan(500);
+    // three declared, one present
+    expect(() => readPack(packOf([blob(new Uint8Array(5).fill(1))], 3), small)).toThrow(
+      GitFetchError,
+    );
+  });
+
+  test("the wall clock covers parsing: a deadline in the past stops it between objects", () => {
+    const items = Array.from({ length: 20 }, (_, i) => blob(new Uint8Array(50).fill(i)));
+    expect(() => readPack(packOf(items), small, Date.now() - 1)).toThrow(/took too long/);
+  });
+});
+
+describe("a hostile server", () => {
+  test("every request is bounded: a time budget and a response size cap are passed down", async () => {
+    const { dir, sha } = makeRepo();
+    const s = serveGitRepo(dir);
+    const seen: {
+      maxBytes?: number | undefined;
+      timeoutMs?: number | undefined;
+      redirect?: string | undefined;
+    }[] = [];
+    const spy: SafeFetch = async (input, init) => {
+      seen.push({ maxBytes: init?.maxBytes, timeoutMs: init?.timeoutMs, redirect: init?.redirect });
+      return s.fetch(input, init);
+    };
+    try {
+      await fetchCommit({
+        url: s.url,
+        sha,
+        fetch: spy,
+        limits: { maxPackBytes: 5 * 1024 * 1024, timeoutMs: 60_000 },
+      });
+      expect(seen).toHaveLength(2);
+      expect(seen[0]!.maxBytes).toBe(1024 * 1024); // the advertisement
+      expect(seen[1]!.maxBytes).toBe(6 * 1024 * 1024); // the pack, plus the framing
+      expect(seen.every((x) => x.timeoutMs! > 0 && x.timeoutMs! <= 60_000)).toBe(true);
+      // the fetch itself never follows a redirect; the advertisement only manually
+      expect(seen.map((x) => x.redirect)).toEqual(["manual", "error"]);
+    } finally {
+      s.stop();
+    }
+  });
+
+  test("the real guarded client stops a response that is larger than the cap", async () => {
+    const big = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        new Response(new Uint8Array(3 * 1024 * 1024), {
+          headers: { "content-type": "application/x-git-upload-pack-advertisement" },
+        }),
+    });
+    try {
+      const f = createHttpClient({ allowHosts: ["127.0.0.1"] }).fetch;
+      await expect(
+        fetchCommit({ url: `http://127.0.0.1:${big.port}/a/b.git`, sha: "a".repeat(40), fetch: f }),
+      ).rejects.toThrow(/larger than/);
+    } finally {
+      void big.stop(true);
+    }
+  });
+
+  test("the whole fetch has a wall clock: a server that stalls is given up on", async () => {
+    const slow: SafeFetch = async () => {
+      await Bun.sleep(60);
+      return new Response("", { status: 200 });
+    };
+    await expect(
+      fetchCommit({
+        url: "https://x.test/a/b.git",
+        sha: "a".repeat(40),
+        fetch: slow,
+        limits: { timeoutMs: 30 },
+      }),
+    ).rejects.toThrow(/took too long/);
+  });
+
+  test("a redirect to another host is refused; one within the same origin (a moved repository) is followed", async () => {
+    const { dir, sha } = makeRepo();
+    const other = serveGitRepo(dir); // a second origin that WOULD answer
+    const away = serveGitRepo(dir, {
+      redirectTo: other.url.replace(/\.git$/, ".git/info/refs?service=git-upload-pack"),
+    });
+    const moved = serveGitRepo(dir, { movedFrom: "/old/name.git" });
+    try {
+      await expect(fetchCommit({ url: away.url, sha, fetch: away.fetch })).rejects.toThrow(
+        /another host/,
+      );
+      expect(other.requests).toHaveLength(0); // never contacted
+      const c = await fetchCommit({
+        url: `${moved.url.replace(/\/acme\/web\.git$/, "")}/old/name.git`,
+        sha,
+        fetch: moved.fetch,
+      });
+      expect(c.sha).toBe(sha);
+      // the pack request went to where the redirect ended
+      expect(moved.requests.find((r) => r.method === "POST")!.path).toBe(
+        "/acme/web.git/git-upload-pack",
+      );
+    } finally {
+      other.stop();
+      away.stop();
+      moved.stop();
+    }
+  });
+
+  test("a redirect on the fetch request itself is refused", async () => {
+    const { dir, sha } = makeRepo();
+    const s = serveGitRepo(dir, { postRedirect: true });
+    try {
+      await expect(fetchCommit({ url: s.url, sha, fetch: s.fetch })).rejects.toThrow();
+    } finally {
+      s.stop();
+    }
+  });
+});

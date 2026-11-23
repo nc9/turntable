@@ -37,7 +37,16 @@ const run = async (
   return { out, code };
 };
 
-export function serveGitRepo(repo: string): GitHttpServer {
+export interface GitHttpOptions {
+  /** `GET <prefix>/info/refs` answers 301 to the repository's real path (a repository that moved). */
+  movedFrom?: string;
+  /** `POST .../git-upload-pack` answers 307 to the same path. */
+  postRedirect?: boolean;
+  /** A location `GET .../info/refs` redirects to instead (another origin, say). */
+  redirectTo?: string;
+}
+
+export function serveGitRepo(repo: string, opts: GitHttpOptions = {}): GitHttpServer {
   const requests: GitHttpServer["requests"] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -46,6 +55,15 @@ export function serveGitRepo(repo: string): GitHttpServer {
       const u = new URL(req.url);
       const body = new Uint8Array(await req.arrayBuffer());
       requests.push({ method: req.method, path: u.pathname, body });
+      if (opts.redirectTo && req.method === "GET" && u.pathname.endsWith("/info/refs"))
+        return new Response(null, { status: 302, headers: { location: opts.redirectTo } });
+      if (opts.movedFrom && req.method === "GET" && u.pathname === `${opts.movedFrom}/info/refs`)
+        return new Response(null, {
+          status: 301,
+          headers: { location: `/acme/web.git/info/refs?service=git-upload-pack` },
+        });
+      if (opts.postRedirect && req.method === "POST")
+        return new Response(null, { status: 307, headers: { location: u.pathname } });
       if (req.method === "GET" && u.pathname.endsWith("/info/refs")) {
         const { out } = await run(repo, ["--advertise-refs"]);
         return new Response(out, {

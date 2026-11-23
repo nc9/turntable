@@ -27,10 +27,15 @@ export interface FetchLimits {
   maxPackBytes: number;
   /** Most objects in the pack. Default 500 000. */
   maxObjects: number;
-  /** Most bytes of inflated object data in total. Default 1 GiB. */
+  /** Most bytes of inflated object data in total, delta results included. Default 1 GiB. */
   maxInflatedBytes: number;
+  /** Most bytes of any one object, as declared and as produced. Default 256 MiB. */
+  maxObjectBytes: number;
+  /** Longest chain of deltas on deltas. Default 512 (git's own limit is 4095 and its default 50). */
+  maxDeltaDepth: number;
   /** Most files and directories written. Default 300 000. */
   maxEntries: number;
+  /** Wall clock for the whole fetch: the requests, and the parsing and writing after them. */
   timeoutMs: number;
 }
 
@@ -38,6 +43,8 @@ export const DEFAULT_FETCH_LIMITS: FetchLimits = {
   maxPackBytes: 256 * 1024 * 1024,
   maxObjects: 500_000,
   maxInflatedBytes: 1024 * 1024 * 1024,
+  maxObjectBytes: 256 * 1024 * 1024,
+  maxDeltaDepth: 512,
   maxEntries: 300_000,
   timeoutMs: 300_000,
 };
@@ -128,16 +135,43 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   if (!/^[0-9a-f]{40}$/.test(o.sha))
     throw new GitFetchError("the commit must be a 40 character sha");
   const f = o.fetch ?? safeFetch;
-  const base = o.url.replace(/\/+$/, "");
+  const deadline = Date.now() + limits.timeoutMs;
+  const left = (): number => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new GitFetchError("the fetch took too long");
+    return ms;
+  };
+  let base = o.url.replace(/\/+$/, "");
   const common = { "git-protocol": "version=2", "user-agent": "git/2.39.0 (longshore)" };
 
-  // 1. Capabilities: the server must speak protocol v2 and offer `fetch`.
-  const adv = await f(`${base}/info/refs?service=git-upload-pack`, {
-    headers: { ...common, accept: "application/x-git-upload-pack-advertisement" },
-    timeoutMs: limits.timeoutMs,
-    maxBytes: 1024 * 1024,
-    redirect: "follow",
-  });
+  // 1. Capabilities: the server must speak protocol v2 and offer `fetch`. A redirect is followed
+  // only within the same origin (a repository that moved); never to another host, and the fetch
+  // that follows goes to where this one ended.
+  let advUrl = `${base}/info/refs?service=git-upload-pack`;
+  let adv: Response | undefined;
+  for (let hop = 0; hop <= 3; hop += 1) {
+    adv = await f(advUrl, {
+      headers: { ...common, accept: "application/x-git-upload-pack-advertisement" },
+      timeoutMs: left(),
+      maxBytes: 1024 * 1024,
+      redirect: "manual",
+    });
+    const location = adv.headers.get("location");
+    if (adv.status >= 300 && adv.status < 400 && location !== null) {
+      const next = new URL(location, advUrl);
+      if (next.origin !== new URL(advUrl).origin)
+        throw new GitFetchError("the server redirected to another host; refusing to follow it");
+      if (!next.pathname.endsWith("/info/refs"))
+        throw new GitFetchError("the server redirected somewhere that is not a git repository");
+      advUrl = next.href;
+      base = `${next.origin}${next.pathname.slice(0, -"/info/refs".length)}`;
+      adv = undefined;
+      continue;
+    }
+    break;
+  }
+  if (!adv) throw new GitFetchError("too many redirects");
+  left();
   if (!adv.ok)
     throw new GitFetchError(`the server answered HTTP ${adv.status} for ${hostPath(base)}`);
   const caps: string[] = [];
@@ -172,9 +206,9 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
       accept: "application/x-git-upload-pack-result",
     },
     body,
-    timeoutMs: limits.timeoutMs,
+    timeoutMs: left(),
     maxBytes: limits.maxPackBytes + 1024 * 1024,
-    redirect: "follow",
+    redirect: "error",
   });
   if (!res.ok) throw new GitFetchError(`the server answered HTTP ${res.status} to the fetch`);
   const pack: Uint8Array[] = [];
@@ -201,7 +235,8 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
     throw new GitFetchError(
       "the server sent no packfile (is the commit reachable, and the repository public?)",
     );
-  const objects = readPack(concat(pack), limits);
+  left();
+  const objects = readPack(concat(pack), limits, deadline);
 
   // 3. The commit asked for must be in it, with its own sha.
   const commit = objects.get(o.sha);
@@ -241,7 +276,8 @@ function inflateAt(buf: Uint8Array, pos: number, size: number): { data: Uint8Arr
   return { data: new Uint8Array(r.buffer), used: r.engine.bytesWritten };
 }
 
-function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
+/** Applies a delta. The result's declared size is checked against `maxBytes` BEFORE it is allocated. */
+function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes: number): Uint8Array {
   let i = 0;
   const varint = (): number => {
     let v = 0;
@@ -249,6 +285,7 @@ function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
     for (;;) {
       const b = delta[i++];
       if (b === undefined) throw new GitFetchError("a delta is truncated");
+      if (shift > 49) throw new GitFetchError("a delta size is absurd");
       v += (b & 0x7f) * 2 ** shift;
       if ((b & 0x80) === 0) return v;
       shift += 7;
@@ -256,6 +293,7 @@ function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
   };
   if (varint() !== base.length) throw new GitFetchError("a delta does not match its base");
   const size = varint();
+  if (size > maxBytes) throw new GitFetchError("a delta would produce an object that is too large");
   const out = new Uint8Array(size);
   let o = 0;
   while (i < delta.length) {
@@ -263,9 +301,10 @@ function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
     if ((op & 0x80) !== 0) {
       let off = 0;
       let len = 0;
-      for (let k = 0; k < 4; k += 1) if ((op & (1 << k)) !== 0) off += delta[i++]! * 2 ** (8 * k);
+      for (let k = 0; k < 4; k += 1)
+        if ((op & (1 << k)) !== 0) off += (delta[i++] ?? 0) * 2 ** (8 * k);
       for (let k = 0; k < 3; k += 1)
-        if ((op & (0x10 << k)) !== 0) len += delta[i++]! * 2 ** (8 * k);
+        if ((op & (0x10 << k)) !== 0) len += (delta[i++] ?? 0) * 2 ** (8 * k);
       if (len === 0) len = 0x10000;
       if (off + len > base.length || o + len > size)
         throw new GitFetchError("a delta copies out of range");
@@ -285,10 +324,18 @@ function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
   return out;
 }
 
-/** Reads a whole packfile into verified objects, by sha. */
+/**
+ * Reads a whole packfile into verified objects, by sha. The pack is hostile input, so every size
+ * is bounded before it is acted on: the object count before anything is allocated for it, each
+ * object's declared size before it is inflated (and the inflate itself is capped at that size, so
+ * a stream that lies is cut), delta results before they are allocated, and the sum of everything
+ * unpacked against one budget. Delta chains are depth-limited and an offset delta may only point
+ * at an EARLIER object. `deadline` is checked between objects.
+ */
 export function readPack(
   pack: Uint8Array,
   limits: FetchLimits = DEFAULT_FETCH_LIMITS,
+  deadline: number = Date.now() + limits.timeoutMs,
 ): Map<string, GitObject> {
   if (pack.length < 32 || dec.decode(pack.subarray(0, 4)) !== "PACK")
     throw new GitFetchError("not a packfile");
@@ -296,48 +343,63 @@ export function readPack(
   if (view.getUint32(4) !== 2) throw new GitFetchError("unsupported pack version");
   const count = view.getUint32(8);
   if (count > limits.maxObjects) throw new GitFetchError("the pack has too many objects");
-  const trailer = pack.subarray(pack.length - 20);
-  const sum = createHash("sha1")
-    .update(pack.subarray(0, pack.length - 20))
-    .digest();
+  const end = pack.length - 20;
+  const trailer = pack.subarray(end);
+  const sum = createHash("sha1").update(pack.subarray(0, end)).digest();
   if (Buffer.compare(Buffer.from(trailer), sum) !== 0)
     throw new GitFetchError("the pack checksum does not match");
 
   type Raw = { type: number; data: Uint8Array; baseOffset?: number; baseOid?: string };
   const byOffset = new Map<number, Raw>();
   let pos = 12;
-  let inflated = 0;
+  let budget = 0;
+  const spend = (n: number): void => {
+    budget += n;
+    if (budget > limits.maxInflatedBytes)
+      throw new GitFetchError("the pack is too large when unpacked");
+  };
+  const byte = (): number => {
+    if (pos >= end) throw new GitFetchError("the pack is truncated");
+    return pack[pos++]!;
+  };
   for (let n = 0; n < count; n += 1) {
+    if (Date.now() > deadline) throw new GitFetchError("the fetch took too long");
     const start = pos;
-    let c = pack[pos++]!;
+    let c = byte();
     const type = (c >> 4) & 7;
     let size = c & 15;
     let shift = 4;
     while ((c & 0x80) !== 0) {
-      c = pack[pos++]!;
+      if (shift > 49) throw new GitFetchError("a packed object size is absurd");
+      c = byte();
       size += (c & 0x7f) * 2 ** shift;
       shift += 7;
     }
-    inflated += size;
-    if (inflated > limits.maxInflatedBytes)
-      throw new GitFetchError("the pack is too large when unpacked");
+    // Declared size: bounded before the stream is touched.
+    if (size > limits.maxObjectBytes) throw new GitFetchError("a packed object is too large");
+    spend(size);
     let baseOffset: number | undefined;
     let baseOid: string | undefined;
     if (type === 6) {
-      c = pack[pos++]!;
+      c = byte();
       let off = c & 0x7f;
       while ((c & 0x80) !== 0) {
-        c = pack[pos++]!;
+        if (off > 2 ** 40) throw new GitFetchError("a delta offset is absurd");
+        c = byte();
         off = (off + 1) * 128 + (c & 0x7f);
       }
       baseOffset = start - off;
+      // Only an earlier object, and never the delta itself or anything before the first object.
+      if (off <= 0 || baseOffset < 12 || baseOffset >= start)
+        throw new GitFetchError("a delta points outside the pack");
     } else if (type === 7) {
+      if (pos + 20 > end) throw new GitFetchError("the pack is truncated");
       baseOid = Buffer.from(pack.subarray(pos, pos + 20)).toString("hex");
       pos += 20;
     } else if (!(type in TYPES)) {
       throw new GitFetchError("a packed object has an unknown type");
     }
-    const { data, used } = inflateAt(pack.subarray(0, pack.length - 20), pos, size);
+    const { data, used } = inflateAt(pack.subarray(0, end), pos, size);
     pos += used;
     byOffset.set(start, {
       type,
@@ -346,20 +408,37 @@ export function readPack(
       ...(baseOid ? { baseOid } : {}),
     });
   }
-  if (pos !== pack.length - 20) throw new GitFetchError("the pack has trailing data");
+  if (pos !== end) throw new GitFetchError("the pack has trailing data");
 
   const objects = new Map<string, GitObject>();
   const resolved = new Map<number, GitObject>();
+  const resolving = new Set<number>();
+  const depthOf = new Map<number, number>();
+  // The length of the chain of deltas an object sits on, by its offset: a memoised walk would
+  // otherwise never go deeper than one step, so the depth is counted explicitly.
+  const oidAt = new Map<string, number>();
+  const baseOffsetOf = (oid: string): number => oidAt.get(oid) ?? -1;
+  const chain = (offset: number, baseAt: number): void => {
+    const d = (depthOf.get(baseAt) ?? 0) + 1;
+    if (d > limits.maxDeltaDepth) throw new GitFetchError("a delta chain is too long");
+    depthOf.set(offset, d);
+  };
   const resolve = (offset: number, depth = 0): GitObject => {
     const done = resolved.get(offset);
     if (done) return done;
-    if (depth > 4096) throw new GitFetchError("a delta chain is too long");
+    if (depth > limits.maxDeltaDepth) throw new GitFetchError("a delta chain is too long");
+    if (resolving.has(offset)) throw new GitFetchError("a delta depends on itself");
+    if (Date.now() > deadline) throw new GitFetchError("the fetch took too long");
     const raw = byOffset.get(offset);
     if (!raw) throw new GitFetchError("a delta points outside the pack");
+    resolving.add(offset);
     let obj: GitObject;
     if (raw.type === 6) {
-      const base = resolve(raw.baseOffset as number, depth + 1);
-      obj = { type: base.type, data: applyDelta(base.data, raw.data) };
+      const baseAt = raw.baseOffset as number;
+      const base = resolve(baseAt, depth + 1);
+      chain(offset, baseAt);
+      obj = { type: base.type, data: applyDelta(base.data, raw.data, limits.maxObjectBytes) };
+      spend(obj.data.length);
     } else if (raw.type === 7) {
       let base = objects.get(raw.baseOid as string);
       if (!base) {
@@ -376,12 +455,17 @@ export function readPack(
         }
       }
       if (!base) throw new GitFetchError("a delta's base is not in the pack");
-      obj = { type: base.type, data: applyDelta(base.data, raw.data) };
+      chain(offset, baseOffsetOf(raw.baseOid as string));
+      obj = { type: base.type, data: applyDelta(base.data, raw.data, limits.maxObjectBytes) };
+      spend(obj.data.length);
     } else {
       obj = { type: TYPES[raw.type] as ObjectType, data: raw.data };
     }
+    resolving.delete(offset);
     resolved.set(offset, obj);
-    objects.set(oidOf(obj.type, obj.data), obj);
+    const oid = oidOf(obj.type, obj.data);
+    objects.set(oid, obj);
+    if (!oidAt.has(oid)) oidAt.set(oid, offset);
     return obj;
   };
   // Whole objects first, so a ref-delta's base is found by sha; then the deltas.
@@ -448,6 +532,7 @@ export function materialize(
   limits: Partial<FetchLimits> = {},
 ): Materialized {
   const max = { ...DEFAULT_FETCH_LIMITS, ...limits };
+  const deadline = Date.now() + max.timeoutMs;
   let entries = 0;
   let bytes = 0;
   const symlinks = new Set<string>();
@@ -463,6 +548,8 @@ export function materialize(
         );
       entries += 1;
       if (entries > max.maxEntries) throw new GitFetchError("the repository has too many files");
+      if (entries % 256 === 0 && Date.now() > deadline)
+        throw new GitFetchError("the fetch took too long");
       const path = rel === "" ? e.name : `${rel}/${e.name}`;
       // Nothing is written through a symlink the tree itself made (a case-folding filesystem could
       // make `A` and `a` the same name; this holds there too).
