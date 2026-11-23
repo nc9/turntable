@@ -13,6 +13,7 @@ const ALLOWED_TESTS = new Set<string>([
   "packages/core/tests/release-prereqs.test.ts", // the real server, on 127.0.0.1
   "packages/core/tests/github-app.test.ts", // the manifest loopback page
   "packages/core/tests/github-hosted-manifest.test.ts", // the hosted manifest routes, on 127.0.0.1
+  "packages/core/tests/server-pages.test.ts", // the CLI manifest loopback page, on 127.0.0.1
   "packages/core/tests/db-backup.test.ts", // fetches only its own Bun.serve on 127.0.0.1
   "packages/core/tests/cache.test.ts", // the cache service under test, on 127.0.0.1
   "packages/core/tests/mcp.test.ts", // the MCP transport, on 127.0.0.1
