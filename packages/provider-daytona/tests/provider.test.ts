@@ -365,6 +365,104 @@ describe("live cap and waiting", () => {
   });
 });
 
+describe("fleets: two instances in one account never touch each other", () => {
+  const A = "longshore-dev";
+  const B = "longshore-shadow";
+
+  test("a fleet's sandboxes carry its own label and name prefix, and nothing of the default's", async () => {
+    const p = make({ fleet: B, runId: "r1" });
+    const { id } = await p.create(spec({ labels: {} }));
+    const sent = created()[0]!.body as { name: string; labels: Record<string, string> };
+    expect(sent.name.startsWith("longshore-shadow-")).toBe(true);
+    expect(sent.labels).toEqual({ "longshore-shadow": "1", "longshore-run": "r1" });
+    expect(sent.labels["longshore-dev"]).toBeUndefined();
+    // its own label is the reserved one, not the default's
+    expect(() => p.buildCreateBody(spec({ labels: { "longshore-shadow": "0" } }))).toThrow(
+      SpecError,
+    );
+    await p.destroy(id);
+  });
+
+  test("fleet A never counts, lists, verifies or deletes fleet B's sandboxes, and the reverse", async () => {
+    const a = make({ fleet: A, maxLive: 1 });
+    const b = make({ fleet: B, maxLive: 1 });
+    const mineA = await a.create(spec({ name: "x", labels: { grp: "g" } }));
+    // B is not held up by A's live sandbox: separate budgets
+    const mineB = await b.create(spec({ name: "x", labels: { grp: "g" } }));
+    expect(await a.count({})).toBe(1);
+    expect(await b.count({})).toBe(1);
+    expect((await a.list({ labels: { grp: "g" } })).map((s) => s.id)).toEqual([mineA.id]);
+    expect((await b.list({ labels: { grp: "g" } })).map((s) => s.id)).toEqual([mineB.id]);
+    // refused by id even though the id is known
+    await expect(a.destroy(mineB.id)).rejects.toBeInstanceOf(SpecError);
+    await expect(b.destroy(mineA.id)).rejects.toBeInstanceOf(SpecError);
+    await expect(
+      a.exec.start(mineB.id, { argv: ["true"], timeoutSeconds: 5 }),
+    ).rejects.toBeInstanceOf(SpecError);
+    // a sweep by label reaches only its own fleet
+    expect(await a.destroyByLabels({ grp: "g" })).toBe(1);
+    expect(mock.sandboxes.has(mineB.id)).toBe(true);
+    expect(mock.sandboxes.has(mineA.id)).toBe(false);
+    expect(await b.destroyByLabels({ grp: "g" })).toBe(1);
+    expect(mock.sandboxes.has(mineB.id)).toBe(false);
+    // every list a fleet made named its own label and never the other's
+    const queries = mock.requests.filter((r) => r.method === "GET" && r.path === "/api/sandbox");
+    expect(queries.some((q) => q.query.includes("longshore-shadow"))).toBe(true);
+    expect(queries.some((q) => q.query.includes("longshore-dev"))).toBe(true);
+  });
+
+  test("a fleet whose name extends another's is not mistaken for it: both the label and the prefix must match", async () => {
+    const short = make({ fleet: "longshore-dev" });
+    const long = make({ fleet: "longshore-dev-2" });
+    const mineLong = await long.create(spec({ name: "x", labels: { grp: "g" } }));
+    // the long fleet's name starts with the short one's prefix, but it lacks the short label
+    expect(mock.sandboxes.get(mineLong.id)!.name.startsWith("longshore-dev-")).toBe(true);
+    expect(await short.count({})).toBe(0);
+    expect(await short.list({})).toEqual([]);
+    expect(await short.destroyByLabels({ grp: "g" })).toBe(0);
+    await expect(short.destroy(mineLong.id)).rejects.toBeInstanceOf(SpecError);
+    expect(mock.sandboxes.has(mineLong.id)).toBe(true);
+    await long.destroy(mineLong.id);
+  });
+
+  test("a sandbox with the default's name prefix but another fleet's label is not the default's", async () => {
+    const other = mock.addForeign("longshore-dev-sneaky", { "longshore-shadow": "1" });
+    const p = make();
+    expect(await p.count({})).toBe(0);
+    await expect(p.destroy(other)).rejects.toBeInstanceOf(SpecError);
+    expect(mock.sandboxes.has(other)).toBe(true);
+  });
+
+  test("the default is unchanged: no option means longshore-dev", async () => {
+    const p = make();
+    expect(p.fleet.name).toBe("longshore-dev");
+    const { id } = await p.create(spec({ labels: {} }));
+    const sent = created()[0]!.body as { name: string; labels: Record<string, string> };
+    expect(sent.name.startsWith("longshore-dev-")).toBe(true);
+    expect(sent.labels["longshore-dev"]).toBe("1");
+    await p.destroy(id);
+  });
+
+  test("a fleet name is validated: lower case, longshore- first, at most 30 characters", () => {
+    for (const bad of [
+      "shadow",
+      "Longshore-shadow",
+      "longshore-",
+      "longshore--x",
+      "longshore-x-",
+      "longshore-x y",
+      "longshore-é",
+      "other-longshore-x",
+      "longshore-".padEnd(31, "a"),
+      "",
+    ]) {
+      expect(() => make({ fleet: bad }), bad).toThrow(RangeError);
+    }
+    expect(make({ fleet: "longshore-".padEnd(30, "a") }).fleet.name).toHaveLength(30);
+    expect(make({ fleet: "longshore-shadow" }).fleet.name).toBe("longshore-shadow");
+  });
+});
+
 describe("only ever our own sandboxes", () => {
   test("list, count and destroyByLabels never see or delete a foreign sandbox", async () => {
     const theirs = mock.addForeign("acme-ci-1", { "acme-ci": "1", grp: "g" });

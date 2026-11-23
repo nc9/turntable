@@ -91,6 +91,8 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
+  instanceOrgCap?: number | undefined;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
@@ -106,6 +108,7 @@ export function startServer(options: ServeOptions) {
     vault: options.vault,
     claims: options.claims?.starter,
     webauthn: options.webauthn,
+    instanceOrgCap: options.instanceOrgCap,
   };
   const api = createRestApi(env, {
     trustForwardedProto:
