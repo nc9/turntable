@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { assertSafeDist } from "./release-checks";
 import { prepareCompileEntry } from "../packages/ui/scripts/compile-entry";
 import { signAdhoc, verifySignature } from "./rcodesign";
+import { onePasswordEmbedPlugin } from "./op-embed";
 
 const TARGETS = ["bun-linux-x64", "bun-linux-arm64", "bun-darwin-arm64"] as const;
 
@@ -43,6 +44,8 @@ for (const target of targets) {
     entrypoints: [entry],
     compile: { target: target as (typeof TARGETS)[number], outfile },
     minify: true,
+    // Embeds the 1Password SDK's WASM core (scripts/op-embed.ts); fails the build if it changed.
+    plugins: [onePasswordEmbedPlugin(join(root, "packages/core"))],
     define: { TURNTABLE_BUILD_VERSION: JSON.stringify(version) },
   });
   if (!result.success) {

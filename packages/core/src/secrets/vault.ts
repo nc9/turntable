@@ -23,6 +23,7 @@ import {
   getVaultSecretById,
   getVersionCiphertext,
   insertVaultSecret,
+  upsertExternalVaultSecret,
   listVaultSecrets,
   listVaultVersions,
   scopeKeyOf,
@@ -35,6 +36,8 @@ import {
 import { credentialsFor, normalizeRef, type TrustClass } from "../trust";
 import { auditFailure } from "../audit/failures";
 import { assertResealAllowed, open, recordVersion, seal, vaultAad } from "./crypto";
+import type { BackendRef, SecretBackend } from "./backends/types";
+import { BackendError, type BackendHealth } from "./backends/types";
 
 /** Classes a secret may name. `untrusted_pr` is deliberately absent and can never be added. */
 export const ALLOWED_SECRET_CLASSES = ["protected", "release", "trusted_pr"] as const;
@@ -134,6 +137,11 @@ export interface SecretView {
   ref_pattern: string | null;
   trust_classes: string[];
   destinations: string[];
+  /** `sealed`, or the backend that holds the value (e.g. `onepassword`). */
+  source: string;
+  /** The backend's reference (vault, item and field names); null for a sealed secret. */
+  external_ref: string | null;
+  /** 0 for an external reference: it has no sealed versions. */
   current_version: number;
   versions: {
     version: number;
@@ -155,6 +163,8 @@ function view(row: VaultSecretRow, versions: VaultVersionMeta[]): SecretView {
     ref_pattern: row.refPattern,
     trust_classes: JSON.parse(row.trustClasses) as string[],
     destinations: JSON.parse(row.destinations) as string[],
+    source: row.source,
+    external_ref: row.externalRef,
     current_version: row.currentVersion,
     versions: versions.map((v) => ({
       version: v.version,
@@ -192,7 +202,12 @@ export type UseDenial =
   | "environment_unavailable"
   | "destination_not_allowed"
   | "version_unavailable"
-  | "decrypt_failed";
+  | "decrypt_failed"
+  // External backends. `account_not_bound`: no configured account serves this reference for this
+  // org or project and trust class. `backend_unavailable`: the backend could not produce a value
+  // (outage, rate limit, auth failure, unknown reference); the use fails closed.
+  | "account_not_bound"
+  | "backend_unavailable";
 
 export type UseResult =
   { ok: true; value: string; version: number; secretId: string } | { ok: false; reason: UseDenial };
@@ -205,6 +220,8 @@ export interface VaultOptions {
    * by the release lane: any other lane refuses them before it decrypts anything. Default `main`.
    */
   lane?: "main" | "release";
+  /** External secret stores, by `vault_secrets.source`. Absent: only sealed secrets resolve. */
+  backends?: readonly SecretBackend[];
   now?: () => number;
 }
 
@@ -213,9 +230,11 @@ export class SecretVault {
   readonly #key: Buffer;
   readonly #now: () => number;
   readonly #lane: "main" | "release";
+  readonly #backends: ReadonlyMap<string, SecretBackend>;
 
   constructor(o: VaultOptions) {
     this.#lane = o.lane ?? "main";
+    this.#backends = new Map((o.backends ?? []).map((b) => [b.source, b]));
     this.#db = o.db;
     this.#key = o.masterKey;
     this.#now = o.now ?? Date.now;
@@ -242,6 +261,7 @@ export class SecretVault {
       sc.name,
       scopeKeyOf(sc.projectId, sc.environment, sc.refPattern),
     );
+    if (existing) assertSealed(existing);
     if (!existing) {
       const row = await insertVaultSecret(
         this.#db,
@@ -283,6 +303,7 @@ export class SecretVault {
       scopeKeyOf(sc.projectId, sc.environment, sc.refPattern),
     );
     if (!existing) return undefined;
+    assertSealed(existing);
     await addVaultVersion(
       this.#db,
       orgId,
@@ -331,6 +352,136 @@ export class SecretVault {
     return before;
   }
 
+  /**
+   * Points a secret name at a reference in an external store, instead of a sealed value. Creates
+   * the secret, or re-points an existing external one of that exact scope (and replaces its
+   * policy); a sealed secret is never converted in place. The reference must parse and some
+   * configured account must serve its vault. No value is read here.
+   */
+  async bindReference(
+    orgId: string,
+    actor: string,
+    scope: SecretScopeInput,
+    source: string,
+    reference: string,
+    policy: SecretPolicyInput = {},
+  ): Promise<{ secret: SecretView; created: boolean }> {
+    const sc = normalizeScope(scope);
+    const pol = normalizePolicy(policy);
+    const backend = this.#backends.get(source);
+    if (!backend) throw new VaultInputError(`no ${source} backend is configured`);
+    let ref: BackendRef;
+    try {
+      ref = backend.parseRef(reference);
+    } catch (err) {
+      throw new VaultInputError(err instanceof Error ? err.message : "invalid reference");
+    }
+    if (!backend.accountFor(ref)) {
+      throw new VaultInputError(`no configured ${source} account serves vault ${ref.vault}`);
+    }
+    const existing = await findVaultSecret(
+      this.#db,
+      orgId,
+      sc.name,
+      scopeKeyOf(sc.projectId, sc.environment, sc.refPattern),
+    );
+    if (existing && existing.source === "sealed") {
+      throw new VaultInputError(
+        "a sealed secret has this scope: delete it before binding a reference",
+      );
+    }
+    const row = await upsertExternalVaultSecret(this.#db, orgId, {
+      ...sc,
+      ...pol,
+      source,
+      externalRef: reference,
+      createdBy: actor,
+    });
+    return { secret: view(row, []), created: !existing };
+  }
+
+  /** Removes an external reference. A sealed secret is refused: use `delete`. */
+  async unbindReference(orgId: string, scope: SecretScopeInput): Promise<SecretView | undefined> {
+    const sc = normalizeScope(scope);
+    const existing = await findVaultSecret(
+      this.#db,
+      orgId,
+      sc.name,
+      scopeKeyOf(sc.projectId, sc.environment, sc.refPattern),
+    );
+    if (!existing) return undefined;
+    if (existing.source === "sealed") {
+      throw new VaultInputError("that secret is sealed, not a reference: use delete_secret");
+    }
+    const before = view(existing, []);
+    await deleteVaultSecret(this.#db, orgId, existing.id);
+    return before;
+  }
+
+  /** Drops every backend's cached values, so the next use reads fresh. Returns how many. */
+  refreshBackends(): number {
+    let n = 0;
+    for (const b of this.#backends.values()) n += b.refresh();
+    return n;
+  }
+
+  /** Every backend credential, for the redactor. */
+  backendTokens(): string[] {
+    return [...this.#backends.values()].flatMap((b) => [...b.tokens()]);
+  }
+
+  /** Reachability and quota for each backend; never a value. */
+  async backendHealth(): Promise<{ source: string; health: BackendHealth }[]> {
+    const out: { source: string; health: BackendHealth }[] = [];
+    for (const b of this.#backends.values())
+      out.push({ source: b.source, health: await b.health() });
+    return out;
+  }
+
+  /**
+   * Resolves an external reference after the policy checks above it passed: finds the account,
+   * checks its binding for this org, project and class, then asks the backend. Fails closed: any
+   * backend failure is a refusal, so no value (empty, stale or partial) reaches the caller.
+   */
+  async #resolveExternal(
+    secret: VaultSecretRow,
+    who: { orgId: string; projectId: string; klass: TrustClass },
+  ): Promise<
+    | { ok: true; value: string; detail: Record<string, unknown> }
+    | { ok: false; reason: UseDenial; detail: Record<string, unknown> }
+  > {
+    const backend = this.#backends.get(secret.source);
+    let ref: BackendRef | undefined;
+    try {
+      if (backend && secret.externalRef) ref = backend.parseRef(secret.externalRef);
+    } catch {
+      ref = undefined;
+    }
+    if (!backend || !ref) {
+      return { ok: false, reason: "backend_unavailable", detail: { source: secret.source } };
+    }
+    const names = { source: secret.source, vault: ref.vault, item: ref.item, field: ref.field };
+    const account = backend.accountFor(ref);
+    if (
+      !account ||
+      !account.trustClasses.includes(who.klass) ||
+      !(account.orgs.includes(who.orgId) || account.projects.includes(who.projectId))
+    ) {
+      return {
+        ok: false,
+        reason: "account_not_bound",
+        detail: { ...names, ...(account ? { account: account.name } : {}) },
+      };
+    }
+    const detail = { ...names, account: account.name };
+    try {
+      return { ok: true, value: await backend.resolve(account.name, ref), detail };
+    } catch (err) {
+      const kind = err instanceof BackendError ? err.kind : "outage";
+      return { ok: false, reason: "backend_unavailable", detail: { ...detail, error_kind: kind } };
+    }
+  }
+
   async list(
     orgId: string,
     projectId?: string,
@@ -369,7 +520,11 @@ export class SecretVault {
    */
   async use(req: UseRequest): Promise<UseResult> {
     const scope = { orgId: req.orgId, projectId: req.projectId };
-    const deny = async (reason: UseDenial, secretId?: string): Promise<UseResult> => {
+    const deny = async (
+      reason: UseDenial,
+      secretId?: string,
+      extra: Record<string, unknown> = {},
+    ): Promise<UseResult> => {
       await auditFailure(
         this.#db,
         {
@@ -387,6 +542,7 @@ export class SecretVault {
             job: req.jobId,
             attempt: req.attemptId,
             destination: req.destination,
+            ...extra,
           },
         },
         this.#now,
@@ -441,6 +597,36 @@ export class SecretVault {
     const hosts = JSON.parse(secret.destinations) as string[];
     if (!hostAllowed(hosts, req.destination)) return deny("destination_not_allowed", secret.id);
 
+    if (secret.source !== "sealed") {
+      // An external reference has no sealed versions; a pinned version means nothing for it.
+      const ext = await this.#resolveExternal(secret, {
+        orgId: req.orgId,
+        projectId: req.projectId,
+        klass,
+      });
+      if (!ext.ok) return deny(ext.reason, secret.id, ext.detail);
+      await appendAudit(this.#db, scope, {
+        principalKind: "attempt",
+        principalId: req.attemptId,
+        op: "secret_use",
+        effect: "use",
+        outcome: "ok",
+        input: {
+          secret: secret.name,
+          secret_id: secret.id,
+          version: 0,
+          run: req.runId,
+          job: req.jobId,
+          attempt: req.attemptId,
+          destination: req.destination,
+          class: klass,
+          ...ext.detail,
+        },
+      });
+      await touchVaultSecret(this.#db, req.orgId, secret.id, this.#now());
+      return { ok: true, value: ext.value, version: 0, secretId: secret.id };
+    }
+
     const version = req.version ?? secret.currentVersion;
     const rec = await getVersionCiphertext(this.#db, req.orgId, secret.id, version);
     const now = this.#now();
@@ -489,7 +675,11 @@ export class SecretVault {
    */
   async usePublishCredential(req: PublishUseRequest): Promise<PublishUseResult> {
     const scope = { orgId: req.orgId, projectId: req.projectId };
-    const deny = async (reason: UseDenial, secretId?: string): Promise<PublishUseResult> => {
+    const deny = async (
+      reason: UseDenial,
+      secretId?: string,
+      extra: Record<string, unknown> = {},
+    ): Promise<PublishUseResult> => {
       await auditFailure(
         this.#db,
         {
@@ -506,6 +696,7 @@ export class SecretVault {
             request: req.requestId,
             tag: req.tag,
             destination: req.destination,
+            ...extra,
           },
         },
         this.#now,
@@ -533,6 +724,33 @@ export class SecretVault {
     }
     const hosts = JSON.parse(secret.destinations) as string[];
     if (!hostAllowed(hosts, req.destination)) return deny("destination_not_allowed", secret.id);
+    if (secret.source !== "sealed") {
+      const ext = await this.#resolveExternal(secret, {
+        orgId: req.orgId,
+        projectId: req.projectId,
+        klass: "release",
+      });
+      if (!ext.ok) return deny(ext.reason, secret.id, ext.detail);
+      await appendAudit(this.#db, scope, {
+        principalKind: "system",
+        principalId: "release-lane",
+        op: "secret_use",
+        effect: "use",
+        outcome: "ok",
+        input: {
+          secret: secret.name,
+          secret_id: secret.id,
+          version: 0,
+          request: req.requestId,
+          tag: req.tag,
+          destination: req.destination,
+          class: "release",
+          ...ext.detail,
+        },
+      });
+      await touchVaultSecret(this.#db, req.orgId, secret.id, this.#now());
+      return { ok: true, value: ext.value, version: 0, secretId: secret.id };
+    }
     const version = secret.currentVersion;
     const rec = await getVersionCiphertext(this.#db, req.orgId, secret.id, version);
     if (!rec) return deny("version_unavailable", secret.id);
@@ -584,6 +802,13 @@ export interface PublishUseRequest {
 
 export type PublishUseResult =
   { ok: true; value: string; version: number; secretId: string } | { ok: false; reason: UseDenial };
+
+/** An external reference has no versions to set or rotate: re-point it with bind instead. */
+function assertSealed(row: VaultSecretRow): void {
+  if (row.source !== "sealed") {
+    throw new VaultInputError("that secret is an external reference: bind or unbind it instead");
+  }
+}
 
 /** The environment a job runs in, if its plan records one. Today none does. */
 function jobEnvironment(planned: string | null): string | null {

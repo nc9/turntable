@@ -43,6 +43,7 @@ import { jobCacheProvider } from "./cache/job";
 import { createCacheService, type CacheService } from "./cache/service";
 import { FsCacheStore } from "./cache/store";
 import { SecretVault } from "./secrets/vault";
+import { loadOnePasswordConfig, OnePasswordBackend } from "./secrets/backends/onepassword";
 import { generateToken, hashToken } from "./ops/tokens";
 import { Poller } from "./poll";
 import { resolvePollConfig, resolveProviderConfig, serveDefaults } from "./serve-config";
@@ -627,7 +628,14 @@ async function serve(args: string[]): Promise<void> {
   if (keyFile) {
     const masterKey = loadMasterKey(keyFile);
     const store = new SecretStore(db, masterKey);
-    vault = new SecretVault({ db, masterKey });
+    // External secret stores: only when the operator configured one. Nothing of the 1Password
+    // SDK is loaded otherwise, and not until the first read even then.
+    const op = loadOnePasswordConfig();
+    vault = new SecretVault({
+      db,
+      masterKey,
+      ...(op ? { backends: [new OnePasswordBackend({ config: op })] } : {}),
+    });
     outboundWebhooks = new WebhookService({
       db,
       masterKey,

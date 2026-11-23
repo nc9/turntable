@@ -15,6 +15,8 @@ const GATED = new Set([
   "test:golden",
   "test:vault-e2e",
   "test:pg-only",
+  "test:op-embed",
+  "test:onepassword-live",
 ]);
 
 const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {

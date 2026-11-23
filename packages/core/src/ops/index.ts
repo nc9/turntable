@@ -41,7 +41,16 @@ import {
   listProxyRulesOp,
   setProxyRuleOp,
 } from "./definitions/proxy-rules";
-import { deleteSecretOp, listSecretsOp, rotateSecretOp, setSecretOp } from "./definitions/vault";
+import {
+  bindSecretReferenceOp,
+  deleteSecretOp,
+  doctorSecretsOp,
+  listSecretsOp,
+  refreshSecretsOp,
+  rotateSecretOp,
+  setSecretOp,
+  unbindSecretReferenceOp,
+} from "./definitions/vault";
 import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
 import { sandboxUsageOp } from "./definitions/sandbox-usage";
@@ -98,6 +107,10 @@ export const registry = createRegistry([
   setQuotas,
   acceptActionMoveOp,
   setSecretOp,
+  bindSecretReferenceOp,
+  unbindSecretReferenceOp,
+  refreshSecretsOp,
+  doctorSecretsOp,
   rotateSecretOp,
   deleteSecretOp,
   setProxyRuleOp,

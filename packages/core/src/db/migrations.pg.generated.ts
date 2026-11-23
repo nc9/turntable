@@ -179,5 +179,14 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"projects\" ADD COLUMN \"sandbox_snapshot\" text;",
       "ALTER TABLE \"projects\" ADD COLUMN \"max_concurrent\" bigint;"
     ]
+  },
+  {
+    "tag": "0007_external_secret_refs",
+    "when": 1795414089401,
+    "statements": [
+      "ALTER TABLE \"vault_secrets\" ADD COLUMN \"source\" text DEFAULT 'sealed' NOT NULL;",
+      "ALTER TABLE \"vault_secrets\" ADD COLUMN \"external_ref\" text;",
+      "ALTER TABLE \"vault_secrets\" ADD CONSTRAINT \"vault_secrets_source_check\" CHECK ((\"vault_secrets\".\"source\" = 'sealed' and \"vault_secrets\".\"external_ref\" is null and \"vault_secrets\".\"current_version\" >= 1) or (\"vault_secrets\".\"source\" <> 'sealed' and \"vault_secrets\".\"external_ref\" is not null and \"vault_secrets\".\"current_version\" = 0));"
+    ]
   }
 ];

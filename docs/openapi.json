@@ -3926,10 +3926,19 @@
                             },
                             "description": "Hosts a delivery may go to. Empty: nowhere."
                           },
+                          "source": {
+                            "type": "string",
+                            "description": "sealed, or the store that holds the value (onepassword)."
+                          },
+                          "external_ref": {
+                            "description": "The store's reference (vault, item and field names). Null when sealed.",
+                            "type": ["string", "null"]
+                          },
                           "current_version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "0 for an external reference."
                           },
                           "versions": {
                             "type": "array",
@@ -3998,6 +4007,8 @@
                           "ref_pattern",
                           "trust_classes",
                           "destinations",
+                          "source",
+                          "external_ref",
                           "current_version",
                           "versions",
                           "created_at",

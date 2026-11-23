@@ -253,6 +253,13 @@
       "when": 1795402134841,
       "tag": "0035_project_sandbox_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1795414088779,
+      "tag": "0036_external_secret_refs",
+      "breakpoints": true
     }
   ]
 }
