@@ -47,7 +47,9 @@ export const varsSchema = z
  * Operator rules that run one job as several shards, each in its own sandbox, without changing
  * the workflow: `[{ "job": "tests", "shards": [{ "steps": ["Rules tests"] }, { "steps": ["Audit
  * engine tests"] }] }]`. Steps are named by their `name:` or `#<n>` (counted from 1); a step no
- * shard names runs in every shard. Never read from the repository.
+ * shard names runs in every shard. A shard may add `paths` (workflow path-filter globs, `!`
+ * negation included): it then runs only when a changed file matches, and always when the changed
+ * files are unknown. Never read from the repository.
  */
 export const splitsSchema = z
   .array(
@@ -55,13 +57,22 @@ export const splitsSchema = z
       .object({
         job: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/, "a job id"),
         shards: z
-          .array(z.object({ steps: z.array(z.string().min(1).max(200)).min(1).max(20) }).strict())
+          .array(
+            z
+              .object({
+                steps: z.array(z.string().min(1).max(200)).min(1).max(20),
+                // Glob validity and the empty-list rule are checked by splitRuleProblem below.
+                paths: z.array(z.string().max(200)).max(50).optional(),
+              })
+              .strict(),
+          )
           .min(2)
           .max(8),
       })
       .strict()
-      .refine((r) => splitRuleProblem(r) === undefined, {
-        message: "a step is in two shards, or a step name is not a name or #<number>",
+      .superRefine((r, ctx) => {
+        const problem = splitRuleProblem(r);
+        if (problem) ctx.addIssue({ code: "custom", message: problem });
       }),
   )
   .max(10)

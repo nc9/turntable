@@ -46,13 +46,77 @@ const WORD: Record<AttemptResult, string> = {
  * result; an infrastructure error is a `failure` with an infrastructure title, because nothing
  * trustworthy passed.
  */
-export function conclusionFor(mode: Exclude<ChecksMode, "off">, result: AttemptResult): Conclusion {
+export function conclusionFor(
+  mode: Exclude<ChecksMode, "off">,
+  result: AttemptResult | NoAttemptSkip,
+): Conclusion {
   if (mode === "shadow") return "neutral";
+  if (typeof result === "object") return "skipped";
   return result === "infra_error" ? "failure" : result;
 }
 
-export function titleFor(mode: Exclude<ChecksMode, "off">, result: AttemptResult): string {
-  return `${mode === "shadow" ? "Shadow" : "Turntable"}: ${WORD[result]}`;
+/**
+ * A job that ended `skipped` without ever running an attempt (a false `if:`, a failed or skipped
+ * `needs`, every shard path-skipped). GitHub posts a `skipped` check for it, and branch protection
+ * counts a skipped required check as satisfied, so a required context never stays pending.
+ */
+export type NoAttemptSkip = { result: "skipped"; attempt: false };
+export const NO_ATTEMPT_SKIP: NoAttemptSkip = { result: "skipped", attempt: false };
+
+/**
+ * One rule per way a job can be skipped without running: the reason the scheduler stored on the
+ * skipped attempt (the text after `skipped: `) in, a fixed public sentence out. Add a rule here for
+ * a new reason; the first one to answer wins. Only fixed words and the changed-set source ever
+ * reach a check run, never the raw `if:` text.
+ */
+export const SKIP_REASON_RULES: ((reason: string) => string | undefined)[] = [
+  // Every shard limited by `paths` was skipped: `no shard paths changed: ... (<changed-set source>)`.
+  (reason) => {
+    if (!reason.startsWith("no shard paths changed")) return undefined;
+    const source = /\(([^()]+)\)$/.exec(reason)?.[1];
+    return source ? `no shard's paths changed: ${plain(source, 80)}` : "no shard's paths changed";
+  },
+];
+
+export type SkipInput = {
+  /** The skipped attempt's error class: `dependency:<state>` or `skipped: <reason>`. */
+  errorClass: string | null;
+  /** The job's `needs`, with the state each ended in. */
+  needs: readonly { name: string; state: string }[];
+};
+
+const needsWas = (n: { name: string; state: string }): string =>
+  `needs ${plain(n.name, 60)} was ${n.state}`;
+
+/** Why a job ended skipped without an attempt, as a fixed sentence for the check summary. */
+export function skipReasonFor(i: SkipInput): string {
+  const ec = i.errorClass ?? "";
+  const bad = (state?: string) =>
+    i.needs.find((n) => (state ? n.state === state : n.state !== "success"));
+  if (ec.startsWith("dependency:")) {
+    const n = bad(ec.slice("dependency:".length)) ?? bad();
+    if (n) return needsWas(n);
+  }
+  const reason = ec.startsWith("skipped: ") ? ec.slice("skipped: ".length) : "";
+  for (const rule of SKIP_REASON_RULES) {
+    const text = rule(reason);
+    if (text !== undefined) return text;
+  }
+  if (/^cannot evaluate if:/.test(reason)) return "the if: expression could not be evaluated";
+  if (/^if: .* is false$/s.test(reason)) {
+    // The default `if: success()` is false because a need did not succeed.
+    const n = reason === "if: success() is false" ? bad() : undefined;
+    return n ? needsWas(n) : "the if: expression was false";
+  }
+  if (reason.startsWith("unsupported:")) return "the job uses a feature Turntable does not support";
+  return "the job was skipped before it started";
+}
+
+export function titleFor(
+  mode: Exclude<ChecksMode, "off">,
+  result: AttemptResult | NoAttemptSkip,
+): string {
+  return `${mode === "shadow" ? "Shadow" : "Turntable"}: ${typeof result === "object" ? "skipped" : WORD[result]}`;
 }
 
 export const RUNNING_TITLE = (mode: Exclude<ChecksMode, "off">): string =>
@@ -106,7 +170,7 @@ export function classifyInfra(reason: string | undefined): InfraClass {
 
 export type SummaryInput = {
   mode: Exclude<ChecksMode, "off">;
-  result: AttemptResult;
+  result: AttemptResult | NoAttemptSkip;
   runUrl: string | undefined;
   failingStep?: string | undefined;
   /** Already redacted and capped by the digest. */
@@ -115,6 +179,8 @@ export type SummaryInput = {
   infraClass?: InfraClass | undefined;
   /** For a job split across sandboxes: one line per shard (fixed words and numbers only). */
   shards?: readonly string[] | undefined;
+  /** For a job skipped without an attempt: the fixed reason sentence. */
+  skipReason?: string | undefined;
 };
 
 /**
@@ -122,7 +188,9 @@ export type SummaryInput = {
  * fence (so markdown, links and mentions in log text stay inert). Never more log than the digest.
  */
 export function summaryFor(i: SummaryInput): string {
-  const lines: string[] = [`**Result:** ${WORD[i.result]}`];
+  const word = typeof i.result === "object" ? "skipped" : WORD[i.result];
+  const lines: string[] = [`**Result:** ${word}`];
+  if (i.skipReason) lines.push(`**Reason:** ${i.skipReason}`);
   if (i.mode === "shadow") {
     lines.push(
       "This is a shadow check: it is always neutral and never gates a merge. The result above is what Turntable found.",

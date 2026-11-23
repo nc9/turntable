@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { declaredPermissions, DEFAULT_PERMISSIONS, wantsIdToken } from "../src/permissions";
+import { parse } from "yaml";
+import { declaredPermissions, DEFAULT_PERMISSIONS, wantsIdTokenIn } from "../src/permissions";
+
+const wantsIdToken = (yaml: string, jobId: string): boolean => {
+  try {
+    return wantsIdTokenIn(parse(yaml, { merge: true }), jobId);
+  } catch {
+    return false;
+  }
+};
 
 const wf = (body: string): string => `name: t\non: push\n${body}`;
 

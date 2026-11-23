@@ -327,7 +327,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
 <form method="post" action="${MANIFEST_PATH}" autocomplete="off">
 <p><label>Setup token<br><input type="password" name="setup_token" required autocomplete="off" size="48"></label></p>
 <p><label>Turntable org that will own the App (its slug)<br><input name="org" required pattern="[a-z0-9][a-z0-9-]{0,62}" size="24"${o.ownerOrgSlugs?.[0] ? ` value="${esc(o.ownerOrgSlugs[0])}"` : ""}></label></p>
-<p><label>App name<br><input name="name" value="Turntable" maxlength="34" size="24"></label></p>
+<p><label>App name<br><input name="name" value="Turntable CI" maxlength="34" size="24"></label></p>
 <p><label>Create it under this GitHub organization (blank for your own account)<br><input name="gh_org" maxlength="39" size="24"></label></p>
 <p><label><input type="checkbox" name="rotate" value="1"> Replace the App this instance already has</label></p>
 <button type="submit">Continue</button>
@@ -367,7 +367,7 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
     }
 
     const slug = field("org");
-    const name = field("name") || "Turntable";
+    const name = field("name") || "Turntable CI";
     const ghOrg = field("gh_org");
     const rotate = field("rotate") === "1" || field("rotate") === "true";
     if (!ORG_SLUG.test(slug)) return note(400, "Bad request", "Give the org's slug.");

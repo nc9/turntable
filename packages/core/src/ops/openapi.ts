@@ -93,8 +93,15 @@ function operation(op: Op): Json {
         ...(op.untrustedOutput
           ? {
               headers: {
-                "X-Longshore-Untrusted-Content": {
+                "X-Turntable-Untrusted-Content": {
                   description: "Always `true` on this operation: the body carries untrusted text.",
+                  schema: { type: "string", enum: ["true"] },
+                },
+                "X-Longshore-Untrusted-Content": {
+                  // rename-keep
+                  description:
+                    "Deprecated: the same value as `X-Turntable-Untrusted-Content`, sent until a later release removes it.",
+                  deprecated: true,
                   schema: { type: "string", enum: ["true"] },
                 },
               },
@@ -108,11 +115,11 @@ function operation(op: Op): Json {
       "404": { $ref: "#/components/responses/NotFound" },
     },
     security: op.auth.type === "signature" ? [] : [{ bearerAuth: [] }],
-    "x-longshore-effect": op.effect,
+    "x-turntable-effect": op.effect,
     ...(op.auth.type === "instance"
-      ? { "x-longshore-instance-only": true }
-      : { "x-longshore-min-role": op.auth.minRole }),
-    "x-longshore-untrusted-output": op.untrustedOutput,
+      ? { "x-turntable-instance-only": true }
+      : { "x-turntable-min-role": op.auth.minRole }),
+    "x-turntable-untrusted-output": op.untrustedOutput,
   };
 }
 
