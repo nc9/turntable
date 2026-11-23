@@ -17,9 +17,7 @@ export const dbBackupOp = defineOp({
     "size and sha256. Use it before an upgrade that applies migrations. It keeps the newest " +
     "`keep` backups (default from TURNTABLE_BACKUP_KEEP, else 10) and refuses when free space " +
     "is below twice the database size. On Postgres it refuses: use pg_dump. Restoring is " +
-    "stop, replace the file, start. The copy is synchronous and blocks this server's event loop " +
-    "for its whole duration, so run it in a quiet window; on a busy hosted instance prefer " +
-    "TURNTABLE_BACKUP_BEFORE_MIGRATE=1 at boot until the backup runs in a worker. Only the instance administrator can call it. Not an MCP tool.",
+    "stop, replace the file, start. The copy runs on a worker thread, so the server keeps serving while it runs. Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
     keep: z
       .int()
@@ -43,7 +41,7 @@ export const dbBackupOp = defineOp({
   scope: "org",
   http: { method: "POST", path: "/instance/db-backup" },
   mcp: false,
-  // VACUUM INTO of a large database takes seconds. It reads through its own connection, so it
+  // VACUUM INTO of a large database takes seconds (on a worker thread). It reads through its own connection, so it
   // must not sit inside the dispatcher's write transaction, which would block every other writer.
   outsideTransaction: true,
   auditDetail: (o) => ({ name: o.name, size_bytes: o.size_bytes, sha256: o.sha256 }),

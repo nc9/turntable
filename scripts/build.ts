@@ -40,7 +40,10 @@ for (const target of targets) {
   const name = `turntable-${target.replace(/^bun-/, "")}`;
   const outfile = join(dist, name);
   const result = await Bun.build({
-    entrypoints: [entry],
+    // The backup worker is its own entrypoint, embedded in the executable (#310). `root` makes its
+    // path inside the binary `./packages/core/src/db/backup-worker.ts`, which backup.ts relies on.
+    entrypoints: [entry, join(root, "packages/core/src/db/backup-worker.ts")],
+    root,
     compile: { target: target as (typeof TARGETS)[number], outfile },
     minify: true,
     define: { TURNTABLE_BUILD_VERSION: JSON.stringify(version) },

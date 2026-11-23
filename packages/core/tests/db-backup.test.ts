@@ -360,3 +360,50 @@ sqliteOnly("before a migration", () => {
     expect(() => backupKeepFromEnv({ TURNTABLE_BACKUP_KEEP: "two" })).toThrow();
   });
 });
+
+sqliteOnly("the backup worker (#310)", () => {
+  test("the main thread stays responsive and healthz answers while the copy is held over 1 s", async () => {
+    const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    let maxLate = 0;
+    let last = performance.now();
+    const tick = setInterval(() => {
+      const now = performance.now();
+      maxLate = Math.max(maxLate, now - last - 10);
+      last = now;
+    }, 10);
+    try {
+      const started = performance.now();
+      const copy = backupSqlite({
+        dbPath,
+        dataDir: dir,
+        version: "1.2.3",
+        now: () => clock,
+        workerHoldMs: 1500,
+      });
+      // The worker is blocked for 1.5 s: the health check must answer inside that window.
+      await new Promise((r) => setTimeout(r, 300));
+      const health = performance.now();
+      const res = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+      expect(await res.text()).toBe("ok");
+      expect(performance.now() - health).toBeLessThan(200);
+      const r = await copy;
+      expect(performance.now() - started).toBeGreaterThan(1000);
+      expect(maxLate).toBeLessThan(50);
+      const out = new Database(r.path, { readonly: true });
+      expect(out.query("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+      out.close();
+    } finally {
+      clearInterval(tick);
+      await server.stop(true);
+    }
+  }, 30_000);
+
+  test("a copy that fails in the worker is a BackupError and leaves no partial file", async () => {
+    const bad = join(dir, "not-a-db.db");
+    writeFileSync(bad, "this is not a sqlite database, just text".repeat(20));
+    const err = await backupSqlite({ dbPath: bad, dataDir: dir, version: "1" }).catch((e) => e);
+    expect(err).toBeInstanceOf(BackupError);
+    expect(err.code).toBe("failed");
+    expect((await readdir(join(dir, "backups"))).filter((n) => n.endsWith(".partial"))).toEqual([]);
+  });
+});
