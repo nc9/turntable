@@ -814,3 +814,51 @@ export function listIngestBindings(db: Db): Promise<
     );
   });
 }
+
+/**
+ * GitHub repos bound through an App installation, across every tenant (the poller serves all of
+ * them), so the poller can read each with a token minted for that one repo.
+ */
+export function listInstalledRepos(db: Db): Promise<
+  {
+    orgSlug: string;
+    projectSlug: string;
+    owner: string;
+    repo: string;
+    installationId: string;
+  }[]
+> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        orgSlug: s.orgs.slug,
+        projectSlug: s.projects.slug,
+        owner: s.projectRepos.owner,
+        repo: s.projectRepos.repo,
+        forge: s.projectRepos.forge,
+        installationId: s.projectRepos.installationId,
+      })
+      .from(s.projectRepos)
+      .innerJoin(
+        s.projects,
+        and(
+          eq(s.projects.id, s.projectRepos.projectId),
+          eq(s.projects.orgId, s.projectRepos.orgId),
+        ),
+      )
+      .innerJoin(s.orgs, eq(s.orgs.id, s.projects.orgId));
+    return rows.flatMap((r) =>
+      r.forge === "github" && r.installationId !== null
+        ? [
+            {
+              orgSlug: r.orgSlug,
+              projectSlug: r.projectSlug,
+              owner: r.owner,
+              repo: r.repo,
+              installationId: r.installationId,
+            },
+          ]
+        : [],
+    );
+  });
+}
