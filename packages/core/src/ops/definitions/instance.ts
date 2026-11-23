@@ -5,16 +5,24 @@
 import { z } from "zod";
 import {
   appendAudit,
+  countActiveApiTokens,
+  createOrg,
   getInstanceToken,
   getOrgBySlug,
+  insertApiToken,
   listAllOrgs,
   setOrgQuotas,
 } from "../../db/repos";
 import { SYSTEM_ORG_SLUG } from "../../audit/failures";
+import { AGENT_ROLES, TOKEN_KINDS } from "../../db/schema";
+import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
+import { generateToken, hashToken } from "../tokens";
 import { quotaView, quotaViewSchema } from "./quotas";
+
+const DAY_MS = 86_400_000;
 
 const iso = (ms: number | null | undefined): string | null =>
   ms === null || ms === undefined ? null : new Date(ms).toISOString();
@@ -186,5 +194,139 @@ export const rotateInstanceTokenOp = defineOp({
       if (err instanceof Error) throw new OpError("invalid_input", err.message);
       throw err;
     }
+  },
+});
+
+export const createOrgOp = defineOp({
+  name: "create_org",
+  summary: "Create an empty org (instance administrator only).",
+  description:
+    "Creates an org with a slug (lower-case letters, digits and `-`, up to 63, starting " +
+    "alphanumeric) and a display name. The org starts with no projects and no tokens: give it " +
+    "its first token with `create_org_token`. A slug already in use is a conflict, and the " +
+    "internal system org is never a target. On a hosted instance with no shell this is how a " +
+    "second tenant is added. Audited in the system org's chain and in the new org's own. Only " +
+    "the instance administrator can call it. Not an MCP tool.",
+  input: z.object({
+    slug: z.string().min(1).max(63).describe("Slug of the new org."),
+    name: z.string().min(1).max(120).describe("Display name. Untrusted text elsewhere."),
+  }),
+  output: z.object({ id: z.string(), slug: z.string(), name: z.string() }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/orgs" },
+  mcp: false,
+  async handler(ctx, i) {
+    if (!ORG_SLUG.test(i.slug)) {
+      throw new OpError(
+        "invalid_input",
+        "an org slug is lower-case letters, digits and - (up to 63, starting alphanumeric)",
+      );
+    }
+    if (i.slug === SYSTEM_ORG_SLUG || (await getOrgBySlug(ctx.db, i.slug))) {
+      throw new OpError("conflict", "an org with that slug already exists");
+    }
+    const org = await createOrg(ctx.db, { slug: i.slug, name: i.name });
+    await appendAudit(
+      ctx.db,
+      { orgId: org.id },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "create_org",
+        effect: "write",
+        outcome: "ok",
+        input: { slug: org.slug },
+      },
+    );
+    return { id: org.id, slug: org.slug, name: org.name };
+  },
+});
+
+export const createOrgTokenOp = defineOp({
+  name: "create_org_token",
+  summary: "Mint an org's first token (instance administrator only).",
+  description:
+    "Mints the first token of an org that has none: it is refused as a conflict once the org " +
+    "has any token that is neither revoked nor expired, so it cannot be used to add access to " +
+    "an org that already has some (the same one-shot rule as the env bootstrap). The role is " +
+    "at most `release_operator`; `kind` defaults to `person` (the operator's own token, which " +
+    "may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is " +
+    "returned once in `token` and cannot be read again: only its hash is stored, and the audit " +
+    "entries never hold it. After this the org manages its own tokens. The system org is never " +
+    "a target. Audited in the system org's chain and in the org's own. Only the instance " +
+    "administrator can call it. Not an MCP tool.",
+  input: z.object({
+    target_org: z.string().min(1).max(64).describe("Slug of the org."),
+    name: z.string().min(1).max(80).describe("A label for the token."),
+    role: z.enum(AGENT_ROLES).describe("At most release_operator."),
+    kind: z
+      .enum(TOKEN_KINDS)
+      .default("person")
+      .describe("person: a human's own token (default). agent: an MCP client or script."),
+    expires_days: z.int().min(1).max(365).describe("Lifetime in days."),
+  }),
+  output: z.object({
+    id: z.string(),
+    name: z.string(),
+    org: z.string().describe("Org slug."),
+    role: z.enum(AGENT_ROLES),
+    kind: z.enum(TOKEN_KINDS),
+    expires_at: z.string(),
+    token: z.string().describe("The secret. Shown once, store it now."),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/orgs/tokens" },
+  mcp: false,
+  oneTimeSecretFields: ["token"],
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    const scope = { orgId: org.id };
+    if ((await countActiveApiTokens(ctx.db, scope, ctx.now())) > 0) {
+      throw new OpError(
+        "conflict",
+        "the org already has an active token; only the org's own admins can add more",
+      );
+    }
+    const secret = generateToken();
+    const expiresAt = ctx.now() + i.expires_days * DAY_MS;
+    const row = await insertApiToken(ctx.db, scope, {
+      name: i.name,
+      role: i.role,
+      kind: i.kind,
+      tokenHash: hashToken(secret),
+      createdBy: `instance:${ctx.principal.id}`,
+      expiresAt,
+    });
+    await appendAudit(ctx.db, scope, {
+      principalKind: "instance",
+      principalId: ctx.principal.id,
+      op: "create_org_token",
+      effect: "write",
+      outcome: "ok",
+      input: {
+        target_org: org.slug,
+        token_id: row.id,
+        name: i.name,
+        role: i.role,
+        kind: i.kind,
+        expires_days: i.expires_days,
+      },
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      org: org.slug,
+      role: i.role,
+      kind: i.kind,
+      expires_at: new Date(expiresAt).toISOString(),
+      token: secret,
+    };
   },
 });
