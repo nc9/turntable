@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { JOB_STATES, type JobState } from "@/api/types";
 import { HomeRedirect, NotFound } from "@/features/shell/home";
 import { Shell } from "@/features/shell/shell";
@@ -12,6 +12,11 @@ import { ApproversPage } from "@/features/runs/approvers-page";
 import { QuotasPage } from "@/features/runs/quotas-page";
 import { UsagePage } from "@/features/runs/usage-page";
 import { OrgSettingsPage } from "@/features/settings/org-settings-page";
+import { InstanceSettingsPage } from "@/features/instance/settings-page";
+import { InstanceQuotasPage } from "@/features/instance/quotas-page";
+import { InstanceProjectsPage } from "@/features/instance/projects-page";
+import { InstanceBackupsPage } from "@/features/instance/backups-page";
+import { InstanceTokenPage } from "@/features/instance/token-page";
 import { SettingsPage } from "@/features/runs/settings-page";
 
 export type RunsSearch = {
@@ -109,7 +114,32 @@ const orgSettingsRoute = createRoute({
   component: OrgSettingsPage,
 });
 
+// The instance-administrator area. The shell renders it with its own sign-in instead of the org
+// shell (see Shell). "-" is not a valid org slug, so these never collide with an org.
+const instanceIndexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/-/instance",
+  beforeLoad: () => {
+    throw redirect({ to: "/-/instance/settings" });
+  },
+});
+const instanceRoutes = [
+  ["settings", InstanceSettingsPage],
+  ["quotas", InstanceQuotasPage],
+  ["projects", InstanceProjectsPage],
+  ["backups", InstanceBackupsPage],
+  ["token", InstanceTokenPage],
+].map(([name, component]) =>
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: `/-/instance/${name as string}`,
+    component: component as () => React.JSX.Element,
+  }),
+);
+
 const routeTree = rootRoute.addChildren([
+  instanceIndexRoute,
+  ...instanceRoutes,
   indexRoute,
   orgRoute,
   ingestRoute,
