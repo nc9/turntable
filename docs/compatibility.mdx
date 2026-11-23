@@ -66,7 +66,7 @@ A heavy job can run as several shards, each in its own sandbox, **without editin
 
 ## Runner image toolset
 
-GitHub's `ubuntu-latest` image comes with a large preinstalled toolset, and workflows assume it. Longshore's sandbox is a smaller image, built from `images/runner/Dockerfile`: the pinned `node:22-bookworm` base plus PowerShell 7 (pinned by version and checksum), `jq`, `rsync`, `zip` and `unzip`. A step that needs a tool the image lacks fails with exit 127, and the log says `<tool> is not available on this image` so it is not a bare "command not found". Install the tool in a step if egress allows it, or use your own image.
+GitHub's `ubuntu-latest` image comes with a large preinstalled toolset, and workflows assume it. Longshore's sandbox is a smaller image, built from `images/runner/Dockerfile`: the pinned `node:22-bookworm` base plus PowerShell 7 (pinned by version and checksum), `jq`, `rsync`, `zip` and `unzip`. A step that needs a tool the image lacks fails with exit 127, and the log says `<tool> is not available on this image` so it is not a bare "command not found". A tool the image lacks is simply absent, as on a runner without it: `command -v pwsh` fails, so a workflow's own probe (`if ! command -v pwsh; then echo ::notice::skipped; exit 0; fi`) skips and succeeds. Longshore puts a shim on `PATH` only for the interpreters that exist (it uses them to keep steps off a terminal), never for one that does not. Install the tool in a step if egress allows it, or use your own image.
 
 This table is generated from the built image in CI (`scripts/runner-toolset.ts`), so it cannot drift from the image. "On GitHub" is whether `ubuntu-latest` has the tool preinstalled.
 
