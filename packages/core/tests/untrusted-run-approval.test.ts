@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import {
   createJob,
   createProject,
+  getOrgBySlug,
   createRun,
   type Db,
   getProjectSandboxSettings,
@@ -26,6 +27,7 @@ import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { setSandboxPolicy } from "../src/ops/policy-cli";
 import { assertMintable, generateToken, hashToken } from "../src/ops/tokens";
 import { createTokenFromCli, listTokensFromCli } from "../src/ops/token-cli";
+import { bootstrapToken } from "../src/ops/bootstrap";
 import { mintToken, rawExec, seedWorld, type Tenant } from "./ops-helpers";
 
 let db: Db;
@@ -456,5 +458,72 @@ describe("token kind", () => {
     expect(mcpTools(registry).map((t) => t.name)).not.toContain("create_api_token");
     const withKind = registry.ops.filter((o) => "kind" in o.input.shape).map((o) => o.name);
     expect(withKind).toEqual(["create_api_token"]);
+  });
+});
+
+describe("the human path under no_agents", () => {
+  test("the web UI's approve, with a person-kind session token, succeeds", async () => {
+    // The UI calls POST /runs/{id}/approve with its bearer token, over REST.
+    await setProjectSandboxSettings(db, a.scope, { untrustedRunApproval: "no_agents" });
+    const h = await held(a.scope);
+    const ui = (await mintToken(db, { orgId: a.orgId }, "release_operator", { kind: "person" }))
+      .secret;
+    const r = await dispatch(
+      { registry, db, transport: "rest" },
+      { kind: "bearer", token: ui },
+      "approve_run",
+      h.input,
+    );
+    expect(r.ok).toBe(true);
+    expect(await jobStates(a.scope, h.runId)).toEqual(["queued"]);
+  });
+
+  test("the bootstrap token is a person token, and it is audited as one", async () => {
+    const secret = generateToken();
+    const res = await bootstrapToken(db, { sha256: hashToken(secret), org: "org-fresh" });
+    expect(res.status).toBe("created");
+    const rows = await listTokensFromCli(db, { org: "org-fresh" });
+    expect(rows.map((r) => [r.name, r.kind])).toEqual([["bootstrap", "person"]]);
+    const org = (await getOrgBySlug(db, "org-fresh"))!;
+    const audit = (await listAudit(db, { orgId: org.id }, { limit: 5 })).find(
+      (x) => x.op === "create_api_token",
+    );
+    expect(JSON.parse(audit!.input)).toMatchObject({ kind: "person" });
+  });
+
+  test("a signed approval op does not consult the run policy, so WebAuthn works under no_agents", () => {
+    // approve_environment is a signature op: the enrolled approver's proof is the credential and
+    // approve_run's untrusted_run_approval is read only in approve_run's handler. The signed path
+    // for a held run is the `human` mode and stays closed in this round (see QUESTION.md).
+    const op = registry.ops.find((o) => o.name === "approve_environment")!;
+    expect(op.auth.type).toBe("signature");
+    expect(
+      approvalRefusal("no_agents", {
+        principal: { kind: "approver", id: "k", orgId: "o", person: "p", role: "viewer" },
+        transport: "rest",
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("minting a person token", () => {
+  test("an agent token minting a person token is refused and audited", async () => {
+    const agent = (await mintToken(db, { orgId: a.orgId }, "release_operator", { kind: "agent" }))
+      .secret;
+    const r = await dispatch(
+      { registry, db, transport: "rest" },
+      { kind: "bearer", token: agent },
+      "create_api_token",
+      { name: "sneaky", role: "reader", kind: "person" },
+    );
+    expect(r.ok).toBe(false);
+    expect((await listTokensFromCli(db, { org: "org-a" })).map((t) => t.name)).not.toContain(
+      "sneaky",
+    );
+    const rows = (await listAudit(db, { orgId: a.orgId }, { limit: 10 })).filter(
+      (x) => x.op === "create_api_token",
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.outcome).toStartWith("error:");
   });
 });

@@ -13,6 +13,10 @@ Releases are tagged `v<major>.<minor>.<patch>`. Until 1.0, prereleases are `v0.x
 
 Migrations run on start and only go forward. Back up the data directory (SQLite) or snapshot the database (Postgres) before upgrading. To roll back, restore the backup and start the previous version.
 
+## Upgrade notes
+
+**Run approval defaults to `no_agents`.** `approve_run` now defaults to `no_agents` per project; tokens minted before this upgrade count as agent tokens. Re-mint person tokens (`create_api_token --kind person`) before approving from a token. The instance bootstrap token is a person token. The CLI takes the same flag: `turntable token create --kind agent|person`, defaulting to `agent`. Only a person token or a person at the host can mint a person token.
+
 ## What a release contains
 
 | Asset | What it is |
