@@ -18,6 +18,7 @@ import {
   startProxy,
   type RunningProxy,
 } from "@turntable/proxy";
+import { plannedIdToken } from "@turntable/act-runner";
 import { dockerBridgeGateway } from "@turntable/provider-docker";
 import type { ProxyEndpoint } from "@turntable/provider-sdk";
 import { SecretRegistry } from "@turntable/redact";
@@ -70,15 +71,7 @@ export interface OidcTarget {
   pathPrefix: string;
 }
 
-/** Whether the job's stored plan says it asked for an ID token. Unreadable means no. */
-export function plannedIdToken(planned: string | null | undefined): boolean {
-  if (!planned) return false;
-  try {
-    return (JSON.parse(planned) as { idToken?: unknown }).idToken === true;
-  } catch {
-    return false;
-  }
-}
+export { plannedIdToken };
 
 /** The one rule that lets a job ask its own org's issuer for a token. Nothing else on that host. */
 export function oidcRules(t: OidcTarget): Rule[] {

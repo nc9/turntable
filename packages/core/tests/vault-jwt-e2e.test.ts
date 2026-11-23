@@ -72,9 +72,7 @@ async function mint(
     orgId: a.orgId,
     attemptId: a.attemptId,
     klass: "protected",
-    workflowYaml:
-      "name: t\non: push\njobs:\n  a:\n    runs-on: x\n    permissions:\n      id-token: write\n    steps: []\n",
-    jobId: "a",
+    planned: JSON.stringify({ id: "a", key: "a", idToken: true }),
   });
   if ("none" in issued) throw new Error(issued.none);
   const res = await (o.handlerFor ?? handler).handle(

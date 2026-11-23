@@ -23,9 +23,8 @@ import type { AttemptContext, AttemptOutcome } from "../src/scheduler/types";
 import { seedWorld, type Tenant } from "./ops-helpers";
 
 const BASE = "https://ci.example.test/oidc";
-const WF_ASKS =
-  "name: t\non: push\njobs:\n  a:\n    runs-on: x\n    permissions:\n      id-token: write\n    steps: []\n";
-const WF_PLAIN = "name: t\non: push\njobs:\n  a:\n    runs-on: x\n    steps: []\n";
+const PLAN_ASKS = JSON.stringify({ id: "a", key: "a", idToken: true });
+const PLAN_PLAIN = JSON.stringify({ id: "a", key: "a" });
 const done: AttemptOutcome = { state: "success", reason: "ok" };
 
 let db: Db;
@@ -104,12 +103,11 @@ async function ctxOf(extra: Partial<AttemptContext> = {}): Promise<AttemptContex
   };
 }
 
-const req = (klassName: string, workflowYaml: string) => ({
+const req = (klassName: string, planned: string | null) => ({
   orgId: a.orgId,
   attemptId: a.attemptId,
   klass: klassName,
-  workflowYaml,
-  jobId: "a",
+  planned,
 });
 
 /** One HTTPS request through the proxy, as a step would make it. */
@@ -145,7 +143,7 @@ async function through(
 
 describe("JobOidc.issue", () => {
   test("a protected job that asked gets the variables, with a placeholder as the request token", async () => {
-    const r = await jobOidc.issue(req("protected", WF_ASKS));
+    const r = await jobOidc.issue(req("protected", PLAN_ASKS));
     if ("none" in r) throw new Error(r.none);
     expect(r.requestUrl).toBe(`${BASE}/${a.slug}/token?api-version=2.0`);
     expect(r.requestToken).toBe(OIDC_PLACEHOLDER_TOKEN);
@@ -169,14 +167,14 @@ describe("JobOidc.issue", () => {
   });
 
   test("a job that did not ask gets nothing, whatever its class", async () => {
-    expect(await jobOidc.issue(req("protected", WF_PLAIN))).toEqual({
+    expect(await jobOidc.issue(req("protected", PLAN_PLAIN))).toEqual({
       none: "the job did not ask for it",
     });
   });
 
   test("an untrusted or trusted pull request gets nothing even when it asked", async () => {
     for (const k of ["untrusted_pr", "trusted_pr"]) {
-      const r = await jobOidc.issue(req(k, WF_ASKS));
+      const r = await jobOidc.issue(req(k, PLAN_ASKS));
       expect("none" in r && r.none).toContain("may not mint");
     }
   });
@@ -192,8 +190,8 @@ describe("JobOidc.issue", () => {
       }),
       masterKey: master,
     });
-    expect("none" in (await wide.issue(req("trusted_pr", WF_ASKS)))).toBe(false);
-    expect("none" in (await wide.issue(req("untrusted_pr", WF_ASKS)))).toBe(true);
+    expect("none" in (await wide.issue(req("trusted_pr", PLAN_ASKS)))).toBe(false);
+    expect("none" in (await wide.issue(req("untrusted_pr", PLAN_ASKS)))).toBe(true);
   });
 
   test("an IP-literal issuer host gets no rule and no token, and nothing throws", async () => {
@@ -209,7 +207,7 @@ describe("JobOidc.issue", () => {
       });
       expect(await ip.mintTarget(a.orgId)).toBeUndefined();
       expect(await ip.proxyTarget({ scope: a.scope }, "protected")).toBeUndefined();
-      expect("none" in (await ip.issue(req("protected", WF_ASKS)))).toBe(true);
+      expect("none" in (await ip.issue(req("protected", PLAN_ASKS)))).toBe(true);
     }
   });
 
@@ -219,7 +217,7 @@ describe("JobOidc.issue", () => {
       issuer: new OidcIssuer({ db, masterKey: master, baseUrl: "http://ci.example.test/oidc" }),
       masterKey: master,
     });
-    expect("none" in (await plain.issue(req("protected", WF_ASKS)))).toBe(true);
+    expect("none" in (await plain.issue(req("protected", PLAN_ASKS)))).toBe(true);
   });
 });
 
@@ -240,7 +238,7 @@ describe("the mint credential behind the proxy", () => {
 
   test("the proxy attaches the credential to the mint request and nothing else on that host", async () => {
     await klass("protected");
-    const issued = await jobOidc.issue(req("protected", WF_ASKS));
+    const issued = await jobOidc.issue(req("protected", PLAN_ASKS));
     if ("none" in issued) throw new Error(issued.none);
     await wrap(async (c) => {
       c.proxy!.setOidcMinter(issued.credentialFor);
@@ -280,7 +278,7 @@ describe("the mint credential behind the proxy", () => {
 
   test("the proxy does not follow a redirect: the job gets the 302, and nothing is sent on", async () => {
     await klass("protected");
-    const issued = await jobOidc.issue(req("protected", WF_ASKS));
+    const issued = await jobOidc.issue(req("protected", PLAN_ASKS));
     if ("none" in issued) throw new Error(issued.none);
     respond = () =>
       new Response(null, { status: 302, headers: { location: "https://evil.example.test/steal" } });
@@ -335,7 +333,7 @@ describe("the mint credential behind the proxy", () => {
 describe("the minted credential works at the issuer", () => {
   test("the endpoint accepts it for its own attempt and org, and returns a token for the audience", async () => {
     await klass("protected");
-    const issued = await jobOidc.issue(req("protected", WF_ASKS));
+    const issued = await jobOidc.issue(req("protected", PLAN_ASKS));
     if ("none" in issued) throw new Error(issued.none);
     const handler = createOidcHandler({ db, issuer, masterKey: master });
     const res = await handler.handle(

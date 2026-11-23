@@ -1,7 +1,7 @@
 // Secrets, the GitHub App record, installations and webhook deliveries. Like index.ts, part of
 // the only code allowed to name tenant tables. Secret values are stored only as sealed records
 // and are never returned by any query written for an API response.
-import { and, asc, eq, gt, inArray, isNull, like, lt, ne } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, like, lt, ne, notLike } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { DeliveryStatus, InstallationStatus } from "../schema";
@@ -389,7 +389,7 @@ export function createInstallationClaim(
   });
 }
 
-/** A claim by nonce, used or not (the callback checks the rest). */
+/** A claim by nonce, used or not (the callback checks the rest). App manifest nonces are never claims. */
 export function getInstallationClaim(
   db: Db,
   nonce: string,
@@ -398,14 +398,19 @@ export function getInstallationClaim(
     const rows = await h.orm
       .select()
       .from(s.installationClaims)
-      .where(eq(s.installationClaims.nonce, nonce));
+      .where(
+        and(
+          eq(s.installationClaims.nonce, nonce),
+          notLike(s.installationClaims.startedBy, `${MANIFEST_NONCE_PREFIX}%`),
+        ),
+      );
     return rows[0];
   });
 }
 
 /**
  * Consumes a claim: atomic, so a state is accepted once. Returns the claim, or undefined when the
- * nonce is unknown, expired or already used.
+ * nonce is unknown, expired, already used or an App manifest nonce.
  */
 export function consumeInstallationClaim(
   db: Db,
@@ -426,6 +431,7 @@ export function consumeInstallationClaim(
       .where(
         and(
           eq(s.installationClaims.nonce, nonce),
+          notLike(s.installationClaims.startedBy, `${MANIFEST_NONCE_PREFIX}%`),
           isNull(s.installationClaims.usedAt),
           gt(s.installationClaims.expiresAt, now),
         ),
