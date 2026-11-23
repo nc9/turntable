@@ -20,6 +20,7 @@ import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
+import { doctorForApi, doctorOutput } from "./doctor";
 import { quotaView, quotaViewSchema } from "./quotas";
 
 const DAY_MS = 86_400_000;
@@ -328,5 +329,29 @@ export const createOrgTokenOp = defineOp({
       expires_at: new Date(expiresAt).toISOString(),
       token: secret,
     };
+  },
+});
+
+export const instanceDoctorOp = defineOp({
+  name: "instance_doctor",
+  summary: "The instance's readiness report, for the instance administrator.",
+  description:
+    "Runs the same read-only readiness checks as `turntable doctor` (master key and audit " +
+    "anchor, database and migrations, GitHub App credentials, sandbox provider, proxy TLS, " +
+    "forwarded headers, release channel, quotas) and returns each check's id, area, status " +
+    "(pass, warn or fail), a fixed one-line summary and a fixed fix. It never returns raw error " +
+    "text or a secret value. Use it on a hosted instance with no shell, for example to confirm " +
+    "a master-key rotation before removing the previous key. Only the instance administrator " +
+    "can call it. Read-only. Not an MCP tool.",
+  input: z.object({}),
+  output: doctorOutput,
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/doctor" },
+  mcp: false,
+  async handler(ctx) {
+    return doctorForApi(ctx.doctor);
   },
 });

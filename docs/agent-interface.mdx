@@ -86,6 +86,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `create_org` | none | no |  | write | admin | instance | Create an empty org (instance administrator only). |
 | `create_org_token` | none | no |  | write | admin | instance | Mint an org's first token (instance administrator only). |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
+| `instance_doctor` | none | no |  | read | admin | instance | The instance's readiness report, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
 | `db_backup` | none | no | `turntable db backup` | write | admin | instance | Back up the SQLite database into the data dir (instance administrator only). |
 | `accept_action_move` | `POST /api/v1/action-pins/accept-move` | no |  | write | operator | token | Accept a moved action tag: re-pin it to the commit it now points at. |
