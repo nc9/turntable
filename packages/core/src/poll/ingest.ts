@@ -13,6 +13,7 @@ import type { Db } from "../db";
 import {
   appendAudit,
   bindRepo,
+  findRepoBindingByName,
   countPolledSince,
   countWaitingRuns,
   getProjectEgress,
@@ -228,6 +229,8 @@ export type IngestResult = {
   refused: { what: string; reason: string }[];
   /** Attempts of older runs that a cancel-in-progress run took over while running. */
   superseded: Superseded["running"];
+  /** Set when the repo was not polled because another project holds its binding. */
+  skipped?: string;
 };
 
 /**
@@ -688,6 +691,13 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   const [owner, name] = repo.toLowerCase().split("/") as [string, string];
   const bound = await listRepos(deps.db, scope);
   if (!bound.some((r) => r.forge === "github" && r.owner === owner && r.repo === name)) {
+    // A binding moved to another project (`move_repo_binding`) is the instance admin's: until the
+    // entry names that project the repo is skipped, with no bind attempt and no GitHub call.
+    if (await findRepoBindingByName(deps.db, { forge: "github", owner, repo: name })) {
+      result.skipped = `poll ${repo}: bound to another project than the poll entry names; skipped until the entry is updated`;
+      log(result.skipped);
+      return result;
+    }
     await bindRepo(deps.db, scope, { forge: "github", owner, repo: name });
   }
 
