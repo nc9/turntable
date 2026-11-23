@@ -503,4 +503,6 @@ export type Setting = {
   /** The least role that may change it. */
   role: Whoami["role"];
   mcpEditable: boolean;
+  /** What is at risk in changing it, for a setting whose change can weaken a protection. */
+  warning: string | null;
 };

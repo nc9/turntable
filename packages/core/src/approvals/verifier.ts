@@ -7,6 +7,7 @@ import { approverIdentity } from "./identity";
 import { keyPolicyViolation } from "./key-policy";
 import type { Db } from "../db";
 import {
+  effectiveKeyPolicy,
   getEnvPolicy,
   getKeyPolicy,
   getRun,
@@ -69,7 +70,7 @@ export function createApprovalVerifier(
       const rp = o.rp ?? defaults.rp;
       const scope = { orgId: subject.orgId, projectId: subject.projectId };
       const policy = await getEnvPolicy(db, subject.orgId, environment);
-      const keyPolicy = await getKeyPolicy(db, subject.orgId);
+      const keyPolicy = effectiveKeyPolicy(await getKeyPolicy(db, subject.orgId), policy);
       const run = await getRun(db, scope, subject.runId);
       // A run made from a tag has an author nobody can name: one more approver than usual.
       const required = run ? requiredApprovals(policy, run) : policy.required;

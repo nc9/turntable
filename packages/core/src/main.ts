@@ -23,6 +23,7 @@ import {
 } from "./github/claim";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
+import { setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
@@ -516,6 +517,8 @@ async function serve(args: string[]): Promise<void> {
   // key, a bad value or an unreadable file stops the boot here, before anything is opened. No file
   // is fine.
   const settings = loadSettingsRuntime({ config: values.config });
+  // The approval engine and the release lane read the approval policy from the same runtime.
+  setAmbientSettings(settings);
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid --port: ${values.port}`);

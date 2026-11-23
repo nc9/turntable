@@ -58,6 +58,16 @@ A tag push becomes a release run through the poller. Nothing about it is automat
 - **No author.** A tag run has no actor. An annotated tag's tagger is free text, not a verified identity, so it is kept only as `facts.taggerLabel` for display, never as the actor that the author check and the OIDC claims read (a token minted for the run has no `actor` claim).
 - **Quorum.** With no known author the environment's "the author cannot approve" rule cannot be checked. For a run the poller made from a tag (its stored trust facts name the tag, set by ingest and never by input, and its ref is that tag's ref) no approver is excluded, whoever tagged, and the environment needs one more distinct identity than its `required`: at least `required` of the approvers are then not the author. A quorum of 2 needs 3 distinct approvers, a quorum of 1 needs 2. The audit log records `approval_author_unknown`, "author unknown; required N distinct approvers (R+1)". The tagger's name is free text the tag's creator chose, so it is display only and never excludes an approver. With `allowAuthorApproval` (the solo setup) the author rule is off and `required` applies. Any other run with no author stays refused whatever the quorum. Lightweight and annotated tags behave the same.
 
+**Solo release on a hosted instance.** A one-person org has no shell to run `turntable approvals policy`, and with the default quorum of 2 a tag run needs 3 distinct approvers. The operator sets the solo policy for `release` in `turntable.toml` instead:
+
+```toml
+[orgs.acme.approval_policy.release]
+required = 1
+allow_author_approval = true
+```
+
+A tag run then needs one approver, and the setting is locked: the CLI and `instance_set_setting` refuse to change it until the file does. The instance administrator can set the same value without the file when nothing locks it (`instance_set_setting` with `key: "approval_policy"` and `target_org`). Both are audited and flagged as a loosening; see [Human approvals](/security#human-approvals).
+
 ## Publishing
 
 After signing, the lane publishes the bytes it verified to the targets declared for the project. Declarations live in the lane's own file, never in the main database:

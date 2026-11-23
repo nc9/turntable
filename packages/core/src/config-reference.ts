@@ -577,6 +577,12 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
+    name: "TURNTABLE_APPROVAL_POLICY",
+    area: "Server",
+    description:
+      'The approval policy for every org on the instance (JSON): a map from environment name to `required`, `allow_author_approval` and `key_policy`, for example `{"release":{"required":1,"allow_author_approval":true}}`. The environment name of the `approval_policy` setting, which `turntable.toml` sets per org and `instance_set_setting` sets for one org. A value here locks it: the CLI and the instance op refuse to change it. See [Human approvals](/security#human-approvals).',
+  },
+  {
     name: "TURNTABLE_SANDBOX_SIZES_JSON",
     area: "Worker and provider",
     description:

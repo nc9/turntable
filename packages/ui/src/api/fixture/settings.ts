@@ -97,6 +97,7 @@ export function createFixtureSettings(role: () => Role) {
       default: s.default,
       role: s.role,
       mcpEditable: false,
+      warning: null,
     };
     if (s.fixed)
       return {

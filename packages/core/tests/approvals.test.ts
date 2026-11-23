@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import * as s from "../src/db/schema";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   createHash,
   createSign,
@@ -39,6 +39,9 @@ import {
   type Scope,
 } from "../src/db";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
+import { setAmbientSettings } from "../src/settings/ambient";
+import { loadSettingsRuntime } from "../src/settings/boot";
+import { settingsRegistry } from "../src/settings/definitions";
 import { mcpTools } from "../src/ops/mcp";
 import { createRestApi } from "../src/ops/rest";
 import { makeCert, type TestCert } from "./helpers/x509";
@@ -1242,6 +1245,70 @@ describe("review hardening", () => {
       const s = await approve(c2.statement, await signOffline(alice, c2));
       expect(s.ok && s.output).toMatchObject({ approvals: 1, required: 1, released_jobs: 1 });
       expect((await authorAudits()).length).toBe(before);
+    });
+
+    /** The settings layers above the database, as the server boots them (#345). */
+    const useConfig = (toml: string, env: Record<string, string> = {}) =>
+      setAmbientSettings(
+        loadSettingsRuntime({
+          registry: settingsRegistry,
+          env,
+          config: "turntable.toml",
+          read: () => toml,
+        }),
+      );
+    afterEach(() => setAmbientSettings(undefined));
+
+    test("turntable.toml sets solo for production: a tag run needs one approver, not three", async () => {
+      useConfig(
+        `[orgs.acme.approval_policy.production]\nrequired = 1\nallow_author_approval = true\n`,
+      );
+      const rid = await tagRun("1".repeat(40));
+      const alice = await ed25519Approver("alice");
+      const c = await challenge(alice.id, "production", rid);
+      const r = await approve(c.statement, await signOffline(alice, c));
+      expect(r.ok && r.output).toMatchObject({ approvals: 1, required: 1, released_jobs: 1 });
+      const v = await createApprovalVerifier(db, { rp: RP }).verify(
+        subject(rid, "1".repeat(40)),
+        "production",
+        { now: t },
+      );
+      expect(v.approved).toBe(true);
+    });
+
+    test("an environment value locks the policy: the stored one is not read, the CLI writes nothing", async () => {
+      // The database says solo; the environment says two people.
+      await setEnvPolicy(db, orgId, {
+        environment: "production",
+        required: 1,
+        allowAuthorApproval: true,
+        by: "t",
+        now: t,
+      });
+      useConfig("", { TURNTABLE_APPROVAL_POLICY: '{"production":{"required":2}}' });
+      const rid = await tagRun("2".repeat(40));
+      const alice = await ed25519Approver("alice");
+      const c = await challenge(alice.id, "production", rid);
+      const r = await approve(c.statement, await signOffline(alice, c));
+      expect(r.ok && r.output).toMatchObject({ approvals: 1, required: 3, released_jobs: 0 });
+      await expect(
+        setEnvPolicy(db, orgId, {
+          environment: "production",
+          required: 1,
+          allowAuthorApproval: true,
+          by: "t",
+          now: t,
+        }),
+      ).rejects.toThrow(/locked: it is set by the environment \(TURNTABLE_APPROVAL_POLICY\)/);
+    });
+
+    test("a per-environment hardware key policy stops an ed25519 key counting", async () => {
+      useConfig(`[orgs.acme.approval_policy.production]\nrequired = 1\nkey_policy = "hardware"\n`);
+      const rid = await makeRun({ sha: "a".repeat(40) });
+      const alice = await ed25519Approver("alice");
+      const c = await challenge(alice.id, "production", rid);
+      const r = await approve(c.statement, await signOffline(alice, c));
+      expect(!r.ok && r.error.message).toContain("cannot approve");
     });
 
     test("one person with two keys is one identity, so it is not a quorum", async () => {
