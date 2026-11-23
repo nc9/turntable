@@ -97,14 +97,20 @@ test("MCP tool list equals the registry minus signature ops", () => {
   const hiddenFromMcp = registry.documentedOps().filter((o) => !o.mcp);
   // Secret values never reach an agent's context; the approval ops that build a statement to be
   // signed are REST, UI and CLI only too (an agent may relay a signed one, never make one).
+  // The setters that decide where secrets flow, widen egress, bless a moved action tag or end an
+  // incident stop are human acts too (removing a rule or a host, which only narrows, stays on MCP).
   expect(hiddenFromMcp.map((o) => o.name).toSorted()).toEqual([
+    "accept_action_move",
+    "add_proxy_passthrough_host",
     "approval_challenge",
     "enrolment_challenge",
+    "incident_unfreeze",
     "key_policy_challenge",
     "register_challenge",
     "request_enrolment",
     "request_release",
     "rotate_secret",
+    "set_proxy_rule",
     "set_secret",
     "start_installation_claim",
   ]);

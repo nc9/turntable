@@ -179,5 +179,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"projects\" ADD COLUMN \"sandbox_snapshot\" text;",
       "ALTER TABLE \"projects\" ADD COLUMN \"max_concurrent\" bigint;"
     ]
+  },
+  {
+    "tag": "0007_skip_check_claim",
+    "when": 1795419761704,
+    "statements": [
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"skip_check_claimed_at\" bigint;"
+    ]
   }
 ];

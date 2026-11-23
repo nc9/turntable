@@ -55,6 +55,8 @@ function requireProject(ctx: OpContext): string {
 
 export const setProxyRuleOp = defineOp({
   name: "set_proxy_rule",
+  // Decides where a secret may be sent: a limit-raising setter, not for an agent.
+  mcp: false,
   summary:
     "Allow the secrets proxy to inject a secret into requests to one host (create or replace).",
   description:
@@ -62,7 +64,8 @@ export const setProxyRuleOp = defineOp({
     "exact host, port, methods and path prefix, and how it is attached (a header with a format " +
     "such as `Bearer {secret}`, or HTTP Basic). The host must be one of the secret's " +
     "destination hosts. The job never sees the value. Jobs of class untrusted_pr never get " +
-    "rules. Needs release_operator or admin; audited.",
+    "rules. Needs release_operator or admin; audited. Not available over MCP: it decides where a " +
+    "secret may be sent, so a person sets it (REST or the CLI); removing a rule is available.",
   input: z.object({
     name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/),
     secret: z.string().min(1).max(128),
@@ -201,13 +204,16 @@ function checkedHost(host: string): string {
 
 export const addPassthroughHostOp = defineOp({
   name: "add_proxy_passthrough_host",
+  // Widens the egress of secret-bearing jobs: a limit-raising setter, not for an agent.
+  mcp: false,
   summary: "Allow a project's secret-bearing jobs a plain tunnel to one host (no injection).",
   description:
     "A job that has proxy rules is secret-bearing: through the secrets proxy it may reach rule " +
     "hosts and, with no other entry, nothing else. This lists hosts it may also open a plain TLS " +
     "tunnel to (nothing is injected, the job's own TLS runs end to end), for example github.com " +
     "and codeload.github.com for checkout, or registry.npmjs.org. Without entries, sources must " +
-    "be pre-staged. Needs release_operator or admin; audited.",
+    "be pre-staged. Needs release_operator or admin; audited. Not available over MCP: it widens " +
+    "what a secret-bearing job can reach, so a person sets it (REST); removing a host is available.",
   input: z.object({
     host: hostField,
     ports: z
@@ -238,7 +244,12 @@ export const addPassthroughHostOp = defineOp({
 export const listPassthroughHostsOp = defineOp({
   name: "list_proxy_passthrough_hosts",
   summary: "List the hosts a project's secret-bearing jobs may tunnel to without injection.",
-  description: "Needs release_operator or admin. Read-only.",
+  description:
+    "Lists the hosts a project's secret-bearing jobs may open a plain TLS tunnel to, with the " +
+    "ports allowed for each (nothing is injected: the job's own TLS runs end to end). A job " +
+    "that has proxy rules reaches only its rule hosts plus these, so use this to see why a " +
+    "secret-bearing job can or cannot reach a host, for example github.com for checkout. " +
+    "Needs release_operator or admin. Read-only.",
   input: z.object({ ...pageInput }),
   output: z.object({
     hosts: z.array(z.object({ host: z.string(), ports: z.array(z.int()) })),

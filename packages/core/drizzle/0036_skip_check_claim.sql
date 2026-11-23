@@ -1,0 +1,1 @@
+ALTER TABLE `job_attempts` ADD `skip_check_claimed_at` integer;

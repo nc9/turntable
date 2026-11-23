@@ -144,6 +144,10 @@
     {
       "tag": "0035_project_sandbox_settings",
       "sha256": "b5461683da64deeee4dbe7831a76a73559625c6f9a00a18c9a5ede2abc0e17d2"
+    },
+    {
+      "tag": "0036_skip_check_claim",
+      "sha256": "2264b3d75c95951266a4386646b98624399fd351318df93d0e72c487cba8d782"
     }
   ],
   "pg": [
@@ -174,6 +178,10 @@
     {
       "tag": "0006_project_sandbox_settings",
       "sha256": "362828bade3e3201f2db9b43f2997fae6e012c57553b445d7e702b2fcd9a287a"
+    },
+    {
+      "tag": "0007_skip_check_claim",
+      "sha256": "0696ab60f4c478429f3b665fe9244fc70b206652dddf97a5c800b8a570310ca8"
     }
   ]
 }

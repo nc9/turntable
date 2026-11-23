@@ -87,13 +87,16 @@ export const incidentFreeze = defineOp({
 
 export const incidentUnfreeze = defineOp({
   name: "incident_unfreeze",
+  // Reversing the safety stop is human-only; freezing stays on MCP.
+  mcp: false,
   summary: "Resume scheduling after an incident freeze. Rotation flags stay.",
   description:
     "Clears the freeze of the scope's own level (the org, or the project) so jobs are claimed " +
     "again, and queued work resumes. It reverses the pause only: killed runs stay cancelled, " +
     "dropped tokens are minted again on demand, and secrets flagged rotation_required stay " +
     "flagged until they are rotated. If the org is frozen, unfreezing one project does not " +
-    "resume it (`still_frozen_by` says so). Audited. Needs the release_operator role.",
+    "resume it (`still_frozen_by` says so). Audited. Needs the release_operator role. Not available " +
+    "over MCP: ending an incident stop is a human decision (freezing is available).",
   input: z.object({}),
   output: z.object({
     was_frozen: z.boolean(),

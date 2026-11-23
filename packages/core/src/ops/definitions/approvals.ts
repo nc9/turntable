@@ -737,6 +737,8 @@ const environmentOutput = z.object({
 
 export const approveEnvironment = defineOp({
   name: "approve_environment",
+  // Signature op: a human-signed statement is the credential, never a token.
+  mcp: false,
   summary: "Approve a run for an environment with a signed statement. Human only.",
   description:
     "Records one approver's signed statement for a run waiting on an environment. The statement " +
@@ -803,6 +805,8 @@ export const submitApproval = defineOp({
 
 export const approveEnrolment = defineOp({
   name: "approve_enrolment",
+  // Signature op: a human-signed statement is the credential, never a token.
+  mcp: false,
   summary: "Approve enrolling a new approver key with a signed statement. Human only.",
   description:
     "Records one existing approver's signed statement approving a pending enrolment. When a " +
