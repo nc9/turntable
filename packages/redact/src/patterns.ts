@@ -69,13 +69,15 @@ export const PATTERNS: readonly Pattern[] = [
   },
   {
     // Longshore's own tokens (core/src/ops/tokens.ts): a prefix and 32 random bytes as base64url,
-    // exactly 43 characters. Exact length and no letter or digit right after it, so words such as
-    // `ls_colors` or a longer identifier are left alone, while a token followed by `-`, `_` or `.`
-    // (a file name, a suffix) is still redacted: leaking a real token costs more than a false hit. `lsi_` is the instance administrator's,
-    // `ls_` an org's, and `tt_` the same org token minted before the rename (still accepted).
+    // exactly 43 characters. `lsi_` is the instance administrator's, `ls_` an org's, and `tt_` the
+    // same org token minted before the rename (still accepted). No boundary on either side: the
+    // 43 characters are distinctive enough that `ls_colors` and other words are safe without one,
+    // and a token glued to other text (`xls_<token>`, `<token>abc`, `id=ls_<token>X`) still holds
+    // a usable credential, so it fails closed: whatever token characters follow are redacted too.
     name: "longshore-token",
-    re: /\b(?:lsi|ls|tt)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9])/g,
-    maxLength: 4 + 43,
+    re: /(?:lsi|ls|tt)_[A-Za-z0-9_-]{43}/g,
+    maxLength: 4 + 43 + 1,
+    run: "A-Za-z0-9_-",
   },
   { name: "npm-token", re: /\bnpm_[A-Za-z0-9]{36,255}/g, maxLength: 4 + 255 + 1, run: "A-Za-z0-9" },
   { name: "aws-access-key-id", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, maxLength: 21 },

@@ -138,9 +138,9 @@ The log redactor has a built-in pattern for Longshore's own tokens, so one that 
 | `lsi_` | An instance administrator token (`longshore token create --instance`) | the prefix and exactly 43 base64url characters |
 | `tt_` | An org token minted before the rename; still accepted | the prefix and exactly 43 base64url characters |
 
-The pattern is tight on purpose: exact length, at a word boundary, and no letter or digit right after, so `ls_colors` and ordinary identifiers are left alone. Only a hash of a token is stored, and a token is shown once.
+The pattern needs the prefix and exactly 43 base64url characters, which is distinctive enough that `ls_colors` and ordinary words are left alone. It has no boundary on either side and fails closed: a token glued to other text (`xls_<token>`, `<token>abc`, `id=ls_<token>X`) still holds a usable credential, so it is redacted, and so are any token characters that keep going after it. Only a hash of a token is stored, and a token is shown once.
 
-To make your own secret scanner catch a leaked one too, register these as custom patterns (GitHub secret scanning custom patterns, GitGuardian custom detectors, gitleaks or trufflehog rules): `\b(?:lsi|ls|tt)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9])`. Treat a match as a live credential: revoke it with `longshore token revoke <id>` and mint a new one. This repository has no scanner configuration of its own to extend.
+To make your own secret scanner catch a leaked one too, register these as custom patterns (GitHub secret scanning custom patterns, GitGuardian custom detectors, gitleaks or trufflehog rules): `(?:lsi|ls|tt)_[A-Za-z0-9_-]{43}`. Treat a match as a live credential: revoke it with `longshore token revoke <id>` and mint a new one. This repository has no scanner configuration of its own to extend.
 
 ## Transport: https only
 

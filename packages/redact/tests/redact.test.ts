@@ -96,7 +96,6 @@ describe("Longshore's own tokens are redacted by pattern alone", () => {
         [`curl -H 'x: ${tok}'`, `curl -H 'x: ${R}'`],
         [`${tok}\n${tok}`, `${R}\n${R}`],
         [`${tok}.json`, `${R}.json`],
-        [`${tok}-old ${tok}_new`, `${R}-old ${R}_new`],
       ] as const) {
         expect(redactString(text)).toBe(expected);
       }
@@ -110,7 +109,29 @@ describe("Longshore's own tokens are redacted by pattern alone", () => {
     }
   });
 
-  test("not tokens: words, wrong lengths, other prefixes", () => {
+  test("a token glued to other text is still redacted: it fails closed", () => {
+    for (const make of [org, instance, legacy]) {
+      const tok = make();
+      for (const [text, expected] of [
+        [`x${tok}`, `x${R}`],
+        [`my_${tok}`, `my_${R}`],
+        [`${tok}abc`, R], // the run that keeps going is redacted through
+        [`${tok}_more-stuff`, R],
+        [`id=${tok}X`, `id=${R}`],
+        [`<${tok}>`, `<${R}>`],
+        [`a${tok}b c`, `a${R} c`],
+      ] as const) {
+        expect(redactString(text)).toBe(expected);
+      }
+    }
+  });
+
+  test("glued tokens are redacted when a chunk boundary falls anywhere", () => {
+    const tok = org();
+    splitEverywhere(`id=x${tok}tail rest`, `id=x${R} rest`);
+  });
+
+  test("not tokens: words, a bare prefix, anything short of 43 characters, other prefixes", () => {
     const b = body();
     for (const text of [
       "export LS_COLORS=ls_colors",
@@ -120,13 +141,10 @@ describe("Longshore's own tokens are redacted by pattern alone", () => {
       "ls_short",
       `ls_${b.slice(0, 42)}`, // one short
       `lsi_${b.slice(0, 42)}`,
-      `ls_${b}x`, // one long: not our token shape
-      `lsi_${b}x`,
-      `xls_${b}`, // not at a word boundary
-      `my_ls_${b}`,
+      `tt_${b.slice(0, 42)}`,
       `lsx_${b}`,
       `ls-${b}`,
-      "tool_ls_output_is_long_enough_to_look_like_a_token_0123456789",
+      `ls ${b}`,
     ]) {
       expect(redactString(text)).toBe(text);
     }
