@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as s from "../src/ops/onboarding-schemas";
+import { z } from "zod";
 
 const keys = (o: { shape: Record<string, unknown> }) => Object.keys(o.shape).sort();
 
@@ -148,11 +149,7 @@ describe("onboarding schemas", () => {
       }).success,
     ).toBe(false);
     expect(s.MAX_ACTIVE_ONBOARDING_TOKENS).toBe(5);
-    expect([...s.ONBOARDING_TOKEN_SECRET_FIELDS]).toEqual([
-      "token",
-      "setup.claude_command",
-      "setup.mcp_json",
-    ]);
+    expect([...s.ONBOARDING_TOKEN_SECRET_FIELDS]).toEqual(["token", "claude_command", "mcp_json"]);
     const out = {
       token: "t",
       token_id: "i",
@@ -165,6 +162,20 @@ describe("onboarding schemas", () => {
     expect(s.createOnboardingAgentTokenOutput.safeParse({ ...out, expires_at: 1.5 }).success).toBe(
       false,
     );
+  });
+  test("token secret fields are leaf names of the output, never prompt", () => {
+    const leaves = new Set<string>();
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") return;
+      const n = node as { properties?: Record<string, unknown> };
+      for (const [k, v] of Object.entries(n.properties ?? {})) {
+        leaves.add(k);
+        walk(v);
+      }
+    };
+    walk(z.toJSONSchema(s.createOnboardingAgentTokenOutput));
+    for (const f of s.ONBOARDING_TOKEN_SECRET_FIELDS) expect(leaves.has(f)).toBe(true);
+    expect((s.ONBOARDING_TOKEN_SECRET_FIELDS as readonly string[]).includes("prompt")).toBe(false);
   });
   test("ack and events", () => {
     expect(

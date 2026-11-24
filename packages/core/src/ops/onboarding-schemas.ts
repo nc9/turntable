@@ -225,14 +225,12 @@ export type RunDefaultBranchOutput = z.infer<typeof runDefaultBranchOutput>;
 
 export const MAX_ACTIVE_ONBOARDING_TOKENS = 5;
 /**
- * Dotted paths. define.ts matches oneTimeSecretFields (and lint.ts matches output fields) by LEAF
- * name, so the nested names do not work there as written; see the PR report.
+ * Leaf field names, matched anywhere in the output: define.ts matches oneTimeSecretFields (and
+ * lint.ts matches output fields) by LEAF name, so `claude_command` and `mcp_json` are listed
+ * without their `setup.` parent. The `prompt` field must never contain the token, because it is
+ * shown and may be pasted anywhere, so it is deliberately not in this list.
  */
-export const ONBOARDING_TOKEN_SECRET_FIELDS = [
-  "token",
-  "setup.claude_command",
-  "setup.mcp_json",
-] as const;
+export const ONBOARDING_TOKEN_SECRET_FIELDS = ["token", "claude_command", "mcp_json"] as const;
 export const createOnboardingAgentTokenInput = z.object({
   projects: z.array(projectSlug).max(20).optional().describe("Limit the token to these projects."),
   ttl_days: z.int().min(1).max(30).default(30).describe("Token lifetime in days, 1 to 30."),
@@ -246,7 +244,7 @@ export const createOnboardingAgentTokenOutput = z.object({
     claude_command: z.string().describe("Shell command that registers the MCP server."),
     mcp_json: z.string().describe("MCP client config as JSON text."),
   }),
-  prompt: z.string().describe("Starter prompt to paste into the agent."),
+  prompt: z.string().describe("Starter prompt to paste into the agent. Never contains the token."),
 });
 export type CreateOnboardingAgentTokenInput = z.infer<typeof createOnboardingAgentTokenInput>;
 export type CreateOnboardingAgentTokenOutput = z.infer<typeof createOnboardingAgentTokenOutput>;
