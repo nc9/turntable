@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isTransientInfra } from "@turntable/act-runner";
+import { isRetryableInfra } from "@turntable/act-runner";
 import { type Db, onAttemptsCancelled } from "../db";
 import {
   addCut,
@@ -319,6 +319,8 @@ export class Scheduler {
     const controller = new AbortController();
     const db = this.#o.db;
     const owner = this.owner;
+    // The class this attempt runs as, once known: a mid-run infra kind is retried only for PR jobs.
+    let recordedClass: string | undefined;
 
     const store: AttemptStore = {
       setExec: async (where) => {
@@ -328,6 +330,7 @@ export class Scheduler {
         await recordPlan(db, scope, attempt.id, owner, planJson);
       },
       setTrustClass: async (klass) => {
+        recordedClass = klass;
         await recordTrustClass(db, scope, attempt.id, owner, klass);
       },
       reset: async () => {
@@ -388,7 +391,7 @@ export class Scheduler {
       // heartbeat runs, a cancel still lands), then retries below. The sandbox is already gone.
       let retryable =
         outcome.state === "infra_error" &&
-        isTransientInfra(outcome.infraKind) &&
+        isRetryableInfra(outcome.infraKind, recordedClass ?? attempt.trustClass) &&
         !controller.signal.aborted &&
         !this.#cutting.has(attempt.id);
       try {

@@ -82,9 +82,10 @@ async function setup(open: () => Db) {
     },
   });
   /** Each attempt makes a sandbox, releases it (as executeJob does), then returns the next scripted outcome. */
-  const script = (outcomes: AttemptOutcome[]): AttemptRunner => {
+  const script = (outcomes: AttemptOutcome[], klass = "trusted_pr"): AttemptRunner => {
     let n = 0;
     return async (ctx) => {
+      await ctx.store.setTrustClass(klass).catch(() => undefined); // write-once: first attempt only
       const sb = await ctx.provider.create({
         name: `tt-${n}`,
         labels: {},
@@ -193,6 +194,50 @@ for (const [name, open] of dialects) {
         expect(ev).toHaveLength(0);
       });
     }
+
+    for (const klass of ["protected", "release"]) {
+      test(`sandbox_lost on a ${klass} job is not retried`, async () => {
+        const t = await setup(open);
+        await t.drive(t.sched(t.script([transient("sandbox_lost", "act process lost")], klass)));
+        const attempts = await listAttempts(t.db, t.scope, t.job.id);
+        expect(attempts).toHaveLength(1);
+        expect(attempts[0]!.state).toBe("infra_error");
+        expect(attempts[0]!.errorClass).toBe("act process lost");
+        expect((await getJob(t.db, t.scope, t.job.id))?.state).toBe("infra_error");
+        expect(t.made).toHaveLength(1);
+      });
+    }
+
+    test("sandbox_lost on a trusted_pr job is retried once", async () => {
+      const t = await setup(open);
+      await t.drive(
+        t.sched(
+          t.script(
+            [transient("sandbox_lost", "act process lost"), { state: "success", reason: "ok" }],
+            "trusted_pr",
+          ),
+        ),
+      );
+      const attempts = await listAttempts(t.db, t.scope, t.job.id);
+      expect(attempts.map((a) => a.state)).toEqual(["infra_error", "success"]);
+    });
+
+    test("sandbox_create_failed on a release job is retried once (it happens before any step)", async () => {
+      const t = await setup(open);
+      await t.drive(
+        t.sched(
+          t.script(
+            [
+              transient("sandbox_create_failed", "create failed"),
+              { state: "success", reason: "ok" },
+            ],
+            "release",
+          ),
+        ),
+      );
+      const attempts = await listAttempts(t.db, t.scope, t.job.id);
+      expect(attempts.map((a) => a.state)).toEqual(["infra_error", "success"]);
+    });
 
     test("a cancel during the backoff skips the retry", async () => {
       const t = await setup(open);
