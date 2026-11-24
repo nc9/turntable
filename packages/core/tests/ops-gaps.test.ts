@@ -267,10 +267,12 @@ test("cancel: reason is optional, audited, capped at 500 and blank counts as abs
   await run(operator, "cancel", { run_id: r2.id, reason: "  superseded by newer push  " });
   const audit = await listAudit(db, { orgId: a.orgId });
   const rows = audit.filter((x) => x.op === "cancel" && x.outcome === "ok");
-  expect(rows.some((x) => x.input.includes("superseded by newer push"))).toBe(true);
+  expect(rows.some((x) => JSON.parse(x.input).reason === "superseded by newer push")).toBe(true);
   const r3 = (await finishRun(a, [{ key: "build", state: "success" }])).run;
   const long = await call(operator, "cancel", { run_id: r3.id, reason: "x".repeat(501) });
   expect(!long.ok && long.error.code).toBe("invalid_input");
+  const padded = await call(operator, "cancel", { run_id: r3.id, reason: ` ${"x".repeat(500)} ` });
+  expect(padded.ok).toBe(true);
   expect((await call(operator, "cancel", { run_id: r3.id, reason: "   " })).ok).toBe(true);
   const rerun = await call(operator, "rerun", { run_id: r3.id });
   expect(!rerun.ok && rerun.error.code).toBe("invalid_input");

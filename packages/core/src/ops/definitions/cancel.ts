@@ -16,9 +16,10 @@ export const cancel = defineOp({
   input: z.object({
     run_id: z.string().min(1).max(64),
     reason: z
-      .string()
-      .max(500)
-      .optional()
+      .preprocess(
+        (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim()) : v),
+        z.string().max(500).optional(),
+      )
       .describe(
         "Why (optional, up to 500 characters). Trimmed; blank counts as absent. Recorded in the audit entry.",
       ),
