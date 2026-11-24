@@ -1,0 +1,355 @@
+// "Sign in with GitHub" (#430) through the instance's own GitHub App (user-to-server OAuth).
+//
+//   GET  /auth                      the sign-in page, or who is signed in and a sign-out button
+//   GET  /auth/session              the same as JSON
+//   GET  /auth/github/login         starts: single-use state, a browser-binding cookie, then GitHub
+//   GET  /auth/github/callback      finishes: state and cookie must match, the nonce is spent
+//                                   BEFORE the code is exchanged, then the user's numeric id is read
+//   POST /auth/logout               revokes the session (Origin must match, and a CSRF token)
+//
+// The state is an HMAC over a nonce and an expiry, like the installation claim's. The nonce also
+// sits in a short-lived `__Host-` cookie and in `login_states`, where it is spent atomically, so a
+// state cannot be replayed and a link opened in another browser cannot finish. The identity is the
+// numeric GitHub user id. Roles come from Turntable's membership rows, which only an invite or the
+// instance administrator creates: signing in never grants an org.
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { type SafeFetch, safeFetch } from "@turntable/net";
+import type { Db } from "../db";
+import {
+  completeSignIn,
+  consumeLoginState,
+  createLoginState,
+  getGithubApp,
+  getIdentityByUserId,
+  listMembershipsOfUser,
+} from "../db/repos";
+import { SECRET_CLIENT } from "../github/app-auth";
+import { esc, pageResponse } from "../pages/server-pages";
+import type { SecretStore } from "../secrets/store";
+import {
+  csrfToken,
+  LOGIN_COOKIE,
+  newSessionId,
+  readCookie,
+  SESSION_COOKIE,
+  sessionHash,
+  type WebSessions,
+} from "./web-sessions";
+
+export const AUTH_PAGE_PATH = "/auth";
+export const LOGIN_PATH = "/auth/github/login";
+export const CALLBACK_PATH = "/auth/github/callback";
+export const LOGOUT_PATH = "/auth/logout";
+export const SESSION_INFO_PATH = "/auth/session";
+export const SECRET_LOGIN_KEY = "github-app/login-state-key";
+export const LOGIN_TTL_MS = 10 * 60_000;
+
+const b64u = (b: Buffer | string): string => Buffer.from(b).toString("base64url");
+
+/** A GitHub user proven by an OAuth code. Only what sign-in needs: the numeric id and the login. */
+export type GithubIdentity = { id: string; login: string };
+
+export interface IdentityVerifier {
+  verify(code: string, redirectUri: string): Promise<GithubIdentity>;
+}
+
+/** The OAuth exchange through the guarded client. The user's token is read once and dropped. */
+export function githubIdentityVerifier(o: {
+  db: Db;
+  store: SecretStore;
+  fetch?: SafeFetch;
+  oauthBase?: string;
+  apiBase?: string;
+}): IdentityVerifier {
+  const f = o.fetch ?? safeFetch;
+  const oauth = o.oauthBase ?? "https://github.com";
+  const api = o.apiBase ?? "https://api.github.com";
+  return {
+    async verify(code, redirectUri) {
+      const app = await getGithubApp(o.db);
+      if (!app) throw new Error("no GitHub App is configured");
+      const secret = await o.store.get(app.orgId, SECRET_CLIENT);
+      if (!secret) throw new Error("the App's client secret is missing");
+      const tok = await f(`${oauth}/login/oauth/access_token`, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "turntable",
+        },
+        body: JSON.stringify({
+          client_id: app.clientId,
+          client_secret: secret,
+          code,
+          redirect_uri: redirectUri,
+        }),
+        timeoutMs: 15_000,
+        maxBytes: 64 * 1024,
+      });
+      const tj = (await tok.json().catch(() => ({}))) as { access_token?: unknown };
+      if (!tok.ok || typeof tj.access_token !== "string") throw new Error("code not accepted");
+      const me = await f(`${api}/user`, {
+        headers: {
+          authorization: `Bearer ${tj.access_token}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "turntable",
+        },
+        timeoutMs: 15_000,
+        maxBytes: 64 * 1024,
+      });
+      if (!me.ok) throw new Error(`user: HTTP ${me.status}`);
+      const mj = (await me.json()) as { id?: unknown; login?: unknown };
+      if (typeof mj.id !== "number" || typeof mj.login !== "string") throw new Error("bad user");
+      if (!/^[A-Za-z0-9-]{1,39}$/.test(mj.login)) throw new Error("bad login");
+      return { id: String(mj.id), login: mj.login };
+    },
+  };
+}
+
+const safeEqual = (a: string, b: string): boolean => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+
+const page = (status: number, title: string, body: string, cookies: string[] = []): Response =>
+  pageResponse({ status, title, body, cookies, formAction: "'self' https://github.com" });
+
+const note = (status: number, title: string, message: string, cookies: string[] = []): Response =>
+  page(status, title, `<p>${esc(message)}</p><p><a href="${AUTH_PAGE_PATH}">Back</a></p>`, cookies);
+
+const clearLoginCookie = `${LOGIN_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
+
+export interface AuthHandler {
+  handle(req: Request): Promise<Response | undefined>;
+}
+
+export interface AuthHandlerOptions {
+  db: Db;
+  store: SecretStore;
+  sessions: WebSessions;
+  identity: IdentityVerifier;
+  log?: (line: string) => void;
+}
+
+export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
+  const redirectUri = `${o.sessions.origin}${CALLBACK_PATH}`;
+
+  async function key(appOrg: string): Promise<Buffer> {
+    let k = await o.store.get(appOrg, SECRET_LOGIN_KEY);
+    if (k === undefined) {
+      k = randomBytes(32).toString("base64url");
+      await o.store.set(appOrg, SECRET_LOGIN_KEY, k);
+    }
+    return Buffer.from(k, "base64url");
+  }
+
+  const sign = (k: Buffer, body: string): Buffer =>
+    createHmac("sha256", k).update(`login.v1.${body}`).digest();
+
+  /** The nonce of a state whose signature and expiry hold. */
+  async function verifyState(state: string, appOrg: string): Promise<string | undefined> {
+    const parts = state.split(".");
+    if (parts.length !== 3 || parts[0] !== "v1") return undefined;
+    const [, body, sig] = parts as [string, string, string];
+    const want = sign(await key(appOrg), body);
+    const given = Buffer.from(sig, "base64url");
+    if (given.length !== want.length || !timingSafeEqual(given, want)) return undefined;
+    try {
+      const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as {
+        n?: unknown;
+        e?: unknown;
+      };
+      if (typeof p.n !== "string" || typeof p.e !== "number" || p.e <= o.sessions.now()) {
+        return undefined;
+      }
+      return p.n;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function start(): Promise<Response> {
+    const app = await getGithubApp(o.db);
+    if (!app) return note(503, "Sign-in unavailable", "No GitHub App is configured.");
+    const now = o.sessions.now();
+    const nonce = randomBytes(18).toString("base64url");
+    const expiresAt = now + LOGIN_TTL_MS;
+    await createLoginState(o.db, nonce, expiresAt, now);
+    const body = b64u(JSON.stringify({ n: nonce, e: expiresAt }));
+    const state = `v1.${body}.${b64u(sign(await key(app.orgId), body))}`;
+    const target =
+      `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(app.clientId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+    const headers = new Headers({ location: target, "cache-control": "no-store" });
+    // Lax: the callback is a navigation that starts on github.com.
+    headers.append(
+      "set-cookie",
+      `${LOGIN_COOKIE}=${nonce}; Max-Age=${LOGIN_TTL_MS / 1000}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    );
+    return new Response(null, { status: 303, headers });
+  }
+
+  async function callback(req: Request, url: URL): Promise<Response> {
+    const app = await getGithubApp(o.db);
+    if (!app) return note(503, "Sign-in unavailable", "No GitHub App is configured.");
+    const state = url.searchParams.get("state") ?? "";
+    const code = url.searchParams.get("code") ?? "";
+    const cookieNonce = readCookie(req, LOGIN_COOKIE);
+    const stateNonce = await verifyState(state, app.orgId);
+    // The browser that started the sign-in must be the one that finishes it. Nothing is spent
+    // until the signature, the expiry and the cookie all agree.
+    if (!stateNonce || !cookieNonce || !safeEqual(cookieNonce, stateNonce)) {
+      return note(
+        403,
+        "Sign-in refused",
+        "This sign-in did not start in this browser, or it expired. Start again.",
+        [clearLoginCookie],
+      );
+    }
+    if (!(await consumeLoginState(o.db, stateNonce, o.sessions.now()))) {
+      return note(403, "Sign-in refused", "This sign-in was already used. Start again.", [
+        clearLoginCookie,
+      ]);
+    }
+    if (url.searchParams.has("error") || code === "") {
+      return note(400, "Sign-in cancelled", "GitHub did not authorize the sign-in.", [
+        clearLoginCookie,
+      ]);
+    }
+    let who: GithubIdentity;
+    try {
+      who = await o.identity.verify(code, redirectUri);
+    } catch {
+      return note(403, "Sign-in refused", "GitHub did not accept the authorization.", [
+        clearLoginCookie,
+      ]);
+    }
+    const id = newSessionId();
+    const { absoluteMs } = await o.sessions.lifetimes();
+    const result = await completeSignIn(o.db, {
+      githubUserId: who.id,
+      login: who.login,
+      now: o.sessions.now(),
+      sessionHash: sessionHash(id),
+      absoluteMs,
+    });
+    if (!result.ok) {
+      o.log?.(`sign-in refused: GitHub user ${who.id} has no membership and no invite`);
+      return note(
+        403,
+        "No access",
+        "This GitHub account is not a member of any org on this instance. Ask an org admin to invite your GitHub login, then sign in again.",
+        [clearLoginCookie],
+      );
+    }
+    const headers = new Headers({ location: "/", "cache-control": "no-store" });
+    headers.append("set-cookie", o.sessions.setCookie(id, absoluteMs));
+    headers.append("set-cookie", clearLoginCookie);
+    return new Response(null, { status: 303, headers });
+  }
+
+  async function current(
+    req: Request,
+  ): Promise<
+    | { cookie: string; login: string; orgs: { slug: string; name: string; role: string }[] }
+    | undefined
+  > {
+    const cookie = readCookie(req, SESSION_COOKIE);
+    if (!cookie) return undefined;
+    const live = await o.sessions.resolve(cookie);
+    if (!live) return undefined;
+    const identity = await getIdentityByUserId(o.db, live.userId);
+    const orgs = await listMembershipsOfUser(o.db, live.userId);
+    return {
+      cookie,
+      login: identity?.login ?? "unknown",
+      orgs: orgs.map((m) => ({ slug: m.slug, name: m.name, role: m.role })),
+    };
+  }
+
+  async function home(req: Request): Promise<Response> {
+    const me = await current(req);
+    if (!me) {
+      return page(
+        200,
+        "Sign in",
+        `<p>Sign in with the GitHub account an org admin invited.</p>` +
+          `<form method="get" action="${LOGIN_PATH}"><button class="tt-button" type="submit">Sign in with GitHub</button></form>`,
+      );
+    }
+    const rows = me.orgs
+      .map((m) => `<li><strong>${esc(m.slug)}</strong> (${esc(m.role)})</li>`)
+      .join("");
+    return page(
+      200,
+      "Signed in",
+      `<p>Signed in as <strong>${esc(me.login)}</strong>.</p><ul>${rows}</ul>` +
+        `<form method="post" action="${LOGOUT_PATH}"><input type="hidden" name="csrf" value="${esc(csrfToken(me.cookie))}"><button class="tt-button" type="submit">Sign out</button></form>`,
+    );
+  }
+
+  async function info(req: Request): Promise<Response> {
+    const me = await current(req);
+    const body = me
+      ? { signed_in: true, github_login: me.login, orgs: me.orgs }
+      : { signed_in: false };
+    return Response.json(body, {
+      headers: {
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      },
+    });
+  }
+
+  async function logout(req: Request): Promise<Response> {
+    // CSRF: the Origin is the configured public origin, and the form carries the session's token.
+    if (!o.sessions.sameOrigin(req)) {
+      return note(403, "Request refused", "Sign out from the page of this instance.");
+    }
+    const cookie = readCookie(req, SESSION_COOKIE);
+    if (cookie) {
+      const form = await req.formData().catch(() => undefined);
+      const given = typeof form?.get("csrf") === "string" ? (form.get("csrf") as string) : "";
+      if (!given || !safeEqual(given, csrfToken(cookie))) {
+        return note(403, "Request refused", "The sign-out form expired. Reload and try again.");
+      }
+      await o.sessions.revoke(cookie);
+    }
+    const headers = new Headers({ location: AUTH_PAGE_PATH, "cache-control": "no-store" });
+    headers.append("set-cookie", o.sessions.clearCookie());
+    return new Response(null, { status: 303, headers });
+  }
+
+  return {
+    async handle(req) {
+      const url = new URL(req.url);
+      const p = url.pathname;
+      const get = req.method === "GET";
+      try {
+        if (p === AUTH_PAGE_PATH || p === `${AUTH_PAGE_PATH}/`) {
+          return get ? await home(req) : note(405, "Method not allowed", "Use GET.");
+        }
+        if (p === SESSION_INFO_PATH) {
+          return get ? await info(req) : note(405, "Method not allowed", "Use GET.");
+        }
+        if (p === LOGIN_PATH)
+          return get ? await start() : note(405, "Method not allowed", "Use GET.");
+        if (p === CALLBACK_PATH) {
+          return get ? await callback(req, url) : note(405, "Method not allowed", "Use GET.");
+        }
+        if (p === LOGOUT_PATH) {
+          return req.method === "POST"
+            ? await logout(req)
+            : note(405, "Method not allowed", "Use the sign-out button.");
+        }
+        return undefined;
+      } catch (e) {
+        o.log?.(`sign-in error: ${e instanceof Error ? e.message : String(e)}`);
+        return note(500, "Something went wrong", "An error occurred; try again.");
+      }
+    },
+  };
+}

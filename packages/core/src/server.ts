@@ -18,6 +18,8 @@ import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
 import type { GithubFacts } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
+import type { AuthHandler } from "./auth/github-login";
+import type { WebSessions } from "./auth/web-sessions";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import type { DoctorReport } from "./doctor/types";
 import type { ForwardedObserver } from "./doctor/observe";
@@ -94,6 +96,11 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /**
+   * Sign in with GitHub and web sessions (#430), when a master key and an https public URL are
+   * set. Without it no session cookie is a credential and every `/auth/*` path falls through.
+   */
+  webAuth?: { sessions: WebSessions; handler: AuthHandler };
   /** GitHub API facts, for `resync_installation`. */
   githubFacts?: GithubFacts;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
@@ -128,6 +135,7 @@ export function startServer(options: ServeOptions) {
     db: options.db,
     vault: options.vault,
     claims: options.claims?.starter,
+    sessions: options.webAuth?.sessions,
     githubFacts: options.githubFacts,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
@@ -171,6 +179,8 @@ export function startServer(options: ServeOptions) {
     if (manifest) return manifest;
     const claimed = await options.claims?.handler.handle(req);
     if (claimed) return claimed;
+    const signedIn = await options.webAuth?.handler.handle(req);
+    if (signedIn) return signedIn;
     const idp = await options.oidc?.handle(req);
     if (idp) return idp;
     const cached = await options.cache?.handle(req);

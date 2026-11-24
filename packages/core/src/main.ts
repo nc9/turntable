@@ -22,6 +22,8 @@ import {
   InstallationClaims,
   type ClaimHandler,
 } from "./github/claim";
+import { type AuthHandler, createAuthHandler, githubIdentityVerifier } from "./auth/github-login";
+import { WebSessions } from "./auth/web-sessions";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
 import { setAmbientSettings } from "./settings/ambient";
@@ -800,6 +802,8 @@ async function serve(args: string[]): Promise<void> {
   let appFacts: GithubFacts | undefined;
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
+  // Sign in with GitHub and web sessions (auth/github-login.ts); needs the store and a public URL.
+  let webAuth: { sessions: WebSessions; handler: AuthHandler } | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
   let wake: ((repo: string) => void) | undefined;
   // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
@@ -890,6 +894,33 @@ async function serve(args: string[]): Promise<void> {
           log: (m) => console.warn(`[turntable] ${m}`),
         }),
       };
+    }
+    const signInUrl = (values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL)?.trim();
+    if (signInUrl) {
+      let u: URL | undefined;
+      try {
+        u = new URL(signInUrl);
+      } catch {
+        u = undefined;
+      }
+      const local = u?.hostname === "localhost" || u?.hostname === "127.0.0.1";
+      if (!u || (u.protocol !== "https:" && !local)) {
+        console.warn(
+          "web sign-in is off: TURNTABLE_PUBLIC_URL must be an https URL (the session cookie is Secure)",
+        );
+      } else {
+        const sessions = new WebSessions({ db, publicUrl: signInUrl, settings });
+        webAuth = {
+          sessions,
+          handler: createAuthHandler({
+            db,
+            store,
+            sessions,
+            identity: githubIdentityVerifier({ db, store }),
+            log: (m) => console.warn(`[turntable] ${m}`),
+          }),
+        };
+      }
     }
     const setupHash = process.env.TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256?.trim();
     if (setupHash) {
@@ -984,6 +1015,7 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(webAuth ? { webAuth } : {}),
         ...(appFacts ? { githubFacts: appFacts } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),

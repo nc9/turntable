@@ -1737,7 +1737,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 18,
+              "maxItems": 20,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1759,7 +1759,9 @@
                   "org.token_reminted",
                   "org.token_minted",
                   "org.tokens_exhausted",
-                  "org.installation_claim_started_by_instance"
+                  "org.installation_claim_started_by_instance",
+                  "org.member_invited",
+                  "org.member_joined"
                 ]
               }
             }
@@ -1870,7 +1872,9 @@
                               "org.token_reminted",
                               "org.token_minted",
                               "org.tokens_exhausted",
-                              "org.installation_claim_started_by_instance"
+                              "org.installation_claim_started_by_instance",
+                              "org.member_invited",
+                              "org.member_joined"
                             ]
                           },
                           "project": {
@@ -8426,6 +8430,98 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/members/invites": {
+      "post": {
+        "operationId": "invite_member",
+        "summary": "Invite a GitHub login to this org.",
+        "description": "Creates a pending invite for a GitHub login, with an org role (viewer, member, admin or owner). The invitee's first sign-in with GitHub binds their numeric GitHub id, consumes the invite and makes them a member; nothing else grants membership (not GitHub org membership, not repo access). The invite expires in 7 days, and a newer invite for the same login replaces the older one. Who may call it: a person's own token with release_operator or above (it may invite viewer or member only), or a signed-in admin or owner (up to their own role; only an owner invites an owner). An agent token is refused. Audited, and the org's feed gets an `org.member_invited` event. Not an MCP tool.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "github_login": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]{1,39}$",
+                    "description": "The GitHub login to invite. Matched case-insensitively at sign-in."
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": ["owner", "admin", "member", "viewer"]
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["github_login", "role"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invite_id": {
+                      "type": "string"
+                    },
+                    "github_login": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": ["owner", "admin", "member", "viewer"]
+                    },
+                    "expires_at": {
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["invite_id", "github_login", "role", "expires_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/github/installations/{installation_id}/resync": {
       "post": {
         "operationId": "resync_installation",
@@ -11557,6 +11653,98 @@
                     "created_at",
                     "pruned"
                   ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/member-bindings": {
+      "post": {
+        "operationId": "instance_bind_github_login",
+        "summary": "Grant an org role to a GitHub login (instance administrator only).",
+        "description": "Creates a pending grant of `role` in the org `target_org` for the GitHub login `github_login`, for an org that has no admin who can invite (a new org's first owner). It is the same single-use invite `invite_member` makes: the person's first sign-in with GitHub binds their numeric id and makes them a member. It expires in 7 days. `reason` is required and kept in the audit. Audited in the system org's chain and in the target org's own, and the org's feed gets `org.member_invited`. The system org is never a target. Only the instance administrator can call it, over REST: an org's own tokens never can. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org that gains the member."
+                  },
+                  "github_login": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]{1,39}$",
+                    "description": "The GitHub login to invite. Matched case-insensitively at sign-in."
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": ["owner", "admin", "member", "viewer"]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator grants it. Kept in the audit."
+                  }
+                },
+                "required": ["target_org", "github_login", "role", "reason"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invite_id": {
+                      "type": "string"
+                    },
+                    "github_login": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": ["owner", "admin", "member", "viewer"]
+                    },
+                    "expires_at": {
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["invite_id", "github_login", "role", "expires_at"],
                   "additionalProperties": false
                 }
               }

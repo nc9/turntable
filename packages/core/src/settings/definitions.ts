@@ -238,6 +238,46 @@ export const preemptWindowMinutesSetting = defineSetting({
   toml: "scheduler.preempt_window_minutes",
 });
 
+/** Web sessions (#430): how long one may sit idle, and how long it lives at most. */
+export const DEFAULT_SESSION_IDLE_HOURS = 12;
+export const DEFAULT_SESSION_ABSOLUTE_DAYS = 7;
+
+export const sessionIdleHoursSetting = defineSetting({
+  key: "session_idle_hours",
+  scope: "instance",
+  type: z.int().min(1).max(168),
+  default: DEFAULT_SESSION_IDLE_HOURS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides how long a stolen browser session stays usable, so only a person changes it",
+  description:
+    "Hours a web session may sit unused before it is signed out (1 to 168). Each request from the session restarts the clock.",
+  warning: "Raising this lengthens the time a session left open in a browser stays usable.",
+  env: ["TURNTABLE_SESSION_IDLE_HOURS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "auth.session_idle_hours",
+});
+
+export const sessionAbsoluteDaysSetting = defineSetting({
+  key: "session_absolute_days",
+  scope: "instance",
+  type: z.int().min(1).max(90),
+  default: DEFAULT_SESSION_ABSOLUTE_DAYS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides how long a stolen browser session stays usable, so only a person changes it",
+  description:
+    "Days a web session lives at most, however active it is (1 to 90). After that the person signs in with GitHub again.",
+  warning: "Raising this lengthens the time a stolen session can be used.",
+  env: ["TURNTABLE_SESSION_ABSOLUTE_DAYS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "auth.session_absolute_days",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
@@ -250,4 +290,6 @@ export const settingsRegistry = createSettingsRegistry([
   schedulingClassSetting,
   preemptMaxPerJobSetting,
   preemptWindowMinutesSetting,
+  sessionIdleHoursSetting,
+  sessionAbsoluteDaysSetting,
 ]);

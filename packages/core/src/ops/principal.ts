@@ -17,7 +17,18 @@ export type Principal =
       /** Who holds the token. A token row with no kind is an agent (fail closed). */
       tokenKind: TokenKind;
     }
-  | { kind: "member"; id: string; orgId: string; role: MemberRole }
+  | {
+      kind: "member";
+      id: string;
+      orgId: string;
+      role: MemberRole;
+      /**
+       * Set when the member is a signed-in web session (#430). A session may read, and may call
+       * only the writes the dispatcher names; everything else needs a passkey step-up it does not
+       * have yet. An in-process member (the CLI) leaves it unset.
+       */
+      session?: true;
+    }
   /**
    * An enrolled approver, proven by a signature over the request's statement. It exists only for
    * signature ops: no token op accepts it, and no bearer token or member can become one.
@@ -38,6 +49,11 @@ export type Credential =
    * it, and the dispatcher verifies the signature before anything else runs.
    */
   | { kind: "signed" }
+  /**
+   * A web session cookie's value (REST only; MCP and the sockets never build one). The dispatcher
+   * resolves it to the signed-in user's `member` principal for one org, from the database.
+   */
+  | { kind: "session"; cookie: string }
   /** In-process only: an already-authenticated principal. Adapters never build this. */
   | { kind: "principal"; principal: Principal };
 

@@ -22,6 +22,7 @@
           "providers",
           "cache",
           "security",
+          "web-sign-in",
           "secrets-vault",
           "oidc",
           "secrets-proxy",

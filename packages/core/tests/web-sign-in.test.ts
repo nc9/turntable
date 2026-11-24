@@ -1,0 +1,623 @@
+// Sign in with GitHub, sessions, invites and the first-user bootstrap (#430). A fake GitHub stands
+// behind the code exchange; everything else (state, cookies, rows, dispatch, REST) is the real
+// thing, on SQLite and on Postgres.
+import { afterAll, describe, expect, test } from "bun:test";
+import { systemOrgId } from "../src/audit/failures";
+import {
+  CALLBACK_PATH,
+  createAuthHandler,
+  type GithubIdentity,
+  LOGIN_PATH,
+  LOGOUT_PATH,
+  SESSION_INFO_PATH,
+} from "../src/auth/github-login";
+import {
+  csrfToken,
+  LOGIN_COOKIE,
+  SESSION_COOKIE,
+  sessionHash,
+  WebSessions,
+} from "../src/auth/web-sessions";
+import {
+  createOrg,
+  type Db,
+  listAudit,
+  listEvents,
+  listMembershipsOfUser,
+  openDatabase,
+  schema,
+} from "../src/db";
+import { testDb } from "../src/db/dialect";
+import { openPostgres } from "../src/db/pg";
+import { dispatch, type DispatchEnv, registry } from "../src/ops";
+import { SESSION_WRITE_OPS } from "../src/ops/dispatch";
+import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
+import { createRestApi } from "../src/ops/rest";
+import { buildManifest } from "../src/github/manifest";
+import { setup } from "./github-helpers";
+import { mintToken } from "./ops-helpers";
+
+const ORIGIN = "https://ci.example.test";
+const T0 = 1_800_000_000_000;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+const pgTarget = (): Parameters<typeof openPostgres>[0] => {
+  const t = testDb();
+  return t && t !== "pglite"
+    ? { url: t, schema: `lstest_signin_${process.pid}` }
+    : { pglite: true };
+};
+
+const opened: Db[] = [];
+const dialects: [string, () => Db][] = [
+  ["sqlite", () => openDatabase(":memory:")],
+  ["postgres", () => openPostgres(pgTarget(), { fresh: true })],
+];
+afterAll(() => {
+  for (const db of opened) db.close();
+});
+
+const cookieOf = (res: Response, name: string): string | undefined =>
+  res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`));
+const valueOf = (setCookie: string): string =>
+  setCookie.split(";")[0]!.slice(setCookie.indexOf("=") + 1);
+
+describe.each(dialects)("web sign-in (%s)", (_name, open) => {
+  async function harness() {
+    const s = await setup("42", open);
+    opened.push(s.db);
+    const tenant = await createOrg(s.db, { slug: "tenant", name: "Tenant" });
+    const other = await createOrg(s.db, { slug: "other", name: "Other" });
+    let now = T0;
+    const sessions = new WebSessions({ db: s.db, publicUrl: ORIGIN, now: () => now });
+    // The fake GitHub: a code maps to a user. An unknown code is refused like GitHub refuses it.
+    const users = new Map<string, GithubIdentity>();
+    const redirects: string[] = [];
+    const handler = createAuthHandler({
+      db: s.db,
+      store: s.store,
+      sessions,
+      identity: {
+        async verify(code, redirectUri) {
+          redirects.push(redirectUri);
+          const u = users.get(code);
+          if (!u) throw new Error("bad code");
+          return u;
+        },
+      },
+    });
+    const env: DispatchEnv = {
+      registry,
+      db: s.db,
+      sessions,
+      allowInstance: true,
+      now: () => now,
+    };
+    const tti = (await createInstanceTokenFromCli(s.db, { name: "ops" })).secret;
+    const bind = (input: Record<string, unknown>) =>
+      dispatch(env, { kind: "bearer", token: tti }, "instance_bind_github_login", {
+        target_org: "tenant",
+        github_login: "alice",
+        role: "admin",
+        reason: "first admin of the org",
+        ...input,
+      });
+    const start = async () => {
+      const go = (await handler.handle(new Request(`${ORIGIN}${LOGIN_PATH}`)))!;
+      const location = new URL(go.headers.get("location")!);
+      return {
+        go,
+        location,
+        state: location.searchParams.get("state")!,
+        cookie: valueOf(cookieOf(go, LOGIN_COOKIE)!),
+      };
+    };
+    const callback = async (state: string, code: string, cookie?: string) =>
+      (await handler.handle(
+        new Request(`${ORIGIN}${CALLBACK_PATH}?${new URLSearchParams({ state, code })}`, {
+          headers: cookie ? { cookie: `${LOGIN_COOKIE}=${cookie}` } : {},
+        }),
+      ))!;
+    /** A whole sign-in for a code. `session` is the cookie value when it succeeded. */
+    const signIn = async (code: string) => {
+      const st = await start();
+      const res = await callback(st.state, code, st.cookie);
+      const set = cookieOf(res, SESSION_COOKIE);
+      return { res, session: set ? valueOf(set) : undefined, setCookie: set };
+    };
+    const as = (cookie: string, op: string, input: Record<string, unknown> = {}) =>
+      dispatch(env, { kind: "session", cookie }, op, input);
+    const logout = (init: { cookie?: string; origin?: string | null; csrf?: string }) =>
+      handler.handle(
+        new Request(`${ORIGIN}${LOGOUT_PATH}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            ...(init.cookie ? { cookie: `${SESSION_COOKIE}=${init.cookie}` } : {}),
+            ...(init.origin === null ? {} : { origin: init.origin ?? ORIGIN }),
+          },
+          body: new URLSearchParams({ csrf: init.csrf ?? "" }),
+        }),
+      );
+    return {
+      ...s,
+      tenant,
+      other,
+      now: () => now,
+      advance: (ms: number) => (now += ms),
+      sessions,
+      handler,
+      users,
+      redirects,
+      env,
+      tti,
+      bind,
+      start,
+      callback,
+      signIn,
+      as,
+      logout,
+    };
+  }
+
+  /** Alice (GitHub id 1001) is invited as admin of `tenant` and signs in. */
+  async function aliceAdmin() {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    expect((await h.bind({})).ok).toBe(true);
+    const r = await h.signIn("code-alice");
+    expect(r.res.status).toBe(303);
+    return { h, cookie: r.session! };
+  }
+
+  test("login round trip: authorize redirect, callback, session cookie, membership from the DB", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "Alice" });
+    expect((await h.bind({ github_login: "ALICE", role: "owner" })).ok).toBe(true);
+    const st = await h.start();
+    expect(st.go.status).toBe(303);
+    expect(st.location.origin + st.location.pathname).toBe(
+      "https://github.com/login/oauth/authorize",
+    );
+    expect(st.location.searchParams.get("client_id")).toBe("Iv1.abc");
+    expect(st.location.searchParams.get("redirect_uri")).toBe(`${ORIGIN}${CALLBACK_PATH}`);
+    const loginCookie = cookieOf(st.go, LOGIN_COOKIE)!;
+    for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"]) {
+      expect(loginCookie).toContain(attr);
+    }
+    const done = await h.callback(st.state, "code-alice", st.cookie);
+    expect(done.status).toBe(303);
+    expect(done.headers.get("location")).toBe("/");
+    // the code was exchanged with the same redirect_uri the authorize step used
+    expect(h.redirects).toEqual([`${ORIGIN}${CALLBACK_PATH}`]);
+    const set = cookieOf(done, SESSION_COOKIE)!;
+    expect(set.startsWith("__Host-")).toBe(true);
+    for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/", "Max-Age=604800"]) {
+      expect(set).toContain(attr);
+    }
+    expect(set).not.toContain("Domain");
+    // the login cookie is cleared
+    expect(cookieOf(done, LOGIN_COOKIE)).toContain("Max-Age=0");
+    const id = valueOf(set);
+    // the database holds only a hash of the session id
+    const rows = await h.db.run((x) => x.orm.select().from(schema.webSessions));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe(sessionHash(id));
+    expect(rows[0]!.id).not.toBe(id);
+    // the identity is the numeric id, and the login only what GitHub said last
+    const idents = await h.db.run((x) => x.orm.select().from(schema.githubIdentities));
+    expect(idents).toMatchObject([{ githubUserId: "1001", login: "Alice" }]);
+    const me = await h.as(id, "whoami");
+    expect(me.ok && me.output).toMatchObject({ kind: "member", role: "owner", org: "tenant" });
+    // /auth/session and the page show who is signed in
+    const info = await h.handler.handle(
+      new Request(`${ORIGIN}${SESSION_INFO_PATH}`, {
+        headers: { cookie: `${SESSION_COOKIE}=${id}` },
+      }),
+    );
+    expect(await info!.json()).toMatchObject({
+      signed_in: true,
+      github_login: "Alice",
+      orgs: [{ slug: "tenant", role: "owner" }],
+    });
+  });
+
+  test("a state with no cookie, a wrong cookie or a bad signature is refused and spends nothing", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const a = await h.start();
+    const b = await h.start();
+    expect((await h.callback(a.state, "code-alice")).status).toBe(403); // no cookie
+    expect((await h.callback(a.state, "code-alice", b.cookie)).status).toBe(403); // another browser's
+    const [v, body] = a.state.split(".");
+    expect((await h.callback(`${v}.${body}.AAAA`, "code-alice", a.cookie)).status).toBe(403);
+    expect((await h.callback("garbage", "code-alice", a.cookie)).status).toBe(403);
+    expect((await h.callback("", "code-alice", a.cookie)).status).toBe(403);
+    // none of that spent the nonce: the genuine callback still works
+    const ok = await h.callback(a.state, "code-alice", a.cookie);
+    expect(ok.status).toBe(303);
+    expect(cookieOf(ok, SESSION_COOKIE)).toBeDefined();
+  });
+
+  test("a replayed state is refused, and an expired one", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const a = await h.start();
+    expect((await h.callback(a.state, "code-alice", a.cookie)).status).toBe(303);
+    const replay = await h.callback(a.state, "code-alice", a.cookie);
+    expect(replay.status).toBe(403);
+    expect(cookieOf(replay, SESSION_COOKIE)).toBeUndefined();
+    const b = await h.start();
+    h.advance(11 * 60_000);
+    const late = await h.callback(b.state, "code-alice", b.cookie);
+    expect(late.status).toBe(403);
+    expect(cookieOf(late, SESSION_COOKIE)).toBeUndefined();
+  });
+
+  test("a code GitHub refuses signs nobody in, and the nonce is spent", async () => {
+    const h = await harness();
+    const a = await h.start();
+    const res = await h.callback(a.state, "no-such-code", a.cookie);
+    expect(res.status).toBe(403);
+    expect(cookieOf(res, SESSION_COOKIE)).toBeUndefined();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    expect((await h.callback(a.state, "code-alice", a.cookie)).status).toBe(403); // state already used
+  });
+
+  test("no auto-join: a stranger gets no session, no user row and no membership", async () => {
+    const h = await harness();
+    // Mallory is, say, an owner of the GitHub org and of the repos. GitHub says nothing here.
+    h.users.set("code-mallory", { id: "3003", login: "mallory" });
+    const r = await h.signIn("code-mallory");
+    expect(r.res.status).toBe(403);
+    expect(r.session).toBeUndefined();
+    expect(await h.db.run((x) => x.orm.select().from(schema.githubIdentities))).toHaveLength(0);
+    expect(await h.db.run((x) => x.orm.select().from(schema.webSessions))).toHaveLength(0);
+    expect(await h.db.run((x) => x.orm.select().from(schema.orgMembers))).toHaveLength(0);
+  });
+
+  test("roles come from the DB: an invite for one org grants nothing in another", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({ role: "admin" });
+    await h.bind({ target_org: "other", role: "viewer" });
+    const { session } = await h.signIn("code-alice");
+    const sid = session!;
+    // two orgs: one must be named
+    const unnamed = await h.as(sid, "whoami");
+    expect(!unnamed.ok && unnamed.error.code).toBe("invalid_input");
+    const t = await h.as(sid, "whoami", { org: "tenant" });
+    expect(t.ok && t.output).toMatchObject({ role: "admin" });
+    const o = await h.as(sid, "whoami", { org: "other" });
+    expect(o.ok && o.output).toMatchObject({ role: "viewer" });
+    // a viewer cannot invite; the same call as an admin of the other org works
+    const denied = await h.as(sid, "invite_member", {
+      org: "other",
+      github_login: "bob",
+      role: "viewer",
+    });
+    expect(!denied.ok && denied.error.code).toBe("forbidden");
+    // an org the person does not belong to looks like one that does not exist
+    const third = await createOrg(h.db, { slug: "third", name: "Third" });
+    const none = await h.as(sid, "whoami", { org: third.slug });
+    expect(!none.ok && none.error.code).toBe("not_found");
+    const ghost = await h.as(sid, "whoami", { org: "no-such-org" });
+    expect(!ghost.ok && ghost.error.code).toBe("not_found");
+  });
+
+  test("invite_member: the invitee's first sign-in binds the numeric id, consumes the invite and emits the event", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const inv = await h.as(cookie, "invite_member", {
+      github_login: "Bob",
+      role: "member",
+    });
+    expect(inv.ok).toBe(true);
+    expect(inv.ok && inv.output).toMatchObject({ github_login: "bob", role: "member" });
+    h.users.set("code-bob", { id: "2002", login: "BOB" });
+    const r = await h.signIn("code-bob");
+    expect(r.res.status).toBe(303);
+    const bob = await h.as(r.session!, "whoami");
+    expect(bob.ok && bob.output).toMatchObject({ role: "member", org: "tenant" });
+    // the invite is spent: a second account with the same login (a recycled one) gets nothing
+    h.users.set("code-bob2", { id: "9009", login: "bob" });
+    expect((await h.signIn("code-bob2")).res.status).toBe(403);
+    const invites = await h.db.run((x) => x.orm.select().from(schema.memberInvites));
+    expect(invites.find((i) => i.githubLogin === "bob")?.usedByUserId).toBeTruthy();
+    const feed = await listEvents(
+      h.db,
+      { orgId: h.tenant.id },
+      { after: 0, limit: 50, types: ["org.member_invited", "org.member_joined"] },
+    );
+    expect(feed.map((e) => e.type)).toEqual([
+      "org.member_invited", // alice, by the instance
+      "org.member_joined", // alice
+      "org.member_invited", // bob, by alice
+      "org.member_joined", // bob
+    ]);
+    expect(JSON.parse(feed[3]!.payload)).toMatchObject({
+      github_user_id: "2002",
+      github_login: "BOB",
+      role: "member",
+    });
+    const joined = (await listAudit(h.db, { orgId: h.tenant.id })).filter(
+      (a) => a.op === "member_joined",
+    );
+    expect(joined).toHaveLength(2);
+  });
+
+  test("an invite expires after 7 days, and a newer invite replaces an older one", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({ role: "viewer" });
+    await h.bind({ role: "owner" }); // replaces the viewer invite
+    h.advance(6 * DAY);
+    const { session } = await h.signIn("code-alice");
+    const me = await h.as(session!, "whoami");
+    expect(me.ok && me.output).toMatchObject({ role: "owner" });
+    const live = (await h.db.run((x) => x.orm.select().from(schema.memberInvites))).filter(
+      (i) => i.usedAt === null && i.revokedAt === null,
+    );
+    expect(live).toHaveLength(0);
+
+    h.users.set("code-late", { id: "5005", login: "late" });
+    await h.bind({ github_login: "late" });
+    h.advance(8 * DAY);
+    expect((await h.signIn("code-late")).res.status).toBe(403);
+  });
+
+  test("who may invite, and up to what role", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const scope = { orgId: h.tenant.id };
+    // an admin may not invite above their own role
+    const up = await h.as(cookie, "invite_member", { github_login: "x1", role: "owner" });
+    expect(!up.ok && up.error.code).toBe("forbidden");
+    // a person's release_operator token: viewer or member only
+    const person = await mintToken(h.db, scope, "release_operator", { kind: "person" });
+    const asToken = (token: string, input: Record<string, unknown>) =>
+      dispatch(h.env, { kind: "bearer", token }, "invite_member", input);
+    expect((await asToken(person.secret, { github_login: "x2", role: "member" })).ok).toBe(true);
+    const adminViaToken = await asToken(person.secret, { github_login: "x3", role: "admin" });
+    expect(!adminViaToken.ok && adminViaToken.error.code).toBe("forbidden");
+    // an agent token, even release_operator, never; and a reader is below the role
+    const agent = await mintToken(h.db, scope, "release_operator");
+    const refused = await asToken(agent.secret, { github_login: "x4", role: "viewer" });
+    expect(!refused.ok && refused.error.code).toBe("forbidden");
+    const reader = await mintToken(h.db, scope, "reader", { kind: "person" });
+    const low = await asToken(reader.secret, { github_login: "x5", role: "viewer" });
+    expect(!low.ok && low.error.code).toBe("forbidden");
+    // not over MCP
+    expect(registry.mcpOps().map((o) => o.name)).not.toContain("invite_member");
+    // an existing member cannot be invited again
+    const dup = await h.as(cookie, "invite_member", { github_login: "ALICE", role: "viewer" });
+    expect(!dup.ok && dup.error.code).toBe("conflict");
+  });
+
+  test("instance_bind_github_login: audited in both chains, with an org event; bad targets refused", async () => {
+    const h = await harness();
+    const r = await h.bind({ role: "owner" });
+    expect(r.ok).toBe(true);
+    const mine = (rows: Awaited<ReturnType<typeof listAudit>>) =>
+      rows.filter((a) => a.op === "instance_bind_github_login");
+    const sys = mine(await listAudit(h.db, { orgId: await systemOrgId(h.db) }));
+    expect(sys).toHaveLength(1);
+    expect(sys[0]).toMatchObject({ principalKind: "instance", outcome: "ok" });
+    const own = mine(await listAudit(h.db, { orgId: h.tenant.id }));
+    expect(own).toHaveLength(1);
+    expect(JSON.parse(own[0]!.input)).toMatchObject({
+      target_org: "tenant",
+      github_login: "alice",
+      role: "owner",
+      reason: "first admin of the org",
+    });
+    const feed = await listEvents(
+      h.db,
+      { orgId: h.tenant.id },
+      { after: 0, limit: 10, types: ["org.member_invited"] },
+    );
+    expect(feed).toHaveLength(1);
+    expect(JSON.parse(feed[0]!.payload)).toMatchObject({
+      github_login: "alice",
+      role: "owner",
+      via: "instance",
+    });
+    const missing = await h.bind({ target_org: "no-such-org" });
+    expect(!missing.ok && missing.error.code).toBe("not_found");
+    const sysOrg = await h.bind({ target_org: "_system" });
+    expect(!sysOrg.ok && sysOrg.error.code).toBe("not_found");
+    expect((await h.bind({ github_login: "bad login!" })).ok).toBe(false);
+    expect((await h.bind({ reason: "" })).ok).toBe(false);
+    // an org token, of any role, and a session never reach it
+    const tok = await mintToken(h.db, { orgId: h.tenant.id }, "release_operator", {
+      kind: "person",
+    });
+    const viaToken = await dispatch(
+      h.env,
+      { kind: "bearer", token: tok.secret },
+      "instance_bind_github_login",
+      {
+        target_org: "tenant",
+        github_login: "eve",
+        role: "owner",
+        reason: "x",
+      },
+    );
+    expect(!viaToken.ok && viaToken.error.code).toBe("forbidden");
+    expect(registry.mcpOps().map((o) => o.name)).not.toContain("instance_bind_github_login");
+  });
+
+  test("session lifetime: idle timeout, absolute lifetime", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const idle = (await h.signIn("code-alice")).session!;
+    h.advance(11 * HOUR);
+    expect(await h.sessions.resolve(idle)).toBeDefined(); // used: the idle clock restarts
+    h.advance(11 * HOUR);
+    expect(await h.sessions.resolve(idle)).toBeDefined();
+    h.advance(13 * HOUR); // unused for longer than 12 h
+    expect(await h.sessions.resolve(idle)).toBeUndefined();
+    const dead = await h.as(idle, "whoami");
+    expect(!dead.ok && dead.error.code).toBe("unauthenticated");
+
+    const busy = (await h.signIn("code-alice")).session!;
+    for (let i = 0; i < 27; i += 1) {
+      h.advance(6 * HOUR);
+      expect(await h.sessions.resolve(busy)).toBeDefined(); // 162 h in, never idle
+    }
+    h.advance(7 * HOUR); // 169 h: past the 7 day absolute limit however active it was
+    expect(await h.sessions.resolve(busy)).toBeUndefined();
+  });
+
+  test("sign-out revokes the session; it needs the origin and the CSRF token", async () => {
+    const { h, cookie } = await aliceAdmin();
+    expect((await h.as(cookie, "whoami")).ok).toBe(true);
+    expect((await h.logout({ cookie, origin: "https://evil.example" }))!.status).toBe(403);
+    expect((await h.logout({ cookie, origin: null, csrf: csrfToken(cookie) }))!.status).toBe(403);
+    expect((await h.logout({ cookie, csrf: "wrong" }))!.status).toBe(403);
+    expect((await h.as(cookie, "whoami")).ok).toBe(true); // all refused: still signed in
+    const out = (await h.logout({ cookie, csrf: csrfToken(cookie) }))!;
+    expect(out.status).toBe(303);
+    expect(cookieOf(out, SESSION_COOKIE)).toContain("Max-Age=0");
+    const after = await h.as(cookie, "whoami");
+    expect(!after.ok && after.error.code).toBe("unauthenticated");
+    const row = await h.db.run((x) => x.orm.select().from(schema.webSessions));
+    expect(row[0]!.revokedAt).not.toBeNull();
+  });
+
+  test("a session may read and invite, and every other write is refused for the step-up it lacks", async () => {
+    const { h, cookie } = await aliceAdmin();
+    expect((await h.as(cookie, "list_runs", { org: "tenant" })).ok).toBe(true);
+    const writes = registry
+      .tokenOps()
+      .filter(
+        (o) => o.auth.type === "token" && o.effect !== "read" && !SESSION_WRITE_OPS.has(o.name),
+      );
+    const names = writes.map((o) => o.name);
+    // the step-up actions of #430 are among them
+    for (const n of ["create_api_token", "set_setting", "approve_run", "request_enrolment"]) {
+      expect(names).toContain(n);
+    }
+    for (const op of writes) {
+      const r = await h.as(cookie, op.name, { org: "tenant" });
+      expect(r.ok, op.name).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code, op.name).toBe("forbidden");
+        expect(r.error.message, op.name).toContain("step-up");
+      }
+    }
+    // nothing was minted
+    const tokens = await h.as(cookie, "list_api_tokens", { org: "tenant" });
+    expect(tokens.ok && JSON.stringify(tokens.output)).not.toContain("b-minted");
+    // instance ops are not for a session either
+    const inst = await h.as(cookie, "instance_whoami");
+    expect(inst.ok).toBe(false);
+    expect([...SESSION_WRITE_OPS]).toEqual(["invite_member"]);
+  });
+
+  test("REST: a cookie needs the exact public Origin on a state-changing request; a bearer is unaffected", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const api = createRestApi(h.env);
+    const post = (headers: Record<string, string>, login: string) =>
+      api(
+        new Request(`${ORIGIN}/api/v1/members/invites`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({ org: "tenant", github_login: login, role: "viewer" }),
+        }),
+      );
+    const c = { cookie: `${SESSION_COOKIE}=${cookie}` };
+    expect((await post({ ...c, origin: "https://evil.example" }, "v1"))!.status).toBe(403);
+    expect((await post({ ...c, origin: "null" }, "v1"))!.status).toBe(403);
+    expect((await post(c, "v1"))!.status).toBe(403); // no Origin at all
+    expect((await post({ ...c, origin: `${ORIGIN}.evil.example` }, "v1"))!.status).toBe(403);
+    expect((await post({ ...c, origin: ORIGIN }, "v1"))!.status).toBe(200);
+    // a GET needs no Origin
+    const who = await api(new Request(`${ORIGIN}/api/v1/whoami?org=tenant`, { headers: c }));
+    expect(who!.status).toBe(200);
+    expect(await who!.json()).toMatchObject({ kind: "member", role: "admin" });
+    // a bearer token behaves exactly as before: no cookie, no origin check
+    const tok = await mintToken(h.db, { orgId: h.tenant.id }, "release_operator", {
+      kind: "person",
+    });
+    const bearer = { authorization: `Bearer ${tok.secret}`, origin: "https://evil.example" };
+    expect((await post(bearer, "v2"))!.status).toBe(200);
+    const tokWho = await api(
+      new Request(`${ORIGIN}/api/v1/whoami`, {
+        headers: { authorization: `Bearer ${tok.secret}` },
+      }),
+    );
+    expect(await tokWho!.json()).toMatchObject({ kind: "token", role: "release_operator" });
+    // a bad bearer is not rescued by a good cookie
+    const bad = await api(
+      new Request(`${ORIGIN}/api/v1/whoami?org=tenant`, {
+        headers: { ...c, authorization: "Bearer tt_nope" },
+      }),
+    );
+    expect(bad!.status).toBe(401);
+    // and with sign-in not configured the cookie is not a credential at all
+    const off = createRestApi({ ...h.env, sessions: undefined });
+    const none = await off(new Request(`${ORIGIN}/api/v1/whoami?org=tenant`, { headers: c }));
+    expect(none!.status).toBe(401);
+    // a revoked or garbage cookie is a 401
+    const junk = await api(
+      new Request(`${ORIGIN}/api/v1/whoami`, { headers: { cookie: `${SESSION_COOKIE}=junk` } }),
+    );
+    expect(junk!.status).toBe(401);
+  });
+
+  test("sign-in is unavailable without a GitHub App, and other paths and methods are not claimed", async () => {
+    const db = open();
+    opened.push(db);
+    const { SecretStore } = await import("../src/secrets/store");
+    const { randomBytes } = await import("node:crypto");
+    const sessions = new WebSessions({ db, publicUrl: ORIGIN });
+    const handler = createAuthHandler({
+      db,
+      store: new SecretStore(db, randomBytes(32)),
+      sessions,
+      identity: { verify: async () => ({ id: "1", login: "x" }) },
+    });
+    const go = await handler.handle(new Request(`${ORIGIN}${LOGIN_PATH}`));
+    expect(go!.status).toBe(503);
+    expect(go!.headers.getSetCookie()).toEqual([]);
+    // unrelated paths fall through to the rest of the server
+    expect(await handler.handle(new Request(`${ORIGIN}/healthz`))).toBeUndefined();
+    expect(await handler.handle(new Request(`${ORIGIN}/auth/other`))).toBeUndefined();
+    // wrong methods
+    const bad = await handler.handle(new Request(`${ORIGIN}${LOGOUT_PATH}`));
+    expect(bad!.status).toBe(405);
+  });
+
+  test("two sign-ins of one invite make one member and one user", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const [a, b] = await Promise.all([h.start(), h.start()]);
+    const first = await h.callback(a.state, "code-alice", a.cookie);
+    const second = await h.callback(b.state, "code-alice", b.cookie);
+    expect([first.status, second.status]).toEqual([303, 303]);
+    const members = await listMembershipsOfUser(
+      h.db,
+      (await h.db.run((x) => x.orm.select().from(schema.githubIdentities)))[0]!.userId,
+    );
+    expect(members).toHaveLength(1);
+    // the second sign-in is an existing member signing in: same user, a second session
+    const idents = await h.db.run((x) => x.orm.select().from(schema.githubIdentities));
+    expect(idents).toHaveLength(1);
+    expect(await h.db.run((x) => x.orm.select().from(schema.webSessions))).toHaveLength(2);
+  });
+});
+
+test("the claim-mode App manifest registers the sign-in callback URL", () => {
+  const m = buildManifest({
+    name: "Turntable",
+    url: ORIGIN,
+    redirectUrl: "http://x/cb",
+    claimFlow: true,
+  });
+  expect(m.callback_urls).toEqual([`${ORIGIN}/api/v1/github/setup`, `${ORIGIN}${CALLBACK_PATH}`]);
+});

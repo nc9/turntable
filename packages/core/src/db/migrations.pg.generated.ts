@@ -242,5 +242,21 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"check_dismissed_at\" bigint;",
       "ALTER TABLE \"job_attempts\" ADD COLUMN \"check_dismissed_reason\" text;"
     ]
+  },
+  {
+    "tag": "0015_web_sign_in",
+    "when": 1795486603234,
+    "statements": [
+      "CREATE TABLE \"github_identities\" (\n\t\"github_user_id\" text PRIMARY KEY NOT NULL,\n\t\"user_id\" text NOT NULL,\n\t\"login\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"last_sign_in_at\" bigint,\n\tCONSTRAINT \"github_identities_user_unique\" UNIQUE(\"user_id\")\n);",
+      "CREATE TABLE \"login_states\" (\n\t\"nonce\" text PRIMARY KEY NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"expires_at\" bigint NOT NULL,\n\t\"used_at\" bigint\n);",
+      "CREATE TABLE \"member_invites\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"github_login\" text NOT NULL,\n\t\"role\" text NOT NULL,\n\t\"created_by\" text NOT NULL,\n\t\"reason\" text,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"expires_at\" bigint NOT NULL,\n\t\"used_at\" bigint,\n\t\"used_by_user_id\" text,\n\t\"revoked_at\" bigint,\n\tCONSTRAINT \"member_invites_role_check\" CHECK (role IN ('owner', 'admin', 'member', 'viewer'))\n);",
+      "CREATE TABLE \"web_sessions\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"user_id\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"last_seen_at\" bigint NOT NULL,\n\t\"expires_at\" bigint NOT NULL,\n\t\"revoked_at\" bigint\n);",
+      "ALTER TABLE \"github_identities\" ADD CONSTRAINT \"github_identities_user_id_users_id_fk\" FOREIGN KEY (\"user_id\") REFERENCES \"users\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"member_invites\" ADD CONSTRAINT \"member_invites_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"web_sessions\" ADD CONSTRAINT \"web_sessions_user_id_users_id_fk\" FOREIGN KEY (\"user_id\") REFERENCES \"users\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "CREATE INDEX \"member_invites_login_idx\" ON \"member_invites\" USING btree (\"github_login\");",
+      "CREATE INDEX \"member_invites_org_idx\" ON \"member_invites\" USING btree (\"org_id\",\"github_login\");",
+      "CREATE INDEX \"web_sessions_user_idx\" ON \"web_sessions\" USING btree (\"user_id\");"
+    ]
   }
 ];

@@ -39,6 +39,9 @@ const NO_ORG_ID = new Set([
   "orgs", // the tenant itself
   "users", // global identity; membership is org_members
   "instance_tokens", // the instance administrator: holds no org grant by design (#205)
+  "github_identities", // a GitHub account linked to a global user (#430)
+  "login_states", // a sign-in attempt in flight, before anyone is known (#430)
+  "web_sessions", // a signed-in user's session; its orgs come from org_members (#430)
 ]);
 
 test.skipIf(onPostgres)("every table except the allowlist has an org_id column", () => {
