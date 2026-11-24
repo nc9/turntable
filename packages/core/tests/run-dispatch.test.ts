@@ -201,6 +201,26 @@ describe("who may dispatch", () => {
     expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
   });
 
+  test("authorization comes first: a refused caller makes zero forge calls and creates nothing", async () => {
+    const w = await world();
+    const before = w.gh.state.calls.length;
+    const refusals: { tok: string; code: string }[] = [];
+    for (const role of ["reader", "operator"] as const) {
+      refusals.push({ tok: await w.token(w.a.scope, role), code: "forbidden" });
+    }
+    // An agent token below the dispatch role: refused on role, before the handler.
+    const agent = await mintToken(db, w.a.scope, "operator", { kind: "agent" });
+    refusals.push({ tok: agent.secret, code: "forbidden" });
+    for (const r of refusals) {
+      const err = await refused(call(w, r.tok, { inputs: { version: "1" } }));
+      expect(err.code).toBe(r.code);
+    }
+    expect(w.gh.state.calls.length).toBe(before);
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+    expect(await db.orm.select().from(s.jobs)).toEqual([]);
+    expect(await db.orm.select().from(s.pollSeen)).toEqual([]);
+  });
+
   test("a project that does not ingest the repo is refused", async () => {
     const w = await world();
     const other = await createProject(db, { orgId: w.a.scope.orgId }, { slug: "other", name: "O" });
@@ -250,6 +270,34 @@ describe("the run", () => {
     expect(verdict.decision).toBe("skip");
     const build = jobs.find((j) => j.jobKey === "build")!;
     expect(workflowReadiness(build, [], run).decision).toBe("ready");
+  });
+
+  test("one sha, resolved once: a branch that moves mid-dispatch changes nothing the run carries", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    // Move main right after the ref lookup is answered, between the forge phase and the writes.
+    let moved = 0;
+    w.gh.state.afterRefLookup = () => {
+      moved++;
+      w.gh.state.head.sha = SHA("f");
+    };
+    const out = await ok(call(w, tok, { inputs: { version: "1" } }));
+    w.gh.state.afterRefLookup = undefined;
+    expect(moved).toBeGreaterThan(0);
+    expect(w.gh.state.head.sha).toBe(SHA("f"));
+    expect(out.sha).toBe(SHA("a"));
+    const run = (await getRun(db, w.a.scope, out.run_id))!;
+    expect(run.sha).toBe(SHA("a"));
+    expect(JSON.parse(run.plan!).github.sha).toBe(SHA("a"));
+    expect(JSON.stringify(buildActEvent(run))).not.toContain(SHA("f"));
+    const jobs = await listJobs(db, w.a.scope, run.id);
+    expect(jobs.length).toBe(2);
+    for (const j of jobs) expect(JSON.stringify(j)).not.toContain(SHA("f"));
+    const all = await db.orm.select().from(s.runs);
+    expect(all.map((r) => r.sha)).toEqual([SHA("a")]);
+    // The workflow was read at the first sha, once, and the ref was looked up once per kind.
+    const refCalls = w.gh.state.calls.filter((c) => c.path.includes("/git/ref/"));
+    expect(refCalls.length).toBe(2);
   });
 
   test("a branch other than the default is trusted_pr; a protected-ref pattern is protected", async () => {
@@ -513,6 +561,11 @@ describe("atomic writes", () => {
     const rows = (await listAudit(db, w.a.scope)).filter((r) => r.op === "run_dispatch");
     expect(rows.length).toBe(1);
     expect(rows[0]!.outcome).toContain("error:");
+    // No audit row anywhere claims success for the attempt.
+    const everything = await listAudit(db, w.a.scope);
+    expect(everything.filter((r) => r.op === "run_dispatch" && r.outcome === "ok")).toEqual([]);
+    expect(await db.orm.select().from(s.runs)).toEqual([]);
+    expect(await db.orm.select().from(s.jobAttempts)).toEqual([]);
     // The same dispatch through the healthy db still works: nothing was left half-done.
     const out = await ok(call(w, tok, { inputs: { version: "1" } }));
     expect((await listJobs(db, w.a.scope, out.run_id)).length).toBe(2);

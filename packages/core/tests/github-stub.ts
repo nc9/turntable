@@ -75,6 +75,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     /** Author login (null: no linked account) and message of a commit, by sha. */
     commits: new Map<string, { login: string | null; message: string }>(),
     calls: [] as { path: string; method: string | undefined; ifNoneMatch?: string }[],
+    /** Runs right after a branch or tag lookup is answered (to move a ref mid-dispatch). */
+    afterRefLookup: undefined as (() => void) | undefined,
   };
   const parentsOf = (sha: string): { sha: string }[] =>
     (state.history.find((c) => c.sha === sha)?.parents ?? []).map((p) => ({ sha: p }));
@@ -116,6 +118,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     const refGet = new RegExp(`^/repos/${repo}/git/ref/(heads|tags)/(.+)$`).exec(path);
     if (refGet) {
       const name = refGet[2] as string;
+      const hook = state.afterRefLookup;
+      if (hook) queueMicrotask(hook);
       if (refGet[1] === "heads") {
         const sha = name === "main" ? state.head.sha : state.branches.get(name);
         return sha
