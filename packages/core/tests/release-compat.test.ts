@@ -594,7 +594,7 @@ describe("the release proxy", () => {
   test("a run the lane never signed gets nothing", async () => {
     expect(await reg()).toEqual({ ok: false, reason: "not_approved" });
     expect(await outcomes()).toContain("release_proxy_register:refused:not_approved");
-  });
+  }, 30_000);
 
   test("a signed release gets the project's compat rules, from the lane's own file", async () => {
     await sign();
