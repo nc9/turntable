@@ -4002,8 +4002,8 @@
     "/tokens/{token_id}/revoke": {
       "post": {
         "operationId": "revoke_api_token",
-        "summary": "Revoke an API token at once: an org admin any token, any token itself.",
-        "description": "Revokes an API token by id (from `list_api_tokens`). It takes effect at once: the token's next request is refused, because every call looks the token up afresh. An org owner or admin may revoke any token of the org; any token may revoke itself (rotate: mint the new token, check it works, then revoke the old one with the old one or as an admin). Refused with `conflict` when it would leave the org with no usable token, unless a token revokes itself with confirm_lockout true (recovery is then the instance administrator's token minting, which waits). Idempotent: revoking an already revoked token changes nothing and returns already_revoked true. A token id of another org is `not_found`. `reason` is recorded in the audit entry with the token id, never the secret. An admin's revoke always also revokes every token the token minted, transitively, in the same transaction (each is audited as `parent revoked`). A token revoking itself keeps the tokens it minted by default, which is how a rotation works (mint the successor with the old token, verify it, then self-revoke); pass cascade true to kill everything it minted (it is compromised). The last-usable guard counts the tokens that would survive. Destructive and audited.\n\nRequired role: reader. Side effects: destructive; audited.",
+        "summary": "Revoke an API token at once: an org admin any token, any token itself and its own subtree.",
+        "description": "Revokes an API token by id (from `list_api_tokens`). It takes effect at once: the token's next request is refused, because every call looks the token up afresh. An org owner or admin may revoke any token of the org; any token may revoke itself (rotate: mint the new token, check it works, then revoke the old one with the old one or as an admin). Refused with `conflict` when it would leave the org with no usable token, unless a token revokes itself with confirm_lockout true (recovery is then the instance administrator's token minting, which waits). Idempotent: revoking an already revoked token changes nothing and returns already_revoked true. A token may also revoke any token in its own minted subtree (a child, grandchild, and so on, by the stored creator chain; cascade defaults to true there, so the target's own subtree goes too, and the output counts it in `descendants_revoked`). A token can never revoke its ancestor, a sibling or any token outside its subtree: each is `not_found`, the same as an unknown id. A token id of another org is `not_found`. `reason` is recorded in the audit entry with the token id, never the secret. An admin's revoke always also revokes every token the token minted, transitively, in the same transaction (each is audited as `parent revoked`). A token revoking itself keeps the tokens it minted by default, which is how a rotation works (mint the successor with the old token, verify it, then self-revoke); pass cascade true to kill everything it minted (it is compromised). The last-usable guard counts the tokens that would survive. Destructive and audited.\n\nRequired role: reader. Side effects: destructive; audited.",
         "parameters": [
           {
             "name": "token_id",
@@ -4031,8 +4031,7 @@
                     "description": "Why: recorded in the audit log."
                   },
                   "cascade": {
-                    "default": false,
-                    "description": "Self-revoke only: also revoke every token this one minted, transitively (compromise). Default false keeps a rotation's successor. An admin's revoke always cascades.",
+                    "description": "Also revoke every token the target minted, transitively. Self-revoke: default false keeps a rotation's successor (true when compromised). Revoking a descendant: default true. An admin's revoke always cascades.",
                     "type": "boolean"
                   },
                   "confirm_lockout": {
@@ -4080,12 +4079,25 @@
                     "already_revoked": {
                       "type": "boolean"
                     },
+                    "descendants_revoked": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Tokens revoked beneath the target (cascade)."
+                    },
                     "org_locked_out": {
                       "type": "boolean",
                       "description": "True when no usable token is left in the org."
                     }
                   },
-                  "required": ["token_id", "name", "revoked", "already_revoked", "org_locked_out"],
+                  "required": [
+                    "token_id",
+                    "name",
+                    "revoked",
+                    "already_revoked",
+                    "descendants_revoked",
+                    "org_locked_out"
+                  ],
                   "additionalProperties": false
                 }
               }

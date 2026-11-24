@@ -37,10 +37,10 @@ describe("revoke_api_token", () => {
     expect((await dispatch(env(), asBearer(keep.secret), "list_runs", {})).ok).toBe(true);
   });
 
-  test("a non-owner may not revoke someone else's token", async () => {
+  test("a token may not revoke a non-descendant (same not_found as an unknown id); a non-admin member is forbidden", async () => {
     const other = await mintToken(db, { orgId: a.orgId }, "reader");
     const op = await mintToken(db, { orgId: a.orgId }, "release_operator");
-    expect(code(await revoke(asBearer(op.secret), { token_id: other.id }))).toBe("forbidden");
+    expect(code(await revoke(asBearer(op.secret), { token_id: other.id }))).toBe("not_found");
     const viewer: Principal = { kind: "member", id: "v", orgId: a.orgId, role: "member" };
     expect(code(await revoke(asMember(viewer), { token_id: other.id }))).toBe("forbidden");
     expect((await dispatch(env(), asBearer(other.secret), "list_runs", {})).ok).toBe(true);
