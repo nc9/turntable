@@ -6148,6 +6148,10 @@
                           "waiting": {
                             "type": "boolean"
                           },
+                          "release": {
+                            "type": "boolean",
+                            "description": "True for the project's release environment: it is approved with release_approval_challenge and approve_release, over the release manifest."
+                          },
                           "approvals": {
                             "type": "array",
                             "items": {
@@ -6177,6 +6181,7 @@
                           "required",
                           "allow_author_approval",
                           "waiting",
+                          "release",
                           "approvals"
                         ],
                         "additionalProperties": false

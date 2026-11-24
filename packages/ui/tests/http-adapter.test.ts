@@ -796,6 +796,7 @@ describe("operations added for trust, digests, search and ingest", () => {
               required: 2,
               allow_author_approval: false,
               waiting: true,
+              release: false,
               approvals: [
                 {
                   person: "alice",
@@ -843,6 +844,60 @@ describe("operations added for trust, digests, search and ingest", () => {
     });
     expect(st.environments[0]!.approvals[0]!.person).toBe("alice");
     expect(st.author).toBe("octo");
+  });
+
+  test("release approval calls: the v2 challenge carries the manifest, the approval goes to /approvals/release", async () => {
+    const A = "a".repeat(64);
+    const { api, calls } = make((url) => {
+      if (url.pathname.endsWith("/approvals/release-challenge"))
+        return json({
+          statement: { run_id: "run1", environment: "release", manifest_sha256: "d".repeat(64) },
+          canonical: "{}",
+          statement_hash: "ab",
+          challenge: "YWI",
+          rp_id: "ci.example.com",
+          passkey_id: "cred",
+          challenge_expires_at: "2026-11-23T10:10:00.000Z",
+          manifest_sha256: "d".repeat(64),
+          artifacts: [{ name: "SHA256SUMS", sha256: A, size: 412 }],
+        });
+      if (url.pathname.endsWith("/approvals/release"))
+        return json({
+          run_id: "run1",
+          environment: "release",
+          approvals: 1,
+          required: 2,
+          released_jobs: 0,
+          state: "queued",
+          manifest_sha256: "d".repeat(64),
+        });
+      return json({}, 404);
+    });
+    const ch = await api.releaseApprovalChallenge({
+      runId: "run1",
+      approver: "ap1",
+      project: "app",
+    });
+    expect(ch.manifestSha256).toBe("d".repeat(64));
+    expect(ch.artifacts).toEqual([{ name: "SHA256SUMS", sha256: A, size: 412 }]);
+    const post = calls.find((c) => c.url.pathname.endsWith("/approvals/release-challenge"))!;
+    expect(JSON.parse(String(post.init.body))).toEqual({
+      run_id: "run1",
+      approver: "ap1",
+      org: "acme",
+      project: "app",
+    });
+    const r = await api.approveRelease({
+      statement: ch.statement,
+      signature: { kind: "ed25519", signature: "AAAA" },
+    });
+    expect(r).toMatchObject({ approvals: 1, required: 2, releasedJobs: 0 });
+    const sent = calls.find((c) => c.url.pathname === "/api/v1/approvals/release")!;
+    expect(sent.init.method).toBe("POST");
+    expect(JSON.parse(String(sent.init.body))).toEqual({
+      statement: ch.statement,
+      signature: { kind: "ed25519", signature: "AAAA" },
+    });
   });
 
   test("incident status maps the freeze, its reason as data, and the rotation list", async () => {

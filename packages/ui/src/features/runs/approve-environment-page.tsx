@@ -2,13 +2,21 @@ import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { CheckCircle2, ChevronRight, KeyRound, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { getBackend } from "@/api";
-import type { Approver, EnvironmentApprovalResult } from "@/api/types";
+import type {
+  Approver,
+  ApprovalStatement,
+  ReleaseStatement,
+  EnvironmentApprovalResult,
+  ReleaseApprovalChallenge,
+} from "@/api/types";
 import { EmptyState, ErrorState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ManifestSection } from "./release-manifest";
 import { useScope } from "@/features/shell/scope";
 import { formatRelative } from "@/lib/format";
 import { statementMismatch } from "@/lib/approval-statement";
+import { approvalErrorMessage, releaseMismatch } from "@/lib/release-approval";
 import { useAsync } from "@/lib/use-async";
 import { CeremonyError, signWithPasskey, webauthnAvailable } from "@/lib/webauthn";
 import { sanitize } from "@/log/parser";
@@ -47,6 +55,7 @@ export function ApproveEnvironmentPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<EnvironmentApprovalResult | null>(null);
+  const [manifest, setManifest] = useState<ReleaseApprovalChallenge | null>(null);
 
   if (status.error && !status.data)
     return (
@@ -82,6 +91,7 @@ export function ApproveEnvironmentPage() {
       </EmptyState>
     );
 
+  const isRelease = env.release;
   const people = new Set(env.approvals.map((a) => a.person));
   const isAuthor = (a: Approver) =>
     !env.allowAuthorApproval &&
@@ -100,26 +110,63 @@ export function ApproveEnvironmentPage() {
   const simulated = api.capabilities.simulatedCeremony;
   const canSign = simulated || webauthnAvailable();
 
-  const sign = async () => {
-    if (!selected || selected.passkeyId === null) return;
+  const shownFor = (approver: string) => ({
+    runId,
+    headSha: s.headSha!,
+    workflowHash: s.workflowHash!,
+    environment: env.environment,
+    approver,
+  });
+
+  // A release is approved over its manifest (v2): fetch it, check that it hashes to the digest in
+  // the statement, and show it. Nothing is signed until the person has seen it.
+  const reviewManifest = async () => {
+    if (!selected) return;
     setBusy(true);
     setError(null);
     try {
-      const ch = await api.approvalChallenge({
+      const ch = await api.releaseApprovalChallenge({
         runId,
-        environment: env.environment,
         approver: selected.id,
         project: projectSlug,
       });
-      const mismatch = statementMismatch(ch.statement, {
-        runId,
-        headSha: s.headSha!,
-        workflowHash: s.workflowHash!,
-        environment: env.environment,
-        approver: selected.id,
-      });
-      // Never sign what is not on the screen.
+      const mismatch = await releaseMismatch(ch.statement, ch.artifacts, shownFor(selected.id));
       if (mismatch) throw new CeremonyError(`Nothing was signed: ${mismatch}.`);
+      setManifest(ch);
+    } catch (e) {
+      setManifest(null);
+      setError(
+        e instanceof Error ? approvalErrorMessage(e.message) : "The manifest could not be loaded.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sign = async () => {
+    if (!selected || selected.passkeyId === null) return;
+    if (isRelease && !manifest) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let statement: ApprovalStatement | ReleaseStatement;
+      let challenge: { challenge: string; rpId: string | null; passkeyId: string | null };
+      if (isRelease) {
+        statement = manifest!.statement;
+        challenge = manifest!;
+      } else {
+        const ch = await api.approvalChallenge({
+          runId,
+          environment: env.environment,
+          approver: selected.id,
+          project: projectSlug,
+        });
+        const mismatch = statementMismatch(ch.statement, shownFor(selected.id));
+        // Never sign what is not on the screen.
+        if (mismatch) throw new CeremonyError(`Nothing was signed: ${mismatch}.`);
+        statement = ch.statement;
+        challenge = ch;
+      }
       const signature = simulated
         ? ({
             kind: "webauthn",
@@ -129,14 +176,22 @@ export function ApproveEnvironmentPage() {
             signature: "fixture",
           } as const)
         : await signWithPasskey({
-            challenge: ch.challenge,
-            rpId: ch.rpId ?? "",
-            passkeyId: ch.passkeyId ?? selected.passkeyId,
+            challenge: challenge.challenge,
+            rpId: challenge.rpId ?? "",
+            passkeyId: challenge.passkeyId ?? selected.passkeyId,
           });
-      setDone(await api.approveEnvironment({ statement: ch.statement, signature }));
+      setDone(
+        isRelease
+          ? await api.approveRelease({ statement: statement as ReleaseStatement, signature })
+          : await api.approveEnvironment({ statement: statement as ApprovalStatement, signature }),
+      );
       status.reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The approval was not accepted.");
+      // A spent or expired challenge needs a new manifest review.
+      if (isRelease) setManifest(null);
+      setError(
+        e instanceof Error ? approvalErrorMessage(e.message) : "The approval was not accepted.",
+      );
     } finally {
       setBusy(false);
     }
@@ -162,6 +217,9 @@ export function ApproveEnvironmentPage() {
       <p className="mt-1 text-sm text-dim">
         You sign exactly what is below. If the commit or the workflow changes, the signature no
         longer applies and the run needs a new approval.
+        {isRelease
+          ? " This is a release: you also sign the digest of the files it will publish, shown after you choose who signs."
+          : ""}
       </p>
 
       <dl className="mt-5 divide-y divide-line overflow-hidden rounded-xl border border-line">
@@ -204,6 +262,7 @@ export function ApproveEnvironmentPage() {
               onClick={() => {
                 setDone(null);
                 setChosen(null);
+                setManifest(null);
               }}
             >
               Sign as another approver
@@ -238,7 +297,10 @@ export function ApproveEnvironmentPage() {
                         value={a.id}
                         disabled={why !== null}
                         checked={chosen === a.id}
-                        onChange={() => setChosen(a.id)}
+                        onChange={() => {
+                          setChosen(a.id);
+                          setManifest(null);
+                        }}
                         className="mt-1"
                       />
                       <span className="min-w-0 flex-1">
@@ -267,14 +329,31 @@ export function ApproveEnvironmentPage() {
               approve with an offline key.
             </p>
           ) : null}
+          {isRelease && manifest ? (
+            <ManifestSection artifacts={manifest.artifacts} digest={manifest.manifestSha256} />
+          ) : null}
           <div className="mt-4">
-            <Button
-              onClick={() => void sign()}
-              disabled={busy || !selected || reason(selected) !== null || !canSign}
-            >
-              <KeyRound />
-              {busy ? "Waiting for your key" : "Approve with passkey"}
-            </Button>
+            {isRelease && !manifest ? (
+              <Button
+                onClick={() => void reviewManifest()}
+                disabled={busy || !selected || reason(selected) !== null || !canSign}
+              >
+                <KeyRound />
+                {busy ? "Loading the manifest" : "Review the release manifest"}
+              </Button>
+            ) : (
+              <Button
+                onClick={() => void sign()}
+                disabled={busy || !selected || reason(selected) !== null || !canSign}
+              >
+                <KeyRound />
+                {busy
+                  ? "Waiting for your key"
+                  : isRelease
+                    ? "Approve this release with passkey"
+                    : "Approve with passkey"}
+              </Button>
+            )}
             {!selected ? (
               <p className="mt-2 text-xs text-dim">Choose who is signing first.</p>
             ) : null}
@@ -287,8 +366,12 @@ export function ApproveEnvironmentPage() {
         <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-dim">
           <li>
             Ask the server for the statement:{" "}
-            <code className="font-mono text-xs">POST /api/v1/approvals/challenge</code> with the
-            run, environment and your approver id.
+            <code className="font-mono text-xs">
+              {isRelease
+                ? "POST /api/v1/approvals/release-challenge"
+                : "POST /api/v1/approvals/challenge"}
+            </code>{" "}
+            with the run{isRelease ? "" : ", environment"} and your approver id.
           </li>
           <li>
             On the machine that holds your key, sign its{" "}
@@ -300,8 +383,10 @@ export function ApproveEnvironmentPage() {
           </li>
           <li>
             Send the statement and signature to{" "}
-            <code className="font-mono text-xs">POST /api/v1/approvals</code>. No token is needed:
-            the signature is the credential.
+            <code className="font-mono text-xs">
+              {isRelease ? "POST /api/v1/approvals/release" : "POST /api/v1/approvals"}
+            </code>
+            . No token is needed: the signature is the credential.
           </li>
         </ol>
       </details>

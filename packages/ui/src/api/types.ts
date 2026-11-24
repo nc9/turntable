@@ -301,6 +301,21 @@ export type EnrolStatement = {
   nonce: string;
 };
 
+/** One artifact of a release manifest, as the server recorded it. */
+export type ReleaseArtifact = { name: string; sha256: string; size: number };
+
+/** What a human signs to approve a release: the run, the commit and the manifest digest. */
+export type ReleaseStatement = Omit<ApprovalStatement, "type"> & {
+  type: "turntable.approve_release.v2";
+  /** sha256 hex of the canonical manifest of the artifacts the release lane will sign. */
+  manifest_sha256: string;
+};
+
+export type ReleaseApprovalChallenge = ApprovalChallenge<ReleaseStatement> & {
+  manifestSha256: string;
+  artifacts: ReleaseArtifact[];
+};
+
 export type ApprovalChallenge<S = ApprovalStatement> = {
   statement: S;
   canonical: string;
@@ -331,6 +346,8 @@ export type ApprovalStatus = {
     required: number;
     allowAuthorApproval: boolean;
     waiting: boolean;
+    /** The project's release environment: approved over the release manifest (v2). */
+    release: boolean;
     approvals: {
       person: string;
       method: "webauthn" | "ed25519";

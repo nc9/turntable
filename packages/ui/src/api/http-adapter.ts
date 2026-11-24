@@ -4,6 +4,7 @@ import { stepEvents } from "./step-events";
 import type {
   ApprovalChallenge,
   ApprovalStatement,
+  ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
   SandboxUsage,
@@ -38,6 +39,7 @@ import type {
 import type {
   WireSandboxUsage,
   WireApprovalStatus,
+  WireReleaseChallenge,
   WireApprovers,
   WireChallenge,
   WireEnrolmentApproval,
@@ -646,6 +648,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
           required: e.required,
           allowAuthorApproval: e.allow_author_approval,
           waiting: e.waiting,
+          release: e.release,
           approvals: e.approvals.map((a) => ({
             person: a.person,
             method: a.method,
@@ -793,6 +796,37 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         { run_id: runId, environment, approver, org: org(), project },
       );
       return challengeOf<ApprovalStatement>(w);
+    },
+
+    async releaseApprovalChallenge({ runId, approver, project }) {
+      const w = await call<WireReleaseChallenge>(
+        "POST",
+        "/approvals/release-challenge",
+        {},
+        { run_id: runId, approver, org: org(), project },
+      );
+      return {
+        ...challengeOf<ReleaseStatement>(w),
+        manifestSha256: w.manifest_sha256,
+        artifacts: w.artifacts.map((a) => ({ name: a.name, sha256: a.sha256, size: a.size })),
+      };
+    },
+
+    async approveRelease({ statement, signature }): Promise<EnvironmentApprovalResult> {
+      const w = await call<WireEnvironmentApproval>(
+        "POST",
+        "/approvals/release",
+        {},
+        { statement, signature },
+      );
+      return {
+        runId: w.run_id,
+        environment: w.environment,
+        approvals: w.approvals,
+        required: w.required,
+        releasedJobs: w.released_jobs,
+        state: w.state,
+      };
     },
 
     async approveEnvironment({ statement, signature }): Promise<EnvironmentApprovalResult> {

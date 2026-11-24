@@ -117,6 +117,11 @@ export const approvalStatus = defineOp({
         required: z.int(),
         allow_author_approval: z.boolean(),
         waiting: z.boolean(),
+        release: z
+          .boolean()
+          .describe(
+            "True for the project's release environment: it is approved with release_approval_challenge and approve_release, over the release manifest.",
+          ),
         approvals: z.array(
           z.object({
             person: z.string(),
@@ -141,6 +146,9 @@ export const approvalStatus = defineOp({
     const records = await listEnvironmentRecords(ctx.db, ctx.scope.orgId, run.id);
     const names = [...new Set([...waiting, ...records.map((r) => r.environment!)])].toSorted();
     const now = ctx.now();
+    const releaseEnvironment = (
+      await getProjectSigning(ctx.db, { orgId: ctx.scope.orgId, projectId: run.projectId })
+    ).environment;
     const environments = [];
     for (const environment of names) {
       const policy = await getEnvPolicy(ctx.db, ctx.scope.orgId, environment, ctx.settings);
@@ -157,6 +165,7 @@ export const approvalStatus = defineOp({
         required: policy.required,
         allow_author_approval: policy.allowAuthorApproval,
         waiting: waiting.includes(environment),
+        release: environment === releaseEnvironment,
         approvals: live.map((r) => ({
           person: r.person,
           method: r.method as "webauthn" | "ed25519",

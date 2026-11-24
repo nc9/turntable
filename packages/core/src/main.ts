@@ -141,7 +141,7 @@ Usage:
   turntable policy set --egress <none|open|allowlist> [--org local] [--project <slug>]
   turntable policy set --checks-mode <off|shadow|live> [--org local] [--project <slug>]
   turntable mcp [--token-file <path>] [--data-dir ./data]
-  turntable approvals keygen|bootstrap|sign|policy|list|revoke ...   (human approvals; see docs/security.mdx)
+  turntable approvals keygen|bootstrap|sign|approve-release|policy|list|revoke ...   (human approvals; see docs/security.mdx)
   turntable incident freeze|unfreeze|status --org <slug> [--project <slug>] [--reason <text>]
   turntable db backup [--keep <n>] [--data-dir ./data]  (SQLite backup into <data-dir>/backups; not for Postgres)
   turntable quotas show|set --org <slug> [--max-concurrent <n|none> ...] [--data-dir ./data]
