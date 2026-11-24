@@ -1,0 +1,1 @@
+ALTER TABLE "approval_records" ADD COLUMN "spent_at" bigint;

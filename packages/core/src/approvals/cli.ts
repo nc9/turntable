@@ -34,7 +34,7 @@ export const APPROVALS_USAGE = `Usage:
       Enrols the FIRST approver of an org. Refused once any approver exists: after that, new keys
       need a quorum of existing approvers (request_enrolment / approve_enrolment).
   turntable approvals sign --key <private-key-file> --statement <file|->
-      Signs the "canonical" text of an approval statement (from approval_challenge) offline.
+      Signs the "canonical" text of an approval statement (from approval_challenge or release_approval_challenge) offline.
       Prints the signature object to send with the statement.
   turntable approvals policy --org <slug> --environment <name> --required <n> [--allow-author-approval] [--key-policy any|hardware]
       Sets how many distinct people an environment needs. Without --allow-author-approval the

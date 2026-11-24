@@ -258,5 +258,12 @@ export const migrations: Migration[] = [
       "CREATE INDEX \"member_invites_org_idx\" ON \"member_invites\" USING btree (\"org_id\",\"github_login\");",
       "CREATE INDEX \"web_sessions_user_idx\" ON \"web_sessions\" USING btree (\"user_id\");"
     ]
+  },
+  {
+    "tag": "0016_approval_records_spent",
+    "when": 1795495555910,
+    "statements": [
+      "ALTER TABLE \"approval_records\" ADD COLUMN \"spent_at\" bigint;"
+    ]
   }
 ];

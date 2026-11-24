@@ -15,6 +15,10 @@ export type SigningDenial =
   | "environment_mismatch"
   | "verification_mismatch"
   | "no_approval"
+  /** A release approval exists, but for another artifact set than the one about to be signed. */
+  | "manifest_mismatch"
+  /** The release approval for exactly these bytes was already spent by a signature. */
+  | "approval_spent"
   | "no_backend"
   | "key_shared";
 

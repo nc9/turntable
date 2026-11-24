@@ -1,0 +1,1 @@
+ALTER TABLE `approval_records` ADD `spent_at` integer;

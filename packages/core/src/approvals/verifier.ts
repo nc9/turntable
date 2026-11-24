@@ -13,10 +13,11 @@ import {
   getRun,
   listEnvironmentRecords,
   parseTrust,
+  spendApprovalRecords,
 } from "../db/repos";
 import { authorBlocked, liveEnvironmentRecords, requiredApprovals } from "./apply";
 import { dbKeyStore } from "./store";
-import { statementHash, envStatementSchema } from "./statement";
+import { statementHash, envStatementSchema, releaseStatementSchema } from "./statement";
 import { signatureSchema, verifySignature, type ApproverKeyStore } from "./verify";
 import type { RelyingParty } from "./webauthn";
 
@@ -28,9 +29,17 @@ export type ApprovalSubject = {
   headSha: string;
   /** Hex sha256 of the workflow, as in the run's trust decision. */
   workflowHash: string;
+  /**
+   * The release manifest digest the approval must name (#424, see release/manifest.ts). When set,
+   * only unspent `turntable.approve_release.v2` approvals of exactly this digest count, and a
+   * `turntable.approve_environment.v1` approval counts for nothing. Set it for every signature.
+   */
+  manifestSha256?: string;
 };
 
 export type VerifiedApproval = {
+  /** The stored record, so a signature can spend exactly the approvals it rests on. */
+  recordId?: string;
   approverId: string;
   person: string;
   /** The verified forge login the approval counts under (see identity.ts). */
@@ -49,7 +58,15 @@ export type ApprovalVerdict =
       required: number;
       have: number;
       reason:
-        "insufficient_approvals" | "expired" | "self_approval" | "run_not_found" | "sha_mismatch";
+        | "insufficient_approvals"
+        | "expired"
+        | "self_approval"
+        | "run_not_found"
+        | "sha_mismatch"
+        /** Approvals exist for this run and environment, but for another artifact set. */
+        | "manifest_mismatch"
+        /** An approval of exactly this manifest exists, and a signature already spent it. */
+        | "approval_spent";
     };
 
 export interface ApprovalVerifier {
@@ -58,6 +75,15 @@ export interface ApprovalVerifier {
     environment: string,
     o?: { now?: number; keys?: ApproverKeyStore; rp?: RelyingParty },
   ): Promise<ApprovalVerdict>;
+  /**
+   * Spends the approvals a verdict rests on, atomically (all or none): false when any was already
+   * spent. A verifier whose approvals are not single-use may omit it.
+   */
+  spend?(
+    subject: ApprovalSubject,
+    approvals: readonly VerifiedApproval[],
+    o?: { now?: number },
+  ): Promise<boolean>;
 }
 
 export function createApprovalVerifier(
@@ -65,6 +91,11 @@ export function createApprovalVerifier(
   defaults: { rp?: RelyingParty } = {},
 ): ApprovalVerifier {
   return {
+    async spend(subject, approvals, o = {}) {
+      const ids = approvals.flatMap((a) => (a.recordId ? [a.recordId] : []));
+      if (ids.length !== approvals.length) return false;
+      return spendApprovalRecords(db, subject.orgId, ids, o.now ?? Date.now());
+    },
     async verify(subject, environment, o = {}) {
       const now = o.now ?? Date.now();
       const rp = o.rp ?? defaults.rp;
@@ -101,7 +132,12 @@ export function createApprovalVerifier(
         workflowHash: subject.workflowHash,
         environment,
       };
-      const live = liveEnvironmentRecords(all, bind, now);
+      const manifest = subject.manifestSha256;
+      const live = liveEnvironmentRecords(
+        all,
+        manifest === undefined ? bind : { ...bind, manifest },
+        now,
+      );
       const keys = o.keys ?? dbKeyStore(db, subject.orgId);
       const good: VerifiedApproval[] = [];
       let selfApproved = false;
@@ -109,7 +145,10 @@ export function createApprovalVerifier(
         let parsed;
         let sig;
         try {
-          parsed = envStatementSchema.parse(JSON.parse(r.statement));
+          parsed =
+            manifest === undefined
+              ? envStatementSchema.parse(JSON.parse(r.statement))
+              : releaseStatementSchema.parse(JSON.parse(r.statement));
           sig = signatureSchema.parse(JSON.parse(r.signature));
         } catch {
           continue;
@@ -132,6 +171,7 @@ export function createApprovalVerifier(
           continue;
         }
         good.push({
+          recordId: r.id,
           approverId: key.id,
           person: key.person,
           identity,
@@ -151,6 +191,29 @@ export function createApprovalVerifier(
           approvals: [...distinct.values()],
         };
       if (selfApproved && distinct.size < required) return denied("self_approval", distinct.size);
+      if (manifest !== undefined) {
+        // Say WHY a release approval does not count, when it is one of these (not an expiry).
+        const ofRun = liveEnvironmentRecords(all, { ...bind }, now).filter((r) => {
+          try {
+            return releaseStatementSchema.safeParse(JSON.parse(r.statement)).success;
+          } catch {
+            return false;
+          }
+        });
+        const same = ofRun.filter((r) => {
+          try {
+            return (
+              (JSON.parse(r.statement) as { manifest_sha256?: string }).manifest_sha256 ===
+              manifest.toLowerCase()
+            );
+          } catch {
+            return false;
+          }
+        });
+        if (same.length > 0 && same.every((r) => r.spentAt !== null))
+          return denied("approval_spent", 0);
+        if (ofRun.length > 0 && same.length === 0) return denied("manifest_mismatch", 0);
+      }
       if (all.length > 0 && all.every((r) => r.expiresAt <= now)) return denied("expired", 0);
       return denied("insufficient_approvals", distinct.size);
     },

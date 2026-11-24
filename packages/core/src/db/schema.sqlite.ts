@@ -1141,6 +1141,11 @@ export const approvalRecords = sqliteTable(
     signature: text("signature").notNull(),
     createdAt: createdAt(),
     expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    /**
+     * When the signing service spent this approval (a `turntable.approve_release.v2` record is
+     * spent by the one signature it authorises); null while unspent. Set once, never cleared.
+     */
+    spentAt: integer("spent_at", { mode: "number" }),
   },
   (t) => [
     unique("approval_records_hash_unique").on(t.orgId, t.statementHash),

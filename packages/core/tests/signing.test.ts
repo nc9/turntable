@@ -479,6 +479,8 @@ describe("policy refusals (nothing reaches the signer)", () => {
         runId: run.id,
         headSha: SHA,
         workflowHash: "h",
+        // The digest of the artifacts about to be signed, which the verifier must match (#424).
+        manifestSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         env: "release",
       },
     ]);
