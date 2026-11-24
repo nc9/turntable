@@ -668,6 +668,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "The window, in minutes, over which the preemptions of one job are counted (1 to 10080). The environment name of the `preempt_window_minutes` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
+    name: "TURNTABLE_SESSION_IDLE_HOURS",
+    area: "Server",
+    default: "12",
+    description:
+      "Hours a web session may sit unused before it is signed out (1 to 168). The environment name of the `session_idle_hours` setting, which `turntable.toml` and `instance_set_setting` also set. See [Signing in to the web UI](/web-sign-in).",
+  },
+  {
+    name: "TURNTABLE_SESSION_ABSOLUTE_DAYS",
+    area: "Server",
+    default: "7",
+    description:
+      "Days a web session lives at most, however active it is (1 to 90). The environment name of the `session_absolute_days` setting, which `turntable.toml` and `instance_set_setting` also set. See [Signing in to the web UI](/web-sign-in).",
+  },
+  {
     name: "TURNTABLE_APPROVAL_POLICY",
     area: "Server",
     description:

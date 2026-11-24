@@ -38,7 +38,8 @@ import { setup } from "./github-helpers";
 import { mintToken } from "./ops-helpers";
 
 const ORIGIN = "https://ci.example.test";
-const T0 = 1_800_000_000_000;
+// Real time: the instance token and API tokens are minted with expiries counted from the clock.
+const T0 = Date.now();
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
