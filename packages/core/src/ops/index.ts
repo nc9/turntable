@@ -27,6 +27,7 @@ import {
   createOrgOp,
   createOrgTokenOp,
   moveRepoBindingOp,
+  instanceStartInstallationClaimOp,
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
@@ -130,6 +131,7 @@ export const registry = createRegistry([
   createOrgOp,
   createOrgTokenOp,
   moveRepoBindingOp,
+  instanceStartInstallationClaimOp,
   instanceListOrgs,
   instanceDoctorOp,
   instanceIngestStatusOp,

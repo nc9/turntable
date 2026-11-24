@@ -56,6 +56,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: minting an org's first token must never land in an agent's context",
   move_repo_binding:
     "instance administrator ops are REST only: moving a repo between tenants is the operator's act, never an agent's",
+  instance_start_installation_claim:
+    "instance administrator ops are REST only: starting a tenant's GitHub claim is the operator's act, never an agent's",
   db_backup:
     "instance administrator ops are REST only: it writes a copy of the whole database, never an agent's act",
   rotate_instance_token:
