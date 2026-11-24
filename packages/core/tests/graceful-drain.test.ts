@@ -18,6 +18,7 @@ import {
   markDrainCut,
   openDatabase,
   type Scope,
+  setProjectChecksMode,
 } from "../src/db";
 import { checkDraining } from "../src/doctor/checks";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
@@ -57,6 +58,7 @@ afterEach(() => {
   world.dispose();
   resetProcessDrain();
   processDrain.trackRunning(() => 0);
+  processDrain.trackShadowCutter(async () => 0);
 });
 
 /** One run with one queued job and attempt. */
@@ -289,11 +291,21 @@ describe("instance_drain and instance_drain_status", () => {
       draining: true,
       running_attempts: 0,
       since: new Date(clock).toISOString(),
+      running_by_mode: { live: 0, shadow: 0 },
+      shadow_mode: "wait",
+      shadow_cut: 0,
     });
     const status = await asInstance("instance_drain_status");
     expect(status.ok && status.output).toEqual(on.output);
     const off = await asInstance("instance_drain", { on: false, reason: "deploy done" });
-    expect(off.ok && off.output).toEqual({ draining: false, running_attempts: 0, since: null });
+    expect(off.ok && off.output).toEqual({
+      draining: false,
+      running_attempts: 0,
+      since: null,
+      running_by_mode: { live: 0, shadow: 0 },
+      shadow_mode: "wait",
+      shadow_cut: 0,
+    });
   });
 
   test("running_attempts counts running attempts across the instance", async () => {
@@ -334,6 +346,285 @@ describe("instance_drain and instance_drain_status", () => {
       if (!r.ok) expect(r.error.code, role).toBe("forbidden");
     }
     expect(processDrain.draining).toBe(false);
+  });
+});
+
+describe("drain shadow: cancel (#480)", () => {
+  let live: { orgId: string; scope: Required<Scope> };
+  beforeEach(async () => {
+    const project = await createProject(db, { orgId: a.orgId }, { slug: "gate", name: "gate" });
+    live = { orgId: a.orgId, scope: { orgId: a.orgId, projectId: project.id } };
+    await setProjectChecksMode(db, live.scope, "live");
+    await setProjectChecksMode(db, a.scope, "shadow");
+  });
+
+  /** A runner that blocks until its gate opens; an abort ends it as cancelled, like a real stop. */
+  function blockingRunner() {
+    const gates = new Map<string, ReturnType<typeof gate>>();
+    const aborted: string[] = [];
+    const starts: string[] = [];
+    const runner: AttemptRunner = async (ctx) => {
+      const key = `${ctx.job.jobKey}#${ctx.attempt.id}`;
+      starts.push(ctx.job.jobKey);
+      const g = gate();
+      gates.set(ctx.job.jobKey, g);
+      ctx.signal.addEventListener("abort", () => {
+        aborted.push(ctx.job.jobKey);
+        g.open();
+      });
+      await g.p;
+      return ctx.signal.aborted
+        ? { state: "cancelled", reason: key }
+        : { state: "success", reason: "ok" };
+    };
+    return { runner, gates, aborted, starts };
+  }
+
+  const waitFor = async (cond: () => boolean) => {
+    for (let i = 0; i < 400 && !cond(); i++) await Bun.sleep(5);
+    expect(cond()).toBe(true);
+  };
+
+  test("cancel cuts shadow attempts and leaves live ones running; the cut job is requeued once and runs after the drain", async () => {
+    const s = await queueJob(a.scope, "shadow-job");
+    const l = await queueJob(live.scope, "live-job");
+    const b = blockingRunner();
+    const finished: string[] = [];
+    const drain = new DrainState();
+    const sched = new Scheduler({
+      db,
+      runner: b.runner,
+      providers: () => world.provider(),
+      globalCap: 50,
+      perOrgCap: 50,
+      drain,
+      observer: { started() {}, finished: (c) => finished.push(c.job.jobKey) },
+    });
+    expect(await sched.tick()).toBe(2);
+    drain.set(true, "deploy", T0);
+    await drain.applyShadow("cancel");
+
+    expect(drain.shadowMode).toBe("cancel");
+    expect(drain.shadowCut).toBe(1);
+    await waitFor(() => sched.activeCount === 1);
+    expect(b.aborted).toEqual(["shadow-job"]);
+
+    // the shadow job went back to the queue under a new attempt: infra retry, never a failure
+    const attempts = await listAttempts(db, a.scope, s.job.id);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({ state: "infra_error", leaseOwner: null });
+    expect(attempts[0]!.errorClass).toStartWith("controller_lost");
+    expect(attempts[1]).toMatchObject({ state: "queued" });
+    expect((await getJob(db, a.scope, s.job.id))?.state).toBe("queued");
+    // the live attempt is untouched and still running
+    expect((await listAttempts(db, live.scope, l.job.id))[0]).toMatchObject({ state: "running" });
+    expect(await getJob(db, live.scope, l.job.id)).toMatchObject({ state: "running" });
+    // no result was reported for the cut attempt
+    expect(finished).toEqual([]);
+
+    // a second cancel call finds nothing left to cut
+    await drain.applyShadow("cancel");
+    expect(drain.shadowCut).toBe(1);
+
+    // draining: the requeued job does not start
+    expect(await sched.tick()).toBe(0);
+    // after the drain ends (the restart), it runs and succeeds
+    drain.set(false, "", T0);
+    expect(await sched.tick()).toBe(1);
+    b.gates.get("shadow-job")!.open();
+    b.gates.get("live-job")!.open();
+    await sched.idle();
+    expect((await getJob(db, a.scope, s.job.id))?.state).toBe("success");
+    expect((await getJob(db, live.scope, l.job.id))?.state).toBe("success");
+    expect(b.aborted).toEqual(["shadow-job"]);
+  });
+
+  test("a project with checks off is cut like shadow", async () => {
+    await setProjectChecksMode(db, a.scope, "off");
+    const s = await queueJob(a.scope, "off-job");
+    const b = blockingRunner();
+    const drain = new DrainState();
+    const sched = new Scheduler({
+      db,
+      runner: b.runner,
+      providers: () => world.provider(),
+      globalCap: 50,
+      perOrgCap: 50,
+      drain,
+    });
+    await sched.tick();
+    drain.set(true, "deploy", T0);
+    await drain.applyShadow("cancel");
+    expect(drain.shadowCut).toBe(1);
+    await sched.idle();
+    expect((await getJob(db, a.scope, s.job.id))?.state).toBe("queued");
+  });
+
+  test("a second cut of the same job ends it as infra_error, not another requeue", async () => {
+    const s = await queueJob(a.scope, "twice");
+    const b = blockingRunner();
+    const drain = new DrainState();
+    const sched = new Scheduler({
+      db,
+      runner: b.runner,
+      providers: () => world.provider(),
+      globalCap: 50,
+      perOrgCap: 50,
+      drain,
+    });
+    await sched.tick();
+    drain.set(true, "deploy", T0);
+    await drain.applyShadow("cancel");
+    await sched.idle();
+    drain.set(false, "", T0);
+    await sched.tick();
+    drain.set(true, "deploy again", T0);
+    await drain.applyShadow("cancel");
+    await sched.idle();
+    expect(await listAttempts(db, a.scope, s.job.id)).toHaveLength(2);
+    expect((await getJob(db, a.scope, s.job.id))?.state).toBe("infra_error");
+  });
+
+  test("wait (the default) cuts nothing and waits for shadow attempts", async () => {
+    const s = await queueJob(a.scope, "shadow-job");
+    const b = blockingRunner();
+    const drain = new DrainState();
+    const sched = new Scheduler({
+      db,
+      runner: b.runner,
+      providers: () => world.provider(),
+      globalCap: 50,
+      perOrgCap: 50,
+      drain,
+    });
+    await sched.tick();
+    drain.set(true, "deploy", T0);
+    await drain.applyShadow("wait");
+    expect(drain.shadowCut).toBe(0);
+    expect(sched.activeCount).toBe(1);
+    expect(b.aborted).toEqual([]);
+    b.gates.get("shadow-job")!.open();
+    await sched.idle();
+    expect((await getJob(db, a.scope, s.job.id))?.state).toBe("success");
+  });
+
+  test("a verdict reached before the stop landed is kept, not requeued", async () => {
+    const s = await queueJob(a.scope, "racy");
+    const drain = new DrainState();
+    const g = gate();
+    const sched = new Scheduler({
+      db,
+      runner: async (ctx) => {
+        ctx.signal.addEventListener("abort", () => g.open());
+        await g.p;
+        return { state: "success", reason: "ok" };
+      },
+      providers: () => world.provider(),
+      globalCap: 50,
+      perOrgCap: 50,
+      drain,
+    });
+    await sched.tick();
+    drain.set(true, "deploy", T0);
+    await drain.applyShadow("cancel");
+    await sched.idle();
+    expect(await listAttempts(db, a.scope, s.job.id)).toHaveLength(1);
+    expect((await getJob(db, a.scope, s.job.id))?.state).toBe("success");
+  });
+
+  test("applyShadow does nothing when not draining, and ending the drain resets the count", async () => {
+    const d = new DrainState();
+    await d.applyShadow("cancel");
+    expect(d.shadowMode).toBe("wait");
+    d.set(true, "deploy", 1);
+    d.trackShadowCutter(async () => 3);
+    await d.applyShadow("cancel");
+    expect(d.shadowCut).toBe(3);
+    d.set(false, "", 2);
+    expect(d.shadowCut).toBe(0);
+    expect(d.shadowMode).toBe("wait");
+  });
+
+  describe("the op", () => {
+    let env: DispatchEnv;
+    let secret: string;
+    beforeEach(async () => {
+      env = { registry, db, allowInstance: true, instanceOrgCap: 4, now: () => Date.now() };
+      secret = (await createInstanceTokenFromCli(db, { name: "ops laptop" })).secret;
+    });
+    const asInstance = (name: string, input: Record<string, unknown> = {}) =>
+      dispatch(env, { kind: "bearer", token: secret }, name, input);
+
+    test("status splits running attempts by mode, reports shadow_cut, and the audit records the mode and count", async () => {
+      await queueJob(a.scope, "shadow-job");
+      await queueJob(live.scope, "live-job");
+      await queueJob(live.scope, "live-job-2");
+      for (let i = 0; i < 3; i++) {
+        await claimNextAttempt(db, {
+          owner: "w",
+          leaseMs: 60_000,
+          now: Date.now(),
+          globalCap: 9,
+          perOrgCap: 9,
+        });
+      }
+      const status = await asInstance("instance_drain_status");
+      expect(status.ok && status.output).toMatchObject({
+        running_attempts: 3,
+        running_by_mode: { live: 2, shadow: 1 },
+        shadow_mode: "wait",
+        shadow_cut: 0,
+      });
+
+      processDrain.trackShadowCutter(async () => 1);
+      const on = await asInstance("instance_drain", {
+        on: true,
+        reason: "deploy abc123",
+        shadow: "cancel",
+      });
+      expect(on.ok && on.output).toMatchObject({
+        draining: true,
+        shadow_mode: "cancel",
+        shadow_cut: 1,
+      });
+      const after = await asInstance("instance_drain_status");
+      expect(after.ok && after.output).toMatchObject({ shadow_mode: "cancel", shadow_cut: 1 });
+
+      const rows = await listAudit(db, { orgId: await systemOrgId(db) }, { limit: 50 });
+      const row = rows.find((x) => x.op === "instance_drain");
+      expect(row).toMatchObject({ effect: "write", outcome: "ok" });
+      const input = JSON.parse(row!.input as string) as Record<string, unknown>;
+      expect(input).toMatchObject({ shadow: "cancel", shadow_mode: "cancel", shadow_cut: 1 });
+    });
+
+    test("shadow defaults to wait and rejects other values; ending the drain resets it", async () => {
+      const bad = await asInstance("instance_drain", {
+        on: true,
+        reason: "deploy",
+        shadow: "kill",
+      });
+      expect(bad.ok).toBe(false);
+      const on = await asInstance("instance_drain", { on: true, reason: "deploy" });
+      expect(on.ok && on.output).toMatchObject({ shadow_mode: "wait", shadow_cut: 0 });
+      await asInstance("instance_drain", { on: true, reason: "deploy", shadow: "cancel" });
+      const off = await asInstance("instance_drain", { on: false, reason: "done" });
+      expect(off.ok && off.output).toMatchObject({ draining: false, shadow_mode: "wait" });
+    });
+
+    test("org tokens are still refused with shadow set, and MCP does not list it", async () => {
+      for (const role of ["reader", "operator", "release_operator"] as const) {
+        const tok = (await mintToken(db, { orgId: a.orgId }, role)).secret;
+        const r = await dispatch(env, { kind: "bearer", token: tok }, "instance_drain", {
+          on: true,
+          reason: "sneaky",
+          shadow: "cancel",
+        });
+        expect(r.ok, role).toBe(false);
+        if (!r.ok) expect(r.error.code, role).toBe("forbidden");
+      }
+      expect(mcpTools(registry).map((t) => t.name)).not.toContain("instance_drain");
+      expect(processDrain.draining).toBe(false);
+    });
   });
 });
 

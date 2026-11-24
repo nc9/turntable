@@ -5,7 +5,9 @@ import {
   appendLogFenced,
   type Claim,
   claimNextAttempt,
+  CONTROLLER_LOST,
   finishAttempt,
+  getProjectChecksMode,
   heartbeatAttempt,
   ifLeaseHeld,
   markDrainCut,
@@ -13,6 +15,7 @@ import {
   recordExec,
   recordPlan,
   recordTrustClass,
+  requeueLostAttemptOnce,
   resetAttemptOutput,
   upsertStep,
 } from "../db/repos";
@@ -115,6 +118,34 @@ export class Scheduler {
       log: o.log ?? (() => {}),
     };
     this.#o.drain.trackRunning(() => this.#active.size);
+    this.#o.drain.trackShadowCutter(() => this.cutShadow());
+  }
+
+  /** Attempts a drain is cutting (#480): their runner is stopped and the job requeued once. */
+  readonly #cutting = new Set<string>();
+
+  /**
+   * Drain `shadow: "cancel"` (#480): for each running attempt of a project whose checks mode is
+   * not `live`, marks it cut by the drain (the same mark #448's timeout uses) and stops its runner,
+   * which destroys the sandbox like a supersede does. The attempt ends as an infra retry (see
+   * `#launch`), never a job failure. Live projects' attempts are left to finish. Returns the count.
+   */
+  async cutShadow(): Promise<number> {
+    let n = 0;
+    for (const [id, a] of [...this.#active.entries()]) {
+      if (this.#cutting.has(id)) continue;
+      try {
+        if ((await getProjectChecksMode(this.#o.db, a.scope)) === "live") continue;
+        if (!(await markDrainCut(this.#o.db, a.scope, id, this.owner))) continue;
+      } catch (err) {
+        this.#o.log(`could not cut ${id} for the drain: ${String(err)}`);
+        continue;
+      }
+      this.#cutting.add(id);
+      a.controller.abort("drain_cut");
+      n++;
+    }
+    return n;
   }
 
   #limit: { at: number; value: { max: number; windowMs: number } } | undefined;
@@ -345,6 +376,25 @@ export class Scheduler {
         outcome = infra(err instanceof Error ? err.message : String(err));
       } finally {
         clearInterval(beat);
+      }
+      // A shadow attempt the drain cut ends as a requeue, not a result: its job goes back to the
+      // queue under a new attempt (once) and no check is reported. A verdict it reached before the
+      // stop landed is kept.
+      if (
+        this.#cutting.delete(attempt.id) &&
+        (outcome.state === "infra_error" || outcome.state === "cancelled")
+      ) {
+        const requeued = await requeueLostAttemptOnce(db, scope, {
+          attemptId: attempt.id,
+          owner,
+          errorClass: `${CONTROLLER_LOST} (drain cancel)`,
+          now: this.#o.now(),
+          requireExpired: false,
+        }).catch((err) => {
+          this.#o.log(`could not requeue ${attempt.id} after the drain cut: ${String(err)}`);
+          return false;
+        });
+        if (requeued) return;
       }
       const exitCode =
         outcome.state === "success"

@@ -13,6 +13,7 @@ import {
   appendEvent,
   countActiveApiTokens,
   countRunning,
+  countRunningByMode,
   createOrg,
   findRepoBindingByName,
   getInstallation,
@@ -904,6 +905,16 @@ const drainOutput = z.object({
   draining: z.boolean(),
   running_attempts: z.int().describe("Attempts running right now, across the instance."),
   since: z.string().nullable().describe("When the drain started (ISO 8601), or null."),
+  running_by_mode: z
+    .object({
+      live: z.int().describe("Running attempts of projects whose checks mode is live."),
+      shadow: z.int().describe("Running attempts of projects whose checks mode is shadow or off."),
+    })
+    .describe("`running_attempts` split by the project's checks mode."),
+  shadow_mode: z
+    .enum(["wait", "cancel"])
+    .describe("What this drain does with shadow attempts: wait for them or cut them."),
+  shadow_cut: z.int().describe("Shadow attempts cut since this drain began."),
 });
 
 async function drainView(ctx: { db: Db }): Promise<z.infer<typeof drainOutput>> {
@@ -912,6 +923,9 @@ async function drainView(ctx: { db: Db }): Promise<z.infer<typeof drainOutput>> 
     draining: snap.draining,
     running_attempts: await countRunning(ctx.db),
     since: iso(snap.since),
+    running_by_mode: await countRunningByMode(ctx.db),
+    shadow_mode: processDrain.shadowMode,
+    shadow_cut: processDrain.shadowCut,
   };
 }
 
@@ -926,11 +940,23 @@ export const instanceDrainOp = defineOp({
     "resumes the queue. on=false resumes claiming without a restart. The drain is held in memory " +
     "and is never persisted, so a restart always ends it. It covers this process: run the worker " +
     "role in the same process as the web role (the default), or drain each worker process. " +
-    "Turning it on twice keeps the first time. The reason is kept in the system audit chain. " +
+    "Turning it on twice keeps the first time. With shadow=cancel, running attempts of projects " +
+    "whose checks mode is shadow or off are stopped now as infrastructure cuts and their jobs " +
+    "requeued once (never a job failure, no failed check); live projects are still waited for. " +
+    "The reason is kept in the system audit chain. " +
     "Only the instance administrator can call it. Not an MCP tool.",
   input: z.object({
     on: z.boolean().describe("true starts the drain, false ends it."),
     reason: z.string().trim().min(3).max(500).describe("Why. Kept in the audit."),
+    shadow: z
+      .enum(["wait", "cancel"])
+      .optional()
+      .describe(
+        "What to do with running attempts of projects whose checks mode is not live (shadow or " +
+          "off), which gate nothing. wait (default) lets them finish; cancel stops each one now " +
+          "as an infrastructure cut and requeues its job once. Live projects' attempts are " +
+          "always waited for. Only meaningful with on=true.",
+      ),
   }),
   output: drainOutput,
   effect: "write",
@@ -939,9 +965,15 @@ export const instanceDrainOp = defineOp({
   scope: "org",
   http: { method: "POST", path: "/instance/drain" },
   mcp: false,
-  auditDetail: (o) => ({ draining: o.draining, running_attempts: o.running_attempts }),
+  auditDetail: (o) => ({
+    draining: o.draining,
+    running_attempts: o.running_attempts,
+    shadow_mode: o.shadow_mode,
+    shadow_cut: o.shadow_cut,
+  }),
   async handler(ctx, i) {
     processDrain.set(i.on, i.reason, ctx.now());
+    if (i.on && i.shadow) await processDrain.applyShadow(i.shadow);
     return drainView(ctx);
   },
 });
@@ -950,7 +982,9 @@ export const instanceDrainStatusOp = defineOp({
   name: "instance_drain_status",
   summary: "Whether this instance is draining and how many attempts still run.",
   description:
-    "Returns `draining`, `running_attempts` (across the instance) and `since`. A deploy script " +
+    "Returns `draining`, `running_attempts` (across the instance, split in `running_by_mode` into " +
+    "live and shadow), `since`, `shadow_mode` and `shadow_cut` (attempts cut since the drain began). " +
+    "A deploy script " +
     "waits for `running_attempts` to be 0 after `instance_drain`. Only the instance " +
     "administrator can call it. Read-only. Not an MCP tool.",
   input: z.object({}),
