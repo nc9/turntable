@@ -564,13 +564,13 @@ describe("v1 stays for non-release environments", () => {
   });
 
   test("approval_status marks the release environment, so a client picks the v2 challenge", async () => {
-    const { runId } = await mkRun();
+    const { runId } = await mkRun({ sha: "e".repeat(40) });
     const st = await ok<{ environments: { environment: string; release: boolean }[] }>(
       "approval_status",
       { run_id: runId },
     );
     expect(st.environments.find((e) => e.environment === "release")?.release).toBe(true);
-    const other = await mkRun({ environment: "staging" });
+    const other = await mkRun({ environment: "staging", sha: "f".repeat(40) });
     const st2 = await ok<{ environments: { environment: string; release: boolean }[] }>(
       "approval_status",
       { run_id: other.runId },
