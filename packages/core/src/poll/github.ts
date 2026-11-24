@@ -57,6 +57,8 @@ export type PullRequest = {
   baseRepo: string;
   /** The base branch the PR targets. */
   baseRef: string;
+  /** GitHub's own `updated_at` (epoch ms); undefined when absent or unparseable. */
+  updatedAt?: number;
   /** The commit the base branch pointed at when the PR was read. For `github.event`. */
   baseSha?: string;
 };
@@ -488,6 +490,7 @@ export class GithubClient {
     )) as {
       number: number;
       title?: string;
+      updated_at?: string;
       user?: { login?: string } | null;
       head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
       base?: { ref?: string; sha?: string; repo?: { full_name?: string } };
@@ -495,9 +498,11 @@ export class GithubClient {
     return body.flatMap((p) => {
       const baseRepo = p.base?.repo?.full_name;
       if (typeof p.head?.sha !== "string" || typeof baseRepo !== "string") return [];
+      const updated = typeof p.updated_at === "string" ? Date.parse(p.updated_at) : Number.NaN;
       return [
         {
           number: p.number,
+          ...(Number.isFinite(updated) ? { updatedAt: updated } : {}),
           title: p.title ?? "",
           author: p.user?.login ?? null,
           headSha: p.head.sha.toLowerCase(),

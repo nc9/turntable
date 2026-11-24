@@ -133,6 +133,14 @@ export const pollConfigSchema = z
              */
             prNumbers: z.array(z.int().positive()).max(100).optional(),
             /**
+             * Only pull requests last updated at or after this time are ingested (ISO 8601). A PR
+             * first seen older than this is remembered and queues nothing until its head changes.
+             * Default: the moment PR mode was first seen on for this repo. Ignored with `prNumbers`.
+             */
+            prSince: z.iso.datetime({ offset: true }).optional(),
+            /** Like `prSince`, as a rolling window: PRs updated in the last N hours. The later cutoff wins. */
+            prMaxAgeHours: z.int().min(1).max(87_600).optional(),
+            /**
              * Ingest merge queue runs (`merge_group`). Each poll lists the repo's
              * `gh-readonly-queue/<defaultBranch>/` branches and runs one only when it is a verified
              * GitHub-made commit for an open same-repo PR by a listed author. Off by default.
@@ -199,6 +207,9 @@ export const ingestSettingsSchema = z
     workflow: z.string().min(1).default(".github/workflows/ci.yml"),
     defaultBranch: z.string().min(1),
     prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
+    /** See the poll entry: PRs last updated before this are remembered, not run. */
+    prSince: z.iso.datetime({ offset: true }).optional(),
+    prMaxAgeHours: z.int().min(1).max(87_600).optional(),
     authors: z.array(z.string().min(1)).default([]),
     protectedRefs: z.array(z.string().min(1)).default([]),
     /** Tag ref patterns to ingest as release runs (refs/tags/v*). Default none. */
