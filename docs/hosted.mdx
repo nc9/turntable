@@ -258,6 +258,8 @@ curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/project-settings" \
 }
 ```
 
+With `prMode` on, the first poll takes a baseline of every open pull request's head and runs none of them: only a later push to a pull request, or a newly opened one, gets a run (a comment or label never does). `"prBaseline": false` turns that off and backfills every open pull request's head on the first poll, which can queue a lot of runs at once on a busy repo. It is set only in the server's poll config, an operator surface, never by a tenant. `prNumbers` still forces the listed pull requests in.
+
 The cap divides the instance's sandboxes between projects: with a global cap of 10 and `max_concurrent` 4 on this project, the other projects of the org always have 6. A project cap can only lower the per-org cap (`--org-cap`, `TURNTABLE_ORG_CAP`), so that must be at least as high as the largest cap you set. The snapshot only changes where this project's sandboxes start, and it is used for every trust class in the project, untrusted pull requests included, so never bake credentials or private code into it. `max_concurrent: 0` pauses the project. See [Providers](/providers#per-project-snapshot-and-concurrency-cap) for the order against size classes and the provider default.
 
 ### A low-priority project
