@@ -395,6 +395,9 @@ export class Scheduler {
           return false;
         });
         if (requeued) return;
+        // The one infra retry is spent (or the requeue failed): the stop must not read as a human
+        // cancel. The job ends infra_error, like a drain-timeout cut with no retry left.
+        outcome = infra(`${CONTROLLER_LOST} (drain cancel)`);
       }
       const exitCode =
         outcome.state === "success"
