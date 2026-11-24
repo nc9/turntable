@@ -158,7 +158,7 @@ Two more operations are signature operations: `approve_environment` (`POST /api/
 - `GREEN`: every run succeeded (a skipped run counts as passed).
 - `RED`: any run failed or hit an infrastructure error.
 - `PENDING`: anything is queued, running or waiting for approval.
-- `CANCELLED`: every run for the sha was cancelled. Nothing finished, so it is neither red nor green; re-run it.
+- `CANCELLED`: some workflow's runs for the sha were all cancelled (by concurrency, a newer push or a user), and no other workflow is red or pending. That workflow never finished, so the sha is not green; re-run it. Within one workflow a newer completed run beats an older cancelled one. Precedence: `RED`, then `PENDING`, then `CANCELLED`, then `GREEN`.
 - `NONE`: no run exists for the sha.
 
 A run cancelled by a concurrency group, superseded by a newer push, or cancelled by a user never makes a sha `RED`. It is skipped in favour of the workflow's latest other run, so a cancelled run followed by a green one is `GREEN`, and a failed run followed by a cancelled rerun stays `RED`.

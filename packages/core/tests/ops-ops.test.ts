@@ -284,7 +284,8 @@ test("checks_for_sha: NONE is not PENDING, and the verdict rules hold", async ()
   expect(verdict(["success", "running"])).toBe("PENDING");
   expect(verdict(["success", "awaiting_approval"])).toBe("PENDING");
   expect(verdict(["success", "infra_error"])).toBe("RED");
-  expect(verdict(["success", "cancelled"])).toBe("GREEN"); // a cancelled run is never red
+  // one entry per workflow: a workflow that only has cancelled runs never completed
+  expect(verdict(["success", "cancelled"])).toBe("CANCELLED");
   expect(verdict(["failure", "cancelled"])).toBe("RED");
   expect(verdict(["running", "cancelled"])).toBe("PENDING");
   expect(verdict(["cancelled", "cancelled"])).toBe("CANCELLED");
@@ -383,11 +384,18 @@ test("checks_for_sha: cancelled runs never make a sha red", async () => {
   expect(red.counts).toMatchObject({ failure: 1, cancelled: 0 });
   expect(red.runs.map((r: { id: string }) => r.id)).toEqual([f1.id]);
 
-  // one workflow cancelled while another is green: the cancelled one is ignored
+  // workflow A green, workflow B all-cancelled: B never completed, so the sha is not green
   const mixed = SHA("4");
   await doneRun(mixed, "cancelled", "a.yml");
   await doneRun(mixed, "success", "b.yml");
-  expect((await run("checks_for_sha", { sha: mixed })).state).toBe("GREEN");
+  expect((await run("checks_for_sha", { sha: mixed })).state).toBe("CANCELLED");
+
+  // A green, B red, then a cancelled B rerun: B's latest non-cancelled run is red, so RED
+  const redRerun = SHA("6");
+  await doneRun(redRerun, "success", "a.yml");
+  await doneRun(redRerun, "failure", "b.yml");
+  await doneRun(redRerun, "cancelled", "b.yml");
+  expect((await run("checks_for_sha", { sha: redRerun })).state).toBe("RED");
 });
 
 test("checks_for_sha: jobs past the cap are flagged, counts still cover them", async () => {

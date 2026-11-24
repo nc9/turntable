@@ -16,18 +16,19 @@ export const MAX_JOBS_PER_RUN = 256;
 /**
  * Verdict over the latest run of each workflow. A cancelled run (cancelled by a concurrency
  * group, superseded by a newer push, or cancelled by a user) was never tested to a result, so it
- * never makes a sha RED and is ignored while any other run has a verdict. If every run was
- * cancelled the verdict is CANCELLED. Of the rest: any failure or infra_error is RED; otherwise
- * any queued, running or awaiting-approval run is PENDING; otherwise GREEN. No runs at all is
- * NONE, which is not the same as queued.
+ * never makes a sha RED: within a workflow the latest non-cancelled run decides. Across
+ * workflows (one entry each): any failure or infra_error is RED; otherwise any queued, running or
+ * awaiting-approval run is PENDING; otherwise a workflow whose runs were all cancelled makes it
+ * CANCELLED, never GREEN; otherwise GREEN. No runs at all is NONE, which is not the same as queued.
  */
 export function verdict(latest: readonly JobState[]): CheckState {
   if (latest.length === 0) return "NONE";
-  const live = latest.filter((s) => s !== "cancelled");
-  if (live.length === 0) return "CANCELLED";
-  if (live.some((s) => s === "failure" || s === "infra_error")) return "RED";
+  if (latest.some((s) => s === "failure" || s === "infra_error")) return "RED";
   // A skipped run (nothing to run for this commit) does not block: it counts as passed.
-  if (live.some((s) => s !== "success" && s !== "skipped")) return "PENDING";
+  if (latest.some((s) => s !== "success" && s !== "skipped" && s !== "cancelled")) return "PENDING";
+  // One entry per workflow (its deciding run). A workflow whose runs were ALL cancelled never
+  // completed, so the sha is not green: a gate must not pass a sha with a workflow that never ran.
+  if (latest.some((s) => s === "cancelled")) return "CANCELLED";
   return "GREEN";
 }
 
@@ -40,8 +41,9 @@ export const checksForSha = defineOp({
     "infrastructure error, PENDING if anything is queued, running or waiting for approval, and " +
     "NONE only when no run exists for the sha (a queued run is PENDING, not NONE). A run " +
     "cancelled by a concurrency group, superseded by a newer push or cancelled by a user is " +
-    "never RED: it is skipped in favour of the workflow's latest other run, and a sha whose runs " +
-    "were all cancelled is CANCELLED (neither red nor green: nothing finished, re-run it). " +
+    "never RED: it is skipped in favour of the workflow's latest other run. A sha where any " +
+    "workflow's runs were ALL cancelled is CANCELLED unless another workflow is red or pending " +
+    "(precedence RED, PENDING, CANCELLED, GREEN): that workflow never finished, so re-run it. " +
     "Each run lists its jobs with the exact check name the reporter posts for each " +
     "(`turntable / <job>[ (<matrix leg>)]`, or `shadow / ...` in shadow mode), the job state and " +
     "its newest attempt number, so a required-check gate can match by name; at most 256 jobs " +
