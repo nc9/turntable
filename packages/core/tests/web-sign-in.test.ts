@@ -509,6 +509,14 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     }
   });
 
+  test("a refused session is audited as a session, not as a token", async () => {
+    const h = await harness();
+    const r = await h.as("x".repeat(40), "whoami", { org: "tenant" });
+    expect(!r.ok && r.error.code).toBe("unauthenticated");
+    const rows = await listAudit(h.db, { orgId: await systemOrgId(h.db) });
+    expect(rows.filter((a) => a.op === "whoami").map((a) => a.principalKind)).toEqual(["session"]);
+  });
+
   test("an invite never cancels a more privileged one", async () => {
     const { h, cookie } = await aliceAdmin();
     expect((await h.bind({ github_login: "carol", role: "owner" })).ok).toBe(true);

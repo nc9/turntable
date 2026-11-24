@@ -367,7 +367,7 @@ export async function dispatch(
       if (err instanceof AuthFailure) {
         await auditFailure(env.db, {
           orgId: err.orgId,
-          principalKind: "token",
+          principalKind: credential.kind === "session" ? "session" : "token",
           principalId: err.tokenId ?? "unknown",
           source: err.tokenId ?? `unknown:${unknownTokenSource(credential)}`,
           trackFirst: err.tokenId !== undefined,
