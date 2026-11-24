@@ -10,8 +10,9 @@ import {
   transitionJob,
   updateAttempt,
 } from "../src/db";
+import { checkName } from "../src/checks/mapping";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
-import { verdict } from "../src/ops/definitions/checks-for-sha";
+import { MAX_JOBS_PER_RUN, verdict } from "../src/ops/definitions/checks-for-sha";
 import { completeLength, leadingPartial } from "../src/ops/utf8";
 import { addLog, mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
@@ -48,6 +49,33 @@ async function newRun(
     ref: opts.ref ?? "refs/heads/main",
     ...(opts.sha ? { sha: opts.sha } : {}),
   });
+}
+
+/** A job in `state` (terminal states go through running, as the scheduler does). */
+async function jobIn(
+  runId: string,
+  key: string,
+  state: "success" | "failure" | "cancelled" | "queued",
+  extra: { name?: string; matrix?: Record<string, unknown> } = {},
+) {
+  const j = (await createJob(db, a.scope, {
+    runId,
+    jobKey: key,
+    name: extra.name ?? key,
+    ...(extra.matrix ? { matrix: extra.matrix } : {}),
+  }))!;
+  if (state === "cancelled") await transitionJob(db, a.scope, j.id, "cancelled");
+  else if (state !== "queued") {
+    await transitionJob(db, a.scope, j.id, "running");
+    await transitionJob(db, a.scope, j.id, state, { exitCode: state === "success" ? 0 : 1 });
+  }
+  return j;
+}
+
+async function doneRun(sha: string, status: "success" | "failure" | "cancelled", wf = "ci.yml") {
+  const r = await newRun({ sha, workflow: wf });
+  await setRunStatus(db, a.scope, r.id, status);
+  return r;
 }
 
 test("list_runs: filters, newest first, cursor pages cover everything once", async () => {
@@ -227,6 +255,7 @@ test("checks_for_sha: NONE is not PENDING, and the verdict rules hold", async ()
 
   const r1 = await newRun({ sha, workflow: "ci.yml" });
   expect((await run("checks_for_sha", { sha })).state).toBe("PENDING"); // queued is not NONE
+  await createJob(db, a.scope, { runId: r1.id, jobKey: "q", name: "q" }); // counts are per job
   expect((await run("checks_for_sha", { sha })).counts.queued).toBe(1);
 
   const r2 = await newRun({ sha, workflow: "lint.yml" });
@@ -240,6 +269,7 @@ test("checks_for_sha: NONE is not PENDING, and the verdict rules hold", async ()
 
   // a newer failing run of ci.yml wins over the older success
   const r3 = await newRun({ sha, workflow: "ci.yml" });
+  await jobIn(r3.id, "j", "failure");
   await setRunStatus(db, a.scope, r3.id, "failure");
   const red = await run("checks_for_sha", { sha });
   expect(red.state).toBe("RED");
@@ -254,12 +284,129 @@ test("checks_for_sha: NONE is not PENDING, and the verdict rules hold", async ()
   expect(verdict(["success", "running"])).toBe("PENDING");
   expect(verdict(["success", "awaiting_approval"])).toBe("PENDING");
   expect(verdict(["success", "infra_error"])).toBe("RED");
-  expect(verdict(["success", "cancelled"])).toBe("RED");
+  // one entry per workflow: a workflow that only has cancelled runs never completed
+  expect(verdict(["success", "cancelled"])).toBe("CANCELLED");
+  expect(verdict(["failure", "cancelled"])).toBe("RED");
+  expect(verdict(["running", "cancelled"])).toBe("PENDING");
+  expect(verdict(["cancelled", "cancelled"])).toBe("CANCELLED");
   expect(verdict(["failure", "queued"])).toBe("RED");
   expect(verdict(["success"])).toBe("GREEN");
   expect(verdict(["success", "skipped"])).toBe("GREEN");
   expect(verdict(["skipped"])).toBe("GREEN");
   expect(verdict(["skipped", "running"])).toBe("PENDING");
+});
+
+test("checks_for_sha: a 9-job run lists 9 jobs named exactly as the reporter posts them", async () => {
+  const sha = SHA("e");
+  const r = await newRun({ sha, workflow: "ci.yml" });
+  const expected: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const name = `job ${i}`;
+    await jobIn(r.id, `k${i}`, "success", { name });
+    expected.push(checkName("live", { name, matrix: null }));
+  }
+  const matrix = { os: "linux", node: 20 };
+  await jobIn(r.id, "mx", "success", { name: "build", matrix });
+  expected.push(checkName("live", { name: "build", matrix: JSON.stringify(matrix) }));
+  await setRunStatus(db, a.scope, r.id, "success");
+  const out = await run("checks_for_sha", { sha });
+  expect(out.state).toBe("GREEN");
+  expect(out.runs).toHaveLength(1);
+  const jobs = out.runs[0].jobs as { job_id: string; check_name: string; conclusion: string }[];
+  expect(jobs).toHaveLength(9);
+  expect(jobs.map((j) => j.check_name).sort()).toEqual([...expected].sort());
+  expect(jobs.every((j) => j.check_name.startsWith("turntable / "))).toBe(true);
+  expect(jobs.find((j) => j.check_name.startsWith("turntable / build"))!.check_name).toContain("(");
+  expect(jobs.every((j) => j.conclusion === "success")).toBe(true);
+  expect(out.runs[0].jobs_truncated).toBe(false);
+  expect(out.counts.success).toBe(9);
+});
+
+test("checks_for_sha: a failed job names itself, counts are per job, and shadow mode renames", async () => {
+  const sha = SHA("f");
+  const r = await newRun({ sha, workflow: "ci.yml" });
+  await jobIn(r.id, "lint", "success");
+  await jobIn(r.id, "test", "failure");
+  await jobIn(r.id, "docs", "queued");
+  await setRunStatus(db, a.scope, r.id, "failure");
+  const out = await run("checks_for_sha", { sha });
+  expect(out.state).toBe("RED");
+  expect(out.counts).toMatchObject({ success: 1, failure: 1, queued: 1 });
+  const failed = out.runs[0].jobs.filter((j: { conclusion: string }) => j.conclusion === "failure");
+  expect(failed).toEqual([
+    expect.objectContaining({ check_name: "turntable / test", conclusion: "failure" }),
+  ]);
+  const { setProjectChecksMode } = await import("../src/db");
+  await setProjectChecksMode(db, a.scope, "shadow");
+  const shadow = await run("checks_for_sha", { sha });
+  expect(shadow.runs[0].jobs.map((j: { check_name: string }) => j.check_name).sort()).toEqual([
+    "shadow / docs",
+    "shadow / lint",
+    "shadow / test",
+  ]);
+});
+
+test("checks_for_sha: cancelled runs never make a sha red", async () => {
+  // the only run was superseded: cancelled, not red, not green
+  const only = SHA("1");
+  const sup = await newRun({ sha: only, workflow: "ci.yml" });
+  await jobIn(sup.id, "j", "cancelled");
+  await setRunStatus(db, a.scope, sup.id, "cancelled");
+  const c = await run("checks_for_sha", { sha: only });
+  expect(c.state).toBe("CANCELLED");
+  expect(c.counts.cancelled).toBe(1);
+  expect(c.runs).toHaveLength(1);
+  expect(c.runs[0].jobs[0].conclusion).toBe("cancelled");
+
+  // cancelled, then a later successful run: green, with the green run's jobs counted
+  const later = SHA("2");
+  const c1 = await newRun({ sha: later, workflow: "ci.yml" });
+  await jobIn(c1.id, "j", "cancelled");
+  await setRunStatus(db, a.scope, c1.id, "cancelled");
+  const g = await newRun({ sha: later, workflow: "ci.yml" });
+  await jobIn(g.id, "j", "success");
+  await setRunStatus(db, a.scope, g.id, "success");
+  const green = await run("checks_for_sha", { sha: later });
+  expect(green.state).toBe("GREEN");
+  expect(green.runs.map((r: { id: string }) => r.id)).toEqual([g.id]);
+  expect(green.counts).toMatchObject({ success: 1, cancelled: 0 });
+
+  // failed, then a later cancelled rerun: still red, counts from the failed run
+  const failed = SHA("3");
+  const f1 = await newRun({ sha: failed, workflow: "ci.yml" });
+  await jobIn(f1.id, "j", "failure");
+  await setRunStatus(db, a.scope, f1.id, "failure");
+  const f2 = await newRun({ sha: failed, workflow: "ci.yml" });
+  await jobIn(f2.id, "j", "cancelled");
+  await setRunStatus(db, a.scope, f2.id, "cancelled");
+  const red = await run("checks_for_sha", { sha: failed });
+  expect(red.state).toBe("RED");
+  expect(red.counts).toMatchObject({ failure: 1, cancelled: 0 });
+  expect(red.runs.map((r: { id: string }) => r.id)).toEqual([f1.id]);
+
+  // workflow A green, workflow B all-cancelled: B never completed, so the sha is not green
+  const mixed = SHA("4");
+  await doneRun(mixed, "cancelled", "a.yml");
+  await doneRun(mixed, "success", "b.yml");
+  expect((await run("checks_for_sha", { sha: mixed })).state).toBe("CANCELLED");
+
+  // A green, B red, then a cancelled B rerun: B's latest non-cancelled run is red, so RED
+  const redRerun = SHA("6");
+  await doneRun(redRerun, "success", "a.yml");
+  await doneRun(redRerun, "failure", "b.yml");
+  await doneRun(redRerun, "cancelled", "b.yml");
+  expect((await run("checks_for_sha", { sha: redRerun })).state).toBe("RED");
+});
+
+test("checks_for_sha: jobs past the cap are flagged, counts still cover them", async () => {
+  const sha = SHA("5");
+  const r = await newRun({ sha, workflow: "ci.yml" });
+  const total = MAX_JOBS_PER_RUN + 3;
+  for (let i = 0; i < total; i++) await jobIn(r.id, `k${i}`, "queued");
+  const out = await run("checks_for_sha", { sha });
+  expect(out.runs[0].jobs).toHaveLength(MAX_JOBS_PER_RUN);
+  expect(out.runs[0].jobs_truncated).toBe(true);
+  expect(out.counts.queued).toBe(total);
 });
 
 test("checks_for_sha: a short sha is rejected and repo narrows to its project", async () => {
