@@ -1,0 +1,60 @@
+---
+title: Signing in to the web UI
+description: Sign in with GitHub, sessions, who may join an org, and the first-user bootstrap.
+---
+
+People sign in to the web UI with GitHub, through the instance's own GitHub App (user-to-server OAuth on the App, not a separate OAuth App). The same code serves a self-hosted and a hosted instance. What a person may do comes only from Turntable's own membership rows, never from GitHub.
+
+## Turning it on
+
+Sign-in is on when the instance has a master key (`TURNTABLE_MASTER_KEY_FILE`), a GitHub App and an https public URL (`TURNTABLE_PUBLIC_URL`; `localhost` is allowed for a trial). The session cookie is `Secure` and uses the `__Host-` prefix, so a public URL that is not https leaves sign-in off, with a warning at boot. Without it, no session cookie is a credential anywhere and every `/auth/*` path is unclaimed.
+
+In the App's settings on GitHub, check two things:
+
+- **Request user authorization (OAuth) during installation** is on (the claim flow needs it too).
+- The callback URLs include `<public url>/auth/github/callback`. An App created by the hosted manifest flow in claim mode already lists it next to `<public url>/api/v1/github/setup`. Add it by hand to any other App.
+
+The App needs no new permission: user authorization only reads the signed-in user's id and login.
+
+## The flow
+
+1. `GET /auth/github/login` builds a `state` (an HMAC over a random nonce and an expiry, 10 minutes). The nonce is stored once in `login_states` and set in a short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie, `__Host-tt_login`. The browser goes to GitHub's authorize URL for the App, with an explicit `redirect_uri`. There is no `return_to` parameter: a finished sign-in always lands on `/`.
+2. GitHub sends the browser to `GET /auth/github/callback`. The state's signature and expiry must hold and the cookie must equal the state's nonce, exactly. Only then is the nonce spent, atomically, so a replayed state fails. Only after that is the code exchanged and the user read (`GET /user`). The user's token is dropped at once.
+3. The identity is the **numeric GitHub user id**, kept in `github_identities`. The login is stored for display and for matching invites; a rename changes nothing.
+4. If the person has no membership and no live invite, nothing is written and the page says so. Signing in never grants an org: there is no auto-join by repo access or GitHub org membership.
+
+## Sessions
+
+A session is a row in `web_sessions`. The browser holds a random 256-bit id in `__Host-tt_session` (`Secure; HttpOnly; SameSite=Lax; Path=/`, no `Domain`); the database holds only its SHA-256, so a database read yields no usable cookie.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `session_idle_hours` | 12 | Signed out after this long unused. |
+| `session_absolute_days` | 7 | Signed out after this long, however active. |
+
+Both are instance settings (environment, `turntable.toml` or `instance_set_setting`). Sign-out (`POST /auth/logout`) revokes the row.
+
+A session is a credential for the REST API only (`/api/v1`). MCP, the realtime socket and the event stream stay bearer-token only. A request that carries an `Authorization` header is judged as a bearer request, and its cookie is ignored.
+
+A session resolves to a `member` principal for **one org**, with the role in that org's `org_members` row. A person in several orgs names the org in the call (`org`); a person who is not a member gets the same `not_found` as for an org that does not exist.
+
+### CSRF
+
+Every state-changing request from a session must carry an `Origin` header equal to the configured public origin. A missing `Origin`, `null`, or a look-alike is refused (403). The origin is the configured one, never the request's `Host`. The sign-out form also carries a token derived from the session id. Requests with a bearer token are unaffected.
+
+### What a session may do
+
+A session may call every read operation its role allows, and **one** write: `invite_member`. Every other write is refused, and the refusal is audited, until passkey step-up lands (see below). The rule is a default-deny list in the dispatcher (`SESSION_WRITE_OPS`), so a new write operation is closed to sessions until someone opens it.
+
+## Who may join: invites and the bootstrap
+
+Membership is created in one of two ways, never automatically.
+
+- **`invite_member`** (`POST /api/v1/members/invites`, not an MCP tool): `{github_login, role}`. Callable by a person's own token with `release_operator` or above, or by a signed-in admin or owner. A token may invite a viewer or member only; a signed-in **session** may also invite only a viewer or member (an admin or owner invite is refused with "needs passkey step-up or the instance operator" until step-up lands, so a stolen session cannot mint a persistent owner); a member may not invite above their own role; an agent token is refused. The invite lasts 7 days, and a newer invite for the same account replaces the older one. The org feed gets `org.member_invited`.
+- **`instance_bind_github_login`** (`POST /api/v1/instance/member-bindings`, a `tti_` token only, REST only): `{target_org, github_login, role, reason}`. The instance administrator uses it to give a new org its first admin or owner. It is audited in the system org's chain and in the org's own, and the org's feed gets `org.member_invited`. This is the only root of an admin or owner on an org with no admin who can invite.
+
+Both resolve the login to its **numeric GitHub user id when the invite is created** (`GET /users/{login}` with the App's credentials, through the guarded outbound client) and store the id on the invite. If GitHub cannot be asked, or has no such user, the invite is refused. At the invitee's first sign-in, Turntable matches on that id (the login is only for display), so an account renamed since the invite still gets in and a different account that now holds the old login does not. It binds the identity, consumes the invite and adds the membership in one transaction, emits `org.member_joined` and audits it as `member_joined`. An existing member keeps the role they have.
+
+## Passkey step-up
+
+Planned and not in this release: a signed-in session will need a fresh passkey assertion (at most 5 minutes old, bound to the action) to mint tokens, change approvers and enrolment, loosen a setting, or approve. Until then those operations are refused for a session; use a token. Bearer tokens keep their rules.

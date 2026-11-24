@@ -1,7 +1,9 @@
 // REST adapter: routes generated from the registry under /api/v1. It translates HTTP to a
 // dispatch call and back, and decides nothing about access: authn, scope, roles, validation and
 // audit all live in dispatch().
+import { readCookie, SESSION_COOKIE } from "../auth/web-sessions";
 import { type DispatchEnv, dispatch } from "./dispatch";
+import type { Credential } from "./principal";
 import type { Op } from "./define";
 import { OpError, errorBody } from "./errors";
 import { inputJsonSchema, type JsonSchema } from "./json-schema";
@@ -183,7 +185,22 @@ export function createRestApi(
         if (!signed.ok) return failure(signed.error);
         return json(signed.output, 200);
       }
-      if (!bearer) {
+      // A bearer token always wins and is judged as before. Only a request with NO Authorization
+      // header at all can use the session cookie, and then only when sign-in is configured.
+      let credential: Credential | undefined;
+      if (bearer) credential = { kind: "bearer", token: bearer[1]! };
+      else if (!req.headers.has("authorization") && env.sessions) {
+        const cookie = readCookie(req, SESSION_COOKIE);
+        if (cookie) {
+          // CSRF: a cookie is sent by the browser on its own, so a state-changing request must
+          // come from the instance's own origin. A missing Origin is refused.
+          if (req.method !== "GET" && !env.sessions.sameOrigin(req)) {
+            throw new OpError("forbidden", "cross-origin request refused");
+          }
+          credential = { kind: "session", cookie };
+        }
+      }
+      if (!credential) {
         return failure(new OpError("unauthenticated", "missing bearer token"), {
           "www-authenticate": 'Bearer realm="turntable"',
         });
@@ -194,12 +211,7 @@ export function createRestApi(
           "this operation carries a secret value and is accepted only over https (or loopback)",
         );
       }
-      const result = await dispatch(
-        restEnv,
-        { kind: "bearer", token: bearer[1]! },
-        route.op.name,
-        input,
-      );
+      const result = await dispatch(restEnv, credential, route.op.name, input);
       if (!result.ok) {
         return failure(
           result.error,

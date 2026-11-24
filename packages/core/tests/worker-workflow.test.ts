@@ -116,6 +116,7 @@ const CFG = (over: Partial<PollRepoConfig> = {}): PollRepoConfig =>
         workflow: ".github/workflows/ci.yml",
         defaultBranch: "main",
         prMode: "allowlist",
+        prBaseline: false,
         authors: ["octocat"],
         ...over,
       },
@@ -1125,7 +1126,7 @@ jobs:
     return gh;
   };
   const APPROVAL_CFG = (over: Partial<PollRepoConfig> = {}) =>
-    CFG({ prMode: "approval", authors: [], ...over });
+    CFG({ prMode: "approval", prBaseline: false, authors: [], ...over });
   // A client with a token, so the forge is asked about authors (the stub accepts any value).
   const ingestAs = (gh: ReturnType<typeof makeGithub>, cfg: PollRepoConfig = APPROVAL_CFG()) =>
     pollRepo(

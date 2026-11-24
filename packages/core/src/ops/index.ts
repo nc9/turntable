@@ -20,6 +20,8 @@ import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins"
 import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
 import {
   instanceDoctorOp,
+  instanceDrainOp,
+  instanceDrainStatusOp,
   instanceAuditVerifyOp,
   instanceListOrgs,
   instanceWhoami,
@@ -50,6 +52,7 @@ import { signRelease } from "./definitions/sign-release";
 import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
 import { startInstallationClaim } from "./definitions/installation-claim";
 import { whoami } from "./definitions/whoami";
+import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import {
   addPassthroughHostOp,
   deletePassthroughHostOp,
@@ -134,6 +137,8 @@ export const registry = createRegistry([
   instanceStartInstallationClaimOp,
   instanceListOrgs,
   instanceDoctorOp,
+  instanceDrainOp,
+  instanceDrainStatusOp,
   instanceIngestStatusOp,
   instanceAuditVerifyOp,
   setQuotas,
@@ -169,6 +174,8 @@ export const registry = createRegistry([
   requestReleaseOp,
   getReleaseRequestOp,
   startInstallationClaim,
+  inviteMemberOp,
+  instanceBindGithubLoginOp,
   resyncInstallation,
   setOidcAudiencesOp,
   getProjectSettings,

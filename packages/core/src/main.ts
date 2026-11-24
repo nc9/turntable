@@ -6,7 +6,12 @@ import { allowHostsFromEnv } from "@turntable/net";
 import type { Provider } from "@turntable/provider-sdk";
 import { checkoutConfigFromEnv } from "./run/checkout-child";
 import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
-import { githubFacts, type GithubFacts } from "./github/api";
+import {
+  githubFacts,
+  type GithubFacts,
+  githubUserLookup,
+  type GithubUserLookup,
+} from "./github/api";
 import { adoptPolledBindings } from "./github/installations";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
@@ -22,9 +27,11 @@ import {
   InstallationClaims,
   type ClaimHandler,
 } from "./github/claim";
+import { type AuthHandler, createAuthHandler, githubIdentityVerifier } from "./auth/github-login";
+import { WebSessions } from "./auth/web-sessions";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
-import { setAmbientSettings } from "./settings/ambient";
+import { ambientSettings, setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
@@ -88,6 +95,8 @@ import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
+import { DEFAULT_DRAIN_TIMEOUT_SECONDS, drainTimeoutSecondsSetting } from "./settings/definitions";
+import { resolveSetting } from "./settings/resolve";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
 import { countHumanWithAnyKeyPolicy, countHumanWithoutApprover } from "./ops/setting-guard";
@@ -475,10 +484,18 @@ async function startBackground(
       poller?.stop();
       if (reconcileTimer) clearInterval(reconcileTimer);
       if (scheduler) {
-        // Stop claiming, give running attempts a moment, then leave the rest: their leases
-        // expire and the next boot's reconcile re-attaches to them. Never abort them
-        // here, which would record a user cancel that never happened.
-        await Promise.race([scheduler.stop(), Bun.sleep(10_000)]);
+        // Drain (#446): start nothing new, wait for running attempts up to `drain_timeout_seconds`
+        // (the server stays up and /healthz says `draining`), then leave the rest. Their leases
+        // expire and the next boot's reconcile re-attaches to them, or retries each job once as an
+        // infra error. Never abort them here, which would record a user cancel that never happened.
+        const seconds = (
+          await resolveSetting(ambientSettings(), db, drainTimeoutSecondsSetting.key).catch(() => ({
+            value: DEFAULT_DRAIN_TIMEOUT_SECONDS,
+          }))
+        ).value as number;
+        log(`draining: waiting up to ${seconds}s for ${scheduler.activeCount} running attempt(s)`);
+        const { remaining } = await scheduler.drainAndWait(seconds * 1000, "shutdown");
+        if (remaining > 0) log(`drain timeout: ${remaining} attempt(s) left for the next boot`);
       }
       await secretsProxy?.stop();
     },
@@ -798,8 +815,11 @@ async function serve(args: string[]): Promise<void> {
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
   let appFacts: GithubFacts | undefined;
+  let appUsers: GithubUserLookup | undefined;
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
+  // Sign in with GitHub and web sessions (auth/github-login.ts); needs the store and a public URL.
+  let webAuth: { sessions: WebSessions; handler: AuthHandler } | undefined;
   // Set once the poller exists: a push or pull request webhook wakes it for that repo.
   let wake: ((repo: string) => void) | undefined;
   // Hosted multi-tenant installs: an org claims its own installation (github/claim.ts).
@@ -867,6 +887,7 @@ async function serve(args: string[]): Promise<void> {
     });
     const ghFacts = githubFacts(auth);
     appFacts = ghFacts;
+    appUsers = githubUserLookup(auth);
     webhooks = createWebhookHandler({
       db,
       store,
@@ -890,6 +911,33 @@ async function serve(args: string[]): Promise<void> {
           log: (m) => console.warn(`[turntable] ${m}`),
         }),
       };
+    }
+    const signInUrl = (values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL)?.trim();
+    if (signInUrl) {
+      let u: URL | undefined;
+      try {
+        u = new URL(signInUrl);
+      } catch {
+        u = undefined;
+      }
+      const local = u?.hostname === "localhost" || u?.hostname === "127.0.0.1";
+      if (!u || (u.protocol !== "https:" && !local)) {
+        console.warn(
+          "web sign-in is off: TURNTABLE_PUBLIC_URL must be an https URL (the session cookie is Secure)",
+        );
+      } else {
+        const sessions = new WebSessions({ db, publicUrl: signInUrl, settings });
+        webAuth = {
+          sessions,
+          handler: createAuthHandler({
+            db,
+            store,
+            sessions,
+            identity: githubIdentityVerifier({ db, store }),
+            log: (m) => console.warn(`[turntable] ${m}`),
+          }),
+        };
+      }
     }
     const setupHash = process.env.TURNTABLE_GITHUB_APP_SETUP_TOKEN_SHA256?.trim();
     if (setupHash) {
@@ -984,7 +1032,9 @@ async function serve(args: string[]): Promise<void> {
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
+        ...(webAuth ? { webAuth } : {}),
         ...(appFacts ? { githubFacts: appFacts } : {}),
+        ...(appUsers ? { githubUsers: appUsers } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
         ...(artifacts ? { artifacts } : {}),
@@ -1040,7 +1090,11 @@ async function serve(args: string[]): Promise<void> {
 
   wake = (repo) => void background.nudge(repo);
 
+  let stopping = false;
   const stop = () => {
+    // A second signal does not wait for the drain.
+    if (stopping) process.exit(1);
+    stopping = true;
     for (const s of auditStops) s();
     void background
       .stop()

@@ -133,6 +133,13 @@ export const pollConfigSchema = z
              */
             prNumbers: z.array(z.int().positive()).max(100).optional(),
             /**
+             * The first poll with PR mode on records every open pull request's current head as
+             * seen and runs nothing; after that only a new head (a push, or a newly opened PR)
+             * runs. Set false to ingest every open PR on that first poll. Turning PR mode off and
+             * on again takes a new baseline. `prNumbers` PRs are always ingested.
+             */
+            prBaseline: z.boolean().default(true),
+            /**
              * Ingest merge queue runs (`merge_group`). Each poll lists the repo's
              * `gh-readonly-queue/<defaultBranch>/` branches and runs one only when it is a verified
              * GitHub-made commit for an open same-repo PR by a listed author. Off by default.
@@ -199,6 +206,8 @@ export const ingestSettingsSchema = z
     workflow: z.string().min(1).default(".github/workflows/ci.yml"),
     defaultBranch: z.string().min(1),
     prMode: z.enum(["off", "allowlist", "approval"]).default("off"),
+    /** See the poll entry: the first poll takes a baseline of open PR heads. */
+    prBaseline: z.boolean().default(true),
     authors: z.array(z.string().min(1)).default([]),
     protectedRefs: z.array(z.string().min(1)).default([]),
     /** Tag ref patterns to ingest as release runs (refs/tags/v*). Default none. */

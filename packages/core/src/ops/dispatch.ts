@@ -11,6 +11,7 @@ import {
   getOrgById,
   getOrgBySlug,
   getProjectBySlug,
+  listMembershipsOfUser,
   type Scope,
   touchApiToken,
   touchInstanceToken,
@@ -19,8 +20,9 @@ import type { DoctorReport } from "../doctor/types";
 import type { Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { WebSessions } from "../auth/web-sessions";
 import type { WebhookService } from "../webhooks/service";
-import type { GithubFacts } from "../github/api";
+import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
@@ -42,6 +44,8 @@ export type DispatchEnv = {
   claims?: InstallationClaims | undefined;
   /** GitHub API facts (the App's credentials); `resync_installation` needs them. */
   githubFacts?: GithubFacts | undefined;
+  /** Login to numeric id lookup, for invites. */
+  githubUsers?: GithubUserLookup | undefined;
   /**
    * Let a `tti_` instance token authenticate. Set only by the REST adapter: MCP and the realtime
    * socket leave it off, so an instance token is simply not a credential there.
@@ -68,6 +72,11 @@ export type DispatchEnv = {
   doctor?: (() => Promise<DoctorReport>) | undefined;
   /** The settings registry and its environment and file layers (boot builds it). */
   settings?: SettingsRuntime | undefined;
+  /**
+   * Web sessions (#430). Set by the REST adapter's owner when sign-in is configured; absent, a
+   * session cookie is not a credential anywhere.
+   */
+  sessions?: WebSessions | undefined;
   /** Set by the MCP adapter alone: the call is an agent's, so MCP-off settings are refused. */
   viaMcp?: boolean | undefined;
 };
@@ -136,11 +145,28 @@ function auditedInput(op: Op, input: unknown, detail: Record<string, unknown>): 
 
 /** A short stable digest of an unrecognised token, so repeats of it share a throttle bucket. */
 const unknownTokenSource = (c: Credential): string =>
-  c.kind === "bearer" ? hashToken(c.token).slice(0, 12) : "none";
+  c.kind === "bearer"
+    ? hashToken(c.token).slice(0, 12)
+    : c.kind === "session"
+      ? hashToken(c.cookie).slice(0, 12)
+      : "none";
+
+/**
+ * The writes a web session may make, until passkey step-up lands. Everything else that is not a
+ * read (minting tokens, approvers and enrolment, loosening settings, approvals, ...) is refused
+ * for a session by default, so a new op is closed to sessions until someone opens it here.
+ */
+export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set(["invite_member"]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
-export async function authenticate(env: DispatchEnv, credential: Credential): Promise<Principal> {
+export async function authenticate(
+  env: DispatchEnv,
+  credential: Credential,
+  /** The `org` the call names, which picks the org a session acts in. */
+  orgHint?: unknown,
+): Promise<Principal> {
   if (credential.kind === "principal") return credential.principal;
+  if (credential.kind === "session") return authenticateSession(env, credential.cookie, orgHint);
   // A signed request is authenticated against its input, by authenticateSigned.
   if (credential.kind === "signed") throw new AuthFailure();
   const token = credential.token;
@@ -190,6 +216,37 @@ async function authenticateInstance(env: DispatchEnv, token: string): Promise<Pr
 }
 
 const NO_SUCH_SCOPE = "org or project not found";
+
+/**
+ * A session cookie. The principal is a `member` whose role is the one Turntable's own membership
+ * row gives in the org the call names, never anything GitHub says. A person in several orgs must
+ * name one; a non-member gets the same error as an org that does not exist.
+ */
+async function authenticateSession(
+  env: DispatchEnv,
+  cookie: string,
+  org: unknown,
+): Promise<Principal> {
+  const live = await env.sessions?.resolve(cookie);
+  if (!live) throw new AuthFailure();
+  if (org !== undefined && typeof org !== "string") {
+    throw new OpError("invalid_input", "org must be a string");
+  }
+  const memberships = await listMembershipsOfUser(env.db, live.userId);
+  const pick =
+    org === undefined
+      ? memberships.length === 1
+        ? memberships[0]
+        : undefined
+      : memberships.find((m) => m.slug === org);
+  if (!pick) {
+    if (org === undefined && memberships.length > 1) {
+      throw new OpError("invalid_input", "org is required: this account belongs to several orgs");
+    }
+    throw new OpError("not_found", NO_SUCH_SCOPE);
+  }
+  return { kind: "session", id: live.userId, orgId: pick.orgId, role: pick.role };
+}
 
 /**
  * Step 2: resolves the Scope from the principal's grant. The input's `org` and `project` can
@@ -296,7 +353,13 @@ export async function dispatch(
         principal = r.principal;
         rawInput = r.raw;
       } else {
-        principal = await authenticate(env, credential);
+        principal = await authenticate(
+          env,
+          credential,
+          rawInput !== null && typeof rawInput === "object"
+            ? (rawInput as Record<string, unknown>).org
+            : undefined,
+        );
       }
     } catch (err) {
       // An authentication failure has no scope yet; it is audited in the token's org, or in the
@@ -304,7 +367,7 @@ export async function dispatch(
       if (err instanceof AuthFailure) {
         await auditFailure(env.db, {
           orgId: err.orgId,
-          principalKind: "token",
+          principalKind: credential.kind === "session" ? "session" : "token",
           principalId: err.tokenId ?? "unknown",
           source: err.tokenId ?? `unknown:${unknownTokenSource(credential)}`,
           trackFirst: err.tokenId !== undefined,
@@ -339,6 +402,27 @@ export async function dispatch(
     }
     if (op.auth.type !== "instance" && principal.kind === "instance") {
       throw new OpError("forbidden", "an instance token holds no org grant");
+    }
+    // A web session is default-deny for writes: only the named ones, whatever the member's role.
+    // It is judged before the scope (a project-scoped op with no project would fail there first);
+    // a member principal is bound to one org, so the refusal is audited in that org's chain.
+    if (credential.kind === "session" && op.effect !== "read" && !SESSION_WRITE_OPS.has(op.name)) {
+      await appendAudit(
+        env.db,
+        { orgId: principal.orgId },
+        {
+          principalKind: principal.kind,
+          principalId: principal.id,
+          op: op.name,
+          effect: op.effect,
+          outcome: "error:forbidden",
+          input: redactInput(op, raw),
+        },
+      ).catch(() => {});
+      throw new OpError(
+        "forbidden",
+        `${op.name} needs a passkey step-up, which a web session cannot give yet: use a token`,
+      );
     }
     const scope: Scope =
       principal.kind === "instance"
@@ -378,6 +462,7 @@ export async function dispatch(
       vault: env.vault,
       claims: env.claims,
       githubFacts: env.githubFacts,
+      githubUsers: env.githubUsers,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       transport: env.transport,

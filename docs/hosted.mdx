@@ -306,7 +306,7 @@ Before you start: an instance on a public https URL with `TURNTABLE_MASTER_KEY_F
 2. Press the button and approve on GitHub. Expect a redirect back to the loopback page that reports success.
 3. Run `turntable github-app status`. Expect the App listed with no secret in the output.
 4. On GitHub, open the App settings. Check these: the permissions are the four in [GitHub App](/github-app), the events are `push`, `pull_request` and `check_run`, the webhook URL is `<public url>/api/v1/webhooks/github`, and the setup URL is `<public url>/api/v1/github/setup`.
-5. With claim mode on, the manifest already turned on **Request user authorization (OAuth) during installation**. Check that it is on. Turn it on by hand only for an App created without claim mode.
+5. With claim mode on, the manifest already turned on **Request user authorization (OAuth) during installation** and listed the callback URLs `<public url>/api/v1/github/setup` and `<public url>/auth/github/callback` (the second is for [web sign-in](/web-sign-in)). Check both. Turn the first on, and add both URLs, by hand only for an App created without claim mode.
 6. The loopback command always creates a private App. If other accounts will install it, choose **Make public** under **Advanced**.
 
 ### 2. Webhook delivery
@@ -339,6 +339,18 @@ Use two GitHub accounts: an admin of the test organization (A), and a member who
 ### Report back
 
 Record the date, the App id, and the pass or fail of each numbered step in the tracking issue, without secrets or installation ids. Then remove the "Known gaps" entry below.
+
+## Deploying without killing runs
+
+A restart while attempts run cuts them. Drain first, so a deploy never turns a tenant's check red.
+
+1. Turn the drain on with an instance token: `POST /api/v1/instance/drain` with `{"on": true, "reason": "deploy <sha>"}` (`instance_drain`, REST only). The scheduler starts no new attempt. Queued work stays queued in the database and running attempts finish.
+2. Wait until `GET /api/v1/instance/drain` (`instance_drain_status`) reports `running_attempts: 0`. `GET /healthz` stays 200 while draining so the platform does not stop the old instance early, and carries `"draining": true` (only the flag: it is unauthenticated, so the count is in `instance_drain_status`). `instance_doctor` reports `draining` as a warning.
+3. Deploy. The new instance boots undrained (the drain is held in memory, never stored) and resumes the queue with no lost or duplicated attempts.
+
+A plain `SIGTERM` does the same thing: it starts a drain, waits for running attempts up to `drain_timeout_seconds` (instance setting, default 600, 0 to 3600; `TURNTABLE_DRAIN_TIMEOUT_SECONDS` or `[scheduler] drain_timeout_seconds`), then exits. A second signal exits at once. Set the platform's stop grace period above the timeout. An attempt still running at the timeout is left for the next boot: if its detached exec still exists the new instance re-attaches to it and records the real result; if the sandbox is gone the attempt ends as `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, never reported as a job failure. A second loss of the same job ends it as `infra_error`.
+
+The drain covers the process that serves the call. Run the worker role in the same process as the web role, or drain each worker process.
 
 ## Known gaps
 

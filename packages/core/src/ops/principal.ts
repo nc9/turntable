@@ -19,6 +19,14 @@ export type Principal =
     }
   | { kind: "member"; id: string; orgId: string; role: MemberRole }
   /**
+   * A signed-in person on the web (#430): a session cookie resolved to the role their membership
+   * row gives in one org. It is deliberately NOT a `member`. Every `kind === "member"` check in
+   * the code was written for the trusted in-process caller (the host CLI) and so refuses a
+   * session; a session passes only the role checks, and only the writes the dispatcher names
+   * (SESSION_WRITE_OPS) until passkey step-up exists.
+   */
+  | { kind: "session"; id: string; orgId: string; role: MemberRole }
+  /**
    * An enrolled approver, proven by a signature over the request's statement. It exists only for
    * signature ops: no token op accepts it, and no bearer token or member can become one.
    */
@@ -38,6 +46,11 @@ export type Credential =
    * it, and the dispatcher verifies the signature before anything else runs.
    */
   | { kind: "signed" }
+  /**
+   * A web session cookie's value (REST only; MCP and the sockets never build one). The dispatcher
+   * resolves it to the signed-in user's `member` principal for one org, from the database.
+   */
+  | { kind: "session"; cookie: string }
   /** In-process only: an already-authenticated principal. Adapters never build this. */
   | { kind: "principal"; principal: Principal };
 

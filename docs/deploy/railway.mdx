@@ -93,6 +93,18 @@ Behind Railway's edge, the client address on a connection is the proxy's. `TURNT
 - **Do not guess.** Use the ranges your platform documents for its edge, and leave it unset if you cannot find them. An entry that is too wide lets a caller spoof its address.
 - `TURNTABLE_TRUST_FORWARDED_FOR` is no longer read (a warning is printed).
 
+## Deploying without killing runs
+
+A restart while attempts run cuts them. Drain first, so a deploy never turns a tenant's check red.
+
+1. Turn the drain on with an instance token: `POST /api/v1/instance/drain` with `{"on": true, "reason": "deploy <sha>"}` (`instance_drain`, REST only). The scheduler starts no new attempt. Queued work stays queued in the database and running attempts finish.
+2. Wait until `GET /api/v1/instance/drain` (`instance_drain_status`) reports `running_attempts: 0`. `GET /healthz` stays 200 while draining so the platform does not stop the old instance early, and carries `"draining": true` (only the flag: it is unauthenticated, so the count is in `instance_drain_status`). `instance_doctor` reports `draining` as a warning.
+3. Deploy. The new instance boots undrained (the drain is held in memory, never stored) and resumes the queue with no lost or duplicated attempts.
+
+A plain `SIGTERM` does the same thing: it starts a drain, waits for running attempts up to `drain_timeout_seconds` (instance setting, default 600, 0 to 3600; `TURNTABLE_DRAIN_TIMEOUT_SECONDS` or `[scheduler] drain_timeout_seconds`), then exits. A second signal exits at once. On Railway the `SIGTERM` to `SIGKILL` buffer is the service variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, which defaults to `0`: without it Railway kills the process almost at once and the drain wait never happens. Set it above the drain timeout (for example `630` for the default 600), and keep `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` at `0` (its default): a volume is mounted by one deployment at a time, so the new deployment must not start while the old one is still draining. Even so, drive deploys with the op (steps 1 to 3); `SIGTERM` is the backstop. An attempt still running at the timeout is left for the next boot: if its detached exec still exists the new instance re-attaches to it and records the real result; if the sandbox is gone the attempt ends as `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, never reported as a job failure. A second loss of the same job ends it as `infra_error`.
+
+The drain covers the process that serves the call. Run the worker role in the same process as the web role, or drain each worker process.
+
 ## Checklist
 
 1. Volume at `/data`, `TURNTABLE_DATA_DIR=/data`, public domain, `TURNTABLE_PUBLIC_URL`, `TURNTABLE_TRUST_FORWARDED_PROTO=1`.

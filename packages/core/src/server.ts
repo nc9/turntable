@@ -16,9 +16,12 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
-import type { GithubFacts } from "./github/api";
+import type { GithubFacts, GithubUserLookup } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
+import type { AuthHandler } from "./auth/github-login";
+import type { WebSessions } from "./auth/web-sessions";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
+import { processDrain } from "./scheduler/drain";
 import type { DoctorReport } from "./doctor/types";
 import type { ForwardedObserver } from "./doctor/observe";
 import type { SecretStore } from "./secrets/store";
@@ -59,7 +62,13 @@ export async function handleRequest(
     return new Response("method not allowed", { status: 405, headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/healthz") {
-    return Response.json({ ok: true, version: VERSION }, { headers: SECURITY_HEADERS });
+    // Still 200 while draining, so the platform keeps the old instance until its attempts finish.
+    const body = processDrain.draining
+      ? // Only the flag: /healthz is unauthenticated, so a running count would publish tenant
+        // activity. The count is in the instance administrator's instance_drain_status.
+        { ok: true, version: VERSION, draining: true }
+      : { ok: true, version: VERSION };
+    return Response.json(body, { headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/openapi.json") {
     return new Response(OPENAPI, {
@@ -94,8 +103,15 @@ export type ServeOptions = {
   vault?: SecretVault;
   /** Installation claims (hosted): the start op and the setup callback. */
   claims?: { starter: InstallationClaims; handler: ClaimHandler };
+  /**
+   * Sign in with GitHub and web sessions (#430), when a master key and an https public URL are
+   * set. Without it no session cookie is a credential and every `/auth/*` path falls through.
+   */
+  webAuth?: { sessions: WebSessions; handler: AuthHandler };
   /** GitHub API facts, for `resync_installation`. */
   githubFacts?: GithubFacts;
+  /** Resolves a GitHub login to its numeric id, for invites. */
+  githubUsers?: GithubUserLookup;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
@@ -128,7 +144,9 @@ export function startServer(options: ServeOptions) {
     db: options.db,
     vault: options.vault,
     claims: options.claims?.starter,
+    sessions: options.webAuth?.sessions,
     githubFacts: options.githubFacts,
+    githubUsers: options.githubUsers,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
@@ -171,6 +189,8 @@ export function startServer(options: ServeOptions) {
     if (manifest) return manifest;
     const claimed = await options.claims?.handler.handle(req);
     if (claimed) return claimed;
+    const signedIn = await options.webAuth?.handler.handle(req);
+    if (signedIn) return signedIn;
     const idp = await options.oidc?.handle(req);
     if (idp) return idp;
     const cached = await options.cache?.handle(req);

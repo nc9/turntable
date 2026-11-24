@@ -627,6 +627,8 @@ const UNREACHABLE: Record<string, string> = {
     "the shipped registry has no org or project setting yet, so no key reaches a value for A either; the cross-tenant test with a test registry is in settings.test.ts (tenancy: another org's token ...)",
   set_setting:
     "as get_setting: no shipped org or project setting to set; settings.test.ts covers the cross-tenant write",
+  invite_member:
+    "needs a GitHub App lookup of the login (a fake is wired in web-sign-in.test.ts, where who may invite, the role cap and replacement are covered); org B is probed and refused alike",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

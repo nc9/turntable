@@ -185,6 +185,7 @@ describe("hosted shadow, end to end", () => {
           defaultBranch: "main",
           intervalSeconds: 3600,
           prMode: "approval",
+          prBaseline: false,
         },
       ],
     });

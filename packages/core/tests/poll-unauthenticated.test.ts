@@ -94,7 +94,7 @@ test("measures a cycle with an open pull request from an allowed author", async 
   const client = new GithubClient({ baseUrl: "https://api.github.com", fetch: gh.fetch });
   const db = openDatabase(":memory:");
   await ensureLocalTenant(db);
-  const repo = cfg({ prMode: "allowlist", authors: ["octocat"] }).repos[0]!;
+  const repo = cfg({ prMode: "allowlist", prBaseline: false, authors: ["octocat"] }).repos[0]!;
   const deps = { db, github: client, provider: "docker", now: () => 1_800_000_000_000 };
   await pollRepo(deps, repo);
   gh.state.calls.length = 0;

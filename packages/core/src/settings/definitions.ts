@@ -277,6 +277,66 @@ export const preemptWindowMinutesSetting = defineSetting({
   toml: "scheduler.preempt_window_minutes",
 });
 
+/** Web sessions (#430): how long one may sit idle, and how long it lives at most. */
+export const DEFAULT_SESSION_IDLE_HOURS = 12;
+export const DEFAULT_SESSION_ABSOLUTE_DAYS = 7;
+
+export const sessionIdleHoursSetting = defineSetting({
+  key: "session_idle_hours",
+  scope: "instance",
+  type: z.int().min(1).max(168),
+  default: DEFAULT_SESSION_IDLE_HOURS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides how long a stolen browser session stays usable, so only a person changes it",
+  description:
+    "Hours a web session may sit unused before it is signed out (1 to 168). Each request from the session restarts the clock.",
+  warning: "Raising this lengthens the time a session left open in a browser stays usable.",
+  env: ["TURNTABLE_SESSION_IDLE_HOURS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "auth.session_idle_hours",
+});
+
+export const sessionAbsoluteDaysSetting = defineSetting({
+  key: "session_absolute_days",
+  scope: "instance",
+  type: z.int().min(1).max(90),
+  default: DEFAULT_SESSION_ABSOLUTE_DAYS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides how long a stolen browser session stays usable, so only a person changes it",
+  description:
+    "Days a web session lives at most, however active it is (1 to 90). After that the person signs in with GitHub again.",
+  warning: "Raising this lengthens the time a stolen session can be used.",
+  env: ["TURNTABLE_SESSION_ABSOLUTE_DAYS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "auth.session_absolute_days",
+});
+
+/** Seconds a SIGTERM waits for running attempts after it starts a drain (#446). */
+export const DEFAULT_DRAIN_TIMEOUT_SECONDS = 600;
+
+export const drainTimeoutSecondsSetting = defineSetting({
+  key: "drain_timeout_seconds",
+  scope: "instance",
+  type: z.int().min(0).max(3600),
+  default: DEFAULT_DRAIN_TIMEOUT_SECONDS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it decides how long a shutdown waits for tenants' running jobs, so only a person changes it",
+  description:
+    "Seconds a SIGTERM waits for running attempts to finish before the server exits (0 to 3600). The server stops starting new attempts at once; attempts still running at the timeout are left for the next boot's reconcile.",
+  env: ["TURNTABLE_DRAIN_TIMEOUT_SECONDS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "scheduler.drain_timeout_seconds",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
@@ -291,4 +351,7 @@ export const settingsRegistry = createSettingsRegistry([
   schedulingClassSetting,
   preemptMaxPerJobSetting,
   preemptWindowMinutesSetting,
+  drainTimeoutSecondsSetting,
+  sessionIdleHoursSetting,
+  sessionAbsoluteDaysSetting,
 ]);

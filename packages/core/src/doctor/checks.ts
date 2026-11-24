@@ -2,6 +2,7 @@ import { createPrivateKey, X509Certificate } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { ingestStatus, POLL_RESERVE } from "../poll/status";
+import { processDrain } from "../scheduler/drain";
 import { open, secretAad } from "../secrets/crypto";
 import { RELEASE_KEY_ENV, RELEASE_KEY_PREVIOUS_ENV } from "../roles";
 import { anchorKeyMessage } from "../secrets/master-key";
@@ -735,6 +736,20 @@ export function checkPollHealth(now: number = Date.now()): DoctorCheck {
   return pass("poll_health", area, "no repo is failing to poll and the poll budget has room");
 }
 
+/** A drain holds back every new attempt: say so, with a fixed sentence (#446). */
+export function checkDraining(): DoctorCheck {
+  const area = "scheduler";
+  if (processDrain.draining) {
+    return warn(
+      "draining",
+      area,
+      "the scheduler is draining: no new attempt starts until the drain ends",
+      "Finish the deploy, or call `instance_drain` with on=false to resume. A restart ends the drain.",
+    );
+  }
+  return pass("draining", area, "the scheduler is claiming work normally");
+}
+
 /** Every check, in a fixed order. A check that throws is reported as a fail, never as a crash. */
 export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
   const safe = async (
@@ -772,6 +787,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("release_channel", "release", () => checkChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
+    ...(await safe("draining", "scheduler", () => checkDraining())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
     ...(await safe("human_approval_key_policy", "approvals", () => checkHumanApprovalKeyPolicy(i))),
   ];

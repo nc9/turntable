@@ -8,6 +8,7 @@ import {
   finishAttempt,
   heartbeatAttempt,
   ifLeaseHeld,
+  markDrainCut,
   type Readiness,
   recordExec,
   recordPlan,
@@ -18,6 +19,7 @@ import {
 import { ambientSettings } from "../settings/ambient";
 import { preemptMaxPerJobSetting, preemptWindowMinutesSetting } from "../settings/definitions";
 import { resolveSetting, type SettingsRuntime } from "../settings/resolve";
+import { type DrainState, processDrain } from "./drain";
 import { workflowReadiness } from "./workflow-readiness";
 import type {
   AttemptContext,
@@ -50,6 +52,8 @@ export type SchedulerOptions = {
   onlyRun?: string;
   /** The settings layers (env, `turntable.toml`): where the preemption limits come from. Default: the process's own (`ambientSettings`). */
   settings?: SettingsRuntime;
+  /** While draining it claims nothing (#446). Default: the process's own (`processDrain`). */
+  drain?: DrainState;
   now?: () => number;
   log?: (message: string) => void;
 };
@@ -65,15 +69,22 @@ const infra = (reason: string): AttemptOutcome => ({ state: "infra_error", reaso
 export class Scheduler {
   readonly owner: string;
   readonly #o: Required<
-    Omit<SchedulerOptions, "owner" | "log" | "readiness" | "onlyRun" | "observer" | "settings">
+    Omit<
+      SchedulerOptions,
+      "owner" | "log" | "readiness" | "onlyRun" | "observer" | "settings" | "drain"
+    >
   > & {
     observer?: AttemptObserver | undefined;
     onlyRun?: string | undefined;
     settings?: SettingsRuntime | undefined;
     log: (message: string) => void;
     readiness: Readiness;
+    drain: DrainState;
   };
-  readonly #active = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  readonly #active = new Map<
+    string,
+    { controller: AbortController; done: Promise<void>; scope: Claim["scope"] }
+  >();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #running = false;
   #wake: (() => void) | undefined;
@@ -99,9 +110,11 @@ export class Scheduler {
       onlyRun: o.onlyRun,
       settings: o.settings,
       observer: o.observer,
+      drain: o.drain ?? processDrain,
       now: o.now ?? Date.now,
       log: o.log ?? (() => {}),
     };
+    this.#o.drain.trackRunning(() => this.#active.size);
   }
 
   #limit: { at: number; value: { max: number; windowMs: number } } | undefined;
@@ -129,6 +142,8 @@ export class Scheduler {
   async tick(): Promise<number> {
     let started = 0;
     for (;;) {
+      // Draining: nothing new starts. Queued work stays queued; running attempts carry on.
+      if (this.#o.drain.draining) return started;
       const now = this.#o.now();
       const claim = await claimNextAttempt(this.#o.db, {
         owner: this.owner,
@@ -186,6 +201,36 @@ export class Scheduler {
     clearTimeout(this.#timer);
     if (opts.abort) for (const a of this.#active.values()) a.controller.abort("scheduler stopping");
     await Promise.all([...this.#active.values()].map((a) => a.done));
+  }
+
+  /**
+   * Graceful shutdown (#446): starts a drain (no new attempt starts), waits up to `timeoutMs` for
+   * the running ones, then marks those still running as cut by the drain so the next boot's
+   * reconcile re-attaches to their execs or, failing that, retries each job once as an infra
+   * error. Never aborts them. Returns how many were still running.
+   */
+  async drainAndWait(timeoutMs: number, reason = "shutdown"): Promise<{ remaining: number }> {
+    this.#o.drain.set(true, reason, this.#o.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), Math.max(0, timeoutMs));
+    });
+    try {
+      await Promise.race([this.idle(), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+    const left = [...this.#active.entries()];
+    for (const [id, a] of left) {
+      await markDrainCut(this.#o.db, a.scope, id, this.owner).catch((err) =>
+        this.#o.log(`could not mark ${id} as cut by the drain: ${String(err)}`),
+      );
+    }
+    // The loop ends here either way: the process is going away, and what still runs is left.
+    this.#running = false;
+    this.#unsubscribe();
+    clearTimeout(this.#timer);
+    return { remaining: left.length };
   }
 
   /**
@@ -328,7 +373,7 @@ export class Scheduler {
     };
 
     const done = run().finally(() => this.#active.delete(attempt.id));
-    this.#active.set(attempt.id, { controller, done });
+    this.#active.set(attempt.id, { controller, done, scope });
     this.#notify((o) => o.started(claim));
   }
 }

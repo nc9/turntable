@@ -15,3 +15,4 @@ packages/core/tests/skipped-dismissed.test.ts
 packages/core/tests/delegated-token-minting.test.ts
 packages/core/tests/token-ops.test.ts
 packages/core/tests/token-realtime.test.ts
+packages/core/tests/web-sign-in.test.ts
