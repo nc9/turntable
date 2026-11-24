@@ -6,8 +6,9 @@ import {
   ClaimError,
   InstallationClaims,
   CLAIM_COOKIE,
+  claimCookieName,
+  claimCsrfCookieName,
   CLAIM_START_PATH,
-  CSRF_COOKIE,
   createClaimHandler,
   githubUserVerifier,
 } from "../src/github/claim";
@@ -158,7 +159,7 @@ describe("the installation claim flow", () => {
       const nonce = cookie === undefined ? (q.state ? nonceOf(q.state) : "") : cookie;
       return (await handler.handle(
         new Request(`http://x${CLAIM_PATH}?${new URLSearchParams(q)}`, {
-          headers: nonce ? { cookie: `${CLAIM_COOKIE}=${nonce}` } : {},
+          headers: nonce ? { cookie: `${claimCookieName(nonce)}=${nonce}` } : {},
         }),
       ))!;
     };
@@ -167,7 +168,8 @@ describe("the installation claim flow", () => {
       const res = (await handler.handle(new Request(`http://x${url}`)))!;
       const html = res.status === 200 ? await res.clone().text() : "";
       const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1] ?? "";
-      const token = /ls_claim_csrf=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+      const token =
+        /ls_claim_csrf_[0-9a-f]{16}=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
       return { res, csrf, token };
     };
     const submit = async (
@@ -179,7 +181,7 @@ describe("the installation claim flow", () => {
           method: "POST",
           headers: {
             "content-type": "application/x-www-form-urlencoded",
-            ...(o.token ? { cookie: `${CSRF_COOKIE}=${o.token}` } : {}),
+            ...(o.token ? { cookie: `${claimCsrfCookieName(nonceOf(state))}=${o.token}` } : {}),
             ...(o.headers ?? { "sec-fetch-site": "same-origin" }),
           },
           body: new URLSearchParams({ state, csrf: o.csrf ?? "" }),
@@ -227,8 +229,8 @@ describe("the installation claim flow", () => {
         .get("location")!
         .startsWith("https://github.com/apps/turntable-test/installations/new?state="),
     ).toBe(true);
-    const cookie = go.headers.getSetCookie().find((c) => c.startsWith(`${CLAIM_COOKIE}=`))!;
-    expect(cookie).toContain(`${CLAIM_COOKIE}=${h.nonceOf(state)}`);
+    const cookie = go.headers.getSetCookie().find((c) => c.startsWith(`${CLAIM_COOKIE}_`))!;
+    expect(cookie).toContain(`${claimCookieName(h.nonceOf(state))}=${h.nonceOf(state)}`);
     for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Max-Age=900"]) {
       expect(cookie).toContain(attr);
     }
@@ -242,12 +244,17 @@ describe("the installation claim flow", () => {
     expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
     // both cookies are cleared once the callback has used them
     const cleared = res.headers.getSetCookie();
-    expect(cleared.some((c) => c.startsWith(`${CLAIM_COOKIE}=;`) && c.includes("Max-Age=0"))).toBe(
-      true,
-    );
-    expect(cleared.some((c) => c.startsWith(`${CSRF_COOKIE}=;`) && c.includes("Max-Age=0"))).toBe(
-      true,
-    );
+    expect(
+      cleared.some(
+        (c) => c.startsWith(`${claimCookieName(h.nonceOf(state))}=;`) && c.includes("Max-Age=0"),
+      ),
+    ).toBe(true);
+    expect(
+      cleared.some(
+        (c) =>
+          c.startsWith(`${claimCsrfCookieName(h.nonceOf(state))}=;`) && c.includes("Max-Age=0"),
+      ),
+    ).toBe(true);
     const row = await getInstallation(h.db, "100");
     expect(row?.orgId).toBe(h.tenantB.id); // the claiming org, not the org that owns the App
     expect((await listProjects(h.db, { orgId: h.tenantB.id })).length).toBe(1);

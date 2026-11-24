@@ -41,6 +41,13 @@ import {
   getOrgById,
 } from "../db/repos";
 import { esc, pageResponse } from "../pages/server-pages";
+import {
+  excessFlowCookies,
+  flowCookieName,
+  MAX_FLOW_COOKIES,
+  readFlowCookies,
+} from "../auth/flow-cookies";
+import { KeyCache } from "../secrets/ensure-key";
 import type { SecretStore } from "../secrets/store";
 import type { GithubFacts } from "./api";
 import { SECRET_CLIENT } from "./app-auth";
@@ -49,9 +56,20 @@ import { syncInstallation } from "./installations";
 export const CLAIM_PATH = "/api/v1/github/setup";
 /** Where `start` points: the confirmation page (GET) and its form (POST). */
 export const CLAIM_START_PATH = "/api/v1/github/claim";
+// Each claim has its OWN cookies, named from a short hash of its nonce, so two claims started in one
+// browser do not overwrite each other's binding (#443). The callback reads the cookie that matches
+// its state's nonce, exactly. At most MAX_FLOW_COOKIES of each kind are kept; the oldest expire.
 export const CLAIM_COOKIE = "ls_claim";
 /** The double-submit token for the confirmation form. */
 export const CSRF_COOKIE = "ls_claim_csrf";
+const CLAIM_COOKIE_PREFIX = `${CLAIM_COOKIE}_`;
+const CSRF_COOKIE_PREFIX = `${CSRF_COOKIE}_`;
+/** The binding cookie's name for one claim. */
+export const claimCookieName = (nonce: string): string =>
+  flowCookieName(CLAIM_COOKIE_PREFIX, nonce);
+/** The confirmation form's CSRF cookie name for one claim. */
+export const claimCsrfCookieName = (nonce: string): string =>
+  flowCookieName(CSRF_COOKIE_PREFIX, nonce);
 const COOKIE_PATH = "/api/v1/github";
 export const SECRET_CLAIM_KEY = "github-app/claim-state-key";
 export const CLAIM_TTL_MS = 15 * 60_000;
@@ -111,23 +129,23 @@ interface StatePayload {
 
 export class InstallationClaims {
   readonly #o: ClaimOptions;
+  readonly #keys: KeyCache;
 
   constructor(o: ClaimOptions) {
     this.#o = o;
+    this.#keys = new KeyCache(o.store, SECRET_CLAIM_KEY);
   }
 
   #now(): number {
     return (this.#o.now ?? Date.now)();
   }
 
-  /** The HMAC key, created on first use and kept sealed in the App org's secret store. */
-  async #key(appOrg: string): Promise<Buffer> {
-    let k = await this.#o.store.get(appOrg, SECRET_CLAIM_KEY);
-    if (k === undefined) {
-      k = randomBytes(32).toString("base64url");
-      await this.#o.store.set(appOrg, SECRET_CLAIM_KEY, k);
-    }
-    return Buffer.from(k, "base64url");
+  /**
+   * The HMAC key: created on first use with insert-if-absent, then always the value the App org's
+   * secret store holds, so concurrent first uses and other processes share one key.
+   */
+  #key(appOrg: string): Promise<Buffer> {
+    return this.#keys.get(appOrg);
   }
 
   /**
@@ -192,6 +210,21 @@ export class InstallationClaims {
     );
   }
 
+  /** Whether `given` is the form value for this token and nonce (re-reads the key once if stale). */
+  async csrfOk(token: string, nonce: string, given: string): Promise<boolean> {
+    const app = await getGithubApp(this.#o.db);
+    if (!app) throw new ClaimError(503, "no GitHub App is configured");
+    return this.#keys.verify(app.orgId, (k) =>
+      safeEqual(given, b64u(createHmac("sha256", k).update(`csrf.${token}.${nonce}`).digest())),
+    );
+  }
+
+  /** Expiry of the claim a cookie names, to rank cookies for the cap. Unknown ranks oldest. */
+  async expiryOf(nonce: string): Promise<number> {
+    const c = await getInstallationClaim(this.#o.db, nonce).catch(() => undefined);
+    return c?.expiresAt ?? 0;
+  }
+
   /**
    * GitHub's page for a verified state: the install page, or the configure page of an existing
    * installation when the claim names one. GitHub sends no `state` back from the configure page;
@@ -231,11 +264,12 @@ export class InstallationClaims {
     const parts = state.split(".");
     if (parts.length !== 3 || parts[0] !== "v1") return undefined;
     const [, body, sig] = parts as [string, string, string];
-    const want = createHmac("sha256", await this.#key(app.orgId))
-      .update(`v1.${body}`)
-      .digest();
     const given = Buffer.from(sig, "base64url");
-    if (given.length !== want.length || !timingSafeEqual(given, want)) return undefined;
+    const good = await this.#keys.verify(app.orgId, (k) => {
+      const want = createHmac("sha256", k).update(`v1.${body}`).digest();
+      return given.length === want.length && timingSafeEqual(given, want);
+    });
+    if (!good) return undefined;
     try {
       const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as StatePayload;
       if (typeof p.o !== "string" || typeof p.p !== "string" || typeof p.n !== "string")
@@ -258,13 +292,14 @@ export class InstallationClaims {
       installationId: string;
       state: string;
       code: string | undefined;
-      cookieNonce?: string;
+      /** The nonces held by this browser's well-formed claim cookies (name and value agree). */
+      cookieNonces?: string[];
       /** GitHub's `setup_action`: `install`, or `update` from the configure redirect. */
       action?: string;
     },
     facts: GithubFacts,
     user: UserVerifier,
-  ): Promise<{ orgId: string; bound: string[] }> {
+  ): Promise<{ orgId: string; bound: string[]; nonce: string }> {
     if (!/^\d{1,20}$/.test(q.installationId)) throw new ClaimError(400, "bad installation id");
     let st = await this.verify(q.state);
     // The configure redirect (`update`) carries no `state`. The claim is then found by the nonce in
@@ -272,16 +307,19 @@ export class InstallationClaims {
     // also rides on a link an attacker sends: the claim is therefore pinned to the installation it
     // was started for, and any other installation id is refused before an owner check or a token
     // exchange. A claim started without an installation can only finish through the signed state.
-    if (!st && q.action === "update" && q.state === "" && q.cookieNonce) {
-      const c = await getInstallationClaim(this.#o.db, q.cookieNonce);
-      if (
-        c &&
-        c.usedAt === null &&
-        c.expiresAt > this.#now() &&
-        c.installationId !== null &&
-        c.installationId === q.installationId
-      ) {
-        st = { o: c.orgId, p: c.startedBy, n: c.nonce, e: c.expiresAt, i: c.installationId };
+    if (!st && q.action === "update" && q.state === "") {
+      for (const n of q.cookieNonces ?? []) {
+        const c = await getInstallationClaim(this.#o.db, n);
+        if (
+          c &&
+          c.usedAt === null &&
+          c.expiresAt > this.#now() &&
+          c.installationId !== null &&
+          c.installationId === q.installationId
+        ) {
+          st = { o: c.orgId, p: c.startedBy, n: c.nonce, e: c.expiresAt, i: c.installationId };
+          break;
+        }
       }
     }
     // A signed state that names an installation only claims that one.
@@ -296,7 +334,9 @@ export class InstallationClaims {
       throw new ClaimError(status, message);
     };
     // The browser that confirmed the claim on Turntable is the one that must finish it.
-    if (!q.cookieNonce || !safeEqual(q.cookieNonce, st.n)) {
+    // Exactly this claim's cookie: its name is derived from the nonce, so another claim's cookie
+    // in the same browser neither helps nor blocks it.
+    if (!(q.cookieNonces ?? []).some((n) => safeEqual(n, st.n))) {
       return refuse(
         403,
         "open the claim link from this Turntable instance and confirm it in the same browser",
@@ -368,7 +408,7 @@ export class InstallationClaims {
       repositories: r.bound.length,
       ...who,
     });
-    return { orgId: st.o, bound: r.bound };
+    return { orgId: st.o, bound: r.bound, nonce: st.n };
   }
 
   async #audit(st: StatePayload, outcome: string, input: Record<string, unknown>): Promise<void> {
@@ -494,10 +534,10 @@ const shell = (status: number, title: string, body: string, cookies: string[] = 
 const page = (status: number, title: string, message: string, cookies: string[] = []): Response =>
   shell(status, title, `<p>${esc(message)}</p>`, cookies);
 
-const CLEAR = [
-  `${CLAIM_COOKIE}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`,
-  `${CSRF_COOKIE}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`,
-];
+const clearClaim = (name: string): string =>
+  `${name}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`;
+const clearCsrf = (name: string): string =>
+  `${name}=; Max-Age=0; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`;
 
 export interface ClaimHandler {
   handle(req: Request): Promise<Response | undefined>;
@@ -526,6 +566,7 @@ export function createClaimHandler(o: {
           "GitHub will send you back here once the installation is approved.",
         );
       }
+      const held = claimCookies(req);
       try {
         const r = await o.claims.complete(
           {
@@ -533,7 +574,7 @@ export function createClaimHandler(o: {
             state: url.searchParams.get("state") ?? "",
             ...(action ? { action } : {}),
             code: url.searchParams.get("code") ?? undefined,
-            ...(cookieNonce(req) ? { cookieNonce: cookieNonce(req) as string } : {}),
+            cookieNonces: held.map((c) => c.nonce),
           },
           o.facts,
           o.user,
@@ -542,7 +583,12 @@ export function createClaimHandler(o: {
           200,
           "Installation connected",
           `The installation is connected${r.bound.length > 0 ? ` (${r.bound.length} repositories)` : ""}. You can close this page.`,
-          CLEAR,
+          // Only this claim's cookies go; a parallel claim in this browser keeps its own.
+          [
+            ...(r.nonce
+              ? [clearClaim(claimCookieName(r.nonce)), clearCsrf(claimCsrfCookieName(r.nonce))]
+              : []),
+          ],
         );
       } catch (e) {
         if (e instanceof ClaimError) {
@@ -564,7 +610,7 @@ function cookieValue(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-const cookieNonce = (req: Request): string | undefined => cookieValue(req, CLAIM_COOKIE);
+const claimCookies = (req: Request) => readFlowCookies(req, CLAIM_COOKIE_PREFIX);
 
 /**
  * The confirmation page and its form. GET names the org that will receive the installation and
@@ -597,7 +643,11 @@ async function startPage(
         `<p>Only continue if you started this from that org. You will sign in to GitHub next, and only an owner of the GitHub account can complete it.</p>` +
         `<form method="post" action="${CLAIM_START_PATH}"><input type="hidden" name="state" value="${esc(state)}"><input type="hidden" name="csrf" value="${esc(mac)}"><button class="tt-button" type="submit">Continue to GitHub</button></form>`,
       [
-        `${CSRF_COOKIE}=${token}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`,
+        `${claimCsrfCookieName(d.nonce)}=${token}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict`,
+        // A browser keeps at most MAX_FLOW_COOKIES confirmation tokens; the earliest are expired.
+        ...excessFlowCookies(readFlowCookies(req, CSRF_COOKIE_PREFIX), MAX_FLOW_COOKIES)
+          .filter((n) => n !== claimCsrfCookieName(d.nonce))
+          .map(clearCsrf),
       ],
     );
   }
@@ -615,8 +665,8 @@ async function startPage(
   const csrf = typeof form?.get("csrf") === "string" ? (form.get("csrf") as string) : "";
   const d = await claims.describe(state);
   if (!d) return gone();
-  const token = cookieValue(req, CSRF_COOKIE);
-  if (!token || !csrf || !safeEqual(csrf, await claims.csrfMac(token, d.nonce))) {
+  const token = cookieValue(req, claimCsrfCookieName(d.nonce));
+  if (!token || !csrf || !(await claims.csrfOk(token, d.nonce, csrf))) {
     return page(
       403,
       "Request refused",
@@ -636,8 +686,15 @@ async function startPage(
   // complete. The CSRF token above is Strict because it only travels same-site.
   headers.append(
     "set-cookie",
-    `${CLAIM_COOKIE}=${d.nonce}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`,
+    `${claimCookieName(d.nonce)}=${d.nonce}; Max-Age=${CLAIM_TTL_MS / 1000}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Lax`,
   );
-  headers.append("set-cookie", CLEAR[1] as string);
+  headers.append("set-cookie", clearCsrf(claimCsrfCookieName(d.nonce)));
+  // Cap the browser's claim cookies: expire the claims that end soonest, past MAX_FLOW_COOKIES.
+  const held = readFlowCookies(req, CLAIM_COOKIE_PREFIX).filter((c) => c.nonce !== d.nonce);
+  const ranks = new Map<string, number>();
+  for (const c of held) ranks.set(c.nonce, await claims.expiryOf(c.nonce));
+  for (const name of excessFlowCookies(held, MAX_FLOW_COOKIES, (n) => ranks.get(n) ?? 0)) {
+    headers.append("set-cookie", clearClaim(name));
+  }
   return new Response(null, { status: 303, headers });
 }

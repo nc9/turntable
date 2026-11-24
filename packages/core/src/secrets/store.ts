@@ -6,6 +6,7 @@ import {
   getSecretRecord,
   listSecretNames,
   putSecretRecord,
+  putSecretRecordIfAbsent,
 } from "../db/repos";
 import { assertResealAllowed, open, recordVersion, seal, secretAad } from "./crypto";
 
@@ -36,6 +37,24 @@ export class SecretStore {
     // A new value in this store closes an incident rotation flag it raised (and only this
     // store's flags: a vault secret of the same name is rotated through the vault).
     await clearRotationFlag(this.#db, { orgId }, name, "builtin", Date.now());
+  }
+
+  /**
+   * Stores the value only when the name is free (atomic, both dialects). True when this call
+   * stored it; false means another writer got there first and the caller must read the stored value.
+   */
+  async setIfAbsent(orgId: string, name: string, value: string): Promise<boolean> {
+    assertName(name);
+    const inserted = await putSecretRecordIfAbsent(
+      this.#db,
+      { orgId },
+      name,
+      seal(this.#key, value, secretAad(orgId, name), "system", orgId),
+    );
+    if (!inserted) return false;
+    await this.#audit(orgId, "secret_set", name);
+    await clearRotationFlag(this.#db, { orgId }, name, "builtin", Date.now());
+    return true;
   }
 
   /** Throws SecretDecryptError if the record was tampered with or the key is wrong. */
