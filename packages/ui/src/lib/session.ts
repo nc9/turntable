@@ -8,7 +8,6 @@ import { lastOrg } from "./last-org";
 
 export const SESSION_PATH = "/auth/session";
 export const LOGIN_PATH = "/auth/github/login";
-export const AUTH_PAGE_PATH = "/auth";
 export const LOGOUT_PATH = "/auth/logout";
 export const SIGN_IN_PATH = "/sign-in";
 export const TOKEN_SIGN_IN_PATH = "/sign-in/token";
@@ -19,15 +18,23 @@ export type SessionState = {
   status: "unknown" | "anonymous" | "signed-in";
   login: string | null;
   orgs: SessionOrg[];
+  /** The per-session CSRF token from `GET /auth/session`; sent with writes the server checks. */
+  csrf: string | null;
   notice: string | null;
 };
 
-const UNKNOWN: SessionState = { status: "unknown", login: null, orgs: [], notice: null };
+const UNKNOWN: SessionState = {
+  status: "unknown",
+  login: null,
+  orgs: [],
+  csrf: null,
+  notice: null,
+};
 
 /** The `GET /auth/session` body, validated. Anything unexpected is treated as signed out. */
 export function parseSession(body: unknown): SessionState {
   if (!body || typeof body !== "object") return { ...UNKNOWN, status: "anonymous" };
-  const b = body as { signed_in?: unknown; github_login?: unknown; orgs?: unknown };
+  const b = body as { signed_in?: unknown; github_login?: unknown; orgs?: unknown; csrf?: unknown };
   if (b.signed_in !== true || !Array.isArray(b.orgs)) return { ...UNKNOWN, status: "anonymous" };
   const orgs: SessionOrg[] = [];
   for (const o of b.orgs) {
@@ -45,6 +52,7 @@ export function parseSession(body: unknown): SessionState {
     status: "signed-in",
     login: typeof b.github_login === "string" ? b.github_login : null,
     orgs,
+    csrf: typeof b.csrf === "string" && b.csrf ? b.csrf : null,
     notice: null,
   };
 }
@@ -133,9 +141,20 @@ export const urlOrgSlug = (pathname: string): string | null => {
   return seg && seg !== "-" ? decodeURIComponent(seg) : null;
 };
 
-/** The CSRF token sits in the sign-out form of the server's `/auth` page (the cookie is HttpOnly). */
-export function csrfFromAuthPage(html: string): string | undefined {
-  return /name="csrf"\s+value="([A-Za-z0-9_-]{16,128})"/.exec(html)?.[1];
+/** The sign-out request: the session's CSRF token, form-encoded (the browser adds the Origin). */
+export function logoutRequest(csrf: string): [string, RequestInit] {
+  return [
+    LOGOUT_PATH,
+    {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "manual",
+      referrerPolicy: "no-referrer",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf }).toString(),
+    },
+  ];
 }
 
 // --- store ---------------------------------------------------------------------------------
@@ -208,30 +227,27 @@ export type SignOutDeps = {
 };
 
 /**
- * Sign out: read the CSRF token from the server's `/auth` page, POST it to `/auth/logout` (the
- * browser adds the Origin header the server checks), then leave. The local state is cleared even
- * if the server cannot be reached; the cookie then simply expires on its own.
+ * Sign out: POST the CSRF token from `GET /auth/session` to `/auth/logout` (the browser adds the
+ * Origin header the server checks), then leave. The local state is cleared even if the server
+ * cannot be reached; the cookie then simply expires on its own.
  */
 export async function signOut(deps: SignOutDeps = {}): Promise<{ ok: boolean }> {
   const f = deps.fetch ?? ((i: string, n?: RequestInit) => fetch(i, n));
   let ok = false;
   try {
-    const page = await f(AUTH_PAGE_PATH, {
-      credentials: "same-origin",
-      cache: "no-store",
-      referrerPolicy: "no-referrer",
-    });
-    const csrf = csrfFromAuthPage(await page.text());
-    if (csrf) {
-      const res = await f(LOGOUT_PATH, {
-        method: "POST",
+    let csrf = state.csrf;
+    if (!csrf) {
+      const res = await f(SESSION_PATH, {
         credentials: "same-origin",
         cache: "no-store",
-        redirect: "manual",
         referrerPolicy: "no-referrer",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ csrf }).toString(),
+        headers: { accept: "application/json" },
       });
+      csrf = res.ok ? parseSession(await res.json()).csrf : null;
+    }
+    if (csrf) {
+      const [url, init] = logoutRequest(csrf);
+      const res = await f(url, init);
       // A manual redirect (the server answers 303 to /auth) is an opaque redirect: that is success.
       ok = res.ok || res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400);
     }
