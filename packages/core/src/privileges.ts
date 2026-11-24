@@ -23,6 +23,7 @@ import {
   readdirSync,
   type Stats,
 } from "node:fs";
+import { BACKUPS_DIR, isBackupEntryName } from "./db/backup-names";
 
 export class RootRefused extends Error {}
 
@@ -162,7 +163,7 @@ function assertSameDir(dirPath: string, st: Stats): void {
 
 /**
  * Gives the data directory and the files Turntable expects in it to uid:gid. Not recursive in
- * general: the top level only, plus the contents of the audit state directory. An entry that is
+ * general: the top level only, plus the contents of the audit state directory and of `backups`. An entry that is
  * not on the list stops the start, named, so nothing a past process planted is touched. Every
  * child is reached through the open descriptor of its parent, never by a path that a symlink
  * swapped in after the check could redirect.
@@ -192,6 +193,29 @@ export function chownData(
             if (!/^[0-9A-Za-z]+\.state(\.tmp)?$/.test(inner)) {
               throw new RootRefused(
                 `unexpected entry ${join(shown, inner)} in the audit state directory; refusing to start`,
+              );
+            }
+            if (!HAS_PROC_FD) assertSameDir(shown, dir);
+            chownChecked(
+              childRoute(dirFd, shown, inner),
+              join(shown, inner),
+              "file",
+              uid,
+              gid,
+              top.dev,
+              fchown,
+            );
+            if (!HAS_PROC_FD) assertSameDir(shown, dir);
+          }
+        });
+      } else if (name === BACKUPS_DIR) {
+        // `db_backup` writes here: only its exact file names, each a plain single-link file.
+        chownChecked(route, shown, "dir", uid, gid, top.dev, fchown, (dirFd, dir) => {
+          const inRoute = HAS_PROC_FD ? `/proc/self/fd/${dirFd}` : shown;
+          for (const inner of readdirSync(inRoute)) {
+            if (!isBackupEntryName(inner)) {
+              throw new RootRefused(
+                `unexpected entry ${join(shown, inner)} in the backups directory; refusing to start`,
               );
             }
             if (!HAS_PROC_FD) assertSameDir(shown, dir);
