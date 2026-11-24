@@ -86,10 +86,23 @@ export interface ApprovalVerifier {
   ): Promise<boolean>;
 }
 
+/**
+ * What the signing service takes: a verifier whose approvals are single-use, so `spend` is
+ * required and a wiring without it does not compile. The optional form above stays for callers
+ * that only read a verdict (nothing to spend), such as the approve and challenge ops.
+ */
+export interface ReleaseApprovalVerifier extends ApprovalVerifier {
+  spend(
+    subject: ApprovalSubject,
+    approvals: readonly VerifiedApproval[],
+    o?: { now?: number },
+  ): Promise<boolean>;
+}
+
 export function createApprovalVerifier(
   db: Db,
   defaults: { rp?: RelyingParty } = {},
-): ApprovalVerifier {
+): ReleaseApprovalVerifier {
   return {
     async spend(subject, approvals, o = {}) {
       const ids = approvals.flatMap((a) => (a.recordId ? [a.recordId] : []));

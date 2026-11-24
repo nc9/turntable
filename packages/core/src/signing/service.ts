@@ -24,7 +24,7 @@ import {
   type Scope,
 } from "../db/repos";
 import { manifestSha256 } from "../release/manifest";
-import type { ApprovalVerifier, ApprovalSubject } from "./approvals";
+import type { ReleaseApprovalVerifier, ApprovalSubject } from "./approvals";
 import { decideSigning, type SigningDenial } from "./policy";
 
 export type Backend = "builtin" | "aws-kms" | "gcp-kms";
@@ -33,7 +33,7 @@ export interface SigningServiceOptions {
   db: Db;
   /** The backends this instance has. A project's key names one of them. */
   signers: Partial<Record<Backend, Signer>>;
-  approvals: ApprovalVerifier;
+  approvals: ReleaseApprovalVerifier;
   /** The Turntable instance, as a URL: the provenance's builder id. */
   builderId: string;
 }
@@ -232,7 +232,10 @@ export class SigningService {
 
     // Everything has checked out: spend the approvals this signature rests on, all or none, so one
     // approval authorises one signature of these bytes and a racing second request is refused.
-    if (approval?.approved && subject && this.#o.approvals.spend) {
+    if (approval?.approved && subject) {
+      // Fail closed: a verifier that cannot spend would let one approval sign again and again.
+      // The type requires `spend`; this guards a wiring that got past it (a cast, untyped JS).
+      if (typeof this.#o.approvals.spend !== "function") return deny("approval_unspendable");
       const spent = await this.#o.approvals.spend(subject, approval.approvals);
       if (!spent) return deny("approval_spent", undefined, { manifest_sha256: manifest });
     }

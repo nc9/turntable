@@ -17,7 +17,7 @@ import {
   RELEASE_STATEMENT_TYPE,
   statementHash,
 } from "../src/approvals/statement";
-import { createApprovalVerifier } from "../src/approvals/verifier";
+import { createApprovalVerifier, type ReleaseApprovalVerifier } from "../src/approvals/verifier";
 import { verifyRegistration, type RelyingParty } from "../src/approvals/webauthn";
 import {
   createAttempt,
@@ -339,6 +339,26 @@ describe("approve, then sign the same manifest", () => {
     const again = await sign(runId);
     expect(again).toMatchObject({ ok: false, reason: "approval_spent" });
     expect(await denials()).toContain("denied:approval_spent");
+  });
+
+  test("a verifier without spend refuses to sign, fail closed, and nothing is signed", async () => {
+    const { runId } = await mkRun();
+    await approveAs("alice", runId);
+    await finish(runId);
+    const real = createApprovalVerifier(db, { rp: RP });
+    const noSpend = new SigningService({
+      db,
+      signers: { builtin: local },
+      // The type forbids it; a cast stands in for a wiring that got past it.
+      approvals: { verify: real.verify.bind(real) } as unknown as ReleaseApprovalVerifier,
+      builderId: "https://ci.example.test/turntable",
+    });
+    const out = await noSpend.signRelease(scope, { runId, artifacts: NAMES });
+    expect(out).toMatchObject({ ok: false, reason: "approval_unspendable" });
+    expect(await denials()).toContain("denied:approval_unspendable");
+    expect(await denials()).not.toContain("ok");
+    // The approval was not consumed: the real service can still sign it once.
+    expect((await sign(runId)).ok).toBe(true);
   });
 
   test("two racing signatures: exactly one wins", async () => {

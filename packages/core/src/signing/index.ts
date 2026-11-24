@@ -3,6 +3,7 @@ export {
   type ApprovalVerdict,
   type ApprovalVerifier,
   denyAllApprovals,
+  type ReleaseApprovalVerifier,
   type VerifiedApproval,
 } from "./approvals";
 export {
