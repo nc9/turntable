@@ -57,6 +57,7 @@ const CFG = (): PollRepoConfig =>
         workflow: ".github/workflows/ci.yml",
         defaultBranch: "main",
         prMode: "allowlist",
+        prBaseline: false,
         authors: ["octocat"],
       },
     ],
