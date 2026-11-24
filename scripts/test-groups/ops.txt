@@ -10,3 +10,4 @@ packages/core/tests/github-app-status.test.ts
 packages/core/tests/realtime.test.ts
 packages/core/tests/settings.test.ts
 packages/core/tests/settings-boot.test.ts
+packages/core/tests/log-grep.test.ts
