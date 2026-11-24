@@ -64,6 +64,11 @@ export type OpContext = {
   settings?: SettingsRuntime | undefined;
   /** True when the call came in over MCP: `set_setting` refuses settings MCP may not change. */
   viaMcp?: boolean | undefined;
+  /**
+   * Set by the dispatcher when a web session passed a fresh passkey step-up for exactly this
+   * action and target (#430). Absent otherwise: a handler that opens a session path must require it.
+   */
+  stepUp?: { action: string; target: string | undefined } | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {

@@ -3685,7 +3685,7 @@
       "post": {
         "operationId": "create_api_token",
         "summary": "Create an agent token, scoped to the org or one project. Shown once.",
-        "description": "Creates a bearer token with a role (reader, operator or release_operator), scoped to the org or to one project (pass project). The secret is returned once in `token` and cannot be read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max 365). Callable by an org admin (in-process) or by a bearer token of role operator or above in its own org, which can never escalate: the new token's role is at most the caller's, its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, never the reverse or another project), and it expires no later than the caller does. `kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children, a delegated token's own children may not mint (depth limit), and one original root's whole lineage may hold at most 50 live delegated tokens, revoked or expired ones not counted (each a conflict; depth counts live ancestors only, so rotation works). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent tokens as run approvers, so mint a person token only for a human. Writes and is audited (the audit entry names the minting token), and emits an `org.token_minted` event. Not an MCP tool: credential minting is a REST act. Grant the least role and the narrowest scope that works.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Creates a bearer token with a role (reader, operator or release_operator), scoped to the org or to one project (pass project). The secret is returned once in `token` and cannot be read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max 365). Callable by an org admin (in-process), by a signed-in admin or owner on the web with a fresh passkey step-up for exactly this request (`step_up`, see `session_step_up_challenge`; the token's role is at most theirs and an agent token is at most operator), or by a bearer token of role operator or above in its own org, which can never escalate: the new token's role is at most the caller's, its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, never the reverse or another project), and it expires no later than the caller does. `kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children, a delegated token's own children may not mint (depth limit), and one original root's whole lineage may hold at most 50 live delegated tokens, revoked or expired ones not counted (each a conflict; depth counts live ancestors only, so rotation works). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent tokens as run approvers, so mint a person token only for a human. Writes and is audited (the audit entry names the minting token), and emits an `org.token_minted` event. Not an MCP tool: credential minting is a REST act. Grant the least role and the narrowest scope that works.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -8482,7 +8482,7 @@
       "post": {
         "operationId": "invite_member",
         "summary": "Invite a GitHub login to this org.",
-        "description": "Creates a pending invite for a GitHub login, with an org role (viewer, member, admin or owner). The invitee's first sign-in with GitHub binds their numeric GitHub id, consumes the invite and makes them a member; nothing else grants membership (not GitHub org membership, not repo access). The invite expires in 7 days, and a newer invite for the same login replaces the older one. Who may call it: a person's own token with release_operator or above (it may invite viewer or member only), or a signed-in admin or owner (up to their own role; only an owner invites an owner). An agent token is refused. Audited, and the org's feed gets an `org.member_invited` event. Not an MCP tool.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "description": "Creates a pending invite for a GitHub login, with an org role (viewer, member, admin or owner). The invitee's first sign-in with GitHub binds their numeric GitHub id, consumes the invite and makes them a member; nothing else grants membership (not GitHub org membership, not repo access). The invite expires in 7 days, and a newer invite for the same login replaces the older one. Who may call it: a person's own token with release_operator or above (it may invite viewer or member only), or a signed-in admin or owner (up to their own role; only an owner invites an owner; a session needs a fresh passkey step-up, `step_up`, to invite an admin or owner). An agent token is refused. Audited, and the org's feed gets an `org.member_invited` event. Not an MCP tool.\n\nRequired role: release_operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -8567,6 +8567,119 @@
         ],
         "x-turntable-effect": "write",
         "x-turntable-min-role": "release_operator",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/session/step-up": {
+      "post": {
+        "operationId": "session_step_up_challenge",
+        "summary": "Start a passkey step-up for one sensitive action from a web session.",
+        "description": "Web sessions only. Names an action (create_api_token, or invite_member for an admin or owner) and the exact `input` the action will be called with (project scope included), and returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs `challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature). The step-up is bound to the action and to a hash of that exact input, so it authorizes no other action and no other parameters, can be used once, and lasts 5 minutes. Needs a passkey enrolled for this person in the org (an approver key under their GitHub login that satisfies the org's key policy). Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nRequired role: viewer. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "create_api_token or invite_member."
+                  },
+                  "input": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {},
+                    "description": "The exact input the action will be called with, `org` and `project` included."
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["action", "input"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "step_up_id": {
+                      "type": "string"
+                    },
+                    "challenge": {
+                      "type": "string",
+                      "description": "base64url: the WebAuthn challenge to sign."
+                    },
+                    "rp_id": {
+                      "type": "string"
+                    },
+                    "passkeys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "approver": {
+                            "type": "string"
+                          },
+                          "credential_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["approver", "credential_id"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["step_up_id", "challenge", "rp_id", "passkeys", "expires_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "viewer",
         "x-turntable-untrusted-output": false
       }
     },

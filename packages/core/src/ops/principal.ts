@@ -23,9 +23,16 @@ export type Principal =
    * row gives in one org. It is deliberately NOT a `member`. Every `kind === "member"` check in
    * the code was written for the trusted in-process caller (the host CLI) and so refuses a
    * session; a session passes only the role checks, and only the writes the dispatcher names
-   * (SESSION_WRITE_OPS) until passkey step-up exists.
+   * (SESSION_WRITE_OPS) or carry a fresh passkey step-up (SESSION_STEP_UP_OPS).
    */
-  | { kind: "session"; id: string; orgId: string; role: MemberRole }
+  | {
+      kind: "session";
+      id: string;
+      orgId: string;
+      role: MemberRole;
+      /** The hash naming the session row; a step-up is bound to it. Absent: no step-up (fail closed). */
+      sessionHash?: string | undefined;
+    }
   /**
    * An enrolled approver, proven by a signature over the request's statement. It exists only for
    * signature ops: no token op accepts it, and no bearer token or member can become one.
