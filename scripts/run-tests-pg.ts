@@ -10,6 +10,11 @@
 // need Docker, a binary or a service and have their own jobs). A few files are about SQLite
 // itself or start a second process with its own database; they are listed below, with why.
 // At most five files go to one `bun test` (each PGlite-backed process is memory-heavy).
+//
+// TURNTABLE_PG_TEST_CONCURRENCY (integer 1 to 8, default 1) runs that many chunks at once. Each
+// chunk's output is buffered and printed whole when it finishes, so logs stay readable. A real
+// server is safe for this: each test schema is named with the process id (see openDatabase).
+import { parsePgConcurrency } from "./pg-concurrency";
 import { parseGroupCall, readGroup, testScripts } from "./test-groups";
 
 const SQLITE_ONLY = new Map<string, string>([
@@ -39,21 +44,52 @@ for (const [k, v] of Object.entries(testScripts())) {
   if (files.some((f) => f.includes("packages/core/tests/"))) suites.push([k, files]);
 }
 
-const failed: string[] = [];
+const concurrency = parsePgConcurrency(process.env.TURNTABLE_PG_TEST_CONCURRENCY);
+
+type Chunk = { name: string; files: string[] };
+const chunks: Chunk[] = [];
 for (const [name, listed] of suites) {
   const files = listed
     .filter((f) => f.startsWith("packages/core/tests/"))
     .filter((f) => !SQLITE_ONLY.has(f.split("/").pop()!));
-  for (let i = 0; i < files.length; i += 5) {
-    const chunk = files.slice(i, i + 5);
-    console.log(`\n== ${name}: ${chunk.join(" ")}`);
-    const p = Bun.spawn(["bun", "test", ...chunk], {
-      stdout: "inherit",
-      stderr: "inherit",
-      env: process.env,
-    });
-    if ((await p.exited) !== 0) failed.push(`${name}: ${chunk.join(" ")}`);
-  }
+  for (let i = 0; i < files.length; i += 5) chunks.push({ name, files: files.slice(i, i + 5) });
+}
+
+const failed: string[] = [];
+const timings: { label: string; seconds: number }[] = [];
+
+async function runChunk({ name, files }: Chunk): Promise<void> {
+  const label = `${name}: ${files.join(" ")}`;
+  const start = performance.now();
+  const p = Bun.spawn(["bun", "test", ...files], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: process.env,
+  });
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(),
+    new Response(p.stderr).text(),
+    p.exited,
+  ]);
+  const seconds = (performance.now() - start) / 1000;
+  timings.push({ label, seconds });
+  if (code !== 0) failed.push(label);
+  // One write per chunk, so a chunk's lines (and its ::group:: blocks) are never interleaved.
+  process.stdout.write(
+    `\n== ${label}\n${out}${err}-- ${name} chunk took ${seconds.toFixed(1)}s${code !== 0 ? " (FAILED)" : ""}\n`,
+  );
+}
+
+let next = 0;
+await Promise.all(
+  Array.from({ length: Math.min(concurrency, chunks.length) }, async () => {
+    while (next < chunks.length) await runChunk(chunks[next++]!);
+  }),
+);
+
+console.log(`\nslowest chunks (of ${chunks.length}, concurrency ${concurrency}):`);
+for (const t of timings.sort((a, b) => b.seconds - a.seconds).slice(0, 5)) {
+  console.log(`  ${t.seconds.toFixed(1)}s  ${t.label}`);
 }
 if (failed.length > 0) {
   console.error(`\nfailed on Postgres:\n  ${failed.join("\n  ")}`);
