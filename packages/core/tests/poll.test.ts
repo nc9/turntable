@@ -628,6 +628,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "queueBranches",
     "queueCommit",
     "rateLimit",
+    "refObject",
     "repoDefaultBranch",
     "setToken",
     "tagRefs",

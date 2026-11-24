@@ -110,6 +110,33 @@ async function buildWorld(): Promise<World> {
     webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
     githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
+    // `run_dispatch` needs the poller and a forge; this stand-in honours its contract (the run
+    // lands in the scope the dispatcher resolved, and nowhere else) so the op is reached for
+    // real. The ref and sha rules are in run-dispatch.test.ts.
+    runDispatcher: async (
+      scope: { orgId: string; projectId: string },
+      _repo: string | undefined,
+      _req: unknown,
+    ) => {
+      const sha = "c".repeat(40);
+      const run = await createRun(db, scope, {
+        // Never the sampler's input: B writing A's marker into B's own run is not a leak.
+        workflowPath: ".github/workflows/dispatched.yml",
+        event: "workflow_dispatch",
+        ref: "refs/heads/main",
+        sha,
+      });
+      return {
+        runId: run.id,
+        repo: "dispatch/stub",
+        sha,
+        ref: "refs/heads/main",
+        trustClass: "protected" as const,
+        held: false,
+        inputNames: [],
+        superseded: [],
+      };
+    },
   };
   const a = await seedTenant(db, "org-a");
   const b = await seedTenant(db, "org-b");
@@ -166,7 +193,8 @@ async function buildWorld(): Promise<World> {
   });
 
   // Secrets, proxy rules and passthrough hosts, through A's own operator, so audit rows exist.
-  const aRel = (await mintToken(db, { orgId: a.orgId }, "release_operator")).secret;
+  const aRel = (await mintToken(db, { orgId: a.orgId }, "release_operator", { kind: "person" }))
+    .secret;
   const asA = (name: string, input: Record<string, unknown>) =>
     dispatch(env, { kind: "bearer", token: aRel }, name, input);
   const mk = async (name: string, input: Record<string, unknown>) => {
@@ -318,7 +346,7 @@ async function buildWorld(): Promise<World> {
       const tok = (await mintToken(db, { orgId: t.orgId }, role)).secret;
       out.push({ label: `${label} ${role} token`, cred: { kind: "bearer", token: tok }, role });
     }
-    const scoped = (await mintToken(db, t.scope, "release_operator")).secret;
+    const scoped = (await mintToken(db, t.scope, "release_operator", { kind: "person" })).secret;
     out.push({
       label: `${label} project-scoped release_operator`,
       cred: { kind: "bearer", token: scoped },

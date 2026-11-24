@@ -32,6 +32,7 @@ import type { WebhookService } from "./webhooks/service";
 import { pageCsp, renderPage, servePageAsset } from "./pages/server-pages";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
+import type { RunDispatcher } from "./poll/dispatch";
 
 const PLACEHOLDER_HTML = renderPage({
   title: "Turntable",
@@ -110,6 +111,8 @@ export type ServeOptions = {
   webAuth?: { sessions: WebSessions; handler: AuthHandler };
   /** GitHub API facts, for `resync_installation`. */
   githubFacts?: GithubFacts;
+  /** Starts `workflow_dispatch` runs (the poller), for `run_dispatch`. */
+  runDispatcher?: RunDispatcher;
   /** Resolves a GitHub login to its numeric id, for invites. */
   githubUsers?: GithubUserLookup;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
@@ -147,6 +150,7 @@ export function startServer(options: ServeOptions) {
     sessions: options.webAuth?.sessions,
     githubFacts: options.githubFacts,
     githubUsers: options.githubUsers,
+    runDispatcher: options.runDispatcher,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,

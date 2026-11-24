@@ -1,5 +1,5 @@
 import type { Db } from "../db";
-import { appendAudit, listIngestBindings, listInstalledRepos } from "../db/repos";
+import { appendAudit, listIngestBindings, listInstalledRepos, type Scope } from "../db/repos";
 import { backoffMs } from "./backoff";
 import {
   ANONYMOUS_REQUESTS_PER_HOUR,
@@ -11,7 +11,14 @@ import {
   requestsPerPoll,
 } from "./config";
 import { type FetchLike, GithubClient, RateLimited } from "./github";
-import { newTagCaches, pollRepo } from "./ingest";
+import {
+  DispatchError,
+  dispatchWorkflow,
+  refuseAgentByName,
+  type DispatchRequest,
+  type DispatchResult,
+} from "./dispatch";
+import { newTagCaches, pollRepo, targetScope } from "./ingest";
 import { ingestStatus, POLL_RESERVE, type PollAuthMode, type RepoStatus } from "./status";
 
 /** What the poller needs from the GitHub App: the one mint function (it caches until near expiry). */
@@ -278,6 +285,66 @@ export class Poller {
 
   #now(): number {
     return (this.#o.now ?? Date.now)();
+  }
+
+  /**
+   * Starts one `workflow_dispatch` run for a repo of this project. The repo is one the project
+   * ingests (a static poll entry for it, or its binding with ingest settings): a project with
+   * neither refuses. `repo` is needed only when the project ingests several. The forge client is
+   * the poller's own (read-only, an installation token when the repo has one).
+   */
+  async dispatch(
+    scope: Required<Scope>,
+    repo: string | undefined,
+    req: DispatchRequest,
+  ): Promise<DispatchResult & { repo: string }> {
+    await this.refreshBindings().catch(() => {});
+    const mine: PollRepoConfig[] = [];
+    for (const key of new Set(this.#allRepos().map((c) => c.repo.toLowerCase()))) {
+      if (repo !== undefined && key !== repo.toLowerCase()) continue;
+      // The same config the poll loop uses: a static entry wins over a binding of the same name.
+      const cfg = this.#cfg(key) as PollRepoConfig;
+      const target = this.#o.config.repos.includes(cfg)
+        ? await targetScope(this.#o.db, cfg).catch(() => undefined)
+        : this.#boundIds.get(key);
+      if (target && target.orgId === scope.orgId && target.projectId === scope.projectId) {
+        mine.push(cfg);
+      }
+    }
+    if (mine.length === 0) {
+      throw new DispatchError(
+        "not_found",
+        repo === undefined
+          ? "this project has no repo with ingest enabled"
+          : `${repo} is not ingested by this project`,
+      );
+    }
+    if (mine.length > 1) {
+      throw new DispatchError(
+        "invalid_input",
+        `this project ingests several repos (${mine.map((c) => c.repo).join(", ")}): name one`,
+      );
+    }
+    const cfg = mine[0] as PollRepoConfig;
+    // An agent token's policy is checked from the ref name before any forge call (a client may
+    // mint an installation token).
+    refuseAgentByName(cfg, req);
+    const { github } = await this.#clientFor(cfg);
+    const out = await dispatchWorkflow(
+      {
+        db: this.#o.db,
+        github,
+        provider: this.#o.config.provider,
+        ...(this.#o.now ? { now: this.#o.now } : {}),
+        ...(this.#o.log ? { log: this.#o.log } : {}),
+      },
+      cfg,
+      scope,
+      req,
+    );
+    if (out.superseded.length > 0) this.#o.onSuperseded?.(out.superseded);
+    this.#o.onQueued?.();
+    return { ...out, repo: cfg.repo };
   }
 
   /** Polls every repo once, now. For tests. */

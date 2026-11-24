@@ -63,7 +63,12 @@ export const runSummarySchema = z.object({
   sha: z.string().nullable(),
   workflow_name: z.string().nullable().describe("Workflow display name, from the forge."),
   commit_message: z.string().nullable().describe("Head commit message (capped), from the forge."),
-  actor: z.string().nullable().describe("Forge login of whoever triggered the run."),
+  actor: z
+    .string()
+    .nullable()
+    .describe(
+      "Forge login of whoever triggered the run; for a workflow_dispatch run, the dispatching principal (kind:id).",
+    ),
   head_branch: z.string().nullable(),
   pr_number: z.int().nullable().describe("Pull request number, when the run is for one."),
   state: jobStateSchema,

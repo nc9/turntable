@@ -106,5 +106,13 @@ export function buildActEvent(run: ActEventRun): Record<string, unknown> {
       ...repository,
     };
   }
+  if (run.event === "workflow_dispatch") {
+    // `github.event.inputs`: the strings stored at dispatch. Act derives the typed `inputs`
+    // context from them and the workflow's declared types.
+    const given = isObj(stored.inputs) ? stored.inputs : {};
+    const inputs: Record<string, string> = {};
+    for (const [k, v] of Object.entries(given)) if (typeof v === "string") inputs[k] = v;
+    return { ref: run.ref, inputs, ...repository };
+  }
   return { ...repository };
 }

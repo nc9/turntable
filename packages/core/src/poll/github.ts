@@ -630,6 +630,34 @@ export class GithubClient {
     }
   }
 
+  /**
+   * What `refs/heads/<name>` or `refs/tags/<name>` points at in THIS repository (a fork's branch
+   * is not here), or undefined when no such ref exists. An annotated tag is returned as the tag
+   * object (`type: "tag"`) for `peelTag`.
+   */
+  async refObject(
+    repo: string,
+    kind: "heads" | "tags",
+    name: string,
+  ): Promise<{ type: "commit" | "tag"; sha: string } | undefined> {
+    if (!/^[A-Za-z0-9._/-]{1,200}$/.test(name)) return undefined;
+    try {
+      const body = (await this.#get(
+        `/repos/${repo}/git/ref/${kind}/${name.split("/").map(encodeURIComponent).join("/")}`,
+      )) as { object?: { type?: string; sha?: string } };
+      const type = body.object?.type;
+      const sha = body.object?.sha;
+      return (type === "commit" || type === "tag") &&
+        typeof sha === "string" &&
+        /^[0-9a-f]{40,64}$/i.test(sha)
+        ? { type, sha: sha.toLowerCase() }
+        : undefined;
+    } catch (err) {
+      if (err instanceof GithubError && err.status === 404) return undefined;
+      throw err;
+    }
+  }
+
   /** Raw file content at a commit, or undefined when it does not exist there. */
   async fileAt(repo: string, path: string, sha: string): Promise<string | undefined> {
     try {

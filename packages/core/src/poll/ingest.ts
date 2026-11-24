@@ -254,7 +254,7 @@ export type IngestDeps = {
   tagCaches?: TagCaches;
 };
 
-async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
+export async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
   if (cfg.org === "local" && cfg.project === "local") return ensureLocalTenant(db);
   const org = await getOrgBySlug(db, cfg.org);
   if (!org) throw new Error(`poll config: no org ${cfg.org}`);
@@ -369,7 +369,7 @@ function localUses(text: string): string[] {
  * reads: anything absolute or climbing out is never requested (the planner marks that job
  * unsupported). Files over the safe reader's size cap are ignored.
  */
-async function fetchLocalActions(
+export async function fetchLocalActions(
   github: GithubClient,
   repo: string,
   sha: string,

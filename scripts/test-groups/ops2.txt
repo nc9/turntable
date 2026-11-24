@@ -20,3 +20,5 @@ packages/core/tests/release-approval-v2.test.ts
 packages/core/tests/session-step-up.test.ts
 packages/core/tests/release-approve-cli.test.ts
 packages/core/tests/pr-text-not-exposed.test.ts
+packages/core/tests/dispatch-inputs-not-exposed.test.ts
+packages/core/tests/run-dispatch-agents.test.ts

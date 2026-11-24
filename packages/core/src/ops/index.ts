@@ -53,6 +53,7 @@ import { failureDigest } from "./definitions/failure-digest";
 import { listOrgs } from "./definitions/list-orgs";
 import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
+import { runDispatch } from "./definitions/run-dispatch";
 import { signRelease } from "./definitions/sign-release";
 import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
 import { startInstallationClaim } from "./definitions/installation-claim";
@@ -118,6 +119,7 @@ export const registry = createRegistry([
   checksForSha,
   cancel,
   rerun,
+  runDispatch,
   approveRunOp,
   approveRunChallengeOp,
   signRelease,

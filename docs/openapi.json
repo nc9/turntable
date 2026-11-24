@@ -188,7 +188,7 @@
                             "type": ["string", "null"]
                           },
                           "actor": {
-                            "description": "Forge login of whoever triggered the run.",
+                            "description": "Forge login of whoever triggered the run; for a workflow_dispatch run, the dispatching principal (kind:id).",
                             "type": ["string", "null"]
                           },
                           "head_branch": {
@@ -403,7 +403,7 @@
                       "type": ["string", "null"]
                     },
                     "actor": {
-                      "description": "Forge login of whoever triggered the run.",
+                      "description": "Forge login of whoever triggered the run; for a workflow_dispatch run, the dispatching principal (kind:id).",
                       "type": ["string", "null"]
                     },
                     "head_branch": {
@@ -2487,6 +2487,145 @@
         ],
         "x-turntable-effect": "write",
         "x-turntable-min-role": "operator",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/dispatches": {
+      "post": {
+        "operationId": "run_dispatch",
+        "summary": "Start a workflow_dispatch run of one workflow at a branch or tag.",
+        "description": "Runs a workflow that declares `on.workflow_dispatch`, as the GitHub 'Run workflow' button does. `ref` is a branch or tag name of the project's repo (or refs/heads/..., refs/tags/...); it is resolved to a sha NOW and the run is for exactly that sha. A bare commit sha is not accepted (as on GitHub), and neither is a name that is not in the repo (a fork's branch, an unknown name). `inputs` is a map of strings checked against the workflow's `on.workflow_dispatch.inputs`: unknown names, missing required inputs, wrong types (boolean, number, choice, environment) and values over the size cap are refused with the reason; defaults are applied. The job sees `github.event_name == 'workflow_dispatch'`, `github.event.inputs.*` (strings) and `inputs.*` (typed). Trust class: the default branch (and the project's protected refs) is protected, another branch is trusted_pr (no secrets), and a tag the project lists as a release ref is a release run that WAITS for release approval like a tag push would (state awaiting_approval); a dispatch never skips an approval. Only a repo this project ingests, and only when ingest is on. Input values are stored with the run and never written to the audit log (the audit has the input names). An agent token is also bound by the project's run_dispatch_agents policy (default unprivileged: an agent may not dispatch a protected or release run, refused before any forge call; none: no agent dispatches; any). Needs release_operator or higher (a maintainer); an operator or a reader is refused. Counts against the project's hourly run cap. Writes and is audited.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "workflow": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Workflow file under .github/workflows/, e.g. .github/workflows/release.yml."
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "A branch or tag name (or refs/heads/..., refs/tags/...)."
+                  },
+                  "inputs": {
+                    "default": {},
+                    "description": "String inputs by name, at most 25 and 65536 bytes in total.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 65536
+                    }
+                  },
+                  "repo": {
+                    "description": "owner/name; only needed when the project ingests more than one repo.",
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+                  },
+                  "org": {
+                    "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "project": {
+                    "description": "Project slug. Required unless the token is scoped to one project.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["workflow", "ref"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "The full ref the run is for."
+                    },
+                    "sha": {
+                      "type": "string",
+                      "description": "The commit the ref resolved to; the run is for exactly this."
+                    },
+                    "trust_class": {
+                      "type": "string",
+                      "enum": ["protected", "release", "trusted_pr", "untrusted_pr"]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": ["queued", "awaiting_approval"],
+                      "description": "awaiting_approval when the run waits for a human before any job starts."
+                    },
+                    "input_names": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The inputs the run got, defaults included."
+                    }
+                  },
+                  "required": [
+                    "run_id",
+                    "repo",
+                    "ref",
+                    "sha",
+                    "trust_class",
+                    "state",
+                    "input_names"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-min-role": "release_operator",
         "x-turntable-untrusted-output": false
       }
     },

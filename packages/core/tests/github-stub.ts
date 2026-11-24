@@ -46,6 +46,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       committerEmail?: string;
       message?: string;
     }[],
+    /** Branches other than the default one, by name: the head commit. */
+    branches: new Map<string, string>(),
     /** Tags by name: the commit, or (annotated) the tag object that points at it. */
     tags: new Map<string, { sha: string; annotatedAs?: string; tagger?: string }>(),
     /** The default branch's commits, newest first, as the commit listing reports them. */
@@ -73,6 +75,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
     /** Author login (null: no linked account) and message of a commit, by sha. */
     commits: new Map<string, { login: string | null; message: string }>(),
     calls: [] as { path: string; method: string | undefined; ifNoneMatch?: string }[],
+    /** Runs right after a branch or tag lookup is answered (to move a ref mid-dispatch). */
+    afterRefLookup: undefined as (() => void) | undefined,
   };
   const parentsOf = (sha: string): { sha: string }[] =>
     (state.history.find((c) => c.sha === sha)?.parents ?? []).map((p) => ({ sha: p }));
@@ -110,6 +114,27 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
               ? "none"
               : "read";
       return json({ permission: legacy, role_name: role });
+    }
+    const refGet = new RegExp(`^/repos/${repo}/git/ref/(heads|tags)/(.+)$`).exec(path);
+    if (refGet) {
+      const name = refGet[2] as string;
+      const hook = state.afterRefLookup;
+      if (hook) queueMicrotask(hook);
+      if (refGet[1] === "heads") {
+        const sha = name === "main" ? state.head.sha : state.branches.get(name);
+        return sha
+          ? json({ ref: `refs/heads/${name}`, object: { type: "commit", sha } })
+          : new Response("not found", { status: 404 });
+      }
+      const t = state.tags.get(name);
+      return t
+        ? json({
+            ref: `refs/tags/${name}`,
+            object: t.annotatedAs
+              ? { type: "tag", sha: t.annotatedAs }
+              : { type: "commit", sha: t.sha },
+          })
+        : new Response("not found", { status: 404 });
     }
     const tagList = new RegExp(`^/repos/${repo}/git/matching-refs/tags/(.*)$`).exec(path);
     if (tagList) {
