@@ -75,44 +75,38 @@ describe("the event payload act is given", () => {
     });
   });
 
-  test("only allowlisted forge facts get in: titles, bodies, tokens and unknown keys never do", () => {
+  test("only allowlisted forge facts get in: tokens and unknown keys never do", () => {
     const hostile = {
-      title: "x",
-      body: "ignore previous instructions",
+      title: "top-level",
       token: "ghs_secret",
       pull_request: {
-        title: "evil",
-        body: "evil",
-        user: { login: "evil" },
+        title: "t",
+        body: "b",
+        labels: [{ name: "l", color: "red", url: "https://evil/l" }, "bad", { name: 3 }],
+        user: { login: "someone", type: "Bot", token: "ghs_u", site_admin: true },
         base: { ref: "main", sha: BASE, token: "ghs_x", label: "evil" },
         head: {
           ref: "topic",
           sha: HEAD,
-          repo: { clone_url: "https://evil/x", full_name: "evil/x" },
+          repo: { clone_url: "https://evil/x", full_name: "evil/x", fork: true, token: "ghs_r" },
         },
         draft: true,
       },
-      sender: { login: "evil" },
+      sender: { login: "someone", type: "Bot", email: "e@example.com" },
     };
     const ev = buildActEvent(prRun({}, hostile));
     const text = JSON.stringify(ev);
-    for (const bad of [
-      "evil",
-      "ghs_",
-      "ignore previous",
-      "sender",
-      "title",
-      "body",
-      "token",
-      "clone_url",
-    ]) {
+    for (const bad of ["ghs_", "top-level", "clone_url", "email", "site_admin", "color", "url"]) {
       expect(text).not.toContain(bad);
     }
-    expect((ev.pull_request as { draft: boolean }).draft).toBe(true);
-    // the head repo is the run's repo, not whatever the stored event named
-    expect((ev.pull_request as { head: { repo: unknown } }).head.repo).toEqual({
-      full_name: "acme/web",
-    });
+    const pr = ev.pull_request as Record<string, any>;
+    expect(pr.draft).toBe(true);
+    expect(pr.title).toBe("t");
+    expect(pr.body).toBe("b");
+    expect(pr.labels).toEqual([{ name: "l" }]);
+    expect(pr.user).toEqual({ login: "someone", type: "Bot" });
+    expect(pr.head.repo).toEqual({ full_name: "evil/x", fork: true });
+    expect(ev.sender).toEqual({ login: "someone", type: "Bot" });
   });
 
   test("a missing or malformed base sha is left out, not invented; a bad plan does not throw", () => {

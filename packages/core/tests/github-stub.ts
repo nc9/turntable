@@ -11,6 +11,14 @@ export type StubPull = {
   headRef?: string;
   /** `owner/name` of the head repo; null is a deleted fork. Default: the base repo. */
   headRepo?: string | null;
+  title?: string;
+  body?: string | null;
+  labels?: string[];
+  draft?: boolean;
+  /** The author's account type, e.g. "Bot". */
+  userType?: string;
+  /** The head repo's own `fork` flag. */
+  headFork?: boolean;
 };
 
 export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/ci.yml") {
@@ -216,12 +224,21 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       return json(
         state.pulls.map((p) => ({
           number: p.number,
-          title: `PR ${p.number}`,
-          user: { login: p.user },
+          title: p.title ?? `PR ${p.number}`,
+          body: p.body ?? null,
+          draft: p.draft ?? false,
+          labels: (p.labels ?? []).map((name) => ({ name })),
+          user: { login: p.user, ...(p.userType ? { type: p.userType } : {}) },
           head: {
             sha: p.headSha,
             ref: p.headRef ?? "topic",
-            repo: p.headRepo === null ? null : { full_name: p.headRepo ?? repo },
+            repo:
+              p.headRepo === null
+                ? null
+                : {
+                    full_name: p.headRepo ?? repo,
+                    ...(p.headFork === undefined ? {} : { fork: p.headFork }),
+                  },
           },
           base: { ref: p.baseRef ?? "main", sha: p.baseSha ?? SHA("b"), repo: { full_name: repo } },
         })),
