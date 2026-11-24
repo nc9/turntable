@@ -315,10 +315,12 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     );
   }
 
+  // Same-origin only: no CORS header is ever added here, so only this origin's script can read the
+  // CSRF token, and `no-store` keeps it out of caches.
   async function info(req: Request): Promise<Response> {
     const me = await current(req);
     const body = me
-      ? { signed_in: true, github_login: me.login, orgs: me.orgs }
+      ? { signed_in: true, github_login: me.login, orgs: me.orgs, csrf: csrfToken(me.cookie) }
       : { signed_in: false };
     return Response.json(body, {
       headers: {

@@ -52,6 +52,8 @@ Any logged-out visit to the app ends on `/sign-in`. Its main button, **Sign in w
 
 When the page loads, it asks `GET /auth/session`. If you are signed in, the UI runs on the cookie session and stores no token in the browser. Your orgs come from the session, an org switcher in the header lists them, and the last org used in this browser is remembered (and checked against your orgs, so a stale one is ignored). After the GitHub callback you land in that org, in your only org, or on an org picker. **Sign out** in the switcher menu posts to `/auth/logout` and returns to `/sign-in`.
 
+The session cookie is HttpOnly, so the UI cannot read it. For writes the server checks, it takes the per-session CSRF token from the `csrf` field of the `GET /auth/session` response (present only when signed in) and sends it back with the request. That route is same-origin only: it sends no CORS headers, so no other origin's script can read the token, and its responses are `Cache-Control: no-store`.
+
 Two things differ from token mode:
 
 - **Updates are polled.** The realtime socket and the event stream accept only a bearer token, so a session refreshes lists and logs every few seconds instead of streaming them.

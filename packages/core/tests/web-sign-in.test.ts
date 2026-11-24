@@ -259,6 +259,31 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     });
   });
 
+  test("/auth/session hands the signed-in page its CSRF token, same-origin only and uncached", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const get = (init: { cookie?: string; origin?: string } = {}) =>
+      h.handler.handle(
+        new Request(`${ORIGIN}${SESSION_INFO_PATH}`, {
+          headers: {
+            ...(init.cookie ? { cookie: `${SESSION_COOKIE}=${init.cookie}` } : {}),
+            ...(init.origin ? { origin: init.origin } : {}),
+          },
+        }),
+      );
+    const res = (await get({ cookie, origin: "https://evil.example" }))!;
+    const body = (await res.json()) as { csrf?: string };
+    expect(body.csrf).toBe(csrfToken(cookie));
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect([...res.headers.keys()].filter((k) => k.startsWith("access-control-"))).toEqual([]);
+    // the token passes the sign-out check; another value does not
+    expect((await h.logout({ cookie, csrf: "wrong" }))!.status).toBe(403);
+    expect((await h.logout({ cookie, csrf: body.csrf ?? "" }))!.status).toBe(303);
+    // signed out: no token
+    const anon = (await get())!;
+    expect(await anon.json()).toEqual({ signed_in: false });
+    expect([...anon.headers.keys()].filter((k) => k.startsWith("access-control-"))).toEqual([]);
+  });
+
   test("a state with no cookie, a wrong cookie or a bad signature is refused and spends nothing", async () => {
     const h = await harness();
     h.users.set("code-alice", { id: "1001", login: "alice" });

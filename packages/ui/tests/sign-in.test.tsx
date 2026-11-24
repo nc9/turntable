@@ -5,10 +5,10 @@ import { PASSKEY_MESSAGE, refusalMessage, TOKEN_MESSAGE } from "../src/api/refus
 import { ConnectScreen } from "../src/features/shell/connect";
 import { SignInScreen } from "../src/features/shell/sign-in-screen";
 import {
-  csrfFromAuthPage,
   gateFor,
   getSession,
   loadSession,
+  logoutRequest,
   parseSession,
   pickOrg,
   resetSession,
@@ -282,34 +282,54 @@ describe("refusal mapping", () => {
 
 describe("sign out", () => {
   const CSRF = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
-  const page = `<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${CSRF}"><button>Sign out</button></form>`;
 
-  test("csrfFromAuthPage reads the form's token", () => {
-    expect(csrfFromAuthPage(page)).toBe(CSRF);
-    expect(csrfFromAuthPage("<p>Sign in</p>")).toBeUndefined();
+  test("parseSession keeps the csrf of a signed-in session only", () => {
+    expect(parseSession({ signed_in: true, orgs: [], csrf: CSRF }).csrf).toBe(CSRF);
+    expect(parseSession({ signed_in: true, orgs: [] }).csrf).toBeNull();
+    expect(parseSession({ signed_in: false, csrf: CSRF }).csrf).toBeNull();
   });
 
-  test("posts the CSRF token to /auth/logout, then leaves for /sign-in", async () => {
+  test("logoutRequest builds the POST from the token", () => {
+    const [url, init] = logoutRequest(CSRF);
+    expect(url).toBe("/auth/logout");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("same-origin");
+    expect(String(init.body)).toBe(`csrf=${CSRF}`);
+  });
+
+  test("posts the token from the session response to /auth/logout, never fetching /auth", async () => {
     resetSession(parseSession({ signed_in: true, github_login: "o", orgs: [{ slug: "a" }] }));
     const calls: { url: string; init: RequestInit }[] = [];
     let left = "";
     const r = await signOut({
       fetch: async (url: string, init: RequestInit = {}) => {
         calls.push({ url, init });
-        return url === "/auth" ? new Response(page) : new Response(null, { status: 303 });
+        return url === "/auth/session"
+          ? json({ signed_in: true, orgs: [], csrf: CSRF })
+          : new Response(null, { status: 303 });
       },
       leave: (to) => {
         left = to;
       },
     });
-    expect(calls.map((c) => c.url)).toEqual(["/auth", "/auth/logout"]);
-    const out = calls[1] as { init: RequestInit };
-    expect(out.init.method).toBe("POST");
-    expect(out.init.credentials).toBe("same-origin");
-    expect(String(out.init.body)).toBe(`csrf=${CSRF}`);
+    expect(calls.map((c) => c.url)).toEqual(["/auth/session", "/auth/logout"]);
+    expect(String((calls[1] as { init: RequestInit }).init.body)).toBe(`csrf=${CSRF}`);
     expect(r.ok).toBe(true);
     expect(left).toBe("/sign-in");
     expect(getSession().status).toBe("anonymous");
+  });
+
+  test("uses the token already held from the session load, with no extra request", async () => {
+    resetSession(parseSession({ signed_in: true, orgs: [], csrf: CSRF }));
+    const urls: string[] = [];
+    await signOut({
+      fetch: async (url: string) => {
+        urls.push(url);
+        return new Response(null, { status: 303 });
+      },
+      leave: () => {},
+    });
+    expect(urls).toEqual(["/auth/logout"]);
   });
 
   test("signs out locally even when the server cannot be reached", async () => {
