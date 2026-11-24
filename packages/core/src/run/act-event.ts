@@ -3,9 +3,15 @@
 //
 // Built only from forge facts that were fetched and stored at ingest (the run row and the event
 // stored in the run's plan), copied field by field from an allowlist. Nothing else is ever
-// included: no token, nothing a job could smuggle in. The PR title, body and label names are
-// attacker-controlled text; they are copied as inert strings into the event JSON file and
-// nowhere else (never a command line, an environment variable, a log line or a summary).
+// included: no token, nothing a job could smuggle in.
+//
+// PR text (title, body, labels) is attacker-controlled. It enters ONLY this event JSON, exactly as
+// on GitHub, where using `${{ github.event.pull_request.title }}` inside a `run:` step is the
+// workflow author's own injection risk. That is safe here because of the core invariant: a job for
+// an untrusted author holds no usable credentials (trust classes, #17), so an injection gains
+// nothing beyond what the author's own code could already do. Turntable itself never renders,
+// returns or summarises PR text: no operation result, event, log line, check-run summary or
+// command line carries it (pr-text-not-exposed.test.ts holds that line).
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);

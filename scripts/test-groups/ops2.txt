@@ -19,3 +19,4 @@ packages/core/tests/web-sign-in.test.ts
 packages/core/tests/release-approval-v2.test.ts
 packages/core/tests/session-step-up.test.ts
 packages/core/tests/release-approve-cli.test.ts
+packages/core/tests/pr-text-not-exposed.test.ts
