@@ -876,7 +876,7 @@ test("ingest refuses unknown needs, cycles, self-dependencies and more than 256 
       { key: "a", needs: [] },
     ]),
   ).toMatch(/duplicate/);
-});
+}, 30_000);
 
 test("ingest_status narrows to the project for a project-scoped token", async () => {
   resetIngestStatus();

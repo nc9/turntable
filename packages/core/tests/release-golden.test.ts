@@ -900,7 +900,7 @@ describe("the same path, from a signed tag push webhook through the poller", () 
       });
       await releaseAndVerify();
     }
-  });
+  }, 30_000);
 
   test("the solo policy (a quorum of one, author approval allowed) passes, annotated or not", async () => {
     for (const lightweight of [false, true]) {

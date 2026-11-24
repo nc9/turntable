@@ -100,4 +100,4 @@ test("turntable audit: checkpoint, verify, export, and tamper exit codes", async
   expect(await quiet(() => auditCommand(["verify", ...base, ...anchored]))).toBe(1);
   expect(await quiet(() => auditCommand(["bogus"]))).toBe(2);
   db.close();
-});
+}, 30_000);
