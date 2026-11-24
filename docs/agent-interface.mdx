@@ -97,6 +97,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_doctor` | none | no |  | read | admin | instance | The instance's readiness report, for the instance administrator. |
 | `instance_drain` | none | no |  | write | admin | instance | Stop starting new attempts so a deploy does not cut running jobs (instance administrator). |
 | `instance_drain_status` | none | no |  | read | admin | instance | Whether this instance is draining and how many attempts still run. |
+| `instance_org_summary` | none | no |  | read | admin | instance | Counts of tokens, approvers, members and pending invites per org. |
 | `instance_run_activity` | none | no |  | read | admin | instance | Counts of runs, jobs and running attempts per org, for a deploy check. |
 | `instance_ingest_status` | none | no |  | read | admin | instance | Poll health of every org's repos, for the instance administrator. |
 | `instance_audit_verify` | none | no |  | read | admin | instance | Check orgs' audit chains against exported anchors, for the instance administrator. |
