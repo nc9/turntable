@@ -170,3 +170,23 @@ So a domain list is enforced by a transparent filter on the TLS server name and 
 3. The proxy gains a TLS listener mode, the per-source rate limits and the connection caps above.
 4. The canary gains the private-range and wrong-address probes. Nothing else in the job runner changes: it already works from `SandboxHandle.proxy` and `mustNotReach`.
 5. Tests: a fake Daytona API that records the create body (allow list present, no window), the relay against a local TLS proxy, the canary's refusal cases, and the live check script run by hand against a real account under the existing sandbox limits.
+
+## Running the egress probe
+
+`packages/provider-daytona/scripts/egress-probe.ts` measures what each egress class really blocks on Daytona, from inside a sandbox. It creates real sandboxes, so an operator runs it by hand with a key and an explicit go. CI never runs it, and this page records no results until a run has happened.
+
+```sh
+bun run packages/provider-daytona/scripts/egress-probe.ts \
+  --i-have-approval --key-file <path> --probe-zone <zone> \
+  --allow-address <ipv4> [--include-domain-mode --domain-allow <name>] \
+  [--only <class>] [--out report.json]
+```
+
+- **Approval gate.** It refuses to start without `--i-have-approval`. The key comes from `--key-file` (a file holding only the key) or `DAYTONA_API_KEY`, never from a default location, and is never printed.
+- **Safety.** One sandbox at a time, fleet `turntable-dev` (label and name prefix), a 15 minute TTL, the provider's org usage preflight before each create, delete in `finally`, and a refusal to start if sandboxes of the fleet already exist. It prints sandbox-minutes and the number left behind.
+- **Classes.** `none` (`networkBlockAll`, the provider's own path), `deny-all-except-proxy` (`networkAllowList` with `--allow-address`, which must not be 1.1.1.1 or 8.8.8.8), and with `--include-domain-mode` also `proxy-domain-filtered` (`domainAllowList` with `--domain-allow`).
+- **Probes.** HTTP and HTTPS to a public name and to an IP literal; HTTP to an IP with a spoofed allowed `Host`; a raw TCP request over a socket to a public IP; DNS over UDP and over TCP to two public resolvers, for a real name and a random one, decoded (rcode and A records); the system resolver; and the sandbox gateway's 18080 forward proxy (the gateway is read from `/proc/net/route`). Every probe is judged by content (a status line, returned bytes, a decoded A record), never by a successful connect. `deny-all-except-proxy` and the domain class also run a control that must answer, so a silent failure of the probe cannot read as "blocked".
+- **Forwarded-query check (a manual step).** Each class sends queries for `<random>.<probe-zone>`. The zone must be one whose authoritative nameserver you control and log. The script prints each name and the time; look for them in your nameserver's log. A name that shows up there was forwarded upstream before any NXDOMAIN, so query names are a data channel for that class. The script cannot see that log, so it cannot pass or fail this check.
+- **Output and exit code.** A JSON report per class (probe, raw outcome, verdict `blocked`, `LEAK`, `control-ok` or `inconclusive`). Exit 1 if any probe for `none` or `deny-all-except-proxy` got a real answer, 2 if any probe was inconclusive (a missing result is never read as blocked), 3 for bad usage or a sandbox left behind, else 0. A LEAK under the domain class is reported but does not change the exit code: that class is an L7 filter by design.
+
+A `LEAK` means the class is not enforced on Daytona for that path. Do not rely on it: refuse jobs that need that class on this provider (fail closed) until Daytona fixes it, and record the finding and date in the security docs.

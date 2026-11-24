@@ -4,3 +4,4 @@ packages/provider-daytona/tests/env-file.test.ts
 packages/provider-daytona/tests/conformance-mock.test.ts
 packages/provider-daytona/tests/proxy-path.test.ts
 packages/provider-daytona/tests/legacy-labels.test.ts
+packages/provider-daytona/tests/egress-probe-lib.test.ts
