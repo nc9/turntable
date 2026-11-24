@@ -38,7 +38,9 @@ import { credentialsFor } from "../src/trust";
 import { mintToken } from "./ops-helpers";
 import { GithubClient, pollConfigSchema, pollRepo, type PollRepoConfig } from "../src/poll";
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
-import { parseSandboxSizes } from "../src/scheduler/sandbox-size";
+import { parseSandboxSizes, setOperatorSizes } from "../src/scheduler/sandbox-size";
+import { ambientSettings } from "../src/settings/ambient";
+import type { Credential } from "../src/ops";
 import { makeGithub, SHA } from "./github-stub";
 
 // Several tests here take 2-3 s alone and over 6 s under CPU load: well past bun's 5 s default.
@@ -615,6 +617,69 @@ jobs:
     const jobs = await listJobs(db, scope, (await listRuns(db, scope))[0]!.id);
     expect(jobs.length).toBeGreaterThan(0);
     expect(jobs.every((j) => j.state === "failure")).toBe(true);
+  });
+
+  test("a stored tenant map entry for a class made non-selectable afterwards fails the job with the reason: no sandbox, no fallback (#506)", async () => {
+    const cfg = (orgs?: string[]) =>
+      parseSandboxSizes(
+        JSON.stringify({
+          classes: {
+            small: { cpus: 2 },
+            large: { cpus: 4 },
+            mac: { cpus: 8, tenantSelectable: false, ...(orgs ? { orgs } : {}) },
+          },
+          // the instance map and the default would be a silent downgrade
+          labels: { "ubuntu-latest-4-cores": "large" },
+          default: "small",
+        }),
+        "test",
+      );
+    const settings = ambientSettings();
+    setOperatorSizes(cfg(["local"]));
+    try {
+      const { secret } = await mintToken(db, scope, "release_operator", { kind: "person" });
+      const set = await dispatch(
+        { registry, db, settings },
+        { kind: "bearer", token: secret } as Credential,
+        "set_setting",
+        { key: "runner_labels", value: { "ubuntu-latest-4-cores": "mac" } },
+      );
+
+      expect(set.ok).toBe(true);
+      // the operator drops the allowlist: the stored entry now names a class the org may not select
+      const { specs, jobs, logOf } = await (async () => {
+        const gh = makeGithub();
+        gh.state.files.set("*", SIZED);
+        await ingest(gh);
+        const real = world.provider();
+        const specs: string[] = [];
+        const provider: Provider = Object.assign(Object.create(real) as Provider, {
+          create: (spec: Parameters<Provider["create"]>[0]) => {
+            specs.push(spec.name);
+            return real.create(spec);
+          },
+        });
+        await drain(await makeScheduler(gh, provider, { sizes: cfg() }));
+        const jobs = await listJobs(db, scope, (await listRuns(db, scope))[0]!.id);
+        const logOf = async (key: string) => {
+          const job = jobs.find((j) => j.jobKey === key)!;
+          const [att] = await listAttempts(db, scope, job.id);
+          return Buffer.concat((await readLog(db, scope, att!.id)).map((c) => c.bytes)).toString();
+        };
+        return { specs, jobs, logOf };
+      })();
+      const st = Object.fromEntries(jobs.map((j) => [j.jobKey, j.state]));
+      // only the job whose label hit the stale entry fails; the others have no tenant entry
+      expect(st.heavy).toBe("failure");
+      expect(st.light).toBe("success");
+      expect(specs.length).toBe(2); // heavy never got a sandbox
+      const log = await logOf("heavy");
+      expect(log).toContain(
+        "runner label `ubuntu-latest-4-cores` maps to class `mac`, which this org may not select",
+      );
+    } finally {
+      setOperatorSizes(undefined);
+    }
   });
 
   test("with no size map the spec carries no resources: the provider's own default", async () => {

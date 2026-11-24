@@ -10,6 +10,7 @@ import {
   refuseLabelMap,
   setOperatorSizes,
   sizeFor,
+  tenantMapRefusal,
   type SandboxSizes,
 } from "../src/scheduler/sandbox-size";
 import { loadSettingsRuntime } from "../src/settings/boot";
@@ -207,37 +208,38 @@ describe("tenantSelectable and the org allowlist (#506)", () => {
     expect(() => rt(`[orgs.other]\nrunner_labels = { x = "mac" }\n`)).toThrow(/mac/);
   });
 
-  test("a stored map whose class became non-selectable is ignored at run time, one log line", async () => {
+  test("a stored map whose class became non-selectable is refused at run time, not downgraded", async () => {
     setOperatorSizes(gated([a.slug]));
     const r = rt();
     expect((await setVia(r, "runner_labels", { "my-box": "mac" })).ok).toBe(true);
     const maps = await resolveRunnerLabelMaps(db, a.scope, r);
-    const lines: string[] = [];
     const later = gated(); // the operator dropped the allowlist
-    const out = sizeFor(later, ["my-box", "my-box"], {
-      overrides: maps,
-      orgSlug: a.slug,
-      log: (l) => lines.push(l),
-    });
-    expect(out.class).toBe("small");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("my-box");
-    expect(lines[0]).toContain("mac");
-    // falls back to the instance map when it maps the label
-    const viaInstance = sizeFor(later, ["op-mac"], { overrides: maps, orgSlug: a.slug });
-    expect(viaInstance.class).toBe("mac");
-    // and an allowlisted org still gets it
-    expect(sizeFor(gated([a.slug]), ["my-box"], { overrides: maps, orgSlug: a.slug }).class).toBe(
-      "mac",
+    const why = tenantMapRefusal(later, ["my-box"], { overrides: maps, orgSlug: a.slug }) ?? "";
+    expect(why).toContain(
+      "runner label `my-box` maps to class `mac`, which this org may not select",
     );
+    expect(why).not.toContain(a.slug);
+    // the instance map does not rescue it, and an allowlisted org or an untrusted run is not refused
+    expect(
+      tenantMapRefusal(later, ["my-box", "op-mac"], { overrides: maps, orgSlug: a.slug }),
+    ).toBe(why);
+    expect(
+      tenantMapRefusal(gated([a.slug]), ["my-box"], { overrides: maps, orgSlug: a.slug }),
+    ).toBeUndefined();
+    expect(
+      tenantMapRefusal(later, ["my-box"], { untrusted: true, overrides: maps, orgSlug: a.slug }),
+    ).toBeUndefined();
+    // a label the map does not name is not refused
+    expect(
+      tenantMapRefusal(later, ["other"], { overrides: maps, orgSlug: a.slug }),
+    ).toBeUndefined();
   });
 
   test("the operator's instance map routes to it; untrusted still gets untrustedClass", () => {
     const g = gated();
-    expect(sizeFor(g, ["op-mac"], { orgSlug: a.slug }).class).toBe("mac");
+    expect(sizeFor(g, ["op-mac"]).class).toBe("mac");
     expect(
-      sizeFor(g, ["op-mac"], { untrusted: true, overrides: [{ "op-mac": "mac" }], orgSlug: "x" })
-        .class,
+      sizeFor(g, ["op-mac"], { untrusted: true, overrides: [{ "op-mac": "mac" }] }).class,
     ).toBe("tiny");
   });
 

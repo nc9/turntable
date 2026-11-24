@@ -253,10 +253,6 @@ export function sizeFor(
     untrusted?: boolean;
     /** Tenant label maps, most specific first (project, then org). */
     overrides?: readonly LabelMap[];
-    /** The org the tenant maps belong to, for the class allowlist. */
-    orgSlug?: string | undefined;
-    /** Where the one line per refused tenant entry goes. Default: console.warn. */
-    log?: (line: string) => void;
   } = {},
 ): SandboxSize {
   if (!cfg) return {};
@@ -277,13 +273,7 @@ export function sizeFor(
   const chosen =
     o.untrusted === true
       ? (pick(cfg.untrustedClass) ?? defaultPick)
-      : (fromLayers(
-          o.overrides ?? [],
-          labels,
-          pick,
-          o.orgSlug,
-          o.log ?? ((l) => console.warn(l)),
-        ) ??
+      : (fromLayers(o.overrides ?? [], labels, pick) ??
         labels.map((l) => pick(own(cfg.labels, l)) ?? coresPick(l)).find((x) => x !== undefined) ??
         defaultPick);
   if (!chosen) return {};
@@ -306,29 +296,45 @@ export function sizeFor(
 }
 
 /** The first layer (most specific first) that maps any of the labels, and that class if defined. */
-function fromLayers<C>(
+function firstLayerHit<C>(
   layers: readonly LabelMap[],
   labels: readonly string[],
-  pick: (name: string | undefined) => [string, C & SizeClassDef] | undefined,
-  orgSlug: string | undefined,
-  log: (line: string) => void,
-): [string, C & SizeClassDef] | undefined {
-  const logged = new Set<string>();
+  pick: (name: string | undefined) => [string, C] | undefined,
+): { label: string; hit: [string, C] } | undefined {
   for (const layer of layers) {
-    for (const l of labels) {
-      const hit = pick(own(layer, l));
-      if (!hit) continue;
-      // The operator changed the class after the map was set: ignore the entry, never run on it.
-      if (!tenantMayName(hit[1], orgSlug)) {
-        const line = `turntable: ignoring runner label ${labelText(l)}: size class ${labelText(hit[0])} is no longer available to this org; falling back`;
-        if (!logged.has(line)) {
-          logged.add(line);
-          log(line);
-        }
-        continue;
-      }
-      return hit;
+    for (const label of labels) {
+      const hit = pick(own(layer, label));
+      if (hit) return { label, hit };
     }
   }
   return undefined;
+}
+
+function fromLayers<C>(
+  layers: readonly LabelMap[],
+  labels: readonly string[],
+  pick: (name: string | undefined) => [string, C] | undefined,
+): [string, C] | undefined {
+  return firstLayerHit(layers, labels, pick)?.hit;
+}
+
+/**
+ * Run-time check of a stored tenant label map: the entry that would pick the class names one this
+ * org may no longer select (the operator changed `tenantSelectable` or `orgs` after the map was
+ * set). The job must FAIL with this reason, never fall back to the instance map or the default,
+ * which would hide size-dependent bugs. Undefined when fine. Untrusted runs never read tenant
+ * maps. Fixed words plus the label and class name; never another org.
+ */
+export function tenantMapRefusal(
+  cfg: SandboxSizes | undefined,
+  labels: readonly string[],
+  o: { untrusted?: boolean; overrides?: readonly LabelMap[]; orgSlug?: string | undefined },
+): string | undefined {
+  if (!cfg || o.untrusted === true) return undefined;
+  const found = firstLayerHit(o.overrides ?? [], labels, (name) => {
+    const c = own(cfg.classes, name);
+    return name !== undefined && c ? [name, c] : undefined;
+  });
+  if (!found || tenantMayName(found.hit[1], o.orgSlug)) return undefined;
+  return `unsupported: runner label \`${labelText(found.label)}\` maps to class \`${labelText(found.hit[0])}\`, which this org may not select; ask the operator or change the map`;
 }
