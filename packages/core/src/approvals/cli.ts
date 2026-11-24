@@ -25,6 +25,9 @@ import { MAX_REQUIRED_APPROVALS } from "./policy-setting";
 import { notCountingReason } from "./identity";
 import { KeyPolicyError, keyPolicyViolation } from "./key-policy";
 import { generateEd25519, signEd25519 } from "./keys";
+import { approveReleaseRemote, releaseSignPreview } from "./release-cli";
+import { parseBaseUrl } from "../channel/api";
+import { readTokenFile } from "../mcp/stdio";
 
 export const APPROVALS_USAGE = `Usage:
   turntable approvals keygen --out <private-key-file>
@@ -36,6 +39,11 @@ export const APPROVALS_USAGE = `Usage:
   turntable approvals sign --key <private-key-file> --statement <file|->
       Signs the "canonical" text of an approval statement (from approval_challenge or release_approval_challenge) offline.
       Prints the signature object to send with the statement.
+  turntable approvals approve-release --url <https://host> --org <slug> --project <slug> --run <run id> --approver <approver id> --key <private-key-file> --token-file <operator token file> [--yes]
+      Approves a RELEASE with an offline ed25519 key (\`turntable.approve_release.v2\`). Fetches the
+      server's challenge, prints every artifact (name, size, sha256) and the manifest digest, checks
+      that they hash to the digest in the statement, asks you to confirm (or --yes), signs and
+      submits. The token only fetches the challenge; the signature is the credential for the approval.
   turntable approvals policy --org <slug> --environment <name> --required <n> [--allow-author-approval] [--key-policy any|hardware]
       Sets how many distinct people an environment needs. Without --allow-author-approval the
       author of a run cannot approve it. Allowing it removes the two-person guarantee for that
@@ -60,6 +68,13 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     options: {
       out: { type: "string" },
       key: { type: "string" },
+      url: { type: "string" },
+      project: { type: "string" },
+      run: { type: "string" },
+      approver: { type: "string" },
+      "token-file": { type: "string" },
+      yes: { type: "boolean", default: false },
+      "allow-insecure": { type: "boolean", default: false },
       statement: { type: "string" },
       org: { type: "string" },
       person: { type: "string" },
@@ -107,6 +122,16 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     } catch {
       // not JSON: the text is the canonical statement
     }
+    // A release challenge carries its manifest: check it and show it before signing.
+    try {
+      const preview = releaseSignPreview(JSON.parse(text));
+      if (preview !== null) console.error(preview);
+    } catch (e) {
+      if (!(e instanceof SyntaxError)) {
+        console.error(e instanceof Error ? e.message : "the release challenge is not valid");
+        return 1;
+      }
+    }
     // Show what is being signed, so the signer sees the identity an enrolment would grant.
     try {
       const st = JSON.parse(canonical) as Record<string, unknown>;
@@ -131,6 +156,44 @@ export async function approvalsCommand(args: string[]): Promise<number> {
     const sig = signEd25519(readFileSync(values.key, "utf8"), canonical);
     console.log(JSON.stringify({ kind: "ed25519", signature: sig }));
     return 0;
+  }
+
+  if (sub === "approve-release") {
+    if (
+      !values.url ||
+      !values.org ||
+      !values.project ||
+      !values.run ||
+      !values.approver ||
+      !values.key ||
+      !values["token-file"]
+    )
+      return usage();
+    try {
+      const result = await approveReleaseRemote({
+        baseUrl: parseBaseUrl(values.url, values["allow-insecure"]),
+        org: values.org,
+        project: values.project,
+        runId: values.run,
+        approver: values.approver,
+        privatePem: readFileSync(values.key, "utf8"),
+        token: readTokenFile(values["token-file"]),
+        print: (t) => console.error(t),
+        confirm: async () => {
+          if (values.yes) return true;
+          console.error("Sign this release approval with your key? Type yes to confirm.");
+          const line = (await Bun.stdin.stream().getReader().read()).value;
+          return new TextDecoder().decode(line).trim().toLowerCase() === "yes";
+        },
+      });
+      console.log(JSON.stringify(result));
+      return 0;
+    } catch (e) {
+      console.error(
+        `turntable approvals approve-release: ${e instanceof Error ? e.message : "failed"}`,
+      );
+      return 1;
+    }
   }
 
   if (!values.org || !["bootstrap", "policy", "key-policy", "list", "revoke"].includes(sub ?? ""))

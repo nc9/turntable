@@ -2,6 +2,8 @@ import type { ChangeEvent } from "./realtime";
 import type {
   ApprovalChallenge,
   ApprovalStatement,
+  ReleaseApprovalChallenge,
+  ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
   SandboxUsage,
@@ -106,6 +108,17 @@ export interface TurntableApi {
   /** Sends a statement a human signed. No bearer token is needed: the signature is the credential. */
   approveEnvironment(args: {
     statement: ApprovalStatement;
+    signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
+  }): Promise<EnvironmentApprovalResult>;
+  /** The v2 statement for the project's release environment, with the manifest it binds. */
+  releaseApprovalChallenge(args: {
+    runId: string;
+    approver: string;
+    project: string;
+  }): Promise<ReleaseApprovalChallenge>;
+  /** Sends a signed v2 release statement. No bearer token: the signature is the credential. */
+  approveRelease(args: {
+    statement: ReleaseStatement;
     signature: WebAuthnSignature | { kind: "ed25519"; signature: string };
   }): Promise<EnvironmentApprovalResult>;
   registerChallenge(): Promise<{

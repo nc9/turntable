@@ -563,6 +563,23 @@ describe("v1 stays for non-release environments", () => {
     expect(!relay.ok && relay.error.message).toContain("release_requires_v2");
   });
 
+  test("approval_status marks the release environment, so a client picks the v2 challenge", async () => {
+    type Status = { environments: { environment: string; release: boolean }[] };
+    // "production" is gated by the suite's policy (only a gated environment waits and is listed).
+    const rel = await ok<Status>("approval_status", {
+      run_id: (await mkRun({ sha: "e".repeat(40) })).runId,
+    });
+    expect(rel.environments.find((e) => e.environment === "release")?.release).toBe(true);
+    const other = await ok<Status>("approval_status", {
+      run_id: (await mkRun({ environment: "production", sha: "f".repeat(40) })).runId,
+    });
+    expect(other.environments.find((e) => e.environment === "production")?.release).toBe(false);
+    for (const st of [rel, other]) {
+      expect(st.environments.length).toBeGreaterThan(0);
+      for (const e of st.environments) expect(typeof e.release).toBe("boolean");
+    }
+  });
+
   test("a v1 approval never lets the signing service sign", async () => {
     // Even a v1 record that predates this change (inserted directly) counts for nothing.
     const { runId } = await mkRun();

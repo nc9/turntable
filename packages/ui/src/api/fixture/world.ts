@@ -907,6 +907,7 @@ export function createWorld(options: { now?: () => number; seed?: string } = {})
               required: REQUIRED,
               allowAuthorApproval: false,
               waiting: true,
+              release: false,
               approvals: recs.map((r) => ({
                 person: r.person,
                 method: "webauthn" as const,

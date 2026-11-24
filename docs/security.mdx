@@ -273,6 +273,21 @@ The signing service signs only if it finds approvals (the policy's number of dis
 
 `longshore.approve_environment.v1` is accepted for every environment **except** the project's release environment: a v1 statement for it is refused (`release_requires_v2`), and a stored v1 record never counts toward a signature. The two-person rule, the author rule, the key policy and expiry apply to v2 exactly as to v1, and only approvals of the same manifest count toward one quorum. The operations are `release_approval_challenge` (not an MCP tool) and `approve_release` (signature only, no token).
 
+#### Approving a release in the UI and with the CLI
+
+The approval page marks a release environment (`approval_status` returns `release: true` for it) and shows what you are approving before it asks for a signature. Choose who signs, then **Review the release manifest**: the page fetches the v2 challenge, recomputes the manifest digest from the artifacts the server listed, and refuses to continue unless it equals the `manifest_sha256` in the statement. It then lists each artifact with its name, size and sha256, and the manifest digest. Only after that does **Approve this release with passkey** ask your key to sign. Other environments keep the v1 page.
+
+With an offline ed25519 key, one command does the same:
+
+```sh
+turntable approvals approve-release --url https://ci.example.com --org acme --project api \
+  --run <run id> --approver <approver id> --key key.pem --token-file operator.token
+```
+
+It fetches the challenge (the operator token is used for that call only), prints every artifact with its size and sha256 and the manifest digest, checks that they hash to the digest in the statement, and asks you to type `yes` (or pass `--yes` in a script you trust). It then signs the canonical v2 statement and submits it to `approve_release` without a token. If you fetched the `release_approval_challenge` response yourself, `turntable approvals sign --statement response.json` runs the same check and prints the same summary before it signs.
+
+A client that still builds a v1 statement for the release environment gets `release_requires_v2` from the server. The UI and the CLI show it as: "this is a release: update the client, approvals now bind the release manifest".
+
 ### Two ways to sign
 
 - **WebAuthn (passkey or security key).** The UI calls `approval_challenge`; the server issues the statement and a single-use challenge equal to the hash of the statement. The browser signs it with the approver's passkey. The server checks the challenge, the origin, the relying party id, that the authenticator verified the person (PIN or biometric), the signature, and that the sign counter moved forward. Registration uses attestation "none": a key is trusted because existing approvers enrolled it, not because a vendor certified it. Set `TURNTABLE_PUBLIC_URL` (or `TURNTABLE_WEBAUTHN_RP_ID` and `TURNTABLE_WEBAUTHN_ORIGINS`) so the relying party is known; a passkey is bound to the relying party id, so changing it orphans every enrolled passkey. WebAuthn needs no change to the page's content security policy.

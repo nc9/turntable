@@ -243,6 +243,7 @@ export type WireApprovalStatus = {
     required: number;
     allow_author_approval: boolean;
     waiting: boolean;
+    release: boolean;
     approvals: {
       person: string;
       method: "webauthn" | "ed25519";
@@ -292,6 +293,11 @@ export type WireChallenge = {
   rp_id: string | null;
   passkey_id: string | null;
   challenge_expires_at: string;
+};
+
+export type WireReleaseChallenge = WireChallenge & {
+  manifest_sha256: string;
+  artifacts: { name: string; sha256: string; size: number }[];
 };
 
 export type WireEnvironmentApproval = {

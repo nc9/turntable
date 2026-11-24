@@ -167,6 +167,11 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     setSetting: (a) => delay(() => settings.set(a)),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
+    // The fixture world has no release environment (its approval is "production").
+    releaseApprovalChallenge: () =>
+      Promise.reject(new Error("no job of this run waits for approval in the release environment")),
+    approveRelease: () =>
+      Promise.reject(new Error("no job of this run waits for approval in the release environment")),
     approveEnvironment: ({ statement, signature }) =>
       delay(() => world.approveEnvironment(statement, signature)),
     registerChallenge: () =>
