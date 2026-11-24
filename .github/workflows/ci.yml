@@ -55,8 +55,9 @@ jobs:
           case "${base}" in
             ""|*[!0-9a-f]*|0000000000000000000000000000000000000000) base="" ;;
           esac
-          # Docs-only skipping applies to pull requests only.
-          if [ "${EVENT}" = "pull_request" ] && [ -n "${base}" ] && files="$(git diff --name-only "${base}" "${HEAD_SHA}")" && [ -n "${files}" ]; then
+          # Docs-only skipping applies to pull requests only. --no-renames lists both sides of a
+          # rename, so moving a source file under docs/ is not mistaken for a docs-only change.
+          if [ "${EVENT}" = "pull_request" ] && [ -n "${base}" ] && files="$(git diff --no-renames --name-only "${base}" "${HEAD_SHA}")" && [ -n "${files}" ]; then
             docs_only=true
             while IFS= read -r f; do
               case "${f}" in
