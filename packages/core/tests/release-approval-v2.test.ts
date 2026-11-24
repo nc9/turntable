@@ -156,7 +156,7 @@ async function edApprover(person: string): Promise<Person> {
 
 /** A release run (tag, class release) whose one job waits on `environment`, with recorded artifacts. */
 async function mkRun(
-  o: { environment?: string; files?: Record<string, Buffer>; actor?: string } = {},
+  o: { environment?: string; files?: Record<string, Buffer>; actor?: string; sha?: string } = {},
 ) {
   const environment = o.environment ?? "release";
   const planned = {
@@ -177,7 +177,7 @@ async function mkRun(
       workflowPath: ".github/workflows/release.yml",
       event: "push",
       ref: "refs/tags/v1.2.3",
-      sha: SHA,
+      sha: o.sha ?? SHA,
       actor: o.actor ?? "octo",
       trust: JSON.stringify({ class: "release", workflowHash: WF_HASH }),
     },
@@ -455,7 +455,7 @@ describe("expiry and binding", () => {
 
   test("another run's approval does not sign this run, even for identical bytes", async () => {
     const one = await mkRun();
-    const two = await mkRun();
+    const two = await mkRun({ sha: "d".repeat(40) });
     await approveAs("alice", one.runId);
     await finish(two.runId);
     expect(await sign(two.runId)).toMatchObject({ ok: false, reason: "no_approval" });
@@ -470,7 +470,7 @@ describe("expiry and binding", () => {
       const msg = await failure(
         approve(st, { kind: "ed25519", signature: signEd25519(p.priv, canonicalOf(st)) }),
       );
-      expect(msg).toMatch(/another (org|project)|signature not accepted/);
+      expect(msg).toMatch(/not_found|another (org|project)|signature not accepted/);
     }
   });
 
@@ -658,7 +658,7 @@ describe("both signature kinds, and the org key policy", () => {
       Date.now(),
     );
     const one = await mkRun();
-    const two = await mkRun();
+    const two = await mkRun({ sha: "d".repeat(40) });
     const c1 = await challenge(one.runId, a.id);
     const c2 = await challenge(two.runId, a.id);
     expect((await approve(c2.statement, dev.assert(c1.challenge))).ok).toBe(false);

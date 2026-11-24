@@ -18,6 +18,8 @@ const MCP_OFF: Record<string, string> = {
   set_secret: "the value would sit in an agent's context",
   rotate_secret: "the value would sit in an agent's context",
   approval_challenge: "an agent may relay a signed statement, never create one for signing",
+  release_approval_challenge:
+    "an agent may relay a signed release approval, never create the statement a human signs over the release manifest",
   approve_run_challenge: "an agent may relay a signed statement, never create one for signing",
   enrolment_challenge: "approver enrolment is a human act",
   register_challenge: "approver enrolment is a human act",
