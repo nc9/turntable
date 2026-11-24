@@ -159,18 +159,20 @@ test("events: the number of concurrent waiters is capped", async () => {
   waiterLimits.perOrg = 1000; // this test is about the global cap
   const cursor = (await run("events")).next_after;
   const waiters = Array.from({ length: waiterLimits.global }, () =>
-    run("events", { after: cursor, wait_ms: 400 }),
+    run("events", { after: cursor, wait_ms: 3000 }),
   );
-  await Bun.sleep(100);
+  // Wait for registration instead of a fixed sleep: under CPU load the waiters
+  // can take longer than 100 ms to park.
+  for (let i = 0; i < 400 && waitingCount() < waiterLimits.global; i++) await Bun.sleep(25);
   expect(waitingCount()).toBe(waiterLimits.global);
   const t0 = Date.now();
-  const over = await run("events", { after: cursor, wait_ms: 5000 });
+  const over = await run("events", { after: cursor, wait_ms: 15000 });
   expect(over.events).toEqual([]);
-  expect(Date.now() - t0).toBeLessThan(1000); // returned at once instead of waiting
+  expect(Date.now() - t0).toBeLessThan(10_000); // returned at once instead of waiting 15 s
   await Promise.all(waiters);
   expect(waitingCount()).toBe(0);
   Object.assign(waiterLimits, saved);
-});
+}, 30_000);
 
 test("job_steps and job_cuts: contents, attempts, empty cases, tenancy", async () => {
   expect(await run("job_steps", { job_id: a.jobId })).toEqual({

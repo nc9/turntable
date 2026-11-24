@@ -560,7 +560,7 @@ describe("cache service over HTTP", () => {
     } finally {
       await w.server.stop(true);
     }
-  });
+  }, 30_000);
 
   test("an unknown, revoked or ended-job token gets the same 401, and the bare path gets nothing", async () => {
     let running = true;

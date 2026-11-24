@@ -1,6 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { buildActEvent } from "../src/run/act-event";
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,6 +40,9 @@ import { GithubClient, pollConfigSchema, pollRepo, type PollRepoConfig } from ".
 import { createActRunner, reconcileExpired, Scheduler } from "../src/scheduler";
 import { parseSandboxSizes } from "../src/scheduler/sandbox-size";
 import { makeGithub, SHA } from "./github-stub";
+
+// Several tests here take 2-3 s alone and over 6 s under CPU load: well past bun's 5 s default.
+setDefaultTimeout(30_000);
 
 const tmp = mkdtempSync(join(tmpdir(), "tt-worker-wf-"));
 const world = new FakeWorld({ hostPaths: [tmp], exec: { tickSeconds: 1 } });

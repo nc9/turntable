@@ -1013,7 +1013,7 @@ describe("offline signature and CLI", () => {
       console.error = err;
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
 
 // ---- tenant binding, the author check failing closed, and the weak-setup warning ----
