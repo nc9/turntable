@@ -15,11 +15,20 @@
 // Exit code: 1 when `none` or `deny-all-except-proxy` gave a real answer to any probe (the class is
 // not enforced on Daytona: refuse it, fail closed); 2 when a probe or control was inconclusive;
 // 3 for bad usage or a sandbox left behind; else 0.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { DaytonaProvider, networkSettingFor, type UsageRecord } from "../src/index";
 import {
+  applyAnalytics,
+  buildBurst,
   buildProbePlan,
+  forwardLabelNames,
+  makeRunId,
+  parseAnalyticsResult,
+  parseBurstOutput,
+  parseForwardLabels,
+  renderForwardCheck,
+  type ForwardCheck,
   exitCodeFor,
   parseGatewayFromProcNetRoute,
   parseRunnerOutput,
@@ -42,6 +51,8 @@ function usage(msg?: string): never {
       "usage: egress-probe.ts --i-have-approval --probe-zone <zone> [--key-file <path>]",
       "         [--allow-address <ipv4>] [--include-domain-mode --domain-allow <name>]",
       "         [--only none|deny-all-except-proxy|proxy-domain-filtered] [--public-name <name>] [--out <file>]",
+      "         [--forward-labels <10..200>]",
+      "       egress-probe.ts --render <report.json> --analytics-result <result.json>   (no network)",
       "",
       "  --i-have-approval    required: this creates real sandboxes in the account the key belongs to",
       "  --key-file <path>    file holding only the Daytona key (or set DAYTONA_API_KEY)",
@@ -50,6 +61,10 @@ function usage(msg?: string): never {
       "  --allow-address <ip> the address to allow-list for deny-all-except-proxy (not 1.1.1.1 or 8.8.8.8)",
       "  --include-domain-mode  also probe proxy-domain-filtered (needs --domain-allow <name>)",
       "  --public-name <name> the public name probed over HTTP(S) and DNS (default example.com)",
+      "  --forward-labels <N> distinct names eprobe-<run>-<i>.<zone> sent per class for the analytics",
+      "                       check (default 50, 10 to 200)",
+      "  --render <report>    re-print a saved report; with --analytics-result <file> holding",
+      "                       {class?, prefix, hits, sampleInterval, window} it records that result",
     ].join("\n"),
   );
   process.exit(3);
@@ -66,6 +81,40 @@ function opt(n: string): string | undefined {
 }
 
 if (flag("--help") || flag("-h")) usage();
+
+const renderFile = opt("--render");
+const analyticsFile = opt("--analytics-result");
+if (analyticsFile && !renderFile) usage("--analytics-result needs --render <report.json>");
+if (renderFile) {
+  // Offline re-render: no key, no sandbox, no network.
+  const saved = JSON.parse(readFileSync(renderFile, "utf8")) as {
+    reports: ClassReport[];
+    probeZone?: string;
+  };
+  const withCheck = saved.reports.filter((r) => r.forwardCheck);
+  if (analyticsFile) {
+    const rawResult = JSON.parse(readFileSync(analyticsFile, "utf8")) as { class?: EgressClass };
+    const target = rawResult.class
+      ? withCheck.find((r) => r.class === rawResult.class)
+      : withCheck.length === 1
+        ? withCheck[0]
+        : undefined;
+    if (!target?.forwardCheck) usage("--analytics-result needs a class matching one report class");
+    try {
+      target.forwardCheck = applyAnalytics(
+        target.forwardCheck,
+        parseAnalyticsResult(rawResult, target.forwardCheck.prefix),
+      );
+    } catch (e) {
+      usage(e instanceof Error ? e.message : String(e));
+    }
+    const renderOut = opt("--out");
+    if (renderOut) writeFileSync(renderOut, JSON.stringify(saved, null, 2) + "\n");
+  }
+  for (const r of withCheck)
+    for (const l of renderForwardCheck(r.class, r.forwardCheck!)) console.log(l);
+  process.exit(0);
+}
 if (!flag("--i-have-approval")) usage("refusing to run without --i-have-approval");
 const keyFile = opt("--key-file");
 if (!keyFile && !process.env.DAYTONA_API_KEY) usage("give --key-file or set DAYTONA_API_KEY");
@@ -78,6 +127,13 @@ const domainAllow = opt("--domain-allow")?.toLowerCase();
 const allowAddress = opt("--allow-address");
 const only = opt("--only") as EgressClass | undefined;
 const outFile = opt("--out");
+let forwardLabels: number;
+try {
+  forwardLabels = parseForwardLabels(opt("--forward-labels"));
+} catch (e) {
+  usage(e instanceof Error ? e.message : String(e));
+}
+const runId = makeRunId(randomBytes(10));
 
 const ALL: EgressClass[] = ["none", "deny-all-except-proxy", "proxy-domain-filtered"];
 if (only !== undefined && !ALL.includes(only)) usage(`--only must be one of ${ALL.join(", ")}`);
@@ -136,7 +192,7 @@ async function run(id: string, a: string[], seconds: number): Promise<string> {
   return dec.decode(logs.bytes);
 }
 
-async function probeClass(cls: EgressClass): Promise<ClassReport> {
+async function probeClass(cls: EgressClass, classIndex: number): Promise<ClassReport> {
   const tag = cls === "none" ? "n" : cls === "deny-all-except-proxy" ? "s" : "d";
   const randomLabel = `tt${randomBytes(6).toString("hex")}${tag}`;
   let allowed: string | undefined;
@@ -172,20 +228,44 @@ async function probeClass(cls: EgressClass): Promise<ClassReport> {
       ...(allowed ? { allowed } : {}),
     });
     const sentAt = new Date().toISOString();
+    // Class k uses indexes k*N..k*N+N-1 so no name repeats across classes (no resolver cache hit).
+    const firstIndex = classIndex * forwardLabels;
+    const burstNames = forwardLabelNames(runId, forwardLabels, probeZone!, firstIndex);
     const out = await run(
       h.id,
       [
         "node",
         "-e",
         SANDBOX_RUNNER_JS,
-        JSON.stringify({ timeoutMs: 8000, probes: plan.map((p) => p.run) }),
+        JSON.stringify({
+          timeoutMs: 8000,
+          totalMs: 280000,
+          probes: plan.map((p) => p.run),
+          burst: buildBurst(burstNames),
+        }),
       ],
-      300,
+      330,
     );
+    const b = parseBurstOutput(out);
+    const forwardCheck: ForwardCheck = {
+      prefix: `eprobe-${runId}-`,
+      n: forwardLabels,
+      firstIndex,
+      firstSentAt: b?.first ?? null,
+      lastSentAt: b?.last ?? null,
+      sentUdp: b?.sentUdp ?? 0,
+      sentTcp: b?.sentTcp ?? 0,
+      verdict: "inconclusive",
+    };
     const raws = parseRunnerOutput(out, plan);
     const probes = plan.map((p) => reportProbe(cls, p, raws.get(p.id)!));
     const names = [...new Set(plan.flatMap((p) => (p.forwardedName ? [p.forwardedName] : [])))];
-    return { class: cls, forwardedQueries: names.map((name) => ({ name, sentAt })), probes };
+    return {
+      class: cls,
+      forwardedQueries: names.map((name) => ({ name, sentAt })),
+      forwardCheck,
+      probes,
+    };
   } finally {
     await provider.destroy(h.id).catch((e) => console.error(`destroy failed: ${String(e)}`));
   }
@@ -201,7 +281,7 @@ if (existing > 0) {
 const reports: ClassReport[] = [];
 let leftover = 0;
 try {
-  for (const cls of classes) reports.push(await probeClass(cls)); // one sandbox at a time
+  for (const [i, cls] of classes.entries()) reports.push(await probeClass(cls, i)); // one sandbox at a time
 } finally {
   leftover = await provider.count({});
   if (leftover > 0) {
@@ -215,6 +295,8 @@ const code = exitCodeFor(reports);
 const full = {
   generatedAt: new Date().toISOString(),
   probeZone,
+  forwardLabels,
+  runId,
   sandboxes: usageRecords.length,
   sandboxMinutes: Number((seconds / 60).toFixed(1)),
   sandboxesLeft: leftover,
@@ -245,4 +327,14 @@ for (const r of reports) {
   for (const q of r.forwardedQueries)
     console.log(`  [${r.class}] ${q.name}  (sent from ${q.sentAt}, within about 5 minutes after)`);
 }
+console.log("");
+console.log(
+  "ANALYTICS CHECK (sampled dataset, e.g. the zone's DNS analytics such as dnsAnalyticsAdaptiveGroups):",
+);
+for (const r of reports) {
+  if (r.forwardCheck) for (const l of renderForwardCheck(r.class, r.forwardCheck)) console.log(l);
+}
+console.log(
+  "  Record the result with: --render <report.json> --analytics-result <result.json> [--out <report.json>]",
+);
 process.exit(leftover > 0 ? 3 : code);

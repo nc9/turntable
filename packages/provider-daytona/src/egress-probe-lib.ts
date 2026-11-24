@@ -253,6 +253,8 @@ export type ClassReport = {
   class: EgressClass;
   /** Sent-at times and names for the operator's authoritative-NS log check. */
   forwardedQueries: { name: string; sentAt: string }[];
+  /** The many-distinct-labels check, sized for a sampled analytics dataset. */
+  forwardCheck?: ForwardCheck;
   probes: ProbeReport[];
 };
 
@@ -552,6 +554,38 @@ function sysdnsProbe(p) {
   return cap(T, r, { kind: "sysdns", addresses: [], error: "timeout" });
 }
 
+function systemNameserver() {
+  try {
+    const t = require("fs").readFileSync("/etc/resolv.conf", "utf8");
+    const m = /^nameserver\s+(\S+)/m.exec(t);
+    return m ? m[1] : null;
+  } catch (e) { return null; }
+}
+
+// Forwarded-query burst: each name is its own query (distinct, so no cache absorbs it). UDP names go
+// through c-ares with the system resolvers; the TCP names are raw framed queries to the first one.
+async function burst(b) {
+  const r = new dns.Resolver({ timeout: 3000, tries: 1 });
+  const sent = { udp: 0, tcp: 0 };
+  let first = null, last = null;
+  const stamp = () => { const t = new Date().toISOString(); if (!first) first = t; last = t; };
+  const queue = b.udp.slice();
+  const worker = async () => {
+    while (queue.length) {
+      const name = queue.shift();
+      stamp(); sent.udp++;
+      await cap(4000, new Promise((res) => r.resolve4(name, () => res(0))), 0);
+    }
+  };
+  await Promise.all(Array.from({ length: b.concurrency || 10 }, worker));
+  const ns = systemNameserver();
+  for (const q of b.tcp) {
+    stamp(); sent.tcp++;
+    if (ns) await tcpProbe({ host: ns, port: 53, sendHex: q.sendHex }, (x) => x.length >= 2 && x.length >= 2 + ((x[0] << 8) | x[1]));
+  }
+  console.log("BURST " + JSON.stringify({ sent, first, last, nameserver: ns }));
+}
+
 (async () => {
   for (const p of params.probes) {
     let raw;
@@ -565,6 +599,198 @@ function sysdnsProbe(p) {
     } catch (e) { raw = { kind: "missing", error: "runner exception: " + code(e) }; }
     emit(p.id, raw);
   }
+  if (params.burst) { try { await burst(params.burst); } catch (e) { console.log("BURST " + JSON.stringify({ error: code(e) })); } }
 })();
 setTimeout(() => process.exit(0), (params.totalMs || 240000)).unref();
 `;
+
+// ---------------------------------------------------------------------------------------------
+// Forwarded-query check for a SAMPLED analytics dataset (e.g. a zone's DNS analytics). One query is
+// usually missed, so many distinct labels are sent and the operator looks for ANY hit.
+
+export const FORWARD_LABELS_DEFAULT = 50;
+export const FORWARD_LABELS_MIN = 10;
+export const FORWARD_LABELS_MAX = 200;
+/** How many of the labels go over TCP instead of UDP. */
+export const FORWARD_TCP_COUNT = 3;
+/** Minutes added after the last send before the analytics window should close. */
+export const ANALYTICS_DELAY_MARGIN_MINUTES = 15;
+
+/** Parses `--forward-labels`; throws RangeError outside 10..200 or when not an integer. */
+export function parseForwardLabels(v: string | undefined): number {
+  if (v === undefined) return FORWARD_LABELS_DEFAULT;
+  if (!/^\d+$/.test(v)) throw new RangeError("--forward-labels must be an integer");
+  const n = Number(v);
+  if (n < FORWARD_LABELS_MIN || n > FORWARD_LABELS_MAX) {
+    throw new RangeError(`--forward-labels must be ${FORWARD_LABELS_MIN} to ${FORWARD_LABELS_MAX}`);
+  }
+  return n;
+}
+
+/** A 10-char lowercase run id from at least 10 random bytes. */
+export function makeRunId(random: Uint8Array): string {
+  if (random.length < 10) throw new RangeError("need at least 10 random bytes");
+  return Array.from(random.subarray(0, 10), (b) => String.fromCharCode(97 + (b % 26))).join("");
+}
+
+/** The query-name prefix for a run (what the analytics filter matches). */
+export const forwardPrefix = (runId: string): string => `eprobe-${runId}-`;
+
+/**
+ * `count` distinct names `eprobe-<run>-<i>.<zone>` for i from `start`. Each is a valid DNS label
+ * (at most 63 characters) and the whole name is checked by `buildDnsQuery` when it is sent.
+ */
+export function forwardLabelNames(runId: string, count: number, zone: string, start = 0): string[] {
+  if (!/^[a-z]{10}$/.test(runId)) throw new RangeError("runId must be 10 lowercase letters");
+  if (!Number.isInteger(count) || count < 1) throw new RangeError("count must be positive");
+  return Array.from({ length: count }, (_, k) => `${forwardPrefix(runId)}${start + k}.${zone}`);
+}
+
+/** The chance that every one of `n` independent queries is dropped by 1-in-`sampleInterval` sampling. */
+export function missProbability(n: number, sampleInterval: number): number {
+  if (!(sampleInterval >= 1)) throw new RangeError("sampleInterval must be at least 1");
+  return Math.pow(1 - 1 / sampleInterval, n);
+}
+
+export type ForwardInterpretation = {
+  verdict: "forwarding observed" | "no forwarding observed";
+  text: string;
+};
+
+/** Any hit means forwarding observed. No hit is never proof, and is never worded as "blocked". */
+export function interpretAnalytics(a: {
+  hits: number;
+  n: number;
+  sampleInterval: number;
+  window: string;
+}): ForwardInterpretation {
+  if (a.hits > 0) {
+    return {
+      verdict: "forwarding observed",
+      text: `forwarding observed (${a.hits} hit(s) in ${a.window})`,
+    };
+  }
+  const miss = missProbability(a.n, a.sampleInterval);
+  return {
+    verdict: "no forwarding observed",
+    text:
+      `no forwarding observed (window ${a.window}, ${a.n} labels, sampleInterval ${a.sampleInterval}); ` +
+      `this is not proof: the chance of missing all ${a.n} at that sampling is ${(miss * 100).toFixed(2)}%`,
+  };
+}
+
+/** What the operator reads off the analytics dataset for one class. */
+export type AnalyticsResult = {
+  /** Which class the numbers are for; may be left out when the report has one check. */
+  class?: EgressClass;
+  prefix: string;
+  hits: number;
+  sampleInterval: number;
+  window: string;
+};
+
+/** Validates an operator-supplied analytics result; it must be for the prefix it is applied to. */
+export function parseAnalyticsResult(raw: unknown, expectedPrefix: string): AnalyticsResult {
+  const o = raw as Partial<AnalyticsResult> | null;
+  if (!o || typeof o !== "object") throw new Error("analytics result must be a JSON object");
+  if (typeof o.prefix !== "string" || o.prefix !== expectedPrefix) {
+    throw new Error(`analytics result is for prefix ${String(o.prefix)}, not ${expectedPrefix}`);
+  }
+  if (!Number.isInteger(o.hits) || (o.hits as number) < 0) {
+    throw new Error("analytics result hits must be a non-negative integer");
+  }
+  if (typeof o.sampleInterval !== "number" || !(o.sampleInterval >= 1)) {
+    throw new Error("analytics result sampleInterval must be a number of at least 1");
+  }
+  if (typeof o.window !== "string" || o.window.length === 0) {
+    throw new Error("analytics result window must be a non-empty string");
+  }
+  return o as AnalyticsResult;
+}
+
+export type ForwardCheck = {
+  prefix: string;
+  n: number;
+  /** Index range of this class's labels (classes use disjoint ranges so names never repeat). */
+  firstIndex: number;
+  firstSentAt: string | null;
+  lastSentAt: string | null;
+  sentUdp: number;
+  sentTcp: number;
+  /** `inconclusive` until an operator records the analytics result. */
+  verdict: "inconclusive" | ForwardInterpretation["verdict"];
+  analytics?: AnalyticsResult;
+  interpretation?: string;
+};
+
+/** The runner's burst parameters: names over UDP, and the last `FORWARD_TCP_COUNT` as framed TCP queries. */
+export function buildBurst(names: readonly string[], idBase = 0x6000) {
+  const tcpNames = names.slice(-FORWARD_TCP_COUNT);
+  const udp = names.slice(0, names.length - tcpNames.length);
+  const tcp = tcpNames.map((name, k) => ({
+    name,
+    sendHex: toHex(frameDnsTcp(buildDnsQuery(name, idBase + k))),
+  }));
+  return { udp: [...udp], tcp, concurrency: 10 };
+}
+
+/** The runner's `BURST {json}` line: send counts and first/last send times, or undefined. */
+export function parseBurstOutput(
+  stdout: string,
+): { sentUdp: number; sentTcp: number; first: string | null; last: string | null } | undefined {
+  for (const line of stdout.split("\n")) {
+    if (!line.startsWith("BURST ")) continue;
+    try {
+      const o = JSON.parse(line.slice(6)) as {
+        sent?: { udp?: number; tcp?: number };
+        first?: string | null;
+        last?: string | null;
+      };
+      if (!o.sent) return undefined;
+      return {
+        sentUdp: o.sent.udp ?? 0,
+        sentTcp: o.sent.tcp ?? 0,
+        first: o.first ?? null,
+        last: o.last ?? null,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Fills in the verdict from an operator's analytics result (no network). */
+export function applyAnalytics(check: ForwardCheck, a: AnalyticsResult): ForwardCheck {
+  const r = interpretAnalytics({
+    hits: a.hits,
+    n: check.n,
+    sampleInterval: a.sampleInterval,
+    window: a.window,
+  });
+  return { ...check, verdict: r.verdict, analytics: a, interpretation: r.text };
+}
+
+/** The report lines for one class's forwarded-query check. */
+export function renderForwardCheck(
+  cls: EgressClass,
+  c: ForwardCheck,
+  sampleInterval = 10,
+): string[] {
+  const end = c.lastSentAt
+    ? new Date(Date.parse(c.lastSentAt) + ANALYTICS_DELAY_MARGIN_MINUTES * 60_000).toISOString()
+    : "?";
+  const lines = [
+    `[${cls}] ${c.n} distinct labels ${c.prefix}${c.firstIndex}..${c.firstIndex + c.n - 1} (${c.sentUdp} UDP, ${c.sentTcp} TCP)`,
+    `  filter: queryName_like: "${c.prefix}%"  (attribute a hit to this class by its index ${c.firstIndex}..${c.firstIndex + c.n - 1})`,
+    `  window: ${c.firstSentAt ?? "?"} to ${end} (first send to last send plus ${ANALYTICS_DELAY_MARGIN_MINUTES} min analytics delay)`,
+    `  chance all ${c.n} are missed at sampleInterval ${sampleInterval}: ${(missProbability(c.n, sampleInterval) * 100).toFixed(2)}%`,
+    `  any hit = forwarding observed; no hit = "no forwarding observed (window, ${c.n} labels, sampleInterval as reported)", never proof`,
+  ];
+  lines.push(
+    c.interpretation
+      ? `  result: ${c.interpretation}`
+      : "  result: inconclusive (no analytics result recorded)",
+  );
+  return lines;
+}
