@@ -6,7 +6,12 @@ import { allowHostsFromEnv } from "@turntable/net";
 import type { Provider } from "@turntable/provider-sdk";
 import { checkoutConfigFromEnv } from "./run/checkout-child";
 import { addNotice, type Db, ensureInstance, getAttempt, openDatabase } from "./db";
-import { githubFacts, type GithubFacts } from "./github/api";
+import {
+  githubFacts,
+  type GithubFacts,
+  githubUserLookup,
+  type GithubUserLookup,
+} from "./github/api";
 import { adoptPolledBindings } from "./github/installations";
 import { CheckReporter } from "./checks/reporter";
 import { githubCheckRunsApi } from "./checks/client";
@@ -800,6 +805,7 @@ async function serve(args: string[]): Promise<void> {
   let webhooks: WebhookHandler | undefined;
   let claims: { starter: InstallationClaims; handler: ClaimHandler } | undefined;
   let appFacts: GithubFacts | undefined;
+  let appUsers: GithubUserLookup | undefined;
   // Creating the GitHub App from this instance, for a host with no shell (github/hosted-manifest.ts).
   let appManifest: HostedManifestHandler | undefined;
   // Sign in with GitHub and web sessions (auth/github-login.ts); needs the store and a public URL.
@@ -871,6 +877,7 @@ async function serve(args: string[]): Promise<void> {
     });
     const ghFacts = githubFacts(auth);
     appFacts = ghFacts;
+    appUsers = githubUserLookup(auth);
     webhooks = createWebhookHandler({
       db,
       store,
@@ -1017,6 +1024,7 @@ async function serve(args: string[]): Promise<void> {
         ...(claims ? { claims } : {}),
         ...(webAuth ? { webAuth } : {}),
         ...(appFacts ? { githubFacts: appFacts } : {}),
+        ...(appUsers ? { githubUsers: appUsers } : {}),
         ...(appManifest ? { appManifest } : {}),
         ...(cache ? { cache } : {}),
         ...(artifacts ? { artifacts } : {}),

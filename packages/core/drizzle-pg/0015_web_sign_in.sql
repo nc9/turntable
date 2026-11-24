@@ -18,6 +18,7 @@ CREATE TABLE "member_invites" (
 	"id" text PRIMARY KEY NOT NULL,
 	"org_id" text NOT NULL,
 	"github_login" text NOT NULL,
+	"github_user_id" text NOT NULL,
 	"role" text NOT NULL,
 	"created_by" text NOT NULL,
 	"reason" text,
@@ -41,6 +42,6 @@ CREATE TABLE "web_sessions" (
 ALTER TABLE "github_identities" ADD CONSTRAINT "github_identities_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "member_invites" ADD CONSTRAINT "member_invites_org_id_orgs_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."orgs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "web_sessions" ADD CONSTRAINT "web_sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "member_invites_login_idx" ON "member_invites" USING btree ("github_login");--> statement-breakpoint
+CREATE INDEX "member_invites_user_idx" ON "member_invites" USING btree ("github_user_id");--> statement-breakpoint
 CREATE INDEX "member_invites_org_idx" ON "member_invites" USING btree ("org_id","github_login");--> statement-breakpoint
 CREATE INDEX "web_sessions_user_idx" ON "web_sessions" USING btree ("user_id");

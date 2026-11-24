@@ -1,5 +1,5 @@
 {
-  "id": "94870f32-900a-414f-ad24-f983334b8f21",
+  "id": "6150019f-218c-4b26-8cfb-02c3d35606d7",
   "prevId": "529f5e2a-7df4-487e-a41c-183059d94260",
   "version": "7",
   "dialect": "postgresql",
@@ -3290,6 +3290,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "github_user_id": {
+          "name": "github_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "role": {
           "name": "role",
           "type": "text",
@@ -3341,11 +3347,11 @@
         }
       },
       "indexes": {
-        "member_invites_login_idx": {
-          "name": "member_invites_login_idx",
+        "member_invites_user_idx": {
+          "name": "member_invites_user_idx",
           "columns": [
             {
-              "expression": "github_login",
+              "expression": "github_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

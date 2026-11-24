@@ -19,6 +19,7 @@ CREATE TABLE `member_invites` (
 	`id` text PRIMARY KEY NOT NULL,
 	`org_id` text NOT NULL,
 	`github_login` text NOT NULL,
+	`github_user_id` text NOT NULL,
 	`role` text NOT NULL,
 	`created_by` text NOT NULL,
 	`reason` text,
@@ -31,7 +32,7 @@ CREATE TABLE `member_invites` (
 	CONSTRAINT "member_invites_role_check" CHECK(role IN ('owner', 'admin', 'member', 'viewer'))
 );
 --> statement-breakpoint
-CREATE INDEX `member_invites_login_idx` ON `member_invites` (`github_login`);--> statement-breakpoint
+CREATE INDEX `member_invites_user_idx` ON `member_invites` (`github_user_id`);--> statement-breakpoint
 CREATE INDEX `member_invites_org_idx` ON `member_invites` (`org_id`,`github_login`);--> statement-breakpoint
 CREATE TABLE `web_sessions` (
 	`id` text PRIMARY KEY NOT NULL,

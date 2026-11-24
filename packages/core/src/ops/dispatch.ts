@@ -22,7 +22,7 @@ import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { WebSessions } from "../auth/web-sessions";
 import type { WebhookService } from "../webhooks/service";
-import type { GithubFacts } from "../github/api";
+import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
@@ -44,6 +44,8 @@ export type DispatchEnv = {
   claims?: InstallationClaims | undefined;
   /** GitHub API facts (the App's credentials); `resync_installation` needs them. */
   githubFacts?: GithubFacts | undefined;
+  /** Login to numeric id lookup, for invites. */
+  githubUsers?: GithubUserLookup | undefined;
   /**
    * Let a `tti_` instance token authenticate. Set only by the REST adapter: MCP and the realtime
    * socket leave it off, so an instance token is simply not a credential there.
@@ -460,6 +462,7 @@ export async function dispatch(
       vault: env.vault,
       claims: env.claims,
       githubFacts: env.githubFacts,
+      githubUsers: env.githubUsers,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       transport: env.transport,

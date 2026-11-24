@@ -1574,8 +1574,10 @@ export const memberInvites = pgTable(
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id),
-    /** Lowercase: GitHub logins are case-insensitive. */
+    /** Lowercase, for display: GitHub logins are case-insensitive and get renamed and recycled. */
     githubLogin: text("github_login").notNull(),
+    /** The numeric id the login resolved to WHEN the invite was made. Sign-in matches on this. */
+    githubUserId: text("github_user_id").notNull(),
     role: text("role").notNull(),
     /** `kind:id` of whoever created it (a member, a person token, or the instance administrator). */
     createdBy: text("created_by").notNull(),
@@ -1587,7 +1589,7 @@ export const memberInvites = pgTable(
     revokedAt: bigint("revoked_at", { mode: "number" }),
   },
   (t) => [
-    index("member_invites_login_idx").on(t.githubLogin),
+    index("member_invites_user_idx").on(t.githubUserId),
     index("member_invites_org_idx").on(t.orgId, t.githubLogin),
     check("member_invites_role_check", inList("role", MEMBER_ROLES)),
   ],

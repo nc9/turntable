@@ -74,23 +74,26 @@ export function getIdentityByUserId(db: Db, userId: string): Promise<GithubIdent
   });
 }
 
-/** The member of `scope`'s org whose recorded GitHub login is `loginLc` (a best-effort duplicate check). */
-export function findMemberByGithubLogin(
+/** The member of `scope`'s org whose GitHub account has this numeric id. */
+export function findMemberByGithubUserId(
   db: Db,
   scope: Scope,
-  loginLc: string,
+  githubUserId: string,
 ): Promise<{ userId: string; role: MemberRole } | undefined> {
   return db.run(async (h) => {
     const rows = await h.orm
-      .select({
-        userId: s.orgMembers.userId,
-        role: s.orgMembers.role,
-        login: s.githubIdentities.login,
-      })
+      .select({ userId: s.orgMembers.userId, role: s.orgMembers.role })
       .from(s.orgMembers)
       .innerJoin(s.githubIdentities, eq(s.githubIdentities.userId, s.orgMembers.userId))
-      .where(scoped(scope, { orgId: s.orgMembers.orgId }));
-    const hit = rows.find((r) => r.login.toLowerCase() === loginLc);
+      .where(
+        scoped(
+          scope,
+          { orgId: s.orgMembers.orgId },
+          eq(s.githubIdentities.githubUserId, githubUserId),
+        ),
+      )
+      .limit(1);
+    const hit = rows[0];
     return hit ? { userId: hit.userId, role: hit.role as MemberRole } : undefined;
   });
 }
@@ -106,6 +109,7 @@ export function createMemberInvite(
   scope: Scope,
   input: {
     githubLogin: string;
+    githubUserId: string;
     role: MemberRole;
     createdBy: string;
     reason?: string | undefined;
@@ -122,7 +126,7 @@ export function createMemberInvite(
         scoped(
           scope,
           { orgId: s.memberInvites.orgId },
-          eq(s.memberInvites.githubLogin, login),
+          eq(s.memberInvites.githubUserId, input.githubUserId),
           isNull(s.memberInvites.usedAt),
           isNull(s.memberInvites.revokedAt),
         ),
@@ -132,6 +136,7 @@ export function createMemberInvite(
       id,
       orgId: scope.orgId,
       githubLogin: login,
+      githubUserId: input.githubUserId,
       role: input.role,
       createdBy: input.createdBy,
       reason: input.reason ?? null,
@@ -193,7 +198,6 @@ export function completeSignIn(
   },
 ): Promise<SignInResult> {
   return db.transaction(async (tx) => {
-    const loginLc = input.login.toLowerCase();
     const [identity] = await tx.orm
       .select()
       .from(s.githubIdentities)
@@ -205,7 +209,7 @@ export function completeSignIn(
       .innerJoin(s.orgs, eq(s.orgs.id, s.memberInvites.orgId))
       .where(
         and(
-          eq(s.memberInvites.githubLogin, loginLc),
+          eq(s.memberInvites.githubUserId, input.githubUserId),
           isNull(s.memberInvites.usedAt),
           isNull(s.memberInvites.revokedAt),
           gt(s.memberInvites.expiresAt, input.now),

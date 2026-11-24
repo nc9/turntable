@@ -87,9 +87,25 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
         },
       },
     });
+    // The fake GitHub user lookup: login to numeric id, as GitHub's `GET /users/{login}` says.
+    const logins = new Map<string, string>([
+      ["alice", "1001"],
+      ["bob", "2002"],
+      ["late", "5005"],
+    ]);
+    const lookup = { fail: false };
+    const githubUsers = {
+      async idOfLogin(login: string): Promise<string | undefined> {
+        if (lookup.fail) throw new Error("GitHub is down");
+        const l = login.toLowerCase();
+        if (l === "ghost") return undefined;
+        return logins.get(l) ?? `gen-${l}`;
+      },
+    };
     const env: DispatchEnv = {
       registry,
       db: s.db,
+      githubUsers,
       sessions,
       allowInstance: true,
       now: () => now,
@@ -149,6 +165,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       sessions,
       handler,
       users,
+      logins,
+      lookup,
       redirects,
       env,
       tti,
@@ -394,6 +412,71 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     // an existing member cannot be invited again
     const dup = await h.as(cookie, "invite_member", { github_login: "ALICE", role: "viewer" });
     expect(!dup.ok && dup.error.code).toBe("conflict");
+  });
+
+  test("a session may invite only viewer or member, whatever its role", async () => {
+    const { h, cookie } = await aliceAdmin();
+    for (const role of ["admin", "owner"]) {
+      const r = await h.as(cookie, "invite_member", { github_login: `s-${role}`, role });
+      expect(r.ok, role).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code).toBe("forbidden");
+        expect(r.error.message).toBe("needs passkey step-up or the instance operator");
+      }
+    }
+    expect((await h.as(cookie, "invite_member", { github_login: "s-v", role: "viewer" })).ok).toBe(
+      true,
+    );
+    expect((await h.as(cookie, "invite_member", { github_login: "s-m", role: "member" })).ok).toBe(
+      true,
+    );
+    // the instance operator still roots an admin or owner
+    expect((await h.bind({ github_login: "s-owner", role: "owner" })).ok).toBe(true);
+  });
+
+  test("an invite binds the numeric id: a recycled login is refused, a renamed account is not", async () => {
+    const h = await harness();
+    expect((await h.bind({ github_login: "alice" })).ok).toBe(true); // resolves to 1001
+    const invite = (await h.db.run((x) => x.orm.select().from(schema.memberInvites)))[0]!;
+    expect(invite.githubUserId).toBe("1001");
+    // someone else now holds the login "alice"
+    h.users.set("code-other", { id: "7777", login: "alice" });
+    const stolen = await h.signIn("code-other");
+    expect(stolen.res.status).toBe(403);
+    expect(stolen.session).toBeUndefined();
+    expect(await h.db.run((x) => x.orm.select().from(schema.orgMembers))).toHaveLength(0);
+    // the invited account, renamed, signs in
+    h.users.set("code-renamed", { id: "1001", login: "alice-renamed" });
+    const ok = await h.signIn("code-renamed");
+    expect(ok.res.status).toBe(303);
+    const me = await h.as(ok.session!, "whoami");
+    expect(me.ok && me.output).toMatchObject({ role: "admin", org: "tenant" });
+    const idents = await h.db.run((x) => x.orm.select().from(schema.githubIdentities));
+    expect(idents).toMatchObject([{ githubUserId: "1001", login: "alice-renamed" }]);
+  });
+
+  test("an invite is refused when the login cannot be resolved", async () => {
+    const h = await harness();
+    h.lookup.fail = true;
+    const down = await h.bind({});
+    expect(!down.ok && down.error.code).toBe("unavailable");
+    h.lookup.fail = false;
+    const none = await h.bind({ github_login: "ghost" });
+    expect(!none.ok && none.error.code).toBe("not_found");
+    // no GitHub App wired: fail closed too
+    const bare = await dispatch(
+      { ...h.env, githubUsers: undefined },
+      { kind: "bearer", token: h.tti },
+      "instance_bind_github_login",
+      {
+        target_org: "tenant",
+        github_login: "alice",
+        role: "admin",
+        reason: "x",
+      },
+    );
+    expect(!bare.ok && bare.error.code).toBe("unavailable");
+    expect(await h.db.run((x) => x.orm.select().from(schema.memberInvites))).toHaveLength(0);
   });
 
   test("instance_bind_github_login: audited in both chains, with an org event; bad targets refused", async () => {

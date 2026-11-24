@@ -12,7 +12,7 @@ import {
   appendAudit,
   appendEvent,
   createMemberInvite,
-  findMemberByGithubLogin,
+  findMemberByGithubUserId,
   getOrgBySlug,
 } from "../../db/repos";
 import { MEMBER_ROLES, type MemberRole } from "../../db/schema";
@@ -69,6 +69,10 @@ export const inviteMemberOp = defineOp({
         throw new OpError("forbidden", "a token can invite a viewer or member only");
       }
     } else if (p.kind === "member") {
+      // Until passkey step-up exists, a stolen session must never mint a persistent admin or owner.
+      if (p.session && i.role !== "viewer" && i.role !== "member") {
+        throw new OpError("forbidden", "needs passkey step-up or the instance operator");
+      }
       if (ROLE_RANK[i.role] > ROLE_RANK[p.role]) {
         throw new OpError("forbidden", "you cannot invite a role above your own");
       }
@@ -80,7 +84,7 @@ export const inviteMemberOp = defineOp({
 });
 
 async function invite(
-  ctx: Pick<OpContext, "db" | "scope" | "now">,
+  ctx: Pick<OpContext, "db" | "scope" | "now" | "githubUsers">,
   githubLogin: string,
   role: MemberRole,
   by: string,
@@ -88,12 +92,25 @@ async function invite(
   reason: string | undefined,
 ) {
   const loginLc = githubLogin.toLowerCase();
-  if (await findMemberByGithubLogin(ctx.db, ctx.scope, loginLc)) {
+  // The login is resolved to the numeric account NOW and the invite binds that id: a login that is
+  // later renamed or recycled to someone else cannot use it. Any failure refuses the invite.
+  if (!ctx.githubUsers) {
+    throw new OpError("unavailable", "inviting needs a configured GitHub App to resolve the login");
+  }
+  let githubUserId: string | undefined;
+  try {
+    githubUserId = await ctx.githubUsers.idOfLogin(loginLc);
+  } catch {
+    throw new OpError("unavailable", "could not ask GitHub who that login is; try again");
+  }
+  if (!githubUserId) throw new OpError("not_found", "GitHub has no user with that login");
+  if (await findMemberByGithubUserId(ctx.db, ctx.scope, githubUserId)) {
     throw new OpError("conflict", "that GitHub login is already a member of this org");
   }
   const now = ctx.now();
   const row = await createMemberInvite(ctx.db, ctx.scope, {
     githubLogin: loginLc,
+    githubUserId,
     role,
     createdBy: by,
     reason,
@@ -102,7 +119,14 @@ async function invite(
   });
   await appendEvent(ctx.db, ctx.scope, {
     type: "org.member_invited",
-    payload: { github_login: loginLc, role, by, via, invite_id: row.id },
+    payload: {
+      github_login: loginLc,
+      github_user_id: githubUserId,
+      role,
+      by,
+      via,
+      invite_id: row.id,
+    },
   });
   return {
     invite_id: row.id,
@@ -141,7 +165,7 @@ export const instanceBindGithubLoginOp = defineOp({
     if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
     const target = { orgId: org.id };
     const out = await invite(
-      { db: ctx.db, scope: target, now: ctx.now },
+      { db: ctx.db, scope: target, now: ctx.now, githubUsers: ctx.githubUsers },
       i.github_login,
       i.role,
       `instance:${ctx.principal.id}`,

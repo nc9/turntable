@@ -509,13 +509,13 @@ export const migrations: Migration[] = [
   },
   {
     "tag": "0044_web_sign_in",
-    "when": 1795486602245,
+    "when": 1795487355156,
     "statements": [
       "CREATE TABLE `github_identities` (\n\t`github_user_id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`login` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_sign_in_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE UNIQUE INDEX `github_identities_user_unique` ON `github_identities` (`user_id`);",
       "CREATE TABLE `login_states` (\n\t`nonce` text PRIMARY KEY NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer\n);",
-      "CREATE TABLE `member_invites` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`github_login` text NOT NULL,\n\t`role` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`reason` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer,\n\t`used_by_user_id` text,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"member_invites_role_check\" CHECK(role IN ('owner', 'admin', 'member', 'viewer'))\n);",
-      "CREATE INDEX `member_invites_login_idx` ON `member_invites` (`github_login`);",
+      "CREATE TABLE `member_invites` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`github_login` text NOT NULL,\n\t`github_user_id` text NOT NULL,\n\t`role` text NOT NULL,\n\t`created_by` text NOT NULL,\n\t`reason` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`used_at` integer,\n\t`used_by_user_id` text,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"member_invites_role_check\" CHECK(role IN ('owner', 'admin', 'member', 'viewer'))\n);",
+      "CREATE INDEX `member_invites_user_idx` ON `member_invites` (`github_user_id`);",
       "CREATE INDEX `member_invites_org_idx` ON `member_invites` (`org_id`,`github_login`);",
       "CREATE TABLE `web_sessions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_seen_at` integer NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `web_sessions_user_idx` ON `web_sessions` (`user_id`);"

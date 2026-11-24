@@ -16,7 +16,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
-import type { GithubFacts } from "./github/api";
+import type { GithubFacts, GithubUserLookup } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { AuthHandler } from "./auth/github-login";
 import type { WebSessions } from "./auth/web-sessions";
@@ -103,6 +103,8 @@ export type ServeOptions = {
   webAuth?: { sessions: WebSessions; handler: AuthHandler };
   /** GitHub API facts, for `resync_installation`. */
   githubFacts?: GithubFacts;
+  /** Resolves a GitHub login to its numeric id, for invites. */
+  githubUsers?: GithubUserLookup;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
@@ -137,6 +139,7 @@ export function startServer(options: ServeOptions) {
     claims: options.claims?.starter,
     sessions: options.webAuth?.sessions,
     githubFacts: options.githubFacts,
+    githubUsers: options.githubUsers,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
