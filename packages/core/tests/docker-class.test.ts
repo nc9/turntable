@@ -36,10 +36,17 @@ setDefaultTimeout(30_000);
 
 const tmp = mkdtempSync(join(tmpdir(), "tt-docker-class-"));
 const world = new FakeWorld({ hostPaths: [tmp], exec: { tickSeconds: 1 }, dockerInSandbox: true });
+const microWorld = new FakeWorld({
+  hostPaths: [tmp],
+  exec: { tickSeconds: 1 },
+  dockerInSandbox: true,
+  isolation: "microvm",
+});
 const plainWorld = new FakeWorld({ hostPaths: [tmp], exec: { tickSeconds: 1 } });
 afterAll(() => {
   world.dispose();
   plainWorld.dispose();
+  microWorld.dispose();
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -76,6 +83,7 @@ exit 0
 }
 const control = join(tmp, "docker-mode");
 installDocker(world, control);
+installDocker(microWorld, control);
 const setDocker = (mode: "up" | "down" | "noimage"): void => writeFileSync(control, mode);
 
 const CFG = (): PollRepoConfig =>
@@ -306,10 +314,34 @@ describe("a job that needs Docker", () => {
     expect(denied.job("plain").state).toBe("success");
   });
 
-  test("with untrustedDocker the untrusted job uses the docker class", async () => {
+  test("untrustedDocker on a container-isolated docker class still fails the untrusted job, with no sandbox", async () => {
     const r = await runAll({ untrusted: true, sizes: sizes({ untrustedDocker: true }) });
+    expect(r.job("db").state).toBe("failure");
+    expect(r.specOf("db")).toBeUndefined();
+    expect(await r.logOf("db")).toContain("needs a microVM-isolated sandbox");
+    expect(r.job("plain").state).toBe("success");
+  });
+
+  test("with untrustedDocker and a microVM-isolated provider the untrusted job uses the docker class", async () => {
+    const r = await runAll({
+      untrusted: true,
+      w: microWorld,
+      sizes: sizes({ untrustedDocker: true }),
+    });
     expect(r.job("db").state).toBe("success");
     expect(r.specOf("db")?.snapshot).toBe("snap-docker");
+  });
+
+  test("a trusted run's docker job on a container-isolated class is unaffected", async () => {
+    const r = await runAll();
+    expect(r.job("db").state).toBe("success");
+  });
+
+  test("untrustedDocker false fails on a microVM provider too", async () => {
+    const r = await runAll({ untrusted: true, w: microWorld });
+    expect(r.job("db").state).toBe("failure");
+    expect(r.specOf("db")).toBeUndefined();
+    expect(await r.logOf("db")).toContain("untrustedDocker");
   });
 
   test("docker info failing in the sandbox is an infra failure, classified infra, with the reason", async () => {
@@ -416,5 +448,23 @@ describe("class config", () => {
     expect(dockerRefusal(sizes(), "uses container:", { untrusted: true, provider: ok })).toContain(
       "untrustedDocker",
     );
+    const on = sizes({ untrustedDocker: true });
+    expect(
+      dockerRefusal(on, "uses container:", {
+        untrusted: true,
+        provider: { ...ok, isolation: "container" },
+      }),
+    ).toContain("needs a microVM-isolated sandbox");
+    expect(
+      dockerRefusal(on, "uses container:", {
+        untrusted: true,
+        provider: { ...ok, isolation: "gvisor" },
+      }),
+    ).toContain("microVM");
+    for (const isolation of ["microvm", "vm"] as const) {
+      expect(
+        dockerRefusal(on, "uses container:", { untrusted: true, provider: { ...ok, isolation } }),
+      ).toBeUndefined();
+    }
   });
 });

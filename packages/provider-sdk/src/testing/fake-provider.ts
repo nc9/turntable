@@ -26,6 +26,8 @@ export interface FakeWorldOptions {
   exec?: WrappedExecOptions;
   /** Advertise `info.dockerInSandbox`. Default false. */
   dockerInSandbox?: boolean;
+  /** Advertise `info.isolation`. Default `container`. */
+  isolation?: ProviderInfo["isolation"];
 }
 
 interface FakeSandbox {
@@ -54,7 +56,7 @@ export class FakeWorld {
   private generation = 0;
   private seq = 0;
   readonly opts: Required<Pick<FakeWorldOptions, "maxFileBytes" | "latencyMs" | "shell">> &
-    Pick<FakeWorldOptions, "exec" | "hostPaths" | "dockerInSandbox">;
+    Pick<FakeWorldOptions, "exec" | "hostPaths" | "dockerInSandbox" | "isolation">;
 
   constructor(opts: FakeWorldOptions = {}) {
     this.opts = {
@@ -64,6 +66,7 @@ export class FakeWorld {
       ...(opts.exec ? { exec: opts.exec } : {}),
       ...(opts.hostPaths ? { hostPaths: opts.hostPaths } : {}),
       ...(opts.dockerInSandbox ? { dockerInSandbox: true } : {}),
+      ...(opts.isolation ? { isolation: opts.isolation } : {}),
     };
     mkdirSync(this.binDir);
     // The wrapper itself invokes `sh`; make that resolve to the chosen shell.
@@ -241,6 +244,7 @@ class FakeProvider implements Provider {
       ...FAKE_INFO,
       files: { ...FAKE_INFO.files, maxBytes: world.opts.maxFileBytes },
       ...(world.opts.dockerInSandbox ? { dockerInSandbox: true } : {}),
+      ...(world.opts.isolation ? { isolation: world.opts.isolation } : {}),
     };
     const runner: ShellRunner = {
       run: async (id, argv, { timeoutMs }) => {

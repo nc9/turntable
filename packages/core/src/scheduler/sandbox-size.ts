@@ -29,7 +29,11 @@
 // the operator did not list is never reachable by an `-N-cores` label. A job that names another OS (macOS, Windows) or arm
 // is refused before any sandbox exists (`refusalFor`), never run on a Linux amd64 sandbox.
 import { z } from "zod";
-import type { SandboxResources } from "@turntable/provider-sdk";
+import {
+  type IsolationClass,
+  type SandboxResources,
+  isolationAtLeast,
+} from "@turntable/provider-sdk";
 
 const pos = (max: number) => z.number().int().positive().max(max);
 const ORG_SLUG = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/);
@@ -291,7 +295,10 @@ export function refusalFor(
 export function dockerRefusal(
   cfg: SandboxSizes | undefined,
   need: string,
-  o: { untrusted: boolean; provider: { dockerInSandbox?: boolean | undefined } },
+  o: {
+    untrusted: boolean;
+    provider: { dockerInSandbox?: boolean | undefined; isolation?: IsolationClass | undefined };
+  },
 ): string | undefined {
   const head = `unsupported: ${need.replaceAll(/[`\r\n]+/g, " ").slice(0, 80)}`;
   if (!cfg?.dockerClass || cfg.classes[cfg.dockerClass]?.docker !== true) {
@@ -302,6 +309,14 @@ export function dockerRefusal(
   }
   if (o.untrusted && !cfg.untrustedDocker) {
     return `${head}; Docker is not enabled for untrusted runs (the operator sets untrustedDocker)`;
+  }
+  // Docker-in-Docker usually needs a privileged sandbox sharing the host kernel: an untrusted run
+  // gets it only on a microVM or better, whatever the operator set.
+  if (
+    o.untrusted &&
+    (o.provider.isolation === undefined || !isolationAtLeast(o.provider.isolation, "microvm"))
+  ) {
+    return `${head}; an untrusted run's Docker job needs a microVM-isolated sandbox; this class is container-isolated`;
   }
   return undefined;
 }
