@@ -9,6 +9,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { afterAll, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import type { WebSessions } from "../src/auth/web-sessions";
 import {
   addMember,
@@ -21,6 +22,7 @@ import {
 } from "../src/db";
 import type { Db } from "../src/db";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
+import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { SESSION_STEP_UP_OPS } from "../src/ops/step-up";
 import { mintToken } from "./ops-helpers";
 
@@ -63,7 +65,7 @@ afterAll(() => {
   for (const db of opened) db.close();
 });
 
-async function harness() {
+async function harness(o: { keyId?: string | null; login?: string } = {}) {
   const db = openDatabase(":memory:");
   opened.push(db);
   const org = await createOrg(db, { slug: "tenant", name: "Tenant" });
@@ -71,7 +73,7 @@ async function harness() {
   await db.run((h) =>
     h.orm
       .insert(schema.githubIdentities)
-      .values({ githubUserId: "1001", userId: user.id, login: "Alice" }),
+      .values({ githubUserId: "1001", userId: user.id, login: o.login ?? "Alice" }),
   );
   await addMember(db, { orgId: org.id }, { userId: user.id, role: "owner" });
   const dev = passkey();
@@ -81,6 +83,7 @@ async function harness() {
     {
       person: "Alice",
       forgeLogin: "alice",
+      githubUserId: o.keyId === undefined ? "1001" : o.keyId,
       kind: "webauthn",
       credentialId: dev.credentialId,
       publicKey: dev.spki,
@@ -96,13 +99,19 @@ async function harness() {
     "cookie-two-aaaaaaaaaaaaaaaaaaaa": { userId: user.id, hash: "hash-two" },
   };
   const sessions = { resolve: async (c: string) => live[c] } as unknown as WebSessions;
+  const lookup = { fail: false };
   const env: DispatchEnv = {
     registry,
     db,
     sessions,
     webauthn: RP,
     now: () => now,
-    githubUsers: { idOfLogin: async (l: string) => `gen-${l.toLowerCase()}` },
+    githubUsers: {
+      idOfLogin: async (l: string) => {
+        if (lookup.fail) throw new Error("GitHub is down");
+        return `gh-${l.toLowerCase()}`;
+      },
+    },
   };
   const ONE = "cookie-one-aaaaaaaaaaaaaaaaaaaa";
   const TWO = "cookie-two-aaaaaaaaaaaaaaaaaaaa";
@@ -132,6 +141,7 @@ async function harness() {
     org,
     user,
     dev,
+    lookup,
     env,
     as,
     stepUp,
@@ -395,5 +405,98 @@ describe("session passkey step-up", () => {
       input: mint,
     });
     expect(ch.ok).toBe(false);
+  });
+
+  test("step-up needs the numeric GitHub id to match: same login, different id is refused", async () => {
+    const h = await harness({ keyId: "9999" }); // a key enrolled for another account named alice
+    const r = await h.as(h.ONE, "session_step_up_challenge", {
+      action: "create_api_token",
+      input: mint,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("conflict");
+  });
+
+  test("same id, renamed login: the step-up works (the login is display text)", async () => {
+    const h = await harness({ login: "alice-renamed" });
+    const su = await h.stepUp("create_api_token", mint);
+    expect((await h.as(h.ONE, "create_api_token", { ...mint, step_up: su })).ok).toBe(true);
+  });
+
+  test("a key with no recorded id can never step up: re-enrol it", async () => {
+    const h = await harness({ keyId: null });
+    const r = await h.as(h.ONE, "session_step_up_challenge", {
+      action: "create_api_token",
+      input: mint,
+    });
+    expect(r.ok).toBe(false);
+    expect(reasonOf(r)).toBe("step_up_reenrol");
+    if (!r.ok) expect(r.error.message).toContain("re-enrol this passkey");
+    // and a step-up issued while the key had an id is refused once the id is gone
+    const h2 = await harness();
+    const su = await h2.stepUp("create_api_token", mint);
+    await h2.db.run((x) => x.orm.update(schema.approvers).set({ githubUserId: null }));
+    const call = await h2.as(h2.ONE, "create_api_token", { ...mint, step_up: su });
+    expect(reasonOf(call)).toBe("step_up_reenrol");
+  });
+
+  const ed25519 = () =>
+    generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
+
+  test("bootstrap_approver records the numeric id, and a failed lookup refuses it", async () => {
+    const h = await harness();
+    const second = await createOrg(h.db, { slug: "second", name: "Second" });
+    const tti = (await createInstanceTokenFromCli(h.db, { name: "ops" })).secret;
+    const env: DispatchEnv = { ...h.env, allowInstance: true };
+    const call = () =>
+      dispatch(env, { kind: "bearer", token: tti }, "bootstrap_approver", {
+        target_org: "second",
+        person: "Zed",
+        forge_login: "Zed-Login",
+        public_key: ed25519(),
+      });
+    const rowsOf = () =>
+      h.db.run((x) =>
+        x.orm.select().from(schema.approvers).where(eq(schema.approvers.orgId, second.id)),
+      );
+    h.lookup.fail = true;
+    expect((await call()).ok).toBe(false);
+    expect(await rowsOf()).toHaveLength(0);
+    h.lookup.fail = false;
+    expect((await call()).ok).toBe(true);
+    const rows = await rowsOf();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.githubUserId).toBe("gh-zed-login");
+  });
+
+  test("token and session enrolment record the id; a failed lookup refuses a token enrolment", async () => {
+    const h = await harness();
+    const tok = (await mintToken(h.db, { orgId: h.org.id }, "release_operator")).secret;
+    const enrol = (login: string, cred: Parameters<typeof dispatch>[1]) =>
+      dispatch(h.env, cred, "request_enrolment", {
+        person: login,
+        forge_login: login,
+        ed25519_public_key: ed25519(),
+      });
+    h.lookup.fail = true;
+    expect((await enrol("carol", { kind: "bearer", token: tok })).ok).toBe(false);
+    h.lookup.fail = false;
+    expect((await enrol("carol", { kind: "bearer", token: tok })).ok).toBe(true);
+    // a session enrolling its own login records the SESSION's id (4004), not a lookup (gh-dave)
+    const dave = await createUser(h.db, { displayName: "Dave" });
+    await h.db.run((x) =>
+      x.orm
+        .insert(schema.githubIdentities)
+        .values({ githubUserId: "4004", userId: dave.id, login: "Dave" }),
+    );
+    await addMember(h.db, { orgId: h.org.id }, { userId: dave.id, role: "owner" });
+    const session = {
+      kind: "principal",
+      principal: { kind: "session", id: dave.id, orgId: h.org.id, role: "owner" },
+    } as const;
+    expect((await enrol("dave", session)).ok).toBe(true);
+    const rows = await h.db.run((x) => x.orm.select().from(schema.approverEnrolments));
+    expect(rows.find((r) => r.forgeLogin === "carol")!.githubUserId).toBe("gh-carol");
+    expect(rows.find((r) => r.forgeLogin === "dave")!.githubUserId).toBe("4004");
   });
 });

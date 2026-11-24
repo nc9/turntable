@@ -12,7 +12,6 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJson } from "../audit/chain";
 import { keyPolicyViolation } from "../approvals/key-policy";
-import { normalizeLogin } from "../approvals/identity";
 import { verifyAssertion, WebAuthnError, type RelyingParty } from "../approvals/webauthn";
 import type { Db } from "../db";
 import {
@@ -40,6 +39,7 @@ export type StepUpReason =
   | "step_up_reused"
   | "step_up_wrong_action"
   | "step_up_bad_key"
+  | "step_up_reenrol"
   | "step_up_bad_assertion"
   | "step_up_unavailable";
 
@@ -113,27 +113,29 @@ export function stepUpHash(b: Binding): string {
 export const stepUpChallengeOf = (hashHex: string): string =>
   Buffer.from(hashHex, "hex").toString("base64url");
 
-/** The passkeys this person may step up with in this org: their own, live, and within the key policy. */
+/**
+ * The passkeys this person may step up with in this org: WebAuthn keys enrolled for THEIR numeric
+ * GitHub id, live, and within the key policy. The forge login is display text here: only the id
+ * counts. A key with no recorded id never qualifies (`legacy`: it must be re-enrolled).
+ */
 export async function stepUpKeys(
   db: Db,
   orgId: string,
   userId: string,
-): Promise<{ id: string; credentialId: string }[]> {
+): Promise<{ keys: { id: string; credentialId: string }[]; legacy: number }> {
   const identity = await getIdentityByUserId(db, userId);
-  if (!identity) return [];
-  const login = normalizeLogin(identity.login);
+  if (!identity) return { keys: [], legacy: 0 };
   const policy = await getKeyPolicy(db, orgId);
-  const keys = await listApprovers(db, orgId);
-  return keys
-    .filter(
-      (k) =>
-        k.kind === "webauthn" &&
-        k.credentialId !== null &&
-        k.forgeLogin !== null &&
-        normalizeLogin(k.forgeLogin) === login &&
-        keyPolicyViolation(policy, k) === null,
-    )
-    .map((k) => ({ id: k.id, credentialId: k.credentialId! }));
+  const live = (await listApprovers(db, orgId)).filter(
+    (k) =>
+      k.kind === "webauthn" && k.credentialId !== null && keyPolicyViolation(policy, k) === null,
+  );
+  return {
+    keys: live
+      .filter((k) => k.githubUserId !== null && k.githubUserId === identity.githubUserId)
+      .map((k) => ({ id: k.id, credentialId: k.credentialId! })),
+    legacy: live.filter((k) => k.githubUserId === null).length,
+  };
 }
 
 export type VerifiedStepUp = { action: string; target: string | undefined };
@@ -180,7 +182,13 @@ export async function verifyStepUp(
     throw refuse("step_up_wrong_action", "that step-up was issued for a different action");
   }
   const key = await getApprover(o.db, o.orgId, su.approver);
-  const allowed = (await stepUpKeys(o.db, o.orgId, o.userId)).some((k) => k.id === su.approver);
+  // A key with no numeric id can never satisfy a step-up, whatever its login says.
+  if (key && key.revokedAt === null && key.githubUserId === null) {
+    throw refuse("step_up_reenrol", "that passkey has no GitHub account id: re-enrol this passkey");
+  }
+  const allowed = (await stepUpKeys(o.db, o.orgId, o.userId)).keys.some(
+    (k) => k.id === su.approver,
+  );
   if (
     !key ||
     key.revokedAt !== null ||

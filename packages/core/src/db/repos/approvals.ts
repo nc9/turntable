@@ -306,6 +306,8 @@ export type NewApprover = {
   attested?: boolean | undefined;
   person: string;
   forgeLogin?: string | null | undefined;
+  /** The numeric GitHub account id the key is enrolled for; null when unknown (cannot step up). */
+  githubUserId?: string | null | undefined;
   kind: s.ApproverKind;
   credentialId?: string | null | undefined;
   publicKey: string;
@@ -327,6 +329,7 @@ export function insertApprover(
       orgId,
       person: a.person,
       forgeLogin: a.forgeLogin ?? null,
+      githubUserId: a.githubUserId ?? null,
       kind: a.kind,
       credentialId: a.credentialId ?? null,
       publicKey: a.publicKey,
@@ -537,6 +540,7 @@ export function insertEnrolment(
       orgId,
       person: e.person,
       forgeLogin: e.forgeLogin ?? null,
+      githubUserId: e.githubUserId ?? null,
       kind: e.kind,
       credentialId: e.credentialId ?? null,
       publicKey: e.publicKey,
@@ -598,6 +602,7 @@ export function activateEnrolment(
       {
         person: e.person,
         forgeLogin: e.forgeLogin,
+        githubUserId: e.githubUserId,
         kind: e.kind as s.ApproverKind,
         credentialId: e.credentialId,
         publicKey: e.publicKey,

@@ -109,6 +109,7 @@ async function buildWorld(): Promise<World> {
     vault,
     webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
+    githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
   };
   const a = await seedTenant(db, "org-a");
   const b = await seedTenant(db, "org-b");

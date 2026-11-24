@@ -180,6 +180,10 @@
     {
       "tag": "0044_web_sign_in",
       "sha256": "368ae3b2982142bdf1b3e7005877855619a49dc11ac9e57c4258441dfbaf9f70"
+    },
+    {
+      "tag": "0045_approver_github_user_id",
+      "sha256": "23365c8c046b1ed262efe282d40311846f3ee66997e7e718300e75cd59539da9"
     }
   ],
   "pg": [
@@ -246,6 +250,10 @@
     {
       "tag": "0015_web_sign_in",
       "sha256": "9e0653df5e51b83fd756062798c85e45d43e562932e78d44bcb91eca3908c4e5"
+    },
+    {
+      "tag": "0016_approver_github_user_id",
+      "sha256": "bce9d48e0175ac71e6dbb2012d6c18e6393bf2c04eea9af0f6881271ed6679c4"
     }
   ]
 }

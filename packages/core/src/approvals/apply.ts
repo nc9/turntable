@@ -541,7 +541,14 @@ export async function approvalWarnings(
 export async function bootstrapFirstApprover(
   db: Db,
   orgId: string,
-  a: { person: string; forgeLogin: string; publicKey: string; createdBy: string },
+  a: {
+    person: string;
+    forgeLogin: string;
+    publicKey: string;
+    createdBy: string;
+    /** The login's numeric GitHub id; absent (host CLI) means the key can never step up. */
+    githubUserId?: string | undefined;
+  },
   now: number,
   opts: { delayMs?: number } = {},
 ): Promise<{ id: string; person: string; fingerprint: string }> {
@@ -565,6 +572,7 @@ export async function bootstrapFirstApprover(
     {
       person: a.person,
       forgeLogin: a.forgeLogin,
+      githubUserId: a.githubUserId ?? null,
       kind: "ed25519",
       publicKey,
       alg: "EdDSA",

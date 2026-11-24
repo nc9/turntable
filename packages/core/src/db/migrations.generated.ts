@@ -520,5 +520,13 @@ export const migrations: Migration[] = [
       "CREATE TABLE `web_sessions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_seen_at` integer NOT NULL,\n\t`expires_at` integer NOT NULL,\n\t`revoked_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `web_sessions_user_idx` ON `web_sessions` (`user_id`);"
     ]
+  },
+  {
+    "tag": "0045_approver_github_user_id",
+    "when": 1795492243464,
+    "statements": [
+      "ALTER TABLE `approver_enrolments` ADD `github_user_id` text;",
+      "ALTER TABLE `approvers` ADD `github_user_id` text;"
+    ]
   }
 ];

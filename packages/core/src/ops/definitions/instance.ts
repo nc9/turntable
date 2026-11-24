@@ -41,6 +41,7 @@ import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
 import { ClaimError } from "../../github/claim";
+import { resolveGithubUserId } from "../../approvals/github-id";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
@@ -802,7 +803,7 @@ export const bootstrapApprover = defineOp({
     "bootstrap key signs the passkey's enrolment as usual. An org whose approvers were all revoked " +
     "can be bootstrapped again only after the `approver_rebootstrap_delay_hours` setting (24 by " +
     "default, at least 1) has passed since the last revocation, so a stolen token cannot revoke " +
-    "every approver and enrol its own key at once; the refusal says when. Revoking the last " +
+    "every approver and enrol its own key at once; the refusal says when. The forge login is resolved to its numeric GitHub id through the App (refused if it cannot be), which web step-up matches on. Revoking the last " +
     "approver and every bootstrap emit an event (`approvers.depleted`, `approver.bootstrapped`) " +
     "that outbound webhooks can carry. Returns the approver id and the key's " +
     "fingerprint. The change is audited in the system org's chain and in the target org's own, " +
@@ -848,6 +849,8 @@ export const bootstrapApprover = defineOp({
         orgSlug: org.slug,
       })
     ).value as number;
+    // Resolve the login to its numeric id through the App first; a failed lookup refuses.
+    const githubUserId = await resolveGithubUserId(ctx.githubUsers, i.forge_login);
     let made: { id: string; person: string; fingerprint: string };
     try {
       made = await bootstrapFirstApprover(
@@ -856,6 +859,7 @@ export const bootstrapApprover = defineOp({
         {
           person: i.person,
           forgeLogin: i.forge_login,
+          githubUserId,
           publicKey: i.public_key,
           createdBy: `instance:${ctx.principal.id}`,
         },

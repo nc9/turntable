@@ -91,7 +91,14 @@ export const sessionStepUpChallenge = defineOp({
       if (!pr) throw new OpError("not_found", "org or project not found");
       projectId = pr.id;
     }
-    const keys = await stepUpKeys(ctx.db, ctx.scope.orgId, p.id);
+    const { keys, legacy } = await stepUpKeys(ctx.db, ctx.scope.orgId, p.id);
+    if (keys.length === 0 && legacy > 0) {
+      throw new OpError(
+        "forbidden",
+        "no passkey of yours has a recorded GitHub account id: re-enrol this passkey (step_up_reenrol)",
+        { reason: "step_up_reenrol" },
+      );
+    }
     if (keys.length === 0) {
       throw new OpError(
         "conflict",
