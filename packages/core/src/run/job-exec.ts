@@ -51,7 +51,7 @@ export interface JobEnv {
   /** `none` (default) gives the sandbox no network. `open` is an explicit opt-in. */
   egress?: "none" | "open";
   /** The sandbox's size, from the operator's size map (see scheduler/sandbox-size.ts). Absent: the provider's default. */
-  sandbox?: { resources?: SandboxResources; snapshot?: string };
+  sandbox?: { resources?: SandboxResources; snapshot?: string; image?: string };
   registry: SecretRegistry;
   signal?: AbortSignal | undefined;
   idleFlushMs?: number;
@@ -235,7 +235,8 @@ export async function executeJob(
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
         labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
-        image: env.image,
+        // A realised class's image (the operator's, per provider) beats the runner's default image.
+        image: env.sandbox?.image ?? env.image,
         ...(env.sandbox?.resources ? { resources: env.sandbox.resources } : {}),
         // The project's snapshot (set by the instance operator) beats a size class's, which beats the provider's.
         ...((env.snapshot ?? env.sandbox?.snapshot)

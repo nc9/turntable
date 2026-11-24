@@ -2,11 +2,20 @@
 // a provider snapshot), and the scheduler asks the provider for that size. Nothing here is stored
 // in the database: it is serve configuration, like the provider's own.
 //
-//   { "classes": { "large": { "cpus": 4, "memoryMb": 8192, "snapshot": "daytona-large" } },
+//   { "classes": { "large": { "cpus": 4, "memoryMb": 8192,
+//                              "providers": { "daytona": { "snapshot": "daytona-large" },
+//                                             "docker": { "image": "registry.example/runner:large" } } } },
 //     "labels":  { "ubuntu-latest-4-cores": "large" },
 //     "default": "small",           // a class name; unset: the provider's own default size
 //     "untrustedClass": "small",    // optional: untrusted PR runs always get this class
 //     "maxCpus": 8, "maxMemoryMb": 16384, "maxDiskGb": 100 }   // global ceilings, optional
+//
+// A class is realised per provider: `providers.<name>` holds what only that provider understands
+// (Daytona: `snapshot`; Docker: `image`), and the provider's `realiseClass` maps the class to a
+// sandbox spec or refuses it. The top-level `snapshot` is a deprecated alias for
+// `providers.daytona.snapshot`. An org or project may map labels to class NAMES the operator
+// defined (the `runner_labels` settings); the ceilings still clamp, and project beats org beats
+// the instance map.
 //
 // A workflow file chooses its labels, so a stranger's pull request could ask for the biggest
 // class. `untrustedClass` fixes what such a run gets whatever it asks for, and the ceilings clamp
@@ -23,16 +32,32 @@ import type { SandboxResources } from "@turntable/provider-sdk";
 const pos = (max: number) => z.number().int().positive().max(max);
 const NAME = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 
+const SNAPSHOT = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/;
+const IMAGE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/;
+const PROVIDER_VALUE = z.union([z.string().max(512), z.number(), z.boolean()]);
+
+/** What one provider needs to realise a class. Known providers are checked tightly. */
+const providerSpecific = z
+  .record(NAME, z.record(z.string().min(1).max(64), PROVIDER_VALUE))
+  .superRefine((m, ctx) => {
+    const check = (prov: string, key: string, re: RegExp): void => {
+      const v = m[prov]?.[key];
+      if (v !== undefined && !(typeof v === "string" && re.test(v)))
+        ctx.addIssue({ code: "custom", path: [prov, key], message: `${prov}.${key} is not valid` });
+    };
+    check("daytona", "snapshot", SNAPSHOT);
+    check("docker", "image", IMAGE);
+  });
+
 const classSchema = z
   .object({
     cpus: pos(256).optional(),
     memoryMb: pos(2_097_152).optional(),
     diskGb: pos(16_384).optional(),
-    /** A provider snapshot of this size (Daytona: a snapshot per class). */
-    snapshot: z
-      .string()
-      .regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/)
-      .optional(),
+    /** Deprecated alias for `providers.daytona.snapshot`; folded in when the config is parsed. */
+    snapshot: z.string().regex(SNAPSHOT).optional(),
+    /** Per provider settings: `{ daytona: { snapshot }, docker: { image } }`. */
+    providers: providerSpecific.optional(),
   })
   .strict();
 
@@ -50,6 +75,15 @@ export const sandboxSizesSchema = z
   })
   .strict()
   .superRefine((c, ctx) => {
+    for (const [n, k] of Object.entries(c.classes)) {
+      const p = k.providers?.daytona?.snapshot;
+      if (k.snapshot !== undefined && p !== undefined && p !== k.snapshot)
+        ctx.addIssue({
+          code: "custom",
+          path: ["classes", n, "snapshot"],
+          message: "snapshot and providers.daytona.snapshot disagree",
+        });
+    }
     const known = (n: string | undefined, path: (string | number)[]): void => {
       if (n !== undefined && !Object.hasOwn(c.classes, n))
         ctx.addIssue({ code: "custom", path, message: `unknown size class ${n}` });
@@ -61,6 +95,61 @@ export const sandboxSizesSchema = z
   });
 
 export type SandboxSizes = z.infer<typeof sandboxSizesSchema>;
+export type SizeClassDef = SandboxSizes["classes"][string];
+
+const warned = new Set<string>();
+/** A config warning, once per process per message (boot reads the config more than once). */
+function warnOnce(msg: string): void {
+  if (warned.has(msg)) return;
+  warned.add(msg);
+  console.warn(`turntable: ${msg}`);
+}
+
+/** Folds the deprecated top-level `snapshot` into `providers.daytona.snapshot`, with a warning. */
+function normalise(c: SandboxSizes): SandboxSizes {
+  const classes: SandboxSizes["classes"] = {};
+  for (const [n, k] of Object.entries(c.classes)) {
+    const { snapshot, ...rest } = k;
+    if (snapshot === undefined) {
+      classes[n] = k;
+      continue;
+    }
+    warnOnce(`sandbox size class ${n}: \`snapshot\` is deprecated, use providers.daytona.snapshot`);
+    classes[n] = {
+      ...rest,
+      providers: { ...rest.providers, daytona: { ...rest.providers?.daytona, snapshot } },
+    };
+  }
+  return { ...c, classes };
+}
+
+let operator: SandboxSizes | undefined;
+/** The operator's size config, held for the label-map settings' set-time check. Set at boot. */
+export function setOperatorSizes(s: SandboxSizes | undefined): void {
+  operator = s;
+}
+export function operatorSizes(): SandboxSizes | undefined {
+  return operator;
+}
+
+/** A tenant's label map: label to the NAME of a class. */
+export type LabelMap = Readonly<Record<string, string>>;
+
+/**
+ * Why a tenant label map cannot be set: it may name only classes the operator defined. Undefined
+ * when fine. Fixed words plus the label and class name (both are the caller's own input).
+ */
+export function refuseLabelMap(
+  m: LabelMap,
+  sizes: SandboxSizes | undefined = operator,
+): string | undefined {
+  for (const [label, cls] of Object.entries(m)) {
+    if (!sizes || !Object.hasOwn(sizes.classes, cls)) {
+      return `runner label ${labelText(label)} names size class ${labelText(cls)}, which the instance operator has not defined`;
+    }
+  }
+  return undefined;
+}
 
 export function parseSandboxSizes(text: string, source: string): SandboxSizes {
   let raw: unknown;
@@ -75,10 +164,15 @@ export function parseSandboxSizes(text: string, source: string): SandboxSizes {
       `${source}: ${r.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`,
     );
   }
-  return r.data;
+  return normalise(r.data);
 }
 
-export type SandboxSize = { resources?: SandboxResources; snapshot?: string; class?: string };
+export type SandboxSize = {
+  resources?: SandboxResources;
+  class?: string;
+  /** The class's per provider settings, for the provider's `realiseClass`. */
+  providers?: Readonly<Record<string, Readonly<Record<string, string | number | boolean>>>>;
+};
 
 const own = <T>(m: Readonly<Record<string, T>>, k: string | undefined): T | undefined =>
   k !== undefined && Object.hasOwn(m, k) ? m[k] : undefined;
@@ -135,7 +229,11 @@ export function untrustedForSize(klass: string | null | undefined, local = false
 export function sizeFor(
   cfg: SandboxSizes | undefined,
   labels: readonly string[],
-  o: { untrusted?: boolean } = {},
+  o: {
+    untrusted?: boolean;
+    /** Tenant label maps, most specific first (project, then org). */
+    overrides?: readonly LabelMap[];
+  } = {},
 ): SandboxSize {
   if (!cfg) return {};
   const pick = (
@@ -155,7 +253,8 @@ export function sizeFor(
   const chosen =
     o.untrusted === true
       ? (pick(cfg.untrustedClass) ?? defaultPick)
-      : (labels.map((l) => pick(own(cfg.labels, l)) ?? coresPick(l)).find((x) => x !== undefined) ??
+      : (fromLayers(o.overrides ?? [], labels, pick) ??
+        labels.map((l) => pick(own(cfg.labels, l)) ?? coresPick(l)).find((x) => x !== undefined) ??
         defaultPick);
   if (!chosen) return {};
   const [name, c] = chosen;
@@ -172,6 +271,19 @@ export function sizeFor(
   return {
     class: name,
     ...(Object.keys(resources).length > 0 ? { resources } : {}),
-    ...(c.snapshot ? { snapshot: c.snapshot } : {}),
+    ...(c.providers && Object.keys(c.providers).length > 0 ? { providers: c.providers } : {}),
   };
+}
+
+/** The first layer (most specific first) that maps any of the labels, and that class if defined. */
+function fromLayers<C>(
+  layers: readonly LabelMap[],
+  labels: readonly string[],
+  pick: (name: string | undefined) => [string, C] | undefined,
+): [string, C] | undefined {
+  for (const layer of layers) {
+    const hit = labels.map((l) => pick(own(layer, l))).find((x) => x !== undefined);
+    if (hit) return hit;
+  }
+  return undefined;
 }

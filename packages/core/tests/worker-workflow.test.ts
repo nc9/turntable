@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256Hex, staticResolver, tarDirectory } from "@turntable/act-runner";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
-import type { Provider } from "@turntable/provider-sdk";
+import type { Provider, SandboxResources } from "@turntable/provider-sdk";
 import {
   type Db,
   ensureLocalTenant,
@@ -493,7 +493,7 @@ jobs:
     JSON.stringify({
       classes: {
         small: { cpus: 2, memoryMb: 4096 },
-        large: { cpus: 4, memoryMb: 8192, snapshot: "snap-large" },
+        large: { cpus: 4, memoryMb: 8192, providers: { fake: { snapshot: "snap-large" } } },
         huge: { cpus: 96 },
       },
       labels: { "ubuntu-latest-4-cores": "large", "ubuntu-latest-96-cores": "huge" },
@@ -509,6 +509,18 @@ jobs:
     const real = world.provider();
     const specs: { job: string; spec: Parameters<Provider["create"]>[0] }[] = [];
     const provider: Provider = Object.assign(Object.create(real) as Provider, {
+      // A snapshot-style provider: the class's `snapshot` is what the sandbox starts from.
+      realiseClass: (
+        cls: SandboxResources,
+        specific?: Readonly<Record<string, string | number | boolean>>,
+      ) =>
+        specific?.refuse === true
+          ? { ok: false as const, reason: "this provider cannot use that class" }
+          : {
+              ok: true as const,
+              resources: cls,
+              ...(typeof specific?.snapshot === "string" ? { snapshot: specific.snapshot } : {}),
+            },
       create: (spec: Parameters<Provider["create"]>[0]) => {
         specs.push({ job: spec.labels["turntable.job"] as string, spec });
         return real.create(spec);
@@ -588,6 +600,21 @@ jobs:
     expect(await runWith("trusted_pr")).toEqual({ cpus: 4, recorded: "trusted_pr" });
     expect(await runWith("protected")).toEqual({ cpus: 4, recorded: "protected" });
     expect(await runWith("untrusted_pr")).toEqual({ cpus: 1, recorded: "untrusted_pr" });
+  });
+
+  test("a provider that cannot realise a class fails the job closed: no sandbox, the reason logged", async () => {
+    const refusing = parseSandboxSizes(
+      JSON.stringify({
+        classes: { nope: { cpus: 2, providers: { fake: { refuse: true } } } },
+        default: "nope",
+      }),
+      "test",
+    );
+    const { specs } = await run({ sizes: refusing });
+    expect(specs.length).toBe(0);
+    const jobs = await listJobs(db, scope, (await listRuns(db, scope))[0]!.id);
+    expect(jobs.length).toBeGreaterThan(0);
+    expect(jobs.every((j) => j.state === "failure")).toBe(true);
   });
 
   test("with no size map the spec carries no resources: the provider's own default", async () => {

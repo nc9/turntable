@@ -7,6 +7,7 @@ import {
   approvalPolicyMap,
   MAX_REQUIRED_APPROVALS,
 } from "../approvals/policy-setting";
+import { refuseLabelMap } from "../scheduler/sandbox-size";
 import { createSettingsRegistry, defineSetting } from "./define";
 
 /** How many backups `db_backup` keeps when nothing says otherwise. */
@@ -337,6 +338,47 @@ export const drainTimeoutSecondsSetting = defineSetting({
   toml: "scheduler.drain_timeout_seconds",
 });
 
+/**
+ * Per-org and per-project `runs-on` label maps (#492). A map from a label to the NAME of a size
+ * class the instance operator defined; a tenant never defines a
+ * class, so it can reach only sizes the operator chose, still clamped by the operator's ceilings.
+ * Project beats org beats the instance map; an untrusted run ignores all of them. Two keys because
+ * a setting key is unique across scopes. No environment variable: the layers are the file and the
+ * database.
+ */
+const runnerLabelMap = z
+  .record(z.string().min(1).max(100), z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/))
+  .refine((m) => Object.keys(m).length <= 64, {
+    message: "at most 64 labels",
+  });
+const runnerLabelsCommon = {
+  type: runnerLabelMap,
+  default: {} as Record<string, string>,
+  role: "release_operator" as const,
+  refuse: refuseLabelMap,
+  // A bigger class costs the instance more: a value in an agent's context is not a human decision.
+  mcpEditable: false,
+  mcpReason: "it chooses how large a tenant's sandboxes are, so only a person changes it",
+};
+
+export const orgRunnerLabelsSetting = defineSetting({
+  ...runnerLabelsCommon,
+  key: "runner_labels",
+  scope: "org",
+  description:
+    "Maps a `runs-on` label to the name of a sandbox size class the instance operator defined, for every project of the org. Overrides the instance label map; a project's `project_runner_labels` overrides this. A class the operator has not defined is refused, and the operator's ceilings still apply. An untrusted pull request ignores it.",
+  toml: "runner_labels",
+});
+
+export const projectRunnerLabelsSetting = defineSetting({
+  ...runnerLabelsCommon,
+  key: "project_runner_labels",
+  scope: "project",
+  description:
+    "Maps a `runs-on` label to the name of a sandbox size class the instance operator defined, for this project. Overrides the org's `runner_labels` and the instance label map. A class the operator has not defined is refused, and the operator's ceilings still apply. An untrusted pull request ignores it.",
+  toml: "runner_labels",
+});
+
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
@@ -354,4 +396,6 @@ export const settingsRegistry = createSettingsRegistry([
   drainTimeoutSecondsSetting,
   sessionIdleHoursSetting,
   sessionAbsoluteDaysSetting,
+  orgRunnerLabelsSetting,
+  projectRunnerLabelsSetting,
 ]);

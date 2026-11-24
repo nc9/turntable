@@ -6,7 +6,10 @@ import {
   SpecError,
   createWrappedExec,
   scrubbedEnv,
+  type ClassRealisation,
   type Labels,
+  type ProviderClassSettings,
+  type SandboxResources,
   type Provider,
   type ProviderInfo,
   type SandboxInfo,
@@ -180,6 +183,31 @@ export class DockerProvider implements Provider {
   async healthcheck(): Promise<void> {
     const res = await this.cli(["version", "--format", "{{.Server.Version}}"], undefined, 15_000);
     if (res.exitCode !== 0) this.fail("docker daemon unreachable", res);
+  }
+
+  /** A class is cpus, memory and `image`. Docker cannot limit disk, so a class that asks refuses. */
+  realiseClass(cls: SandboxResources, specific?: ProviderClassSettings): ClassRealisation {
+    const extra = Object.keys(specific ?? {}).filter((k) => k !== "image");
+    if (extra.length > 0) {
+      return {
+        ok: false,
+        reason: `docker cannot realise the class setting ${extra[0]!.slice(0, 40)}`,
+      };
+    }
+    if (cls.diskGb !== undefined) {
+      return { ok: false, reason: "docker cannot limit disk, and the class asks for a disk size" };
+    }
+    const image = specific?.image;
+    if (
+      image !== undefined &&
+      (typeof image !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/.test(image))
+    ) {
+      return {
+        ok: false,
+        reason: "docker cannot use the class image: not a valid image reference",
+      };
+    }
+    return { ok: true, resources: { ...cls }, ...(image !== undefined ? { image } : {}) };
   }
 
   async create(spec: SandboxSpec) {

@@ -57,6 +57,8 @@ import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
+import { resolveRunnerLabelMaps } from "./runner-labels";
+import { realiseSize } from "./realise-size";
 import { refusalFor, type SandboxSizes, sizeFor, untrustedForSize } from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
@@ -347,9 +349,21 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     // Values that must never reach the job log: act echoes env and URLs when it is verbose.
     for (const v of secrets) registry.register(v);
     const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
+    const untrusted = untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local);
     const size = sizeFor(o.sizes, planned?.runsOn ?? [], {
-      untrusted: untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local),
+      untrusted,
+      // Tenant label maps never apply to an untrusted run (sizeFor ignores labels for it anyway).
+      ...(o.sizes && !untrusted
+        ? { overrides: await resolveRunnerLabelMaps(o.db, ctx.scope) }
+        : {}),
     });
+    const realised = realiseSize(ctx.provider, size);
+    if (!realised.ok) {
+      const why = `unsupported: the sandbox provider cannot realise size class ${size.class ?? ""}: ${realised.reason}`;
+      await ctx.store.appendLog(0, new TextEncoder().encode(`${why}\n`));
+      o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${why}\n`);
+      return { state: "failure", reason: why };
+    }
     const sink = o.out
       ? prefixedOut((text) => o.out?.(ctx.job.jobKey, text), ctx.job.jobKey)
       : undefined;
@@ -363,14 +377,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         out: sink ? sink.out : () => {},
         registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),
-        ...(size.resources || size.snapshot
-          ? {
-              sandbox: {
-                ...(size.resources ? { resources: size.resources } : {}),
-                ...(size.snapshot ? { snapshot: size.snapshot } : {}),
-              },
-            }
-          : {}),
+        ...(realised.sandbox ? { sandbox: realised.sandbox } : {}),
         ...(githubToken !== undefined ? { githubToken } : {}),
         ...(oidc ? { oidc } : {}),
         // A job holding a minted token, in its environment or behind the proxy, is secret-bearing:

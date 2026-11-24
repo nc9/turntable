@@ -7,7 +7,10 @@ import {
   createWrappedExec,
   readCapped,
   shellQuote,
+  type ClassRealisation,
   type Labels,
+  type ProviderClassSettings,
+  type SandboxResources,
   type Provider,
   type ProviderCheck,
   type ProviderInfo,
@@ -918,6 +921,22 @@ export class DaytonaProvider implements Provider {
       body.buildInfo = { dockerfileContent: `FROM ${spec.image}\n` };
     }
     return body;
+  }
+
+  /** A class is its resources plus `snapshot`; any other setting is not Daytona's and is refused. */
+  realiseClass(cls: SandboxResources, specific?: ProviderClassSettings): ClassRealisation {
+    const extra = Object.keys(specific ?? {}).filter((k) => k !== "snapshot");
+    if (extra.length > 0) {
+      return {
+        ok: false,
+        reason: `daytona cannot realise the class setting ${extra[0]!.slice(0, 40)}`,
+      };
+    }
+    const snapshot = specific?.snapshot;
+    if (snapshot !== undefined && typeof snapshot !== "string") {
+      return { ok: false, reason: "daytona needs the class snapshot to be a name" };
+    }
+    return { ok: true, resources: { ...cls }, ...(snapshot !== undefined ? { snapshot } : {}) };
   }
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
