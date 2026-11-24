@@ -38,6 +38,16 @@ The sandbox spec has no environment variable field. Providers never receive secr
 
 A provider conformance suite will exercise the contract: detached exec, offset logs, exit code recovery and cleanup. First-party and third-party providers must pass it.
 
+## Job user and sudo
+
+Every provider must run the job as root with a working `sudo`, or as a user with passwordless `sudo`, like GitHub-hosted runners, because workflows call `sudo apt-get install ...` and the like. The sandbox is the isolation boundary, so this adds no cross-job risk. The Turntable runner image satisfies it. A tenant-built snapshot must satisfy it too: install `sudo` and, for a non-root user, grant it `NOPASSWD`. Check a snapshot from inside a sandbox started from it:
+
+```sh
+id -u; sudo -n true && echo sudo-ok
+```
+
+The output must include `sudo-ok`. The Daytona live egress probe (`packages/provider-daytona/scripts/egress-probe.ts`) records an `identity` line per egress class as `{uid, user, sudo}` where `sudo` is `ok`, `missing` (no `sudo` binary) or `denied` (it asks for a password or refuses). It is informational; pass `--require-sudo` to make a sandbox that is neither root-with-sudo nor a passwordless-sudo user fail the run (exit code 4).
+
 ## Isolation levels
 
 Every provider declares an `isolation` class in its info, weakest first:
