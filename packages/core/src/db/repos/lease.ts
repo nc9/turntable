@@ -158,6 +158,9 @@ async function runsStartedSince(db: Db, orgId: string, since: number): Promise<S
  * Capacity counts every attempt in state running, lease expired or not, so a crashed worker
  * keeps its slot until the reconciler resolves it.
  */
+/** Run events that are claimed ahead of PR runs within a project: trust class protected. */
+const PROTECTED_EVENTS: string[] = ["push", "merge_group"];
+
 export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undefined> {
   const readiness = o.readiness ?? defaultReadiness;
   const pageSize = o.pageSize ?? 25;
@@ -266,38 +269,57 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             x.oldest.localeCompare(y.oldest),
         )
         .map((w) => w.orgId);
-      const cursor = new Map<string, string>(orgs.map((id) => [id, ""]));
+      // Org order and round-robin are tier-agnostic. Inside one org's turn, protected runs
+      // (push, merge_group) are paged before that org's other runs; FIFO within each tier.
+      const TIERS = ["protected", "other"] as const;
+      const cursor = new Map<string, string>(
+        orgs.flatMap((id) => TIERS.map((t) => [`${id}|${t}`, ""] as const)),
+      );
       const open = new Set(orgs);
       let scanned = 0;
 
       while (open.size > 0 && scanned < scanLimit) {
         for (const orgId of orgs) {
           if (!open.has(orgId) || scanned >= scanLimit) continue;
-          const page = await tx.orm
-            .select({ attempt: s.jobAttempts, job: s.jobs })
-            .from(s.jobAttempts)
-            .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
-            .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
-            .where(
-              and(
-                eq(s.jobAttempts.orgId, orgId),
-                eq(s.jobAttempts.state, "queued"),
-                eq(s.jobs.state, "queued"),
-                isNull(s.jobAttempts.leaseOwner),
-                o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
-                notFrozen(s.runs.orgId, s.runs.projectId),
-                ...notProjectFull,
-                ...classFilter,
-                gt(s.jobAttempts.id, cursor.get(orgId)!),
-              ),
-            )
-            .orderBy(asc(s.jobAttempts.id))
-            .limit(Math.min(pageSize, scanLimit - scanned));
+          let page: {
+            attempt: typeof s.jobAttempts.$inferSelect;
+            job: typeof s.jobs.$inferSelect;
+          }[] = [];
+          let tier: (typeof TIERS)[number] = "protected";
+          for (tier of TIERS) {
+            const cur = cursor.get(`${orgId}|${tier}`);
+            if (cur === undefined) continue;
+            page = await tx.orm
+              .select({ attempt: s.jobAttempts, job: s.jobs })
+              .from(s.jobAttempts)
+              .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+              .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+              .where(
+                and(
+                  eq(s.jobAttempts.orgId, orgId),
+                  eq(s.jobAttempts.state, "queued"),
+                  eq(s.jobs.state, "queued"),
+                  isNull(s.jobAttempts.leaseOwner),
+                  o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+                  notFrozen(s.runs.orgId, s.runs.projectId),
+                  ...notProjectFull,
+                  ...classFilter,
+                  tier === "protected"
+                    ? inArray(s.runs.event, PROTECTED_EVENTS)
+                    : notInArray(s.runs.event, PROTECTED_EVENTS),
+                  gt(s.jobAttempts.id, cur),
+                ),
+              )
+              .orderBy(asc(s.jobAttempts.id))
+              .limit(Math.min(pageSize, scanLimit - scanned));
+            if (page.length > 0) break;
+            cursor.delete(`${orgId}|${tier}`); // tier exhausted: next tier, same turn
+          }
           if (page.length === 0) {
             open.delete(orgId);
             continue;
           }
-          cursor.set(orgId, page.at(-1)!.attempt.id);
+          cursor.set(`${orgId}|${tier}`, page.at(-1)!.attempt.id);
           for (const c of page) {
             scanned++;
             const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
