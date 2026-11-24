@@ -1,0 +1,11 @@
+# Longshore lane configuration (the agents' own gate: changes need the planner's OK).
+# Setup runs before the agent starts; the hooks run on commit and push; the runner re-runs
+# pre_push itself and reports verified_checks. The full test suite is not here on purpose:
+# it runs in CI and the merge queue, which stay the test gate.
+
+[setup]
+commands = ["bun install --frozen-lockfile"]
+
+[checks]
+pre_commit = ["bun fmt --check"]
+pre_push = ["bun run typecheck"]
