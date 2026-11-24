@@ -227,7 +227,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     const idents = await h.db.run((x) => x.orm.select().from(schema.githubIdentities));
     expect(idents).toMatchObject([{ githubUserId: "1001", login: "Alice" }]);
     const me = await h.as(id, "whoami");
-    expect(me.ok && me.output).toMatchObject({ kind: "member", role: "owner", org: "tenant" });
+    expect(me.ok && me.output).toMatchObject({ kind: "session", role: "owner", org: "tenant" });
     // /auth/session and the page show who is signed in
     const info = await h.handler.handle(
       new Request(`${ORIGIN}${SESSION_INFO_PATH}`, {
@@ -479,6 +479,75 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     expect(await h.db.run((x) => x.orm.select().from(schema.memberInvites))).toHaveLength(0);
   });
 
+  test("a web session never passes a check meant for the in-process caller", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({ role: "owner" });
+    const cookie = (await h.signIn("code-alice")).session!;
+    // doctor is the instance operator's: the host CLI's owner principal, never a signed-in owner
+    const viaSession = await h.as(cookie, "doctor", { org: "tenant" });
+    expect(!viaSession.ok && viaSession.error.code).toBe("forbidden");
+    const cli = await dispatch(
+      h.env,
+      {
+        kind: "principal",
+        principal: { kind: "member", id: "cli", orgId: h.tenant.id, role: "owner" },
+      },
+      "doctor",
+      { org: "tenant" },
+    );
+    expect(cli.ok || cli.error.code !== "forbidden").toBe(true);
+    // the member-only checks (webhooks, OIDC audiences, token revoke by an admin) refuse a session too
+    for (const op of [
+      "create_webhook",
+      "set_oidc_audiences",
+      "revoke_api_token",
+      "create_api_token",
+    ]) {
+      const r = await h.as(cookie, op, { org: "tenant" });
+      expect(r.ok, op).toBe(false);
+    }
+  });
+
+  test("an invite never cancels a more privileged one", async () => {
+    const { h, cookie } = await aliceAdmin();
+    expect((await h.bind({ github_login: "carol", role: "owner" })).ok).toBe(true);
+    // a session (cap member) and a person's token both fail to replace the operator's owner invite
+    const viaSession = await h.as(cookie, "invite_member", {
+      github_login: "carol",
+      role: "viewer",
+    });
+    expect(!viaSession.ok && viaSession.error.code).toBe("conflict");
+    const person = await mintToken(h.db, { orgId: h.tenant.id }, "release_operator", {
+      kind: "person",
+    });
+    const viaToken = await dispatch(
+      h.env,
+      { kind: "bearer", token: person.secret },
+      "invite_member",
+      {
+        github_login: "carol",
+        role: "viewer",
+      },
+    );
+    expect(!viaToken.ok && viaToken.error.code).toBe("conflict");
+    const live = (await h.db.run((x) => x.orm.select().from(schema.memberInvites))).filter(
+      (i) => i.githubLogin === "carol" && i.usedAt === null && i.revokedAt === null,
+    );
+    expect(live).toMatchObject([{ role: "owner" }]);
+    // carol still joins as the owner the operator named
+    h.users.set("code-carol", { id: "gen-carol", login: "carol" });
+    const me = await h.as((await h.signIn("code-carol")).session!, "whoami");
+    expect(me.ok && me.output).toMatchObject({ role: "owner" });
+    // a lower invite of the caller's own making may still be replaced by the same caller
+    expect((await h.as(cookie, "invite_member", { github_login: "dave", role: "viewer" })).ok).toBe(
+      true,
+    );
+    expect((await h.as(cookie, "invite_member", { github_login: "dave", role: "member" })).ok).toBe(
+      true,
+    );
+  });
+
   test("instance_bind_github_login: audited in both chains, with an org event; bad targets refused", async () => {
     const h = await harness();
     const r = await h.bind({ role: "owner" });
@@ -621,7 +690,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     // a GET needs no Origin
     const who = await api(new Request(`${ORIGIN}/api/v1/whoami?org=tenant`, { headers: c }));
     expect(who!.status).toBe(200);
-    expect(await who!.json()).toMatchObject({ kind: "member", role: "admin" });
+    expect(await who!.json()).toMatchObject({ kind: "session", role: "admin" });
     // a bearer token behaves exactly as before: no cookie, no origin check
     const tok = await mintToken(h.db, { orgId: h.tenant.id }, "release_operator", {
       kind: "person",

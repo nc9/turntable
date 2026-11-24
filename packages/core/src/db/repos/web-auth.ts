@@ -101,8 +101,10 @@ export function findMemberByGithubUserId(
 // ---- invites ----
 
 /**
- * Creates a pending invite for a login, revoking any earlier pending one for the same login in the
- * same org, so there is only ever one live invite and its role is the latest asked for.
+ * Creates a pending invite for an account, replacing earlier pending ones for it so only one is
+ * ever live. A caller may replace only what `canReplace` allows (nothing more privileged than it
+ * could grant, nothing the instance administrator made): if any earlier pending invite is out of
+ * reach, nothing changes and `undefined` is returned.
  */
 export function createMemberInvite(
   db: Db,
@@ -115,10 +117,25 @@ export function createMemberInvite(
     reason?: string | undefined;
     now: number;
     expiresAt: number;
+    canReplace: (earlier: { role: string; createdBy: string }) => boolean;
   },
-): Promise<MemberInvite> {
+): Promise<MemberInvite | undefined> {
   return db.transaction(async (tx) => {
     const login = input.githubLogin.toLowerCase();
+    const live = await tx.orm
+      .select()
+      .from(s.memberInvites)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.memberInvites.orgId },
+          eq(s.memberInvites.githubUserId, input.githubUserId),
+          isNull(s.memberInvites.usedAt),
+          isNull(s.memberInvites.revokedAt),
+          gt(s.memberInvites.expiresAt, input.now),
+        ),
+      );
+    if (live.some((e) => !input.canReplace(e))) return undefined;
     await tx.orm
       .update(s.memberInvites)
       .set({ revokedAt: input.now })

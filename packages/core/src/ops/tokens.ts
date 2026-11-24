@@ -59,6 +59,9 @@ export function assertMintable(
   creator: Principal,
   request: { role: AgentRole; projectId: string | undefined; kind?: TokenKind },
 ): void {
+  if (creator.kind === "session") {
+    throw new OpError("forbidden", "a web session cannot create tokens without passkey step-up");
+  }
   if (creator.kind === "member") return;
   if (creator.kind === "approver" || creator.kind === "instance") {
     throw new OpError(

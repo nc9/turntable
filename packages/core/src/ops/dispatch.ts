@@ -245,7 +245,7 @@ async function authenticateSession(
     }
     throw new OpError("not_found", NO_SUCH_SCOPE);
   }
-  return { kind: "member", id: live.userId, orgId: pick.orgId, role: pick.role, session: true };
+  return { kind: "session", id: live.userId, orgId: pick.orgId, role: pick.role };
 }
 
 /**

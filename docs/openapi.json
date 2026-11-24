@@ -2853,7 +2853,7 @@
                   "properties": {
                     "kind": {
                       "type": "string",
-                      "enum": ["token", "member"]
+                      "enum": ["token", "member", "session"]
                     },
                     "id": {
                       "type": "string"

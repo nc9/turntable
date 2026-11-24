@@ -68,9 +68,9 @@ export const inviteMemberOp = defineOp({
       if (ROLE_RANK[i.role] > ROLE_RANK.member) {
         throw new OpError("forbidden", "a token can invite a viewer or member only");
       }
-    } else if (p.kind === "member") {
+    } else if (p.kind === "member" || p.kind === "session") {
       // Until passkey step-up exists, a stolen session must never mint a persistent admin or owner.
-      if (p.session && i.role !== "viewer" && i.role !== "member") {
+      if (p.kind === "session" && i.role !== "viewer" && i.role !== "member") {
         throw new OpError("forbidden", "needs passkey step-up or the instance operator");
       }
       if (ROLE_RANK[i.role] > ROLE_RANK[p.role]) {
@@ -79,7 +79,17 @@ export const inviteMemberOp = defineOp({
     } else {
       throw new OpError("forbidden", "not available to this principal");
     }
-    return await invite(ctx, i.github_login, i.role, `${p.kind}:${p.id}`, "invite", undefined);
+    // What this caller may grant, and so may replace: a token or session tops out at member.
+    const maxRank = p.kind === "member" ? ROLE_RANK[p.role] : ROLE_RANK.member;
+    return await invite(
+      ctx,
+      i.github_login,
+      i.role,
+      `${p.kind}:${p.id}`,
+      "invite",
+      undefined,
+      (e) => ROLE_RANK[e.role as MemberRole] <= maxRank && !e.createdBy.startsWith("instance:"),
+    );
   },
 });
 
@@ -90,6 +100,7 @@ async function invite(
   by: string,
   via: "invite" | "instance",
   reason: string | undefined,
+  canReplace: (earlier: { role: string; createdBy: string }) => boolean,
 ) {
   const loginLc = githubLogin.toLowerCase();
   // The login is resolved to the numeric account NOW and the invite binds that id: a login that is
@@ -116,7 +127,11 @@ async function invite(
     reason,
     now,
     expiresAt: now + INVITE_TTL_MS,
+    canReplace,
   });
+  if (!row) {
+    throw new OpError("conflict", "a pending invite with a higher role exists");
+  }
   await appendEvent(ctx.db, ctx.scope, {
     type: "org.member_invited",
     payload: {
@@ -171,6 +186,7 @@ export const instanceBindGithubLoginOp = defineOp({
       `instance:${ctx.principal.id}`,
       "instance",
       i.reason,
+      () => true, // the operator may replace any pending invite
     );
     // The system chain gets the dispatcher's entry; the org's own chain says it too.
     await appendAudit(ctx.db, target, {
