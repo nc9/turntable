@@ -955,7 +955,7 @@ export const instanceDrainOp = defineOp({
         "What to do with running attempts of projects whose checks mode is not live (shadow or " +
           "off), which gate nothing. wait (default) lets them finish; cancel stops each one now " +
           "as an infrastructure cut and requeues its job once. Live projects' attempts are " +
-          "always waited for. Only meaningful with on=true.",
+          "always waited for. Only meaningful with on=true. Each call sets it explicitly: omitted means wait, even if an earlier call set cancel.",
       ),
   }),
   output: drainOutput,
@@ -973,7 +973,7 @@ export const instanceDrainOp = defineOp({
   }),
   async handler(ctx, i) {
     processDrain.set(i.on, i.reason, ctx.now());
-    if (i.on && i.shadow) await processDrain.applyShadow(i.shadow);
+    if (i.on) await processDrain.applyShadow(i.shadow ?? "wait");
     return drainView(ctx);
   },
 });

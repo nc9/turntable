@@ -597,6 +597,18 @@ describe("drain shadow: cancel (#480)", () => {
       expect(input).toMatchObject({ shadow: "cancel", shadow_mode: "cancel", shadow_cut: 1 });
     });
 
+    test("a repeat drain call without shadow means wait, never an inherited cancel", async () => {
+      const cutter = { n: 0 };
+      processDrain.trackShadowCutter(async () => ++cutter.n);
+      await asInstance("instance_drain", { on: true, reason: "deploy", shadow: "cancel" });
+      expect(cutter.n).toBe(1);
+      const again = await asInstance("instance_drain", { on: true, reason: "deploy" });
+      expect(again.ok && again.output).toMatchObject({ shadow_mode: "wait", shadow_cut: 1 });
+      expect(cutter.n).toBe(1);
+      const status = await asInstance("instance_drain_status");
+      expect(status.ok && status.output).toMatchObject({ shadow_mode: "wait", shadow_cut: 1 });
+    });
+
     test("shadow defaults to wait and rejects other values; ending the drain resets it", async () => {
       const bad = await asInstance("instance_drain", {
         on: true,
