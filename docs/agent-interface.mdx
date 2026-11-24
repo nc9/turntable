@@ -178,7 +178,7 @@ Each run lists its jobs as `{job_id, check_name, conclusion, attempt}`. `check_n
 
 `rerun` only queues work. It puts the jobs back in `queued` with a new attempt that carries the reason, and reopens the run. Starting the queued attempts is the scheduler's job, which comes later, so until then a reran job stays queued. The cap is per job key per commit across all runs of that sha (per run when it has none); past it the call is refused with `409 conflict`, and the right response is to read the failure, not to retry. The call is all or nothing. A rerun never bypasses approval: a job with an `approval_kind` goes back to `awaiting_approval` (and emits `approval.required`) whatever its previous state, and a job that never ran (skipped, or cancelled before it started) and needs approval is refused.
 
-`cancel` records the cancellation and, for a job running in the same process, stops it at once: the worker is signalled and its sandbox destroyed. A worker in another process stops at its next heartbeat, when it finds its lease gone.
+`cancel` records the cancellation and, for a job running in the same process, stops it at once: the worker is signalled and its sandbox destroyed. A worker in another process stops at its next heartbeat, when it finds its lease gone. An optional `reason` (up to 500 characters, blank counts as absent) is recorded in the audit entry.
 
 Planned next: `cost_summary`.
 

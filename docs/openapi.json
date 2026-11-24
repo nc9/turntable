@@ -2193,7 +2193,7 @@
       "post": {
         "operationId": "cancel",
         "summary": "Cancel a run: queued, running and waiting jobs become cancelled.",
-        "description": "Cancels a run by moving every queued, running or awaiting-approval job to cancelled. Jobs that already finished are left as they are. Idempotent: cancelling a finished or already cancelled run changes nothing. Destructive and audited; it needs the operator role. A running job is stopped at once: its worker is told to abort and its sandbox is destroyed (a worker in another process stops at its next heartbeat).\n\nRequired role: operator. Side effects: destructive; audited.",
+        "description": "Cancels a run by moving every queued, running or awaiting-approval job to cancelled. Jobs that already finished are left as they are. Idempotent: cancelling a finished or already cancelled run changes nothing. Destructive and audited; it needs the operator role. A running job is stopped at once: its worker is told to abort and its sandbox is destroyed (a worker in another process stops at its next heartbeat). An optional reason is recorded in the audit entry.\n\nRequired role: operator. Side effects: destructive; audited.",
         "parameters": [
           {
             "name": "run_id",
@@ -2213,6 +2213,11 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "reason": {
+                    "description": "Why (optional, up to 500 characters). Trimmed; blank counts as absent. Recorded in the audit entry.",
+                    "type": "string",
+                    "maxLength": 500
+                  },
                   "org": {
                     "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
                     "type": "string",

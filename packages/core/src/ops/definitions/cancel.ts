@@ -12,8 +12,18 @@ export const cancel = defineOp({
     "that already finished are left as they are. Idempotent: cancelling a finished or already " +
     "cancelled run changes nothing. Destructive and audited; it needs the operator role. A running " +
     "job is stopped at once: its worker is told to abort and its sandbox is destroyed (a worker " +
-    "in another process stops at its next heartbeat).",
-  input: z.object({ run_id: z.string().min(1).max(64) }),
+    "in another process stops at its next heartbeat). An optional reason is recorded in the audit entry.",
+  input: z.object({
+    run_id: z.string().min(1).max(64),
+    reason: z
+      .preprocess(
+        (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim()) : v),
+        z.string().max(500).optional(),
+      )
+      .describe(
+        "Why (optional, up to 500 characters). Trimmed; blank counts as absent. Recorded in the audit entry.",
+      ),
+  }),
   output: z.object({
     run_id: z.string(),
     state: z.enum(JOB_STATES).describe("The run's state after cancelling."),
