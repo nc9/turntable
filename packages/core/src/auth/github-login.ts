@@ -214,7 +214,16 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     const stateNonce = await verifyState(state, app.orgId);
     // The browser that started the sign-in must be the one that finishes it. Nothing is spent
     // until the signature, the expiry and the cookie all agree.
-    if (!stateNonce || !cookieNonce || !safeEqual(cookieNonce, stateNonce)) {
+    if (stateNonce && cookieNonce && !safeEqual(cookieNonce, stateNonce)) {
+      // Another sign-in started in this browser since: its cookie replaced this one's nonce.
+      return note(
+        403,
+        "Sign-in refused",
+        "This sign-in was replaced by a newer one in this browser; sign in again.",
+        [clearLoginCookie],
+      );
+    }
+    if (!stateNonce || !cookieNonce) {
       return note(
         403,
         "Sign-in refused",

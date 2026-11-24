@@ -786,10 +786,26 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     expect(bad!.status).toBe(405);
   });
 
+  test("two logins started in one browser: the older one is refused with a clear message", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const older = await h.start();
+    const newer = await h.start();
+    // one browser holds one login cookie: the newer start replaced the older nonce
+    const stale = await h.callback(older.state, "code-alice", newer.cookie);
+    expect(stale.status).toBe(403);
+    expect(await stale.text()).toContain("replaced by a newer one in this browser");
+    const fresh = await h.callback(newer.state, "code-alice", newer.cookie);
+    expect(fresh.status).toBe(303);
+    expect(await h.db.run((x) => x.orm.select().from(schema.webSessions))).toHaveLength(1);
+  });
+
   test("two sign-ins of one invite make one member and one user", async () => {
     const h = await harness();
     h.users.set("code-alice", { id: "1001", login: "alice" });
     await h.bind({});
+    // two browsers (separate cookie jars) start at the same moment
     const [a, b] = await Promise.all([h.start(), h.start()]);
     const first = await h.callback(a.state, "code-alice", a.cookie);
     const second = await h.callback(b.state, "code-alice", b.cookie);
