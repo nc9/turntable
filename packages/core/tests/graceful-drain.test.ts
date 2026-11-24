@@ -236,7 +236,7 @@ describe("boot, healthz and doctor", () => {
     expect(d.snapshot()).toEqual({ draining: true, since: 10, reason: "first" });
   });
 
-  test("/healthz stays 200 while draining and carries draining and the running count", async () => {
+  test("/healthz stays 200 while draining and carries only the draining flag", async () => {
     const plain = await handleRequest(new Request("http://localhost/healthz"));
     expect(await plain.json()).toEqual({ ok: true, version: VERSION });
     processDrain.trackRunning(() => 3);
@@ -247,7 +247,6 @@ describe("boot, healthz and doctor", () => {
       ok: true,
       version: VERSION,
       draining: true,
-      running_attempts: 3,
     });
   });
 

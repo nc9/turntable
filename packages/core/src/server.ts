@@ -62,7 +62,9 @@ export async function handleRequest(
   if (url.pathname === "/healthz") {
     // Still 200 while draining, so the platform keeps the old instance until its attempts finish.
     const body = processDrain.draining
-      ? { ok: true, version: VERSION, draining: true, running_attempts: processDrain.runningHere }
+      ? // Only the flag: /healthz is unauthenticated, so a running count would publish tenant
+        // activity. The count is in the instance administrator's instance_drain_status.
+        { ok: true, version: VERSION, draining: true }
       : { ok: true, version: VERSION };
     return Response.json(body, { headers: SECURITY_HEADERS });
   }
