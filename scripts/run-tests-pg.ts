@@ -55,13 +55,16 @@ for (const [name, listed] of suites) {
   for (let i = 0; i < files.length; i += 5) chunks.push({ name, files: files.slice(i, i + 5) });
 }
 
+// Default per-test timeout under CI load; see run-test-group.ts.
+const TEST_TIMEOUT_MS = "30000";
+
 const failed: string[] = [];
 const timings: { label: string; seconds: number }[] = [];
 
 async function runChunk({ name, files }: Chunk): Promise<void> {
   const label = `${name}: ${files.join(" ")}`;
   const start = performance.now();
-  const p = Bun.spawn(["bun", "test", ...files], {
+  const p = Bun.spawn(["bun", "test", "--timeout", TEST_TIMEOUT_MS, ...files], {
     stdout: "pipe",
     stderr: "pipe",
     env: process.env,
