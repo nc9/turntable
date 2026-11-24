@@ -42,6 +42,12 @@ Docs ship with each feature. This site lives in `docs/` and is built with Tangly
 
 Work on a branch and open a PR for anything beyond a trivial fix. Keep `main` green.
 
+### Merge queue and the required check
+
+`main` merges through the GitHub merge queue. The `ci` workflow also runs on `merge_group` events, and a merge group always runs every job. `ci-ok` is the single required check in the ruleset: it needs every other job in `ci.yml` and passes when each one succeeded or was skipped. When you add a job to `ci.yml`, add it to the `needs` list of `ci-ok`.
+
+A pull request that changes only `docs/**`, `*.md` or `*.mdx` files skips the heavy jobs (Postgres, Docker, act end to end, runner image, release golden path). `check` and `dep-age` still run. Pushes to `main` and merge groups are never treated as docs-only.
+
 ### Branches from before the Turntable rename
 
 Update them by hand. `LONGSHORE_*` env, `ls_` and `lsi_` tokens, `longshore.db` and `__longshore_migrations` are still accepted (see [Formerly Longshore](/configuration#formerly-longshore)). Never rename a string in key-derivation, signing, approval or webhook code.

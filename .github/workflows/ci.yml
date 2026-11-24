@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue builds a temporary branch and waits for this workflow; the full suite always runs.
+  merge_group:
+    types: [checks_requested]
   # Re-run CI on a main sha by hand when its push run was skipped or cancelled (#444's squash body
   # carried a [skip ci] onto main 71044470, and there was no way to re-trigger it).
   workflow_dispatch:
@@ -16,10 +19,55 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A merge group has its own ref, and its own key here too, and is never cancelled by a newer run.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'merge_group' && 'mq' || 'run' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
+  # Decides whether a pull request touches only docs. Merge groups, pushes and manual runs are never
+  # docs-only, so the full suite always runs before and after a merge. Any doubt means "not docs-only".
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Is this a docs-only pull request
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          docs_only=false
+          base=""
+          case "${EVENT}" in
+            pull_request) base="${PR_BASE}" ;;
+            merge_group) base="${MG_BASE}" ;;
+            push) base="${PUSH_BEFORE}" ;;
+          esac
+          case "${base}" in
+            ""|*[!0-9a-f]*|0000000000000000000000000000000000000000) base="" ;;
+          esac
+          # Docs-only skipping applies to pull requests only.
+          if [ "${EVENT}" = "pull_request" ] && [ -n "${base}" ] && files="$(git diff --name-only "${base}" "${HEAD_SHA}")" && [ -n "${files}" ]; then
+            docs_only=true
+            while IFS= read -r f; do
+              case "${f}" in
+                docs/*|*.md|*.mdx) ;;
+                *) docs_only=false; break ;;
+              esac
+            done <<< "${files}"
+          fi
+          echo "event=${EVENT} base=${base:-none} docs_only=${docs_only}"
+          echo "docs_only=${docs_only}" >> "${GITHUB_OUTPUT}"
+
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -80,7 +128,8 @@ jobs:
   # The core and ops suites against a real Postgres (the same suites as `bun run test`, with every
   # test given a fresh database). SQLite-only tests are listed in scripts/run-tests-pg.ts.
   postgres:
-    if: vars.TURNTABLE_CI != 'true'
+    needs: changes
+    if: vars.TURNTABLE_CI != 'true' && needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -116,7 +165,8 @@ jobs:
   # Turntable only: no service containers in a sandbox, so the same suites run on in-process
   # PGlite. GitHub CI runs the real-Postgres job above instead, so this one is not doubled there.
   postgres-pglite:
-    if: vars.TURNTABLE_CI == 'true'
+    needs: changes
+    if: vars.TURNTABLE_CI == 'true' && needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -166,6 +216,8 @@ jobs:
   # request, tag and digest re-check, approval quorum, signing, strict publish to fake npm and
   # GitHub, `turntable verify`, and one negative per gate. Slower than a unit test, so it is its own job.
   release-golden:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -179,7 +231,8 @@ jobs:
       - run: bun run test:golden
 
   provider-docker:
-    if: vars.TURNTABLE_CI != 'true'
+    needs: changes
+    if: vars.TURNTABLE_CI != 'true' && needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -197,7 +250,8 @@ jobs:
         run: bun run test:docker
 
   act-runner-e2e:
-    if: vars.TURNTABLE_CI != 'true'
+    needs: changes
+    if: vars.TURNTABLE_CI != 'true' && needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -245,7 +299,8 @@ jobs:
         run: bun run test:run-e2e
 
   runner-image:
-    if: vars.TURNTABLE_CI != 'true'
+    needs: changes
+    if: vars.TURNTABLE_CI != 'true' && needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -263,7 +318,8 @@ jobs:
         run: bun run scripts/runner-toolset.ts --image turntable-runner:ci --check
 
   docker:
-    if: vars.TURNTABLE_CI != 'true'
+    needs: changes
+    if: vars.TURNTABLE_CI != 'true' && needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -288,3 +344,34 @@ jobs:
           tags: turntable:smoke
       - name: Run the distroless image (healthz, UI, CSP, PORT, bootstrap token, a real worker checkout)
         run: scripts/smoke-image.sh turntable:smoke
+
+  # The one required check for the ruleset. A skipped job is fine: only `changes` (docs-only pull
+  # requests) or the TURNTABLE_CI gates skip jobs. A failed or cancelled job fails this one.
+  ci-ok:
+    needs:
+      - changes
+      - check
+      - postgres
+      - postgres-pglite
+      - dep-age
+      - release-golden
+      - provider-docker
+      - act-runner-e2e
+      - runner-image
+      - docker
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every needed job succeeded or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          bad="$(printf '%s' "${NEEDS}" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"')"
+          if [ -n "${bad}" ]; then
+            echo "not green:"
+            echo "${bad}"
+            exit 1
+          fi
+          echo "all needed jobs succeeded or were skipped"
