@@ -498,4 +498,17 @@ describe("class config", () => {
       ).toBeUndefined();
     }
   });
+
+  test("dockerRefusal names the provider's isolation level, or says it is unknown", () => {
+    const on = sizes({ untrustedDocker: true });
+    const why = (isolation?: "container" | "gvisor") =>
+      dockerRefusal(on, "uses container:", {
+        untrusted: true,
+        provider: { dockerInSandbox: true, ...(isolation ? { isolation } : {}) },
+      });
+    expect(why("container")).toEndWith("this class is container-isolated");
+    expect(why("gvisor")).toEndWith("this class is gvisor-isolated");
+    expect(why(undefined)).toEndWith("its isolation level is unknown");
+    expect(why(undefined)).not.toContain("this class is");
+  });
 });
