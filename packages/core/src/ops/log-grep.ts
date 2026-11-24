@@ -152,11 +152,6 @@ export async function grepLog(
   };
 
   for await (const ln of lineStream(read, start, scanEnd, scanEnd === total)) {
-    if (now() > deadline) {
-      stoppedAt = lastEnd;
-      why = "deadline";
-      break;
-    }
     const hit = match(ln.text.length > MATCH_CHARS ? ln.text.slice(0, MATCH_CHARS) : ln.text);
     let ok = true;
     let failedAt = ln.offset;
@@ -191,6 +186,13 @@ export async function grepLog(
     if (matches >= input.maxMatches && afterLeft === 0) {
       stoppedAt = lastEnd;
       why = "max_matches";
+      break;
+    }
+    // Checked after a line is handled, never before: a call always advances by at least one line
+    // (a line longer than a block is yielded in block-sized pieces), so a pager cannot stall.
+    if (now() > deadline) {
+      stoppedAt = lastEnd;
+      why = "deadline";
       break;
     }
   }

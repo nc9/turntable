@@ -157,6 +157,40 @@ describe("grepLog deadline", () => {
   });
 });
 
+describe("grepLog liveness", () => {
+  test("a clock already past the deadline still advances, and paging reaches the end", async () => {
+    const log = makeLog(500, [400]);
+    let t = 0;
+    const clock = (): number => (t++ === 0 ? 0 : 1e12);
+    const first = await grepLog(reader(log), log.length, 0, { ...base, deadlineMs: 200 }, clock);
+    expect(first.stopped).toBe("deadline");
+    expect(first.next).not.toBeNull();
+    expect(first.next!).toBeGreaterThan(0);
+    let next: number | null = first.next;
+    let hits = first.matches;
+    let calls = 1;
+    while (next !== null) {
+      t = 0;
+      const from: number = next;
+      const r = await grepLog(reader(log), log.length, from, { ...base, deadlineMs: 200 }, clock);
+      if (r.next !== null) expect(r.next).toBeGreaterThan(from);
+      hits += r.matches;
+      next = r.next;
+      expect(++calls).toBeLessThan(1000);
+    }
+    expect(hits).toBe(1);
+  });
+
+  test("a single line longer than a block is passed in pieces, advancing each call", async () => {
+    const long = enc("z".repeat(600_000) + " ERROR tail\nnext ERROR\n");
+    let t = 0;
+    const clock = (): number => (t++ === 0 ? 0 : 1e12);
+    const r = await grepLog(reader(long), long.length, 0, { ...base, deadlineMs: 200 }, clock);
+    expect(r.stopped).toBe("deadline");
+    expect(r.next!).toBeGreaterThan(0);
+  });
+});
+
 describe("grep slots", () => {
   test("the 3rd parallel call per principal is refused, and release frees a slot", () => {
     const slots = createGrepSlots(2, 8);
