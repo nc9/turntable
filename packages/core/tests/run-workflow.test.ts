@@ -158,7 +158,7 @@ describe("runWorkflowLocal", () => {
     expect(by.test?.state).toBe("success");
     expect(by.skipme).toMatchObject({ state: "skipped" });
     expect(by.skipme?.reason).toContain("is false");
-    expect(by.images?.state).toBe("skipped");
+    expect(by.images?.state).toBe("failure");
     expect(by.images?.reason).toContain("unsupported");
     expect(by.images?.reason).toContain("docker");
     expect(by.fail?.state).toBe("failure");
@@ -178,7 +178,7 @@ describe("runWorkflowLocal", () => {
     const row = (k: string) => jobs.find((j) => j.jobKey === k);
     expect(JSON.parse(row("test")?.needs ?? "[]")).toEqual(["build"]);
     expect(row("skipme")?.state).toBe("skipped");
-    expect(row("images")?.state).toBe("skipped");
+    expect(row("images")?.state).toBe("failure");
     expect(row("fail")).toMatchObject({ state: "failure" });
     const [att] = await listAttempts(db, scope, row("images")?.id as string);
     const log = await readLog(db, scope, att?.id as string);
@@ -283,7 +283,7 @@ jobs:
     expect(mine?.run.id).toBe(run.id);
   });
 
-  test("a step that uses a path outside the repo is skipped with the reason, not run", async () => {
+  test("a step that uses a path outside the repo fails the job with the reason, not run; its own false if: skips it", async () => {
     const wf = `on: push
 jobs:
   bad:
@@ -292,11 +292,19 @@ jobs:
       - uses: ./../outside
 `;
     const { db, scope, result, out } = await go(wf);
-    expect(result.jobs[0]).toMatchObject({ state: "skipped" });
+    expect(result.jobs[0]).toMatchObject({ state: "failure" });
     expect(result.jobs[0]?.reason).toContain("outside the repository");
-    expect(out).toContain("[bad] skipped:");
+    expect(out).toContain("[bad] unsupported:");
     const [run] = await listRuns(db, scope);
-    expect(run?.status).toBe("skipped");
+    expect(run?.status).toBe("failure");
+    // the workflow's own gate is the opt-out: false, so a legitimate skip
+    const gated = await go(
+      wf.replace("  bad:\n", "  bad:\n    if: vars.TURNTABLE_CI != 'true'\n"),
+      {
+        vars: { TURNTABLE_CI: "true" },
+      },
+    );
+    expect(gated.result.jobs[0]).toMatchObject({ state: "skipped" });
   });
 
   test("an infrastructure error that is thrown keeps its reason: printed, returned and stored", async () => {

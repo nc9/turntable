@@ -174,7 +174,9 @@ function runsOnLabels(runsOn: unknown): string[] {
   throw new PlanError("runs-on", "runs-on is missing or has an unsupported shape");
 }
 
-const isLinuxLabel = (l: string): boolean => /^(ubuntu(-|$)|linux$|self-hosted$)/.test(l);
+// Only labels that name another OS are refused; a custom label (`boat`) has no OS meaning and is
+// Linux, sized by the operator's map.
+const isLinuxLabel = (l: string): boolean => !/^(macos|windows)/i.test(l);
 
 /**
  * Validates one job for M0 and builds the act command. Rejects, naming the feature: needs,

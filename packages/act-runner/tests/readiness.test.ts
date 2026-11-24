@@ -93,7 +93,8 @@ describe("jobReadiness", () => {
     expect(jobReadiness(job("plain"), { a: ok() }, { cancelled: true })).toMatchObject({
       decision: "cancel",
     });
-    expect(jobReadiness(job("dock"), {})).toMatchObject({ decision: "skip" });
+    // an unsupported job is ready: the runner fails it with the reason, it is never skipped
+    expect(jobReadiness(job("dock"), {})).toMatchObject({ decision: "ready" });
     expect(jobReadiness(job("never"), {})).toMatchObject({ decision: "skip" });
   });
 });

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DockerProvider } from "@turntable/provider-docker";
@@ -43,9 +43,17 @@ async function git(dir: string, ...args: string[]): Promise<void> {
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
-async function exampleRepo(name: string): Promise<{ repo: string; data: string }> {
+async function exampleRepo(
+  name: string,
+  /** Rewrites a workflow of the copy before the commit. */
+  edit?: { file: string; map: (yaml: string) => string },
+): Promise<{ repo: string; data: string }> {
   const repo = join(tmp, `${name}-repo`);
   cpSync(join(import.meta.dir, "../../../examples/hello"), repo, { recursive: true });
+  if (edit) {
+    const f = join(repo, ".github/workflows", edit.file);
+    writeFileSync(f, edit.map(readFileSync(f, "utf8")));
+  }
   await git(repo, "init", "-q", "-b", "main");
   await git(repo, "add", "-A");
   await git(repo, "commit", "-q", "-m", "initial example commit");
@@ -157,7 +165,12 @@ describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
   }, 600_000);
 
   test("whole workflow: needs, outputs, if, skipped and docker jobs, cache miss, runner.os", async () => {
-    const { repo, data } = await exampleRepo("pipeline");
+    // The docker job opts out with its own false `if:` (the CLI sets no project vars, so the
+    // `vars.TURNTABLE_CI` gate cannot be used here): a legitimate skip. Left ungated it fails.
+    const { repo, data } = await exampleRepo("pipeline", {
+      file: "pipeline.yml",
+      map: (y) => y.replace("  images:\n", "  images:\n    if: ${{ false }}\n"),
+    });
     const p = Bun.spawn(
       [
         bin,
@@ -194,6 +207,35 @@ describe.skipIf(!enabled)("turntable run (compiled binary, docker)", () => {
     expect(state("images")).toBe("skipped");
     expect(state("finish")).toBe("success");
     expect(JSON.parse(jobs.find((j) => j.jobKey === "test")?.needs ?? "[]")).toEqual(["build"]);
+  }, 900_000);
+
+  test("an ungated docker job fails the run with the reason, never a skip", async () => {
+    const { repo, data } = await exampleRepo("ungated", {
+      file: "pipeline.yml",
+      map: () =>
+        "name: pipeline\non:\n  push:\n    branches: [main]\njobs:\n  images:\n    runs-on: ubuntu-latest\n    steps:\n      - run: docker build -t example .\n",
+    });
+    const p = Bun.spawn(
+      [
+        bin,
+        "run",
+        join(repo, ".github/workflows/pipeline.yml"),
+        "--repo",
+        repo,
+        "--data-dir",
+        data,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = (await new Response(p.stdout).text()) + (await new Response(p.stderr).text());
+    expect(await p.exited).not.toBe(0);
+    expect(out).toContain("unsupported");
+    const db = openDatabase(join(data, "turntable.db"));
+    const scope = await ensureLocalTenant(db);
+    const [run] = await listRuns(db, scope);
+    const jobs = run ? await listJobs(db, scope, run.id) : [];
+    db.close();
+    expect(jobs.find((j) => j.jobKey === "images")?.state).toBe("failure");
   }, 900_000);
 
   test("pull_request: the step sees the event payload, an origin remote, and an intact .git", async () => {

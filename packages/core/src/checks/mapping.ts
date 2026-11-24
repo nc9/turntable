@@ -115,7 +115,9 @@ export function skipReasonFor(i: SkipInput): string {
 export function titleFor(
   mode: Exclude<ChecksMode, "off">,
   result: AttemptResult | NoAttemptSkip,
+  refused = false,
 ): string {
+  if (refused) return `${mode === "shadow" ? "Shadow" : "Turntable"}: cannot run this job`;
   return `${mode === "shadow" ? "Shadow" : "Turntable"}: ${typeof result === "object" ? "skipped" : WORD[result]}`;
 }
 
@@ -181,7 +183,35 @@ export type SummaryInput = {
   shards?: readonly string[] | undefined;
   /** For a job skipped without an attempt: the fixed reason sentence. */
   skipReason?: string | undefined;
+  /** For a job Turntable refused to run: the stored `unsupported: ...` reason. */
+  refusal?: string | undefined;
 };
+
+/** The fix a refused job's summary always offers. */
+export const REFUSAL_FIX =
+  "If this job should stay on another CI, gate it with `if: vars.TURNTABLE_CI != 'true'`.";
+
+/**
+ * A refusal reason (`unsupported: <text>`) as the sentence for a check summary, or undefined when
+ * the reason is not one. The OS and arch texts are full sentences already; any other planner
+ * reason (docker, services, ...) is wrapped. One line, no mentions, bounded.
+ */
+export function refusalSentence(reason: string | undefined): string | undefined {
+  if (!reason?.startsWith("unsupported: ")) return undefined;
+  const text = reason.slice("unsupported: ".length);
+  // The OS and arch refusals are rebuilt from fixed words; only the label is workflow data, and it
+  // goes inside a code span with its backticks stripped (`plain`), so no markup in it survives.
+  const m = /^This job asks for (?:a (macOS|Windows)|an (arm64)) runner \(`([^`]*)`\)\./.exec(text);
+  if (m) {
+    const label = `\`${plain(m[3] ?? "", 60)}\``;
+    if (m[2]) {
+      return `This job asks for an arm64 runner (${label}). The sandbox provider offers amd64 only; arm runners are not supported by it.`;
+    }
+    return `This job asks for a ${m[1]} runner (${label}). Turntable runs Linux sandboxes only; ${m[1]} runners are not supported yet.`;
+  }
+  // Any other planner reason may quote workflow text (an action name, an image): inert in a span.
+  return `Turntable cannot run this job: \`${plain(text, 200)}\`.`;
+}
 
 /**
  * The summary. Fixed text, the real result, the failing step and the digest excerpt in a code
@@ -196,6 +226,7 @@ export function summaryFor(i: SummaryInput): string {
       "This is a shadow check: it is always neutral and never gates a merge. The result above is what Turntable found.",
     );
   }
+  if (i.refusal) lines.push(`${i.refusal}\n\n${REFUSAL_FIX}`);
   if (i.result === "infra_error") {
     lines.push(
       "Infrastructure error: the sandbox or the runner failed, so this says nothing about the code.",

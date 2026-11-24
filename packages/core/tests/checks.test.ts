@@ -14,7 +14,15 @@ import {
   CheckRunsError,
   githubCheckRunsApi,
 } from "../src/checks/client";
-import { checkName, classifyInfra, conclusionFor, fenced, summaryFor } from "../src/checks/mapping";
+import {
+  checkName,
+  classifyInfra,
+  conclusionFor,
+  fenced,
+  REFUSAL_FIX,
+  refusalSentence,
+  summaryFor,
+} from "../src/checks/mapping";
 import { AppAuth } from "../src/github/app-auth";
 import { Scheduler } from "../src/scheduler";
 import { setupChecksWorld } from "./checks-helpers";
@@ -556,5 +564,54 @@ describe("checks mode policy", () => {
         .map((o) => o.name)
         .filter((n) => /checks_mode|check_run|policy/.test(n) && !n.includes("key_policy")),
     ).toEqual([]);
+  });
+});
+
+describe("a job Turntable cannot run", () => {
+  const reason =
+    "unsupported: This job asks for a macOS runner (`macos-latest`). Turntable runs Linux sandboxes only; macOS runners are not supported yet.";
+  test("a refusal is a failure in live mode, never skipped or neutral", () => {
+    expect(conclusionFor("live", "failure")).toBe("failure");
+    expect(conclusionFor("live", "failure")).not.toBe("skipped");
+    expect(conclusionFor("live", "failure")).not.toBe("neutral");
+  });
+
+  test("the summary carries the reason and the fix", () => {
+    const summary = summaryFor({
+      mode: "live",
+      result: "failure",
+      runUrl: undefined,
+      refusal: refusalSentence(reason),
+    });
+    expect(summary).toContain("This job asks for a macOS runner (`macos-latest`)");
+    expect(summary).toContain(REFUSAL_FIX);
+    expect(REFUSAL_FIX).toContain("if: vars.TURNTABLE_CI != 'true'");
+  });
+
+  test("workflow-controlled text is inert: no link or image syntax outside a code span", () => {
+    const evil = "macos-latest](https://evil)![x](y)";
+    const sentences = [
+      refusalSentence(
+        `unsupported: This job asks for a macOS runner (\`${evil}\`). Turntable runs Linux sandboxes only; macOS runners are not supported yet.`,
+      ),
+      refusalSentence(`unsupported: step uses ${evil}\`[a](b)`),
+    ];
+    for (const s of sentences) {
+      expect(s).toBeDefined();
+      const outside = (s ?? "").replaceAll(/`[^`]*`/g, "");
+      expect(outside).not.toContain("](");
+      expect(outside).not.toContain("![");
+      expect(outside).not.toContain("<");
+      expect((s ?? "").split("`").length % 2).toBe(1); // spans are balanced, none can be closed early
+    }
+    expect(sentences[0]).toContain("`macos-latest](https://evil)![x](y)`");
+  });
+
+  test("a planner reason (docker) is wrapped; a non-refusal is not one", () => {
+    expect(refusalSentence("unsupported: uses services:")).toBe(
+      "Turntable cannot run this job: `uses services:`.",
+    );
+    expect(refusalSentence("exit 1")).toBeUndefined();
+    expect(refusalSentence(undefined)).toBeUndefined();
   });
 });

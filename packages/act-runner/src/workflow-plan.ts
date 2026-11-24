@@ -352,7 +352,10 @@ function dockerReason(job: Obj, readFile: (p: string) => string | undefined): st
   return undefined;
 }
 
-const LINUX_LABEL = /^(ubuntu(-|$)|linux$|self-hosted$)/;
+/** A label with a macOS or Windows meaning (`macos-14`, `macOS`, `windows-2022`, `Windows`). */
+const OS_LABEL = /^(macos|windows)/i;
+
+const labelText = (v: string): string => v.replaceAll(/[`\r\n]+/g, " ").slice(0, 60);
 
 function runsOnReason(runsOn: unknown, ctx: ExprContext): string | undefined {
   let labels: unknown[];
@@ -363,7 +366,13 @@ function runsOnReason(runsOn: unknown, ctx: ExprContext): string | undefined {
   for (const l of labels) {
     if (typeof l !== "string") return "runs-on has a non-string label";
     const v = l.includes("${{") ? interpolate(l, ctx) : l;
-    if (!LINUX_LABEL.test(v)) return `runs-on "${v}" is not a Linux runner`;
+    // Only labels that name another OS are refused. A custom label (`boat`, `large`) has no OS
+    // meaning: the operator's size map decides its sandbox, and it is Linux.
+    const os = OS_LABEL.exec(v)?.[1]?.toLowerCase();
+    if (os) {
+      const name = os === "macos" ? "macOS" : "Windows";
+      return `This job asks for a ${name} runner (\`${labelText(v)}\`). Turntable runs Linux sandboxes only; ${name} runners are not supported yet.`;
+    }
   }
   return undefined;
 }
@@ -608,7 +617,7 @@ export function planWorkflow(
         }
       }
       // Static `if:` is decided now; one that reads needs waits for schedule time.
-      if (job.if !== undefined && !unsupported) {
+      if (job.if !== undefined) {
         const cond = job.if as string | boolean;
         try {
           const isStat = typeof cond === "boolean" || isStatic(wholeExpression(cond) ?? cond);
@@ -616,7 +625,7 @@ export function planWorkflow(
             node.staticSkip ??= { reason: `if: ${String(cond).trim()} is false` };
           }
         } catch (e) {
-          if (e instanceof ExprError) node.unsupported = `if: ${e.message}`;
+          if (e instanceof ExprError) node.unsupported ??= `if: ${e.message}`;
           else throw e;
         }
       }
