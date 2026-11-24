@@ -640,6 +640,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "How many backups to keep under `<data-dir>/backups`. The environment name of the `backup_keep` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
+    name: "TURNTABLE_JOB_LOG_GREP_SCAN_BYTES",
+    area: "Server",
+    default: "33554432",
+    description:
+      "Most log bytes one `job_log` grep call walks. The environment name of the `job_log_grep_scan_bytes` setting, which `turntable.toml` and `instance_set_setting` also set.",
+  },
+  {
+    name: "TURNTABLE_JOB_LOG_GREP_DEADLINE_MS",
+    area: "Server",
+    default: "2000",
+    description:
+      "Wall-clock milliseconds one `job_log` grep call may run. The environment name of the `job_log_grep_deadline_ms` setting, which `turntable.toml` and `instance_set_setting` also set.",
+  },
+  {
     name: "TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS",
     area: "Server",
     default: "24",

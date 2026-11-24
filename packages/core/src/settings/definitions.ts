@@ -101,6 +101,45 @@ export const auditAnchorExportIntervalSetting = defineSetting({
   toml: "audit.anchor_export_minutes",
 });
 
+/** Most log bytes one `job_log` grep call walks, and the registry default for it. */
+export const DEFAULT_JOB_LOG_GREP_SCAN_BYTES = 32 * 1024 * 1024;
+
+export const jobLogGrepScanBytesSetting = defineSetting({
+  key: "job_log_grep_scan_bytes",
+  scope: "instance",
+  type: z.int().min(65_536).max(1_073_741_824),
+  default: DEFAULT_JOB_LOG_GREP_SCAN_BYTES,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it bounds the work one read call may do, so only the instance administrator changes it",
+  description:
+    "Most log bytes one `job_log` grep call walks from its offset (65536 to 1073741824). A log past it stops with `stopped: scan_budget` and is paged on with `next_offset`. `max_bytes` and `max_matches` cap only the output.",
+  env: ["TURNTABLE_JOB_LOG_GREP_SCAN_BYTES"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "job_log.grep_scan_bytes",
+});
+
+export const DEFAULT_JOB_LOG_GREP_DEADLINE_MS = 2000;
+
+export const jobLogGrepDeadlineSetting = defineSetting({
+  key: "job_log_grep_deadline_ms",
+  scope: "instance",
+  type: z.int().min(200).max(10_000),
+  default: DEFAULT_JOB_LOG_GREP_DEADLINE_MS,
+  role: "instance_admin",
+  instanceAdminOnly: true,
+  mcpEditable: false,
+  mcpReason:
+    "it bounds the server time one read call may take, so only the instance administrator changes it",
+  description:
+    "Wall-clock milliseconds one `job_log` grep call may run (200 to 10000). When it runs out the call returns `stopped: deadline` with a `next_offset` at the last line it finished, and the caller pages on. Separate from `job_log_grep_scan_bytes`.",
+  env: ["TURNTABLE_JOB_LOG_GREP_DEADLINE_MS"],
+  envParse: (raw) => (/^\d+$/.test(raw) ? Number(raw) : raw),
+  toml: "job_log.grep_deadline_ms",
+});
+
 export const untrustedRunApprovalSetting = defineSetting({
   key: "untrusted_run_approval",
   scope: "project",
@@ -301,6 +340,8 @@ export const drainTimeoutSecondsSetting = defineSetting({
 /** The shipped registry. */
 export const settingsRegistry = createSettingsRegistry([
   backupKeepSetting,
+  jobLogGrepScanBytesSetting,
+  jobLogGrepDeadlineSetting,
   approverRebootstrapDelaySetting,
   orgTokenRemintDelaySetting,
   auditAnchorSinkUrlSetting,
