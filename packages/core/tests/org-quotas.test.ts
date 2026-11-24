@@ -534,7 +534,9 @@ describe("the host command sets them", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+    // An on-disk database plus every migration: about 1 s idle, over 6 s with three test
+    // processes on four cores (it dropped a merge group at the bun 5 s default).
+  }, 30_000);
 
   test("limits are whole numbers or none", () => {
     expect(parseLimit("x", "5")).toBe(5);
