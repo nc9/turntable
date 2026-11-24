@@ -91,24 +91,53 @@ export interface GithubUserLookup {
   idOfLogin(login: string): Promise<string | undefined>;
 }
 
+/**
+ * GitHub could not be asked. The message holds only the HTTP status and, when GitHub says so, the
+ * time its rate limit resets: safe to show to the caller.
+ */
+export class GithubLookupError extends Error {
+  override name = "GithubLookupError";
+}
+
+/**
+ * `GET /users/{login}` is public, so it is asked without credentials. Never with the App's JWT:
+ * GitHub accepts a JWT only on the App's own endpoints (`/app/...`), so every lookup would fail.
+ * Never with an installation token either: an installation belongs to one tenant, and resolving a
+ * login for another tenant must not spend that tenant's credential. The cost is GitHub's
+ * unauthenticated budget (60 an hour per address); a lookup refused by it says when to retry.
+ * `auth` supplies only the API base.
+ */
 export function githubUserLookup(
-  auth: AppAuth,
+  auth: Pick<AppAuth, "apiBase">,
   fetchImpl: SafeFetch = safeFetch,
 ): GithubUserLookup {
   return {
     async idOfLogin(login) {
       if (!/^[A-Za-z0-9-]{1,39}$/.test(login)) return undefined;
-      const res = await fetchImpl(`${auth.apiBase}/users/${encodeURIComponent(login)}`, {
-        headers: {
-          authorization: `Bearer ${await auth.appJwt()}`,
-          accept: "application/vnd.github+json",
-          "x-github-api-version": "2022-11-28",
-          "user-agent": "turntable",
-        },
-        signal: AbortSignal.timeout(15_000),
-      });
+      let res: Response;
+      try {
+        res = await fetchImpl(`${auth.apiBase}/users/${encodeURIComponent(login)}`, {
+          headers: {
+            accept: "application/vnd.github+json",
+            "x-github-api-version": "2022-11-28",
+            "user-agent": "turntable",
+          },
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch {
+        throw new GithubLookupError("GitHub could not be reached");
+      }
       if (res.status === 404) return undefined;
-      if (!res.ok) throw new Error(`GET user failed: HTTP ${res.status}`);
+      if (!res.ok) {
+        const remaining = res.headers.get("x-ratelimit-remaining");
+        const reset = Number(res.headers.get("x-ratelimit-reset"));
+        if ((res.status === 403 || res.status === 429) && remaining === "0" && reset > 0) {
+          throw new GithubLookupError(
+            `GitHub's unauthenticated rate limit is spent until ${new Date(reset * 1000).toISOString()}`,
+          );
+        }
+        throw new GithubLookupError(`GitHub answered HTTP ${res.status}`);
+      }
       const j = (await res.json()) as { id?: unknown; login?: unknown };
       if (typeof j.id !== "number" || typeof j.login !== "string") return undefined;
       // The answer must be for the login asked about (GitHub answers case-insensitively).

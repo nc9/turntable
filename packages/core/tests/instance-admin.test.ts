@@ -36,7 +36,13 @@ let tokenId: string;
 
 beforeEach(async () => {
   ({ db, a, b } = await seedWorld());
-  env = { registry, db, allowInstance: true, instanceOrgCap: 4 };
+  env = {
+    registry,
+    db,
+    allowInstance: true,
+    instanceOrgCap: 4,
+    githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
+  };
   const made = await createInstanceTokenFromCli(db, { name: "ops laptop" });
   secret = made.secret;
   tokenId = made.id;

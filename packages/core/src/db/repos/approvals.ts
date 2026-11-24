@@ -306,6 +306,8 @@ export type NewApprover = {
   attested?: boolean | undefined;
   person: string;
   forgeLogin?: string | null | undefined;
+  /** The numeric GitHub account id the key is enrolled for; null when unknown (cannot step up). */
+  githubUserId?: string | null | undefined;
   kind: s.ApproverKind;
   credentialId?: string | null | undefined;
   publicKey: string;
@@ -327,6 +329,7 @@ export function insertApprover(
       orgId,
       person: a.person,
       forgeLogin: a.forgeLogin ?? null,
+      githubUserId: a.githubUserId ?? null,
       kind: a.kind,
       credentialId: a.credentialId ?? null,
       publicKey: a.publicKey,
@@ -437,7 +440,7 @@ export function insertChallenge(
   orgId: string,
   c: {
     id: string;
-    kind: "approve" | "enrol" | "register" | "policy";
+    kind: "approve" | "enrol" | "register" | "policy" | "step_up";
     statementHash: string;
     principal: string;
     expiresAt: number;
@@ -445,6 +448,22 @@ export function insertChallenge(
 ): Promise<void> {
   return db.run(async (h) => {
     await h.orm.insert(s.approvalChallenges).values({ orgId, ...c });
+  });
+}
+
+/** One challenge row, to classify why a step-up is refused. */
+export function getChallenge(
+  db: Db,
+  orgId: string,
+  id: string,
+): Promise<typeof s.approvalChallenges.$inferSelect | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.approvalChallenges)
+      .where(and(eq(s.approvalChallenges.orgId, orgId), eq(s.approvalChallenges.id, id)))
+      .limit(1);
+    return row;
   });
 }
 
@@ -521,6 +540,7 @@ export function insertEnrolment(
       orgId,
       person: e.person,
       forgeLogin: e.forgeLogin ?? null,
+      githubUserId: e.githubUserId ?? null,
       kind: e.kind,
       credentialId: e.credentialId ?? null,
       publicKey: e.publicKey,
@@ -582,6 +602,7 @@ export function activateEnrolment(
       {
         person: e.person,
         forgeLogin: e.forgeLogin,
+        githubUserId: e.githubUserId,
         kind: e.kind as s.ApproverKind,
         credentialId: e.credentialId,
         publicKey: e.publicKey,
