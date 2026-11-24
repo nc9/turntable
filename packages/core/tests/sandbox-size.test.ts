@@ -27,7 +27,7 @@ describe("the size map", () => {
     expect(sizeFor(cfg, ["ubuntu-latest-4-cores"])).toEqual({
       class: "large",
       resources: { cpus: 4, memoryMb: 8192, diskGb: 40 },
-      snapshot: "daytona-large",
+      providers: { daytona: { snapshot: "daytona-large" } },
     });
   });
 

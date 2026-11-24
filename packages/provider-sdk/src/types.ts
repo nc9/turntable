@@ -79,6 +79,24 @@ export interface SandboxResources {
 }
 
 /**
+ * What a provider makes of a size class: the sandbox it would start, or a reason it cannot. The
+ * reason is public (a check summary): fixed words, no secrets, no upstream text.
+ */
+export type ClassRealisation =
+  | {
+      ok: true;
+      resources?: SandboxResources;
+      /** The image to start from (providers that create from images). */
+      image?: string;
+      /** The named snapshot to start from (providers that create from snapshots). */
+      snapshot?: string;
+    }
+  | { ok: false; reason: string };
+
+/** Per provider settings of a class: the `providers.<name>` entry, as the operator wrote it. */
+export type ProviderClassSettings = Readonly<Record<string, string | number | boolean>>;
+
+/**
  * Where the secrets proxy is, for a provider whose sandboxes are on a network the controller does
  * not share (Daytona): a public TLS endpoint. A provider that shares a host with the proxy
  * (Docker) uses `host` and `port` only.
@@ -253,6 +271,16 @@ export interface Provider {
    * about the ids is trusted: the provider confirms each before acting on it.
    */
   adopt?(sandboxIds: readonly string[]): void;
+  /**
+   * Maps a size class (its clamped resources) and this provider's own entry in the class
+   * (`providers.<info.name>`) to what the sandbox starts from, or refuses with a reason. Pure: it
+   * creates nothing. A provider without it gets the resources and no provider specific settings;
+   * a class that carries settings for such a provider is refused by the caller.
+   */
+  realiseClass?(
+    cls: SandboxResources,
+    specific: ProviderClassSettings | undefined,
+  ): ClassRealisation;
   exec: ProviderExec;
   files: ProviderFiles;
 }

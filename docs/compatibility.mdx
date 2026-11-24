@@ -87,6 +87,8 @@ What a `runs-on` label does on Turntable:
 | `macos-*`, `windows-*`, `[self-hosted, macOS]`, `[self-hosted, Windows]` | Refused. The job never reaches a sandbox and its check **fails**. |
 | `arm64`, `*-arm` | Refused unless the provider advertises arm64. Daytona offers amd64 only. |
 
+**Per-org and per-project overrides.** The operator's label map is the default. An org (`runner_labels`) or a project (`project_runner_labels`) may map its own labels, including `ubuntu-latest`, to a size class the operator defined: the project's map beats the org's, which beats the instance map. A tenant cannot name a class the operator did not define, and the operator's ceilings still apply. An untrusted pull request always gets the operator's `untrustedClass`. Each class is realised per provider (a Daytona snapshot, a Docker image); a provider that cannot realise the class fails the job with the reason. See [Sandbox size per job](/providers#sandbox-size-per-job).
+
 A refused job fails instead of being skipped on purpose: GitHub branch protection counts a skipped or neutral required check as passing, so a skip would let a pull request merge without the job ever running. The check summary names the label and says `If this job should stay on another CI, gate it with if: vars.TURNTABLE_CI != 'true'`. A job whose own `if:` is false (the gate above, set on the project) is a normal skip: that is the explicit opt-out. The same rule covers every job Turntable cannot run (docker, `services:`, `container:`).
 
 ## Unsupported in v1

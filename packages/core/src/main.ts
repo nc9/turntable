@@ -33,6 +33,7 @@ import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
 import { ambientSettings, setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
+import { setOperatorSizes } from "./scheduler/sandbox-size";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
 import { startCheckpointer } from "./audit/checkpoint";
@@ -562,6 +563,8 @@ async function serve(args: string[]): Promise<void> {
   // The settings layers above the database: the environment and turntable.toml (#321). An unknown
   // key, a bad value or an unreadable file stops the boot here, before anything is opened. No file
   // is fine.
+  // The operator's size classes first: the org and project label maps may name only those.
+  setOperatorSizes(resolveSandboxSizes());
   const settings = loadSettingsRuntime({ config: values.config });
   // The approval engine and the release lane read the approval policy from the same runtime.
   setAmbientSettings(settings);

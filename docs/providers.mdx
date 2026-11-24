@@ -155,7 +155,15 @@ By default every sandbox gets the provider's own default size (Docker: no limits
 {
   "classes": {
     "small": { "cpus": 2, "memoryMb": 4096 },
-    "large": { "cpus": 4, "memoryMb": 8192, "diskGb": 40, "snapshot": "daytona-large" }
+    "large": {
+      "cpus": 4,
+      "memoryMb": 8192,
+      "diskGb": 40,
+      "providers": {
+        "daytona": { "snapshot": "daytona-large" },
+        "docker": { "image": "registry.example/runner:large" }
+      }
+    }
   },
   "labels": { "ubuntu-latest-4-cores": "large" },
   "default": "small",
@@ -168,11 +176,13 @@ By default every sandbox gets the provider's own default size (Docker: no limits
 ```
 
 - A job's `runs-on` labels are read at plan time (a string, a list, or `labels:`; a matrix expression is resolved per leg). The first label with a mapping picks the class. A job with no mapped label gets `default`; with no `default` either, it gets the provider's own size.
-- A class sets `cpus`, `memoryMb`, `diskGb` and, for a provider that picks the size by image, a `snapshot` (Daytona: one snapshot per class, for example `daytona-large`). The scheduler puts these in the sandbox spec; a provider that cannot honour a field says so in its capabilities.
+- A class sets `cpus`, `memoryMb`, `diskGb` and, under `providers`, what only one provider understands: `providers.daytona.snapshot` (one snapshot per class, for example `daytona-large`) and `providers.docker.image`. The provider's `realiseClass` capability maps the class to its sandbox spec: Daytona applies the snapshot and the three resources; Docker applies the image, cpus and memory. A provider that cannot realise a class (Docker has no disk limit, so a class with `diskGb` is refused there; a setting that is not the provider's own is refused too) refuses with a reason, and the job **fails closed** with that reason in its check, like an unsupported OS. A new provider adds its own `providers.<name>` keys without a core change.
+- The top-level `snapshot` of a class is **deprecated**. It is still accepted as `providers.daytona.snapshot`, with one warning at boot; naming both with different values stops the server.
 - `coresClasses` lists the classes a GitHub-style `ubuntu-latest-N-cores` label may resolve to, by cpu count (N must equal the class's `cpus`). A class not listed is never reachable from a workflow label this way (a workflow chooses its labels); an unlisted or unmatched `-N-cores` label gets `default`. Map a label explicitly in `labels` to give it any class.
 - Daytona's capacity wait already counts the class's `cpus`, so a 4-vCPU job waits until 4 are free in the account.
 - `maxCpus`, `maxMemoryMb` and `maxDiskGb` are ceilings across every class: a class past one is clamped to it. They are instance-wide. There is no per-org CPU quota; the org's concurrency and sandbox-minute quotas still apply.
 - A workflow file chooses its own labels, so a stranger's pull request could ask for the biggest class. A job that runs as `untrusted_pr` ignores its labels and gets `untrustedClass` (else `default`). The class is the job's own, as recorded on its attempt (after the demotion rule), not its run's; a missing or unrecognised class counts as untrusted, and only a local run is exempt.
+- **Per org and per project.** An org (`runner_labels`) and a project (`project_runner_labels`) may each map labels to class **names**, through the settings ops, the settings pages or `turntable.toml` (`[orgs.<slug>] runner_labels = { "my-box" = "large" }`; the same key under `[orgs.<slug>.projects.<slug>]` for a project). There is no environment variable. A tenant can name only a class the operator defined above, never define one, and the ceilings above still clamp it: a value naming an undefined class is refused when it is set. The project's map beats the org's, which beats the instance `labels`; then the `-N-cores` rule and `default` apply. A job that runs as `untrusted_pr` ignores all of them and gets `untrustedClass`. Changing them needs the `release_operator` role and is not available over MCP.
 - Lookups use own keys only: a label such as `constructor` or `__proto__` is not a mapping and gets the default, and a class named like an inherited key does not exist. A failed lookup falls back to `default`, never to the provider's size, while a map is configured.
 - A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default`, `untrustedClass` or `coresClasses`, a non-integer or non-positive number, or an unknown key.
 
