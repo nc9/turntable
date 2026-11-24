@@ -61,6 +61,7 @@ import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/re
 import { resolveRunnerLabelMaps } from "./runner-labels";
 import { realiseSize } from "./realise-size";
 import {
+  dockerRefusal,
   refusalFor,
   type SandboxSizes,
   sizeFor,
@@ -263,7 +264,12 @@ export type ActRunnerOptions = {
 
   /** The operator's map from `runs-on` labels to a sandbox size (see sandbox-size.ts). Absent: the provider's default size. */
   sizes?: SandboxSizes;
+  /** Seconds to wait for a docker-class sandbox's daemon before the job fails as infra. Default 30. */
+  dockerWaitSeconds?: number;
 };
+
+/** The image act runs a docker-class job in, unless the operator sets `dockerJobImage`. */
+export const DEFAULT_DOCKER_JOB_IMAGE = "catthehacker/ubuntu:act-latest";
 
 /** What GITHUB_TOKEN holds inside a job that is behind the secrets proxy. The proxy attaches the real one. */
 export const PROXIED_TOKEN_PLACEHOLDER = "turntable-token-is-added-by-the-proxy";
@@ -358,22 +364,44 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
     const untrusted = untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local);
     // Tenant label maps never apply to an untrusted run (sizeFor ignores labels for it anyway).
-    const overrides = o.sizes && !untrusted ? await resolveRunnerLabelMaps(o.db, ctx.scope) : [];
+    const dockerMode = plan.docker !== undefined;
+    // A job routed to the docker class ignores label maps (the operator's `dockerClass` decides).
+    const overrides =
+      o.sizes && !untrusted && !dockerMode ? await resolveRunnerLabelMaps(o.db, ctx.scope) : [];
+    if (dockerMode) {
+      // Also on a re-attach: the config or the provider may have changed since the plan was stored.
+      const why = dockerRefusal(o.sizes, "needs Docker", {
+        untrusted,
+        provider: ctx.provider.info,
+      });
+      if (why) {
+        await ctx.store.appendLog(0, new TextEncoder().encode(`${why}\n`));
+        o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${why}\n`);
+        return { state: "failure", reason: why };
+      }
+    }
     // A stored tenant entry for a class the org may no longer select (the operator changed
     // `tenantSelectable` or `orgs` after the map was set) fails the job with the reason, before any
     // sandbox exists. It never falls back to the instance map or the default: that would hide
     // size-dependent bugs behind confusing OOMs and timeouts.
-    const mapWhy = tenantMapRefusal(o.sizes, planned?.runsOn ?? [], {
-      untrusted,
-      overrides,
-      orgSlug: o.sizes && !untrusted ? (await getOrgById(o.db, ctx.scope.orgId))?.slug : undefined,
-    });
+    const mapWhy = dockerMode
+      ? undefined
+      : tenantMapRefusal(o.sizes, planned?.runsOn ?? [], {
+          untrusted,
+          overrides,
+          orgSlug:
+            o.sizes && !untrusted ? (await getOrgById(o.db, ctx.scope.orgId))?.slug : undefined,
+        });
     if (mapWhy) {
       await ctx.store.appendLog(0, new TextEncoder().encode(`${mapWhy}\n`));
       o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${mapWhy}\n`);
       return { state: "failure", reason: mapWhy };
     }
-    const size = sizeFor(o.sizes, planned?.runsOn ?? [], { untrusted, overrides });
+    const size = sizeFor(o.sizes, planned?.runsOn ?? [], {
+      untrusted,
+      overrides,
+      docker: dockerMode,
+    });
     const realised = realiseSize(ctx.provider, size);
     if (!realised.ok) {
       const why = `unsupported: the sandbox provider cannot realise size class ${size.class ?? ""}: ${realised.reason}`;
@@ -390,7 +418,9 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       {
         provider: ctx.provider,
         store: workerStore(ctx),
-        ...(sandboxSnapshot ? { snapshot: sandboxSnapshot } : {}),
+        // Not for a docker-class job: the project's snapshot would replace the one with the daemon.
+        ...(sandboxSnapshot && !dockerMode ? { snapshot: sandboxSnapshot } : {}),
+        ...(o.dockerWaitSeconds !== undefined ? { dockerWaitSeconds: o.dockerWaitSeconds } : {}),
         out: sink ? sink.out : () => {},
         registry,
         ...(ctx.proxy ? { proxy: ctx.proxy } : {}),
@@ -509,6 +539,21 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         jobKlass = klass;
         await ctx.store.setTrustClass(klass);
         const failOnLint = lintFailsFor(klass);
+        // A job with `services:` or `container:` runs in act's container mode on the docker class,
+        // or fails here with the reason. Every other job is untouched.
+        let docker: { image: string } | undefined;
+        if (planned?.needsDocker !== undefined) {
+          const why = dockerRefusal(o.sizes, planned.needsDocker, {
+            untrusted: untrustedForSize(klass, dbRun.local),
+            provider: ctx.provider.info,
+          });
+          if (why) {
+            await ctx.store.appendLog(0, new TextEncoder().encode(`${why}\n`));
+            o.out?.(job.jobKey, `[${job.jobKey}] ${why}\n`);
+            return { state: "failure", reason: why };
+          }
+          docker = { image: o.sizes?.dockerJobImage ?? DEFAULT_DOCKER_JOB_IMAGE };
+        }
         const jobPlan = planned
           ? // A whole-workflow job: a generated single-job workflow whose stub need jobs carry the
             // real results and outputs of its dependencies.
@@ -524,6 +569,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
                 readFile: checkout.readFile,
                 split: true,
                 failOnLint,
+                ...(docker ? { docker } : {}),
                 eventPayload: buildActEvent(dbRun),
                 ...root,
               },

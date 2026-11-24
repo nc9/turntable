@@ -78,6 +78,12 @@ export interface PlannedJob {
   staticSkip?: { reason: string };
   /** The job cannot run here (docker, non-Linux ...). Reported, not failed. */
   unsupported?: string;
+  /**
+   * The job needs a container runtime for `services:` or `container:` (the reason). It can run in
+   * act's container mode on a Docker-capable size class; where there is none the scheduler fails
+   * it with this reason. Not set with `unsupported` for the same cause.
+   */
+  needsDocker?: string;
   continueOnError: boolean;
   /** Output name to expression. */
   outputs: Record<string, string>;
@@ -330,10 +336,21 @@ function localActionDockerReason(
   return undefined;
 }
 
-/** Why a job needs a container runtime, or undefined. */
-function dockerReason(job: Obj, readFile: (p: string) => string | undefined): string | undefined {
+/**
+ * Why a job needs a container daemon for `services:` or `container:`, or undefined. These can run
+ * in act's container mode on a Docker-capable sandbox; every other docker use is `dockerReason`.
+ */
+function containerModeReason(job: Obj): string | undefined {
   if (job.container !== undefined) return "uses container:";
   if (job.services !== undefined) return "uses services:";
+  return undefined;
+}
+
+/**
+ * Why a job needs docker in a way container mode does not cover (a docker command, a docker
+ * action), or undefined. Container mode hands a job no daemon socket, so these stay refused.
+ */
+function dockerReason(job: Obj, readFile: (p: string) => string | undefined): string | undefined {
   const steps = Array.isArray(job.steps) ? job.steps : [];
   for (const s of steps) {
     if (!isObj(s)) continue;
@@ -547,6 +564,7 @@ export function planWorkflow(
         if (!(e instanceof ExprError)) throw e;
         name = job.name as string;
       }
+      const containerReason = containerModeReason(job);
       let unsupported: string | undefined =
         dockerReason(job, opts.readFile) ??
         (job.uses !== undefined ? "calls a reusable workflow (uses:)" : undefined) ??
@@ -580,6 +598,7 @@ export function planWorkflow(
         ...(leg ? { matrix: leg } : {}),
         ...(job.if !== undefined ? { ifExpr: job.if as string | boolean } : {}),
         ...(unsupported ? { unsupported } : {}),
+        ...(containerReason && !unsupported ? { needsDocker: containerReason } : {}),
         continueOnError: coe,
         outputs,
         // Shards of one job always all run: the workflow's own steps run every suite even when

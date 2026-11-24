@@ -180,12 +180,43 @@ By default every sandbox gets the provider's own default size (Docker: no limits
 - The top-level `snapshot` of a class is **deprecated**. It is still accepted as `providers.daytona.snapshot`, with one warning at boot; naming both with different values stops the server.
 - `coresClasses` lists the classes a GitHub-style `ubuntu-latest-N-cores` label may resolve to, by cpu count (N must equal the class's `cpus`). A class not listed is never reachable from a workflow label this way (a workflow chooses its labels); an unlisted or unmatched `-N-cores` label gets `default`. Map a label explicitly in `labels` to give it any class.
 - `tenantSelectable` (default `true`) says whether an org or project label map may name the class. `orgs` (optional, at most 64 org slugs) lists orgs that may name it even when `tenantSelectable` is `false`. A class with cost or privilege, such as a macOS reservation billed in blocks or a Docker-capable sandbox, should set `"tenantSelectable": false`, with `orgs` for the few orgs that may use it. The operator's own `labels`, `default` and `untrustedClass` can always name any class. Example: `"mac": { "cpus": 4, "tenantSelectable": false, "orgs": ["platform"] }`.
+- `docker: true` marks a Docker-capable class, see below. `dockerClass`, `dockerJobImage` and `untrustedDocker` are top-level keys next to `default`.
 - Daytona's capacity wait already counts the class's `cpus`, so a 4-vCPU job waits until 4 are free in the account.
 - `maxCpus`, `maxMemoryMb` and `maxDiskGb` are ceilings across every class: a class past one is clamped to it. They are instance-wide. There is no per-org CPU quota; the org's concurrency and sandbox-minute quotas still apply.
 - A workflow file chooses its own labels, so a stranger's pull request could ask for the biggest class. A job that runs as `untrusted_pr` ignores its labels and gets `untrustedClass` (else `default`). The class is the job's own, as recorded on its attempt (after the demotion rule), not its run's; a missing or unrecognised class counts as untrusted, and only a local run is exempt.
 - **Per org and per project.** An org (`runner_labels`) and a project (`project_runner_labels`) may each map labels to class **names**, through the settings ops, the settings pages or `turntable.toml` (`[orgs.<slug>] runner_labels = { "my-box" = "large" }`; the same key under `[orgs.<slug>.projects.<slug>]` for a project). There is no environment variable. A tenant can name only a class the operator defined above, never define one, and the ceilings above still clamp it: a value naming an undefined class, or a class that is not `tenantSelectable` for the org (and the org is not in its `orgs`), is refused when it is set. The refusal names the class and never another org. If the operator makes a class unavailable after a map was set, the job that hits that entry fails before any sandbox is created, with a reason that names the label and the class ("label `X` maps to class `Y`, which this org may not select; ask the operator or change the map"). It never falls back to the instance map or `default`, because a silent downgrade hides size-dependent bugs, and it never runs on that class. The project's map beats the org's, which beats the instance `labels`; then the `-N-cores` rule and `default` apply. A job that runs as `untrusted_pr` ignores all of them and gets `untrustedClass`. Changing them needs the `release_operator` role and is not available over MCP.
 - Lookups use own keys only: a label such as `constructor` or `__proto__` is not a mapping and gets the default, and a class named like an inherited key does not exist. A failed lookup falls back to `default`, never to the provider's size, while a map is configured.
-- A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default`, `untrustedClass` or `coresClasses`, a non-integer or non-positive number, or an unknown key.
+- A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default`, `untrustedClass`, `dockerClass` or `coresClasses`, a `dockerClass` that is not `docker: true`, a docker class with no image or snapshot, a non-integer or non-positive number, or an unknown key.
+
+### Docker-capable class: `services:` and `container:` jobs
+
+A job with `services:` or `container:` needs a container daemon. Turntable runs it in act's container mode inside a sandbox that has one; every other job stays in host mode on its usual class.
+
+```json
+{
+  "classes": {
+    "small": { "cpus": 2, "memoryMb": 4096 },
+    "dind": {
+      "cpus": 4,
+      "memoryMb": 8192,
+      "docker": true,
+      "providers": { "daytona": { "snapshot": "daytona-docker" } }
+    }
+  },
+  "default": "small",
+  "dockerClass": "dind",
+  "dockerJobImage": "catthehacker/ubuntu:act-latest",
+  "untrustedDocker": false
+}
+```
+
+- `docker: true` says the class's sandbox runs a Docker daemon. It must name a provider image or snapshot for every provider it lists under `providers` (`snapshot` for Daytona, `image` for Docker), and a class with no `providers` entry at all is refused at start. A docker class defaults to `tenantSelectable: false` (it is privileged and costly); set it explicitly to override, or list `orgs`.
+- `dockerClass` names the one `docker: true` class that jobs needing Docker run on. With it unset, such a job fails with the reason and the `TURNTABLE_CI` gate hint, as before.
+- `dockerJobImage` is the image act runs those jobs in (every runner label maps to it). Default `catthehacker/ubuntu:act-latest`. It is pulled through the sandbox's egress, so with egress `none` it must already be in the snapshot.
+- `untrustedDocker` (default `false`): whether a job in an untrusted pull request run may use the docker class. Docker inside the sandbox widens what untrusted code can do, so the default is that such a job fails with the reason. The untrusted run's other jobs still get `untrustedClass`.
+- **Provider capability.** A provider declares `info.dockerInSandbox`. Daytona declares it: its docs describe Docker-in-Docker in a sandbox, with a `docker:<version>-dind` base image or Docker installed in a custom snapshot, and at least 2 vCPU and 4 GiB. You build that snapshot; Turntable does not. The Docker provider declares it only when constructed with `dockerInSandbox: true` (its default hardened container cannot run a daemon). A provider that does not declare it refuses these jobs with the reason.
+- **Preflight.** Before act starts, `docker info` must succeed in the sandbox (it is retried for up to 30 seconds while the daemon starts). If not, the job fails as an infrastructure error naming the failure.
+- Egress and credentials are the same as for any job: the project's egress class applies to the sandbox, never widened. The daemon socket is not passed to job containers.
 
 ## Provider trust model
 

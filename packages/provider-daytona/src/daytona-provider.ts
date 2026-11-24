@@ -289,6 +289,9 @@ export class DaytonaProvider implements Provider {
       labels: true,
       list: true,
       listByLabel: true,
+      // Documented by Daytona (Docker-in-Docker in a sandbox). Whether a given class can do it is
+      // the operator's snapshot; the job's `docker info` preflight is the check that counts.
+      dockerInSandbox: true,
       os: ["linux"],
       arch: ["amd64"],
       cost: "none",

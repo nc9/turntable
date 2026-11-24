@@ -76,6 +76,12 @@ export interface RunInput {
    * real credential to requests for that URL, so the sandbox never holds a usable one.
    */
   oidc?: { requestUrl: string; requestToken: string };
+  /**
+   * Container mode (the plan has `docker`): what the sandbox's preflight needs. `egress` is the
+   * sandbox's egress: with `none` an image that is not already in the sandbox cannot be pulled,
+   * so the job fails naming it instead of hanging in act.
+   */
+  docker?: { egress: "none" | "open" | "other"; waitSeconds?: number };
 }
 
 export interface RunOptions {
@@ -120,6 +126,21 @@ const fail = (reason: string): JobResult => ({ state: "infra_error", reason });
 async function sleep(ms: number): Promise<void> {
   await Bun.sleep(ms);
 }
+
+/**
+ * Waits for the sandbox's Docker daemon: `docker info` must succeed within the given seconds (a
+ * daemon in a fresh sandbox takes a moment). Args: seconds. Prints the last lines of the error.
+ */
+export const DOCKER_INFO_SH = `n=$1; i=0
+until out=$(docker info 2>&1); do
+  i=$((i + 1))
+  if [ "$i" -gt "$n" ]; then printf '%s\n' "$out" | tail -n 3; exit 3; fi
+  sleep 1
+done
+`;
+
+/** Whether an image is already in the sandbox's Docker. Args: image. */
+export const DOCKER_IMAGE_SH = 'docker image inspect "$1" >/dev/null 2>&1';
 
 /** Assembles uploaded parts into one file and checks it. Args: path, part count, sha256. */
 export const ASSEMBLE_SH = `set -eu
@@ -235,6 +256,13 @@ export async function* runJob(
       );
     }
     yield { kind: "phase", phase: "preparing" };
+    if (plan.docker && input.proxy) {
+      // Container mode does not pass the proxy settings into the job's containers yet: refuse
+      // rather than run a job that would reach out around the proxy or not at all.
+      return fail(
+        "a job that runs in container mode cannot use the secrets proxy yet; the job was not run",
+      );
+    }
     let act = input.act;
     const mk = await execShort(provider, sandboxId, 'mkdir -p "$1" && uname -m', [L.root], retry);
     if (mk.exitCode !== 0) return fail(`cannot prepare sandbox: ${mk.output.trim()}`);
@@ -269,14 +297,40 @@ export async function* runJob(
     );
     if (inst.exitCode !== 0) return fail(`act install failed: ${inst.output.trim()}`);
     // Steps must see no terminal, as on GitHub's runner: shim the interpreters (see step-env.ts).
-    const shims = await execShort(
-      provider,
-      sandboxId,
-      INSTALL_SHIMS_SH,
-      [L.shims, STEP_SHIM, ...SHIM_NAMES],
-      retry,
-    );
-    if (shims.exitCode !== 0) return fail(`cannot install step shims: ${shims.output.trim()}`);
+    // Not in container mode: the steps run in a container and the host shims never apply.
+    if (!plan.docker) {
+      const shims = await execShort(
+        provider,
+        sandboxId,
+        INSTALL_SHIMS_SH,
+        [L.shims, STEP_SHIM, ...SHIM_NAMES],
+        retry,
+      );
+      if (shims.exitCode !== 0) return fail(`cannot install step shims: ${shims.output.trim()}`);
+    }
+    if (plan.docker) {
+      // The daemon must be up before act starts: act's own failure is an unreadable stack. A
+      // sandbox without one is an infra failure (retried once by the scheduler).
+      const wait = input.docker?.waitSeconds ?? 30;
+      const info = await execShort(provider, sandboxId, DOCKER_INFO_SH, [String(wait)], retry);
+      if (info.exitCode !== 0) {
+        return fail(
+          `the sandbox has no working Docker daemon (docker info failed): ${info.output.trim().slice(0, 300)}`,
+        );
+      }
+      // With egress none a pull cannot succeed: say which image, and never widen egress.
+      if (input.docker?.egress === "none") {
+        for (const img of plan.docker.images) {
+          const have = await execShort(provider, sandboxId, DOCKER_IMAGE_SH, [img], retry);
+          if (have.exitCode !== 0) {
+            return {
+              state: "failure",
+              reason: `image ${img} is not in the sandbox and egress is none, so it cannot be pulled; preload it in the docker size class's image or allow egress for the project`,
+            };
+          }
+        }
+      }
+    }
 
     // The event payload, byte for byte as the plan stored it.
     if (plan.eventJson !== undefined) {
@@ -349,6 +403,7 @@ export async function* runJob(
             // `-s GITHUB_TOKEN` takes the value from the environment: it is never in the argv.
             input.githubToken === undefined ? plan.argv : [...plan.argv, "-s", "GITHUB_TOKEN"],
             envFile,
+            !plan.docker,
           ),
           cwd: plan.cwd,
           timeoutSeconds: opts.timeoutSeconds ?? 3600,

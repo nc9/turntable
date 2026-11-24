@@ -53,6 +53,11 @@ export interface DockerProviderOptions {
   exec?: WrappedExecOptions;
   /** Container hardening overrides. Defaults: no-new-privileges, pids-limit 4096, drop NET_RAW. */
   hardening?: Partial<Hardening>;
+  /**
+   * Declare that the sandboxes can run a Docker daemon (the operator's runtime and image allow
+   * it). Default false: a plain hardened container cannot.
+   */
+  dockerInSandbox?: boolean;
 }
 
 interface Result {
@@ -102,6 +107,8 @@ export class DockerProvider implements Provider {
       labels: true,
       list: true,
       listByLabel: true,
+      // Docker inside a container needs a privileged or sysbox-style runtime: opt in explicitly.
+      ...(opts.dockerInSandbox === true ? { dockerInSandbox: true } : {}),
       os: ["linux"],
       arch: ["amd64", "arm64"],
       cost: "none",
