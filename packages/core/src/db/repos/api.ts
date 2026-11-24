@@ -390,6 +390,54 @@ export function runsForSha(db: Db, scope: Scope, sha: string, cap = 200): Promis
   return queryRuns(db, scope, { sha, limit: cap });
 }
 
+export type RunJobRow = {
+  id: string;
+  runId: string;
+  projectId: string;
+  name: string;
+  matrix: string | null;
+  state: JobState;
+  /** Newest attempt number; 0 when the job never started an attempt. */
+  attempt: number;
+};
+
+/** Jobs of the given runs (oldest first), each with its newest attempt number. */
+export function jobsForRuns(db: Db, scope: Scope, runIds: readonly string[]): Promise<RunJobRow[]> {
+  if (runIds.length === 0) return Promise.resolve([]);
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        id: s.jobs.id,
+        runId: s.jobs.runId,
+        projectId: s.jobs.projectId,
+        name: s.jobs.name,
+        matrix: s.jobs.matrix,
+        state: s.jobs.state,
+        attempt: sql<
+          number | string | null
+        >`(select max(${s.jobAttempts.attempt}) from ${s.jobAttempts} where ${s.jobAttempts.jobId} = ${s.jobs.id})`,
+      })
+      .from(s.jobs)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobs.orgId, projectId: s.jobs.projectId },
+          inArray(s.jobs.runId, [...runIds]),
+        ),
+      )
+      .orderBy(asc(s.jobs.id));
+    return rows.map((r) => ({
+      id: r.id,
+      runId: r.runId,
+      projectId: r.projectId,
+      name: r.name,
+      matrix: r.matrix,
+      state: r.state as JobState,
+      attempt: Number(r.attempt ?? 0),
+    }));
+  });
+}
+
 /** Total bytes of an attempt's log (0 when none or out of scope). */
 export function logSize(db: Db, scope: Scope, attemptId: string): Promise<number> {
   return db.run(async (h) => {

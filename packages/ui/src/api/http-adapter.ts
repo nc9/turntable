@@ -442,7 +442,13 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         org: org(),
         project: projectId || undefined,
       });
-      const map = { GREEN: "success", PENDING: "running", RED: "failure", NONE: "none" } as const;
+      const map = {
+        GREEN: "success",
+        PENDING: "running",
+        RED: "failure",
+        NONE: "none",
+        CANCELLED: "cancelled",
+      } as const;
       return {
         sha: w.sha,
         state: map[w.state],
