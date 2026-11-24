@@ -25,7 +25,7 @@ import type { JobArtifactProvider } from "../artifacts/job";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
-import { getOrgById } from "../db/repos/api";
+import { getOrgById, logSize } from "../db/repos/api";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
@@ -900,29 +900,27 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     // A fresh attempt has no sandbox yet: nothing to release.
     if (!ctx.resume) return attemptRunner(ctx);
     const id = ctx.attempt.id;
-    // The job-log lines an early exit writes: the stored log still holds the dead worker's partial
-    // output, so it is cleared before the first of them, and the release line goes after them.
-    // Once `executeJob` has the sandbox it does its own reset and logging.
+    // The job-log lines an early exit writes. The stored log holds the dead worker's partial
+    // output: when the runner exits before re-attaching, nothing can be replayed (the sandbox is
+    // released), so that log is the only record and these lines are appended after it. A runner
+    // that does re-attach resets the log itself (`executeJob`) before it replays the exec.
     let written = 0;
-    let cleared = false;
-    const clear = async (): Promise<void> => {
-      if (cleared) return;
-      cleared = true;
-      await ctx.store.reset().catch(() => undefined);
-    };
+    let base: number | undefined;
     const store: AttemptContext["store"] = {
       ...ctx.store,
       appendLog: async (offset, bytes) => {
         if (handedOff.has(id)) return ctx.store.appendLog(offset, bytes);
-        await clear();
-        written = Math.max(written, offset + bytes.length);
-        return ctx.store.appendLog(offset, bytes);
+        base ??= await logSize(o.db, ctx.scope, id).catch(() => 0);
+        written = Math.max(written, base + offset + bytes.length);
+        return ctx.store.appendLog(base + offset, bytes);
       },
     };
     const rctx: AttemptContext = { ...ctx, store };
     const release = async (reason: string): Promise<void> => {
-      await clear();
-      await releaseInherited(rctx, reason, () => written);
+      base ??= await logSize(o.db, ctx.scope, id).catch(() => 0);
+      written = Math.max(written, base);
+      // `rctx.store` adds the base itself, so the release line's offset is relative to it.
+      await releaseInherited(rctx, reason, () => written - (base ?? 0));
     };
     handedOff.delete(id);
     try {

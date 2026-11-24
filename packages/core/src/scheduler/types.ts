@@ -34,7 +34,7 @@ export interface AttemptStore {
   setPlan(planJson: string): Promise<void>;
   /** Records the class the attempt runs as, once, before the sandbox starts (the vault reads it). */
   setTrustClass(klass: string): Promise<void>;
-  /** Clears stored log, steps and cuts, before a re-attached run replays the whole exec log. */
+  /** Clears stored log, steps and cuts. Only a run that re-attaches calls it, to replay the whole exec log; an early exit keeps the partial log. */
   reset(): Promise<void>;
   appendLog(offset: number, bytes: Uint8Array): Promise<void>;
   recordStep(step: Omit<StepInput, "attemptId">): Promise<void>;

@@ -316,7 +316,11 @@ export function dockerRefusal(
     o.untrusted &&
     (o.provider.isolation === undefined || !isolationAtLeast(o.provider.isolation, "microvm"))
   ) {
-    return `${head}; an untrusted run's Docker job needs a microVM-isolated sandbox; this class is container-isolated`;
+    return `${head}; an untrusted run's Docker job needs a microVM-isolated sandbox; ${
+      o.provider.isolation === undefined
+        ? "its isolation level is unknown"
+        : `this class is ${o.provider.isolation}-isolated`
+    }`;
   }
   return undefined;
 }
