@@ -535,5 +535,12 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `approval_records` ADD `spent_at` integer;"
     ]
+  },
+  {
+    "tag": "0047_attempt_infra_kind",
+    "when": 1795543195856,
+    "statements": [
+      "ALTER TABLE `job_attempts` ADD `infra_kind` text;"
+    ]
   }
 ];

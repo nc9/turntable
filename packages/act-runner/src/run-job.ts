@@ -15,6 +15,7 @@ import {
   type ActTarball,
   type ActionFetcher,
 } from "./act-install";
+import { type InfraKind } from "./infra-kind";
 import { checkoutStubAction } from "./checkout-stub";
 import { createActParser, summarize, type ActEvent } from "./events";
 import { PlanError, assertNoDockerAccess, assertPinned, type JobPlan } from "./plan";
@@ -33,6 +34,8 @@ export type JobState = "success" | "failure" | "skipped" | "infra_error";
 
 export interface JobResult {
   state: JobState;
+  /** For infra_error: the named kind (see infra-kind.ts). Absent means `other`. */
+  infraKind?: InfraKind;
   /** act's exit code when it ran to the end. */
   exitCode?: number;
   /** Short human-readable cause. */
@@ -121,7 +124,11 @@ async function withRetry<T>(fn: () => Promise<T>, max: number, pollMs: number): 
   }
 }
 
-const fail = (reason: string): JobResult => ({ state: "infra_error", reason });
+const fail = (reason: string, infraKind?: InfraKind): JobResult => ({
+  state: "infra_error",
+  reason,
+  ...(infraKind ? { infraKind } : {}),
+});
 
 async function sleep(ms: number): Promise<void> {
   await Bun.sleep(ms);
@@ -316,6 +323,7 @@ export async function* runJob(
       if (info.exitCode !== 0) {
         return fail(
           `the sandbox has no working Docker daemon (docker info failed): ${info.output.trim().slice(0, 300)}`,
+          "docker_daemon_unavailable",
         );
       }
       // With egress none a pull cannot succeed: say which image, and never widen egress.
@@ -415,7 +423,8 @@ export async function* runJob(
     return yield* watchExec(provider, sandboxId, execId, opts, plan);
   } catch (e) {
     if (e instanceof PlanError) return fail(`plan rejected: ${e.message}`);
-    if (e instanceof SandboxNotFoundError) return fail("sandbox is gone (cancelled or expired)");
+    if (e instanceof SandboxNotFoundError)
+      return fail("sandbox is gone (cancelled or expired)", "sandbox_lost");
     if (e instanceof InfraError) return fail(e.message);
     throw e;
   }
@@ -506,7 +515,8 @@ export async function* watchExec(
     const outputs = await readOutputs(provider, sandboxId, plan, maxErr, pollMs);
     return Object.keys(outputs).length > 0 ? { ...verdict, outputs } : verdict;
   } catch (e) {
-    if (e instanceof SandboxNotFoundError) return fail("sandbox is gone (cancelled or expired)");
+    if (e instanceof SandboxNotFoundError)
+      return fail("sandbox is gone (cancelled or expired)", "sandbox_lost");
     if (e instanceof InfraError) return fail(e.message);
     throw e;
   }
@@ -529,7 +539,9 @@ export function resumeJob(
 
 /** Turns the authoritative exec status plus parsed events into a verdict. */
 export function decide(status: ExecStatus, sum: ReturnType<typeof summarize>): JobResult {
-  if (status.state === "lost") return { state: "infra_error", reason: "act process lost" };
+  if (status.state === "lost") {
+    return { state: "infra_error", infraKind: "sandbox_lost", reason: "act process lost" };
+  }
   if (status.state === "killed") {
     const why = status.reason ?? "killed";
     return {

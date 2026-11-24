@@ -1750,7 +1750,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 21,
+              "maxItems": 22,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1761,6 +1761,7 @@
                   "job.state_changed",
                   "attempt.step",
                   "attempt.cut",
+                  "attempt.infra_retry",
                   "approval.required",
                   "infra.error",
                   "quota.warning",
@@ -1875,6 +1876,7 @@
                               "job.state_changed",
                               "attempt.step",
                               "attempt.cut",
+                              "attempt.infra_retry",
                               "approval.required",
                               "infra.error",
                               "quota.warning",

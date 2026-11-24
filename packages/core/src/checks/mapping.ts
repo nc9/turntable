@@ -1,4 +1,5 @@
 // What a check run says. Pure functions: the mode decides the name, the conclusion and the text.
+import { INFRA_KINDS, isInfraKind } from "@turntable/act-runner";
 import type { ChecksMode } from "../db/repos";
 
 export type AttemptResult = "success" | "failure" | "skipped" | "infra_error" | "cancelled";
@@ -170,6 +171,15 @@ export function classifyInfra(reason: string | undefined): InfraClass {
   return "internal";
 }
 
+/**
+ * The line a check summary shows for a job on its infra retry (#517). Fixed words only: the kind
+ * is looked up in the closed table, so nothing from the failed attempt reaches the text.
+ */
+export function infraRetryLine(kind: string | null | undefined): string | undefined {
+  if (!isInfraKind(kind)) return undefined;
+  return `**Retry:** this is the job's second attempt. The first one ended with an infrastructure error (${INFRA_KINDS[kind].label}) and its log is kept under that attempt.`;
+}
+
 export type SummaryInput = {
   mode: Exclude<ChecksMode, "off">;
   result: AttemptResult | NoAttemptSkip;
@@ -185,6 +195,8 @@ export type SummaryInput = {
   skipReason?: string | undefined;
   /** For a job Turntable refused to run: the stored `unsupported: ...` reason. */
   refusal?: string | undefined;
+  /** The kind of the infra failure this attempt is the retry of (#517), when it is one. */
+  retryOf?: string | null | undefined;
 };
 
 /** The fix a refused job's summary always offers. */
@@ -227,6 +239,8 @@ export function summaryFor(i: SummaryInput): string {
     );
   }
   if (i.refusal) lines.push(`${i.refusal}\n\n${REFUSAL_FIX}`);
+  const retry = infraRetryLine(i.retryOf);
+  if (retry) lines.push(retry);
   if (i.result === "infra_error") {
     lines.push(
       "Infrastructure error: the sandbox or the runner failed, so this says nothing about the code.",

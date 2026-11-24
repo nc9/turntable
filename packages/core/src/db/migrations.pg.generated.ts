@@ -273,5 +273,12 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"approval_records\" ADD COLUMN \"spent_at\" bigint;"
     ]
+  },
+  {
+    "tag": "0018_attempt_infra_kind",
+    "when": 1795543196371,
+    "statements": [
+      "ALTER TABLE \"job_attempts\" ADD COLUMN \"infra_kind\" text;"
+    ]
   }
 ];

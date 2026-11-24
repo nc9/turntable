@@ -153,6 +153,8 @@ async function runAll(
     sizes?: ReturnType<typeof sizes> | undefined;
     w?: FakeWorld;
     untrusted?: boolean;
+    /** Called when the first sandbox is destroyed, i.e. between a first attempt and its retry. */
+    afterFirstDestroy?: () => void;
   } = {},
 ) {
   const w = opts.w ?? world;
@@ -181,6 +183,7 @@ async function runAll(
   }
   const real = w.provider();
   const specs: { job: string; spec: Parameters<Provider["create"]>[0] }[] = [];
+  let destroyed = 0;
   const provider: Provider = Object.assign(Object.create(real) as Provider, {
     // A snapshot-style provider: the class's `snapshot` is what the sandbox starts from.
     realiseClass: (
@@ -194,6 +197,11 @@ async function runAll(
     create: (spec: Parameters<Provider["create"]>[0]) => {
       specs.push({ job: spec.labels["turntable.job"] as string, spec });
       return real.create(spec);
+    },
+    destroy: async (id: string) => {
+      await real.destroy(id);
+      destroyed++;
+      if (destroyed === 1) opts.afterFirstDestroy?.();
     },
   });
   const act = await (async () => {
@@ -229,6 +237,7 @@ async function runAll(
     perOrgCap: 1,
     leaseMs: 60_000,
     pollMs: 20,
+    infraRetryBackoffMs: 0,
   });
   for (let i = 0; i < 40; i++) {
     const started = await sched.tick();
@@ -243,11 +252,12 @@ async function runAll(
       (await readLog(db, scope, attempts.at(-1)!.id)).map((c) => c.bytes),
     ).toString();
   };
+  const specCount = (k: string) => specs.filter((x) => x.job === job(k).id).length;
   const specOf = (k: string) => specs.find((x) => x.job === job(k).id)?.spec;
   const attemptsOf = async (k: string) => (await listAttempts(db, scope, job(k).id)).length;
   const lastAttempt = async (k: string) => (await listAttempts(db, scope, job(k).id)).at(-1)!;
   const argv = (k: string): string => readFileSync(join(root, "seen", `${k}.argv`), "utf8");
-  return { job, logOf, specOf, attemptsOf, lastAttempt, argv };
+  return { job, logOf, specOf, specCount, attemptsOf, lastAttempt, argv };
 }
 
 describe("a job that needs Docker", () => {
@@ -344,14 +354,35 @@ describe("a job that needs Docker", () => {
     expect(await r.logOf("db")).toContain("untrustedDocker");
   });
 
-  test("docker info failing in the sandbox is an infra failure, classified infra, with the reason", async () => {
+  test("docker info failing in the sandbox is an infra failure, retried once on a fresh sandbox, then ends with both reasons", async () => {
     setDocker("down");
     const r = await runAll();
     expect(r.job("db").state).toBe("infra_error");
-    expect(await r.attemptsOf("db")).toBe(1); // the scheduler retries only drain and cancel cuts
-    expect((await r.lastAttempt("db")).errorClass).toContain("no working Docker daemon");
+    expect(await r.attemptsOf("db")).toBe(2); // one infra retry (#517), never a third
+    expect(r.specCount("db")).toBe(2); // a fresh sandbox each time
+    const last = await r.lastAttempt("db");
+    expect(last.errorClass).toContain("no working Docker daemon");
+    expect(last.errorClass).toContain("(after: ");
+    expect(last.infraKind).toBe("docker_daemon_unavailable");
     // the plain job never needed the daemon
     expect(r.job("plain").state).toBe("success");
+  });
+
+  test("the infra retry applies the docker refusal again: a dockerClass removed between attempts fails the retry with the reason", async () => {
+    setDocker("down");
+    const cfg = sizes();
+    const r = await runAll({
+      sizes: cfg,
+      afterFirstDestroy: () => {
+        delete (cfg as { dockerClass?: string }).dockerClass;
+      },
+    });
+    expect(await r.attemptsOf("db")).toBe(2);
+    expect(r.specCount("db")).toBe(1); // the retry never got a sandbox
+    expect(r.job("db").state).toBe("failure");
+    const last = await r.lastAttempt("db");
+    expect(last.state).toBe("failure");
+    expect(await r.logOf("db")).toContain("no Docker-capable size class");
   });
 
   test("egress none and an image not in the sandbox: fails naming the image, egress is not widened", async () => {

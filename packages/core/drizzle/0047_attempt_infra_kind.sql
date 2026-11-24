@@ -1,0 +1,1 @@
+ALTER TABLE `job_attempts` ADD `infra_kind` text;

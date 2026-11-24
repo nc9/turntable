@@ -644,6 +644,7 @@ export function updateAttempt(
     execId?: string | null;
     exitCode?: number | null;
     errorClass?: string | null;
+    infraKind?: string | null;
     sandboxCreatedAt?: number | null;
     sandboxDestroyedAt?: number | null;
     sandboxTtlSeconds?: number | null;

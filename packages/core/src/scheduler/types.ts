@@ -1,4 +1,5 @@
 import type { Provider } from "@turntable/provider-sdk";
+import type { InfraKind } from "@turntable/act-runner";
 import type { SecretRegistry } from "@turntable/redact";
 import type { ProxyAccess } from "../proxy";
 import type { Claim, Job, JobAttempt, Run, Scope } from "../db/repos";
@@ -10,6 +11,11 @@ export type AttemptOutcome = {
   exitCode?: number | undefined;
   /** Short cause. Stored as the attempt's error class for infra_error. */
   reason: string;
+  /**
+   * For infra_error: the named kind (see `INFRA_KINDS`), which says whether one retry is worth it.
+   * Absent means `other`: never retried.
+   */
+  infraKind?: InfraKind | undefined;
   /** The job's declared outputs, kept for its dependents. */
   outputs?: Record<string, string> | undefined;
 };

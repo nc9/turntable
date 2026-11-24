@@ -29,6 +29,7 @@ import {
   type AttemptResult,
   checkName,
   classifyInfra,
+  infraRetryLine,
   refusalSentence,
   conclusionFor,
   NO_ATTEMPT_SKIP,
@@ -335,6 +336,16 @@ export class CheckReporter {
     return "posted";
   }
 
+  /** The infra kind of the attempt this one retries (#517), or undefined: a first attempt or a rerun. */
+  async #retryOf(claim: Claim): Promise<string | undefined> {
+    const { attempt, scope, job } = claim;
+    if (attempt.attempt < 2 || attempt.rerunReason !== null) return undefined;
+    const prev = (await listAttempts(this.#o.db, scope, job.id)).find(
+      (a) => a.attempt === attempt.attempt - 1,
+    );
+    return prev?.state === "infra_error" && prev.infraKind ? prev.infraKind : undefined;
+  }
+
   async #post(claim: Claim, outcome: AttemptOutcome | undefined): Promise<void> {
     const { db } = this.#o;
     const { scope, job, attempt } = claim;
@@ -348,7 +359,23 @@ export class CheckReporter {
     // by its shards: made when the first shard starts, completed when the last one finishes.
     const group = shardGroup(job.planned) ? await this.#shardState(claim) : undefined;
 
+    const retryOf = await this.#retryOf(claim);
     if (outcome === undefined) {
+      // A retry after an infra failure (#517) inherits the first attempt's check: show the retry.
+      if (id !== null && retryOf && !group) {
+        const existing = id;
+        const body: CheckRunBody = {
+          status: "in_progress",
+          output: {
+            title: RUNNING_TITLE(mode),
+            summary: summaryRunning(mode, runUrl, retryOf),
+          },
+        };
+        await this.#retry("update check run", () =>
+          this.#o.api.update(token, repo, existing, body),
+        );
+        return;
+      }
       // Started, or re-attached after a restart: the id already stored means it exists.
       if (id !== null) return;
       if (group?.sharedId !== undefined) {
@@ -364,7 +391,7 @@ export class CheckReporter {
         ...(runUrl ? { details_url: runUrl } : {}),
         output: {
           title: RUNNING_TITLE(mode),
-          summary: summaryRunning(mode, runUrl),
+          summary: summaryRunning(mode, runUrl, retryOf),
         },
       });
       await setAttemptCheckRunId(db, scope, attempt.id, id);
@@ -420,6 +447,7 @@ export class CheckReporter {
           failingStep,
           excerpt,
           infraClass: result === "infra_error" ? classifyInfra(outcome.reason) : undefined,
+          retryOf,
           ...(!group && result === "failure" && refusalSentence(outcome.reason)
             ? { refusal: refusalSentence(outcome.reason) }
             : {}),
@@ -522,12 +550,18 @@ export class CheckReporter {
   }
 }
 
-function summaryRunning(mode: Exclude<ChecksMode, "off">, runUrl: string | undefined): string {
+function summaryRunning(
+  mode: Exclude<ChecksMode, "off">,
+  runUrl: string | undefined,
+  retryOf?: string,
+): string {
   const lines = [
     mode === "shadow"
       ? "Turntable is running this job as a shadow check: the result will be neutral."
       : "Turntable is running this job.",
   ];
+  const retry = infraRetryLine(retryOf);
+  if (retry) lines.push(retry);
   if (runUrl) lines.push(`[Open the run in Turntable](${runUrl})`);
   return lines.join("\n\n");
 }

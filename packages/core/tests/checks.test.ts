@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
+  createAttempt,
   type Db,
   getAttemptCheckRunId,
   getRun,
   listAttempts,
+  setAttemptCheckRunId,
   setProjectChecksMode,
 } from "../src/db";
+import * as s from "../src/db/schema";
 import type { Claim } from "../src/db/repos";
 import { CheckReporter, type TokenMinter } from "../src/checks/reporter";
 import {
@@ -196,6 +200,37 @@ describe("reporter", () => {
         expect(run.output!.summary).not.toContain("the sandbox did not start");
       }
     }
+  });
+
+  test("a job on its infra retry keeps its one check and shows the retry (#517)", async () => {
+    await setProjectChecksMode(db, world.scope, "live");
+    const first = await claim();
+    const { api, runs, calls } = fakeApi();
+    const rep = reporterFor(api, minter().auth);
+    rep.started(first);
+    await rep.idle();
+    // The scheduler ended the first attempt with a kind and queued a new one that inherits the check.
+    const checkId = await getAttemptCheckRunId(world.db, world.scope, first.attempt.id);
+    await world.db.run(async (h) => {
+      await h.orm
+        .update(s.jobAttempts)
+        .set({ state: "infra_error", infraKind: "docker_daemon_unavailable" })
+        .where(eq(s.jobAttempts.id, first.attempt.id));
+    });
+    const next = (await createAttempt(world.db, world.scope, {
+      jobId: first.job.id,
+      provider: "fake",
+    }))!;
+    await setAttemptCheckRunId(world.db, world.scope, next.id, checkId!);
+    const retry: Claim = { ...first, attempt: next };
+    rep.started(retry);
+    await rep.idle();
+    const run = [...runs.values()][0]!;
+    expect(runs.size).toBe(1);
+    expect(calls.filter((x) => x.op === "create")).toHaveLength(1);
+    expect(run.status).toBe("in_progress");
+    expect(run.output!.summary).toContain("second attempt");
+    expect(run.output!.summary).toContain("Docker daemon was unavailable");
   });
 
   test("the summary excerpt is redacted and capped at 1 KiB", async () => {

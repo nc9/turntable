@@ -50,6 +50,25 @@ One Turntable instance serves many orgs. An org is the tenant. Isolation is enfo
   - `infra_error` means no trustworthy result: sandbox create failed, provider error, exit code unrecoverable, infra timeout.
   - `success`, `failure` and `cancelled` are terminal. `infra_error` can return to `queued` for a retry, which creates a new attempt.
 
+### Infra retries
+
+A transient infrastructure failure is retried once. An `infra_error` carries a kind from a closed set. The kind is stored on the attempt (`job_attempts.infra_kind`) and the reason text is unchanged.
+
+| Kind | Cause | Retried |
+| --- | --- | --- |
+| `docker_daemon_unavailable` | `docker info` failed in a Docker-class sandbox | yes, every class |
+| `sandbox_create_failed` | the provider could not create the sandbox | yes, every class |
+| `sandbox_lost` | the sandbox or the act process in it vanished, possibly mid-run | only `trusted_pr` and `untrusted_pr` jobs |
+| `image_pull_rate_limited` | reserved, nothing produces it yet (preflight) | yes, every class |
+| `other` | anything else | no |
+
+Each kind has a `beforeSteps` field in `INFRA_KINDS`. A kind that happens before any job step runs is retried for every trust class. A kind that can happen mid-run (`sandbox_lost`) may follow steps with side effects, such as a deploy or a publish, so it is retried only for pull request jobs. A `protected` or `release` job ends `infra_error` with the reason, with no retry. A job whose class is not yet recorded counts as not a pull request.
+
+- **One retry per job.** The first transient failure ends its attempt `infra_error` and queues a new attempt for the same job, after a fixed 10 s backoff. The failed sandbox is already released, so the retry gets a fresh one. The new attempt goes through the same claim and run steps as any attempt, so every refusal and size or tenant-class check applies again. It sets no rerun reason, so it uses none of the commit's reruns.
+- **Separate from the drain requeue.** The one requeue of an attempt cut by a drain (`controller_lost`) has its own limit. A job can have both. A manual rerun starts a fresh retry budget.
+- **Never retried:** refusals, test failures, cancels, the job's own timeout, and kinds not marked transient.
+- **Visible.** The first attempt keeps its log and reason. The job's check is updated in place and says it is on its retry. The run's events and the audit log record `attempt.infra_retry` with the kind. If the retry also fails with an infra error, that attempt's reason carries both.
+
 ### Isolation guarantees
 
 1. Every tenant-owned table has an `org_id` column. A test fails if a new table lacks one and is not on the explicit allowlist (`instance`, `orgs`, `users`).
