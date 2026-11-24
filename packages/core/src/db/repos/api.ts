@@ -2,6 +2,7 @@
 // Like index.ts, this is part of the only code allowed to name tenant tables.
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "..";
+import { DIALECT } from "../dialect";
 import * as s from "../schema";
 import type { AgentRole, JobState, TokenKind } from "../schema";
 import { ulid } from "../ulid";
@@ -12,6 +13,21 @@ export type ApiToken = typeof s.apiTokens.$inferSelect;
 // ---- tokens ----
 
 const TOKEN_COLS = { orgId: s.apiTokens.orgId, projectId: s.apiTokens.projectId };
+
+/**
+ * Serialises token minting and revoking of one org for the rest of the transaction (#437), so a
+ * count of active tokens cannot go stale between the check and the write. Take it first in the
+ * transaction. On Postgres it is a transaction-scoped advisory lock (a waiter holds an older
+ * snapshot, so SERIALIZABLE re-runs it against the winner). SQLite's write transactions are
+ * already exclusive, so it is a no-op there, and outside a transaction there is nothing to hold.
+ */
+export function lockOrgTokens(db: Db, orgId: string): Promise<void> {
+  if (DIALECT !== "pg") return Promise.resolve();
+  return db.run(async (h) => {
+    const orm = h.orm as unknown as { execute(q: unknown): Promise<unknown> };
+    await orm.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`tokens:${orgId}`}, 0))`);
+  });
+}
 
 /** Stores a token by hash. `scope.projectId` narrows it to one project; absent means the org. */
 export function insertApiToken(
@@ -147,6 +163,104 @@ const revokedListeners = new Set<RevokedListener>();
 export function onApiTokenRevoked(listener: RevokedListener): () => void {
   revokedListeners.add(listener);
   return () => revokedListeners.delete(listener);
+}
+
+// ---- token lineage (#437) ----
+// A token minted by another token records `createdBy = "token:<parentId>"` (only create_api_token
+// writes that prefix, from the authenticated principal; every other minting path writes `cli:`,
+// `bootstrap:`, `instance:`, `member:` or a test label), so the parent link needs no column.
+
+/** The parent token id a row was minted by, or null for a root token. */
+export function parentTokenId(row: { createdBy: string }): string | null {
+  return row.createdBy.startsWith("token:") ? row.createdBy.slice("token:".length) : null;
+}
+
+/** The hardest bound on a stored mint chain: a token deeper than this cannot be walked or minted from. */
+export const MAX_STORED_CHAIN_DEPTH = 64;
+
+/**
+ * The lineage of a token (#437). `depth` counts LIVE token-minted ancestors only: the walk for it
+ * stops at the first revoked or expired ancestor, so a rotation (mint the successor, self-revoke)
+ * starts a fresh live chain and repeated rotation never runs out of depth. `originalRootId` is the
+ * top of the STORED `createdBy` chain (the first ancestor not minted by a token), whatever was
+ * revoked in between, so self-revoking never resets the lineage a cap is counted against.
+ * `tooDeep` is set when the stored chain passes MAX_STORED_CHAIN_DEPTH (the caller refuses).
+ * Call under `lockOrgTokens`.
+ */
+export async function tokenLineage(
+  db: Db,
+  row: ApiToken,
+  now: number,
+): Promise<{ depth: number; originalRootId: string; tooDeep: boolean }> {
+  let cur = row;
+  let depth = 0;
+  let liveChain = true;
+  for (let steps = 0; ; steps++) {
+    const parentId = parentTokenId(cur);
+    if (parentId === null) return { depth, originalRootId: cur.id, tooDeep: false };
+    if (steps >= MAX_STORED_CHAIN_DEPTH) return { depth, originalRootId: cur.id, tooDeep: true };
+    const parent = await findApiTokenById(db, parentId);
+    if (!parent || parent.orgId !== row.orgId) {
+      return { depth, originalRootId: cur.id, tooDeep: false };
+    }
+    if (parent.revokedAt !== null || (parent.expiresAt !== null && parent.expiresAt <= now)) {
+      liveChain = false;
+    }
+    if (liveChain) depth += 1;
+    cur = parent;
+  }
+}
+
+/** Tokens minted by `parentId` that are neither revoked nor expired. */
+export function countActiveChildTokens(
+  db: Db,
+  scope: Scope,
+  parentId: string,
+  now: number,
+): Promise<number> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ n: sql<number>`count(*)` })
+      .from(s.apiTokens)
+      .where(
+        scoped(
+          scope,
+          TOKEN_COLS,
+          eq(s.apiTokens.createdBy, `token:${parentId}`),
+          isNull(s.apiTokens.revokedAt),
+          or(isNull(s.apiTokens.expiresAt), gt(s.apiTokens.expiresAt, now)),
+        ),
+      );
+    return Number(row?.n ?? 0);
+  });
+}
+
+/** A token and every token it minted, transitively (the root first), revoked or not. */
+export function tokenSubtree(db: Db, orgId: string, rootId: string): Promise<ApiToken[]> {
+  return db.run(async (h) => {
+    const all = await h.orm.select().from(s.apiTokens).where(scoped({ orgId }, TOKEN_COLS));
+    const byParent = new Map<string, ApiToken[]>();
+    for (const t of all) {
+      const p = parentTokenId(t);
+      if (p !== null) byParent.set(p, [...(byParent.get(p) ?? []), t]);
+    }
+    const out: ApiToken[] = [];
+    const seen = new Set<string>([rootId]);
+    const root = all.find((t) => t.id === rootId);
+    if (!root) return out;
+    const queue = [root];
+    while (queue.length > 0) {
+      const t = queue.shift()!;
+      out.push(t);
+      for (const c of byParent.get(t.id) ?? []) {
+        if (!seen.has(c.id)) {
+          seen.add(c.id);
+          queue.push(c);
+        }
+      }
+    }
+    return out;
+  });
 }
 
 /** Revokes a token. Returns false when it is not in scope or was already revoked. */

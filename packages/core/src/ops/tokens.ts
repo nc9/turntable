@@ -52,8 +52,8 @@ import { ROLE_RANK } from "./roles";
  * A token can never mint a token that exceeds its own grant: a higher role, a wider scope
  * (an org-wide token from a project-scoped one, or a different project), or a less restricted
  * kind (an agent token cannot mint a person token). People (`member`
- * principals) are the trust root and may mint any agent role. Today no token can reach
- * `create_api_token` at all (it needs admin); this keeps the rule true if that ever changes.
+ * principals) are the trust root and may mint any agent role. `create_api_token` calls it for a bearer token (#437). An agent token may mint only agent
+ * tokens, up to `operator`.
  */
 export function assertMintable(
   creator: Principal,
@@ -69,8 +69,13 @@ export function assertMintable(
   if (ROLE_RANK[request.role] > ROLE_RANK[creator.role]) {
     throw new OpError("forbidden", "a token cannot create a token with a higher role than its own");
   }
-  if (creator.tokenKind === "agent" && request.kind === "person") {
-    throw new OpError("forbidden", "an agent token cannot create a person token");
+  if (creator.tokenKind === "agent") {
+    if (request.kind === "person") {
+      throw new OpError("forbidden", "an agent token cannot create a person token");
+    }
+    if (ROLE_RANK[request.role] > ROLE_RANK.operator) {
+      throw new OpError("forbidden", "an agent token can create tokens up to operator only");
+    }
   }
   if (creator.projectId !== null && request.projectId !== creator.projectId) {
     throw new OpError("forbidden", "a token cannot create a token wider than its own scope");

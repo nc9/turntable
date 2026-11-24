@@ -181,12 +181,10 @@ test("role denial: a reader cannot cancel, and the attempt is audited", async ()
   expect((await call(reader.secret, "get_run", { run_id: a.runId })).ok).toBe(true);
 });
 
-test("admin-only: no token role can create tokens, a member admin can", async () => {
-  for (const role of AGENT_ROLES) {
-    const t = await mintToken(db, a.scope, role);
-    const res = await call(t.secret, "create_api_token", { name: "x", role: "reader" });
-    expect(!res.ok && res.error.code).toBe("forbidden");
-  }
+test("a reader token cannot create tokens, a non-admin member cannot, a member admin can", async () => {
+  const reader = await mintToken(db, a.scope, "reader");
+  const res = await call(reader.secret, "create_api_token", { name: "x", role: "reader" });
+  expect(!res.ok && res.error.code).toBe("forbidden");
   const member = await dispatch(
     env,
     { kind: "principal", principal: { kind: "member", id: "m1", orgId: a.orgId, role: "member" } },
