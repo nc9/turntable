@@ -84,6 +84,8 @@ export interface JobEnv {
   githubToken?: string;
   /** GitHub's OIDC request variables for the steps; the token is a placeholder (see oidc/job-delivery). */
   oidc?: { requestUrl: string; requestToken: string };
+  /** Seconds to wait for the sandbox's Docker daemon (a container-mode plan). Default 30. */
+  dockerWaitSeconds?: number;
 }
 
 export interface JobOutcome {
@@ -353,6 +355,16 @@ export async function executeJob(
             : {}),
           ...(env.githubToken !== undefined ? { githubToken: env.githubToken } : {}),
           ...(env.oidc ? { oidc: env.oidc } : {}),
+          ...(plan.docker
+            ? {
+                docker: {
+                  egress: env.egress ?? "none",
+                  ...(env.dockerWaitSeconds !== undefined
+                    ? { waitSeconds: env.dockerWaitSeconds }
+                    : {}),
+                },
+              }
+            : {}),
           ...(env.act ? { act: env.act } : {}),
           ...(env.fetchAction ? { fetchAction: env.fetchAction } : {}),
         },

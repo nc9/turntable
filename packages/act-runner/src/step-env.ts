@@ -36,13 +36,19 @@ export const STEP_ENV: readonly string[] = [
  * terminal, so no TERM; `dumb` would also hide the errors tput and clear give there), sets
  * STEP_ENV, and execs act. `CI=true` and `GITHUB_ACTIONS=true` are set by act itself.
  */
-export function launcherArgv(shimDir: string, actArgv: readonly string[], envFile = ""): string[] {
+export function launcherArgv(
+  shimDir: string,
+  actArgv: readonly string[],
+  envFile = "",
+  /** False in container mode: steps run in a container, where the host shims do not apply. */
+  shims = true,
+): string[] {
   // `envFile` holds export lines that must not appear in an argv (a ps listing, a provider log):
   // the launcher sources it and deletes it before act starts.
   return [
     "sh",
     "-c",
-    'PATH="$1:$PATH"; f=$2; shift 2; export PATH; if [ -n "$f" ]; then . "$f"; rm -f "$f"; fi; exec env -u TERM "$@"',
+    `${shims ? 'PATH="$1:$PATH"; ' : ""}f=$2; shift 2; ${shims ? "export PATH; " : ""}if [ -n "$f" ]; then . "$f"; rm -f "$f"; fi; exec env -u TERM "$@"`,
     "tt",
     shimDir,
     envFile,

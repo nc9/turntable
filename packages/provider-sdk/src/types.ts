@@ -67,6 +67,12 @@ export interface ProviderInfo {
   labels: boolean;
   list: boolean;
   listByLabel: boolean;
+  /**
+   * The provider can run a Docker daemon inside a sandbox (services, container jobs). It only
+   * says the provider can host one: the operator's `docker: true` size class names the image or
+   * snapshot that actually carries the daemon. Absent means false; declare only what is verified.
+   */
+  dockerInSandbox?: boolean;
   os: readonly string[];
   arch: readonly string[];
   cost: "none" | "estimate" | "exact";

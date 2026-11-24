@@ -51,6 +51,12 @@ export interface PlanOptions {
    * act exactly the same bytes.
    */
   eventPayload?: Record<string, unknown>;
+  /**
+   * Run the job in act's container mode, for a job with `services:` or `container:` on a
+   * Docker-capable sandbox: every runner label maps to `image` instead of host mode, and the host
+   * step shims are not used. Set only by the scheduler for a job routed to the docker class.
+   */
+  docker?: { image: string };
 }
 
 export interface PlannedAction {
@@ -154,6 +160,11 @@ export interface JobPlan {
   warnings: PlanWarning[];
   /** The event payload act reads from `layout.eventFile`; absent when there is none. */
   eventJson?: string;
+  /**
+   * Container mode (see PlanOptions.docker). `images` are the literal images the job names
+   * (its runner image, `container:` and `services:`), for the sandbox preflight.
+   */
+  docker?: { image: string; images: string[] };
   /** Full command: act binary then args. Run with cwd = layout.repo. */
   argv: string[];
   cwd: string;
@@ -201,10 +212,10 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
   if (job.uses !== undefined) {
     throw new PlanError("reusable workflow", `job "${jobId}" calls a reusable workflow (uses)`);
   }
-  if (job.services !== undefined) {
+  if (job.services !== undefined && !opts.docker) {
     throw new PlanError("services", `job "${jobId}" uses services; act host mode ignores them`);
   }
-  if (job.container !== undefined) {
+  if (job.container !== undefined && !opts.docker) {
     throw new PlanError("container", `job "${jobId}" uses container; host mode cannot run it`);
   }
   if (!opts.split && isObj(job.strategy) && job.strategy.matrix !== undefined) {
@@ -323,10 +334,27 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     labels,
     event: opts.event ?? "push",
     ...(opts.eventPayload ? { eventJson: JSON.stringify(opts.eventPayload) } : {}),
+    ...(opts.docker
+      ? { docker: { image: opts.docker.image, images: dockerImages(job, opts.docker.image) } }
+      : {}),
     argv: [],
     cwd: layout.repo,
   };
   return withArgv(plan);
+}
+
+const IMAGE_REF = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/;
+
+/** The literal image references a job names: its runner image, `container:`, and `services:`. */
+function dockerImages(job: Obj, runner: string): string[] {
+  const out = new Set<string>([runner]);
+  const add = (v: unknown): void => {
+    const img = typeof v === "string" ? v : isObj(v) ? v.image : undefined;
+    if (typeof img === "string" && IMAGE_REF.test(img.trim())) out.add(img.trim());
+  };
+  add(job.container);
+  if (isObj(job.services)) for (const s of Object.values(job.services)) add(s);
+  return [...out];
 }
 
 /** Builds the act command. Remote actions are keyed by sha once known, else by the written ref. */
@@ -343,9 +371,20 @@ function withArgv(plan: JobPlan): JobPlan {
     plan.workflowPath,
     "-j",
     plan.jobId,
-    ...plan.labels.filter((l) => l !== "self-hosted").flatMap((l) => ["-P", `${l}=-self-hosted`]),
-    "-P",
-    "self-hosted=-self-hosted",
+    // Host mode runs steps on the sandbox itself. Container mode (a docker-class job) maps every
+    // label to the runner image, so `services:` and `container:` work as on GitHub.
+    ...(plan.docker
+      ? [...new Set([...plan.labels, "self-hosted"])].flatMap((l) => [
+          "-P",
+          `${l}=${plan.docker?.image}`,
+        ])
+      : [
+          ...plan.labels
+            .filter((l) => l !== "self-hosted")
+            .flatMap((l) => ["-P", `${l}=-self-hosted`]),
+          "-P",
+          "self-hosted=-self-hosted",
+        ]),
     "--json",
     "--concurrent-jobs",
     "1",

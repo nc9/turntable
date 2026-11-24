@@ -8,6 +8,8 @@
 //     "labels":  { "ubuntu-latest-4-cores": "large" },
 //     "default": "small",           // a class name; unset: the provider's own default size
 //     "untrustedClass": "small",    // optional: untrusted PR runs always get this class
+//     "dockerClass": "dind",        // optional: a `docker: true` class for jobs with services:/container:
+//     "untrustedDocker": false,     // may an untrusted run's docker job use dockerClass (default no)
 //     "maxCpus": 8, "maxMemoryMb": 16384, "maxDiskGb": 100 }   // global ceilings, optional
 //
 // A class is realised per provider: `providers.<name>` holds what only that provider understands
@@ -27,7 +29,11 @@
 // the operator did not list is never reachable by an `-N-cores` label. A job that names another OS (macOS, Windows) or arm
 // is refused before any sandbox exists (`refusalFor`), never run on a Linux amd64 sandbox.
 import { z } from "zod";
-import type { SandboxResources } from "@turntable/provider-sdk";
+import {
+  type IsolationClass,
+  type SandboxResources,
+  isolationAtLeast,
+} from "@turntable/provider-sdk";
 
 const pos = (max: number) => z.number().int().positive().max(max);
 const ORG_SLUG = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/);
@@ -63,11 +69,44 @@ const classSchema = z
      * Whether an org or project label map may name this class. Default true. Set false for a class
      * with cost or privilege (a macOS reservation, a Docker-capable sandbox).
      */
-    tenantSelectable: z.boolean().default(true),
+    tenantSelectable: z.boolean().optional(),
     /** Org slugs that may name the class even when it is not `tenantSelectable`. */
     orgs: z.array(ORG_SLUG).max(64).optional(),
+    /**
+     * The sandbox runs a Docker daemon, so act can run a job's `services:` and `container:`. Such a
+     * class is privileged and costly: `tenantSelectable` defaults to false for it. It must name the
+     * image or snapshot that carries the daemon for every provider it is realised on.
+     */
+    docker: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((k, ctx) => {
+    if (k.docker !== true) return;
+    const named = { ...k.providers };
+    if (k.snapshot !== undefined) named.daytona = { ...named.daytona, snapshot: k.snapshot };
+    if (Object.keys(named).length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers"],
+        message: "a docker class must name a provider image or snapshot (providers.<name>)",
+      });
+    }
+    for (const [prov, v] of Object.entries(named)) {
+      const key = prov === "daytona" ? "snapshot" : prov === "docker" ? "image" : undefined;
+      const ok =
+        key !== undefined
+          ? typeof v[key] === "string" && v[key] !== ""
+          : Object.values(v).some((x) => typeof x === "string" && x !== "");
+      if (!ok) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["providers", prov],
+          message: `a docker class must name ${key ?? "an image or snapshot"} for provider ${prov}`,
+        });
+      }
+    }
+  })
+  .transform((k) => ({ ...k, tenantSelectable: k.tenantSelectable ?? k.docker !== true }));
 
 export const sandboxSizesSchema = z
   .object({
@@ -75,6 +114,18 @@ export const sandboxSizesSchema = z
     labels: z.record(z.string().min(1).max(100), NAME).default({}),
     default: NAME.optional(),
     untrustedClass: NAME.optional(),
+    /**
+     * The `docker: true` class a job that needs Docker (`services:`, `container:`) runs on, in act's
+     * container mode. Unset: such a job fails with the reason. Other jobs never use it.
+     */
+    dockerClass: NAME.optional(),
+    /** Image act runs a Docker-class job in (its platform label maps to it). Pulled through the sandbox's egress. */
+    dockerJobImage: z.string().regex(IMAGE).optional(),
+    /**
+     * Whether an untrusted run's job that needs Docker may use `dockerClass`. Default false: Docker
+     * inside the sandbox widens what untrusted code can do, so such a job fails with the reason.
+     */
+    untrustedDocker: z.boolean().default(false),
     /** Classes an `ubuntu-latest-N-cores` label may resolve to, by cpu count. Empty: none. */
     coresClasses: z.array(NAME).default([]),
     maxCpus: pos(256).optional(),
@@ -98,6 +149,14 @@ export const sandboxSizesSchema = z
     };
     known(c.default, ["default"]);
     known(c.untrustedClass, ["untrustedClass"]);
+    known(c.dockerClass, ["dockerClass"]);
+    if (c.dockerClass !== undefined && c.classes[c.dockerClass]?.docker !== true) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["dockerClass"],
+        message: `dockerClass ${c.dockerClass} must be a class with docker: true`,
+      });
+    }
     c.coresClasses.forEach((n, i) => known(n, ["coresClasses", i]));
     for (const [label, cls] of Object.entries(c.labels)) known(cls, ["labels", label]);
   });
@@ -145,7 +204,7 @@ export type LabelMap = Readonly<Record<string, string>>;
 
 /** Whether an org's label map may name this class: selectable, or the org is on its allowlist. */
 export function tenantMayName(c: SizeClassDef, orgSlug: string | undefined): boolean {
-  return c.tenantSelectable !== false || (orgSlug !== undefined && !!c.orgs?.includes(orgSlug));
+  return c.tenantSelectable === true || (orgSlug !== undefined && !!c.orgs?.includes(orgSlug));
 }
 
 /**
@@ -227,6 +286,41 @@ export function refusalFor(
   return undefined;
 }
 
+/**
+ * Why a job that needs Docker cannot run here, or undefined when it can (a `dockerClass` exists,
+ * the provider can host Docker, and an untrusted run is allowed it). `need` is the planner's reason
+ * (`uses services:`). The text is public (a check summary) and starts with `unsupported: ` so the
+ * check says "cannot run this job" and offers the `TURNTABLE_CI` gate. It never names a class.
+ */
+export function dockerRefusal(
+  cfg: SandboxSizes | undefined,
+  need: string,
+  o: {
+    untrusted: boolean;
+    provider: { dockerInSandbox?: boolean | undefined; isolation?: IsolationClass | undefined };
+  },
+): string | undefined {
+  const head = `unsupported: ${need.replaceAll(/[`\r\n]+/g, " ").slice(0, 80)}`;
+  if (!cfg?.dockerClass || cfg.classes[cfg.dockerClass]?.docker !== true) {
+    return `${head}; this instance has no Docker-capable size class (the operator sets dockerClass)`;
+  }
+  if (o.provider.dockerInSandbox !== true) {
+    return `${head}; the sandbox provider cannot run Docker inside a sandbox`;
+  }
+  if (o.untrusted && !cfg.untrustedDocker) {
+    return `${head}; Docker is not enabled for untrusted runs (the operator sets untrustedDocker)`;
+  }
+  // Docker-in-Docker usually needs a privileged sandbox sharing the host kernel: an untrusted run
+  // gets it only on a microVM or better, whatever the operator set.
+  if (
+    o.untrusted &&
+    (o.provider.isolation === undefined || !isolationAtLeast(o.provider.isolation, "microvm"))
+  ) {
+    return `${head}; an untrusted run's Docker job needs a microVM-isolated sandbox; this class is container-isolated`;
+  }
+  return undefined;
+}
+
 const CLASSES = new Set(["protected", "release", "trusted_pr", "untrusted_pr"]);
 
 /**
@@ -253,6 +347,11 @@ export function sizeFor(
     untrusted?: boolean;
     /** Tenant label maps, most specific first (project, then org). */
     overrides?: readonly LabelMap[];
+    /**
+     * The job needs Docker: it gets the operator's `dockerClass`, whatever its labels or a tenant
+     * map say. Callers check `dockerRefusal` first; with no docker class this returns `{}`.
+     */
+    docker?: boolean;
   } = {},
 ): SandboxSize {
   if (!cfg) return {};
@@ -271,11 +370,15 @@ export function sizeFor(
     return pick(name);
   };
   const chosen =
-    o.untrusted === true
-      ? (pick(cfg.untrustedClass) ?? defaultPick)
-      : (fromLayers(o.overrides ?? [], labels, pick) ??
-        labels.map((l) => pick(own(cfg.labels, l)) ?? coresPick(l)).find((x) => x !== undefined) ??
-        defaultPick);
+    o.docker === true
+      ? pick(cfg.dockerClass)
+      : o.untrusted === true
+        ? (pick(cfg.untrustedClass) ?? defaultPick)
+        : (fromLayers(o.overrides ?? [], labels, pick) ??
+          labels
+            .map((l) => pick(own(cfg.labels, l)) ?? coresPick(l))
+            .find((x) => x !== undefined) ??
+          defaultPick);
   if (!chosen) return {};
   const [name, c] = chosen;
   const clamp = (v: number | undefined, max: number | undefined): number | undefined =>

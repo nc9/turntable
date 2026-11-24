@@ -130,8 +130,6 @@ describe("graph errors and unsupported jobs", () => {
   });
 
   test.each([
-    ["container: node:22\n    steps: []", "container"],
-    ["services:\n      db:\n        image: postgres\n    steps: []", "services"],
     ["steps:\n      - uses: docker://alpine", "docker://"],
     ["steps:\n      - uses: docker/build-push-action@v6", "docker daemon"],
   ])("docker-requiring job: %s", (body, reason) => {
@@ -141,6 +139,29 @@ describe("graph errors and unsupported jobs", () => {
       { readFile },
     );
     expect(p.jobs[0]?.unsupported).toContain(reason);
+  });
+
+  test.each([
+    ["container: node:22\n    steps: []", "uses container:"],
+    ["services:\n      db:\n        image: postgres\n    steps: []", "uses services:"],
+  ])("services and container are routed, not refused: %s", (body, reason) => {
+    const p = planWorkflow(
+      `on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    ${body}\n`,
+      push,
+      { readFile },
+    );
+    expect(p.jobs[0]?.needsDocker).toBe(reason);
+    expect(p.jobs[0]?.unsupported).toBeUndefined();
+  });
+
+  test("services with a docker command in a step stays unsupported (container mode gives no socket)", () => {
+    const p = planWorkflow(
+      `on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    services:\n      db:\n        image: postgres\n    steps:\n      - run: docker ps\n`,
+      push,
+      { readFile },
+    );
+    expect(p.jobs[0]?.unsupported).toContain("docker command");
+    expect(p.jobs[0]?.needsDocker).toBeUndefined();
   });
 
   test("non-Linux and a local docker action", () => {

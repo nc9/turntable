@@ -7,3 +7,4 @@ packages/act-runner/tests/run-job.test.ts
 packages/act-runner/tests/expr.test.ts
 packages/act-runner/tests/triggers.test.ts
 packages/act-runner/tests/cut.test.ts
+packages/act-runner/tests/docker-mode.test.ts
