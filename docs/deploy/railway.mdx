@@ -81,7 +81,7 @@ Everything is configured from the environment (the full list is in [Configuratio
 
 ## Running as root, and dropping it
 
-Railway mounts volumes owned by root, which a non-root process cannot write. The image therefore starts as root with `TURNTABLE_DROP_PRIVILEGES=65532:65532` already set: before it opens the database or any key file, it takes ownership of the files it expects in the data directory (only those names, each through an open descriptor, never following a link), then drops group, supplementary groups and user, and checks that root cannot be regained. A platform that cannot do a step refuses to start.
+Railway mounts volumes owned by root, which a non-root process cannot write. The image therefore starts as root with `TURNTABLE_DROP_PRIVILEGES=65532:65532` already set: before it opens the database or any key file, it takes ownership of the files it expects in the data directory (only those names, each through an open descriptor, never following a link; the `backups` directory is allowed, but only the file names `db_backup` writes may be in it), then drops group, supplementary groups and user, and checks that root cannot be regained. A platform that cannot do a step refuses to start.
 
 **Do not set `RAILWAY_RUN_UID=0`** or any other run-as-root override, and do not set `TURNTABLE_ALLOW_ROOT=1`: the image does not need them, and a server still running as root after startup is refused unless you say so. If a volume was written by an older, root-run deployment, the first start with the drop takes it over; unexpected files in the data directory stop the start with a message naming them.
 

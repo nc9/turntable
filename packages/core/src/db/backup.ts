@@ -21,7 +21,15 @@ import {
   type SettingsRuntime,
 } from "../settings/resolve";
 
-export const BACKUPS_DIR = "backups";
+import {
+  BACKUP_NAME_RE as NAME_RE,
+  BACKUPS_DIR,
+  backupFileName,
+  backupPartialName,
+  safePart,
+} from "./backup-names";
+
+export { BACKUPS_DIR };
 export { DEFAULT_BACKUP_KEEP };
 /** Free space required beside the backup, as a multiple of the database's size. */
 export const BACKUP_SPACE_FACTOR = 2;
@@ -80,9 +88,6 @@ export type BackupOptions = {
   workerHoldMs?: number | undefined;
 };
 
-/** `turntable-<time>-<version>[-<label>].db`. The time prefix makes names sort oldest first. */
-const NAME_RE = /^turntable-\d{8}T\d{9}Z-[A-Za-z0-9._-]+\.db$/;
-
 export const PG_BACKUP_MESSAGE =
   "db_backup only supports the SQLite database. This instance runs on Postgres: take the backup " +
   "with pg_dump (or your platform's snapshot) instead.";
@@ -91,12 +96,6 @@ export const PG_BACKUP_MESSAGE =
 function inside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-/** Names that are safe in a file name: the version of a build is not always plain semver. */
-function safePart(s: string, fallback: string): string {
-  const cleaned = s.replaceAll(/[^A-Za-z0-9._-]/g, "-").replace(/^[.-]+/, "");
-  return cleaned.slice(0, 40) || fallback;
 }
 
 /** Creates `<dataDir>/backups` and proves it is a real directory inside the data dir. */
@@ -191,12 +190,10 @@ export async function backupSqlite(opts: BackupOptions): Promise<BackupResult> {
     );
   }
   const createdAt = (opts.now ?? Date.now)();
-  const stamp = new Date(createdAt).toISOString().replaceAll(/[-:]/g, "").replace(".", "");
   const version = safePart(opts.version, "unknown");
-  const label = opts.label === undefined ? "" : `-${safePart(opts.label, "x")}`;
-  const name = `turntable-${stamp}-${version}${label}.db`;
+  const name = backupFileName(createdAt, opts.version, opts.label);
   const finalPath = join(dir, name);
-  const partial = join(dir, `.${name}.partial`);
+  const partial = join(dir, backupPartialName(name));
   if (!NAME_RE.test(name) || !inside(dir, finalPath) || existsSync(finalPath)) {
     throw new BackupError("failed", `refusing to write ${name}`);
   }

@@ -11,6 +11,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  BACKUP_NAME_RE,
+  BACKUP_PARTIAL_RE,
+  backupFileName,
+  backupPartialName,
+  isBackupEntryName,
+} from "../src/db/backup-names";
 import { DATA_DIR_COMMANDS, dataDirFromArgs, dropForCommand } from "../src/command-privileges";
 import {
   chownData,
@@ -239,6 +246,84 @@ test("the audit state directory holds only state files; a planted link or extra 
   rmSync(join(`${key}.audit-state`, "ABC.state"));
   writeFileSync(join(`${key}.audit-state`, "notes.txt"), "x");
   expect(() => run({ TURNTABLE_MASTER_KEY_FILE: key })).toThrow(/unexpected entry/);
+});
+
+// ---- the backups directory (#475) ----
+
+const BACKUP = backupFileName(Date.now(), "1.2.3");
+
+test("a backups dir with a finished backup and an in-progress temp file is chowned", () => {
+  writeFileSync(join(data, "turntable.db"), "x");
+  mkdirSync(join(data, "backups"));
+  writeFileSync(join(data, "backups", BACKUP), "x");
+  writeFileSync(
+    join(
+      data,
+      "backups",
+      backupPartialName(backupFileName(Date.now() + 1, "1.2.3", "pre-migrate")),
+    ),
+    "x",
+  );
+  run();
+  expect(chowned.length).toBe(5); // data dir, the db, backups dir, two files
+});
+
+test("an unexpected name in backups refuses the start, named", () => {
+  mkdirSync(join(data, "backups"));
+  writeFileSync(join(data, "backups", "notes.txt"), "x");
+  expect(() => run()).toThrow(/unexpected entry .*backups.notes\.txt/);
+});
+
+test("a symlink in backups is refused, even under a valid backup name", () => {
+  mkdirSync(join(data, "backups"));
+  symlinkSync(join(outside, "shadow"), join(data, "backups", BACKUP));
+  expect(() => run()).toThrow(/symbolic link|cannot open/);
+});
+
+test("a subdirectory in backups is refused", () => {
+  mkdirSync(join(data, "backups"));
+  mkdirSync(join(data, "backups", "sub"));
+  expect(() => run()).toThrow(/unexpected entry .*sub/);
+  rmSync(join(data, "backups", "sub"), { recursive: true });
+  mkdirSync(join(data, "backups", BACKUP));
+  expect(() => run()).toThrow(/not a regular file|cannot open/);
+});
+
+test("a hardlinked file in backups is refused: it IS that file", () => {
+  mkdirSync(join(data, "backups"));
+  linkSync(join(outside, "shadow"), join(data, "backups", BACKUP));
+  expect(() => run()).toThrow(/2 hard links/);
+});
+
+test("backups itself being a symlink is refused", () => {
+  symlinkSync(outside, join(data, "backups"));
+  expect(() => run()).toThrow(/symbolic link|cannot open/);
+});
+
+test("the backup name patterns match what backup-names generates, and little else", () => {
+  for (const [version, label] of [
+    ["0.1.0-alpha.1", undefined],
+    ["1.2.3", "pre-migrate"],
+    ["weird version/\u00e9", "la bel"],
+    ["", ""],
+  ] as const) {
+    const name = backupFileName(Date.now(), version, label);
+    expect(BACKUP_NAME_RE.test(name)).toBe(true);
+    const partial = backupPartialName(name);
+    expect(BACKUP_PARTIAL_RE.test(partial)).toBe(true);
+    expect(isBackupEntryName(name) && isBackupEntryName(partial)).toBe(true);
+    expect(BACKUP_NAME_RE.test(partial)).toBe(false);
+  }
+  for (const bad of [
+    "",
+    "turntable.db",
+    ".turntable.db.partial",
+    `${BACKUP}.bak`,
+    `x${BACKUP}`,
+    `../${BACKUP}`,
+  ]) {
+    expect(isBackupEntryName(bad)).toBe(false);
+  }
 });
 
 test("a data dir that does not exist yet is created", () => {
