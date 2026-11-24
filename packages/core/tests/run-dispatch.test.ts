@@ -204,16 +204,16 @@ describe("who may dispatch", () => {
   test("authorization comes first: a refused caller makes zero forge calls and creates nothing", async () => {
     const w = await world();
     const before = w.gh.state.calls.length;
-    const refusals: { tok: string; code: string }[] = [];
+    const refusals: string[] = [];
     for (const role of ["reader", "operator"] as const) {
-      refusals.push({ tok: await w.token(w.a.scope, role), code: "forbidden" });
+      refusals.push(await w.token(w.a.scope, role));
     }
     // An agent token below the dispatch role: refused on role, before the handler.
     const agent = await mintToken(db, w.a.scope, "operator", { kind: "agent" });
-    refusals.push({ tok: agent.secret, code: "forbidden" });
-    for (const r of refusals) {
-      const err = await refused(call(w, r.tok, { inputs: { version: "1" } }));
-      expect(err.code).toBe(r.code);
+    refusals.push(agent.secret);
+    for (const tok of refusals) {
+      const err = await refused(call(w, tok, { inputs: { version: "1" } }));
+      expect(err.code).toBe("forbidden");
     }
     expect(w.gh.state.calls.length).toBe(before);
     expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
