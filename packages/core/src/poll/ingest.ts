@@ -50,6 +50,8 @@ export type Candidate = {
   message: string;
   headBranch: string;
   prNumber?: number;
+  /** For a pull request: the PR object's facts for `github.event.pull_request` (data only). */
+  pr?: PullRequest;
   /** Forge facts for the trust decision, re-fetched at ingest. */
   sameRepo?: boolean;
   permission?: ForgePermission | "unknown";
@@ -278,14 +280,37 @@ export type IngestResult = {
 function eventPayload(c: Candidate, repo: string, before?: string): Value {
   const repository = { full_name: repo };
   if (c.event === "pull_request") {
+    const pr = c.pr;
+    const headRepo = pr ? pr.headRepo : repo;
+    const fork =
+      pr?.headFork ?? (headRepo !== null && headRepo.toLowerCase() !== repo.toLowerCase());
     return {
       ...(c.prNumber === undefined ? {} : { number: c.prNumber }),
       pull_request: {
         ...(c.prNumber === undefined ? {} : { number: c.prNumber }),
         base: { ref: c.baseRef ?? "", ...(c.baseSha ? { sha: c.baseSha } : {}), repo: repository },
-        head: { ref: c.headBranch, sha: c.sha, repo: repository },
-        draft: false,
+        head: {
+          ref: c.headBranch,
+          sha: c.sha,
+          ...(headRepo === null ? {} : { repo: { full_name: headRepo, fork } }),
+        },
+        draft: pr?.draft === true,
+        ...(pr
+          ? {
+              title: pr.title,
+              body: pr.body,
+              labels: pr.labels.map((name) => ({ name })),
+              ...(pr.author === null
+                ? {}
+                : {
+                    user: { login: pr.author, ...(pr.authorType ? { type: pr.authorType } : {}) },
+                  }),
+            }
+          : {}),
       },
+      ...(pr?.author
+        ? { sender: { login: pr.author, ...(pr.authorType ? { type: pr.authorType } : {}) } }
+        : {}),
       repository,
     };
   }
@@ -854,6 +879,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         message: pr.title,
         headBranch: pr.headRef,
         prNumber: pr.number,
+        pr,
         baseRef: pr.baseRef,
         ...(pr.baseSha ? { baseSha: pr.baseSha } : {}),
         sameRepo,
@@ -897,6 +923,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
         message,
         headBranch: pr.headRef,
         prNumber: pr.number,
+        pr,
         baseRef: pr.baseRef,
         ...(pr.baseSha ? { baseSha: pr.baseSha } : {}),
         sameRepo: true,

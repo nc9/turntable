@@ -3,10 +3,13 @@
 //
 // Built only from forge facts that were fetched and stored at ingest (the run row and the event
 // stored in the run's plan), copied field by field from an allowlist. Nothing else is ever
-// included: no token, no title or body text, nothing a job or an author could smuggle in.
+// included: no token, nothing a job could smuggle in. The PR title, body and label names are
+// attacker-controlled text; they are copied as inert strings into the event JSON file and
+// nowhere else (never a command line, an environment variable, a log line or a summary).
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
 const SHA = /^[0-9a-f]{40}$/;
 
 export interface ActEventRun {
@@ -32,6 +35,15 @@ function storedEvent(plan: string | null): Obj {
   }
 }
 
+/** `{login, type}` from a stored user object, or undefined. */
+function user(v: unknown): Obj | undefined {
+  if (!isObj(v)) return undefined;
+  const login = str(v.login);
+  if (!login) return undefined;
+  const type = str(v.type);
+  return { login, ...(type ? { type } : {}) };
+}
+
 /** Never throws: a payload with fewer fields is better than a job that does not start. */
 export function buildActEvent(run: ActEventRun): Record<string, unknown> {
   const stored = storedEvent(run.plan);
@@ -44,6 +56,14 @@ export function buildActEvent(run: ActEventRun): Record<string, unknown> {
     const baseSha = str(base.sha);
     const headSha = run.sha ?? str(head.sha);
     const action = str(stored.action);
+    const headRepoStored = isObj(head.repo) ? head.repo : {};
+    const headRepoName = str(headRepoStored.full_name) ?? run.repo ?? undefined;
+    const fork = bool(headRepoStored.fork);
+    const author = user(pr.user);
+    const sender = user(stored.sender);
+    const labels = Array.isArray(pr.labels)
+      ? pr.labels.flatMap((l) => (isObj(l) && typeof l.name === "string" ? [{ name: l.name }] : []))
+      : undefined;
     return {
       ...(action ? { action } : {}),
       ...(number === undefined ? {} : { number }),
@@ -57,10 +77,17 @@ export function buildActEvent(run: ActEventRun): Record<string, unknown> {
         head: {
           ref: run.headBranch ?? str(head.ref) ?? "",
           ...(headSha ? { sha: headSha } : {}),
-          ...(run.repo ? { repo: { full_name: run.repo } } : {}),
+          ...(headRepoName
+            ? { repo: { full_name: headRepoName, ...(fork === undefined ? {} : { fork }) } }
+            : {}),
         },
         draft: pr.draft === true,
+        ...(typeof pr.title === "string" ? { title: pr.title } : {}),
+        ...(typeof pr.body === "string" ? { body: pr.body } : {}),
+        ...(labels ? { labels } : {}),
+        ...(author ? { user: author } : {}),
       },
+      ...(sender ? { sender } : {}),
       ...repository,
     };
   }

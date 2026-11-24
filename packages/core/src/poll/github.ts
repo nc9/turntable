@@ -59,7 +59,28 @@ export type PullRequest = {
   baseRef: string;
   /** The commit the base branch pointed at when the PR was read. For `github.event`. */
   baseSha?: string;
+  /** Forge facts for `github.event.pull_request`. Text fields are attacker-controlled: data only. */
+  authorType: string | null;
+  body: string;
+  labels: string[];
+  draft: boolean;
+  /** The head repo's own `fork` flag, as GitHub reports it; absent when the head repo is gone. */
+  headFork?: boolean;
 };
+
+/** Most bytes of a PR body kept for the event payload. */
+export const MAX_PR_BODY_BYTES = 64 * 1024;
+/** Most labels kept. */
+const MAX_PR_LABELS = 100;
+
+/** `s` cut to at most `max` UTF-8 bytes, never in the middle of a character. */
+export function capUtf8(s: string, max: number): string {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= max) return s;
+  let end = max;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString("utf8");
+}
 
 type Cached = { etag: string; body: unknown };
 
@@ -488,8 +509,15 @@ export class GithubClient {
     )) as {
       number: number;
       title?: string;
-      user?: { login?: string } | null;
-      head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
+      body?: string | null;
+      draft?: boolean;
+      labels?: { name?: unknown }[] | null;
+      user?: { login?: string; type?: string } | null;
+      head?: {
+        sha?: string;
+        ref?: string;
+        repo?: { full_name?: string; fork?: boolean } | null;
+      };
       base?: { ref?: string; sha?: string; repo?: { full_name?: string } };
     }[];
     return body.flatMap((p) => {
@@ -506,6 +534,15 @@ export class GithubClient {
           baseRepo,
           baseRef: p.base?.ref ?? "",
           ...(typeof p.base?.sha === "string" ? { baseSha: p.base.sha.toLowerCase() } : {}),
+          authorType: typeof p.user?.type === "string" ? p.user.type : null,
+          body: capUtf8(typeof p.body === "string" ? p.body : "", MAX_PR_BODY_BYTES),
+          labels: (Array.isArray(p.labels) ? p.labels : [])
+            .flatMap((l) => (typeof l?.name === "string" ? [l.name] : []))
+            .slice(0, MAX_PR_LABELS),
+          draft: p.draft === true,
+          ...(p.head.repo && typeof p.head.repo.fork === "boolean"
+            ? { headFork: p.head.repo.fork }
+            : {}),
         },
       ];
     });
