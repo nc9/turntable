@@ -1,7 +1,7 @@
 // Web sign-in (#430): login states, GitHub identities, sessions and member invites. Like the other
 // repo modules this is part of the only code that names tenant tables (`member_invites` and
 // `org_members` carry an org). Identity is the numeric GitHub user id; a login only matches invites.
-import { and, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import type { MemberRole } from "../schema";
@@ -136,18 +136,24 @@ export function createMemberInvite(
         ),
       );
     if (live.some((e) => !input.canReplace(e))) return undefined;
-    await tx.orm
-      .update(s.memberInvites)
-      .set({ revokedAt: input.now })
-      .where(
-        scoped(
-          scope,
-          { orgId: s.memberInvites.orgId },
-          eq(s.memberInvites.githubUserId, input.githubUserId),
-          isNull(s.memberInvites.usedAt),
-          isNull(s.memberInvites.revokedAt),
-        ),
-      );
+    // Exactly the rows that were checked, by id, and no others. The match is on the numeric
+    // account only: the login is display text, so an invite for the same login but another
+    // account (made before a rename or recycle) is neither checked nor touched.
+    if (live.length > 0) {
+      await tx.orm
+        .update(s.memberInvites)
+        .set({ revokedAt: input.now })
+        .where(
+          scoped(
+            scope,
+            { orgId: s.memberInvites.orgId },
+            inArray(
+              s.memberInvites.id,
+              live.map((e) => e.id),
+            ),
+          ),
+        );
+    }
     const id = ulid();
     await tx.orm.insert(s.memberInvites).values({
       id,

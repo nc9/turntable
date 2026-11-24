@@ -517,6 +517,39 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     expect(rows.filter((a) => a.op === "whoami").map((a) => a.principalKind)).toEqual(["session"]);
   });
 
+  test("replacing invites checks and revokes exactly the same rows: those of one account", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const live = async (id: string) =>
+      (await h.db.run((x) => x.orm.select().from(schema.memberInvites))).filter(
+        (i) => i.githubUserId === id && i.usedAt === null && i.revokedAt === null,
+      );
+    // the same login, two accounts over time (a rename or recycle): ids c1 then c2
+    h.logins.set("carol", "c1");
+    expect((await h.bind({ github_login: "carol", role: "owner" })).ok).toBe(true);
+    h.logins.set("carol", "c2");
+    expect(
+      (await h.as(cookie, "invite_member", { github_login: "carol", role: "viewer" })).ok,
+    ).toBe(true);
+    // re-inviting c2 never touched c1's owner invite
+    expect(await live("c1")).toMatchObject([{ role: "owner" }]);
+    expect(await live("c2")).toMatchObject([{ role: "viewer" }]);
+    // a higher invite for c2 in the matched set refuses the whole call, and nothing is revoked
+    expect((await h.bind({ github_login: "carol", role: "admin" })).ok).toBe(true);
+    const refused = await h.as(cookie, "invite_member", { github_login: "carol", role: "member" });
+    expect(!refused.ok && refused.error.code).toBe("conflict");
+    expect(await live("c2")).toMatchObject([{ role: "admin" }]);
+    expect(await live("c1")).toMatchObject([{ role: "owner" }]);
+    // the same session replacing its own lower invite for c2 works and leaves c1 alone
+    h.logins.set("dora", "d1");
+    expect((await h.as(cookie, "invite_member", { github_login: "dora", role: "viewer" })).ok).toBe(
+      true,
+    );
+    expect((await h.as(cookie, "invite_member", { github_login: "dora", role: "member" })).ok).toBe(
+      true,
+    );
+    expect(await live("d1")).toMatchObject([{ role: "member" }]);
+  });
+
   test("an invite never cancels a more privileged one", async () => {
     const { h, cookie } = await aliceAdmin();
     expect((await h.bind({ github_login: "carol", role: "owner" })).ok).toBe(true);
