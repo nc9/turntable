@@ -507,6 +507,8 @@ const OVERRIDE: Record<string, (w: World, input: Record<string, unknown>) => voi
     Object.assign(i, { run_id: w.fx.heldRunId, approver: w.fx.aliceId }),
   approval_challenge: (w, i) =>
     Object.assign(i, { run_id: w.fx.envRunId, environment: "production", approver: w.fx.aliceId }),
+  release_approval_challenge: (w, i) =>
+    Object.assign(i, { run_id: w.fx.envRunId, approver: w.fx.aliceId }),
   key_policy_challenge: (w, i) =>
     Object.assign(i, {
       mode: "hardware",
@@ -616,6 +618,8 @@ async function call(w: World, who: Who, op: Op, input: Record<string, unknown>):
 
 /** Ops no token can call, and ops with no input to aim. Each needs a reason. */
 const UNREACHABLE: Record<string, string> = {
+  release_approval_challenge:
+    "needs a run whose jobs wait on the project's release environment with recorded release-class artifacts, which the fixture lacks; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such run. The approval itself is covered in release-approval-v2.test.ts",
   key_policy_challenge:
     "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
   start_installation_claim:

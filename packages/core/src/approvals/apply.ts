@@ -32,6 +32,7 @@ import {
   insertApprover,
   lastApproverRevocation,
   revokeApprover,
+  getProjectSigning,
   getRun,
   insertRecord,
   listEnrolmentRecords,
@@ -51,8 +52,10 @@ import {
   MAX_STATEMENT_TTL_MS,
   POLICY_STATEMENT_TYPE,
   policyDigest,
+  RELEASE_STATEMENT_TYPE,
   statementHash as hashOf,
   type EnrolStatement,
+  type ReleaseStatement,
   type RunStatement,
   type EnvStatement,
   type PolicyStatement,
@@ -67,7 +70,7 @@ type Ctx = { db: Db; scope: Scope; now: number; rp?: RelyingParty | undefined };
 
 async function verified(
   c: Ctx,
-  statement: EnvStatement | EnrolStatement | PolicyStatement | RunStatement,
+  statement: EnvStatement | ReleaseStatement | EnrolStatement | PolicyStatement | RunStatement,
   signature: SignatureMaterial,
 ): Promise<Verified> {
   const key = await dbKeyStore(c.db, c.scope.orgId).lookup(statement.approver);
@@ -299,16 +302,30 @@ async function record(
   }
 }
 
-/** The statements of `records` that still bind (run, sha, workflow, environment) and are live. */
+/**
+ * The statements of `records` that still bind (run, sha, workflow, environment) and are live. With
+ * `manifest`, only `turntable.approve_release.v2` records of exactly that manifest digest that are
+ * not yet spent (the ones a release signature may rest on).
+ */
 export function liveEnvironmentRecords(
   records: readonly ApprovalRecord[],
-  bind: { runId: string; headSha: string; workflowHash: string; environment: string },
+  bind: {
+    runId: string;
+    headSha: string;
+    workflowHash: string;
+    environment: string;
+    manifest?: string;
+  },
   now: number,
 ): ApprovalRecord[] {
   return records.filter((r) => {
     if (r.expiresAt <= now) return false;
     try {
-      const s = JSON.parse(r.statement) as Partial<EnvStatement>;
+      const s = JSON.parse(r.statement) as Partial<ReleaseStatement>;
+      if (bind.manifest !== undefined) {
+        if (s.type !== RELEASE_STATEMENT_TYPE) return false;
+        if (s.manifest_sha256 !== bind.manifest.toLowerCase() || r.spentAt !== null) return false;
+      }
       return (
         s.run_id === bind.runId &&
         s.head_sha === bind.headSha.toLowerCase() &&
@@ -338,6 +355,15 @@ export async function applyEnvironmentApproval(
   const v = await verified(c, statement, signature);
   await checkTenant(c, statement);
   checkExpiry(statement.expires_at, c.now);
+  // A release environment is approved against the exact bytes that will be signed (#424), which
+  // this statement does not name: it is accepted for every other environment only.
+  if ((await getProjectSigning(c.db, c.scope)).environment === statement.environment)
+    throw new OpError(
+      "conflict",
+      `release_requires_v2: ${statement.environment} is this project's release environment: approve it with a ${RELEASE_STATEMENT_TYPE} statement (release_approval_challenge, then approve_release)`,
+      undefined,
+      { refused: "release_requires_v2" },
+    );
   const run = await getRun(c.db, c.scope, statement.run_id);
   if (!run) throw new OpError("not_found", "run not found");
   const trust = parseTrust(run);
@@ -410,6 +436,112 @@ export async function applyEnvironmentApproval(
     required: needed,
     released_jobs: released,
     state,
+  };
+}
+
+/**
+ * One approver's signed `turntable.approve_release.v2` statement (#424): the run's release
+ * environment approved against the digest of the artifacts the lane will sign. Same checks as an
+ * environment approval, plus: the environment must be this project's release environment, and the
+ * statement must be one the server issued (its challenge is spent for webauthn and ed25519 alike,
+ * so the manifest digest in it was computed by the server from its own rows). The jobs are
+ * released when enough distinct people have approved THIS manifest.
+ */
+export async function applyReleaseApproval(
+  c: Ctx,
+  statement: ReleaseStatement,
+  signature: SignatureMaterial,
+): Promise<EnvironmentApprovalResult & { manifest_sha256: string }> {
+  const v = await verified(c, statement, signature);
+  await checkTenant(c, statement);
+  checkExpiry(statement.expires_at, c.now);
+  if ((await getProjectSigning(c.db, c.scope)).environment !== statement.environment)
+    throw new OpError(
+      "conflict",
+      "not_a_release_environment: this is not the project's release environment",
+    );
+  const run = await getRun(c.db, c.scope, statement.run_id);
+  if (!run) throw new OpError("not_found", "run not found");
+  const trust = parseTrust(run);
+  if (run.sha === null || run.sha.toLowerCase() !== statement.head_sha)
+    throw new OpError("conflict", "head_sha is not the sha of this run");
+  if (!trust || trust.workflowHash !== statement.workflow_hash)
+    throw new OpError("conflict", "workflow_hash is not the hash of this run's workflow");
+  if (!(await waitingEnvironments(c.db, c.scope, run.id)).includes(statement.environment))
+    throw new OpError("conflict", "no job of this run waits for approval in that environment");
+  const policy = await getEnvPolicy(c.db, c.scope.orgId, statement.environment);
+  if (approverIdentity(v.key) === null)
+    throw new OpError("forbidden", `this key does not count: ${NO_FORGE_LOGIN}`);
+  const keyPolicy = effectiveKeyPolicy(await getKeyPolicy(c.db, c.scope.orgId), policy);
+  const violation = keyPolicyViolation(keyPolicy, v.key);
+  if (violation !== null) throw new OpError("forbidden", `this key cannot approve: ${violation}`);
+  const blocked = authorBlocked(policy, v.key.forgeLogin, run);
+  if (blocked === "author") throw new OpError("forbidden", "the author of a run cannot approve it");
+  if (blocked === "unknown")
+    throw new OpError(
+      "forbidden",
+      "cannot establish that the approver is not the author of this run (the approver's forge login or the run's author is unknown)",
+    );
+  // The server's own challenge, spent by both methods: a statement the server did not issue (a
+  // manifest digest it did not compute) or one already used is refused.
+  const spent = await consumeChallenge(c.db, c.scope.orgId, {
+    id: statement.nonce,
+    kind: "approve",
+    statementHash: v.hash,
+    now: c.now,
+  });
+  if (!spent) throw new OpError("conflict", "the challenge is unknown, already used or expired");
+  if (v.signCount !== null) await setSignCount(c.db, c.scope.orgId, v.key.id, v.signCount);
+  await record(c, v, signature, {
+    kind: "environment",
+    runId: run.id,
+    environment: statement.environment,
+    expiresAt: statement.expires_at,
+  });
+  const live = liveEnvironmentRecords(
+    await listEnvironmentRecords(c.db, c.scope.orgId, run.id, statement.environment),
+    {
+      runId: run.id,
+      headSha: statement.head_sha,
+      workflowHash: statement.workflow_hash,
+      environment: statement.environment,
+      manifest: statement.manifest_sha256,
+    },
+    c.now,
+  );
+  const people = await recordIdentities(c.db, c.scope.orgId, live, keyPolicy);
+  const needed = requiredApprovals(policy, run);
+  if (people.size >= needed && authorUnknownByConstruction(policy, run)) {
+    await appendAudit(c.db, c.scope, {
+      principalKind: "approver",
+      principalId: v.key.id,
+      op: "approval_author_unknown",
+      effect: "write",
+      outcome: "ok",
+      input: {
+        run: run.id,
+        environment: statement.environment,
+        manifest_sha256: statement.manifest_sha256,
+        approvers: [...people].toSorted(),
+        note: `author unknown; required ${needed} distinct approvers (${policy.required}+1)`,
+      },
+    });
+  }
+  let released = 0;
+  let state = run.status as string;
+  if (people.size >= needed) {
+    const r = await releaseEnvironmentJobs(c.db, c.scope, run.id, statement.environment);
+    released = r.released;
+    state = r.state;
+  }
+  return {
+    run_id: run.id,
+    environment: statement.environment,
+    approvals: people.size,
+    required: needed,
+    released_jobs: released,
+    state,
+    manifest_sha256: statement.manifest_sha256,
   };
 }
 

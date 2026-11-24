@@ -23,7 +23,8 @@ import {
   parseTrust,
   type Scope,
 } from "../db/repos";
-import type { ApprovalVerifier } from "./approvals";
+import { manifestSha256 } from "../release/manifest";
+import type { ReleaseApprovalVerifier, ApprovalSubject } from "./approvals";
 import { decideSigning, type SigningDenial } from "./policy";
 
 export type Backend = "builtin" | "aws-kms" | "gcp-kms";
@@ -32,7 +33,7 @@ export interface SigningServiceOptions {
   db: Db;
   /** The backends this instance has. A project's key names one of them. */
   signers: Partial<Record<Backend, Signer>>;
-  approvals: ApprovalVerifier;
+  approvals: ReleaseApprovalVerifier;
   /** The Turntable instance, as a URL: the provenance's builder id. */
   builderId: string;
 }
@@ -81,6 +82,18 @@ export type SignOutcome =
  */
 export const builtinKeyRef = (orgId: string, name: string): string => `${orgId}.${name}`;
 
+/** The digest of the recorded rows of the requested artifacts, or undefined when there is none. */
+function manifestOf(
+  recorded: readonly { name: string; sha256: string; size: number }[],
+): string | undefined {
+  if (recorded.length === 0) return undefined;
+  try {
+    return manifestSha256(recorded);
+  } catch {
+    return undefined;
+  }
+}
+
 const BACKENDS: readonly Backend[] = ["builtin", "aws-kms", "gcp-kms"];
 
 /** `backend:ref`, or undefined when the setting is not one the service understands. */
@@ -122,22 +135,25 @@ export class SigningService {
       return deny("environment_mismatch", undefined, { required: environment });
     }
     const recorded = await getRunArtifactsByName(db, scope, run.id, req.artifacts);
-    // The verifier re-checks the signed statements itself, for exactly this run, sha, workflow
-    // and environment. A run with no sha or no recorded workflow hash cannot have been approved.
+    // The verifier re-checks the signed statements itself, for exactly this run, sha, workflow,
+    // environment AND the digest of the artifacts about to be signed (#424): an approval of other
+    // bytes counts for nothing. A run with no sha, no recorded workflow hash or no artifact set
+    // that can be digested cannot have been approved.
     const workflowHash = parseTrust(run)?.workflowHash;
-    const approval =
-      run.sha === null || workflowHash === undefined
+    const manifest = manifestOf(recorded);
+    const subject: ApprovalSubject | undefined =
+      run.sha === null || workflowHash === undefined || manifest === undefined
         ? undefined
-        : await this.#o.approvals.verify(
-            {
-              orgId: scope.orgId,
-              projectId: scope.projectId,
-              runId: run.id,
-              headSha: run.sha,
-              workflowHash,
-            },
-            environment,
-          );
+        : {
+            orgId: scope.orgId,
+            projectId: scope.projectId,
+            runId: run.id,
+            headSha: run.sha,
+            workflowHash,
+            manifestSha256: manifest,
+          };
+    const approval =
+      subject === undefined ? undefined : await this.#o.approvals.verify(subject, environment);
     const decision = decideSigning({
       klass: parseTrust(run)?.class,
       status: run.status,
@@ -149,7 +165,21 @@ export class SigningService {
       recorded: recorded.map((a) => a.name),
       approvalOk: approval?.approved === true,
     });
-    if (!decision.ok) return deny(decision.reason, decision.detail);
+    if (!decision.ok) {
+      // A classified reason for a release approval that exists but does not cover these bytes.
+      if (
+        decision.reason === "no_approval" &&
+        approval?.approved === false &&
+        (approval.reason === "manifest_mismatch" || approval.reason === "approval_spent")
+      ) {
+        // An artifact no release attempt wrote is the more telling refusal than a digest that
+        // differs only because that artifact is in the request.
+        const lower = recorded.find((a) => a.klass !== "release");
+        if (lower) return deny("artifact_not_release_class", lower.name);
+        return deny(approval.reason, undefined, { manifest_sha256: manifest });
+      }
+      return deny(decision.reason, decision.detail);
+    }
     // A release signs only what a release-class run produced: nothing a lower class could write.
     const lower = recorded.find((a) => a.klass !== "release");
     if (lower) return deny("artifact_not_release_class", lower.name);
@@ -200,6 +230,16 @@ export class SigningService {
     }
     const keyRef = key.backend === "builtin" ? builtinKeyRef(scope.orgId, key.keyRef) : key.keyRef;
 
+    // Everything has checked out: spend the approvals this signature rests on, all or none, so one
+    // approval authorises one signature of these bytes and a racing second request is refused.
+    if (approval?.approved && subject) {
+      // Fail closed: a verifier that cannot spend would let one approval sign again and again.
+      // The type requires `spend`; this guards a wiring that got past it (a cast, untyped JS).
+      if (typeof this.#o.approvals.spend !== "function") return deny("approval_unspendable");
+      const spent = await this.#o.approvals.spend(subject, approval.approvals);
+      if (!spent) return deny("approval_spent", undefined, { manifest_sha256: manifest });
+    }
+
     const subjects: Artifact[] = req.verified?.archives?.length
       ? req.verified.subjects.map((a) => ({ name: a.name, sha256: a.sha256 }))
       : recorded.map((a) => ({ name: a.name, sha256: a.sha256 }));
@@ -241,6 +281,7 @@ export class SigningService {
       keyid,
       artifacts: subjects,
       approvers: approval?.approved ? approval.approvals.map((a) => a.person) : [],
+      manifest_sha256: manifest,
     });
     return { ok: true, envelope, keyid, subjects };
   }

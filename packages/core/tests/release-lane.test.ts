@@ -308,6 +308,7 @@ describe("what is signed is exactly what the lane verified", () => {
       expiresAt: 2,
     };
     const approve = {
+      spend: async () => true,
       verify: async (_s: unknown, environment: string) => ({
         approved: true as const,
         environment,

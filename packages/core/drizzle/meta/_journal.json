@@ -323,6 +323,13 @@
       "when": 1795492243464,
       "tag": "0045_approver_github_user_id",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1795498977628,
+      "tag": "0046_approval_records_spent",
+      "breakpoints": true
     }
   ]
 }

@@ -246,6 +246,33 @@ A job whose workflow names `environment: production` (or `release`, or any envir
 
 The signature is bound to that exact commit, workflow and environment. If any of them changes (a new push is a new run), or the statement expires (at most 7 days; 24 hours by default), the signature approves nothing. A statement is accepted once. The `type` field keeps a signature for one kind of statement from being replayed as another.
 
+### Release approvals: the statement binds the bytes
+
+A project's release environment (its signing environment, `release` unless the project sets another) is approved with a different statement, `turntable.approve_release.v2`, that also names the contents of the release:
+
+```json
+{ "type": "turntable.approve_release.v2", "org": "acme", "project": "api",
+  "run_id": "...", "head_sha": "...", "workflow_hash": "...", "environment": "release",
+  "manifest_sha256": "<64 hex>", "approver": "<approver key id>",
+  "expires_at": 1767225600000, "nonce": "..." }
+```
+
+`manifest_sha256` is the one canonical digest of the artifact set the release lane will sign. The server computes it from the artifacts it has recorded for the run (`release_approval_challenge`, by default every release-class artifact, or the names the caller gives), so the approver signs a digest the server produced, and the challenge is spent when the approval is recorded, for passkeys and offline keys alike. A statement the server did not issue is refused, and so is a challenge for a run with no recorded artifact yet.
+
+The digest is sha256 (lower-case hex) over this UTF-8 text, and nothing else computes it:
+
+```text
+turntable.release_manifest.v1
+<sha256 hex> <size> <name>
+<sha256 hex> <size> <name>
+```
+
+One line per artifact, sorted by name in code-unit order, each ending in a newline. `sha256` is the 64 hex digits the build recorded, `size` the recorded size in bytes as a decimal integer, and `name` the recorded artifact name (no whitespace or control characters, which is what makes a line unambiguous). The order the artifacts are given in does not matter; an empty set, a duplicate name or a malformed field is refused. The signing service builds the digest the same way from its own stored rows for the artifacts the release request names.
+
+The signing service signs only if it finds approvals (the policy's number of distinct people) that are unexpired, **unspent** and name exactly that digest. It then spends them, all or none, in one step before it signs, so one approval authorises one signature and two racing requests cannot both win. The refusals are classified: `manifest_mismatch` (approvals exist for this run, but for another artifact set: an artifact was added, changed or left out), `approval_spent` (this artifact set was already signed), `no_approval`, and `approval_unspendable` (the service was wired with an approval verifier that cannot spend: it refuses to sign rather than sign without spending, so an approval can never be replayed). Approve what you will release: the release request must name the same set.
+
+`longshore.approve_environment.v1` is accepted for every environment **except** the project's release environment: a v1 statement for it is refused (`release_requires_v2`), and a stored v1 record never counts toward a signature. The two-person rule, the author rule, the key policy and expiry apply to v2 exactly as to v1, and only approvals of the same manifest count toward one quorum. The operations are `release_approval_challenge` (not an MCP tool) and `approve_release` (signature only, no token).
+
 ### Two ways to sign
 
 - **WebAuthn (passkey or security key).** The UI calls `approval_challenge`; the server issues the statement and a single-use challenge equal to the hash of the statement. The browser signs it with the approver's passkey. The server checks the challenge, the origin, the relying party id, that the authenticator verified the person (PIN or biometric), the signature, and that the sign counter moved forward. Registration uses attestation "none": a key is trusted because existing approvers enrolled it, not because a vendor certified it. Set `TURNTABLE_PUBLIC_URL` (or `TURNTABLE_WEBAUTHN_RP_ID` and `TURNTABLE_WEBAUTHN_ORIGINS`) so the relying party is known; a passkey is bound to the relying party id, so changing it orphans every enrolled passkey. WebAuthn needs no change to the page's content security policy.
@@ -292,7 +319,7 @@ Attestation is only trusted when the device certificate carries the FIDO AAGUID 
 
 ### For the signing service
 
-`ApprovalVerifier.verify(subject, environment)` (in `approvals/verifier.ts`) is what the release lane calls before it acts. It never trusts a stored flag: it re-verifies each stored statement against the approver keys (the org's, or the caller's own key store), checks the statement binds exactly this run, sha, workflow and environment, drops expired, revoked and self-approved ones, and requires the policy's number of distinct people.
+`ApprovalVerifier.verify(subject, environment)` (in `approvals/verifier.ts`) is what the signing service calls before it acts. It never trusts a stored flag: it re-verifies each stored statement against the approver keys (the org's, or the caller's own key store), checks the statement binds exactly this run, sha, workflow, environment and, for a release, the manifest digest (`subject.manifestSha256`), drops expired, revoked and self-approved ones, and requires the policy's number of distinct people.
 
 ## Artifact provenance and quarantine
 

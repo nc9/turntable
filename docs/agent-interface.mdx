@@ -117,6 +117,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `approval_status` | `GET /api/v1/approvals/status` | yes |  | read | reader | token | Which environments of a run wait for approval, and who has approved so far. |
 | `approvers_overview` | `GET /api/v1/approvers` | yes |  | read | reader | token | Enrolled approvers, pending enrolments and the per-environment approval policies. |
 | `approval_challenge` | `POST /api/v1/approvals/challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a run in an environment. |
+| `release_approval_challenge` | `POST /api/v1/approvals/release-challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a release's artifacts. |
 | `enrolment_challenge` | `POST /api/v1/approvers/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to approve enrolling a new key. |
 | `register_challenge` | `POST /api/v1/approvers/register-challenge` | no |  | write | release_operator | token | Issue a challenge for registering a new passkey as an approver key. |
 | `key_policy_challenge` | `POST /api/v1/approvers/key-policy/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to change the key policy. |
@@ -124,6 +125,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `request_enrolment` | `POST /api/v1/approvers/enrolments` | no |  | write | release_operator | token | Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum. |
 | `submit_approval` | `POST /api/v1/approvals/relay` | yes |  | write | operator | token | Upload an approval statement a human already signed. |
 | `approve_environment` | `POST /api/v1/approvals` | no |  | write | viewer | signature | Approve a run for an environment with a signed statement. Human only. |
+| `approve_release` | `POST /api/v1/approvals/release` | no |  | write | viewer | signature | Approve a release's artifacts with a signed statement. Human only. |
 | `approve_enrolment` | `POST /api/v1/approvers/approve` | no |  | write | viewer | signature | Approve enrolling a new approver key with a signed statement. Human only. |
 | `incident_freeze` | `POST /api/v1/incident/freeze` | yes | `turntable incident freeze` | destructive | release_operator | token | Incident response: stop scheduling, kill running jobs, drop minted tokens, flag secrets. |
 | `incident_unfreeze` | `POST /api/v1/incident/unfreeze` | no | `turntable incident unfreeze` | write | release_operator | token | Resume scheduling after an incident freeze. Rotation flags stay. |

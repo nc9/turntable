@@ -7,7 +7,7 @@ import {
   type KeyPolicyMode,
 } from "../../approvals/key-policy";
 import { approverIdentity } from "../../approvals/identity";
-import { and, asc, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   type ApprovalPolicyMap,
   approvalPolicyMap,
@@ -688,6 +688,42 @@ export function listEnvironmentRecords(
       )
       .orderBy(asc(s.approvalRecords.createdAt)),
   );
+}
+
+class SpendRace extends Error {}
+
+/**
+ * Spends approval records (#424): marks every one of `ids` spent, all or none, in one
+ * transaction. Returns false (and spends nothing) when any of them is already spent or not in
+ * this org, so two signatures racing for one approval cannot both win.
+ */
+export async function spendApprovalRecords(
+  db: Db,
+  orgId: string,
+  ids: readonly string[],
+  now: number,
+): Promise<boolean> {
+  if (ids.length === 0) return false;
+  try {
+    await db.transaction(async (tx) => {
+      const rows = await tx.orm
+        .update(s.approvalRecords)
+        .set({ spentAt: now })
+        .where(
+          and(
+            eq(s.approvalRecords.orgId, orgId),
+            inArray(s.approvalRecords.id, [...ids]),
+            isNull(s.approvalRecords.spentAt),
+          ),
+        )
+        .returning({ id: s.approvalRecords.id });
+      if (rows.length !== ids.length) throw new SpendRace();
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof SpendRace) return false;
+    throw e;
+  }
 }
 
 /** The signed records for one key policy proposal (they share its digest in `enrolment_id`). */

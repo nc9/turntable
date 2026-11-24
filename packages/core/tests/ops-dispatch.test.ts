@@ -228,7 +228,7 @@ test("a reader token cannot create tokens, a non-admin member cannot, a member a
 
 test("signature ops are refused for every principal and token, and absent from the token adapters", async () => {
   const approve = defineOp({
-    name: "approve_release",
+    name: "placeholder_release_approval",
     summary: "Placeholder human approval for tests.",
     description: "Test-only placeholder for a human, signed release approval; never shipped.",
     input: z.object({ release: z.string() }),
@@ -249,25 +249,27 @@ test("signature ops are refused for every principal and token, and absent from t
   const viaToken = await dispatch(
     testEnv,
     { kind: "bearer", token: token.secret },
-    "approve_release",
+    "placeholder_release_approval",
     { release: "1" },
   );
   expect(!viaToken.ok && viaToken.error.code).toBe("signature_required");
   const viaOwner = await dispatch(
     testEnv,
     { kind: "principal", principal: { kind: "member", id: "o", orgId: a.orgId, role: "owner" } },
-    "approve_release",
+    "placeholder_release_approval",
     { release: "1" },
   );
   expect(!viaOwner.ok && viaOwner.error.code).toBe("signature_required");
 
   // adapters
-  expect(testRegistry.tokenOps().map((o) => o.name)).not.toContain("approve_release");
+  expect(testRegistry.tokenOps().map((o) => o.name)).not.toContain("placeholder_release_approval");
   const { mcpTools } = await import("../src/ops/mcp");
   const { buildOpenApi } = await import("../src/ops/openapi");
   const { createRestApi } = await import("../src/ops/rest");
-  expect(mcpTools(testRegistry).map((t) => t.name)).not.toContain("approve_release");
-  expect(JSON.stringify(buildOpenApi(testRegistry, "x"))).not.toContain("approve_release");
+  expect(mcpTools(testRegistry).map((t) => t.name)).not.toContain("placeholder_release_approval");
+  expect(JSON.stringify(buildOpenApi(testRegistry, "x"))).not.toContain(
+    "placeholder_release_approval",
+  );
   const res = await createRestApi(testEnv)(
     new Request("http://x/api/v1/placeholder-approvals", {
       method: "POST",
@@ -278,7 +280,9 @@ test("signature ops are refused for every principal and token, and absent from t
   // A signature op that takes no signed statement (a placeholder, sign_release) has no REST route.
   expect(res?.status).toBe(404);
   // The signed path is the only one that reaches a signature op, and only with a valid statement.
-  const unsigned = await dispatch(testEnv, { kind: "signed" }, "approve_release", { release: "1" });
+  const unsigned = await dispatch(testEnv, { kind: "signed" }, "placeholder_release_approval", {
+    release: "1",
+  });
   expect(!unsigned.ok && unsigned.error.code).toBe("invalid_input");
   // Token ops refuse a signed credential.
   const wrongWay = await dispatch(testEnv, { kind: "signed" }, "list_runs", {});
@@ -289,7 +293,13 @@ test("signature ops are refused for every principal and token, and absent from t
       .filter((o) => o.auth.type === "signature")
       .map((o) => o.name)
       .toSorted(),
-  ).toEqual(["approve_enrolment", "approve_environment", "approve_key_policy", "sign_release"]);
+  ).toEqual([
+    "approve_enrolment",
+    "approve_environment",
+    "approve_key_policy",
+    "approve_release",
+    "sign_release",
+  ]);
 });
 
 test("input is strict and validated; output is validated and stripped", async () => {

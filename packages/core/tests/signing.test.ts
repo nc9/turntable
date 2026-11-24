@@ -28,7 +28,7 @@ import {
 } from "../src/db";
 import * as s from "../src/db/schema";
 import {
-  type ApprovalVerifier,
+  type ReleaseApprovalVerifier,
   builtinKeyRef,
   denyAllApprovals,
   parseKeyRef,
@@ -58,7 +58,8 @@ const person = (name: string) => ({
   approvedAt: 1,
   expiresAt: 2,
 });
-const approve: ApprovalVerifier = {
+const approve: ReleaseApprovalVerifier = {
+  spend: async () => true,
   verify: async (_s, environment) => ({
     approved: true,
     environment,
@@ -168,7 +169,7 @@ async function releaseRun(
 }
 
 const service = (
-  approvals: ApprovalVerifier = approve,
+  approvals: ReleaseApprovalVerifier = approve,
   signers: ConstructorParameters<typeof SigningService>[0]["signers"] = { builtin: spy },
 ) => new SigningService({ db, signers, approvals, builderId: "https://ci.example.test/turntable" });
 const req = (runId: string, artifacts = ["turntable-linux-x64"]) => ({
@@ -409,6 +410,7 @@ describe("policy refusals (nothing reaches the signer)", () => {
     await setProjectSigning(db, a.scope, { environment: "production" });
     const asked: string[] = [];
     const out = await service({
+      spend: approve.spend,
       verify: async (subject, env) => {
         asked.push(env);
         return approve.verify(subject, env);
@@ -428,7 +430,8 @@ describe("policy refusals (nothing reaches the signer)", () => {
   test("a caller that names another environment is refused, the verifier is not asked, nothing is signed", async () => {
     const run = await releaseRun();
     let asked = 0;
-    const counting: ApprovalVerifier = {
+    const counting: ReleaseApprovalVerifier = {
+      spend: approve.spend,
       verify: async (subject, env) => {
         asked++;
         return approve.verify(subject, env);
@@ -460,6 +463,7 @@ describe("policy refusals (nothing reaches the signer)", () => {
     const run = await releaseRun();
     const asked: unknown[] = [];
     const out = await service({
+      spend: approve.spend,
       verify: async (subject, env) => {
         asked.push({ ...subject, env });
         return {
@@ -479,6 +483,8 @@ describe("policy refusals (nothing reaches the signer)", () => {
         runId: run.id,
         headSha: SHA,
         workflowHash: "h",
+        // The digest of the artifacts about to be signed, which the verifier must match (#424).
+        manifestSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         env: "release",
       },
     ]);
@@ -493,6 +499,7 @@ describe("policy refusals (nothing reaches the signer)", () => {
       .where(eq(s.runs.id, run.id));
     let asked = 0;
     const out = await service({
+      spend: approve.spend,
       verify: async (subject, env) => {
         asked++;
         return approve.verify(subject, env);

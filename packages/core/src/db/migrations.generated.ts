@@ -528,5 +528,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE `approver_enrolments` ADD `github_user_id` text;",
       "ALTER TABLE `approvers` ADD `github_user_id` text;"
     ]
+  },
+  {
+    "tag": "0046_approval_records_spent",
+    "when": 1795498977628,
+    "statements": [
+      "ALTER TABLE `approval_records` ADD `spent_at` integer;"
+    ]
   }
 ];

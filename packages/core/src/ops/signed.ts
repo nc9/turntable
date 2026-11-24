@@ -61,7 +61,8 @@ export async function authenticateSigned(
   const scoped: Record<string, unknown> = {
     ...raw,
     org: statement.org,
-    ...(statement.type === "longshore.approve_environment.v1"
+    ...(statement.type === "longshore.approve_environment.v1" ||
+    statement.type === "turntable.approve_release.v2"
       ? { project: statement.project }
       : {}),
   };

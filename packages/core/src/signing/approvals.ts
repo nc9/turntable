@@ -5,13 +5,17 @@ export type {
   ApprovalSubject,
   ApprovalVerdict,
   ApprovalVerifier,
+  ReleaseApprovalVerifier,
   VerifiedApproval,
 } from "../approvals/verifier";
-import type { ApprovalVerifier } from "../approvals/verifier";
+import type { ReleaseApprovalVerifier } from "../approvals/verifier";
 
 /** The default: no approval is ever found, so nothing is signed. */
-export const denyAllApprovals: ApprovalVerifier = {
+export const denyAllApprovals: ReleaseApprovalVerifier = {
   async verify(_subject, environment) {
     return { approved: false, environment, required: 1, have: 0, reason: "insufficient_approvals" };
+  },
+  async spend() {
+    return false;
   },
 };

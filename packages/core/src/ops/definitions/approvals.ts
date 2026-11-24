@@ -4,6 +4,7 @@ import {
   approvalWarnings,
   applyEnrolmentApproval,
   applyEnvironmentApproval,
+  applyReleaseApproval,
   applyKeyPolicyApproval,
   buildKeyPolicyStatement,
   enrolmentQuorum,
@@ -15,6 +16,8 @@ import {
   canonicalStatement,
   ENROL_STATEMENT_TYPE,
   ENV_STATEMENT_TYPE,
+  RELEASE_STATEMENT_TYPE,
+  releaseStatementSchema,
   enrolStatementSchema,
   policyStatementSchema,
   envStatementSchema,
@@ -42,6 +45,7 @@ import {
   getKeyPolicy,
   getOrgById,
   getProject,
+  getProjectSigning,
   getRun,
   insertChallenge,
   insertEnrolment,
@@ -50,6 +54,7 @@ import {
   listEnvironmentRecords,
   listEnvPolicies,
   listPendingEnrolments,
+  listRunArtifacts,
   parseTrust,
   waitingEnvironments,
   PROTECTED_ENVIRONMENTS,
@@ -59,6 +64,7 @@ import { iso } from "../common";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
 import { principalLabel } from "../principal";
+import { ManifestError, manifestSha256 } from "../../release/manifest";
 
 const nonce = () => randomBytes(24).toString("base64url");
 const MAX_OPEN_CHALLENGES = 50;
@@ -378,6 +384,13 @@ export const approvalChallenge = defineOp({
     const trust = parseTrust(run);
     if (run.sha === null || !trust)
       throw new OpError("conflict", "the run has no recorded sha or workflow hash to approve");
+    if ((await getProjectSigning(ctx.db, ctx.scope)).environment === input.environment)
+      throw new OpError(
+        "conflict",
+        `release_requires_v2: ${input.environment} is this project's release environment: use release_approval_challenge`,
+        undefined,
+        { refused: "release_requires_v2" },
+      );
     if (!(await waitingEnvironments(ctx.db, ctx.scope, run.id)).includes(input.environment))
       throw new OpError("conflict", "no job of this run waits for approval in that environment");
     const { org, project } = await slugs(ctx);
@@ -403,6 +416,117 @@ export const approvalChallenge = defineOp({
       rp_id: ctx.webauthn?.rpId ?? null,
       passkey_id: approver.credentialId,
       challenge_expires_at: iso(now + CHALLENGE_TTL_MS)!,
+    };
+  },
+});
+
+export const releaseApprovalChallenge = defineOp({
+  name: "release_approval_challenge",
+  summary: "Issue the statement an approver signs to approve a release's artifacts.",
+  description:
+    `Builds the ${RELEASE_STATEMENT_TYPE} statement for a run whose jobs wait on the project's ` +
+    "release environment, and its single-use challenge. The statement binds the org, project, " +
+    "run, head sha, workflow hash, environment, the approver's key id, an expiry, a nonce and " +
+    "manifest_sha256: the digest the server computes from the artifacts it has recorded for the " +
+    "run (the run's release-class artifacts, or the names given), as name, sha256 and size. The " +
+    "release lane signs only an artifact set with exactly that digest, once. Refused when no " +
+    "artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key " +
+    "signs `canonical`. Issuing a statement approves nothing. Not available over MCP.",
+  input: z.object({
+    run_id: z.string().min(1).max(64),
+    approver: z.string().min(1).max(64).describe("The approver key id that will sign."),
+    artifacts: z
+      .array(z.string().min(1).max(200))
+      .min(1)
+      .max(50)
+      .optional()
+      .describe(
+        "Artifact names to approve; default: every release-class artifact recorded for the run. The release request must name exactly this set.",
+      ),
+    ttl_minutes: z
+      .int()
+      .min(5)
+      .max(MAX_STATEMENT_TTL_MS / 60_000)
+      .default(DEFAULT_APPROVAL_TTL_MS / 60_000)
+      .describe("How long the approval stays valid once signed."),
+  }),
+  output: challengeOutput.extend({
+    manifest_sha256: z.string().describe("The digest of the artifact set this approval covers."),
+    artifacts: z.array(z.object({ name: z.string(), sha256: z.string(), size: z.int() })),
+  }),
+  effect: "write",
+  auth: { type: "token", minRole: "operator" },
+  untrustedOutput: false,
+  scope: "project",
+  http: { method: "POST", path: "/approvals/release-challenge" },
+  mcp: false,
+  async handler(ctx, input) {
+    const now = ctx.now();
+    const run = await getRun(ctx.db, ctx.scope, input.run_id);
+    if (!run) throw new OpError("not_found", "run not found");
+    const trust = parseTrust(run);
+    if (run.sha === null || !trust)
+      throw new OpError("conflict", "the run has no recorded sha or workflow hash to approve");
+    const environment = (await getProjectSigning(ctx.db, ctx.scope)).environment;
+    if (!(await waitingEnvironments(ctx.db, ctx.scope, run.id)).includes(environment))
+      throw new OpError(
+        "conflict",
+        "no job of this run waits for approval in the release environment",
+      );
+    const recorded = await listRunArtifacts(ctx.db, ctx.scope, run.id);
+    let chosen = recorded.filter((a) => a.klass === "release");
+    if (input.artifacts !== undefined) {
+      const wanted = new Set(input.artifacts);
+      chosen = recorded.filter((a) => wanted.has(a.name));
+      const missing = [...wanted].filter(
+        (n) => !chosen.some((a) => a.name === n && a.klass === "release"),
+      );
+      if (missing.length > 0)
+        throw new OpError(
+          "conflict",
+          `release_manifest_unknown: not recorded as release-class artifacts of this run: ${missing.join(", ")}`,
+        );
+    }
+    if (chosen.length === 0)
+      throw new OpError(
+        "conflict",
+        "release_manifest_unknown: no release-class artifact is recorded for this run yet, so there is nothing to approve",
+      );
+    const files = chosen.map((a) => ({ name: a.name, sha256: a.sha256, size: a.size }));
+    let manifest: string;
+    try {
+      manifest = manifestSha256(files);
+    } catch (e) {
+      if (e instanceof ManifestError)
+        throw new OpError("conflict", `release_manifest_unknown: ${e.message}`);
+      throw e;
+    }
+    const { org, project } = await slugs(ctx);
+    const statement = releaseStatementSchema.parse({
+      type: RELEASE_STATEMENT_TYPE,
+      org,
+      project,
+      run_id: run.id,
+      head_sha: run.sha.toLowerCase(),
+      workflow_hash: trust.workflowHash,
+      environment,
+      manifest_sha256: manifest,
+      approver: input.approver,
+      expires_at: now + input.ttl_minutes * 60_000,
+      nonce: nonce(),
+    });
+    const hash = statementHash(statement);
+    const approver = await openChallenge(ctx, "approve", statement, hash, input.approver);
+    return {
+      statement,
+      canonical: canonicalStatement(statement),
+      statement_hash: hash,
+      challenge: challengeOf(statement),
+      rp_id: ctx.webauthn?.rpId ?? null,
+      passkey_id: approver.credentialId,
+      challenge_expires_at: iso(now + CHALLENGE_TTL_MS)!,
+      manifest_sha256: manifest,
+      artifacts: files,
     };
   },
 });
@@ -779,6 +903,36 @@ export const approveEnvironment = defineOp({
   http: { method: "POST", path: "/approvals" },
   async handler(ctx, input) {
     return applyEnvironmentApproval(
+      { db: ctx.db, scope: ctx.scope, now: ctx.now(), rp: ctx.webauthn },
+      input.statement,
+      input.signature,
+    );
+  },
+});
+
+export const approveRelease = defineOp({
+  name: "approve_release",
+  // Signature op: a human-signed statement is the credential, never a token.
+  mcp: false,
+  summary: "Approve a release's artifacts with a signed statement. Human only.",
+  description:
+    `Records one approver's signed ${RELEASE_STATEMENT_TYPE} statement for a run waiting on the ` +
+    "project's release environment. The statement binds the run, head sha, workflow hash, the " +
+    "environment and manifest_sha256, the digest of the artifacts the release lane will sign; the " +
+    "signature is a WebAuthn assertion over its hash or an offline ed25519 signature over its " +
+    "canonical text. The statement must be the one release_approval_challenge issued (its " +
+    "challenge is spent here). When enough distinct people have approved the same manifest the " +
+    "gated jobs are released, and the release lane may sign exactly that artifact set once. " +
+    "Takes no bearer token: the signature is the credential.",
+  input: z.object({ statement: releaseStatementSchema, signature: signatureSchema }),
+  output: environmentOutput.extend({ manifest_sha256: z.string() }),
+  effect: "write",
+  auth: { type: "signature", minRole: "viewer" },
+  untrustedOutput: false,
+  scope: "project",
+  http: { method: "POST", path: "/approvals/release" },
+  async handler(ctx, input) {
+    return applyReleaseApproval(
       { db: ctx.db, scope: ctx.scope, now: ctx.now(), rp: ctx.webauthn },
       input.statement,
       input.signature,

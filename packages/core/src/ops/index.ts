@@ -1,5 +1,7 @@
 import {
   approvalChallenge,
+  releaseApprovalChallenge,
+  approveRelease,
   approvalStatus,
   approveEnrolment,
   approveEnvironment,
@@ -163,6 +165,7 @@ export const registry = createRegistry([
   approvalStatus,
   approversOverview,
   approvalChallenge,
+  releaseApprovalChallenge,
   enrolmentChallenge,
   registerChallenge,
   keyPolicyChallenge,
@@ -170,6 +173,7 @@ export const registry = createRegistry([
   requestEnrolment,
   submitApproval,
   approveEnvironment,
+  approveRelease,
   approveEnrolment,
   incidentFreeze,
   incidentUnfreeze,

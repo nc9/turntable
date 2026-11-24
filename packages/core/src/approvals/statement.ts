@@ -9,6 +9,12 @@ import { canonicalJson } from "../audit/chain";
 export const ENV_STATEMENT_TYPE = "longshore.approve_environment.v1";
 /** New statement types use the new name; only the frozen types above stay `longshore.*`. */
 export const RUN_STATEMENT_TYPE = "turntable.approve_run.v1";
+/**
+ * A release environment's approval (#424). It binds the digest of the artifact set that will be
+ * signed (`manifest_sha256`, see release/manifest.ts), so the human approves the release contents.
+ * `longshore.approve_environment.v1` is refused for a release environment.
+ */
+export const RELEASE_STATEMENT_TYPE = "turntable.approve_release.v2";
 export const ENROL_STATEMENT_TYPE = "longshore.approve_enrolment.v1";
 
 /** A statement is valid for at most this long after it is checked. */
@@ -37,6 +43,23 @@ export const envStatementSchema = z.strictObject({
   nonce,
 });
 export type EnvStatement = z.infer<typeof envStatementSchema>;
+
+export const releaseStatementSchema = z.strictObject({
+  type: z.literal(RELEASE_STATEMENT_TYPE),
+  org: slug,
+  project: slug,
+  run_id: z.string().min(1).max(64),
+  head_sha: hex(40, 64),
+  workflow_hash: hex(64, 64),
+  environment: z.string().min(1).max(100),
+  /** sha256 hex of the canonical manifest of the artifacts the release lane will sign. */
+  manifest_sha256: hex(64, 64),
+  approver: z.string().min(1).max(64),
+  expires_at: z.int().positive(),
+  /** The single-use challenge id. */
+  nonce,
+});
+export type ReleaseStatement = z.infer<typeof releaseStatementSchema>;
 
 /**
  * A person's approval of one run held for an untrusted author (#324). It binds the run, the commit
@@ -117,6 +140,7 @@ export const policyDigest = (s: PolicyStatement): string =>
 
 export const statementSchema = z.discriminatedUnion("type", [
   envStatementSchema,
+  releaseStatementSchema,
   runStatementSchema,
   enrolStatementSchema,
   policyStatementSchema,

@@ -480,51 +480,9 @@ async function world(
     jobId = (await db.orm.query.jobs.findFirst({ where: (j, { eq }) => eq(j.runId, runId) }))!.id;
   }
 
-  if (o.approve !== false && !o.fork) {
-    // One approver per required identity: distinct forge logins, none of them the (unknown) author.
-    const quorum = o.ingest?.quorum ?? 1;
-    const needed = quorum + (o.ingest && o.ingest.allowAuthorApproval === false ? 1 : 0);
-    for (let n = 0; n < (o.ingest?.approvers ?? needed); n += 1) {
-      const key = generateEd25519();
-      const approver = await insertApprover(
-        db,
-        org.id,
-        {
-          person: `rel${n}`,
-          forgeLogin: `releaser${n}`,
-          kind: "ed25519",
-          publicKey: key.publicSpki,
-          alg: "EdDSA",
-          createdBy: "test",
-        },
-        Date.now(),
-      );
-      const c = await call(operatorTok, "approval_challenge", {
-        run_id: runId,
-        environment: "release",
-        approver: approver.id,
-        project: "web",
-      });
-      if (!c.ok) {
-        ingested?.stop();
-        throw new Error(`challenge: ${c.error.message}`);
-      }
-      const ch = c.output as { statement: unknown; canonical: string };
-      const r = await dispatch(env, { kind: "signed" }, "approve_environment", {
-        statement: ch.statement,
-        signature: { kind: "ed25519", signature: signEd25519(key.privatePem, ch.canonical) },
-      });
-      if (!r.ok) {
-        ingested?.stop();
-        throw new Error(`approve: ${r.error.message}`);
-      }
-    }
-  }
-
-  // 3. The job finished and recorded its artifacts; the bytes sit where the lane reads them.
+  // The build recorded its artifacts first: a release approval (#424) names the digest of exactly
+  // these, so they must be known before anyone approves.
   const attempt = (await createAttempt(db, scope, { jobId, provider: "test" }))!;
-  await setRunStatus(db, scope, runId, "running");
-  await setRunStatus(db, scope, runId, "success");
   const files: Record<string, Uint8Array> = { "cli-linux": binary, "web-1.0.0.tgz": tarball };
   // What an attempt writes is only as trusted as the class it ran as (#39); the lease records it.
   const asClass = async (attemptId: string, klass: string): Promise<void> => {
@@ -549,6 +507,49 @@ async function world(
       size: bytes.length,
     });
   }
+  if (o.approve !== false && !o.fork) {
+    // One approver per required identity: distinct forge logins, none of them the (unknown) author.
+    const quorum = o.ingest?.quorum ?? 1;
+    const needed = quorum + (o.ingest && o.ingest.allowAuthorApproval === false ? 1 : 0);
+    for (let n = 0; n < (o.ingest?.approvers ?? needed); n += 1) {
+      const key = generateEd25519();
+      const approver = await insertApprover(
+        db,
+        org.id,
+        {
+          person: `rel${n}`,
+          forgeLogin: `releaser${n}`,
+          kind: "ed25519",
+          publicKey: key.publicSpki,
+          alg: "EdDSA",
+          createdBy: "test",
+        },
+        Date.now(),
+      );
+      const c = await call(operatorTok, "release_approval_challenge", {
+        run_id: runId,
+        approver: approver.id,
+        project: "web",
+      });
+      if (!c.ok) {
+        ingested?.stop();
+        throw new Error(`challenge: ${c.error.message}`);
+      }
+      const ch = c.output as { statement: unknown; canonical: string };
+      const r = await dispatch(env, { kind: "signed" }, "approve_release", {
+        statement: ch.statement,
+        signature: { kind: "ed25519", signature: signEd25519(key.privatePem, ch.canonical) },
+      });
+      if (!r.ok) {
+        ingested?.stop();
+        throw new Error(`approve: ${r.error.message}`);
+      }
+    }
+  }
+
+  // 3. The job finished; the bytes sit where the lane reads them.
+  await setRunStatus(db, scope, runId, "running");
+  await setRunStatus(db, scope, runId, "success");
   mkdirSync(join(dir, "artifacts", runId), { recursive: true });
   for (const [name, bytes] of Object.entries(files)) {
     const onDisk = o.tamperBytes && name === "cli-linux" ? enc("something else entirely") : bytes;
