@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyAnalytics,
+  buildBurst,
+  forwardLabelNames,
+  interpretAnalytics,
+  makeRunId,
+  missProbability,
+  parseAnalyticsResult,
+  parseBurstOutput,
+  parseForwardLabels,
+  renderForwardCheck,
+  type ForwardCheck,
   buildDnsQuery,
   buildProbePlan,
   decodeDnsResponse,
@@ -273,5 +284,99 @@ describe("report exit code", () => {
   test("2 when a result is inconclusive, 1 still wins over 2", () => {
     expect(exitCodeFor([rep("none", missing)])).toBe(2);
     expect(exitCodeFor([rep("none", missing, leak)])).toBe(1);
+  });
+});
+
+describe("forwarded-query labels for a sampled dataset", () => {
+  const run = makeRunId(new Uint8Array(10).map((_, i) => i * 7));
+  test("run id is 10 lowercase letters", () => {
+    expect(run).toMatch(/^[a-z]{10}$/);
+    expect(() => makeRunId(new Uint8Array(3))).toThrow();
+  });
+  test("N distinct labels share one prefix and are valid DNS labels", () => {
+    const names = forwardLabelNames(run, 200, "probe.example");
+    expect(new Set(names).size).toBe(200);
+    for (const n of names) {
+      expect(n.startsWith(`eprobe-${run}-`)).toBe(true);
+      const label = n.split(".")[0]!;
+      expect(label.length).toBeLessThanOrEqual(63);
+      expect(label).toMatch(/^[a-z0-9-]+$/);
+      expect(buildDnsQuery(n, 1).length).toBeGreaterThan(12);
+    }
+    expect(names[0]).toBe(`eprobe-${run}-0.probe.example`);
+    expect(forwardLabelNames(run, 2, "z.example", 50)[0]).toBe(`eprobe-${run}-50.z.example`);
+  });
+  test("flag range is 10 to 200, default 50", () => {
+    expect(parseForwardLabels(undefined)).toBe(50);
+    expect(parseForwardLabels("10")).toBe(10);
+    expect(parseForwardLabels("200")).toBe(200);
+    for (const bad of ["9", "201", "0", "-5", "abc", "12.5", ""]) {
+      expect(() => parseForwardLabels(bad)).toThrow();
+    }
+  });
+  test("burst sends the last 3 over framed TCP and the rest over UDP", () => {
+    const names = forwardLabelNames(run, 50, "z.example");
+    const b = buildBurst(names);
+    expect(b.udp.length).toBe(47);
+    expect(b.tcp.length).toBe(3);
+    expect(b.tcp[0]!.name).toBe(names[47]!);
+    expect(b.tcp[0]!.sendHex.length / 2).toBe(2 + buildDnsQuery(names[47]!, 0).length);
+  });
+  test("burst output parses", () => {
+    const out = 'noise\nBURST {"sent":{"udp":47,"tcp":3},"first":"a","last":"b"}\n';
+    expect(parseBurstOutput(out)).toEqual({ sentUdp: 47, sentTcp: 3, first: "a", last: "b" });
+    expect(parseBurstOutput("none")).toBeUndefined();
+    expect(parseBurstOutput('BURST {"error":"x"}')).toBeUndefined();
+  });
+  test("the runner carries the burst code", () => {
+    expect(SANDBOX_RUNNER_JS).toContain("params.burst");
+  });
+});
+
+describe("miss probability and interpretation", () => {
+  test("N=50 at sampleInterval 10 is about 0.5%", () => {
+    expect(missProbability(50, 10)).toBeCloseTo(0.00515, 4);
+    expect(missProbability(50, 1)).toBe(0);
+    expect(() => missProbability(50, 0.5)).toThrow();
+  });
+  test("hits > 0 means forwarding observed", () => {
+    const r = interpretAnalytics({ hits: 2, n: 50, sampleInterval: 10, window: "w" });
+    expect(r.verdict).toBe("forwarding observed");
+  });
+  test("hits = 0 is no forwarding observed, never blocked or proof", () => {
+    const r = interpretAnalytics({ hits: 0, n: 50, sampleInterval: 10, window: "w" });
+    expect(r.verdict).toBe("no forwarding observed");
+    expect(r.text).toContain("window w, 50 labels, sampleInterval 10");
+    expect(r.text).toContain("not proof");
+    expect(r.text.toLowerCase()).not.toContain("blocked");
+  });
+  const check: ForwardCheck = {
+    prefix: "eprobe-abcdefghij-",
+    n: 50,
+    firstIndex: 0,
+    firstSentAt: "2026-11-24T00:00:00.000Z",
+    lastSentAt: "2026-11-24T00:01:00.000Z",
+    sentUdp: 47,
+    sentTcp: 3,
+    verdict: "inconclusive",
+  };
+  const good = { prefix: check.prefix, hits: 0, sampleInterval: 10, window: "w" };
+  test("an analytics result for another prefix is rejected", () => {
+    expect(() =>
+      parseAnalyticsResult({ ...good, prefix: "eprobe-zzzzzzzzzz-" }, check.prefix),
+    ).toThrow(/prefix/);
+    expect(parseAnalyticsResult(good, check.prefix).hits).toBe(0);
+    expect(() => parseAnalyticsResult({ ...good, hits: -1 }, check.prefix)).toThrow();
+    expect(() => parseAnalyticsResult({ ...good, sampleInterval: 0 }, check.prefix)).toThrow();
+  });
+  test("the verdict stays inconclusive until a result is applied", () => {
+    expect(check.verdict).toBe("inconclusive");
+    const lines = renderForwardCheck("none", check).join("\n");
+    expect(lines).toContain('queryName_like: "eprobe-abcdefghij-%"');
+    expect(lines).toContain("inconclusive");
+    expect(lines).toContain("0.52%");
+    const done = applyAnalytics(check, good);
+    expect(done.verdict).toBe("no forwarding observed");
+    expect(renderForwardCheck("none", done).join("\n")).toContain("no forwarding observed");
   });
 });
