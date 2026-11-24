@@ -108,6 +108,49 @@ describe("checkout stub inputs", () => {
     expect(await count((await checkout(dir, { depth: "0" })).ws)).toBe(total);
   });
 
+  describe("a shallow delivery fails closed", () => {
+    const REASON = (d: string): string =>
+      `checkout: fetch-depth ${d} needs history that was not delivered for this run (the controller delivered a shallow repository)`;
+    async function shallowDelivery(): Promise<string> {
+      const { dir } = await delivered();
+      const sdir = join(tmp, `shallow-${++n}`);
+      const r = await sh(tmp, `git clone -q --depth 1 file://${dir} ${sdir}`);
+      if (r.code !== 0) throw new Error(r.err);
+      expect(existsSync(join(sdir, ".git", "shallow"))).toBe(true);
+      return sdir;
+    }
+
+    test("fetch-depth 0 fails with the reason and leaves no .git claiming full history", async () => {
+      const r = await checkout(await shallowDelivery(), { depth: "0" });
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain(REASON("0"));
+      expect(existsSync(join(r.ws, ".git"))).toBe(false);
+    });
+
+    test("fetch-depth 3 fails with the reason", async () => {
+      const r = await checkout(await shallowDelivery(), { depth: "3" });
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain(REASON("3"));
+    });
+
+    test("fetch-depth 1 works as before", async () => {
+      const r = await checkout(await shallowDelivery(), { depth: "1" });
+      expect(r.code).toBe(0);
+      expect(await count(r.ws)).toBe(1);
+      expect(existsSync(join(r.ws, ".git", "shallow"))).toBe(true);
+    });
+  });
+
+  test("a full delivery: fetch-depth 0 matches the source and 2 is cut to 2", async () => {
+    const { dir } = await delivered();
+    const total = Number((await sh(dir, "git rev-list --count HEAD")).out);
+    const full = await checkout(dir, { depth: "0" });
+    expect(full.code).toBe(0);
+    expect(await count(full.ws)).toBe(total);
+    expect(existsSync(join(full.ws, ".git", "shallow"))).toBe(false);
+    expect(await count((await checkout(dir, { depth: "2" })).ws)).toBe(2);
+  });
+
   test("ref: a branch, a tag, a sha and a short-hand all resolve inside the delivered repo", async () => {
     const { dir, shas } = await delivered();
     const dev = (await sh(dir, "git rev-parse dev")).out;

@@ -6,7 +6,8 @@
  * It works from the delivered repository only and never touches the network. Inputs:
  *  - `path`: where under the workspace to check out (it may not leave it);
  *  - `ref`: a commit sha, branch or tag that exists in the delivered repository, else an error;
- *  - `fetch-depth`: GitHub's default is 1 (a shallow clone); 0 is the full history;
+ *  - `fetch-depth`: GitHub's default is 1 (a shallow clone); 0 is the full history. A shallow
+ *    delivery cannot give 0, or a depth past its shallow roots: that fails, it is never faked;
  *  - `submodules`: `true` or `recursive`, from the modules the controller delivered under
  *    `.git/modules`; a module that was not delivered is an error, not a fetch.
  * Inputs it cannot honour offline (`lfs`, `sparse-checkout`, `fetch-tags`) are accepted and ignored.
@@ -43,11 +44,38 @@ if [ -n "$TT_REF" ]; then
      git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/$ref" >/dev/null 2>&1; then branch=$ref; fi
 fi
 
+# A shallow delivery (a \`shallow\` file in the source) cannot satisfy a depth that reaches past its
+# shallow roots; fail closed rather than hand the job a history that looks complete and is not.
+if [ -s "$src/.git/shallow" ] && [ "$depth" != 1 ]; then
+  short=0
+  if [ "$depth" = 0 ]; then
+    short=1
+  else
+    frontier=$want
+    i=1
+    while [ "$i" -lt "$depth" ]; do
+      for c in $frontier; do
+        if grep -qx "$c" "$src/.git/shallow"; then short=1; fi
+      done
+      [ "$short" = 0 ] || break
+      next=$(for c in $frontier; do git -C "$src" rev-parse --quiet --verify "$c^@" 2>/dev/null || true; done | sort -u)
+      [ -n "$next" ] || break
+      frontier=$next
+      i=$((i + 1))
+    done
+  fi
+  if [ "$short" = 1 ]; then
+    echo "checkout: fetch-depth $depth needs history that was not delivered for this run (the controller delivered a shallow repository)" >&2
+    exit 1
+  fi
+fi
+
 # The delivered history, copied; a depth above 0 then cuts it the way a shallow clone is cut, by
 # marking the commits that sit \`depth\` generations from the tip as shallow roots.
 if [ -e "$dest/.git" ]; then rm -rf "$dest/.git"; fi
 cp -a "$src/.git" "$dest/.git"
-rm -f "$dest/.git/shallow"
+# A full delivery has no shallow file; a shallow one keeps its roots (rewritten below when cut).
+if [ ! -e "$src/.git/shallow" ]; then rm -f "$dest/.git/shallow"; fi
 if [ "$depth" != 0 ]; then
   frontier=$want
   i=1
