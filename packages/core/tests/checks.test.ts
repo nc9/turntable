@@ -588,9 +588,28 @@ describe("a job Turntable cannot run", () => {
     expect(REFUSAL_FIX).toContain("if: vars.TURNTABLE_CI != 'true'");
   });
 
+  test("workflow-controlled text is inert: no link or image syntax outside a code span", () => {
+    const evil = "macos-latest](https://evil)![x](y)";
+    const sentences = [
+      refusalSentence(
+        `unsupported: This job asks for a macOS runner (\`${evil}\`). Turntable runs Linux sandboxes only; macOS runners are not supported yet.`,
+      ),
+      refusalSentence(`unsupported: step uses ${evil}\`[a](b)`),
+    ];
+    for (const s of sentences) {
+      expect(s).toBeDefined();
+      const outside = (s ?? "").replaceAll(/`[^`]*`/g, "");
+      expect(outside).not.toContain("](");
+      expect(outside).not.toContain("![");
+      expect(outside).not.toContain("<");
+      expect((s ?? "").split("`").length % 2).toBe(1); // spans are balanced, none can be closed early
+    }
+    expect(sentences[0]).toContain("`macos-latest](https://evil)![x](y)`");
+  });
+
   test("a planner reason (docker) is wrapped; a non-refusal is not one", () => {
     expect(refusalSentence("unsupported: uses services:")).toBe(
-      "Turntable cannot run this job (uses services:).",
+      "Turntable cannot run this job: `uses services:`.",
     );
     expect(refusalSentence("exit 1")).toBeUndefined();
     expect(refusalSentence(undefined)).toBeUndefined();

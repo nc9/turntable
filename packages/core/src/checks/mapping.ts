@@ -198,8 +198,19 @@ export const REFUSAL_FIX =
  */
 export function refusalSentence(reason: string | undefined): string | undefined {
   if (!reason?.startsWith("unsupported: ")) return undefined;
-  const text = plain(reason.slice("unsupported: ".length).replaceAll("@", ""), 300);
-  return text.startsWith("This job asks for ") ? text : `Turntable cannot run this job (${text}).`;
+  const text = reason.slice("unsupported: ".length);
+  // The OS and arch refusals are rebuilt from fixed words; only the label is workflow data, and it
+  // goes inside a code span with its backticks stripped (`plain`), so no markup in it survives.
+  const m = /^This job asks for (?:a (macOS|Windows)|an (arm64)) runner \(`([^`]*)`\)\./.exec(text);
+  if (m) {
+    const label = `\`${plain(m[3] ?? "", 60)}\``;
+    if (m[2]) {
+      return `This job asks for an arm64 runner (${label}). The sandbox provider offers amd64 only; arm runners are not supported by it.`;
+    }
+    return `This job asks for a ${m[1]} runner (${label}). Turntable runs Linux sandboxes only; ${m[1]} runners are not supported yet.`;
+  }
+  // Any other planner reason may quote workflow text (an action name, an image): inert in a span.
+  return `Turntable cannot run this job: \`${plain(text, 200)}\`.`;
 }
 
 /**

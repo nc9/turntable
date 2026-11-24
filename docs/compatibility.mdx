@@ -82,7 +82,7 @@ What a `runs-on` label does on Turntable:
 | Label | Result |
 | --- | --- |
 | `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04` | The default sandbox class (unless the operator maps the label). |
-| `ubuntu-latest-{2,4,8,16}-cores` | A class with that many cpus when the operator defines one, else the default class. |
+| `ubuntu-latest-{2,4,8,16}-cores` | A class with that many cpus, only among the operator's `coresClasses`; else the default class. |
 | Custom labels (`boat`, `large`) | The operator's label map, else the default class. Always Linux. |
 | `macos-*`, `windows-*`, `[self-hosted, macOS]`, `[self-hosted, Windows]` | Refused. The job never reaches a sandbox and its check **fails**. |
 | `arm64`, `*-arm` | Refused unless the provider advertises arm64. Daytona offers amd64 only. |

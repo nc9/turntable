@@ -14,7 +14,8 @@
 //
 // GitHub-hosted labels: `ubuntu-latest`, `ubuntu-24.04` and `ubuntu-22.04` mean the default class
 // (unless the operator maps them). `ubuntu-latest-{N}-cores` means a class with N cpus when the
-// operator defines one, else the default. A job that names another OS (macOS, Windows) or arm
+// operator lists in `coresClasses` has, else the default. A workflow can name any label, so a class
+// the operator did not list is never reachable by an `-N-cores` label. A job that names another OS (macOS, Windows) or arm
 // is refused before any sandbox exists (`refusalFor`), never run on a Linux amd64 sandbox.
 import { z } from "zod";
 import type { SandboxResources } from "@turntable/provider-sdk";
@@ -41,6 +42,8 @@ export const sandboxSizesSchema = z
     labels: z.record(z.string().min(1).max(100), NAME).default({}),
     default: NAME.optional(),
     untrustedClass: NAME.optional(),
+    /** Classes an `ubuntu-latest-N-cores` label may resolve to, by cpu count. Empty: none. */
+    coresClasses: z.array(NAME).default([]),
     maxCpus: pos(256).optional(),
     maxMemoryMb: pos(2_097_152).optional(),
     maxDiskGb: pos(16_384).optional(),
@@ -53,6 +56,7 @@ export const sandboxSizesSchema = z
     };
     known(c.default, ["default"]);
     known(c.untrustedClass, ["untrustedClass"]);
+    c.coresClasses.forEach((n, i) => known(n, ["coresClasses", i]));
     for (const [label, cls] of Object.entries(c.labels)) known(cls, ["labels", label]);
   });
 
@@ -141,13 +145,11 @@ export function sizeFor(
     return name !== undefined && c ? [name, c] : undefined;
   };
   const defaultPick = pick(cfg.default);
-  // `ubuntu-latest-4-cores`: the operator's class with exactly 4 cpus, if they defined one.
+  // `ubuntu-latest-4-cores`: a class with exactly 4 cpus among the operator's `coresClasses`.
   const coresPick = (label: string): ReturnType<typeof pick> => {
     const n = Number(CORES_LABEL.exec(label)?.[1]);
     if (!Number.isInteger(n)) return undefined;
-    const name = Object.keys(cfg.classes)
-      .toSorted()
-      .find((k) => cfg.classes[k]?.cpus === n);
+    const name = [...cfg.coresClasses].toSorted().find((k) => own(cfg.classes, k)?.cpus === n);
     return pick(name);
   };
   const chosen =

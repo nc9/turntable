@@ -150,6 +150,7 @@ By default every sandbox gets the provider's own default size (Docker: no limits
   "labels": { "ubuntu-latest-4-cores": "large" },
   "default": "small",
   "untrustedClass": "small",
+  "coresClasses": [],
   "maxCpus": 8,
   "maxMemoryMb": 16384,
   "maxDiskGb": 100
@@ -158,11 +159,12 @@ By default every sandbox gets the provider's own default size (Docker: no limits
 
 - A job's `runs-on` labels are read at plan time (a string, a list, or `labels:`; a matrix expression is resolved per leg). The first label with a mapping picks the class. A job with no mapped label gets `default`; with no `default` either, it gets the provider's own size.
 - A class sets `cpus`, `memoryMb`, `diskGb` and, for a provider that picks the size by image, a `snapshot` (Daytona: one snapshot per class, for example `daytona-large`). The scheduler puts these in the sandbox spec; a provider that cannot honour a field says so in its capabilities.
+- `coresClasses` lists the classes a GitHub-style `ubuntu-latest-N-cores` label may resolve to, by cpu count (N must equal the class's `cpus`). A class not listed is never reachable from a workflow label this way (a workflow chooses its labels); an unlisted or unmatched `-N-cores` label gets `default`. Map a label explicitly in `labels` to give it any class.
 - Daytona's capacity wait already counts the class's `cpus`, so a 4-vCPU job waits until 4 are free in the account.
 - `maxCpus`, `maxMemoryMb` and `maxDiskGb` are ceilings across every class: a class past one is clamped to it. They are instance-wide. There is no per-org CPU quota; the org's concurrency and sandbox-minute quotas still apply.
 - A workflow file chooses its own labels, so a stranger's pull request could ask for the biggest class. A job that runs as `untrusted_pr` ignores its labels and gets `untrustedClass` (else `default`). The class is the job's own, as recorded on its attempt (after the demotion rule), not its run's; a missing or unrecognised class counts as untrusted, and only a local run is exempt.
 - Lookups use own keys only: a label such as `constructor` or `__proto__` is not a mapping and gets the default, and a class named like an inherited key does not exist. A failed lookup falls back to `default`, never to the provider's size, while a map is configured.
-- A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default` or `untrustedClass`, a non-integer or non-positive number, or an unknown key.
+- A bad document stops the server at start, naming the problem: an unknown class in `labels`, `default`, `untrustedClass` or `coresClasses`, a non-integer or non-positive number, or an unknown key.
 
 ## Provider trust model
 

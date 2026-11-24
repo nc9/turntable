@@ -181,13 +181,26 @@ describe("runner labels: other OS and arch fail closed, GitHub labels size", () 
   test("ubuntu-latest-N-cores picks the class with N cpus, else the default", () => {
     const c = parseSandboxSizes(
       JSON.stringify({
-        classes: { small: { cpus: 2 }, eight: { cpus: 8 } },
+        classes: { small: { cpus: 2 }, eight: { cpus: 8 }, release16: { cpus: 16 } },
         default: "small",
+        coresClasses: ["eight"],
       }),
       "t",
     );
     expect(sizeFor(c, ["ubuntu-latest-8-cores"])).toMatchObject({ class: "eight" });
+    // a 16-cpu class the operator did not list is never reachable from a workflow label
     expect(sizeFor(c, ["ubuntu-latest-16-cores"])).toMatchObject({ class: "small" });
+    const listed = parseSandboxSizes(JSON.stringify({ ...c, coresClasses: ["release16"] }), "t");
+    expect(sizeFor(listed, ["ubuntu-latest-16-cores"])).toMatchObject({ class: "release16" });
+    // an untrusted run still gets untrustedClass
+    expect(
+      sizeFor({ ...listed, untrustedClass: "small" }, ["ubuntu-latest-16-cores"], {
+        untrusted: true,
+      }),
+    ).toMatchObject({ class: "small" });
+    expect(() =>
+      parseSandboxSizes(JSON.stringify({ classes: { a: { cpus: 1 } }, coresClasses: ["x"] }), "t"),
+    ).toThrow("unknown size class x");
     // an operator mapping beats the built-in rule
     expect(sizeFor(cfg, ["ubuntu-latest-4-cores"])).toMatchObject({ class: "large" });
   });
