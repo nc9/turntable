@@ -2,7 +2,7 @@
 // compares it with the session person's id, so a recycled or renamed login cannot borrow a key.
 // Any failure to resolve it refuses the enrolment (fail closed): a key with no id could never
 // step up, and silently enrolling one would hide that.
-import type { GithubUserLookup } from "../github/api";
+import { GithubLookupError, type GithubUserLookup } from "../github/api";
 import { OpError } from "../ops/errors";
 
 export async function resolveGithubUserId(
@@ -18,8 +18,12 @@ export async function resolveGithubUserId(
   let id: string | undefined;
   try {
     id = await lookup.idOfLogin(login.trim().toLowerCase());
-  } catch {
-    throw new OpError("unavailable", "GitHub could not be asked to resolve that login; try again");
+  } catch (e) {
+    const why = e instanceof GithubLookupError ? ` (${e.message})` : "";
+    throw new OpError(
+      "unavailable",
+      `GitHub could not be asked to resolve that login${why}; try again`,
+    );
   }
   if (id === undefined) {
     throw new OpError("invalid_input", "that forge login is not a GitHub account");
