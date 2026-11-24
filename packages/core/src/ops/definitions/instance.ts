@@ -21,6 +21,7 @@ import {
   getOrgBySlug,
   getProject,
   getProjectBySlug,
+  instanceRunActivity,
   insertApiToken,
   listAllOrgs,
   moveRepoBinding,
@@ -958,5 +959,81 @@ export const instanceDrainStatusOp = defineOp({
   mcp: false,
   async handler(ctx) {
     return drainView(ctx);
+  },
+});
+
+const activityCounts = z.object({
+  queued: z.int(),
+  running: z.int(),
+  awaiting_approval: z.int().describe("Held for an approval."),
+});
+
+export const instanceRunActivityOp = defineOp({
+  name: "instance_run_activity",
+  summary: "Counts of runs, jobs and running attempts per org, for a deploy check.",
+  description:
+    "Per org: the slug, runs and jobs by state (queued, running, awaiting_approval), running " +
+    "attempts and the start time of the oldest running attempt, with instance totals. Counts " +
+    "only: no run ids, refs, shas, workflow names, logs or repo names. Use it to find a quiet " +
+    "window before a deploy, with no tenant token. The read is audited in the system chain. Only " +
+    "the instance administrator can call it. Read-only. Not an MCP tool.",
+  input: z.object({}),
+  output: z.object({
+    orgs: z.array(
+      z.object({
+        org: z.string(),
+        runs: activityCounts,
+        jobs: activityCounts,
+        running_attempts: z.int(),
+        oldest_running_started_at: z.string().nullable(),
+      }),
+    ),
+    total_running_attempts: z.int(),
+    orgs_with_running_attempts: z.int(),
+  }),
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/run-activity" },
+  mcp: false,
+  async handler(ctx) {
+    const [orgs, activity] = await Promise.all([listAllOrgs(ctx.db), instanceRunActivity(ctx.db)]);
+    const byOrg = new Map(activity.map((a) => [a.orgId, a]));
+    const count = (m: Record<string, number> | undefined) => ({
+      queued: m?.queued ?? 0,
+      running: m?.running ?? 0,
+      awaiting_approval: m?.awaiting_approval ?? 0,
+    });
+    const rows = orgs
+      .filter((o) => o.slug !== SYSTEM_ORG_SLUG)
+      .map((o) => {
+        const a = byOrg.get(o.id);
+        return {
+          org: o.slug,
+          runs: count(a?.runs),
+          jobs: count(a?.jobs),
+          running_attempts: a?.runningAttempts ?? 0,
+          oldest_running_started_at: iso(a?.oldestRunningStartedAt),
+        };
+      });
+    const total = rows.reduce((n, r) => n + r.running_attempts, 0);
+    await appendAudit(
+      ctx.db,
+      { orgId: await systemOrgId(ctx.db) },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_run_activity",
+        effect: "read",
+        outcome: "ok",
+        input: { orgs: rows.length, running_attempts: total },
+      },
+    );
+    return {
+      orgs: rows,
+      total_running_attempts: total,
+      orgs_with_running_attempts: rows.filter((r) => r.running_attempts > 0).length,
+    };
   },
 });

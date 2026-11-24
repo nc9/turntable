@@ -344,6 +344,8 @@ Record the date, the App id, and the pass or fail of each numbered step in the t
 
 A restart while attempts run cuts them. Drain first, so a deploy never turns a tenant's check red.
 
+Before the drain, look for a quiet window: `GET /api/v1/instance/run-activity` (`instance_run_activity`, REST only) gives per-org counts of queued, running and held runs and jobs, the running attempts and the start of the oldest one, with no run content. `instance_drain_status` gives the instance-wide running count.
+
 1. Turn the drain on with an instance token: `POST /api/v1/instance/drain` with `{"on": true, "reason": "deploy <sha>"}` (`instance_drain`, REST only). The scheduler starts no new attempt. Queued work stays queued in the database and running attempts finish.
 2. Wait until `GET /api/v1/instance/drain` (`instance_drain_status`) reports `running_attempts: 0`. `GET /healthz` stays 200 while draining so the platform does not stop the old instance early, and carries `"draining": true` (only the flag: it is unauthenticated, so the count is in `instance_drain_status`). `instance_doctor` reports `draining` as a warning.
 3. Deploy. The new instance boots undrained (the drain is held in memory, never stored) and resumes the queue with no lost or duplicated attempts.
