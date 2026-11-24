@@ -17,13 +17,13 @@ export const DISPATCH_MIN_ROLE = "release_operator" as const;
 
 export const runDispatch = defineOp({
   name: "run_dispatch",
-  summary: "Start a workflow_dispatch run of one workflow at a branch, tag or commit.",
+  summary: "Start a workflow_dispatch run of one workflow at a branch or tag.",
   description:
     "Runs a workflow that declares `on.workflow_dispatch`, as the GitHub 'Run workflow' button " +
-    "does. `ref` is a branch or tag name of the project's repo (or refs/heads/..., refs/tags/...), " +
-    "or a full commit sha on the default branch's first-parent history; it is resolved to a sha " +
-    "NOW and the run is for exactly that sha. A name that is not in the repo (a fork's branch, " +
-    "an unknown name) is refused. `inputs` is a map of strings checked against the workflow's " +
+    "does. `ref` is a branch or tag name of the project's repo (or refs/heads/..., refs/tags/...); " +
+    "it is resolved to a sha NOW and the run is for exactly that sha. A bare commit sha is not " +
+    "accepted (as on GitHub), and neither is a name that is not in the repo (a fork's branch, " +
+    "an unknown name). `inputs` is a map of strings checked against the workflow's " +
     "`on.workflow_dispatch.inputs`: unknown names, missing required inputs, wrong types " +
     "(boolean, number, choice, environment) and values over the size cap are refused with the " +
     "reason; defaults are applied. The job sees `github.event_name == 'workflow_dispatch'`, " +
@@ -41,7 +41,11 @@ export const runDispatch = defineOp({
       .min(1)
       .max(200)
       .describe("Workflow file under .github/workflows/, e.g. .github/workflows/release.yml."),
-    ref: z.string().min(1).max(200).describe("A branch or tag name, or a full commit sha."),
+    ref: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("A branch or tag name (or refs/heads/..., refs/tags/...)."),
     inputs: z
       .record(z.string().min(1).max(100), z.string().max(MAX_DISPATCH_INPUT_BYTES))
       .default({})
@@ -70,7 +74,10 @@ export const runDispatch = defineOp({
   untrustedOutput: false,
   scope: "project",
   http: { method: "POST", path: "/dispatches" },
-  // A forge round trip: not inside the audit transaction. The dispatcher audits the outcome.
+  // Forge round trips (resolve the ref, read the workflow) must not hold the write transaction.
+  // The handler does all of them and the validation first, then writes the run, its jobs and the
+  // dedupe marker in one inner transaction. The dispatcher audits the outcome afterwards, a
+  // refusal as `error:<code>` (values omitted, see logOmitFields).
   outsideTransaction: true,
   // Values are never audited, only names.
   logOmitFields: ["inputs"],

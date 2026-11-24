@@ -1,9 +1,12 @@
 // `workflow_dispatch`: a person (or token) with the project role asks for one workflow to run at
 // one ref with inputs. Everything the run trusts is decided here, from the forge and the stored
 // project config, never from the caller:
-//  - the ref is resolved to a commit sha NOW, in this repository only (a fork's branch, an
-//    unknown name and a sha that is not on the default branch are refused), and the run is for
-//    exactly that sha;
+//  - the ref (a branch or tag, never a bare sha, as on GitHub) is resolved to a commit sha NOW,
+//    in this repository only (a fork's branch and an unknown name are refused), and the run is
+//    for exactly that sha;
+//  - all forge round trips and validation come first and write nothing; the run, its jobs and
+//    the dedupe marker are then written in ONE transaction (createPolledRun), so a failure
+//    leaves nothing behind;
 //  - the workflow is read at that sha and must declare `on.workflow_dispatch`; the inputs are
 //    validated against its declaration;
 //  - the class comes from `decideRun`, the same decision every run gets: the default branch (and
@@ -49,7 +52,7 @@ export class DispatchError extends Error {
 export type DispatchRequest = {
   /** Path under `.github/workflows/`. */
   workflow: string;
-  /** A branch or tag name (or its full ref), or a full commit sha on the default branch. */
+  /** A branch or tag name, or its full ref (refs/heads/..., refs/tags/...). */
   ref: string;
   inputs: Record<string, string>;
   /** Who dispatched: stored as the run's actor and in the trust facts. */
@@ -81,45 +84,32 @@ export type RunDispatcher = (
 
 export const WORKFLOW_PATH = /^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.ya?ml$/;
 const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
-/** How far down the default branch's first-parent history a dispatched sha may be. */
-const SHA_DEPTH = 1000;
 
 /**
- * A ref to a commit of this repository: `{ ref, sha }`, the ref in full. A name that is both a
- * branch and a tag is refused as ambiguous, so the caller says which.
+ * A ref to a commit of this repository: `{ ref, sha }`, the ref in full. A branch or a tag ONLY,
+ * as on GitHub: a bare commit sha is refused. A name that is both a branch and a tag is refused
+ * as ambiguous, so the caller says which.
  */
 export async function resolveDispatchRef(
   deps: IngestDeps,
   cfg: PollRepoConfig,
   input: string,
-): Promise<{ ref: string; sha: string; kind: "branch" | "tag" | "sha" }> {
+): Promise<{ ref: string; sha: string; kind: "branch" | "tag" }> {
   const repo = cfg.repo;
   const text = input.trim();
+  const notARef = () =>
+    new DispatchError(
+      "invalid_input",
+      `ref must be a branch or tag of ${repo}; a bare commit sha is not accepted (as on GitHub)`,
+    );
+  if (FULL_SHA.test(text)) throw notARef();
   if (!/^[A-Za-z0-9._/-]{1,200}$/.test(text) || text.includes("..") || text.endsWith("/")) {
-    throw new DispatchError("invalid_input", "ref must be a branch or tag name, or a full sha");
-  }
-  if (FULL_SHA.test(text)) {
-    const sha = text.toLowerCase();
-    const head = await deps.github.branchHead(repo, cfg.defaultBranch);
-    const chain =
-      head.sha === sha
-        ? new Set([sha])
-        : await deps.github.firstParentChain(repo, head.sha, SHA_DEPTH);
-    if (!chain?.has(sha)) {
-      throw new DispatchError(
-        "not_found",
-        `commit ${sha.slice(0, 12)} is not on the first-parent history of ${cfg.defaultBranch} (within ${SHA_DEPTH} commits); name a branch or tag of ${repo} instead`,
-      );
-    }
-    return { ref: `refs/heads/${cfg.defaultBranch}`, sha, kind: "sha" };
+    throw notARef();
   }
   const wantHeads = text.startsWith("refs/heads/");
   const wantTags = text.startsWith("refs/tags/");
   if (text.startsWith("refs/") && !wantHeads && !wantTags) {
-    throw new DispatchError(
-      "invalid_input",
-      "a full ref must start with refs/heads/ or refs/tags/",
-    );
+    throw notARef();
   }
   const name = wantHeads
     ? text.slice("refs/heads/".length)
@@ -145,10 +135,7 @@ export async function resolveDispatchRef(
     }
     return { ref: `refs/tags/${name}`, sha, kind: "tag" };
   }
-  throw new DispatchError(
-    "not_found",
-    `${text} is not a branch or tag of ${repo} (a fork's branch is not accepted)`,
-  );
+  throw notARef();
 }
 
 /**
@@ -248,7 +235,6 @@ export async function dispatchWorkflow(
     reasons: [
       ...base.reasons,
       `dispatched by ${req.actor} with project role ${req.role}`,
-      ...(target.kind === "sha" ? ["dispatched by sha: a commit of the default branch"] : []),
       ...(release
         ? [
             "a release ref: held for approval by a release operator, as a tag push no ruleset protects is",

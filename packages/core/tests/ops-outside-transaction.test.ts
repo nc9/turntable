@@ -5,6 +5,7 @@ import { registry } from "../src/ops";
 const ALLOWED_OUTSIDE_TRANSACTION = [
   "db_backup", // cannot run inside a transaction
   "resync_installation", // makes GitHub API calls, which must not hold the write transaction
+  "run_dispatch", // forge round trips (resolve the ref, read the workflow) must not hold the write transaction; its writes are one inner transaction
 ];
 
 test("only allowlisted ops run outside the dispatcher's transaction", () => {

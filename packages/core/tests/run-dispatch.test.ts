@@ -15,6 +15,7 @@ import {
   type Db,
   type Scope,
 } from "../src/db";
+import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
 import { Poller, pollConfigSchema } from "../src/poll";
 import { buildActEvent } from "../src/run/act-event";
@@ -264,13 +265,17 @@ describe("the run", () => {
     expect(rel.trust_class).toBe("protected");
   });
 
-  test("a full sha on the default branch's history runs that sha; one off it is refused", async () => {
+  test("a bare commit sha is refused, as on GitHub, even one on the default branch", async () => {
     const w = await world();
     const tok = await w.token(w.a.scope, "release_operator");
-    const out = await ok(call(w, tok, { ref: SHA("b"), inputs: { version: "1" } }));
-    expect(out.sha).toBe(SHA("b"));
-    const err = await refused(call(w, tok, { ref: SHA("7"), inputs: { version: "1" } }));
-    expect(err.code).toBe("not_found");
+    for (const ref of [SHA("b"), SHA("7"), SHA("b").toUpperCase(), "a".repeat(64)]) {
+      const err = await refused(call(w, tok, { ref, inputs: { version: "1" } }));
+      expect(err.code).toBe("invalid_input");
+      expect(err.message).toBe(
+        "ref must be a branch or tag of acme/web; a bare commit sha is not accepted (as on GitHub)",
+      );
+    }
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
   });
 
   test("a ref that is not in the repository is refused with the reason", async () => {
@@ -279,9 +284,8 @@ describe("the run", () => {
     for (const ref of ["someone-elses-fork:main", "no-such-branch", "refs/pull/5/head", "../x"]) {
       const err = await refused(call(w, tok, { ref, inputs: { version: "1" } }));
       expect(["not_found", "invalid_input"]).toContain(err.code);
+      expect(err.message).toContain("ref must be a branch or tag of acme/web");
     }
-    const err = await refused(call(w, tok, { ref: "no-such-branch", inputs: { version: "1" } }));
-    expect(err.message).toContain("not a branch or tag");
     expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
   });
 
@@ -458,5 +462,101 @@ describe("tenancy", () => {
     expect(own.code).toBe("not_found");
     expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
     expect(await listRuns(db, b.scope, { limit: 10 })).toEqual([]);
+  });
+});
+
+describe("atomic writes", () => {
+  test("a failure after the forge phase, while writing, leaves no run, no jobs and no marker", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    // The forge phase and the validation write nothing; the writes are one transaction. Fail the
+    // second insert of the writes (the jobs' attempts) and look for anything left behind.
+    const wrap = (tx: Db): Db => {
+      const wrapped: Db = {
+        ...tx,
+        run: (fn) => fn(wrapped),
+        orm: new Proxy(tx.orm, {
+          get(target, prop, recv) {
+            if (prop === "insert") {
+              return (table: unknown) => {
+                if (table === s.jobAttempts) throw new Error("injected write failure");
+                return target.insert(table as never);
+              };
+            }
+            return Reflect.get(target, prop, recv);
+          },
+        }),
+      };
+      return wrapped;
+    };
+    const failing: Db = {
+      ...db,
+      transaction: (fn, opts) => db.transaction((tx) => fn(wrap(tx)), opts),
+    };
+    const poller = new Poller({ db: failing, config: w.cfg, fetch: w.gh.fetch, now: () => now });
+    const env = {
+      ...w.env,
+      runDispatcher: (sc, r, q) => poller.dispatch(sc, r, q),
+    } as typeof w.env;
+    const res = await dispatch(env, { kind: "bearer", token: tok }, "run_dispatch", {
+      project: "app",
+      workflow: ".github/workflows/release.yml",
+      ref: "main",
+      inputs: { version: "1" },
+    });
+    expect(res.ok).toBe(false);
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+    const jobs = await db.orm.select().from(s.jobs);
+    expect(jobs).toEqual([]);
+    expect(await db.orm.select().from(s.pollSeen)).toEqual([]);
+    // The failure is audited as a refused attempt, without the input values.
+    const rows = (await listAudit(db, w.a.scope)).filter((r) => r.op === "run_dispatch");
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.outcome).toContain("error:");
+    // The same dispatch through the healthy db still works: nothing was left half-done.
+    const out = await ok(call(w, tok, { inputs: { version: "1" } }));
+    expect((await listJobs(db, w.a.scope, out.run_id)).length).toBe(2);
+  });
+});
+
+describe("release approval binds the dispatched sha's workflow", () => {
+  test("an approval for another workflow hash is refused; the matching hash is accepted", async () => {
+    const w = await world({ tagRefs: ["refs/tags/v*"] });
+    // Two release tags at two commits whose workflow file differs.
+    w.gh.state.tags.set("v2.0.0", { sha: SHA("f") });
+    w.gh.state.files.set(SHA("f"), WORKFLOW.replace("echo build", "echo different build"));
+    const tok = await w.token(w.a.scope, "release_operator");
+    const one = await ok(call(w, tok, { ref: "v1.0.0", inputs: { version: "1" } }));
+    const two = await ok(call(w, tok, { ref: "v2.0.0", inputs: { version: "2" } }));
+    expect(one.state).toBe("awaiting_approval");
+    expect(two.state).toBe("awaiting_approval");
+    const hash = async (id: string) =>
+      JSON.parse((await getRun(db, w.a.scope, id))!.trust!).workflowHash as string;
+    const [h1, h2] = [await hash(one.run_id), await hash(two.run_id)];
+    expect(h1).not.toBe(h2);
+    // A person's token: the default policy does not let an agent approve, which is not what is
+    // under test here.
+    const person = (await mintToken(db, w.a.scope, "release_operator", { kind: "person" })).secret;
+    const approve = (run: typeof two, workflow_hash: string, head_sha = run.sha) =>
+      dispatch(w.env, { kind: "bearer", token: person }, "approve_run", {
+        run_id: run.run_id,
+        head_sha,
+        workflow_hash,
+      });
+    // The approval recorded for run one's workflow does not release run two, and the reverse.
+    const wrong = await approve(two, h1);
+    expect(!wrong.ok && wrong.error.code).toBe("conflict");
+    expect(!wrong.ok && wrong.error.message).toContain("workflow");
+    expect((await getRun(db, w.a.scope, two.run_id))!.status).toBe("awaiting_approval");
+    for (const j of await listJobs(db, w.a.scope, two.run_id)) {
+      expect(j.state).toBe("awaiting_approval");
+    }
+    // Nor does the right hash with another sha.
+    const badSha = await approve(two, h2, one.sha);
+    expect(!badSha.ok && badSha.error.code).toBe("conflict");
+    // The matching sha and hash release it.
+    const good = await approve(two, h2);
+    if (!good.ok) throw new Error(`${good.error.code}: ${good.error.message}`);
+    expect((await getRun(db, w.a.scope, two.run_id))!.status).not.toBe("awaiting_approval");
   });
 });
