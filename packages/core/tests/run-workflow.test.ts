@@ -158,7 +158,7 @@ describe("runWorkflowLocal", () => {
     expect(by.test?.state).toBe("success");
     expect(by.skipme).toMatchObject({ state: "skipped" });
     expect(by.skipme?.reason).toContain("is false");
-    expect(by.images?.state).toBe("skipped");
+    expect(by.images?.state).toBe("failure");
     expect(by.images?.reason).toContain("unsupported");
     expect(by.images?.reason).toContain("docker");
     expect(by.fail?.state).toBe("failure");
@@ -178,7 +178,7 @@ describe("runWorkflowLocal", () => {
     const row = (k: string) => jobs.find((j) => j.jobKey === k);
     expect(JSON.parse(row("test")?.needs ?? "[]")).toEqual(["build"]);
     expect(row("skipme")?.state).toBe("skipped");
-    expect(row("images")?.state).toBe("skipped");
+    expect(row("images")?.state).toBe("failure");
     expect(row("fail")).toMatchObject({ state: "failure" });
     const [att] = await listAttempts(db, scope, row("images")?.id as string);
     const log = await readLog(db, scope, att?.id as string);

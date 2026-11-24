@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { planWorkflow } from "@turntable/act-runner";
-import { parseSandboxSizes, sizeFor, untrustedForSize } from "../src/scheduler/sandbox-size";
+import {
+  parseSandboxSizes,
+  refusalFor,
+  sizeFor,
+  untrustedForSize,
+} from "../src/scheduler/sandbox-size";
 import { resolveSandboxSizes } from "../src/serve-config";
 
 const CFG = JSON.stringify({
@@ -137,5 +142,59 @@ describe("planning records the labels", () => {
     expect(plan("ubuntu-latest-4-cores").runsOn).toEqual(["ubuntu-latest-4-cores"]);
     expect(plan("[ubuntu-latest, big]").runsOn).toEqual(["ubuntu-latest", "big"]);
     expect(plan("{ labels: [ubuntu-latest, big] }").runsOn).toEqual(["ubuntu-latest", "big"]);
+  });
+});
+
+const plan = (runsOn: string, extra = "") =>
+  planWorkflow(
+    `on: push\njobs:\n  a:\n    runs-on: ${runsOn}\n${extra}    steps:\n      - run: echo\n`,
+    { name: "push", ref: "refs/heads/main" },
+    { readFile: () => undefined },
+  ).jobs[0]!;
+
+describe("runner labels: other OS and arch fail closed, GitHub labels size", () => {
+  test("macOS, Windows and [self-hosted, macOS] are refused with the sentence", () => {
+    const mac = refusalFor(plan("macos-latest"), ["amd64"]);
+    expect(mac).toContain("asks for a macOS runner (`macos-latest`)");
+    expect(mac).toContain("Linux sandboxes only; macOS runners are not supported yet.");
+    expect(refusalFor(plan("windows-2022"), ["amd64"])).toContain(
+      "Windows runner (`windows-2022`)",
+    );
+    expect(refusalFor(plan("[self-hosted, macOS]"), ["amd64"])).toContain("macOS runner");
+  });
+
+  test("an arm label needs a provider that advertises arm64", () => {
+    const arm = plan("ubuntu-latest-arm");
+    expect(arm.unsupported).toBeUndefined();
+    expect(refusalFor(arm, ["amd64"])).toContain("arm64 runner (`ubuntu-latest-arm`)");
+    expect(refusalFor(plan("arm64"), ["amd64"])).toContain("arm64 runner");
+    expect(refusalFor(arm, ["amd64", "arm64"])).toBeUndefined();
+  });
+
+  test("custom and GitHub Linux labels are not refused and keep the size map", () => {
+    for (const l of ["boat", "large", "ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"]) {
+      expect(refusalFor(plan(l), ["amd64"]), l).toBeUndefined();
+      expect(sizeFor(cfg, [l])).toMatchObject({ class: "small" });
+    }
+  });
+
+  test("ubuntu-latest-N-cores picks the class with N cpus, else the default", () => {
+    const c = parseSandboxSizes(
+      JSON.stringify({
+        classes: { small: { cpus: 2 }, eight: { cpus: 8 } },
+        default: "small",
+      }),
+      "t",
+    );
+    expect(sizeFor(c, ["ubuntu-latest-8-cores"])).toMatchObject({ class: "eight" });
+    expect(sizeFor(c, ["ubuntu-latest-16-cores"])).toMatchObject({ class: "small" });
+    // an operator mapping beats the built-in rule
+    expect(sizeFor(cfg, ["ubuntu-latest-4-cores"])).toMatchObject({ class: "large" });
+  });
+
+  test("an untrusted job still gets untrustedClass whatever it asks for", () => {
+    expect(sizeFor(cfg, ["ubuntu-latest-64-cores"], { untrusted: true })).toMatchObject({
+      class: "small",
+    });
   });
 });

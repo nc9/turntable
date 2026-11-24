@@ -352,7 +352,7 @@ jobs:
     expect(st).toMatchObject({
       build: "success",
       skipme: "skipped", // its if: is false
-      images: "skipped", // docker cannot run here
+      images: "failure", // docker cannot run here: never skipped (a skipped required check passes)
       fail: "failure",
       "after-fail": "skipped", // default if: success()
       cleanup: "success", // always() runs behind the failure
@@ -372,6 +372,65 @@ jobs:
     expect((await getRun(db, scope, run!.id))?.status).toBe("failure");
     // the stub for the failed need really fails, so cleanup's needs.fail.result is failure
     expect(seen("cleanup")).toContain("exit 1");
+  });
+
+  test("macOS, Windows and arm jobs fail with the reason and never reach the provider", async () => {
+    const gh = makeGithub();
+    gh.state.files.set(
+      "*",
+      `on: push
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - run: echo never
+  win:
+    runs-on: windows-2022
+    steps:
+      - run: echo never
+  selfmac:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - run: echo never
+  arm:
+    runs-on: ubuntu-latest-arm
+    steps:
+      - run: echo never
+  custom:
+    runs-on: boat
+    steps:
+      - run: echo ok
+`,
+    );
+    await ingest(gh);
+    const specs: string[] = [];
+    const base = world.provider();
+    const spy: Provider = Object.assign(Object.create(base) as Provider, {
+      create: (spec: Parameters<Provider["create"]>[0]) => {
+        specs.push(spec.name);
+        return base.create(spec);
+      },
+    });
+    await drain(await makeScheduler(gh, spy));
+    const [run] = await listRuns(db, scope);
+    const jobs = await listJobs(db, scope, run!.id);
+    const st = Object.fromEntries(jobs.map((j) => [j.jobKey, j.state]));
+    expect(st).toEqual({
+      mac: "failure",
+      win: "failure",
+      selfmac: "failure",
+      arm: "failure",
+      custom: "success",
+    });
+    expect(specs).toHaveLength(1); // only the custom-label job got a sandbox
+    const logOf = async (key: string) => {
+      const job = jobs.find((j) => j.jobKey === key)!;
+      const [att] = await listAttempts(db, scope, job.id);
+      return Buffer.concat((await readLog(db, scope, att!.id)).map((c) => c.bytes)).toString();
+    };
+    expect(await logOf("mac")).toContain("asks for a macOS runner (`macos-latest`)");
+    expect(await logOf("win")).toContain("Windows runner");
+    expect(await logOf("arm")).toContain("arm64 runner");
   });
 
   test("matrix legs are separate jobs and fail-fast cancels the legs that have not started", async () => {
@@ -879,10 +938,10 @@ jobs:
     await drain(sched);
     const jobs = await listJobs(db, scope, run!.id);
     expect(Object.fromEntries(jobs.map((j) => [j.jobKey, j.state]))).toEqual({
-      dock: "skipped",
-      nested: "skipped",
+      dock: "failure",
+      nested: "failure",
       plain: "success",
-      escape: "skipped",
+      escape: "failure",
     });
   });
 

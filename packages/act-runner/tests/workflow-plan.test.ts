@@ -149,7 +149,7 @@ describe("graph errors and unsupported jobs", () => {
       push,
       { readFile },
     );
-    expect(win.jobs[0]?.unsupported).toContain("not a Linux runner");
+    expect(win.jobs[0]?.unsupported).toContain("Windows runner");
     const files: Record<string, string> = {
       ".github/actions/d/action.yml": "runs:\n  using: docker\n  image: Dockerfile\n",
     };

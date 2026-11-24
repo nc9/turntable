@@ -11,6 +11,11 @@
 // A workflow file chooses its labels, so a stranger's pull request could ask for the biggest
 // class. `untrustedClass` fixes what such a run gets whatever it asks for, and the ceilings clamp
 // every class (so a typo in a class cannot exceed them). An unknown label gets the default.
+//
+// GitHub-hosted labels: `ubuntu-latest`, `ubuntu-24.04` and `ubuntu-22.04` mean the default class
+// (unless the operator maps them). `ubuntu-latest-{N}-cores` means a class with N cpus when the
+// operator defines one, else the default. A job that names another OS (macOS, Windows) or arm
+// is refused before any sandbox exists (`refusalFor`), never run on a Linux amd64 sandbox.
 import { z } from "zod";
 import type { SandboxResources } from "@turntable/provider-sdk";
 
@@ -74,6 +79,36 @@ export type SandboxSize = { resources?: SandboxResources; snapshot?: string; cla
 const own = <T>(m: Readonly<Record<string, T>>, k: string | undefined): T | undefined =>
   k !== undefined && Object.hasOwn(m, k) ? m[k] : undefined;
 
+/** GitHub-hosted labels that mean "an ordinary Linux sandbox": the default class. */
+export const GITHUB_DEFAULT_LABELS: readonly string[] = [
+  "ubuntu-latest",
+  "ubuntu-24.04",
+  "ubuntu-22.04",
+];
+
+const ARM_LABEL = /(^|-)arm(64)?$/i;
+const CORES_LABEL = /^ubuntu-(?:latest|\d\d\.04)-(\d+)-cores$/i;
+
+const labelText = (v: string): string => v.replaceAll(/[`\r\n]+/g, " ").slice(0, 60);
+
+/**
+ * Why a planned job cannot run here, or undefined. The planner already marks other-OS and docker
+ * jobs `unsupported`; an arm label is checked here, against what the provider advertises (amd64
+ * only unless it says `arm64`). The text is public (a check summary): fixed words and the label.
+ */
+export function refusalFor(
+  planned: { unsupported?: string; runsOn?: readonly string[] } | undefined,
+  providerArch: readonly string[],
+): string | undefined {
+  if (!planned) return undefined;
+  if (planned.unsupported) return `unsupported: ${planned.unsupported}`;
+  const arm = (planned.runsOn ?? []).find((l) => ARM_LABEL.test(l));
+  if (arm !== undefined && !providerArch.includes("arm64")) {
+    return `unsupported: This job asks for an arm64 runner (\`${labelText(arm)}\`). The sandbox provider offers amd64 only; arm runners are not supported by it.`;
+  }
+  return undefined;
+}
+
 const CLASSES = new Set(["protected", "release", "trusted_pr", "untrusted_pr"]);
 
 /**
@@ -106,10 +141,20 @@ export function sizeFor(
     return name !== undefined && c ? [name, c] : undefined;
   };
   const defaultPick = pick(cfg.default);
+  // `ubuntu-latest-4-cores`: the operator's class with exactly 4 cpus, if they defined one.
+  const coresPick = (label: string): ReturnType<typeof pick> => {
+    const n = Number(CORES_LABEL.exec(label)?.[1]);
+    if (!Number.isInteger(n)) return undefined;
+    const name = Object.keys(cfg.classes)
+      .toSorted()
+      .find((k) => cfg.classes[k]?.cpus === n);
+    return pick(name);
+  };
   const chosen =
     o.untrusted === true
       ? (pick(cfg.untrustedClass) ?? defaultPick)
-      : (labels.map((l) => pick(own(cfg.labels, l))).find((x) => x !== undefined) ?? defaultPick);
+      : (labels.map((l) => pick(own(cfg.labels, l)) ?? coresPick(l)).find((x) => x !== undefined) ??
+        defaultPick);
   if (!chosen) return {};
   const [name, c] = chosen;
   const clamp = (v: number | undefined, max: number | undefined): number | undefined =>

@@ -57,7 +57,7 @@ import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
-import { type SandboxSizes, sizeFor, untrustedForSize } from "./sandbox-size";
+import { refusalFor, type SandboxSizes, sizeFor, untrustedForSize } from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -403,6 +403,19 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
   };
 
   return async (ctx) => {
+    // A job Turntable cannot run (macOS, Windows, arm without a capable provider, docker,
+    // services, ...) fails with its reason. It is never `skipped`: branch protection counts a
+    // skipped required check as passing, so a skip would let a PR merge unchecked. The workflow's
+    // own false `if:` already skipped it before it got here.
+    if (!ctx.resume) {
+      const planned0 = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
+      const why = refusalFor(planned0, ctx.provider.info.arch);
+      if (why) {
+        await ctx.store.appendLog(0, new TextEncoder().encode(`${why}\n`));
+        o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${why}\n`);
+        return { state: "failure", reason: why };
+      }
+    }
     // Re-attach with the plan stored when the attempt started: no repo fetch, no network.
     if (ctx.resume && ctx.attempt.plan) {
       return run(ctx, JSON.parse(ctx.attempt.plan) as JobPlan, undefined);

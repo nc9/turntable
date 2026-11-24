@@ -84,10 +84,12 @@ export function aggregateNeed(legs: readonly NeedStatus[]): NeedResult {
 /**
  * Decides whether a queued job can start. Pure: give it the planned job and the current states
  * of its needs (keyed by planned job key). `wait` until every need is terminal; then `cancel`
- * if the run was cancelled, `skip` for unsupported jobs and for an `if:` that is false (the
+ * if the run was cancelled, `skip` for an `if:` that is false (the
  * default `if:` is success(): every need succeeded, so a failed, cancelled or skipped need skips
  * the job), else `ready`. The needs results and outputs are what `if:` and the job's own
- * `needs.*` expressions see.
+ * `needs.*` expressions see. An unsupported job is `ready` once its own `if:` allows it: the
+ * runner ends it as a failure with the reason, never `skipped` (branch protection counts a skipped
+ * required check as passing). Only the workflow's own false `if:` skips it.
  */
 export function jobReadiness(
   job: PlannedJob,
@@ -97,7 +99,6 @@ export function jobReadiness(
   const status = (k: string): NeedStatus => needs[k] ?? { state: "queued" };
   if (!job.needs.every((k) => TERMINAL.includes(status(k).state))) return { decision: "wait" };
   if (ctx.cancelled) return { decision: "cancel", reason: "run cancelled" };
-  if (job.unsupported) return { decision: "skip", reason: `unsupported: ${job.unsupported}` };
   if (job.staticSkip) return { decision: "skip", reason: job.staticSkip.reason };
 
   const byId = Object.fromEntries(

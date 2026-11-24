@@ -29,6 +29,7 @@ import {
   type AttemptResult,
   checkName,
   classifyInfra,
+  refusalSentence,
   conclusionFor,
   NO_ATTEMPT_SKIP,
   skipReasonFor,
@@ -407,7 +408,11 @@ export class CheckReporter {
       completed_at: new Date((this.#o.now ?? Date.now)()).toISOString(),
       ...(runUrl ? { details_url: runUrl } : {}),
       output: {
-        title: titleFor(mode, result),
+        title: titleFor(
+          mode,
+          result,
+          !group && result === "failure" && refusalSentence(outcome.reason) !== undefined,
+        ),
         summary: summaryFor({
           mode,
           result,
@@ -415,6 +420,9 @@ export class CheckReporter {
           failingStep,
           excerpt,
           infraClass: result === "infra_error" ? classifyInfra(outcome.reason) : undefined,
+          ...(!group && result === "failure" && refusalSentence(outcome.reason)
+            ? { refusal: refusalSentence(outcome.reason) }
+            : {}),
           ...(group
             ? {
                 shards: [

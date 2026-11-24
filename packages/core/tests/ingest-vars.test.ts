@@ -35,6 +35,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo c
+  mac-ungated:
+    runs-on: macos-latest
+    steps:
+      - run: echo d
+  docker-ungated:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker ps
+  docker-gated:
+    if: vars.TURNTABLE_CI != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker ps
 `;
 
 let db: Db;
@@ -124,4 +137,18 @@ test("setting vars is audited, and policy show lists the names", async () => {
   expect(audit).toContain("TURNTABLE_CI");
   const shown = await showIngest(db, "acme");
   expect(shown[0]?.ingest?.vars).toEqual({ TURNTABLE_CI: "true" });
+});
+
+test("a job Turntable cannot run is ready (the runner fails it) unless its own if: opts out", async () => {
+  const on = await ingest({ TURNTABLE_CI: "true" });
+  // the workflow's own gate is false: a legitimate skip
+  expect(on.jobs["docker-gated"]).toMatchObject({ decision: "skip" });
+  // no gate: never skipped (a skipped required check passes); the runner ends it as a failure
+  expect(on.jobs["docker-ungated"]).toEqual({ decision: "ready" });
+  expect(on.jobs["mac-ungated"]).toEqual({ decision: "ready" });
+});
+
+test("without TURNTABLE_CI the docker gate is open, so the job is ready and the runner refuses it", async () => {
+  const off = await ingest(undefined);
+  expect(off.jobs["docker-gated"]).toEqual({ decision: "ready" });
 });
