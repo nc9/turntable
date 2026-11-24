@@ -16,6 +16,7 @@ import {
   getOrgBySlug,
 } from "../../db/repos";
 import { MEMBER_ROLES, type MemberRole } from "../../db/schema";
+import { GithubLookupError } from "../../github/api";
 import { iso } from "../common";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
@@ -124,8 +125,9 @@ async function invite(
   let githubUserId: string | undefined;
   try {
     githubUserId = await ctx.githubUsers.idOfLogin(loginLc);
-  } catch {
-    throw new OpError("unavailable", "could not ask GitHub who that login is; try again");
+  } catch (e) {
+    const why = e instanceof GithubLookupError ? ` (${e.message})` : "";
+    throw new OpError("unavailable", `could not ask GitHub who that login is${why}; try again`);
   }
   if (!githubUserId) throw new OpError("not_found", "GitHub has no user with that login");
   if (await findMemberByGithubUserId(ctx.db, ctx.scope, githubUserId)) {
