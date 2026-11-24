@@ -564,18 +564,20 @@ describe("v1 stays for non-release environments", () => {
   });
 
   test("approval_status marks the release environment, so a client picks the v2 challenge", async () => {
-    const { runId } = await mkRun({ sha: "e".repeat(40) });
-    const st = await ok<{ environments: { environment: string; release: boolean }[] }>(
-      "approval_status",
-      { run_id: runId },
-    );
-    expect(st.environments.find((e) => e.environment === "release")?.release).toBe(true);
-    const other = await mkRun({ environment: "staging", sha: "f".repeat(40) });
-    const st2 = await ok<{ environments: { environment: string; release: boolean }[] }>(
-      "approval_status",
-      { run_id: other.runId },
-    );
-    expect(st2.environments.find((e) => e.environment === "staging")?.release).toBe(false);
+    type Status = { environments: { environment: string; release: boolean }[] };
+    // "production" is gated by the suite's policy (only a gated environment waits and is listed).
+    const rel = await ok<Status>("approval_status", {
+      run_id: (await mkRun({ sha: "e".repeat(40) })).runId,
+    });
+    expect(rel.environments.find((e) => e.environment === "release")?.release).toBe(true);
+    const other = await ok<Status>("approval_status", {
+      run_id: (await mkRun({ environment: "production", sha: "f".repeat(40) })).runId,
+    });
+    expect(other.environments.find((e) => e.environment === "production")?.release).toBe(false);
+    for (const st of [rel, other]) {
+      expect(st.environments.length).toBeGreaterThan(0);
+      for (const e of st.environments) expect(typeof e.release).toBe("boolean");
+    }
   });
 
   test("a v1 approval never lets the signing service sign", async () => {
