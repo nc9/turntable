@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Re-run CI on a main sha by hand when its push run was skipped or cancelled (#444's squash body
+  # carried a [skip ci] onto main 71044470, and there was no way to re-trigger it).
+  workflow_dispatch:
 
 permissions:
   contents: read
