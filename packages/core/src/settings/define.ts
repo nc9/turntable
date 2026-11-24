@@ -7,6 +7,9 @@ import { ROLE_RANK } from "../ops/roles";
 import type { SettingScope } from "../db/schema";
 
 /** Who may change a setting: an org role, or the instance administrator for instance settings. */
+/** Who the value is for, when known (an org or project value): the org's slug. */
+export type RefuseContext = { orgSlug?: string };
+
 export type SettingRole = Role | "instance_admin";
 
 export type SettingSpec<T> = {
@@ -21,7 +24,7 @@ export type SettingSpec<T> = {
    * every path that sets a value (the ops, the CLI, the config file and the environment), never
    * on reading what is already stored, so a stored value still fails closed.
    */
-  refuse?: (value: T) => string | undefined;
+  refuse?: (value: T, ctx?: RefuseContext) => string | undefined;
   /** The least role that may change it: `instance_admin` for instance settings, else an org role. */
   role: SettingRole;
   /**

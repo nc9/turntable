@@ -25,6 +25,7 @@ import type { JobArtifactProvider } from "../artifacts/job";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
+import { getOrgById } from "../db/repos/api";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
@@ -354,7 +355,10 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       untrusted,
       // Tenant label maps never apply to an untrusted run (sizeFor ignores labels for it anyway).
       ...(o.sizes && !untrusted
-        ? { overrides: await resolveRunnerLabelMaps(o.db, ctx.scope) }
+        ? {
+            overrides: await resolveRunnerLabelMaps(o.db, ctx.scope),
+            orgSlug: (await getOrgById(o.db, ctx.scope.orgId))?.slug,
+          }
         : {}),
     });
     const realised = realiseSize(ctx.provider, size);

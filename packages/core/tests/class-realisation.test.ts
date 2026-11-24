@@ -86,6 +86,7 @@ describe("the deprecated top-level snapshot", () => {
     parseSandboxSizes(legacy, "t");
     expect(c.classes.oldone).toEqual({
       cpus: 2,
+      tenantSelectable: true,
       providers: { daytona: { snapshot: "legacy-snap" } },
     });
     expect(
