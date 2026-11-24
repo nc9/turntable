@@ -8,3 +8,4 @@ packages/core/tests/providers.test.ts
 packages/core/tests/isolation.test.ts
 packages/core/tests/egress.test.ts
 packages/core/tests/graceful-drain.test.ts
+packages/core/tests/resume-release.test.ts

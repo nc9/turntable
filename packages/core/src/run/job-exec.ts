@@ -195,7 +195,8 @@ export async function executeJob(
     return finish(state, reason, code, outputs);
   };
 
-  let sandboxId: string | undefined;
+  // A resumed job owns the sandbox it re-attaches to from the start, so every exit destroys it.
+  let sandboxId: string | undefined = resume?.sandboxId;
   let cancelled = env.signal?.aborted ?? false;
   const aborted = new Promise<"abort">((resolve) => {
     if (cancelled) resolve("abort");
