@@ -58,7 +58,8 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
           // Configuring an existing installation also redirects to the setup URL, so an install
           // made without the claim link can still be claimed (docs/hosted.mdx).
           setup_on_update: true,
-          callback_urls: [`${base}/api/v1/github/setup`],
+          // The second is the web sign-in callback (auth/github-login.ts), for "Sign in with GitHub".
+          callback_urls: [`${base}/api/v1/github/setup`, `${base}/auth/github/callback`],
         }
       : {}),
   };

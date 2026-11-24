@@ -309,6 +309,13 @@
       "when": 1795452409043,
       "tag": "0043_dismissed_skips",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1795487355156,
+      "tag": "0044_web_sign_in",
+      "breakpoints": true
     }
   ]
 }

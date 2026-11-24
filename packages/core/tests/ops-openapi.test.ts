@@ -107,6 +107,7 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "create_api_token",
     "enrolment_challenge",
     "incident_unfreeze",
+    "invite_member",
     "key_policy_challenge",
     "register_challenge",
     "request_enrolment",

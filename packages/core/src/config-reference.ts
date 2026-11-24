@@ -675,6 +675,20 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "Seconds a SIGTERM waits for running attempts after it stops starting new ones (0 to 3600). Attempts still running at the timeout are left for the next boot, which re-attaches to them or retries each job once as an infra error. The environment name of the `drain_timeout_seconds` setting, which `turntable.toml` and `instance_set_setting` also set. See [Hosted](/hosted#deploying-without-killing-runs).",
   },
   {
+    name: "TURNTABLE_SESSION_IDLE_HOURS",
+    area: "Server",
+    default: "12",
+    description:
+      "Hours a web session may sit unused before it is signed out (1 to 168). The environment name of the `session_idle_hours` setting, which `turntable.toml` and `instance_set_setting` also set. See [Signing in to the web UI](/web-sign-in).",
+  },
+  {
+    name: "TURNTABLE_SESSION_ABSOLUTE_DAYS",
+    area: "Server",
+    default: "7",
+    description:
+      "Days a web session lives at most, however active it is (1 to 90). The environment name of the `session_absolute_days` setting, which `turntable.toml` and `instance_set_setting` also set. See [Signing in to the web UI](/web-sign-in).",
+  },
+  {
     name: "TURNTABLE_APPROVAL_POLICY",
     area: "Server",
     description:

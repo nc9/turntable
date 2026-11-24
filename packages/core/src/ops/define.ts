@@ -4,7 +4,7 @@ import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
-import type { GithubFacts } from "../github/api";
+import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
@@ -44,6 +44,8 @@ export type OpContext = {
   claims?: InstallationClaims | undefined;
   /** GitHub App API facts for `resync_installation`; absent when no App is configured. */
   githubFacts?: GithubFacts | undefined;
+  /** Resolves a GitHub login to its numeric id (invites); absent without a GitHub App. */
+  githubUsers?: GithubUserLookup | undefined;
   /** The adapter that carried the call; undefined for in-process callers. */
   transport?: "mcp" | "rest" | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */

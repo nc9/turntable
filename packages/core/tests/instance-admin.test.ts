@@ -208,13 +208,20 @@ describe("no org principal reaches an instance op, and the instance token reache
                       ? { target_org: "org-a", slug: "sneaky", name: "x" }
                       : op.name === "create_org"
                         ? { slug: "sneaky-org", name: "x" }
-                        : op.name === "instance_start_installation_claim"
-                          ? { target_org: "org-a", github_login: "x", reason: "x" }
-                          : op.name === "move_repo_binding"
-                            ? { owner: "acme", repo: "api", to_org: "org-a", to_project: "app" }
-                            : op.name === "create_org_token"
-                              ? { target_org: "org-a", name: "x", role: "reader", expires_days: 1 }
-                              : {};
+                        : op.name === "instance_bind_github_login"
+                          ? { target_org: "org-a", github_login: "x", role: "viewer", reason: "x" }
+                          : op.name === "instance_start_installation_claim"
+                            ? { target_org: "org-a", github_login: "x", reason: "x" }
+                            : op.name === "move_repo_binding"
+                              ? { owner: "acme", repo: "api", to_org: "org-a", to_project: "app" }
+                              : op.name === "create_org_token"
+                                ? {
+                                    target_org: "org-a",
+                                    name: "x",
+                                    role: "reader",
+                                    expires_days: 1,
+                                  }
+                                : {};
           const r = await dispatch(env, cred, op.name, input);
           expect(r.ok, `${label} on ${op.name}`).toBe(false);
           if (!r.ok) expect(r.error.code, `${label} on ${op.name}`).toBe("forbidden");
@@ -238,6 +245,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "create_project",
       "db_backup",
       "instance_audit_verify",
+      "instance_bind_github_login",
       "instance_doctor",
       "instance_drain",
       "instance_drain_status",

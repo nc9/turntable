@@ -16,7 +16,7 @@ export const whoami = defineOp({
     "created the token: untrusted text.",
   input: z.object({}),
   output: z.object({
-    kind: z.enum(["token", "member"]),
+    kind: z.enum(["token", "member", "session"]),
     id: z.string(),
     name: z.string().nullable().describe("The token's label; null for a person."),
     role: z.enum(ALL_ROLES as [string, ...string[]]),

@@ -55,3 +55,7 @@ export const outboundEndpoints = (DIALECT === "pg" ? pg.outboundEndpoints : sqli
 export const outboundSecrets = (DIALECT === "pg" ? pg.outboundSecrets : sqlite.outboundSecrets) as unknown as typeof sqlite.outboundSecrets;
 export const outboundDeliveries = (DIALECT === "pg" ? pg.outboundDeliveries : sqlite.outboundDeliveries) as unknown as typeof sqlite.outboundDeliveries;
 export const settings = (DIALECT === "pg" ? pg.settings : sqlite.settings) as unknown as typeof sqlite.settings;
+export const githubIdentities = (DIALECT === "pg" ? pg.githubIdentities : sqlite.githubIdentities) as unknown as typeof sqlite.githubIdentities;
+export const loginStates = (DIALECT === "pg" ? pg.loginStates : sqlite.loginStates) as unknown as typeof sqlite.loginStates;
+export const webSessions = (DIALECT === "pg" ? pg.webSessions : sqlite.webSessions) as unknown as typeof sqlite.webSessions;
+export const memberInvites = (DIALECT === "pg" ? pg.memberInvites : sqlite.memberInvites) as unknown as typeof sqlite.memberInvites;

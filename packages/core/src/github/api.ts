@@ -84,3 +84,35 @@ export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): Gi
     },
   };
 }
+
+/** Resolves a GitHub login to the numeric user id, so an invite binds an account, not a name. */
+export interface GithubUserLookup {
+  /** Undefined when GitHub has no such user. Throws when GitHub cannot be asked. */
+  idOfLogin(login: string): Promise<string | undefined>;
+}
+
+export function githubUserLookup(
+  auth: AppAuth,
+  fetchImpl: SafeFetch = safeFetch,
+): GithubUserLookup {
+  return {
+    async idOfLogin(login) {
+      if (!/^[A-Za-z0-9-]{1,39}$/.test(login)) return undefined;
+      const res = await fetchImpl(`${auth.apiBase}/users/${encodeURIComponent(login)}`, {
+        headers: {
+          authorization: `Bearer ${await auth.appJwt()}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "turntable",
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.status === 404) return undefined;
+      if (!res.ok) throw new Error(`GET user failed: HTTP ${res.status}`);
+      const j = (await res.json()) as { id?: unknown; login?: unknown };
+      if (typeof j.id !== "number" || typeof j.login !== "string") return undefined;
+      // The answer must be for the login asked about (GitHub answers case-insensitively).
+      return j.login.toLowerCase() === login.toLowerCase() ? String(j.id) : undefined;
+    },
+  };
+}

@@ -306,7 +306,7 @@ Before you start: an instance on a public https URL with `TURNTABLE_MASTER_KEY_F
 2. Press the button and approve on GitHub. Expect a redirect back to the loopback page that reports success.
 3. Run `turntable github-app status`. Expect the App listed with no secret in the output.
 4. On GitHub, open the App settings. Check these: the permissions are the four in [GitHub App](/github-app), the events are `push`, `pull_request` and `check_run`, the webhook URL is `<public url>/api/v1/webhooks/github`, and the setup URL is `<public url>/api/v1/github/setup`.
-5. With claim mode on, the manifest already turned on **Request user authorization (OAuth) during installation**. Check that it is on. Turn it on by hand only for an App created without claim mode.
+5. With claim mode on, the manifest already turned on **Request user authorization (OAuth) during installation** and listed the callback URLs `<public url>/api/v1/github/setup` and `<public url>/auth/github/callback` (the second is for [web sign-in](/web-sign-in)). Check both. Turn the first on, and add both URLs, by hand only for an App created without claim mode.
 6. The loopback command always creates a private App. If other accounts will install it, choose **Make public** under **Advanced**.
 
 ### 2. Webhook delivery

@@ -53,6 +53,8 @@ export const EVENT_TYPES = [
   "org.token_minted",
   "org.tokens_exhausted",
   "org.installation_claim_started_by_instance",
+  "org.member_invited",
+  "org.member_joined",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -1495,5 +1497,86 @@ export const settings = sqliteTable(
       "settings_org_id_check",
       sql`(${t.scopeKind} = 'instance' AND ${t.orgId} IS NULL) OR (${t.scopeKind} = 'org' AND ${t.orgId} IS NOT NULL AND ${t.scopeId} = ${t.orgId}) OR (${t.scopeKind} = 'project' AND ${t.orgId} IS NOT NULL)`,
     ),
+  ],
+);
+
+// ---- web sign-in (#430) ----
+
+/**
+ * A GitHub account linked to a Turntable user. The identity is the numeric GitHub user id, never
+ * the login (logins are renamed and recycled); the login is kept only to show and to match invites.
+ * Global, like `users`: a person can belong to several orgs.
+ */
+export const githubIdentities = sqliteTable(
+  "github_identities",
+  {
+    githubUserId: text("github_user_id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    login: text("login").notNull(),
+    createdAt: createdAt(),
+    lastSignInAt: integer("last_sign_in_at", { mode: "number" }),
+  },
+  (t) => [unique("github_identities_user_unique").on(t.userId)],
+);
+
+/** A sign-in attempt in flight: the single-use nonce behind the OAuth `state`. */
+export const loginStates = sqliteTable("login_states", {
+  nonce: text("nonce").primaryKey(),
+  createdAt: createdAt(),
+  expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+  usedAt: integer("used_at", { mode: "number" }),
+});
+
+/**
+ * A web session. `id` is the SHA-256 of the opaque session id held in the browser's cookie, so a
+ * database read never yields a usable cookie. Idle expiry is `last_seen_at` plus a setting;
+ * `expires_at` is the absolute limit. Sign-out sets `revoked_at`.
+ */
+export const webSessions = sqliteTable(
+  "web_sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    lastSeenAt: integer("last_seen_at", { mode: "number" }).notNull(),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [index("web_sessions_user_idx").on(t.userId)],
+);
+
+/**
+ * A pending grant of org membership to a GitHub login. The invitee's first sign-in binds their
+ * numeric id and consumes it. Membership never comes from GitHub org membership or repo access.
+ */
+export const memberInvites = sqliteTable(
+  "member_invites",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    /** Lowercase, for display: GitHub logins are case-insensitive and get renamed and recycled. */
+    githubLogin: text("github_login").notNull(),
+    /** The numeric id the login resolved to WHEN the invite was made. Sign-in matches on this. */
+    githubUserId: text("github_user_id").notNull(),
+    role: text("role").notNull(),
+    /** `kind:id` of whoever created it (a member, a person token, or the instance administrator). */
+    createdBy: text("created_by").notNull(),
+    reason: text("reason"),
+    createdAt: createdAt(),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    usedAt: integer("used_at", { mode: "number" }),
+    usedByUserId: text("used_by_user_id"),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+  },
+  (t) => [
+    index("member_invites_user_idx").on(t.githubUserId),
+    index("member_invites_org_idx").on(t.orgId, t.githubLogin),
+    check("member_invites_role_check", inList("role", MEMBER_ROLES)),
   ],
 );

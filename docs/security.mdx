@@ -184,6 +184,10 @@ The pattern needs the prefix and exactly 43 base64url characters, which is disti
 
 To make your own secret scanner catch a leaked one too, register these as custom patterns (GitHub secret scanning custom patterns, GitGuardian custom detectors, gitleaks or trufflehog rules): `(?:tti|tt|lsi|ls)_[A-Za-z0-9_-]{43}`. Treat a match as a live credential: revoke it with `turntable token revoke <id>` and mint a new one. This repository has no scanner configuration of its own to extend.
 
+## Web sessions and sign-in
+
+The web UI signs people in with GitHub through the instance's own GitHub App ([Signing in to the web UI](/web-sign-in)). The identity is the numeric GitHub user id; roles come only from Turntable's membership rows, created by an invite or by the instance administrator, never from GitHub org membership or repo access. The OAuth `state` is an HMAC with a single-use nonce that is also bound to the browser by a `__Host-` cookie, and the nonce is spent before the code is exchanged. The session cookie is `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`; only its hash is stored; it has an idle and an absolute lifetime and is revoked on sign-out. Every state-changing request from a session must carry an `Origin` equal to the configured public origin. A session is a REST credential only, and may make one write (`invite_member`) until passkey step-up lands: every other write is refused by default.
+
 ## Transport: https only
 
 Plain http must redirect to https on every site we run. The primary control is the proxy or Cloudflare zone ("Always Use HTTPS", HSTS). The server enforces it too, so a proxy misconfiguration never serves plain http: with `TURNTABLE_TRUST_FORWARDED_PROTO=1`, a forwarded `http` request is redirected (301 for GET and HEAD, 400 for other methods, which a redirect would silently turn into a GET), and https responses carry `Strict-Transport-Security: max-age=31536000; includeSubDomains` (configurable or off with `TURNTABLE_HSTS_MAX_AGE`). The forwarded header is believed only when you set that variable, and only its last hop. Check both layers when you ship or audit a site.
