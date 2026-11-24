@@ -115,7 +115,7 @@ export type WireLog = {
 
 export type WireChecks = {
   sha: string;
-  state: "GREEN" | "PENDING" | "RED" | "NONE";
+  state: "GREEN" | "PENDING" | "RED" | "NONE" | "CANCELLED";
   counts: Record<string, unknown>;
   runs: { id: string; project: string; workflow_path: string; state: JobState }[];
 };
