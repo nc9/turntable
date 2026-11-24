@@ -60,7 +60,21 @@ export function useProjects(orgId: string | null): Loaded<Project[]> {
   return useCached(orgId, () => loadProjects(orgId as string));
 }
 
-export { lastOrg, rememberOrg } from "./last-org";
+const LAST_ORG = "tt-last-org";
+export function rememberOrg(slug: string): void {
+  try {
+    localStorage.setItem(LAST_ORG, slug);
+  } catch {
+    // storage unavailable
+  }
+}
+export function lastOrg(): string | null {
+  try {
+    return localStorage.getItem(LAST_ORG);
+  } catch {
+    return null;
+  }
+}
 
 /** The caller's identity and role. Cached; a failed lookup is retried on the next mount. */
 export function useWhoami(): Loaded<Whoami> {
