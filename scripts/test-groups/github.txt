@@ -11,3 +11,4 @@ packages/core/tests/github-poll-rebind.test.ts
 packages/core/tests/github-regrant-reattach.test.ts
 packages/core/tests/github-claim-consume-pin.test.ts
 packages/core/tests/instance-start-claim.test.ts
+packages/core/tests/github-user-lookup.test.ts
