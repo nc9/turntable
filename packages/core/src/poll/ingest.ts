@@ -112,61 +112,39 @@ const onlyListed = <T extends { number: number }>(
 const MARKER_PR_MODE = { event: "pr-mode-enabled", sha: "since" } as const;
 
 /**
- * The time before which a pull request counts as stale, or undefined when no cutoff applies
- * (PR mode off, or an explicit `prNumbers` list). Default: when this server first saw PR mode on
- * for the repo, a persisted marker (cleared while PR mode is off, so turning it on again starts a
- * new cutoff). `prSince` and `prMaxAgeHours` replace the default; the later of the two wins.
+ * The open pull requests this poll may ingest. On the first poll with PR mode on (no persisted
+ * `pr-mode-enabled` marker) every open PR's current head is recorded as seen (run id `baseline`),
+ * the marker is set, and nothing is ingested, except PRs named in `prNumbers`, an explicit
+ * operator choice. After that a (PR, head) pair runs only when it is not already seen, so a push
+ * or a newly opened PR runs, and a comment or label (same head) does not. No time is used. The
+ * marker survives restarts and is cleared while PR mode is off, so turning it on again takes a
+ * new baseline.
  */
-async function prCutoff(
+async function openPullsFor(
   deps: IngestDeps,
   cfg: PollRepoConfig,
   scope: Scope,
-  now: number,
-): Promise<number | undefined> {
-  const marker = { repo: cfg.repo, workflowPath: cfg.workflow, ...MARKER_PR_MODE };
-  if (cfg.prMode === "off") {
-    await clearPollMarker(deps.db, scope, marker);
-    return undefined;
-  }
-  await markPollSkipped(deps.db, scope, { ...marker, now });
-  if (cfg.prNumbers !== undefined) return undefined;
-  const explicit: number[] = [];
-  if (cfg.prSince !== undefined) explicit.push(Date.parse(cfg.prSince));
-  if (cfg.prMaxAgeHours !== undefined) explicit.push(now - cfg.prMaxAgeHours * 3_600_000);
-  if (explicit.length > 0) return Math.max(...explicit);
-  return (await pollMarkedAt(deps.db, scope, marker)) ?? now;
-}
-
-/**
- * Drops pull requests whose GitHub `updated_at` is before the cutoff, remembering each head as
- * seen (no run) so nothing is queued until the head changes. `updated_at` is GitHub's server-side
- * time and moves on every push, so a head older than the cutoff cannot have been pushed after it.
- * A PR with no `updated_at` cannot be proven stale and is kept.
- */
-async function dropStale(
-  deps: IngestDeps,
-  cfg: PollRepoConfig,
-  scope: Scope,
-  prs: PullRequest[],
-  cutoff: number | undefined,
   now: number,
 ): Promise<PullRequest[]> {
-  if (cutoff === undefined) return prs;
-  const keep: PullRequest[] = [];
-  for (const pr of prs) {
-    if (pr.updatedAt === undefined || pr.updatedAt >= cutoff) {
-      keep.push(pr);
-      continue;
-    }
+  const marker = { repo: cfg.repo, workflowPath: cfg.workflow, ...MARKER_PR_MODE };
+  const all = await deps.github.openPulls(cfg.repo);
+  if (!cfg.prBaseline || (await pollMarkedAt(deps.db, scope, marker)) !== undefined) {
+    return onlyListed(cfg, all);
+  }
+  for (const pr of all) {
+    if (cfg.prNumbers?.includes(pr.number)) continue;
     await markPollSkipped(deps.db, scope, {
       repo: cfg.repo,
       workflowPath: cfg.workflow,
       event: "pull_request",
       sha: pr.headSha,
       now,
+      runId: "baseline",
     });
   }
-  return keep;
+  // Set last: a poll that fails part way takes the baseline again.
+  await markPollSkipped(deps.db, scope, { ...marker, now });
+  return cfg.prNumbers === undefined ? [] : onlyListed(cfg, all);
 }
 
 const allowed = (cfg: Pick<PollRepoConfig, "authors">, login: string | null): boolean =>
@@ -800,9 +778,14 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
   }
 
-  const cutoff = await prCutoff(deps, cfg, scope, now);
-  const openPulls = async (): Promise<PullRequest[]> =>
-    dropStale(deps, cfg, scope, onlyListed(cfg, await deps.github.openPulls(repo)), cutoff, now);
+  if (cfg.prMode === "off") {
+    await clearPollMarker(deps.db, scope, {
+      repo,
+      workflowPath: cfg.workflow,
+      ...MARKER_PR_MODE,
+    });
+  }
+  const openPulls = (): Promise<PullRequest[]> => openPullsFor(deps, cfg, scope, now);
 
   if (cfg.prMode === "approval") {
     // Stranger-controlled work is bounded before any forge call is spent on it: a waiting cap

@@ -945,6 +945,7 @@ describe("the whole server configured from the environment", () => {
         workflow: ".github/workflows/ci.yml",
         defaultBranch: "main",
         prMode: "approval",
+        prBaseline: false,
       },
     ],
   });

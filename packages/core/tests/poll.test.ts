@@ -152,6 +152,7 @@ function config(
         workflow: ".github/workflows/ci.yml",
         defaultBranch: "main",
         prMode: "allowlist",
+        prBaseline: false,
         authors: ["octocat", "hubot"],
         ...over,
       },

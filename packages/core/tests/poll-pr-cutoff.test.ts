@@ -103,17 +103,17 @@ beforeEach(async () => {
   scope = await ensureLocalTenant(db);
 });
 
-test("enabling PR mode on a repo with 20 stale open PRs queues no PR runs", async () => {
+test("enabling PR mode on a repo with 20 open PRs queues no PR runs", async () => {
   const gh = makeGithub();
   gh.state.pulls = stale(20);
   await poll(gh, config(), T0);
   expect(await prRuns()).toHaveLength(0);
-  // Still nothing on later polls: each head is remembered as seen.
+  // Still nothing on later polls: each head is already seen.
   await poll(gh, config(), T0 + 120_000);
   expect(await prRuns()).toHaveLength(0);
 });
 
-test("a push to one stale PR after the cutoff queues exactly one run", async () => {
+test("a push to one baselined PR queues exactly one run", async () => {
   const gh = makeGithub();
   gh.state.pulls = stale(20);
   await poll(gh, config(), T0);
@@ -124,56 +124,58 @@ test("a push to one stale PR after the cutoff queues exactly one run", async () 
   expect(runs[0]).toMatchObject({ prNumber: 5, sha: SHA(999) });
 });
 
-test("a restart over the same database does not backfill", async () => {
+test("a comment or label (updated_at moves, same head) queues nothing", async () => {
   const gh = makeGithub();
-  gh.state.pulls = stale(20);
+  gh.state.pulls = stale(3);
   await poll(gh, config(), T0);
-  // A new ingest instance later: the persisted cutoff is the first poll, not this poll's time.
-  await poll(gh, config(), T0 + 10 * HOUR);
+  for (const p of gh.state.pulls) p.updatedAt = T0 + HOUR;
+  await poll(gh, config(), T0 + 2 * HOUR);
   expect(await prRuns()).toHaveLength(0);
 });
 
-test("prSince overrides the default cutoff", async () => {
+test("a newly opened PR after the baseline queues one run", async () => {
   const gh = makeGithub();
-  gh.state.pulls = [
-    { number: 1, headSha: SHA(101), updatedAt: T0 - 48 * HOUR },
-    { number: 2, headSha: SHA(102), updatedAt: T0 - 5 * HOUR },
-  ];
-  const since = new Date(T0 - 24 * HOUR).toISOString();
-  await poll(gh, config({ prSince: since }), T0);
-  expect((await prRuns()).map((r) => r.prNumber)).toEqual([2]);
-  // An earlier prSince admits both on a fresh database.
-  const db2 = openDatabase(":memory:");
-  scope = await ensureLocalTenant(db2);
-  const early = new Date(T0 - 72 * HOUR).toISOString();
-  await poll(gh, config({ prSince: early }), T0, db2);
-  expect((await prRuns(db2)).map((r) => r.prNumber).sort()).toEqual([1, 2]);
+  gh.state.pulls = stale(3);
+  await poll(gh, config(), T0);
+  gh.state.pulls.push({ number: 50, headSha: SHA(500), updatedAt: T0 + 60_000 });
+  await poll(gh, config(), T0 + 120_000);
+  expect((await prRuns()).map((r) => r.prNumber)).toEqual([50]);
 });
 
-test("prMaxAgeHours overrides the default cutoff", async () => {
-  const gh = makeGithub();
-  gh.state.pulls = [
-    { number: 1, headSha: SHA(101), updatedAt: T0 - 48 * HOUR },
-    { number: 2, headSha: SHA(102), updatedAt: T0 - 5 * HOUR },
-  ];
-  await poll(gh, config({ prMaxAgeHours: 24 }), T0);
-  const runs = await prRuns();
-  expect(runs.map((r) => r.prNumber)).toEqual([2]);
-});
-
-test("prNumbers still picks PRs regardless of the cutoff", async () => {
+test("a restart over the same database does not re-baseline or backfill", async () => {
   const gh = makeGithub();
   gh.state.pulls = stale(20);
-  await poll(gh, config({ prNumbers: [3, 7] }), T0);
-  expect((await prRuns()).map((r) => r.prNumber).sort()).toEqual([3, 7]);
+  await poll(gh, config(), T0);
+  // A new PR opened while the server was down is not swallowed by a second baseline.
+  gh.state.pulls.push({ number: 50, headSha: SHA(500), updatedAt: T0 + HOUR });
+  await poll(gh, config(), T0 + 10 * HOUR);
+  expect((await prRuns()).map((r) => r.prNumber)).toEqual([50]);
 });
 
-test("turning PR mode off and on again starts a new cutoff", async () => {
+test("turning PR mode off and on again takes a new baseline", async () => {
   const gh = makeGithub();
   gh.state.pulls = stale(3);
   await poll(gh, config(), T0);
   await poll(gh, config({ prMode: "off" }), T0 + HOUR);
   gh.state.pulls.push({ number: 9, headSha: SHA(900), updatedAt: T0 + 2 * HOUR });
   await poll(gh, config(), T0 + 3 * HOUR);
-  expect((await prRuns()).map((r) => r.prNumber)).toEqual([9]);
+  // The old heads and the new PR are all baselined again: nothing runs.
+  expect(await prRuns()).toHaveLength(0);
+  gh.state.pulls[0] = { number: 1, headSha: SHA(777), updatedAt: T0 + 4 * HOUR };
+  await poll(gh, config(), T0 + 5 * HOUR);
+  expect((await prRuns()).map((r) => r.prNumber)).toEqual([1]);
+});
+
+test("prNumbers force-includes the listed PRs on the baseline poll", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = stale(20);
+  await poll(gh, config({ prNumbers: [3, 7] }), T0);
+  expect((await prRuns()).map((r) => r.prNumber).sort()).toEqual([3, 7]);
+});
+
+test("prBaseline false ingests every open PR on the first poll", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = stale(4);
+  await poll(gh, config({ prBaseline: false }), T0);
+  expect(await prRuns()).toHaveLength(4);
 });
