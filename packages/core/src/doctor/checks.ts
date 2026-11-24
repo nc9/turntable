@@ -675,6 +675,28 @@ export async function checkHumanApprovalApprovers(i: DoctorInputs): Promise<Doct
     : pass(id, area, "every project on human approval has an approver that counts");
 }
 
+export async function checkApproverReenrol(i: DoctorInputs): Promise<DoctorCheck> {
+  const area = "approvals";
+  const id = "approver_github_ids";
+  if (!i.db) return pass(id, area, "not checked: the database is not open");
+  if (!(await i.db.hasTable("approvers"))) return pass(id, area, "this build has no approver keys");
+  const n = Number(
+    (
+      await i.db.all(
+        sql`SELECT count(*) AS n FROM approvers WHERE revoked_at IS NULL AND github_user_id IS NULL`,
+      )
+    )[0]?.n ?? 0,
+  );
+  return n > 0
+    ? warn(
+        id,
+        area,
+        `${n} approver keys need re-enrolling for passkey step-up`,
+        "A key enrolled without a numeric GitHub account id can never step up a web session: re-enrol it (revoke it, then enrol the person again). `instance_org_summary` shows the count per org.",
+      )
+    : pass(id, area, "every active approver key carries a GitHub account id");
+}
+
 export async function checkHumanApprovalKeyPolicy(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "approvals";
   const id = "human_approval_key_policy";
@@ -789,6 +811,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),
     ...(await safe("human_approval_approvers", "approvals", () => checkHumanApprovalApprovers(i))),
+    ...(await safe("approver_github_ids", "approvals", () => checkApproverReenrol(i))),
     ...(await safe("human_approval_key_policy", "approvals", () => checkHumanApprovalKeyPolicy(i))),
   ];
   return report(all);

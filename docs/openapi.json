@@ -11617,6 +11617,178 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/org-summary": {
+      "get": {
+        "operationId": "instance_org_summary",
+        "summary": "Counts of tokens, approvers, members and pending invites per org.",
+        "description": "Per org: the slug, active tokens and how many expire within 7 days, approvers (active, revoked, and how many active ones lack a GitHub account id and so must re-enrol for passkey step-up), members by role and pending invites, with instance totals. Counts only: no token, approver or member ids, names, logins, GitHub ids or key material. Use it to see an org's identity state with no tenant token. The read is audited in the system chain. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orgs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "tokens": {
+                            "type": "object",
+                            "properties": {
+                              "active": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "expiring_within_7_days": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["active", "expiring_within_7_days"],
+                            "additionalProperties": false
+                          },
+                          "approvers": {
+                            "type": "object",
+                            "properties": {
+                              "active": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "revoked": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "active_missing_github_user_id": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["active", "revoked", "active_missing_github_user_id"],
+                            "additionalProperties": false
+                          },
+                          "members": {
+                            "type": "object",
+                            "properties": {
+                              "owner": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "admin": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "member": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "viewer": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["owner", "admin", "member", "viewer"],
+                            "additionalProperties": false
+                          },
+                          "pending_invites": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": ["org", "tokens", "approvers", "members", "pending_invites"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "orgs": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "active_tokens": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "active_approvers": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "active_approvers_missing_github_user_id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "members": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "pending_invites": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "orgs",
+                        "active_tokens",
+                        "active_approvers",
+                        "active_approvers_missing_github_user_id",
+                        "members",
+                        "pending_invites"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["orgs", "totals"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/run-activity": {
       "get": {
         "operationId": "instance_run_activity",

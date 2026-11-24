@@ -259,6 +259,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_github_app_status",
       "instance_ingest_status",
       "instance_list_orgs",
+      "instance_org_summary",
       "instance_list_settings",
       "instance_revoke_org_token",
       "instance_run_activity",

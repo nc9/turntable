@@ -22,6 +22,7 @@ import {
   getOrgBySlug,
   getProject,
   getProjectBySlug,
+  instanceOrgSummary,
   instanceRunActivity,
   insertApiToken,
   listAllOrgs,
@@ -1073,5 +1074,110 @@ export const instanceRunActivityOp = defineOp({
       total_running_attempts: total,
       orgs_with_running_attempts: rows.filter((r) => r.running_attempts > 0).length,
     };
+  },
+});
+
+export const instanceOrgSummaryOp = defineOp({
+  name: "instance_org_summary",
+  summary: "Counts of tokens, approvers, members and pending invites per org.",
+  description:
+    "Per org: the slug, active tokens and how many expire within 7 days, approvers (active, " +
+    "revoked, and how many active ones lack a GitHub account id and so must re-enrol for " +
+    "passkey step-up), members by role and pending invites, with instance totals. Counts only: " +
+    "no token, approver or member ids, names, logins, GitHub ids or key material. Use it to see " +
+    "an org's identity state with no tenant token. The read is audited in the system chain. " +
+    "Only the instance administrator can call it. Read-only. Not an MCP tool.",
+  input: z.object({}),
+  output: z.object({
+    orgs: z.array(
+      z.object({
+        org: z.string(),
+        tokens: z.object({
+          active: z.int(),
+          expiring_within_7_days: z.int(),
+        }),
+        approvers: z.object({
+          active: z.int(),
+          revoked: z.int(),
+          active_missing_github_user_id: z.int(),
+        }),
+        members: z.object({
+          owner: z.int(),
+          admin: z.int(),
+          member: z.int(),
+          viewer: z.int(),
+        }),
+        pending_invites: z.int(),
+      }),
+    ),
+    totals: z.object({
+      orgs: z.int(),
+      active_tokens: z.int(),
+      active_approvers: z.int(),
+      active_approvers_missing_github_user_id: z.int(),
+      members: z.int(),
+      pending_invites: z.int(),
+    }),
+  }),
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/org-summary" },
+  mcp: false,
+  async handler(ctx) {
+    const [orgs, summary] = await Promise.all([
+      listAllOrgs(ctx.db),
+      instanceOrgSummary(ctx.db, ctx.now()),
+    ]);
+    const byOrg = new Map(summary.map((x) => [x.orgId, x]));
+    const rows = orgs
+      .filter((o) => o.slug !== SYSTEM_ORG_SLUG)
+      .map((o) => {
+        const x = byOrg.get(o.id);
+        return {
+          org: o.slug,
+          tokens: {
+            active: x?.tokensActive ?? 0,
+            expiring_within_7_days: x?.tokensExpiringSoon ?? 0,
+          },
+          approvers: {
+            active: x?.approversActive ?? 0,
+            revoked: x?.approversRevoked ?? 0,
+            active_missing_github_user_id: x?.approversMissingGithubId ?? 0,
+          },
+          members: {
+            owner: x?.members.owner ?? 0,
+            admin: x?.members.admin ?? 0,
+            member: x?.members.member ?? 0,
+            viewer: x?.members.viewer ?? 0,
+          },
+          pending_invites: x?.pendingInvites ?? 0,
+        };
+      });
+    const sum = (f: (r: (typeof rows)[number]) => number) => rows.reduce((n, r) => n + f(r), 0);
+    const totals = {
+      orgs: rows.length,
+      active_tokens: sum((r) => r.tokens.active),
+      active_approvers: sum((r) => r.approvers.active),
+      active_approvers_missing_github_user_id: sum(
+        (r) => r.approvers.active_missing_github_user_id,
+      ),
+      members: sum((r) => r.members.owner + r.members.admin + r.members.member + r.members.viewer),
+      pending_invites: sum((r) => r.pending_invites),
+    };
+    await appendAudit(
+      ctx.db,
+      { orgId: await systemOrgId(ctx.db) },
+      {
+        principalKind: "instance",
+        principalId: ctx.principal.id,
+        op: "instance_org_summary",
+        effect: "read",
+        outcome: "ok",
+        input: { orgs: rows.length },
+      },
+    );
+    return { orgs: rows, totals };
   },
 });
