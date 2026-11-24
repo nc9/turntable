@@ -9,8 +9,8 @@ const BLOCK = 256 * 1024;
 /** Lines are matched on their first MATCH_CHARS characters and shown cut at SHOW_CHARS. */
 const MATCH_CHARS = 2000;
 const SHOW_CHARS = 500;
-/** Wall-clock safety net, checked between lines; hitting it reports `scan_budget`. */
-const DEADLINE_MS = 30_000;
+/** Default per-call wall-clock deadline, checked between lines; the setting overrides it. */
+export const GREP_DEADLINE_MS = 2000;
 const NL = 0x0a;
 
 export type GrepInput = {
@@ -23,9 +23,11 @@ export type GrepInput = {
   maxBytes: number;
   /** Most log bytes walked from `start`; defaults to GREP_SCAN_BYTES. */
   scanBytes?: number;
+  /** Wall-clock budget for the call; defaults to GREP_DEADLINE_MS. */
+  deadlineMs?: number;
 };
 
-export type GrepStop = "end" | "scan_budget" | "max_matches" | "max_bytes";
+export type GrepStop = "end" | "scan_budget" | "deadline" | "max_matches" | "max_bytes";
 
 export type GrepResult = {
   text: string;
@@ -72,6 +74,8 @@ async function* lineStream(
   for (;;) {
     let chunk: Buffer = Buffer.alloc(0);
     if (pos < scanEnd) {
+      // Let other requests run between blocks: one grep must not hold the loop for the call.
+      if (pos > start) await new Promise<void>((r) => setImmediate(r));
       chunk = await read(pos, Math.min(scanEnd, pos + BLOCK));
       pos = chunk.length === 0 ? scanEnd : pos + chunk.length;
     }
@@ -122,7 +126,7 @@ export async function grepLog(
   now: () => number = Date.now,
 ): Promise<GrepResult> {
   const match = matcherFor(input);
-  const deadline = now() + DEADLINE_MS;
+  const deadline = now() + (input.deadlineMs ?? GREP_DEADLINE_MS);
   const scanEnd = Math.min(total, start + (input.scanBytes ?? GREP_SCAN_BYTES));
   const out: string[] = [];
   let outBytes = 0;
@@ -150,7 +154,7 @@ export async function grepLog(
   for await (const ln of lineStream(read, start, scanEnd, scanEnd === total)) {
     if (now() > deadline) {
       stoppedAt = lastEnd;
-      why = "scan_budget";
+      why = "deadline";
       break;
     }
     const hit = match(ln.text.length > MATCH_CHARS ? ln.text.slice(0, MATCH_CHARS) : ln.text);

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { OpError } from "../src/ops/errors";
+import { createGrepSlots } from "../src/ops/grep-slots";
 import { grepLog, type GrepInput } from "../src/ops/log-grep";
 
 const enc = (s: string): Buffer => Buffer.from(s, "utf8");
@@ -130,5 +132,52 @@ describe("grepLog", () => {
     const r = await grepLog(reader(log), log.length, 0, base);
     expect(r.matches).toBe(1);
     expect(r.stopped).toBe("end");
+  });
+});
+
+describe("grepLog deadline", () => {
+  test("a deadline hit stops with next_offset, and resuming finds the later match", async () => {
+    const log = makeLog(10_000, [200, 9000]);
+    // A clock that advances 1 ms per reading: the deadline falls part way through the log.
+    let t = 0;
+    const clock = (): number => t++;
+    const first = await grepLog(reader(log), log.length, 0, { ...base, deadlineMs: 3000 }, clock);
+    expect(first.stopped).toBe("deadline");
+    expect(first.next).not.toBeNull();
+    expect(first.matches).toBe(1);
+    let next: number | null = first.next;
+    let hits = first.matches;
+    let guard = 0;
+    while (next !== null && guard++ < 20) {
+      const r = await grepLog(reader(log), log.length, next, { ...base, deadlineMs: 3000 }, clock);
+      hits += r.matches;
+      next = r.next;
+    }
+    expect(hits).toBe(2);
+  });
+});
+
+describe("grep slots", () => {
+  test("the 3rd parallel call per principal is refused, and release frees a slot", () => {
+    const slots = createGrepSlots(2, 8);
+    const a = slots.acquire("token:a");
+    slots.acquire("token:a");
+    expect(() => slots.acquire("token:a")).toThrow(/busy/);
+    try {
+      slots.acquire("token:a");
+    } catch (e) {
+      expect((e as OpError).code).toBe("rate_limited");
+      expect((e as OpError).status).toBe(429);
+    }
+    slots.acquire("token:b"); // another principal is not affected
+    a();
+    a(); // double release is harmless
+    slots.acquire("token:a");
+  });
+
+  test("the instance-wide limit refuses past 8", () => {
+    const slots = createGrepSlots(2, 8);
+    for (let i = 0; i < 8; i++) slots.acquire(`token:${i}`);
+    expect(() => slots.acquire("token:9")).toThrow(/busy/);
   });
 });
