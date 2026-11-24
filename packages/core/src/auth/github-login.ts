@@ -136,13 +136,27 @@ export interface AuthHandlerOptions {
 export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
   const redirectUri = `${o.sessions.origin}${CALLBACK_PATH}`;
 
-  async function key(appOrg: string): Promise<Buffer> {
-    let k = await o.store.get(appOrg, SECRET_LOGIN_KEY);
-    if (k === undefined) {
-      k = randomBytes(32).toString("base64url");
-      await o.store.set(appOrg, SECRET_LOGIN_KEY, k);
+  // The HMAC key is created on first use. Concurrent first uses in this process must share ONE
+  // creation: two racing get-or-create calls each wrote a different key and the later write
+  // invalidated the state the earlier one had just signed. The key never changes once stored, so
+  // the promise is cached per App org (and dropped if creation fails, so it can be retried).
+  const keys = new Map<string, Promise<Buffer>>();
+  function key(appOrg: string): Promise<Buffer> {
+    let p = keys.get(appOrg);
+    if (!p) {
+      p = (async () => {
+        let k = await o.store.get(appOrg, SECRET_LOGIN_KEY);
+        if (k === undefined) {
+          await o.store.set(appOrg, SECRET_LOGIN_KEY, randomBytes(32).toString("base64url"));
+          k = await o.store.get(appOrg, SECRET_LOGIN_KEY);
+        }
+        if (k === undefined) throw new Error("the sign-in state key could not be stored");
+        return Buffer.from(k, "base64url");
+      })();
+      keys.set(appOrg, p);
+      p.catch(() => keys.delete(appOrg));
     }
-    return Buffer.from(k, "base64url");
+    return p;
   }
 
   const sign = (k: Buffer, body: string): Buffer =>
