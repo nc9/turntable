@@ -737,6 +737,100 @@ export function finishAttempt(db: Db, scope: Scope, input: FinishInput): Promise
   });
 }
 
+/** The attempt error class prefix of an attempt whose controller vanished (see reconcileExpired). */
+export const CONTROLLER_LOST = "controller_lost";
+/**
+ * Set on a still-running attempt by a shutdown that gave up waiting for it (the drain timeout). It
+ * tells the next boot's reconcile: if the exec cannot be re-attached, retry the job once.
+ */
+export const DRAIN_CUT = "drain_cut";
+
+/** Marks a running attempt as cut by a drain timeout. Fenced by the lease holder. */
+export function markDrainCut(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({ errorClass: DRAIN_CUT })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          and(
+            eq(s.jobAttempts.id, attemptId),
+            eq(s.jobAttempts.state, "running"),
+            eq(s.jobAttempts.leaseOwner, owner),
+          ),
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    return rows.length > 0;
+  });
+}
+
+/**
+ * A job whose controller vanished after a drain timeout cut it (`markDrainCut`) is requeued ONCE
+ * as an infra error: the lost attempt ends `infra_error` (never `failure`), the job goes back to
+ * `queued` with a NEW attempt and no rerun reason (it uses none of the commit's reruns). A job
+ * that already lost an attempt this way is left to the caller, which finishes it as `infra_error`.
+ * Fenced like `finishAttempt`: only a still-running attempt whose lease expired before `now`.
+ * Returns true when it requeued.
+ */
+export function requeueLostAttemptOnce(
+  db: Db,
+  scope: Scope,
+  input: { attemptId: string; owner: string; errorClass: string; now: number },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [cur] = await tx.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, input.attemptId),
+        ),
+      )
+      .limit(1);
+    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
+    if (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now) return false;
+    if (cur.errorClass !== DRAIN_CUT) return false;
+    const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
+      (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
+    );
+    if (earlier.length > 0) return false;
+    await updateAttempt(tx, scope, cur.id, {
+      state: "infra_error",
+      errorClass: input.errorClass,
+    });
+    await tx.orm
+      .update(s.jobAttempts)
+      .set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(s.jobAttempts.id, cur.id));
+    await transitionJob(tx, scope, cur.jobId, "infra_error", { reason: CONTROLLER_LOST });
+    const job = await transitionJob(tx, scope, cur.jobId, "queued", { reason: CONTROLLER_LOST });
+    await createAttempt(tx, scope, { jobId: cur.jobId, provider: cur.provider });
+    if (job) {
+      const states = effectiveStates(await listJobs(tx, scope, job.runId));
+      await setRunStatus(tx, scope, job.runId, aggregateRunStatus(states));
+    }
+    await appendAudit(tx, scope, {
+      principalKind: "system",
+      principalId: "scheduler",
+      op: "scheduler.requeue_lost",
+      effect: "write",
+      outcome: "ok",
+      input: { attempt_id: cur.id, job_id: cur.jobId, at: input.now },
+    });
+    return true;
+  });
+}
+
 /** Running attempts whose lease has expired: their worker is gone. Oldest first. */
 export function listExpiredLeases(db: Db, now: number): Promise<JobAttempt[]> {
   return db.run((h) =>

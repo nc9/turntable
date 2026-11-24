@@ -19,6 +19,7 @@ import type { RelyingParty } from "./approvals/webauthn";
 import type { GithubFacts } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
+import { processDrain } from "./scheduler/drain";
 import type { DoctorReport } from "./doctor/types";
 import type { ForwardedObserver } from "./doctor/observe";
 import type { SecretStore } from "./secrets/store";
@@ -59,7 +60,11 @@ export async function handleRequest(
     return new Response("method not allowed", { status: 405, headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/healthz") {
-    return Response.json({ ok: true, version: VERSION }, { headers: SECURITY_HEADERS });
+    // Still 200 while draining, so the platform keeps the old instance until its attempts finish.
+    const body = processDrain.draining
+      ? { ok: true, version: VERSION, draining: true, running_attempts: processDrain.runningHere }
+      : { ok: true, version: VERSION };
+    return Response.json(body, { headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/openapi.json") {
     return new Response(OPENAPI, {
