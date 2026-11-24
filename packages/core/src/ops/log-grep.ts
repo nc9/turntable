@@ -3,14 +3,14 @@ import { redactString } from "@turntable/redact";
 import { OpError } from "./errors";
 import { compileSafeRegex, SafeRegexError, type LineMatcher } from "./safe-regex";
 
-/** Most log bytes one call scans. A bigger log is paged with next_offset. */
-export const GREP_SCAN_BYTES = 4 * 1024 * 1024;
+/** Default scan budget; the `job_log_grep_scan_bytes` setting overrides it. */
+export const GREP_SCAN_BYTES = 32 * 1024 * 1024;
 const BLOCK = 256 * 1024;
 /** Lines are matched on their first MATCH_CHARS characters and shown cut at SHOW_CHARS. */
 const MATCH_CHARS = 2000;
 const SHOW_CHARS = 500;
-/** Wall-clock budget, checked between lines. */
-const DEADLINE_MS = 2000;
+/** Wall-clock safety net, checked between lines; hitting it reports `scan_budget`. */
+const DEADLINE_MS = 30_000;
 const NL = 0x0a;
 
 export type GrepInput = {
@@ -19,8 +19,13 @@ export type GrepInput = {
   ignoreCase: boolean;
   context: number;
   maxMatches: number;
+  /** Caps the OUTPUT text only. */
   maxBytes: number;
+  /** Most log bytes walked from `start`; defaults to GREP_SCAN_BYTES. */
+  scanBytes?: number;
 };
+
+export type GrepStop = "end" | "scan_budget" | "max_matches" | "max_bytes";
 
 export type GrepResult = {
   text: string;
@@ -30,6 +35,8 @@ export type GrepResult = {
   /** Where to continue; null when the scan reached the end of the log. */
   next: number | null;
   scannedBytes: number;
+  /** Why the scan stopped; `next` is null exactly when this is "end". */
+  stopped: GrepStop;
 };
 
 function matcherFor(input: GrepInput): LineMatcher {
@@ -116,7 +123,7 @@ export async function grepLog(
 ): Promise<GrepResult> {
   const match = matcherFor(input);
   const deadline = now() + DEADLINE_MS;
-  const scanEnd = Math.min(total, start + GREP_SCAN_BYTES);
+  const scanEnd = Math.min(total, start + (input.scanBytes ?? GREP_SCAN_BYTES));
   const out: string[] = [];
   let outBytes = 0;
   let matches = 0;
@@ -125,6 +132,7 @@ export async function grepLog(
   let before: Line[] = [];
   let lastEnd = start; // end of the last line fully handled
   let stoppedAt: number | undefined;
+  let why: GrepStop = "scan_budget";
 
   const show = (ln: Line, sep: ":" | "-"): boolean => {
     const cut =
@@ -142,6 +150,7 @@ export async function grepLog(
   for await (const ln of lineStream(read, start, scanEnd, scanEnd === total)) {
     if (now() > deadline) {
       stoppedAt = lastEnd;
+      why = "scan_budget";
       break;
     }
     const hit = match(ln.text.length > MATCH_CHARS ? ln.text.slice(0, MATCH_CHARS) : ln.text);
@@ -171,22 +180,25 @@ export async function grepLog(
     if (!ok) {
       // Output is full: continue from the first line that did not fit.
       stoppedAt = failedAt;
+      why = "max_bytes";
       break;
     }
     lastEnd = ln.end;
     if (matches >= input.maxMatches && afterLeft === 0) {
       stoppedAt = lastEnd;
+      why = "max_matches";
       break;
     }
   }
 
   const resumeAt = stoppedAt ?? lastEnd;
-  const doneAll = stoppedAt === undefined && scanEnd === total;
+  const doneAll = (stoppedAt === undefined && scanEnd === total) || resumeAt >= total;
   return {
     text: out.join(""),
     matches,
     start,
-    next: doneAll || resumeAt >= total ? null : resumeAt,
+    next: doneAll ? null : resumeAt,
+    stopped: doneAll ? "end" : stoppedAt === undefined ? "scan_budget" : why,
     scannedBytes: Math.max(0, resumeAt - start),
   };
 }
