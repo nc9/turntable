@@ -640,6 +640,8 @@ export function markPollSkipped(
     event: string;
     sha: string;
     now?: number | undefined;
+    /** Sentinel stored as the run id; default "skipped". The PR baseline uses "baseline". */
+    runId?: string | undefined;
   },
 ): Promise<boolean> {
   return db.run(async (h) => {
@@ -654,7 +656,7 @@ export function markPollSkipped(
         event: input.event,
         sha: input.sha,
         // Sentinel for "no run" (a binding move writes "moved", see MOVED_RUN_ID in repos/github.ts).
-        runId: "skipped",
+        runId: input.runId ?? "skipped",
         ...(input.now === undefined ? {} : { createdAt: input.now }),
       })
       .onConflictDoNothing()

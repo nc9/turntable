@@ -3,6 +3,7 @@
 // org token of any role can, whatever its grant, and none of these is an MCP tool. Their audit
 // entries go to the system org's chain.
 import { z } from "zod";
+import type { Db } from "../../db";
 import { createSettingsRuntime, resolveSetting } from "../../settings/resolve";
 import { settingsRegistry } from "../../settings/definitions";
 import { approvalWarnings, bootstrapFirstApprover } from "../../approvals/apply";
@@ -11,6 +12,7 @@ import {
   appendAudit,
   appendEvent,
   countActiveApiTokens,
+  countRunning,
   createOrg,
   findRepoBindingByName,
   getInstallation,
@@ -44,6 +46,7 @@ import { rotateInstanceToken } from "../instance-token-cli";
 import { generateToken, hashToken } from "../tokens";
 import { ambientSettings } from "../../settings/ambient";
 import { orgTokenRemintDelaySetting } from "../../settings/definitions";
+import { processDrain } from "../../scheduler/drain";
 import { doctorForApi, doctorOutput } from "./doctor";
 import { quotaView, quotaViewSchema } from "./quotas";
 
@@ -889,5 +892,71 @@ export const bootstrapApprover = defineOp({
       key_fingerprint: made.fingerprint,
       warnings: await approvalWarnings(ctx.db, org.id, ["production", "release"]),
     };
+  },
+});
+
+const drainOutput = z.object({
+  draining: z.boolean(),
+  running_attempts: z.int().describe("Attempts running right now, across the instance."),
+  since: z.string().nullable().describe("When the drain started (ISO 8601), or null."),
+});
+
+async function drainView(ctx: { db: Db }): Promise<z.infer<typeof drainOutput>> {
+  const snap = processDrain.snapshot();
+  return {
+    draining: snap.draining,
+    running_attempts: await countRunning(ctx.db),
+    since: iso(snap.since),
+  };
+}
+
+export const instanceDrainOp = defineOp({
+  name: "instance_drain",
+  summary:
+    "Stop starting new attempts so a deploy does not cut running jobs (instance administrator).",
+  description:
+    "With on=true the scheduler of this server process starts no new attempt: queued work stays " +
+    "queued in the database and running attempts finish. Poll `instance_drain_status` (or " +
+    "`/healthz`) until `running_attempts` is 0, deploy, and the new instance boots undrained and " +
+    "resumes the queue. on=false resumes claiming without a restart. The drain is held in memory " +
+    "and is never persisted, so a restart always ends it. It covers this process: run the worker " +
+    "role in the same process as the web role (the default), or drain each worker process. " +
+    "Turning it on twice keeps the first time. The reason is kept in the system audit chain. " +
+    "Only the instance administrator can call it. Not an MCP tool.",
+  input: z.object({
+    on: z.boolean().describe("true starts the drain, false ends it."),
+    reason: z.string().trim().min(3).max(500).describe("Why. Kept in the audit."),
+  }),
+  output: drainOutput,
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/drain" },
+  mcp: false,
+  auditDetail: (o) => ({ draining: o.draining, running_attempts: o.running_attempts }),
+  async handler(ctx, i) {
+    processDrain.set(i.on, i.reason, ctx.now());
+    return drainView(ctx);
+  },
+});
+
+export const instanceDrainStatusOp = defineOp({
+  name: "instance_drain_status",
+  summary: "Whether this instance is draining and how many attempts still run.",
+  description:
+    "Returns `draining`, `running_attempts` (across the instance) and `since`. A deploy script " +
+    "waits for `running_attempts` to be 0 after `instance_drain`. Only the instance " +
+    "administrator can call it. Read-only. Not an MCP tool.",
+  input: z.object({}),
+  output: drainOutput,
+  effect: "read",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/instance/drain" },
+  mcp: false,
+  async handler(ctx) {
+    return drainView(ctx);
   },
 });

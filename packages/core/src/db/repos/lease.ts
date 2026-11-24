@@ -158,6 +158,9 @@ async function runsStartedSince(db: Db, orgId: string, since: number): Promise<S
  * Capacity counts every attempt in state running, lease expired or not, so a crashed worker
  * keeps its slot until the reconciler resolves it.
  */
+/** Run events that are claimed ahead of PR runs within a project: trust class protected. */
+const PROTECTED_EVENTS: string[] = ["push", "merge_group"];
+
 export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undefined> {
   const readiness = o.readiness ?? defaultReadiness;
   const pageSize = o.pageSize ?? 25;
@@ -266,38 +269,57 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             x.oldest.localeCompare(y.oldest),
         )
         .map((w) => w.orgId);
-      const cursor = new Map<string, string>(orgs.map((id) => [id, ""]));
+      // Org order and round-robin are tier-agnostic. Inside one org's turn, protected runs
+      // (push, merge_group) are paged before that org's other runs; FIFO within each tier.
+      const TIERS = ["protected", "other"] as const;
+      const cursor = new Map<string, string>(
+        orgs.flatMap((id) => TIERS.map((t) => [`${id}|${t}`, ""] as const)),
+      );
       const open = new Set(orgs);
       let scanned = 0;
 
       while (open.size > 0 && scanned < scanLimit) {
         for (const orgId of orgs) {
           if (!open.has(orgId) || scanned >= scanLimit) continue;
-          const page = await tx.orm
-            .select({ attempt: s.jobAttempts, job: s.jobs })
-            .from(s.jobAttempts)
-            .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
-            .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
-            .where(
-              and(
-                eq(s.jobAttempts.orgId, orgId),
-                eq(s.jobAttempts.state, "queued"),
-                eq(s.jobs.state, "queued"),
-                isNull(s.jobAttempts.leaseOwner),
-                o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
-                notFrozen(s.runs.orgId, s.runs.projectId),
-                ...notProjectFull,
-                ...classFilter,
-                gt(s.jobAttempts.id, cursor.get(orgId)!),
-              ),
-            )
-            .orderBy(asc(s.jobAttempts.id))
-            .limit(Math.min(pageSize, scanLimit - scanned));
+          let page: {
+            attempt: typeof s.jobAttempts.$inferSelect;
+            job: typeof s.jobs.$inferSelect;
+          }[] = [];
+          let tier: (typeof TIERS)[number] = "protected";
+          for (tier of TIERS) {
+            const cur = cursor.get(`${orgId}|${tier}`);
+            if (cur === undefined) continue;
+            page = await tx.orm
+              .select({ attempt: s.jobAttempts, job: s.jobs })
+              .from(s.jobAttempts)
+              .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+              .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+              .where(
+                and(
+                  eq(s.jobAttempts.orgId, orgId),
+                  eq(s.jobAttempts.state, "queued"),
+                  eq(s.jobs.state, "queued"),
+                  isNull(s.jobAttempts.leaseOwner),
+                  o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+                  notFrozen(s.runs.orgId, s.runs.projectId),
+                  ...notProjectFull,
+                  ...classFilter,
+                  tier === "protected"
+                    ? inArray(s.runs.event, PROTECTED_EVENTS)
+                    : notInArray(s.runs.event, PROTECTED_EVENTS),
+                  gt(s.jobAttempts.id, cur),
+                ),
+              )
+              .orderBy(asc(s.jobAttempts.id))
+              .limit(Math.min(pageSize, scanLimit - scanned));
+            if (page.length > 0) break;
+            cursor.delete(`${orgId}|${tier}`); // tier exhausted: next tier, same turn
+          }
           if (page.length === 0) {
             open.delete(orgId);
             continue;
           }
-          cursor.set(orgId, page.at(-1)!.attempt.id);
+          cursor.set(`${orgId}|${tier}`, page.at(-1)!.attempt.id);
           for (const c of page) {
             scanned++;
             const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
@@ -733,6 +755,100 @@ export function finishAttempt(db: Db, scope: Scope, input: FinishInput): Promise
       const states = effectiveStates(await listJobs(tx, scope, job.runId));
       await setRunStatus(tx, scope, job.runId, aggregateRunStatus(states));
     }
+    return true;
+  });
+}
+
+/** The attempt error class prefix of an attempt whose controller vanished (see reconcileExpired). */
+export const CONTROLLER_LOST = "controller_lost";
+/**
+ * Set on a still-running attempt by a shutdown that gave up waiting for it (the drain timeout). It
+ * tells the next boot's reconcile: if the exec cannot be re-attached, retry the job once.
+ */
+export const DRAIN_CUT = "drain_cut";
+
+/** Marks a running attempt as cut by a drain timeout. Fenced by the lease holder. */
+export function markDrainCut(
+  db: Db,
+  scope: Scope,
+  attemptId: string,
+  owner: string,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.jobAttempts)
+      .set({ errorClass: DRAIN_CUT })
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          and(
+            eq(s.jobAttempts.id, attemptId),
+            eq(s.jobAttempts.state, "running"),
+            eq(s.jobAttempts.leaseOwner, owner),
+          ),
+        ),
+      )
+      .returning({ id: s.jobAttempts.id });
+    return rows.length > 0;
+  });
+}
+
+/**
+ * A job whose controller vanished after a drain timeout cut it (`markDrainCut`) is requeued ONCE
+ * as an infra error: the lost attempt ends `infra_error` (never `failure`), the job goes back to
+ * `queued` with a NEW attempt and no rerun reason (it uses none of the commit's reruns). A job
+ * that already lost an attempt this way is left to the caller, which finishes it as `infra_error`.
+ * Fenced like `finishAttempt`: only a still-running attempt whose lease expired before `now`.
+ * Returns true when it requeued.
+ */
+export function requeueLostAttemptOnce(
+  db: Db,
+  scope: Scope,
+  input: { attemptId: string; owner: string; errorClass: string; now: number },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [cur] = await tx.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, input.attemptId),
+        ),
+      )
+      .limit(1);
+    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
+    if (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now) return false;
+    if (cur.errorClass !== DRAIN_CUT) return false;
+    const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
+      (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
+    );
+    if (earlier.length > 0) return false;
+    await updateAttempt(tx, scope, cur.id, {
+      state: "infra_error",
+      errorClass: input.errorClass,
+    });
+    await tx.orm
+      .update(s.jobAttempts)
+      .set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(s.jobAttempts.id, cur.id));
+    await transitionJob(tx, scope, cur.jobId, "infra_error", { reason: CONTROLLER_LOST });
+    const job = await transitionJob(tx, scope, cur.jobId, "queued", { reason: CONTROLLER_LOST });
+    await createAttempt(tx, scope, { jobId: cur.jobId, provider: cur.provider });
+    if (job) {
+      const states = effectiveStates(await listJobs(tx, scope, job.runId));
+      await setRunStatus(tx, scope, job.runId, aggregateRunStatus(states));
+    }
+    await appendAudit(tx, scope, {
+      principalKind: "system",
+      principalId: "scheduler",
+      op: "scheduler.requeue_lost",
+      effect: "write",
+      outcome: "ok",
+      input: { attempt_id: cur.id, job_id: cur.jobId, at: input.now },
+    });
     return true;
   });
 }

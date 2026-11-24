@@ -247,6 +247,8 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_audit_verify",
       "instance_bind_github_login",
       "instance_doctor",
+      "instance_drain",
+      "instance_drain_status",
       "instance_get_setting",
       "instance_github_app_status",
       "instance_ingest_status",

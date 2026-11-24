@@ -31,7 +31,7 @@ import { type AuthHandler, createAuthHandler, githubIdentityVerifier } from "./a
 import { WebSessions } from "./auth/web-sessions";
 import { AuditAnchor } from "./audit/anchor";
 import { backupBeforeMigrate, backupKeepFromEnv } from "./db/backup";
-import { setAmbientSettings } from "./settings/ambient";
+import { ambientSettings, setAmbientSettings } from "./settings/ambient";
 import { loadSettingsRuntime } from "./settings/boot";
 import { DIALECT } from "./db/dialect";
 import { SYSTEM_ORG_SLUG } from "./audit/failures";
@@ -95,6 +95,8 @@ import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
 import { createChannelClient, withReleaseChannel } from "./release/channel-client";
+import { DEFAULT_DRAIN_TIMEOUT_SECONDS, drainTimeoutSecondsSetting } from "./settings/definitions";
+import { resolveSetting } from "./settings/resolve";
 import { cachedDoctor } from "./doctor/cache";
 import { runDoctor } from "./doctor/checks";
 import { countHumanWithAnyKeyPolicy, countHumanWithoutApprover } from "./ops/setting-guard";
@@ -482,10 +484,18 @@ async function startBackground(
       poller?.stop();
       if (reconcileTimer) clearInterval(reconcileTimer);
       if (scheduler) {
-        // Stop claiming, give running attempts a moment, then leave the rest: their leases
-        // expire and the next boot's reconcile re-attaches to them. Never abort them
-        // here, which would record a user cancel that never happened.
-        await Promise.race([scheduler.stop(), Bun.sleep(10_000)]);
+        // Drain (#446): start nothing new, wait for running attempts up to `drain_timeout_seconds`
+        // (the server stays up and /healthz says `draining`), then leave the rest. Their leases
+        // expire and the next boot's reconcile re-attaches to them, or retries each job once as an
+        // infra error. Never abort them here, which would record a user cancel that never happened.
+        const seconds = (
+          await resolveSetting(ambientSettings(), db, drainTimeoutSecondsSetting.key).catch(() => ({
+            value: DEFAULT_DRAIN_TIMEOUT_SECONDS,
+          }))
+        ).value as number;
+        log(`draining: waiting up to ${seconds}s for ${scheduler.activeCount} running attempt(s)`);
+        const { remaining } = await scheduler.drainAndWait(seconds * 1000, "shutdown");
+        if (remaining > 0) log(`drain timeout: ${remaining} attempt(s) left for the next boot`);
       }
       await secretsProxy?.stop();
     },
@@ -1080,7 +1090,11 @@ async function serve(args: string[]): Promise<void> {
 
   wake = (repo) => void background.nudge(repo);
 
+  let stopping = false;
   const stop = () => {
+    // A second signal does not wait for the drain.
+    if (stopping) process.exit(1);
+    stopping = true;
     for (const s of auditStops) s();
     void background
       .stop()

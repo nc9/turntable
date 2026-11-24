@@ -66,7 +66,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `job_cuts` | `GET /api/v1/jobs/{job_id}/cuts` | yes |  | read | reader | token | Where a job log had bytes omitted (head and tail caps). |
 | `failure_digest` | `GET /api/v1/failure-digest` | yes |  | read | reader | token | Why a job (or a run's failed jobs) failed: the failing step and the first error, ~2 KiB. |
 | `events` | `GET /api/v1/events` | yes |  | read | reader | token | The event feed from a cursor, with optional long-poll. |
-| `checks_for_sha` | `GET /api/v1/checks/{sha}` | yes |  | read | reader | token | GREEN, PENDING, RED or NONE for a commit: the merge and deploy gate. |
+| `checks_for_sha` | `GET /api/v1/checks/{sha}` | yes |  | read | reader | token | GREEN, PENDING, RED, CANCELLED or NONE for a commit: the merge and deploy gate. |
 | `cancel` | `POST /api/v1/runs/{run_id}/cancel` | yes |  | destructive | operator | token | Cancel a run: queued, running and waiting jobs become cancelled. |
 | `rerun` | `POST /api/v1/runs/{run_id}/rerun` | yes |  | write | operator | token | Rerun failed jobs of a run, or named jobs, with a reason. Capped per commit. |
 | `approve_run` | `POST /api/v1/runs/{run_id}/approve` | yes |  | write | operator (per org policy) | token | Approve a run held for an untrusted author, bound to its head sha and workflow hash. |
@@ -94,6 +94,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_start_installation_claim` | none | no |  | write | admin | instance | Start a GitHub installation claim for an org that cannot (instance administrator only). |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
 | `instance_doctor` | none | no |  | read | admin | instance | The instance's readiness report, for the instance administrator. |
+| `instance_drain` | none | no |  | write | admin | instance | Stop starting new attempts so a deploy does not cut running jobs (instance administrator). |
+| `instance_drain_status` | none | no |  | read | admin | instance | Whether this instance is draining and how many attempts still run. |
 | `instance_ingest_status` | none | no |  | read | admin | instance | Poll health of every org's repos, for the instance administrator. |
 | `instance_audit_verify` | none | no |  | read | admin | instance | Check orgs' audit chains against exported anchors, for the instance administrator. |
 | `set_quotas` | none | no |  | write | admin | instance | Set an org's quotas (instance administrator only). |
@@ -155,7 +157,17 @@ Secret values are set only through the REST API (over https) or `turntable secre
 
 Two more operations are signature operations: `approve_environment` (`POST /api/v1/approvals`) and `approve_enrolment` (`POST /api/v1/approvers/approve`). They take no bearer token and are never MCP tools. The request carries a statement an enrolled approver signed, and the signature is the credential. See [Human approvals](/security#human-approvals).
 
-`checks_for_sha` takes the latest run of each workflow for the full commit sha. Any failure, infrastructure error or cancellation is `RED`. Anything queued, running or waiting for approval is `PENDING`. Every workflow counts as required until required-check configuration exists.
+`checks_for_sha` takes the latest non-cancelled run of each workflow for the full commit sha. The state is one of:
+
+- `GREEN`: every run succeeded (a skipped run counts as passed).
+- `RED`: any run failed or hit an infrastructure error.
+- `PENDING`: anything is queued, running or waiting for approval.
+- `CANCELLED`: some workflow's runs for the sha were all cancelled (by concurrency, a newer push or a user), and no other workflow is red or pending. That workflow never finished, so the sha is not green; re-run it. Within one workflow a newer completed run beats an older cancelled one. Precedence: `RED`, then `PENDING`, then `CANCELLED`, then `GREEN`.
+- `NONE`: no run exists for the sha.
+
+A run cancelled by a concurrency group, superseded by a newer push, or cancelled by a user never makes a sha `RED`. It is skipped in favour of the workflow's latest other run, so a cancelled run followed by a green one is `GREEN`, and a failed run followed by a cancelled rerun stays `RED`.
+
+Each run lists its jobs as `{job_id, check_name, conclusion, attempt}`. `check_name` is exactly what the checks reporter posts (`turntable / <job>`, with the matrix leg in brackets when there is one, or `shadow / <job>` in shadow mode), so a required-check gate can match by name. `conclusion` is the job state and `attempt` its newest attempt number (0 if none started). A run lists at most 256 jobs and sets `jobs_truncated` past that. `counts` is per job, over the same runs that decide the state. Every workflow counts as required until required-check configuration exists.
 
 `get_run` and `list_runs` also return run metadata (`workflow_name`, `commit_message`, `actor`, `head_branch`, `pr_number`) and, per job, `needs`, `matrix` and `approval_kind` (`untrusted_author`, `environment` or null). The forge supplies them; `turntable run` fills them for local runs. They are forge text, so untrusted.
 

@@ -4,3 +4,4 @@ packages/core/tests/job-shards-config.test.ts
 packages/core/tests/shard-paths-ingest.test.ts
 packages/core/tests/poll-tags.test.ts
 packages/core/tests/poll-installation-token.test.ts
+packages/core/tests/poll-pr-cutoff.test.ts

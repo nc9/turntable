@@ -340,6 +340,18 @@ Use two GitHub accounts: an admin of the test organization (A), and a member who
 
 Record the date, the App id, and the pass or fail of each numbered step in the tracking issue, without secrets or installation ids. Then remove the "Known gaps" entry below.
 
+## Deploying without killing runs
+
+A restart while attempts run cuts them. Drain first, so a deploy never turns a tenant's check red.
+
+1. Turn the drain on with an instance token: `POST /api/v1/instance/drain` with `{"on": true, "reason": "deploy <sha>"}` (`instance_drain`, REST only). The scheduler starts no new attempt. Queued work stays queued in the database and running attempts finish.
+2. Wait until `GET /api/v1/instance/drain` (`instance_drain_status`) reports `running_attempts: 0`. `GET /healthz` stays 200 while draining so the platform does not stop the old instance early, and carries `"draining": true` (only the flag: it is unauthenticated, so the count is in `instance_drain_status`). `instance_doctor` reports `draining` as a warning.
+3. Deploy. The new instance boots undrained (the drain is held in memory, never stored) and resumes the queue with no lost or duplicated attempts.
+
+A plain `SIGTERM` does the same thing: it starts a drain, waits for running attempts up to `drain_timeout_seconds` (instance setting, default 600, 0 to 3600; `TURNTABLE_DRAIN_TIMEOUT_SECONDS` or `[scheduler] drain_timeout_seconds`), then exits. A second signal exits at once. Set the platform's stop grace period above the timeout. An attempt still running at the timeout is left for the next boot: if its detached exec still exists the new instance re-attaches to it and records the real result; if the sandbox is gone the attempt ends as `infra_error` (`controller_lost`) and the job is requeued once under a new attempt, never reported as a job failure. A second loss of the same job ends it as `infra_error`.
+
+The drain covers the process that serves the call. Run the worker role in the same process as the web role, or drain each worker process.
+
 ## Known gaps
 
 - The manifest flow (the local one and the hosted one), the claim flow's OAuth exchange and secret rotation have been exercised against a fake GitHub only. Each needs one run against live GitHub.

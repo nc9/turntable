@@ -62,6 +62,7 @@ const config = (over: Record<string, unknown> = {}) =>
         workflow: ".github/workflows/ci.yml",
         defaultBranch: "main",
         prMode: "allowlist",
+        prBaseline: false,
         authors: ["octocat"],
         mergeQueue: true,
         splits: SPLITS,

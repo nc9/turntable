@@ -1,9 +1,12 @@
 import {
   type Claim,
   finishAttempt,
+  CONTROLLER_LOST,
+  DRAIN_CUT,
   listExpiredLeases,
   listUndestroyedSandboxes,
   type Readiness,
+  requeueLostAttemptOnce,
   takeExpiredLease,
   updateAttempt,
 } from "../db/repos";
@@ -125,11 +128,26 @@ export async function reconcileExpired(
       }
     }
     const scope = { orgId: attempt.orgId, projectId: attempt.projectId };
+    // An attempt a drain timeout cut (a deploy) is retried once: it goes back to the queue under a
+    // new attempt and is never a job failure. Any other loss, and a second one, ends the job.
+    const errorClass = `${CONTROLLER_LOST} (${probe})`.slice(0, 200);
+    const requeued =
+      attempt.errorClass === DRAIN_CUT &&
+      (await requeueLostAttemptOnce(db, scope, {
+        attemptId: attempt.id,
+        owner: attempt.leaseOwner ?? "",
+        errorClass,
+        now,
+      }));
+    if (requeued) {
+      report.resolved.push({ attemptId: attempt.id, sandboxId: attempt.sandboxId, probe });
+      continue;
+    }
     const done = await finishAttempt(db, scope, {
       attemptId: attempt.id,
       owner: attempt.leaseOwner ?? "",
       state: "infra_error",
-      errorClass: `controller_lost (${probe})`.slice(0, 200),
+      errorClass,
       expiredBefore: now,
       readiness: opts.readiness ?? workflowReadiness,
     });

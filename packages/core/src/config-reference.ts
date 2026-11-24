@@ -668,6 +668,13 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
       "The window, in minutes, over which the preemptions of one job are counted (1 to 10080). The environment name of the `preempt_window_minutes` setting, which `turntable.toml` and `instance_set_setting` also set.",
   },
   {
+    name: "TURNTABLE_DRAIN_TIMEOUT_SECONDS",
+    area: "Server",
+    default: "600",
+    description:
+      "Seconds a SIGTERM waits for running attempts after it stops starting new ones (0 to 3600). Attempts still running at the timeout are left for the next boot, which re-attaches to them or retries each job once as an infra error. The environment name of the `drain_timeout_seconds` setting, which `turntable.toml` and `instance_set_setting` also set. See [Hosted](/hosted#deploying-without-killing-runs).",
+  },
+  {
     name: "TURNTABLE_SESSION_IDLE_HOURS",
     area: "Server",
     default: "12",

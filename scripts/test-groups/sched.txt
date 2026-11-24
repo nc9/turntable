@@ -1,8 +1,10 @@
 packages/core/tests/scheduler.test.ts
 packages/core/tests/scheduling-yield.test.ts
+packages/core/tests/scheduling-protected-first.test.ts
 packages/core/tests/poll.test.ts
 packages/core/tests/reattach.test.ts
 packages/core/tests/worker-workflow.test.ts
 packages/core/tests/providers.test.ts
 packages/core/tests/isolation.test.ts
 packages/core/tests/egress.test.ts
+packages/core/tests/graceful-drain.test.ts

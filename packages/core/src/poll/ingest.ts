@@ -35,7 +35,7 @@ import {
 import { assertRepoRelative, MAX_REPO_FILE_BYTES } from "../run/safe-read";
 import type { PollConfig, PollRepoConfig } from "./config";
 import { decideRun, type ForgePermission, needsApproval } from "../trust";
-import type { GithubClient, TagRuleset } from "./github";
+import type { GithubClient, PullRequest, TagRuleset } from "./github";
 import { patternProtected, protectingRulesets, type TagProtection } from "./tag-protection";
 
 export type Candidate = {
@@ -108,6 +108,44 @@ const onlyListed = <T extends { number: number }>(
   prs: T[],
 ): T[] =>
   cfg.prNumbers === undefined ? prs : prs.filter((p) => cfg.prNumbers!.includes(p.number));
+
+const MARKER_PR_MODE = { event: "pr-mode-enabled", sha: "since" } as const;
+
+/**
+ * The open pull requests this poll may ingest. On the first poll with PR mode on (no persisted
+ * `pr-mode-enabled` marker) every open PR's current head is recorded as seen (run id `baseline`),
+ * the marker is set, and nothing is ingested, except PRs named in `prNumbers`, an explicit
+ * operator choice. After that a (PR, head) pair runs only when it is not already seen, so a push
+ * or a newly opened PR runs, and a comment or label (same head) does not. No time is used. The
+ * marker survives restarts and is cleared while PR mode is off, so turning it on again takes a
+ * new baseline.
+ */
+async function openPullsFor(
+  deps: IngestDeps,
+  cfg: PollRepoConfig,
+  scope: Scope,
+  now: number,
+): Promise<PullRequest[]> {
+  const marker = { repo: cfg.repo, workflowPath: cfg.workflow, ...MARKER_PR_MODE };
+  const all = await deps.github.openPulls(cfg.repo);
+  if (!cfg.prBaseline || (await pollMarkedAt(deps.db, scope, marker)) !== undefined) {
+    return onlyListed(cfg, all);
+  }
+  for (const pr of all) {
+    if (cfg.prNumbers?.includes(pr.number)) continue;
+    await markPollSkipped(deps.db, scope, {
+      repo: cfg.repo,
+      workflowPath: cfg.workflow,
+      event: "pull_request",
+      sha: pr.headSha,
+      now,
+      runId: "baseline",
+    });
+  }
+  // Set last: a poll that fails part way takes the baseline again.
+  await markPollSkipped(deps.db, scope, { ...marker, now });
+  return cfg.prNumbers === undefined ? [] : onlyListed(cfg, all);
+}
 
 const allowed = (cfg: Pick<PollRepoConfig, "authors">, login: string | null): boolean =>
   login !== null && cfg.authors.some((a) => lower(a) === lower(login));
@@ -740,6 +778,15 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
   }
 
+  if (cfg.prMode === "off") {
+    await clearPollMarker(deps.db, scope, {
+      repo,
+      workflowPath: cfg.workflow,
+      ...MARKER_PR_MODE,
+    });
+  }
+  const openPulls = (): Promise<PullRequest[]> => openPullsFor(deps, cfg, scope, now);
+
   if (cfg.prMode === "approval") {
     // Stranger-controlled work is bounded before any forge call is spent on it: a waiting cap
     // checked first (counting what this poll already took), and a budget of new candidates.
@@ -750,7 +797,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
     }
     let budget = cfg.maxNewPrsPerPoll;
     let taken = 0;
-    for (const pr of onlyListed(cfg, await deps.github.openPulls(repo))) {
+    for (const pr of await openPulls()) {
       if (
         await pollSeen(deps.db, scope, {
           repo,
@@ -817,7 +864,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   }
 
   if (cfg.prMode === "allowlist") {
-    for (const pr of onlyListed(cfg, await deps.github.openPulls(repo))) {
+    for (const pr of await openPulls()) {
       // Already handled: no API call at all.
       if (
         await pollSeen(deps.db, scope, {
