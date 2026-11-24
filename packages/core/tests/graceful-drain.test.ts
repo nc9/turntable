@@ -9,11 +9,14 @@ import {
   createAttempt,
   createJob,
   createRun,
+  createOrg,
+  createProject,
   type Db,
   getJob,
   listAttempts,
   listAudit,
   markDrainCut,
+  openDatabase,
   type Scope,
 } from "../src/db";
 import { checkDraining } from "../src/doctor/checks";
@@ -32,15 +35,20 @@ import { handleRequest } from "../src/server";
 import { drainTimeoutSecondsSetting, settingsRegistry } from "../src/settings/definitions";
 import { createSettingsRuntime } from "../src/settings/resolve";
 import { VERSION } from "../src/version";
-import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
+import { mintToken } from "./ops-helpers";
 
 let db: Db;
-let a: Tenant;
+// One org with one project and nothing queued: seedWorld would add a queued attempt per tenant,
+// which the scheduler and the claim tests below would pick up.
+let a: { orgId: string; scope: Required<Scope> };
 let world: FakeWorld;
 const T0 = 1_800_000_000_000;
 
 beforeEach(async () => {
-  ({ db, a } = await seedWorld());
+  db = openDatabase(":memory:");
+  const org = await createOrg(db, { slug: "org-a", name: "org-a" });
+  const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
+  a = { orgId: org.id, scope: { orgId: org.id, projectId: project.id } };
   world = new FakeWorld();
   resetProcessDrain();
 });
@@ -265,7 +273,8 @@ describe("instance_drain and instance_drain_status", () => {
   let secret: string;
   let clock: number;
   beforeEach(async () => {
-    clock = 1_800_000_000_000;
+    // Instance tokens expire after 30 days from real time: a fixed far-future clock would expire it.
+    clock = Date.now();
     env = { registry, db, allowInstance: true, instanceOrgCap: 4, now: () => clock };
     secret = (await createInstanceTokenFromCli(db, { name: "ops laptop" })).secret;
   });
