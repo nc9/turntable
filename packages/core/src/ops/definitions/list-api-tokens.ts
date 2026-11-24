@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { listApiTokens } from "../../db/repos";
+import { listApiTokens, parentTokenId } from "../../db/repos";
 import { AGENT_ROLES, TOKEN_KINDS } from "../../db/schema";
 import { decodeCursor, encodeCursor, nextCursor, pageInput } from "../common";
 import { defineOp } from "../define";
@@ -11,7 +11,7 @@ export const listApiTokensOp = defineOp({
   summary: "List the org's API tokens: role, scope, last use, expiry, revoked. Never a secret.",
   description:
     "Lists the API tokens of the org, newest first, revoked and expired ones included: id, name, " +
-    "role, kind, the project it is scoped to (null for the whole org), when it was created and " +
+    "role, kind, the project it is scoped to (null for the whole org), when it was created (`created_by_token_id` names the token that minted it, so a holder can see what it minted) and " +
     "last used, when it expires and whether it was revoked. A project-scoped token sees only " +
     "its project's tokens. The secret and its hash are never returned: only the id identifies a " +
     "token, and `revoke_api_token` takes that id. `last_used_at` is approximate (updated at most " +
@@ -27,6 +27,10 @@ export const listApiTokensOp = defineOp({
         project_id: z.string().nullable().describe("Set when the token is scoped to one project."),
         created_at: z.string(),
         created_by: z.string(),
+        created_by_token_id: z
+          .string()
+          .nullable()
+          .describe("The token that minted this one (delegated minting), or null."),
         last_used_at: z.string().nullable(),
         expires_at: z.string().nullable(),
         revoked_at: z.string().nullable(),
@@ -62,6 +66,7 @@ export const listApiTokensOp = defineOp({
         project_id: r.projectId,
         created_at: new Date(r.createdAt).toISOString(),
         created_by: r.createdBy,
+        created_by_token_id: parentTokenId(r),
         last_used_at: iso(r.lastUsedAt),
         expires_at: iso(r.expiresAt),
         revoked_at: iso(r.revokedAt),

@@ -50,6 +50,7 @@ export const EVENT_TYPES = [
   "approvers.depleted",
   "approval.policy_loosened",
   "org.token_reminted",
+  "org.token_minted",
   "org.tokens_exhausted",
   "org.installation_claim_started_by_instance",
 ] as const;

@@ -286,7 +286,7 @@ export const createOrgTokenOp = defineOp({
     "at most `release_operator`; `kind` defaults to `person` (the operator's own token, which " +
     "may approve under `no_agents`). An expiry of 1 to 365 days is required. The secret is " +
     "returned once in `token` and cannot be read again: only its hash is stored, and the audit " +
-    "entries never hold it. After this the org manages its own tokens. The system org is never " +
+    "entries never hold it. From then on the org's own tokens (operator or above) can mint narrower ones with `create_api_token`, within their own role, scope and lifetime. The system org is never " +
     "a target. Audited in the system org's chain and in the org's own. Only the instance " +
     "administrator can call it. Not an MCP tool.",
   input: z.object({
