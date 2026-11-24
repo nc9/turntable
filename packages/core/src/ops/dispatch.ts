@@ -26,6 +26,7 @@ import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
+import type { RunDispatcher } from "../poll/dispatch";
 import { OpError } from "./errors";
 import { authenticateSigned } from "./signed";
 import { type Credential, orgRole, type Principal } from "./principal";
@@ -45,6 +46,8 @@ export type DispatchEnv = {
   claims?: InstallationClaims | undefined;
   /** GitHub API facts (the App's credentials); `resync_installation` needs them. */
   githubFacts?: GithubFacts | undefined;
+  /** Starts `workflow_dispatch` runs (the poller); absent where this process has none. */
+  runDispatcher?: RunDispatcher | undefined;
   /** Login to numeric id lookup, for invites. */
   githubUsers?: GithubUserLookup | undefined;
   /**
@@ -512,6 +515,7 @@ export async function dispatch(
       claims: env.claims,
       githubFacts: env.githubFacts,
       githubUsers: env.githubUsers,
+      runDispatcher: env.runDispatcher,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       transport: env.transport,

@@ -117,9 +117,19 @@ describe("the event payload act is given", () => {
     );
     expect((badBase.pull_request as { base: Record<string, unknown> }).base.sha).toBeUndefined();
     expect(() => buildActEvent(prRun({ plan: "{not json" }))).not.toThrow();
+    // A dispatch with nothing stored has the ref and no inputs; stored inputs are copied as
+    // strings only.
     expect(buildActEvent({ ...prRun(), event: "workflow_dispatch", plan: null })).toEqual({
+      ref: "refs/pull/7/head",
+      inputs: {},
       repository: { full_name: "acme/web" },
     });
+    const withInputs = JSON.stringify({
+      github: { event: { inputs: { a: "1", b: 2, c: { x: 1 } } } },
+    });
+    expect(
+      buildActEvent({ ...prRun(), event: "workflow_dispatch", plan: withInputs }).inputs,
+    ).toEqual({ a: "1" });
   });
 });
 

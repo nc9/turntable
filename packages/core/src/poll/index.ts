@@ -24,3 +24,17 @@ export { backoffMs } from "./backoff";
 export { ingestStatus, resetIngestStatus, type RepoStatus } from "./status";
 export { Poller } from "./poller";
 export { minAnonymousIntervalSeconds, requestsPerPoll } from "./config";
+export {
+  DispatchError,
+  dispatchWorkflow,
+  resolveDispatchRef,
+  WORKFLOW_PATH,
+  type DispatchRequest,
+  type DispatchResult,
+  type RunDispatcher,
+} from "./dispatch";
+export {
+  MAX_DISPATCH_INPUT_BYTES,
+  MAX_DISPATCH_INPUTS,
+  validateDispatchInputs,
+} from "./dispatch-inputs";

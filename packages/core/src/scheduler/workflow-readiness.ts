@@ -15,6 +15,7 @@ export const workflowReadiness: Readiness = (job, deps, run) => {
         github?: Record<string, never>;
         vars?: Record<string, never>;
         env?: Record<string, never>;
+        inputs?: Record<string, never>;
       })
     : {};
   const needs = Object.fromEntries(
@@ -32,7 +33,8 @@ export const workflowReadiness: Readiness = (job, deps, run) => {
     contexts: {
       github: ctx.github ?? {},
       vars: ctx.vars ?? {},
-      inputs: {},
+      // The typed `inputs` of a workflow_dispatch run, stored at dispatch.
+      inputs: ctx.inputs ?? {},
       env: ctx.env ?? {},
       secrets: {},
     },

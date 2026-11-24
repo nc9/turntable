@@ -1,0 +1,462 @@
+// `run_dispatch` (#520, the workflow_dispatch part): who may call it, what the ref resolves to,
+// how inputs are checked, which trust class the run gets, that a release ref still waits for its
+// approval, and what the audit log holds. The forge is the fake GitHub of github-stub.ts.
+import { beforeEach, describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import {
+  bindRepo,
+  createOrg,
+  createProject,
+  getRun,
+  listAudit,
+  listJobs,
+  listRuns,
+  openDatabase,
+  type Db,
+  type Scope,
+} from "../src/db";
+import { dispatch, registry } from "../src/ops";
+import { Poller, pollConfigSchema } from "../src/poll";
+import { buildActEvent } from "../src/run/act-event";
+import { workflowReadiness } from "../src/scheduler/workflow-readiness";
+import { validateDispatchInputs } from "../src/poll/dispatch-inputs";
+import { mintToken } from "./ops-helpers";
+import { makeGithub, SHA } from "./github-stub";
+
+const WORKFLOW = `name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to cut
+        required: true
+        type: string
+      dry_run:
+        type: boolean
+        default: false
+      retries:
+        type: number
+        default: 3
+      channel:
+        type: choice
+        options: [stable, beta]
+        default: stable
+      target:
+        type: environment
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build \${{ inputs.version }}
+  announce:
+    if: \${{ inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo announce
+`;
+const PUSH_ONLY = `name: CI
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+`;
+
+let db: Db;
+let now = 1_800_000_000_000;
+type Org = { scope: Required<Scope>; org: string; project: string };
+
+async function org(slug: string): Promise<Org> {
+  const o = await createOrg(db, { slug, name: slug });
+  const p = await createProject(db, { orgId: o.id }, { slug: "app", name: "App" });
+  return { scope: { orgId: o.id, projectId: p.id }, org: slug, project: "app" };
+}
+
+beforeEach(() => {
+  db = openDatabase(":memory:");
+  now = 1_800_000_000_000;
+});
+
+async function world(
+  o: { tagRefs?: string[]; maxRunsPerHour?: number; orgs?: Org[]; repo?: string } = {},
+) {
+  const a = await org("acme");
+  const repo = o.repo ?? "acme/web";
+  const gh = makeGithub(repo, ".github/workflows/release.yml");
+  gh.state.files.set("*", WORKFLOW);
+  gh.state.files.set(SHA("9"), PUSH_ONLY);
+  gh.state.history = [
+    { sha: SHA("a"), parents: [SHA("b")] },
+    { sha: SHA("b"), parents: [SHA("c")] },
+    { sha: SHA("c"), parents: [] },
+  ];
+  gh.state.branches.set("feature", SHA("d"));
+  gh.state.branches.set("release/1", SHA("e"));
+  gh.state.tags.set("v1.0.0", { sha: SHA("b") });
+  gh.state.tags.set("nightly", { sha: SHA("c") });
+  const cfg = pollConfigSchema.parse({
+    allowUnauthenticated: true,
+    repos: [
+      {
+        repo,
+        org: a.org,
+        project: a.project,
+        workflow: ".github/workflows/release.yml",
+        defaultBranch: "main",
+        tagRefs: o.tagRefs ?? [],
+        protectedRefs: ["refs/heads/release/**"],
+        maxRunsPerHour: o.maxRunsPerHour ?? 100,
+        maxWaitingRuns: 10,
+      },
+    ],
+  });
+  await bindRepo(db, a.scope, { forge: "github", owner: "acme", repo: "web" });
+  const poller = new Poller({
+    db,
+    config: cfg,
+    fetch: gh.fetch,
+    now: () => now,
+  });
+  const env = {
+    registry,
+    db,
+    now: () => now,
+    runDispatcher: (
+      s: Required<Scope>,
+      r: string | undefined,
+      q: Parameters<typeof poller.dispatch>[2],
+    ) => poller.dispatch(s, r, q),
+  };
+  const token = (scope: Scope, role: "reader" | "operator" | "release_operator") =>
+    mintToken(db, scope, role).then((t) => t.secret);
+  return { a, gh, cfg, poller, env, token };
+}
+
+const call = (
+  w: Awaited<ReturnType<typeof world>>,
+  tok: string,
+  input: Record<string, unknown>,
+  project = "app",
+) =>
+  dispatch(w.env, { kind: "bearer", token: tok }, "run_dispatch", {
+    project,
+    workflow: ".github/workflows/release.yml",
+    ref: "main",
+    ...input,
+  });
+
+const ok = async (r: ReturnType<typeof call>) => {
+  const res = await r;
+  if (!res.ok) throw new Error(`${res.error.code}: ${res.error.message}`);
+  return res.output as {
+    run_id: string;
+    repo: string;
+    ref: string;
+    sha: string;
+    trust_class: string;
+    state: string;
+    input_names: string[];
+  };
+};
+const refused = async (r: ReturnType<typeof call>) => {
+  const res = await r;
+  if (res.ok) throw new Error("expected a refusal");
+  return res.error;
+};
+
+describe("who may dispatch", () => {
+  test("a maintainer (release_operator) dispatches; the run shows the event and who", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(call(w, tok, { inputs: { version: "1.2.3", dry_run: "false" } }));
+    expect(out).toMatchObject({ ref: "refs/heads/main", sha: SHA("a"), state: "queued" });
+    const got = await dispatch(w.env, { kind: "bearer", token: tok }, "get_run", {
+      run_id: out.run_id,
+    });
+    if (!got.ok) throw new Error("get_run failed");
+    const run = got.output as { event: string; actor: string; trust_class: string };
+    expect(run.event).toBe("workflow_dispatch");
+    expect(run.actor).toStartWith("token:");
+    expect(run.trust_class).toBe("protected");
+    const list = await dispatch(w.env, { kind: "bearer", token: tok }, "list_runs", {});
+    if (!list.ok) throw new Error("list_runs failed");
+    expect(
+      (list.output as { runs: { id: string; event: string }[] }).runs.find(
+        (r) => r.id === out.run_id,
+      )?.event,
+    ).toBe("workflow_dispatch");
+  });
+
+  test("a reader and an operator are refused, and nothing is created", async () => {
+    const w = await world();
+    for (const role of ["reader", "operator"] as const) {
+      const tok = await w.token(w.a.scope, role);
+      const err = await refused(call(w, tok, { inputs: { version: "1" } }));
+      expect(err.code).toBe("forbidden");
+    }
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+  });
+
+  test("a project that does not ingest the repo is refused", async () => {
+    const w = await world();
+    const other = await createProject(db, { orgId: w.a.scope.orgId }, { slug: "other", name: "O" });
+    const tok = await w.token({ orgId: w.a.scope.orgId, projectId: other.id }, "release_operator");
+    const err = await refused(call(w, tok, { inputs: { version: "1" } }, "other"));
+    expect(err.code).toBe("not_found");
+    expect(err.message).toContain("no repo with ingest enabled");
+  });
+});
+
+describe("the run", () => {
+  test("is for the sha the ref resolved to, with github.event.inputs and inputs set", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(
+      call(w, tok, { inputs: { version: "1.2.3", retries: "5", dry_run: "true" } }),
+    );
+    // The branch moves after the dispatch: the run stays at the sha it resolved to.
+    w.gh.state.head.sha = SHA("f");
+    const run = (await getRun(db, w.a.scope, out.run_id))!;
+    expect(run.sha).toBe(SHA("a"));
+    expect(run.event).toBe("workflow_dispatch");
+    const plan = JSON.parse(run.plan!);
+    expect(plan.github.event_name).toBe("workflow_dispatch");
+    expect(plan.github.event.inputs).toEqual({
+      version: "1.2.3",
+      dry_run: "true",
+      retries: "5",
+      channel: "stable",
+      target: "",
+    });
+    expect(plan.inputs).toEqual({
+      version: "1.2.3",
+      dry_run: true,
+      retries: 5,
+      channel: "stable",
+      target: "",
+    });
+    // What the sandbox's act is given: strings, as GitHub's event payload has them.
+    const ev = buildActEvent(run) as { inputs: Record<string, string>; ref: string };
+    expect(ev.inputs.retries).toBe("5");
+    expect(ev.ref).toBe("refs/heads/main");
+    // `if: inputs.dry_run == false` reads the typed input: the announce job is skipped.
+    const jobs = await listJobs(db, w.a.scope, run.id);
+    const announce = jobs.find((j) => j.jobKey === "announce")!;
+    const verdict = workflowReadiness(announce, [], run);
+    expect(verdict.decision).toBe("skip");
+    const build = jobs.find((j) => j.jobKey === "build")!;
+    expect(workflowReadiness(build, [], run).decision).toBe("ready");
+  });
+
+  test("a branch other than the default is trusted_pr; a protected-ref pattern is protected", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const feature = await ok(call(w, tok, { ref: "feature", inputs: { version: "1" } }));
+    expect(feature).toMatchObject({
+      ref: "refs/heads/feature",
+      sha: SHA("d"),
+      trust_class: "trusted_pr",
+    });
+    const rel = await ok(call(w, tok, { ref: "release/1", inputs: { version: "1" } }));
+    expect(rel.trust_class).toBe("protected");
+  });
+
+  test("a full sha on the default branch's history runs that sha; one off it is refused", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(call(w, tok, { ref: SHA("b"), inputs: { version: "1" } }));
+    expect(out.sha).toBe(SHA("b"));
+    const err = await refused(call(w, tok, { ref: SHA("7"), inputs: { version: "1" } }));
+    expect(err.code).toBe("not_found");
+  });
+
+  test("a ref that is not in the repository is refused with the reason", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    for (const ref of ["someone-elses-fork:main", "no-such-branch", "refs/pull/5/head", "../x"]) {
+      const err = await refused(call(w, tok, { ref, inputs: { version: "1" } }));
+      expect(["not_found", "invalid_input"]).toContain(err.code);
+    }
+    const err = await refused(call(w, tok, { ref: "no-such-branch", inputs: { version: "1" } }));
+    expect(err.message).toContain("not a branch or tag");
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+  });
+
+  test("a name that is both a branch and a tag is ambiguous until the caller says which", async () => {
+    const w = await world();
+    w.gh.state.branches.set("v1.0.0", SHA("d"));
+    const tok = await w.token(w.a.scope, "release_operator");
+    const err = await refused(call(w, tok, { ref: "v1.0.0", inputs: { version: "1" } }));
+    expect(err.message).toContain("both a branch and a tag");
+    const out = await ok(call(w, tok, { ref: "refs/tags/v1.0.0", inputs: { version: "1" } }));
+    expect(out.sha).toBe(SHA("b"));
+  });
+
+  test("a workflow without on.workflow_dispatch is refused", async () => {
+    const w = await world();
+    w.gh.state.files.set("*", PUSH_ONLY);
+    const tok = await w.token(w.a.scope, "release_operator");
+    const err = await refused(call(w, tok, { inputs: {} }));
+    expect(err.code).toBe("invalid_input");
+    expect(err.message).toContain("on.workflow_dispatch");
+  });
+
+  test("a workflow path outside .github/workflows is refused", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    for (const workflow of ["ci.yml", ".github/workflows/../x.yml", ".github/workflows/a/b.yml"]) {
+      const err = await refused(call(w, tok, { workflow, inputs: {} }));
+      expect(err.code).toBe("invalid_input");
+    }
+  });
+});
+
+describe("inputs", () => {
+  test("unknown, missing required, wrong type, bad choice and oversize are refused with reasons", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const cases: [Record<string, string>, string][] = [
+      [{ version: "1", nope: "x" }, "unknown input: nope"],
+      [{}, "input version is required"],
+      [{ version: "1", retries: "many" }, "input retries must be a number"],
+      [{ version: "1", dry_run: "yes" }, "input dry_run must be true or false"],
+      [{ version: "1", channel: "nightly" }, "input channel must be one of: stable, beta"],
+      [{ version: "1", target: "no/slash!" }, "not a valid environment name"],
+      [{ version: "x".repeat(60 * 1024), target: "y".repeat(5 * 1024) }, "the limit is 65536"],
+    ];
+    for (const [inputs, reason] of cases) {
+      const err = await refused(call(w, tok, { inputs }));
+      expect(err.code).toBe("invalid_input");
+      expect(err.message).toContain(reason);
+    }
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+  });
+
+  test("validateDispatchInputs applies defaults and types", () => {
+    const r = validateDispatchInputs(WORKFLOW, { version: "2" });
+    expect(r).toEqual({
+      ok: true,
+      strings: { version: "2", dry_run: "false", retries: "3", channel: "stable", target: "" },
+      typed: { version: "2", dry_run: false, retries: 3, channel: "stable", target: "" },
+    });
+    expect(validateDispatchInputs("on: workflow_dispatch\njobs: {}", {})).toMatchObject({
+      ok: true,
+    });
+    expect(validateDispatchInputs("on: [push, workflow_dispatch]\njobs: {}", { a: "1" })).toEqual({
+      ok: false,
+      reason: "unknown input: a",
+    });
+    expect(validateDispatchInputs("on: push\njobs: {}", {})).toMatchObject({ ok: false });
+  });
+});
+
+describe("audit", () => {
+  test("has who, workflow, ref, the resolved sha and the input names, never the values", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const value = `v-${randomBytes(12).toString("hex")}`;
+    const out = await ok(call(w, tok, { inputs: { version: value } }));
+    const rows = (await listAudit(db, w.a.scope)).filter((r) => r.op === "run_dispatch");
+    expect(rows.length).toBe(1);
+    const text = JSON.stringify(rows[0]);
+    expect(text).not.toContain(value);
+    expect(rows[0]!.principalId).toBeTruthy();
+    expect(text).toContain(".github/workflows/release.yml");
+    expect(text).toContain(SHA("a"));
+    expect(text).toContain(out.run_id);
+    for (const name of ["version", "dry_run", "retries", "channel", "target"]) {
+      expect(text).toContain(name);
+    }
+  });
+
+  test("a refused dispatch is audited too, without the values", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const value = `v-${randomBytes(12).toString("hex")}`;
+    await refused(call(w, tok, { inputs: { version: value, bogus: value } }));
+    const rows = (await listAudit(db, w.a.scope)).filter((r) => r.op === "run_dispatch");
+    expect(rows.length).toBe(1);
+    expect(JSON.stringify(rows[0])).not.toContain(value);
+    expect(rows[0]!.outcome).toContain("invalid_input");
+  });
+});
+
+describe("trust and the release lane", () => {
+  test("a release tag is held for approval, as a tag push no ruleset protects is", async () => {
+    const w = await world({ tagRefs: ["refs/tags/v*"] });
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(call(w, tok, { ref: "v1.0.0", inputs: { version: "1" } }));
+    expect(out).toMatchObject({ trust_class: "release", state: "awaiting_approval" });
+    const run = (await getRun(db, w.a.scope, out.run_id))!;
+    expect(run.status).toBe("awaiting_approval");
+    const jobs = await listJobs(db, w.a.scope, run.id);
+    expect(jobs.length).toBe(2);
+    for (const j of jobs) {
+      expect(j.state).toBe("awaiting_approval");
+      expect(j.approvalKind).toBe("untrusted_author");
+    }
+    // Bound to the exact workflow file: the decision carries its hash.
+    expect(JSON.parse(run.trust!).workflowHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(run.trust!).reasons.join(" ")).toContain("held for approval");
+    // The same tag through the poller is held the same way.
+    w.gh.state.files.set(
+      "*",
+      WORKFLOW.replace("workflow_dispatch:", "push:\n    tags: ['v*']\n  workflow_dispatch:"),
+    );
+    await w.poller.pollAll();
+    const pushed = (await listRuns(db, w.a.scope, { limit: 20 })).find(
+      (r) => r.event === "push" && r.ref === "refs/tags/v1.0.0",
+    );
+    expect(pushed?.status).toBe("awaiting_approval");
+  });
+
+  test("a tag that is not a release ref is trusted_pr and is not held", async () => {
+    const w = await world({ tagRefs: ["refs/tags/v*"] });
+    const tok = await w.token(w.a.scope, "release_operator");
+    const out = await ok(call(w, tok, { ref: "nightly", inputs: { version: "1" } }));
+    expect(out).toMatchObject({ trust_class: "trusted_pr", state: "queued", sha: SHA("c") });
+  });
+
+  test("a held run counts against the waiting cap, and the hourly cap stops a flood", async () => {
+    const w = await world({ maxRunsPerHour: 2 });
+    const tok = await w.token(w.a.scope, "release_operator");
+    await ok(call(w, tok, { inputs: { version: "1" } }));
+    await ok(call(w, tok, { inputs: { version: "2" } }));
+    const err = await refused(call(w, tok, { inputs: { version: "3" } }));
+    expect(err.code).toBe("rate_limited");
+    expect(err.message).toContain("hourly run cap");
+  });
+
+  test("two dispatches of the same sha and inputs are two runs", async () => {
+    const w = await world();
+    const tok = await w.token(w.a.scope, "release_operator");
+    const one = await ok(call(w, tok, { inputs: { version: "1" } }));
+    const two = await ok(call(w, tok, { inputs: { version: "1" } }));
+    expect(one.run_id).not.toBe(two.run_id);
+  });
+});
+
+describe("tenancy", () => {
+  test("another org's token cannot dispatch into this org's project or repo", async () => {
+    const w = await world();
+    const b = await org("other-org");
+    const bTok = await w.token(b.scope, "release_operator");
+    // Naming A's project: not B's, so refused as unknown or forbidden.
+    const named = await dispatch(w.env, { kind: "bearer", token: bTok }, "run_dispatch", {
+      org: "acme",
+      project: "app",
+      workflow: ".github/workflows/release.yml",
+      ref: "main",
+      inputs: { version: "1" },
+    });
+    expect(named.ok).toBe(false);
+    // B's own project does not ingest A's repo.
+    const own = await refused(call(w, bTok, { repo: "acme/web", inputs: { version: "1" } }));
+    expect(own.code).toBe("not_found");
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+    expect(await listRuns(db, b.scope, { limit: 10 })).toEqual([]);
+  });
+});

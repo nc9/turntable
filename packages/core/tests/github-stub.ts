@@ -46,6 +46,8 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
       committerEmail?: string;
       message?: string;
     }[],
+    /** Branches other than the default one, by name: the head commit. */
+    branches: new Map<string, string>(),
     /** Tags by name: the commit, or (annotated) the tag object that points at it. */
     tags: new Map<string, { sha: string; annotatedAs?: string; tagger?: string }>(),
     /** The default branch's commits, newest first, as the commit listing reports them. */
@@ -110,6 +112,25 @@ export function makeGithub(repo = "acme/web", workflowPath = ".github/workflows/
               ? "none"
               : "read";
       return json({ permission: legacy, role_name: role });
+    }
+    const refGet = new RegExp(`^/repos/${repo}/git/ref/(heads|tags)/(.+)$`).exec(path);
+    if (refGet) {
+      const name = refGet[2] as string;
+      if (refGet[1] === "heads") {
+        const sha = name === "main" ? state.head.sha : state.branches.get(name);
+        return sha
+          ? json({ ref: `refs/heads/${name}`, object: { type: "commit", sha } })
+          : new Response("not found", { status: 404 });
+      }
+      const t = state.tags.get(name);
+      return t
+        ? json({
+            ref: `refs/tags/${name}`,
+            object: t.annotatedAs
+              ? { type: "tag", sha: t.annotatedAs }
+              : { type: "commit", sha: t.sha },
+          })
+        : new Response("not found", { status: 404 });
     }
     const tagList = new RegExp(`^/repos/${repo}/git/matching-refs/tags/(.*)$`).exec(path);
     if (tagList) {

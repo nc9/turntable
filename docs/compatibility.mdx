@@ -26,13 +26,26 @@ Steps see the event as they do on GitHub where it matters: act is given a `githu
 | Feature | Status |
 | --- | --- |
 | Triggers: `push` (branch and tag filters, `paths`), `pull_request`, `merge_group` | Supported, see [Quickstart](/quickstart) |
-| Triggers: `schedule`, `workflow_dispatch` | Not ingested yet |
+| Triggers: `workflow_dispatch` | Supported through the `run_dispatch` operation (REST and MCP), see [Manual runs](#manual-runs-workflow_dispatch) |
+| Triggers: `schedule` | Not ingested yet |
 | `needs`, job outputs, `matrix` (with `fail-fast` and `max-parallel`), `if:`, `continue-on-error` | Supported |
 | `concurrency` | Supported with differences: groups are scoped to the repo, and a pull request run's group is rewritten so it cannot cancel the default branch, see [Security](/security#trust-classes-and-fork-pr-gating) |
 | Composite and JavaScript actions | Supported, resolved to a commit sha before the run, see [Security](/security#action-pins-and-moved-tags) |
 | `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STEP_SUMMARY` | Handled by act |
 | Reusable workflows | Not yet verified |
 | `services:` and `container:` jobs | Supported on a Docker-capable size class the operator configures (see [Docker-capable class](/providers#docker-capable-class-services-and-container-jobs)). Without one, or on a provider that cannot run Docker, the job fails with the reason. An untrusted pull request does not get one unless the operator opts in |
+
+## Manual runs (`workflow_dispatch`)
+
+A workflow that declares `on.workflow_dispatch` is started with the `run_dispatch` operation (REST `POST /api/v1/dispatches`, or the MCP tool of the same name), for a repo the project ingests. There is no polling for it: a run exists only when someone asks.
+
+- **Who:** a token or member with the `release_operator` role or higher (the maintainer tier). An `operator` or a `reader` is refused. Every call is audited with who, the workflow, the ref, the resolved sha and the input **names**; input values are never written to the audit log, because they may be sensitive. They are stored with the run.
+- **Ref:** a branch or tag name of the repo (or a full `refs/heads/...`, `refs/tags/...`), or a full sha on the default branch's first-parent history. It is resolved to a sha when you call, in the repo itself (a fork's branch or an unknown name is refused with the reason), and the run is for exactly that sha. The workflow file is read at that sha.
+- **Inputs:** a map of strings, checked against `on.workflow_dispatch.inputs`. Unknown names are refused, `required` inputs without a default must be given, defaults are applied, `boolean` takes `true` or `false`, `number` a number, `choice` one of its `options`, and `environment` an environment name. At most 25 inputs and 64 KiB in total. Jobs see `github.event_name == 'workflow_dispatch'`, `github.event.inputs.*` as strings (as GitHub does) and `inputs.*` typed. A workflow with no `on.workflow_dispatch` is refused.
+- **Trust class:** the same decision as any run, with the dispatching role standing in for a maintainer. The default branch, and the project's protected refs, are `protected`. Any other branch (or a tag that is not a release ref) is `trusted_pr`, without secrets. A tag the project lists in its release refs is a `release` run and **waits for approval** before any job starts, exactly as a tag push that no ruleset protects does; a dispatch never skips an approval. A dispatched run that is not the default branch also gets its own concurrency group, so it cannot cancel the default branch's runs.
+- **Visible:** the run's `event` is `workflow_dispatch` and its `actor` is the dispatching principal, in `list_runs`, `get_run` and the checks posted for it. It counts against the project's hourly run cap.
+
+Differences: GitHub's workflow-level `run-name` and the `workflow_call` form of inputs are not read, and the run needs a poller in the same process as the server that takes the call (the default `serve` roles).
 
 ## Splitting a job across sandboxes
 
@@ -112,7 +125,7 @@ Everything found while running real workflows. Each one is a gap with a stated b
 - **`actions/checkout` with `fetch-depth: 0` (or deeper than 1) fails on shallow deliveries.** The controller delivers the run's commit at depth 1, so the checkout step fails with `checkout: fetch-depth <N> needs history that was not delivered for this run (the controller delivered a shallow repository)` instead of giving a history that looks complete and is not. `fetch-depth: 1` (the default) is unchanged. Full history is delivered in a later change (#525 part 2).
 - **Job splitting is configuration, not workflow syntax.** A heavy job is split across sandboxes by an operator rule (`splits`), never by anything in the repository, so a pull request cannot change it. See [Splitting a job across sandboxes](#splitting-a-job-across-sandboxes). A job with `strategy.matrix` is not split, and a step a rule names that was renamed runs in every shard.
 - **Pull requests run the head commit, not the merge commit,** as described under [Pull request events](#pull-request-events).
-- **`schedule` and `workflow_dispatch` are not ingested yet,** and reusable workflows are not yet verified (see the table above).
+- **`schedule` is not ingested yet,** and reusable workflows are not yet verified (see the table above).
 
 ## Runner image toolset
 

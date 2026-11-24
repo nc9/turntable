@@ -6,6 +6,7 @@ import type { RelyingParty } from "../approvals/webauthn";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { RunDispatcher } from "../poll/dispatch";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import type { DoctorReport } from "../doctor/types";
@@ -44,6 +45,8 @@ export type OpContext = {
   claims?: InstallationClaims | undefined;
   /** GitHub App API facts for `resync_installation`; absent when no App is configured. */
   githubFacts?: GithubFacts | undefined;
+  /** Starts a `workflow_dispatch` run through the poller; absent where this process has none. */
+  runDispatcher?: RunDispatcher | undefined;
   /** Resolves a GitHub login to its numeric id (invites); absent without a GitHub App. */
   githubUsers?: GithubUserLookup | undefined;
   /** The adapter that carried the call; undefined for in-process callers. */
