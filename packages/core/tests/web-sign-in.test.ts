@@ -132,8 +132,15 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
         cookieName: cookieOf(go, `${LOGIN_COOKIE}_`, true)!.split("=")[0]!,
       };
     };
-    const nonceOfState = (state: string): string =>
-      JSON.parse(Buffer.from(state.split(".")[1] ?? "", "base64url").toString()).n as string;
+    // A state that does not parse has no nonce: its cookie name then matches nothing.
+    const nonceOfState = (state: string): string => {
+      try {
+        const n = JSON.parse(Buffer.from(state.split(".")[1] ?? "", "base64url").toString()).n;
+        return typeof n === "string" ? n : "none";
+      } catch {
+        return "none";
+      }
+    };
     /** The callback as a browser holding `cookies` (a raw Cookie header) makes it. */
     const callbackWith = async (state: string, code: string, cookies: string) =>
       (await handler.handle(
