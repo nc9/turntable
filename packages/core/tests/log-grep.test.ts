@@ -100,20 +100,17 @@ describe("grepLog", () => {
   });
 
   test("a match spanning a chunk boundary is found exactly once", async () => {
-    // Blocks are 256 KiB: put a hit line across offset 262144.
+    // Blocks are 256 KiB: 2621 filler lines of 100 bytes end at 262100, so the next line
+    // (about 60 bytes) starts before offset 262144 and ends after it.
     const lines: string[] = [];
-    let size = 0;
-    while (size < 262_144 - 20) {
-      const l = "x".repeat(99) + "\n";
-      lines.push(l);
-      size += l.length;
-    }
-    lines.push("before ERROR spanning the block boundary\n");
+    for (let i = 0; i < 2621; i++) lines.push("x".repeat(99) + "\n");
+    lines.push("before ERROR spanning the block boundary, padded out to cross it\n");
     for (let i = 0; i < 100; i++) lines.push("y".repeat(99) + "\n");
     const log = enc(lines.join(""));
-    const idx = log.indexOf("ERROR spanning");
-    expect(idx).toBeLessThan(262_144);
-    expect(idx + 14).toBeGreaterThan(262_144 - 40);
+    const lineStart = log.indexOf("before ERROR");
+    const lineEnd = log.indexOf("\n", lineStart) + 1;
+    expect(lineStart).toBeLessThan(262_144);
+    expect(lineEnd).toBeGreaterThan(262_144);
     const r = await grepLog(reader(log), log.length, 0, base);
     expect(r.matches).toBe(1);
     expect(r.text.match(/ERROR spanning/g)).toHaveLength(1);
