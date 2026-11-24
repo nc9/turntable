@@ -173,12 +173,13 @@ describe("per-claim cookies (#443)", () => {
       jar,
     );
     expect(ra.status).toBe(200);
-    // finishing the first leaves the second claim's cookie alone
+    // finishing the first clears its own cookies (Max-Age=0) and leaves the second claim's alone
+    const cleared = ra.headers.getSetCookie().filter((c) => c.includes("Max-Age=0"));
+    expect(cleared.map((c) => c.split("=")[0]).sort()).toEqual(
+      [claimCookieName(nonceOf(sa)), claimCsrfCookieName(nonceOf(sa))].sort(),
+    );
+    for (const c of cleared) jar.delete(c.split("=")[0]!);
     expect(jar.has(claimCookieName(nonceOf(sa)))).toBe(false);
-    for (const c of ra.headers.getSetCookie()) {
-      const [kv] = c.split(";");
-      if (c.includes("Max-Age=0")) jar.delete(kv!.split("=")[0]!);
-    }
     expect(jar.has(claimCookieName(nonceOf(sb)))).toBe(true);
     const rb = await h.callback(
       { installation_id: "101", setup_action: "install", state: sb, code: "code" },

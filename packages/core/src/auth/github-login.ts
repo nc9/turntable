@@ -219,9 +219,9 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     const code = url.searchParams.get("code") ?? "";
     const stateNonce = await verifyState(state, app.orgId);
     // Exactly this sign-in's cookie: its name is derived from the state's nonce.
-    const cookieNonce = stateNonce
-      ? readFlowCookie(req, LOGIN_COOKIE_PREFIX, stateNonce)
-      : undefined;
+    // The cookie must carry this state's nonce exactly, not merely sit under its name.
+    const held = stateNonce ? readFlowCookie(req, LOGIN_COOKIE_PREFIX, stateNonce) : undefined;
+    const cookieNonce = held !== undefined && safeEqual(held, stateNonce!) ? held : undefined;
     const clearThis = stateNonce ? [clearLoginCookie(loginCookieName(stateNonce))] : [];
     // The browser that started the sign-in must be the one that finishes it. Nothing is spent
     // until the signature, the expiry and the cookie all agree.

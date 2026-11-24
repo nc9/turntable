@@ -807,8 +807,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     const first = await h.callbackWith(older.state, "code-alice", jar);
     expect(first.status).toBe(303);
     // the finished sign-in clears only its own cookie
-    expect(cookieOf(first, `${older.cookieName}=`)).toContain("Max-Age=0");
-    expect(cookieOf(first, `${newer.cookieName}=`)).toBeUndefined();
+    expect(cookieOf(first, `${older.cookieName}=`, true)).toContain("Max-Age=0");
+    expect(cookieOf(first, `${newer.cookieName}=`, true)).toBeUndefined();
     const second = await h.callbackWith(newer.state, "code-alice", jar);
     expect(second.status).toBe(303);
     expect(await h.db.run((x) => x.orm.select().from(schema.webSessions))).toHaveLength(2);
