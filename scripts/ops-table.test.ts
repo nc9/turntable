@@ -34,6 +34,8 @@ const MCP_OFF: Record<string, string> = {
   create_api_token: "token minting: never into an agent's context, and no agent role can call it",
   sign_release: "signature op: a human-signed assertion, never a token",
   approve_environment: "signature op: a human-signed statement, never a token",
+  approve_release:
+    "signature op: a human-signed statement over the release manifest, never a token",
   approve_enrolment: "signature op: a human-signed statement, never a token",
   key_policy_challenge: "changing which approver keys count is a human act, like enrolment",
   instance_whoami:
