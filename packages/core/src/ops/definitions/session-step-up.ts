@@ -54,7 +54,7 @@ export const sessionStepUpChallenge = defineOp({
     step_up_id: z.string(),
     challenge: z.string().describe("base64url: the WebAuthn challenge to sign."),
     rp_id: z.string(),
-    passkeys: z.array(z.object({ approver: z.string(), credential_id: z.string() })),
+    passkeys: z.array(z.object({ approver: z.string(), passkey_id: z.string() })),
     expires_at: z.string(),
   }),
   effect: "write",
@@ -133,7 +133,7 @@ export const sessionStepUpChallenge = defineOp({
       step_up_id: nonce,
       challenge: stepUpChallengeOf(hash),
       rp_id: ctx.webauthn.rpId,
-      passkeys: keys.map((k) => ({ approver: k.id, credential_id: k.credentialId })),
+      passkeys: keys.map((k) => ({ approver: k.id, passkey_id: k.credentialId })),
       expires_at: iso(expiresAt)!,
     };
   },

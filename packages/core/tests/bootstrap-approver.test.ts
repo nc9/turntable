@@ -373,7 +373,11 @@ describe("only the instance administrator, only over REST", () => {
   });
 
   test("REST works, MCP does not list it and rejects an instance token, plain dispatch refuses", async () => {
-    const api = createRestApi({ registry, db });
+    const api = createRestApi({
+      registry,
+      db,
+      githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
+    });
     const k = generateEd25519().publicSpki;
     const rest = await handleRequest(
       new Request("http://localhost/api/v1/instance/approvers/bootstrap", {

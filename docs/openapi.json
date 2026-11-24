@@ -8642,11 +8642,11 @@
                           "approver": {
                             "type": "string"
                           },
-                          "credential_id": {
+                          "passkey_id": {
                             "type": "string"
                           }
                         },
-                        "required": ["approver", "credential_id"],
+                        "required": ["approver", "passkey_id"],
                         "additionalProperties": false
                       }
                     },
