@@ -343,3 +343,109 @@ describe("rotation and cascade", () => {
     expect(refused).toBe("conflict");
   });
 });
+
+describe("revoking the minted subtree (#456)", () => {
+  const bearer = (token: string) => ({ kind: "bearer", token }) as Credential;
+  type Minted = { id: string; token: string };
+  const mint = async (parent: string, over: Record<string, unknown> = {}): Promise<Minted> => {
+    const r = await as(parent, { name: "c", role: "reader", ...over });
+    if (!r.ok) throw new Error(r.error.message);
+    return r.output as Minted;
+  };
+  const alive = async (token: string) => (await dispatch(env, bearer(token), "list_runs", {})).ok;
+  const revoke = (token: string, input: Record<string, unknown>) =>
+    dispatch(env, bearer(token), "revoke_api_token", { reason: "t", ...input });
+
+  test("a parent revokes a child; cascade is on by default and counted", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { role: "operator" });
+    const grand = await mint(child.token);
+    const r = await revoke(parent.secret, { token_id: child.id });
+    expect(r.ok && r.output).toMatchObject({ revoked: true, descendants_revoked: 1 });
+    expect(await alive(child.token)).toBe(false);
+    expect(await alive(grand.token)).toBe(false);
+    expect(await alive(parent.secret)).toBe(true);
+    const text = JSON.stringify(
+      (await listAudit(db, { orgId: a.orgId }, { limit: 50 })).filter(
+        (x) => x.op === "revoke_api_token",
+      ),
+    );
+    expect(text).toContain(parent.id);
+    expect(text).toContain(child.id);
+    expect(text).toContain(grand.id);
+  });
+
+  test("a parent revokes a grandchild directly, leaving the child", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { role: "operator" });
+    const grand = await mint(child.token);
+    const r = await revoke(parent.secret, { token_id: grand.id });
+    expect(r.ok && r.output).toMatchObject({ revoked: true, descendants_revoked: 0 });
+    expect(await alive(grand.token)).toBe(false);
+    expect(await alive(child.token)).toBe(true);
+  });
+
+  test("cascade false keeps the descendant's own children", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { role: "operator" });
+    const grand = await mint(child.token);
+    const r = await revoke(parent.secret, { token_id: child.id, cascade: false });
+    expect(r.ok && r.output).toMatchObject({ descendants_revoked: 0 });
+    expect(await alive(child.token)).toBe(false);
+    expect(await alive(grand.token)).toBe(true);
+  });
+
+  test("ancestor, sibling, cousin, unrelated and other-org ids are all the same not_found", async () => {
+    const parent = await orgWide("operator");
+    const other = await orgWide("operator");
+    const child = await mint(parent.secret, { role: "operator" });
+    const sibling = await mint(parent.secret, { role: "operator" });
+    const grand = await mint(child.token);
+    const cousin = await mint(sibling.token);
+    const foreign = await mintToken(db, { orgId: b.orgId }, "operator");
+    const probe = async (who: string, id: string) => {
+      const r = await revoke(who, { token_id: id });
+      return r.ok ? "ok" : `${r.error.code}:${r.error.message}`;
+    };
+    const unknown = await probe(child.token, "no-such-token-id");
+    expect(unknown.startsWith("not_found")).toBe(true);
+    expect(await probe(child.token, parent.id)).toBe(unknown);
+    expect(await probe(grand.token, parent.id)).toBe(unknown);
+    expect(await probe(child.token, sibling.id)).toBe(unknown);
+    expect(await probe(child.token, cousin.id)).toBe(unknown);
+    expect(await probe(parent.secret, other.id)).toBe(unknown);
+    expect(await probe(parent.secret, foreign.id)).toBe(unknown);
+    for (const t of [
+      parent.secret,
+      other.secret,
+      child.token,
+      sibling.token,
+      grand.token,
+      cousin.token,
+    ]) {
+      expect(await alive(t)).toBe(true);
+    }
+    expect(await alive(foreign.secret)).toBe(true);
+  });
+
+  test("a concurrent mint under the target is revoked or refused", async () => {
+    const parent = await orgWide("operator");
+    const child = await mint(parent.secret, { role: "operator" });
+    const [rev, minted] = await Promise.all([
+      revoke(parent.secret, { token_id: child.id }),
+      as(child.token, { name: "race", role: "reader" }),
+    ]);
+    expect(rev.ok).toBe(true);
+    if (minted.ok) expect(await alive((minted.output as Minted).token)).toBe(false);
+    expect(await alive(child.token)).toBe(false);
+  });
+
+  test("self-revoke still works and the revoked token gets 401", async () => {
+    const parent = await orgWide("operator");
+    await orgWide("reader");
+    const child = await mint(parent.secret, { role: "operator" });
+    expect((await revoke(child.token, { token_id: child.id })).ok).toBe(true);
+    const after = await dispatch(env, bearer(child.token), "list_runs", {});
+    expect(after.ok ? "ok" : after.error.code).toBe("unauthenticated");
+  });
+});
