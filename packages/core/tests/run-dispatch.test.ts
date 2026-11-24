@@ -132,7 +132,7 @@ async function world(
     ) => poller.dispatch(s, r, q),
   };
   const token = (scope: Scope, role: "reader" | "operator" | "release_operator") =>
-    mintToken(db, scope, role).then((t) => t.secret);
+    mintToken(db, scope, role, { kind: "person" }).then((t) => t.secret);
   return { a, gh, cfg, poller, env, token };
 }
 

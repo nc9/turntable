@@ -75,7 +75,7 @@ beforeEach(async () => {
     db,
     runDispatcher: (s, r, q) => poller.dispatch(s, r, q),
   };
-  const maintainer = (await mintToken(db, scope, "release_operator")).secret;
+  const maintainer = (await mintToken(db, scope, "release_operator", { kind: "person" })).secret;
   const res = await dispatch(env, { kind: "bearer", token: maintainer }, "run_dispatch", {
     project: "app",
     workflow: ".github/workflows/release.yml",

@@ -6,6 +6,7 @@ import { getRun } from "../../db/repos";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 import { principalLabel } from "../principal";
+import { effectiveRunDispatchAgents } from "../setting-guard";
 
 /**
  * The lowest role that may dispatch. A dispatch starts a run of a chosen ref with chosen inputs,
@@ -33,7 +34,7 @@ export const runDispatch = defineOp({
     "release approval like a tag push would (state awaiting_approval); a dispatch never skips an " +
     "approval. Only a repo this project ingests, and only when ingest is on. Input values are " +
     "stored with the run and never written to the audit log (the audit has the input names). " +
-    "Needs release_operator or higher (a maintainer); an operator or a reader is refused. " +
+    "An agent token is also bound by the project's run_dispatch_agents policy (default unprivileged: an agent may not dispatch a protected or release run, refused before any forge call; none: no agent dispatches; any). Needs release_operator or higher (a maintainer); an operator or a reader is refused. " +
     "Counts against the project's hourly run cap. Writes and is audited.",
   input: z.object({
     workflow: z
@@ -96,6 +97,13 @@ export const runDispatch = defineOp({
       throw new OpError("unavailable", "this server cannot dispatch runs (no poller)");
     }
     const scope = { orgId: ctx.scope.orgId, projectId: ctx.scope.projectId };
+    // An agent principal is what `untrusted_run_approval`'s no_agents calls one: a token whose
+    // kind is agent. The policy is read before any forge call and travels with the request, so
+    // the refusal comes before the network and again once the real class is known.
+    const agentPolicy =
+      ctx.principal.kind === "token" && ctx.principal.tokenKind === "agent"
+        ? await effectiveRunDispatchAgents(ctx.settings, ctx.db, scope.orgId, scope.projectId)
+        : undefined;
     try {
       const out = await ctx.runDispatcher(scope, input.repo, {
         workflow: input.workflow,
@@ -103,6 +111,7 @@ export const runDispatch = defineOp({
         inputs: input.inputs,
         actor: principalLabel(ctx.principal),
         role: ctx.principal.role,
+        ...(agentPolicy ? { agentPolicy } : {}),
       });
       const run = await getRun(ctx.db, scope, out.runId);
       return {

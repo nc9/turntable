@@ -32,13 +32,14 @@ import {
   validateJobGraph,
 } from "../db/repos";
 import { assertRepoRelative } from "../run/safe-read";
-import { decideRun, needsApproval, type TrustClass } from "../trust";
+import type { RunDispatchAgents } from "../settings/definitions";
+import { classifyRun, decideRun, needsApproval, type TrustClass } from "../trust";
 import type { PollRepoConfig } from "./config";
 import { validateDispatchInputs } from "./dispatch-inputs";
 import { describeWorkflow, fetchLocalActions, type IngestDeps } from "./ingest";
 
 export type DispatchErrorCode =
-  "invalid_input" | "not_found" | "conflict" | "rate_limited" | "unavailable";
+  "invalid_input" | "not_found" | "conflict" | "rate_limited" | "unavailable" | "forbidden";
 
 /** A refusal with its reason; nothing was created. */
 export class DispatchError extends Error {
@@ -59,7 +60,61 @@ export type DispatchRequest = {
   actor: string;
   /** The project role that allowed it, recorded in the trust reasons. */
   role: string;
+  /**
+   * The project's `run_dispatch_agents` policy, set ONLY when the caller is an agent token (a
+   * person's dispatch leaves it unset and is never limited by it).
+   */
+  agentPolicy?: RunDispatchAgents | undefined;
 };
+
+const AGENT_NONE_REFUSAL =
+  "agent tokens may not dispatch runs in this project (run_dispatch_agents)";
+const AGENT_PRIVILEGED_REFUSAL =
+  "agent tokens may not dispatch protected or release runs in this project (run_dispatch_agents)";
+
+const isPrivileged = (k: TrustClass): boolean => k === "protected" || k === "release";
+
+/**
+ * The refusal an agent's dispatch gets under the project's policy for a run of class `klass`, or
+ * undefined. `klass` undefined (the class is not known yet) checks only the `none` policy.
+ */
+function agentRefusal(req: DispatchRequest, klass: TrustClass | undefined): string | undefined {
+  if (req.agentPolicy === undefined || req.agentPolicy === "any") return undefined;
+  if (req.agentPolicy === "none") return AGENT_NONE_REFUSAL;
+  return klass !== undefined && isPrivileged(klass) ? AGENT_PRIVILEGED_REFUSAL : undefined;
+}
+
+/** The class a maintainer's dispatch gets for a ref, from the project's own config (no forge). */
+function classOf(cfg: PollRepoConfig, ref: string, isTag: boolean): TrustClass {
+  return classifyRun({
+    event: "workflow_dispatch",
+    ref,
+    fork: false,
+    authorTrusted: true,
+    actorPermission: "maintain",
+    protectedRefs: [`refs/heads/${cfg.defaultBranch}`, ...cfg.protectedRefs],
+    ...(isTag ? { releaseRefs: cfg.tagRefs } : {}),
+  });
+}
+
+/**
+ * Refuses an agent's dispatch from the ref NAME alone, before any forge call: the class is only
+ * known after the ref resolves, so this takes the strictest class the name can have (a bare name
+ * may be a branch or a tag). Throws a DispatchError; a person's dispatch always passes.
+ */
+export function refuseAgentByName(cfg: PollRepoConfig, req: DispatchRequest): void {
+  if (req.agentPolicy === undefined) return;
+  const text = req.ref.trim();
+  const asBranch = !text.startsWith("refs/tags/");
+  const asTag = !text.startsWith("refs/heads/");
+  const name = text.replace(/^refs\/(heads|tags)\//, "");
+  const classes: TrustClass[] = [];
+  if (asBranch) classes.push(classOf(cfg, `refs/heads/${name}`, false));
+  if (asTag) classes.push(classOf(cfg, `refs/tags/${name}`, true));
+  const klass = classes.find(isPrivileged) ?? classes[0];
+  const why = agentRefusal(req, klass);
+  if (why) throw new DispatchError("forbidden", why);
+}
 
 export type DispatchResult = {
   runId: string;
@@ -229,6 +284,10 @@ export async function dispatchWorkflow(
     workflowHash: createHash("sha256").update(yaml).digest("hex"),
     now,
   });
+  // The class is now known: an agent that looked unprivileged by name but resolved to a protected
+  // or release run is refused the same way, and nothing is created.
+  const late = agentRefusal(req, base.class);
+  if (late) throw new DispatchError("forbidden", late);
   const release = base.class === "release";
   const decision = {
     ...base,
@@ -241,7 +300,12 @@ export async function dispatchWorkflow(
           ]
         : []),
     ],
-    facts: { ...base.facts, ...(isTag ? { tag: target.ref.slice("refs/tags/".length) } : {}) },
+    facts: {
+      ...base.facts,
+      ...(isTag ? { tag: target.ref.slice("refs/tags/".length) } : {}),
+      // Names only, never values: the values live in the run's plan.
+      input_names: Object.keys(parsed.strings),
+    },
   };
   const hold = release || needsApproval(decision.class);
 

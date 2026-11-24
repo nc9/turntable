@@ -14,6 +14,7 @@ import { type FetchLike, GithubClient, RateLimited } from "./github";
 import {
   DispatchError,
   dispatchWorkflow,
+  refuseAgentByName,
   type DispatchRequest,
   type DispatchResult,
 } from "./dispatch";
@@ -325,6 +326,9 @@ export class Poller {
       );
     }
     const cfg = mine[0] as PollRepoConfig;
+    // An agent token's policy is checked from the ref name before any forge call (a client may
+    // mint an installation token).
+    refuseAgentByName(cfg, req);
     const { github } = await this.#clientFor(cfg);
     const out = await dispatchWorkflow(
       {

@@ -141,6 +141,30 @@ export const jobLogGrepDeadlineSetting = defineSetting({
   toml: "job_log.grep_deadline_ms",
 });
 
+/** Which agent principals may start a `workflow_dispatch` run (`run_dispatch_agents`, per project). */
+export const RUN_DISPATCH_AGENTS = ["none", "unprivileged", "any"] as const;
+export type RunDispatchAgents = (typeof RUN_DISPATCH_AGENTS)[number];
+
+export const runDispatchAgentsSetting = defineSetting({
+  key: "run_dispatch_agents",
+  scope: "project",
+  type: z.enum(RUN_DISPATCH_AGENTS),
+  default: "unprivileged",
+  // Loosening is the instance administrator's, as for `untrusted_run_approval`: an org owner may
+  // tighten it (unprivileged, then none) but never loosen it.
+  role: "owner",
+  instanceAdminOnly: true,
+  strictness: ["any", "unprivileged", "none"],
+  // A protected or release run can hold deploy credentials and an agent reads untrusted text, so
+  // a value in an agent's context must not widen what agents may dispatch.
+  mcpEditable: false,
+  mcpReason:
+    "it decides whether agents may dispatch protected or release runs, so only a person changes it",
+  description:
+    "Which agent tokens may start a `workflow_dispatch` run with `run_dispatch`: `none` (never), `unprivileged` (only a run below the protected class: not the default branch, a protected ref or a release tag) or `any` (a release run still waits for its human approval). A person's token is not affected.",
+  toml: "run_dispatch_agents",
+});
+
 export const untrustedRunApprovalSetting = defineSetting({
   key: "untrusted_run_approval",
   scope: "project",
@@ -389,6 +413,7 @@ export const settingsRegistry = createSettingsRegistry([
   auditAnchorSinkUrlSetting,
   auditAnchorExportIntervalSetting,
   untrustedRunApprovalSetting,
+  runDispatchAgentsSetting,
   approvalPolicySetting,
   schedulingClassSetting,
   preemptMaxPerJobSetting,

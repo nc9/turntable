@@ -193,7 +193,8 @@ async function buildWorld(): Promise<World> {
   });
 
   // Secrets, proxy rules and passthrough hosts, through A's own operator, so audit rows exist.
-  const aRel = (await mintToken(db, { orgId: a.orgId }, "release_operator")).secret;
+  const aRel = (await mintToken(db, { orgId: a.orgId }, "release_operator", { kind: "person" }))
+    .secret;
   const asA = (name: string, input: Record<string, unknown>) =>
     dispatch(env, { kind: "bearer", token: aRel }, name, input);
   const mk = async (name: string, input: Record<string, unknown>) => {
@@ -345,7 +346,7 @@ async function buildWorld(): Promise<World> {
       const tok = (await mintToken(db, { orgId: t.orgId }, role)).secret;
       out.push({ label: `${label} ${role} token`, cred: { kind: "bearer", token: tok }, role });
     }
-    const scoped = (await mintToken(db, t.scope, "release_operator")).secret;
+    const scoped = (await mintToken(db, t.scope, "release_operator", { kind: "person" })).secret;
     out.push({
       label: `${label} project-scoped release_operator`,
       cred: { kind: "bearer", token: scoped },

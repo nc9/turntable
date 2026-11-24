@@ -179,6 +179,8 @@ export interface TrustFacts {
   tag?: string;
   /** For a tag run: the annotated tag's tagger name, shown only. Free text, never an identity. */
   taggerLabel?: string;
+  /** For a workflow_dispatch run: the names of the inputs it got (never their values). */
+  input_names?: string[];
 }
 
 export interface TrustDecision {

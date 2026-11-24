@@ -6,7 +6,11 @@ import { allProjectRefs, getKeyPolicy, getOrgById, getProject, listApprovers } f
 import { notCountingReason } from "../approvals/identity";
 import { keyPolicyViolation } from "../approvals/key-policy";
 import type { UntrustedRunApproval } from "../db/schema";
-import { settingsRegistry, untrustedRunApprovalSetting } from "../settings/definitions";
+import {
+  type RunDispatchAgents,
+  settingsRegistry,
+  untrustedRunApprovalSetting,
+} from "../settings/definitions";
 import type { SettingDef } from "../settings/define";
 import { type Resolved, resolveSetting, type SettingSubject } from "../settings/resolve";
 import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
@@ -161,6 +165,25 @@ export async function effectiveApproval(
     await projectSubject(db, orgId, projectId),
   );
   return r.value as UntrustedRunApproval;
+}
+
+/**
+ * The effective `run_dispatch_agents` of one project (environment, `turntable.toml`, stored value,
+ * default). A value that is not a known policy reads as `none` (fail closed).
+ */
+export async function effectiveRunDispatchAgents(
+  rt: SettingsRuntime | undefined,
+  db: Db,
+  orgId: string,
+  projectId: string,
+): Promise<RunDispatchAgents> {
+  const r = await resolveSetting(
+    rt ?? createSettingsRuntime(settingsRegistry),
+    db,
+    "run_dispatch_agents",
+    await projectSubject(db, orgId, projectId),
+  );
+  return r.value === "any" || r.value === "unprivileged" ? r.value : "none";
 }
 
 /**
