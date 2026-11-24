@@ -66,6 +66,7 @@ export const EVENT_TYPES = [
   "org.token_reminted",
   "org.token_minted",
   "org.tokens_exhausted",
+  "org.token_revoked",
   "org.installation_claim_started_by_instance",
   "org.member_invited",
   "org.member_joined",

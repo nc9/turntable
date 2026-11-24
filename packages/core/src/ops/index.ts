@@ -34,6 +34,7 @@ import {
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
+import { instanceRevokeOrgTokenOp } from "./definitions/instance-revoke-org-token";
 import { githubAppStatus, instanceGithubAppStatus } from "./definitions/github-app-status";
 import { getQuotas } from "./definitions/quotas";
 import {
@@ -134,6 +135,7 @@ export const registry = createRegistry([
   rotateInstanceTokenOp,
   createOrgOp,
   createOrgTokenOp,
+  instanceRevokeOrgTokenOp,
   moveRepoBindingOp,
   instanceStartInstallationClaimOp,
   instanceListOrgs,

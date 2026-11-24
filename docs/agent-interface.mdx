@@ -90,6 +90,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `rotate_instance_token` | none | no | `turntable token rotate --instance` | write | admin | instance | Replace the instance administrator token in use with a new one (instance administrator only). |
 | `create_org` | none | no |  | write | admin | instance | Create an empty org (instance administrator only). |
 | `create_org_token` | none | no |  | write | admin | instance | Mint an org's first token, or a new one after a delay (instance administrator only). |
+| `instance_revoke_org_token` | none | no |  | destructive | admin | instance | Break-glass: revoke an org's token and everything it minted (instance administrator only). |
 | `move_repo_binding` | none | no |  | write | admin | instance | Move a repo's binding to a project in another org (instance administrator only). |
 | `instance_start_installation_claim` | none | no |  | write | admin | instance | Start a GitHub installation claim for an org that cannot (instance administrator only). |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |

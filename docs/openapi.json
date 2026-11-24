@@ -1750,7 +1750,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 20,
+              "maxItems": 21,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1772,6 +1772,7 @@
                   "org.token_reminted",
                   "org.token_minted",
                   "org.tokens_exhausted",
+                  "org.token_revoked",
                   "org.installation_claim_started_by_instance",
                   "org.member_invited",
                   "org.member_joined"
@@ -1885,6 +1886,7 @@
                               "org.token_reminted",
                               "org.token_minted",
                               "org.tokens_exhausted",
+                              "org.token_revoked",
                               "org.installation_claim_started_by_instance",
                               "org.member_invited",
                               "org.member_joined"
@@ -10432,6 +10434,113 @@
           }
         ],
         "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/orgs/tokens/revoke": {
+      "post": {
+        "operationId": "instance_revoke_org_token",
+        "summary": "Break-glass: revoke an org's token and everything it minted (instance administrator only).",
+        "description": "Revokes one token of an org by id, at once, with no help from the token's holder: for a leaked tenant token whose holder is unreachable (on a hosted instance a token can otherwise only revoke itself). It always cascades: every token the token minted, transitively, is revoked in the same transaction, because a leaked token's children are suspect too. The next request of each is refused and its open realtime sockets close. The output gives `revoked` and `descendants_revoked`, the number of minted tokens revoked with it. Revoking an already revoked token is a success with `already_revoked` true (any live descendants are still revoked). An unknown id, an id of another org and an unknown org are all the same `not_found`; the system org is never a target. `reason` is required and recorded with the token id and the descendant count, never the secret or its hash. It can leave the org with no usable token (`org_locked_out`): the recovery is `create_org_token`, which for an org that had a token waits out the `org_remint_delay_hours` setting. Audited in the system org's chain and in the org's own, and emits an `org.token_revoked` event to the org. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: destructive; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org."
+                  },
+                  "token_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The token id (from `list_api_tokens`)."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why: recorded in both audit chains."
+                  }
+                },
+                "required": ["target_org", "token_id", "reason"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token_id": {
+                      "type": "string"
+                    },
+                    "org": {
+                      "type": "string",
+                      "description": "Org slug."
+                    },
+                    "revoked": {
+                      "type": "boolean",
+                      "description": "True: the token is revoked now (or already was)."
+                    },
+                    "already_revoked": {
+                      "type": "boolean"
+                    },
+                    "descendants_revoked": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Minted tokens revoked with it."
+                    },
+                    "org_locked_out": {
+                      "type": "boolean",
+                      "description": "True when no usable token is left in the org."
+                    }
+                  },
+                  "required": [
+                    "token_id",
+                    "org",
+                    "revoked",
+                    "already_revoked",
+                    "descendants_revoked",
+                    "org_locked_out"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "destructive",
         "x-turntable-instance-only": true,
         "x-turntable-untrusted-output": false
       }
