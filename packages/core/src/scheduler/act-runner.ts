@@ -68,6 +68,7 @@ import {
   untrustedForSize,
 } from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
+import { appendAudit } from "../db/repos/audit";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
 /** The source of a run: a tarball to deliver and the files the planner reads. */
@@ -338,6 +339,8 @@ async function needResultsFor(
 
 /** Builds the runner for the scheduler. Deterministic plan problems are infra_error with a reason. */
 export function createActRunner(o: ActRunnerOptions): AttemptRunner {
+  // Attempts whose sandbox has been handed to `executeJob`, which destroys it however it ends.
+  const handedOff = new Set<string>();
   const run = async (
     ctx: AttemptContext,
     plan: JobPlan,
@@ -386,6 +389,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       : undefined;
     // The project's own snapshot (set by the instance operator) beats the provider's default.
     const { sandboxSnapshot } = await getProjectSandboxSettings(o.db, ctx.scope);
+    // Past the last early exit: from here `executeJob` owns the sandbox and destroys it.
+    handedOff.add(ctx.attempt.id);
     const res = await executeJob(
       {
         provider: ctx.provider,
@@ -426,7 +431,61 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     };
   };
 
-  return async (ctx) => {
+  /**
+   * An attempt that is resumed inherits a sandbox (and its exec) from a dead worker. When it ends
+   * before `executeJob` takes over, nothing else would release it until its TTL or the sweeper.
+   * This does what a cancel does: stop the exec if it still runs, destroy the sandbox through the
+   * provider and record the destroy; plus one job-log line and one audit entry.
+   */
+  const releaseInherited = async (
+    ctx: AttemptContext,
+    reason: string,
+    logged: () => number,
+  ): Promise<void> => {
+    const resume = ctx.resume;
+    if (!resume) return;
+    const { sandboxId, execId } = resume;
+    try {
+      const st = await ctx.provider.exec.status(sandboxId, execId);
+      if (st.state === "running") await ctx.provider.exec.kill(sandboxId, execId, "KILL");
+    } catch {
+      // destroying the sandbox below ends the exec anyway
+    }
+    let failure: string | undefined;
+    try {
+      await ctx.provider.destroy(sandboxId);
+    } catch (e) {
+      // The sandbox's own TTL or the sweeper ends it; nothing is recorded as destroyed.
+      failure = String(e);
+    }
+    if (failure === undefined) {
+      await ctx.store.setExec({ sandboxDestroyedAt: Date.now() }).catch(() => undefined);
+    }
+    const line =
+      failure === undefined
+        ? `[turntable] released sandbox ${sandboxId}: ${reason}`
+        : `[turntable] could not release sandbox ${sandboxId} (${failure}): ${reason}`;
+    await ctx.store
+      .appendLog(logged(), new TextEncoder().encode(`${line}\n`))
+      .catch(() => undefined);
+    o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${line}\n`);
+    await appendAudit(o.db, ctx.scope, {
+      principalKind: "system",
+      principalId: "scheduler",
+      op: "sandbox.release_resumed",
+      effect: "write",
+      outcome: failure === undefined ? "ok" : "error",
+      input: {
+        sandbox_id: sandboxId,
+        attempt_id: ctx.attempt.id,
+        job_id: ctx.job.id,
+        reason,
+        ...(failure === undefined ? {} : { error: failure.slice(0, 200) }),
+      },
+    }).catch(() => undefined);
+  };
+
+  const attemptRunner: AttemptRunner = async (ctx) => {
     // A job Turntable cannot run (macOS, Windows, arm without a capable provider, docker,
     // services, ...) fails with its reason. It is never `skipped`: branch protection counts a
     // skipped required check as passing, so a skip would let a PR merge unchecked. The workflow's
@@ -787,6 +846,57 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       }
     } finally {
       checkout.dispose?.();
+    }
+  };
+
+  return async (ctx) => {
+    // A fresh attempt has no sandbox yet: nothing to release.
+    if (!ctx.resume) return attemptRunner(ctx);
+    const id = ctx.attempt.id;
+    // The job-log lines an early exit writes: the stored log still holds the dead worker's partial
+    // output, so it is cleared before the first of them, and the release line goes after them.
+    // Once `executeJob` has the sandbox it does its own reset and logging.
+    let written = 0;
+    let cleared = false;
+    const clear = async (): Promise<void> => {
+      if (cleared) return;
+      cleared = true;
+      await ctx.store.reset().catch(() => undefined);
+    };
+    const store: AttemptContext["store"] = {
+      ...ctx.store,
+      appendLog: async (offset, bytes) => {
+        if (handedOff.has(id)) return ctx.store.appendLog(offset, bytes);
+        await clear();
+        written = Math.max(written, offset + bytes.length);
+        return ctx.store.appendLog(offset, bytes);
+      },
+    };
+    const rctx: AttemptContext = { ...ctx, store };
+    const release = async (reason: string): Promise<void> => {
+      await clear();
+      await releaseInherited(rctx, reason, () => written);
+    };
+    handedOff.delete(id);
+    try {
+      if (ctx.signal.aborted) {
+        await release("cancelled before re-attaching");
+        return { state: "cancelled", reason: "cancelled by user" };
+      }
+      const outcome = await attemptRunner(rctx);
+      if (!handedOff.has(id)) await release(`ended before re-attaching: ${outcome.reason}`);
+      return outcome;
+    } catch (err) {
+      if (!handedOff.has(id)) {
+        await release(
+          ctx.signal.aborted
+            ? "cancelled before re-attaching"
+            : `error before re-attaching: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      throw err;
+    } finally {
+      handedOff.delete(id);
     }
   };
 }
