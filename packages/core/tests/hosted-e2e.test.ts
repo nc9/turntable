@@ -21,7 +21,7 @@ import {
   setProjectChecksMode,
 } from "../src/db";
 import {
-  CLAIM_COOKIE,
+  claimCookieName,
   CLAIM_PATH,
   InstallationClaims,
   createClaimHandler,
@@ -101,7 +101,7 @@ describe("hosted shadow, end to end", () => {
     const claimed = await claimHandler.handle(
       new Request(
         `http://x${CLAIM_PATH}?installation_id=100&setup_action=install&code=c&state=${encodeURIComponent(state)}`,
-        { headers: { cookie: `${CLAIM_COOKIE}=${nonce}` } },
+        { headers: { cookie: `${claimCookieName(nonce)}=${nonce}` } },
       ),
     );
     expect(claimed?.status).toBe(200);

@@ -15,7 +15,7 @@ import {
 import { openPostgres } from "../src/db/pg";
 import { testDb } from "../src/db/dialect";
 import {
-  CLAIM_COOKIE,
+  claimCookieName,
   CLAIM_PATH,
   CLAIM_TTL_MS,
   InstallationClaims,
@@ -85,7 +85,9 @@ describe.each(dialects)("instance_start_installation_claim (%s)", (_n, open) => 
     const callback = async (q: Record<string, string>): Promise<Response> =>
       (await handler.handle(
         new Request(`http://x${CLAIM_PATH}?${new URLSearchParams(q)}`, {
-          headers: { cookie: `${CLAIM_COOKIE}=${payloadOf(q.state!).n}` },
+          headers: {
+            cookie: `${claimCookieName(payloadOf(q.state!).n)}=${payloadOf(q.state!).n}`,
+          },
         }),
       ))!;
     return {

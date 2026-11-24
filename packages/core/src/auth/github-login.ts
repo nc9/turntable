@@ -25,7 +25,15 @@ import {
 } from "../db/repos";
 import { SECRET_CLIENT } from "../github/app-auth";
 import { esc, pageResponse } from "../pages/server-pages";
+import { KeyCache } from "../secrets/ensure-key";
 import type { SecretStore } from "../secrets/store";
+import {
+  excessFlowCookies,
+  flowCookieName,
+  MAX_FLOW_COOKIES,
+  readFlowCookie,
+  readFlowCookies,
+} from "./flow-cookies";
 import {
   csrfToken,
   LOGIN_COOKIE,
@@ -43,6 +51,10 @@ export const LOGOUT_PATH = "/auth/logout";
 export const SESSION_INFO_PATH = "/auth/session";
 export const SECRET_LOGIN_KEY = "github-app/login-state-key";
 export const LOGIN_TTL_MS = 10 * 60_000;
+const LOGIN_COOKIE_PREFIX = `${LOGIN_COOKIE}_`;
+/** The binding cookie's name for one sign-in: a tag of its nonce, so parallel sign-ins coexist. */
+export const loginCookieName = (nonce: string): string =>
+  flowCookieName(LOGIN_COOKIE_PREFIX, nonce);
 
 const b64u = (b: Buffer | string): string => Buffer.from(b).toString("base64url");
 
@@ -119,7 +131,8 @@ const page = (status: number, title: string, body: string, cookies: string[] = [
 const note = (status: number, title: string, message: string, cookies: string[] = []): Response =>
   page(status, title, `<p>${esc(message)}</p><p><a href="${AUTH_PAGE_PATH}">Back</a></p>`, cookies);
 
-const clearLoginCookie = `${LOGIN_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
+const clearLoginCookie = (name: string): string =>
+  `${name}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
 
 export interface AuthHandler {
   handle(req: Request): Promise<Response | undefined>;
@@ -136,28 +149,11 @@ export interface AuthHandlerOptions {
 export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
   const redirectUri = `${o.sessions.origin}${CALLBACK_PATH}`;
 
-  // The HMAC key is created on first use. Concurrent first uses in this process must share ONE
-  // creation: two racing get-or-create calls each wrote a different key and the later write
-  // invalidated the state the earlier one had just signed. The key never changes once stored, so
-  // the promise is cached per App org (and dropped if creation fails, so it can be retried).
-  const keys = new Map<string, Promise<Buffer>>();
-  function key(appOrg: string): Promise<Buffer> {
-    let p = keys.get(appOrg);
-    if (!p) {
-      p = (async () => {
-        let k = await o.store.get(appOrg, SECRET_LOGIN_KEY);
-        if (k === undefined) {
-          await o.store.set(appOrg, SECRET_LOGIN_KEY, randomBytes(32).toString("base64url"));
-          k = await o.store.get(appOrg, SECRET_LOGIN_KEY);
-        }
-        if (k === undefined) throw new Error("the sign-in state key could not be stored");
-        return Buffer.from(k, "base64url");
-      })();
-      keys.set(appOrg, p);
-      p.catch(() => keys.delete(appOrg));
-    }
-    return p;
-  }
+  // The HMAC key is created on first use with insert-if-absent and always read back from the
+  // store, so concurrent first uses (this process or another over the same database) share ONE key.
+  // The cache holds only a value read back from the store; a failed verify re-reads once.
+  const keys = new KeyCache(o.store, SECRET_LOGIN_KEY);
+  const key = (appOrg: string): Promise<Buffer> => keys.get(appOrg);
 
   const sign = (k: Buffer, body: string): Buffer =>
     createHmac("sha256", k).update(`login.v1.${body}`).digest();
@@ -167,9 +163,12 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     const parts = state.split(".");
     if (parts.length !== 3 || parts[0] !== "v1") return undefined;
     const [, body, sig] = parts as [string, string, string];
-    const want = sign(await key(appOrg), body);
     const given = Buffer.from(sig, "base64url");
-    if (given.length !== want.length || !timingSafeEqual(given, want)) return undefined;
+    const good = await keys.verify(appOrg, (k) => {
+      const want = sign(k, body);
+      return given.length === want.length && timingSafeEqual(given, want);
+    });
+    if (!good) return undefined;
     try {
       const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as {
         n?: unknown;
@@ -184,7 +183,7 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     }
   }
 
-  async function start(): Promise<Response> {
+  async function start(req: Request): Promise<Response> {
     const app = await getGithubApp(o.db);
     if (!app) return note(503, "Sign-in unavailable", "No GitHub App is configured.");
     const now = o.sessions.now();
@@ -197,11 +196,19 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
       `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(app.clientId)}` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
     const headers = new Headers({ location: target, "cache-control": "no-store" });
-    // Lax: the callback is a navigation that starts on github.com.
+    // Lax: the callback is a navigation that starts on github.com. One cookie per sign-in, named
+    // from its nonce, so a second tab does not replace the first one's binding; the oldest beyond
+    // the cap are expired.
     headers.append(
       "set-cookie",
-      `${LOGIN_COOKIE}=${nonce}; Max-Age=${LOGIN_TTL_MS / 1000}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+      `${loginCookieName(nonce)}=${nonce}; Max-Age=${LOGIN_TTL_MS / 1000}; Path=/; HttpOnly; Secure; SameSite=Lax`,
     );
+    for (const name of excessFlowCookies(
+      readFlowCookies(req, LOGIN_COOKIE_PREFIX),
+      MAX_FLOW_COOKIES,
+    )) {
+      headers.append("set-cookie", clearLoginCookie(name));
+    }
     return new Response(null, { status: 303, headers });
   }
 
@@ -210,35 +217,30 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     if (!app) return note(503, "Sign-in unavailable", "No GitHub App is configured.");
     const state = url.searchParams.get("state") ?? "";
     const code = url.searchParams.get("code") ?? "";
-    const cookieNonce = readCookie(req, LOGIN_COOKIE);
     const stateNonce = await verifyState(state, app.orgId);
+    // Exactly this sign-in's cookie: its name is derived from the state's nonce.
+    const cookieNonce = stateNonce
+      ? readFlowCookie(req, LOGIN_COOKIE_PREFIX, stateNonce)
+      : undefined;
+    const clearThis = stateNonce ? [clearLoginCookie(loginCookieName(stateNonce))] : [];
     // The browser that started the sign-in must be the one that finishes it. Nothing is spent
     // until the signature, the expiry and the cookie all agree.
-    if (stateNonce && cookieNonce && !safeEqual(cookieNonce, stateNonce)) {
-      // Another sign-in started in this browser since: its cookie replaced this one's nonce.
-      return note(
-        403,
-        "Sign-in refused",
-        "This sign-in was replaced by a newer one in this browser; sign in again.",
-        [clearLoginCookie],
-      );
-    }
     if (!stateNonce || !cookieNonce) {
       return note(
         403,
         "Sign-in refused",
         "This sign-in did not start in this browser, or it expired. Start again.",
-        [clearLoginCookie],
+        clearThis,
       );
     }
     if (!(await consumeLoginState(o.db, stateNonce, o.sessions.now()))) {
       return note(403, "Sign-in refused", "This sign-in was already used. Start again.", [
-        clearLoginCookie,
+        ...clearThis,
       ]);
     }
     if (url.searchParams.has("error") || code === "") {
       return note(400, "Sign-in cancelled", "GitHub did not authorize the sign-in.", [
-        clearLoginCookie,
+        ...clearThis,
       ]);
     }
     let who: GithubIdentity;
@@ -246,7 +248,7 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
       who = await o.identity.verify(code, redirectUri);
     } catch {
       return note(403, "Sign-in refused", "GitHub did not accept the authorization.", [
-        clearLoginCookie,
+        ...clearThis,
       ]);
     }
     const id = newSessionId();
@@ -264,12 +266,12 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
         403,
         "No access",
         "This GitHub account is not a member of any org on this instance. Ask an org admin to invite your GitHub login, then sign in again.",
-        [clearLoginCookie],
+        clearThis,
       );
     }
     const headers = new Headers({ location: "/", "cache-control": "no-store" });
     headers.append("set-cookie", o.sessions.setCookie(id, absoluteMs));
-    headers.append("set-cookie", clearLoginCookie);
+    for (const c of clearThis) headers.append("set-cookie", c);
     return new Response(null, { status: 303, headers });
   }
 
@@ -359,7 +361,7 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
           return get ? await info(req) : note(405, "Method not allowed", "Use GET.");
         }
         if (p === LOGIN_PATH)
-          return get ? await start() : note(405, "Method not allowed", "Use GET.");
+          return get ? await start(req) : note(405, "Method not allowed", "Use GET.");
         if (p === CALLBACK_PATH) {
           return get ? await callback(req, url) : note(405, "Method not allowed", "Use GET.");
         }

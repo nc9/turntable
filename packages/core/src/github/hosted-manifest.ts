@@ -32,6 +32,7 @@ import {
 } from "../db/repos";
 import { hashToken } from "../ops/tokens";
 import { esc, pageHeaders, pageResponse } from "../pages/server-pages";
+import { ensureKey } from "../secrets/ensure-key";
 import type { SecretStore } from "../secrets/store";
 import { signAppJwt } from "./app-auth";
 import {
@@ -231,13 +232,9 @@ export function createHostedManifestHandler(o: HostedManifestOptions): HostedMan
 
   /** The state key: created on first start, sealed in the owning org's store. */
   const keyFor = async (orgId: string, create: boolean): Promise<Buffer | undefined> => {
-    let k = await o.store.get(orgId, SECRET_MANIFEST_KEY);
-    if (k === undefined) {
-      if (!create) return undefined;
-      k = randomBytes(32).toString("base64url");
-      await o.store.set(orgId, SECRET_MANIFEST_KEY, k);
-    }
-    return Buffer.from(k, "base64url");
+    if (create) return ensureKey(o.store, orgId, SECRET_MANIFEST_KEY);
+    const k = await o.store.get(orgId, SECRET_MANIFEST_KEY);
+    return k === undefined ? undefined : Buffer.from(k, "base64url");
   };
 
   const sign = (key: Buffer, body: string): string =>

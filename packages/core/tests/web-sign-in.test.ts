@@ -8,6 +8,7 @@ import {
   createAuthHandler,
   type GithubIdentity,
   LOGIN_PATH,
+  loginCookieName,
   LOGOUT_PATH,
   SESSION_INFO_PATH,
 } from "../src/auth/github-login";
@@ -59,8 +60,8 @@ afterAll(() => {
   for (const db of opened) db.close();
 });
 
-const cookieOf = (res: Response, name: string): string | undefined =>
-  res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`));
+const cookieOf = (res: Response, name: string, prefix = false): string | undefined =>
+  res.headers.getSetCookie().find((c) => c.startsWith(prefix ? name : `${name}=`));
 const valueOf = (setCookie: string): string =>
   setCookie.split(";")[0]!.slice(setCookie.indexOf("=") + 1);
 
@@ -127,15 +128,22 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
         go,
         location,
         state: location.searchParams.get("state")!,
-        cookie: valueOf(cookieOf(go, LOGIN_COOKIE)!),
+        cookie: valueOf(cookieOf(go, `${LOGIN_COOKIE}_`, true)!),
+        cookieName: cookieOf(go, `${LOGIN_COOKIE}_`, true)!.split("=")[0]!,
       };
     };
-    const callback = async (state: string, code: string, cookie?: string) =>
+    const nonceOfState = (state: string): string =>
+      JSON.parse(Buffer.from(state.split(".")[1] ?? "", "base64url").toString()).n as string;
+    /** The callback as a browser holding `cookies` (a raw Cookie header) makes it. */
+    const callbackWith = async (state: string, code: string, cookies: string) =>
       (await handler.handle(
         new Request(`${ORIGIN}${CALLBACK_PATH}?${new URLSearchParams({ state, code })}`, {
-          headers: cookie ? { cookie: `${LOGIN_COOKIE}=${cookie}` } : {},
+          headers: cookies ? { cookie: cookies } : {},
         }),
       ))!;
+    // The browser holds this sign-in's own cookie, named from the state's nonce.
+    const callback = async (state: string, code: string, cookie?: string) =>
+      callbackWith(state, code, cookie ? `${loginCookieName(nonceOfState(state))}=${cookie}` : "");
     /** A whole sign-in for a code. `session` is the cookie value when it succeeded. */
     const signIn = async (code: string) => {
       const st = await start();
@@ -173,6 +181,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       tti,
       bind,
       start,
+      callbackWith,
       callback,
       signIn,
       as,
@@ -201,7 +210,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     );
     expect(st.location.searchParams.get("client_id")).toBe("Iv1.abc");
     expect(st.location.searchParams.get("redirect_uri")).toBe(`${ORIGIN}${CALLBACK_PATH}`);
-    const loginCookie = cookieOf(st.go, LOGIN_COOKIE)!;
+    const loginCookie = cookieOf(st.go, `${LOGIN_COOKIE}_`, true)!;
+    expect(loginCookie.startsWith("__Host-")).toBe(true);
     for (const attr of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"]) {
       expect(loginCookie).toContain(attr);
     }
@@ -217,7 +227,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     }
     expect(set).not.toContain("Domain");
     // the login cookie is cleared
-    expect(cookieOf(done, LOGIN_COOKIE)).toContain("Max-Age=0");
+    expect(cookieOf(done, `${LOGIN_COOKIE}_`, true)).toContain("Max-Age=0");
     const id = valueOf(set);
     // the database holds only a hash of the session id
     const rows = await h.db.run((x) => x.orm.select().from(schema.webSessions));
@@ -786,19 +796,74 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     expect(bad!.status).toBe(405);
   });
 
-  test("two logins started in one browser: the older one is refused with a clear message", async () => {
+  test("two logins started in one browser both complete, each with its own cookie", async () => {
     const h = await harness();
     h.users.set("code-alice", { id: "1001", login: "alice" });
     await h.bind({});
     const older = await h.start();
     const newer = await h.start();
-    // one browser holds one login cookie: the newer start replaced the older nonce
-    const stale = await h.callback(older.state, "code-alice", newer.cookie);
-    expect(stale.status).toBe(403);
-    expect(await stale.text()).toContain("replaced by a newer one in this browser");
-    const fresh = await h.callback(newer.state, "code-alice", newer.cookie);
-    expect(fresh.status).toBe(303);
-    expect(await h.db.run((x) => x.orm.select().from(schema.webSessions))).toHaveLength(1);
+    expect(older.cookieName).not.toBe(newer.cookieName);
+    const jar = `${older.cookieName}=${older.cookie}; ${newer.cookieName}=${newer.cookie}`;
+    const first = await h.callbackWith(older.state, "code-alice", jar);
+    expect(first.status).toBe(303);
+    // the finished sign-in clears only its own cookie
+    expect(cookieOf(first, `${older.cookieName}=`)).toContain("Max-Age=0");
+    expect(cookieOf(first, `${newer.cookieName}=`)).toBeUndefined();
+    const second = await h.callbackWith(newer.state, "code-alice", jar);
+    expect(second.status).toBe(303);
+    expect(await h.db.run((x) => x.orm.select().from(schema.webSessions))).toHaveLength(2);
+  });
+
+  test("a callback with only another sign-in's cookie is refused", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const a = await h.start();
+    const b = await h.start();
+    const res = await h.callbackWith(a.state, "code-alice", `${b.cookieName}=${b.cookie}`);
+    expect(res.status).toBe(403);
+    // the cookie under a's name but b's value is not a's cookie either
+    const forged = await h.callbackWith(a.state, "code-alice", `${a.cookieName}=${b.cookie}`);
+    expect(forged.status).toBe(403);
+    expect(
+      (await h.callbackWith(a.state, "code-alice", `${a.cookieName}=${a.cookie}`)).status,
+    ).toBe(303);
+  });
+
+  test("a browser holding many login cookies has the earliest expired when it starts another", async () => {
+    const h = await harness();
+    const held: { cookieName: string; cookie: string }[] = [];
+    for (let i = 0; i < 6; i++) held.push(await h.start());
+    const jar = held.map((c) => `${c.cookieName}=${c.cookie}`).join("; ");
+    const go = (await h.handler.handle(
+      new Request(`${ORIGIN}${LOGIN_PATH}`, { headers: { cookie: jar } }),
+    ))!;
+    const cleared = go.headers.getSetCookie().filter((c) => c.includes("Max-Age=0"));
+    // 6 held, room for MAX_FLOW_COOKIES - 1 = 3 besides the new one: the 3 earliest go
+    expect(cleared.map((c) => c.split("=")[0])).toEqual(held.slice(0, 3).map((c) => c.cookieName));
+  });
+
+  test("the sign-in state key is shared by a second handler over the same store", async () => {
+    const h = await harness();
+    h.users.set("code-alice", { id: "1001", login: "alice" });
+    await h.bind({});
+    const [x, y] = await Promise.all([h.start(), h.start()]);
+    const second = createAuthHandler({
+      db: h.db,
+      store: h.store,
+      sessions: h.sessions,
+      identity: { verify: async () => ({ id: "1001", login: "alice" }) },
+    });
+    const res = await second.handle(
+      new Request(
+        `${ORIGIN}${CALLBACK_PATH}?${new URLSearchParams({ state: y.state, code: "c" })}`,
+        {
+          headers: { cookie: `${y.cookieName}=${y.cookie}` },
+        },
+      ),
+    );
+    expect(res!.status).toBe(303);
+    expect(x.state).not.toBe(y.state);
   });
 
   test("two sign-ins of one invite make one member and one user", async () => {

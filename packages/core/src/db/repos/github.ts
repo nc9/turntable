@@ -48,6 +48,24 @@ export function putSecretRecord(
   });
 }
 
+/** Inserts the record only when the name is free. True when this call inserted it. */
+export function putSecretRecordIfAbsent(
+  db: Db,
+  scope: Scope,
+  name: string,
+  ciphertext: string,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const now = Date.now();
+    const rows = await h.orm
+      .insert(s.secrets)
+      .values({ orgId: scope.orgId, name, ciphertext, createdAt: now, updatedAt: now })
+      .onConflictDoNothing({ target: [s.secrets.orgId, s.secrets.name] })
+      .returning({ name: s.secrets.name });
+    return rows.length > 0;
+  });
+}
+
 export function getSecretRecord(db: Db, scope: Scope, name: string): Promise<string | undefined> {
   return db.run(async (h) => {
     const [row] = await h.orm
