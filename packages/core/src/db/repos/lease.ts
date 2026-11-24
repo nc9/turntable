@@ -158,6 +158,9 @@ async function runsStartedSince(db: Db, orgId: string, since: number): Promise<S
  * Capacity counts every attempt in state running, lease expired or not, so a crashed worker
  * keeps its slot until the reconciler resolves it.
  */
+/** Run events that are claimed ahead of PR runs within a project: trust class protected. */
+const PROTECTED_EVENTS: string[] = ["push", "merge_group"];
+
 export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undefined> {
   const readiness = o.readiness ?? defaultReadiness;
   const pageSize = o.pageSize ?? 25;
@@ -209,10 +212,29 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       Math.min(quotas.get(orgId)?.maxConcurrent ?? Infinity, o.perOrgCap);
     // Scheduling classes: a `yield` project's work is claimed only when no `normal` work can be.
     const yieldIds = await yieldProjects(tx);
+    // Within a project's cap, default-branch pushes and merge-queue runs (trust class protected)
+    // are claimed ahead of PR and other runs. FIFO (attempt id) holds inside each tier. Nothing
+    // is preempted for this: it only orders what is claimed when a slot is free.
     const pass = async (
       klass: "all" | "normal" | "yield",
       probe: boolean,
     ): Promise<Claim | { blockedOrg: string } | undefined> => {
+      for (const tier of ["protected", "other"] as const) {
+        const got = await passTier(klass, probe, tier);
+        if (got) return got;
+      }
+      return undefined;
+    };
+    const passTier = async (
+      klass: "all" | "normal" | "yield",
+      probe: boolean,
+      tier: "protected" | "other",
+    ): Promise<Claim | { blockedOrg: string } | undefined> => {
+      const tierFilter = [
+        tier === "protected"
+          ? inArray(s.runs.event, PROTECTED_EVENTS)
+          : notInArray(s.runs.event, PROTECTED_EVENTS),
+      ];
       const classFilter =
         klass === "all" || yieldIds.size === 0
           ? []
@@ -234,6 +256,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             notFrozen(s.runs.orgId, s.runs.projectId),
             ...notProjectFull,
             ...classFilter,
+            ...tierFilter,
           ),
         )
         .groupBy(s.jobAttempts.orgId);
@@ -288,6 +311,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
                 notFrozen(s.runs.orgId, s.runs.projectId),
                 ...notProjectFull,
                 ...classFilter,
+                ...tierFilter,
                 gt(s.jobAttempts.id, cursor.get(orgId)!),
               ),
             )
