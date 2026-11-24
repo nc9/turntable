@@ -105,3 +105,22 @@ test("yield across projects is unchanged: yield work waits while normal PR work 
   await done(app, c1.attempt.id);
   expect((await claim())!.attempt.id).toBe(yieldPush);
 });
+
+test("across orgs the order stays tier-agnostic: another org's older PR is not starved by pushes", async () => {
+  const orgB = await createOrg(db, { slug: "beta", name: "beta" });
+  const pb = await createProject(db, { orgId: orgB.id }, { slug: "site", name: "site" });
+  const b: Required<Scope> = { orgId: orgB.id, projectId: pb.id };
+  const bPr = await queue(b, "pull_request"); // oldest overall
+  const aPr = await queue(app, "pull_request");
+  const aPush1 = await queue(app, "push");
+  const aPush2 = await queue(app, "push");
+  const order: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const c = (await claim())!;
+    order.push(c.attempt.id);
+    await done(c.scope as Required<Scope>, c.attempt.id);
+  }
+  // Orgs alternate by the fewest running then oldest waiting; inside org A the pushes go first.
+  expect(order[0]).toBe(bPr);
+  expect(order.slice(1)).toEqual([aPush1, aPush2, aPr]);
+});

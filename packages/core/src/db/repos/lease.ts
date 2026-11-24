@@ -212,29 +212,10 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
       Math.min(quotas.get(orgId)?.maxConcurrent ?? Infinity, o.perOrgCap);
     // Scheduling classes: a `yield` project's work is claimed only when no `normal` work can be.
     const yieldIds = await yieldProjects(tx);
-    // Within a project's cap, default-branch pushes and merge-queue runs (trust class protected)
-    // are claimed ahead of PR and other runs. FIFO (attempt id) holds inside each tier. Nothing
-    // is preempted for this: it only orders what is claimed when a slot is free.
     const pass = async (
       klass: "all" | "normal" | "yield",
       probe: boolean,
     ): Promise<Claim | { blockedOrg: string } | undefined> => {
-      for (const tier of ["protected", "other"] as const) {
-        const got = await passTier(klass, probe, tier);
-        if (got) return got;
-      }
-      return undefined;
-    };
-    const passTier = async (
-      klass: "all" | "normal" | "yield",
-      probe: boolean,
-      tier: "protected" | "other",
-    ): Promise<Claim | { blockedOrg: string } | undefined> => {
-      const tierFilter = [
-        tier === "protected"
-          ? inArray(s.runs.event, PROTECTED_EVENTS)
-          : notInArray(s.runs.event, PROTECTED_EVENTS),
-      ];
       const classFilter =
         klass === "all" || yieldIds.size === 0
           ? []
@@ -256,7 +237,6 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             notFrozen(s.runs.orgId, s.runs.projectId),
             ...notProjectFull,
             ...classFilter,
-            ...tierFilter,
           ),
         )
         .groupBy(s.jobAttempts.orgId);
@@ -289,39 +269,57 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
             x.oldest.localeCompare(y.oldest),
         )
         .map((w) => w.orgId);
-      const cursor = new Map<string, string>(orgs.map((id) => [id, ""]));
+      // Org order and round-robin are tier-agnostic. Inside one org's turn, protected runs
+      // (push, merge_group) are paged before that org's other runs; FIFO within each tier.
+      const TIERS = ["protected", "other"] as const;
+      const cursor = new Map<string, string>(
+        orgs.flatMap((id) => TIERS.map((t) => [`${id}|${t}`, ""] as const)),
+      );
       const open = new Set(orgs);
       let scanned = 0;
 
       while (open.size > 0 && scanned < scanLimit) {
         for (const orgId of orgs) {
           if (!open.has(orgId) || scanned >= scanLimit) continue;
-          const page = await tx.orm
-            .select({ attempt: s.jobAttempts, job: s.jobs })
-            .from(s.jobAttempts)
-            .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
-            .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
-            .where(
-              and(
-                eq(s.jobAttempts.orgId, orgId),
-                eq(s.jobAttempts.state, "queued"),
-                eq(s.jobs.state, "queued"),
-                isNull(s.jobAttempts.leaseOwner),
-                o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
-                notFrozen(s.runs.orgId, s.runs.projectId),
-                ...notProjectFull,
-                ...classFilter,
-                ...tierFilter,
-                gt(s.jobAttempts.id, cursor.get(orgId)!),
-              ),
-            )
-            .orderBy(asc(s.jobAttempts.id))
-            .limit(Math.min(pageSize, scanLimit - scanned));
+          let page: {
+            attempt: typeof s.jobAttempts.$inferSelect;
+            job: typeof s.jobs.$inferSelect;
+          }[] = [];
+          let tier: (typeof TIERS)[number] = "protected";
+          for (tier of TIERS) {
+            const cur = cursor.get(`${orgId}|${tier}`);
+            if (cur === undefined) continue;
+            page = await tx.orm
+              .select({ attempt: s.jobAttempts, job: s.jobs })
+              .from(s.jobAttempts)
+              .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+              .innerJoin(s.runs, eq(s.runs.id, s.jobs.runId))
+              .where(
+                and(
+                  eq(s.jobAttempts.orgId, orgId),
+                  eq(s.jobAttempts.state, "queued"),
+                  eq(s.jobs.state, "queued"),
+                  isNull(s.jobAttempts.leaseOwner),
+                  o.onlyRun ? eq(s.jobs.runId, o.onlyRun) : eq(s.runs.local, false),
+                  notFrozen(s.runs.orgId, s.runs.projectId),
+                  ...notProjectFull,
+                  ...classFilter,
+                  tier === "protected"
+                    ? inArray(s.runs.event, PROTECTED_EVENTS)
+                    : notInArray(s.runs.event, PROTECTED_EVENTS),
+                  gt(s.jobAttempts.id, cur),
+                ),
+              )
+              .orderBy(asc(s.jobAttempts.id))
+              .limit(Math.min(pageSize, scanLimit - scanned));
+            if (page.length > 0) break;
+            cursor.delete(`${orgId}|${tier}`); // tier exhausted: next tier, same turn
+          }
           if (page.length === 0) {
             open.delete(orgId);
             continue;
           }
-          cursor.set(orgId, page.at(-1)!.attempt.id);
+          cursor.set(`${orgId}|${tier}`, page.at(-1)!.attempt.id);
           for (const c of page) {
             scanned++;
             const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
