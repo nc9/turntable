@@ -46,6 +46,17 @@ Every state-changing request from a session must carry an `Origin` header equal 
 
 A session may call every read operation its role allows, and two writes with no step-up: `invite_member` for a viewer or member, and `session_step_up_challenge`. A few sensitive writes are open to it only with a fresh passkey step-up (see below). Every other write is refused, and the refusal is audited. The rules are default-deny lists in the dispatcher (`SESSION_WRITE_OPS`, `SESSION_STEP_UP_OPS`), so a new write operation is closed to sessions until someone opens it.
 
+## In the web UI
+
+Any logged-out visit to the app ends on `/sign-in`. Its main button, **Sign in with GitHub**, goes to `/auth/github/login`. A small **Use an API token** link opens `/sign-in/token`, the token form for agents, scripts and break-glass use; it is never the landing page. A `next` parameter on the sign-in URL is kept only when it is a same-origin relative path.
+
+When the page loads, it asks `GET /auth/session`. If you are signed in, the UI runs on the cookie session and stores no token in the browser. Your orgs come from the session, an org switcher in the header lists them, and the last org used in this browser is remembered (and checked against your orgs, so a stale one is ignored). After the GitHub callback you land in that org, in your only org, or on an org picker. **Sign out** in the switcher menu posts to `/auth/logout` and returns to `/sign-in`.
+
+Two things differ from token mode:
+
+- **Updates are polled.** The realtime socket and the event stream accept only a bearer token, so a session refreshes lists and logs every few seconds instead of streaming them.
+- **Some writes are refused.** A session can only invite members. The UI says "This needs passkey confirmation." where a passkey step-up exists, and "Use an API token for this" for every other write.
+
 ## Who may join: invites and the bootstrap
 
 Membership is created in one of two ways, never automatically.

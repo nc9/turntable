@@ -55,5 +55,6 @@ export function useAuth(): AuthState {
       return () => listeners.delete(cb);
     },
     () => state,
+    () => state,
   );
 }

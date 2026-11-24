@@ -1,13 +1,15 @@
 import { KeyRound } from "lucide-react";
 import { useState } from "react";
 import { ApiError, createHttpApi } from "@/api/http-adapter";
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { connect, useAuth } from "@/lib/auth";
 import { resetDirectory } from "@/lib/directory";
 
 /**
- * Temporary sign-in until session auth (#13): paste an agent token (`turntable token create`).
+ * The secondary sign-in (`/sign-in/token`), for agents, scripts and break-glass use: paste an
+ * agent token (`turntable token create`). People sign in with GitHub instead (sign-in-screen).
  * It is checked with one cheap request, kept in memory and sessionStorage, and never put in a URL.
  */
 export function ConnectScreen() {
@@ -59,19 +61,8 @@ export function ConnectScreen() {
         }}
       >
         <div className="mb-6 flex items-center gap-2.5">
-          <svg viewBox="0 0 32 32" className="size-7" aria-hidden="true">
-            <rect width="32" height="32" rx="7" className="fill-foreground" />
-            <circle
-              cx="16"
-              cy="16"
-              r="9"
-              fill="none"
-              className="stroke-background"
-              strokeWidth="2.5"
-            />
-            <circle cx="16" cy="16" r="2.5" className="fill-background" />
-          </svg>
-          <h1 className="text-xl font-semibold tracking-tight">Connect to Turntable</h1>
+          <BrandMark className="size-7" />
+          <h1 className="text-xl font-semibold tracking-tight">Use an API token</h1>
         </div>
         {auth.notice ? (
           <p
@@ -132,6 +123,11 @@ export function ConnectScreen() {
           <KeyRound />
           {busy ? "Connecting" : "Connect"}
         </Button>
+        <p className="mt-4 text-sm">
+          <a href="/sign-in" className="text-dim underline">
+            Back to sign in with GitHub
+          </a>
+        </p>
       </form>
     </main>
   );

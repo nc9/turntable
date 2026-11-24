@@ -17,6 +17,7 @@ import { InstanceQuotasPage } from "@/features/instance/quotas-page";
 import { InstanceProjectsPage } from "@/features/instance/projects-page";
 import { InstanceBackupsPage } from "@/features/instance/backups-page";
 import { InstanceTokenPage } from "@/features/instance/token-page";
+import { sanitizeNext } from "@/lib/session";
 import { SettingsPage } from "@/features/runs/settings-page";
 
 export type RunsSearch = {
@@ -32,6 +33,26 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: HomeRedirect,
+});
+
+// The sign-in routes render nothing themselves: the shell shows the screen (or sends a signed-in
+// visitor on), so the URL bar says where a logged-out visitor is. `next` is kept only if it is a
+// same-origin relative path.
+const signInSearch = (s: Record<string, unknown>): { next?: string } => {
+  const next = sanitizeNext(s.next);
+  return next ? { next } : {};
+};
+const signInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sign-in",
+  component: () => null,
+  validateSearch: signInSearch,
+});
+const tokenSignInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sign-in/token",
+  component: () => null,
+  validateSearch: signInSearch,
 });
 
 const orgRoute = createRoute({
@@ -140,6 +161,8 @@ const instanceRoutes = [
 const routeTree = rootRoute.addChildren([
   instanceIndexRoute,
   ...instanceRoutes,
+  signInRoute,
+  tokenSignInRoute,
   indexRoute,
   orgRoute,
   ingestRoute,

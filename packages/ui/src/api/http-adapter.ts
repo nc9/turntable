@@ -1,4 +1,5 @@
 import type { ApiCapabilities, TurntableApi } from "./client";
+import { refusalMessage } from "./refusal";
 import { stepEvents } from "./step-events";
 import type {
   ApprovalChallenge,
@@ -71,11 +72,14 @@ import type {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  /** `details.reason` of a refusal, when the server named one (for example `step_up_required`). */
+  readonly reason: string | undefined;
+  constructor(status: number, code: string, message: string, reason?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -86,6 +90,12 @@ export type HttpApiOptions = {
   org: () => string | null;
   /** The bearer token, read per request so it is never captured. */
   token: () => string | null;
+  /**
+   * True while a web session (cookie) stands in for the bearer token: requests then send the
+   * same-origin cookie, and no Authorization header. The browser adds the Origin header the
+   * server's CSRF check needs to non-GET requests.
+   */
+  session?: () => boolean;
   /** Called when the server says the token is not accepted (401). */
   onUnauthenticated?: () => void;
   fetch?: typeof fetch;
@@ -261,7 +271,8 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     body?: unknown,
   ): Promise<T> {
     const token = options.token();
-    if (!token) throw new ApiError(401, "unauthenticated", "Not connected");
+    const viaSession = !token && options.session?.() === true;
+    if (!token && !viaSession) throw new ApiError(401, "unauthenticated", "Not connected");
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(query))
       if (v !== undefined && v !== "") qs.set(k, String(v));
@@ -269,27 +280,33 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     const res = await doFetch(url, {
       method,
       headers: {
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
         accept: "application/json",
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       cache: "no-store",
-      credentials: "omit",
+      credentials: viaSession ? "same-origin" : "omit",
       referrerPolicy: "no-referrer",
     });
     if (!res.ok) {
       let code = "internal";
       let message = `Request failed (${res.status})`;
+      let reason: string | undefined;
       try {
         const e = (await res.json()) as WireError;
         code = e.error.code;
         message = e.error.message;
+        const d = e.error.details;
+        if (d && typeof d === "object" && typeof (d as { reason?: unknown }).reason === "string")
+          reason = (d as { reason: string }).reason;
+        const friendly = viaSession ? refusalMessage(code, message, d) : undefined;
+        if (friendly) message = friendly;
       } catch {
         // not JSON; keep the generic message
       }
       if (res.status === 401) options.onUnauthenticated?.();
-      throw new ApiError(res.status, code, message);
+      throw new ApiError(res.status, code, message, reason);
     }
     return (await res.json()) as T;
   }
@@ -481,8 +498,12 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     },
 
     async whoami(): Promise<Whoami> {
-      // No org parameter: the answer says which org the token belongs to.
-      const w = await call<WireWhoami>("GET", "/whoami");
+      // A token names its own org. A web session acts in the org the call names.
+      const w = await call<WireWhoami>(
+        "GET",
+        "/whoami",
+        options.token() === null && options.session?.() ? { org: org() } : {},
+      );
       return { kind: w.kind, id: w.id, name: w.name, role: w.role, org: w.org, project: w.project };
     },
 
