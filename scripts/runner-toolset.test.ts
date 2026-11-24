@@ -16,6 +16,17 @@ describe("runner toolset", () => {
     for (const t of TOOLS) expect(script).toContain(`'${t.cmd}'`);
   });
 
+  test("a tool with a match pattern takes the matching line, not a fixed one", () => {
+    const script = probeScript([
+      { name: "sudo", cmd: "sudo", version: ["--version"], github: true, match: "^Sudo version" },
+      { name: "bash", cmd: "bash", version: ["--version"], github: true },
+    ]);
+    expect(script).toContain("grep -m1 -E '^Sudo version'");
+    expect(script).toContain("sed -n '1p'");
+    // the warning sudo prints first when the hostname is unknown is not the version line
+    expect(versionOf("Sudo version 1.9.13p3")).toBe("1.9.13");
+  });
+
   test("parses present and absent tools", () => {
     const out = "bash\tpresent\tGNU bash, version 5.2\nyq\tabsent\t\nnoise without tabs\n";
     expect(parseProbe(out)).toEqual([
