@@ -236,7 +236,7 @@ describe.each(dialects)("instance_start_installation_claim (%s)", (_n, open) => 
     const own = mine(await listAudit(h.db, { orgId: h.tenant.id }));
     expect(own).toHaveLength(1);
     expect(JSON.parse(own[0]!.input)).toMatchObject({
-      target_target_org: "tenant-b",
+      target_org: "tenant-b",
       github_login: "owner-b",
       installation_pinned: true,
       reason: "tenant has no release_operator token",
