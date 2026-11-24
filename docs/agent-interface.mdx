@@ -133,6 +133,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `get_release_request` | `GET /api/v1/release-requests/{id}` | yes |  | read | release_operator | token | The state of a release request: pending, signed, or refused with a reason. |
 | `start_installation_claim` | `POST /api/v1/github/installation-claims` | no |  | write | release_operator | token | Get the link that connects a GitHub installation to this org. |
 | `invite_member` | `POST /api/v1/members/invites` | no |  | write | release_operator | token | Invite a GitHub login to this org. |
+| `session_step_up_challenge` | `POST /api/v1/session/step-up` | no |  | write | viewer | token | Start a passkey step-up for one sensitive action from a web session. |
 | `instance_bind_github_login` | none | no |  | write | admin | instance | Grant an org role to a GitHub login (instance administrator only). |
 | `resync_installation` | `POST /api/v1/github/installations/{installation_id}/resync` | yes |  | write | release_operator | token | Re-sync one GitHub App installation of this org with GitHub. |
 | `set_oidc_audiences` | `POST /api/v1/oidc-audiences` | no |  | write | admin | token | Limit the OIDC audiences a project's jobs may ask for, or lift the limit. |

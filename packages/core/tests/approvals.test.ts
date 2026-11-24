@@ -296,7 +296,14 @@ beforeEach(async () => {
   const project = await createProject(db, { orgId: org.id }, { slug: "app", name: "App" });
   orgId = org.id;
   scope = { orgId, projectId: project.id };
-  env = { registry, db, now, webauthn: RP, attestationAnchors: ANCHORS };
+  env = {
+    registry,
+    db,
+    now,
+    webauthn: RP,
+    attestationAnchors: ANCHORS,
+    githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
+  };
   releaseTok = (await mintToken(db, { orgId }, "release_operator")).secret;
   operatorTok = (await mintToken(db, { orgId }, "operator")).secret;
   runId = await makeRun();

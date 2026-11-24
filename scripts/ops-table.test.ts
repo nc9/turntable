@@ -22,6 +22,7 @@ const MCP_OFF: Record<string, string> = {
   enrolment_challenge: "approver enrolment is a human act",
   register_challenge: "approver enrolment is a human act",
   request_enrolment: "approver enrolment is a human act",
+  session_step_up_challenge: "a passkey step-up is a human act in a browser session",
   request_release: "releasing is a human decision; the release lane re-checks everything anyway",
   start_installation_claim: "binding a GitHub installation to an org is a human act in a browser",
   set_proxy_rule: "decides where a secret may be sent: a limit-raising setter",
