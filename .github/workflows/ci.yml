@@ -110,7 +110,7 @@ jobs:
         env:
           TURNTABLE_TEST_DB: postgres://postgres@localhost:5432/postgres
           # 4 vCPUs: three chunks at once; each test schema is named per process id
-          TURNTABLE_PG_TEST_CONCURRENCY: "3"
+          TURNTABLE_PG_TEST_CONCURRENCY: "2"
         run: bun run pg:test
 
   # Turntable only: no service containers in a sandbox, so the same suites run on in-process
