@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   Activity,
   Check,
@@ -17,6 +17,7 @@ import {
   ChartColumn,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { IncidentBanner } from "./incident-banner";
 import {
@@ -45,6 +46,9 @@ import { chooseBackend } from "@/api";
 import { disconnect, useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { ConnectScreen } from "./connect";
+import { SignInScreen } from "./sign-in-screen";
+import { gateFor, isSessionActive, loadSession, signOut, useSession } from "@/lib/session";
+import { resetDirectory } from "@/lib/directory";
 import { useConnectionStatus } from "@/db/sync";
 import { CommandPalette } from "./command-palette";
 import { InstanceShell, isInstancePath } from "@/features/instance/instance-shell";
@@ -53,11 +57,7 @@ import { useScope } from "./scope";
 function Logo() {
   return (
     <span className="flex items-center gap-2 font-semibold tracking-tight">
-      <svg viewBox="0 0 32 32" className="size-6" aria-hidden="true">
-        <rect width="32" height="32" rx="7" className="fill-foreground" />
-        <circle cx="16" cy="16" r="9" fill="none" className="stroke-background" strokeWidth="2.5" />
-        <circle cx="16" cy="16" r="2.5" className="fill-background" />
-      </svg>
+      <BrandMark className="size-6" />
       <span className="hidden sm:inline">Turntable</span>
     </span>
   );
@@ -202,6 +202,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
 function Switcher() {
   const scope = useScope();
+  const session = useSession();
   const navigate = useNavigate();
   const label = scope.project
     ? `${scope.org?.name ?? scope.orgSlug} / ${scope.project.name}`
@@ -256,7 +257,25 @@ function Switcher() {
         {chooseBackend() === "http" ? (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
+            {isSessionActive() ? (
+              <>
+                {session.login ? (
+                  <DropdownMenuLabel className="font-normal">
+                    Signed in as {session.login}
+                  </DropdownMenuLabel>
+                ) : null}
+                <DropdownMenuItem
+                  onSelect={() => {
+                    resetDirectory();
+                    void signOut();
+                  }}
+                >
+                  Sign out
+                </DropdownMenuItem>
+              </>
+            ) : (
+              <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
+            )}
           </>
         ) : null}
       </DropdownMenuContent>
@@ -531,13 +550,47 @@ function ShellInner() {
   );
 }
 
-/** Shows the connect screen until a token is held (real API only); the fixture needs none. */
+/**
+ * The gate (#477). Any logged-out visit ends on the sign-in route (GitHub first, the API token
+ * form as a secondary route); a visitor holding a token or a web session gets the app. The
+ * fixture backend needs no sign-in.
+ */
 export function Shell() {
   const auth = useAuth();
-  const path = useRouterState({ select: (s) => s.location.pathname });
+  const session = useSession();
+  const router = useRouter();
+  const loc = useRouterState({ select: (s) => s.location });
+  const path = loc.pathname;
+  const fixture = chooseBackend() === "fixture";
+  const instance = isInstancePath(path);
+  const gate = gateFor({
+    fixture,
+    hasToken: Boolean(auth.token),
+    session: session.status,
+    path,
+    here: `${path}${loc.searchStr}`,
+    next: (loc.search as { next?: unknown }).next,
+  });
+
+  useEffect(() => {
+    if (instance || fixture || auth.token || session.status !== "unknown") return;
+    void loadSession();
+  }, [instance, fixture, auth.token, session.status]);
+
+  const redirectTo =
+    gate.kind !== "redirect"
+      ? null
+      : gate.next
+        ? `${gate.to}?next=${encodeURIComponent(gate.next)}`
+        : gate.to;
+  useEffect(() => {
+    if (!instance && redirectTo !== null) router.history.replace(redirectTo);
+  }, [instance, redirectTo, router]);
+
   // The instance area has its own sign-in: no org session is needed or used there, and an org
   // session does not open it.
-  if (isInstancePath(path)) return <InstanceShell />;
-  if (chooseBackend() === "http" && !auth.token) return <ConnectScreen />;
-  return <ShellInner />;
+  if (instance) return <InstanceShell />;
+  if (gate.kind === "screen") return gate.screen === "token" ? <ConnectScreen /> : <SignInScreen />;
+  if (gate.kind === "app") return <ShellInner />;
+  return <div className="min-h-dvh" aria-busy="true" />;
 }

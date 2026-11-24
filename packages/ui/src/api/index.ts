@@ -5,6 +5,7 @@ import { createPollingRealtime } from "./polling-realtime";
 import { createWsRealtime } from "./ws-adapter";
 import type { Realtime } from "./realtime";
 import { disconnect, getOrg, getToken } from "@/lib/auth";
+import { isSessionActive, sessionEnded, sessionOrg, getSession } from "@/lib/session";
 
 export type BackendKind = "http" | "fixture";
 export type Backend = {
@@ -50,22 +51,42 @@ export function getBackend(): Backend {
       const fixture = createFixture();
       backend = { kind: "fixture", api: fixture.api, realtime: fixture.realtime, fixture };
     } else {
-      const api = createHttpApi({
-        org: getOrg,
+      // Session mode (#477): a signed-in web session stands in for the token. Requests carry the
+      // cookie, the org follows the URL (validated against the session's orgs), the org list is
+      // the session's own, and updates are polled: the WebSocket and the event stream accept
+      // only a bearer token, which a session never holds.
+      const session = !getToken() && isSessionActive();
+      const base = createHttpApi({
+        org: () => (session ? sessionOrg(window.location.pathname) : getOrg()),
         token: getToken,
-        onUnauthenticated: () => disconnect("The server did not accept your token. Connect again."),
+        session: () => session,
+        onUnauthenticated: () => {
+          if (session) {
+            sessionEnded();
+            window.location.assign("/sign-in");
+          } else disconnect("The server did not accept your token. Connect again.");
+        },
       });
+      const api: TurntableApi = session
+        ? {
+            ...base,
+            listOrgs: async () =>
+              getSession().orgs.map((o) => ({ id: o.slug, slug: o.slug, name: o.name })),
+          }
+        : base;
       const onUnauthenticated = () =>
         disconnect("The server did not accept your token. Connect again.");
       // Push over the WebSocket; polling carries each subscription whenever a socket is unavailable.
       const wsUrl = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v1/realtime`;
-      const realtime = createWsRealtime({
-        url: wsUrl,
-        token: getToken,
-        api,
-        fallback: createPollingRealtime(api),
-        onUnauthenticated,
-      });
+      const realtime = session
+        ? createPollingRealtime(api)
+        : createWsRealtime({
+            url: wsUrl,
+            token: getToken,
+            api,
+            fallback: createPollingRealtime(api),
+            onUnauthenticated,
+          });
       backend = { kind: "http", api, realtime, fixture: null };
     }
   }
