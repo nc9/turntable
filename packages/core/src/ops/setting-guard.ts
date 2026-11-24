@@ -76,7 +76,9 @@ export async function guardSettingChange(
       `${def.key}: ${parsed.error.issues.map((x) => x.message).join("; ")}`,
     );
   }
-  const refused = def.refuse?.(parsed.data);
+  const orgSlug =
+    subject.orgSlug ?? (subject.orgId ? (await getOrgById(db, subject.orgId))?.slug : undefined);
+  const refused = def.refuse?.(parsed.data, orgSlug !== undefined ? { orgSlug } : {});
   if (refused) throw new OpError("invalid_input", refused);
   if (oneWay && p && p.kind !== "instance") refuseLoosening(def, before, parsed.data);
   if (def.key === untrustedRunApprovalSetting.key && parsed.data === "human") {

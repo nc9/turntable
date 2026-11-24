@@ -25,6 +25,7 @@ import type { JobArtifactProvider } from "../artifacts/job";
 import type { JobCacheProvider } from "../cache/job";
 import { egressForRun } from "./egress";
 import type { Db } from "../db";
+import { getOrgById } from "../db/repos/api";
 import { listJobs, listRepos, type Run } from "../db/repos";
 import { SecretRegistry } from "@turntable/redact";
 import { DEFAULT_IMAGE, executeJob } from "../run/job-exec";
@@ -59,7 +60,13 @@ import type { JobOidc } from "../oidc/job-delivery";
 import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
 import { resolveRunnerLabelMaps } from "./runner-labels";
 import { realiseSize } from "./realise-size";
-import { refusalFor, type SandboxSizes, sizeFor, untrustedForSize } from "./sandbox-size";
+import {
+  refusalFor,
+  type SandboxSizes,
+  sizeFor,
+  tenantMapRefusal,
+  untrustedForSize,
+} from "./sandbox-size";
 import { assessJob, lintFailsFor, type TrustClass } from "../trust";
 import type { AttemptContext, AttemptOutcome, AttemptRunner } from "./types";
 
@@ -350,13 +357,23 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     for (const v of secrets) registry.register(v);
     const planned = ctx.job.planned ? (JSON.parse(ctx.job.planned) as PlannedJob) : undefined;
     const untrusted = untrustedForSize(effectiveClass ?? ctx.attempt.trustClass, ctx.run.local);
-    const size = sizeFor(o.sizes, planned?.runsOn ?? [], {
+    // Tenant label maps never apply to an untrusted run (sizeFor ignores labels for it anyway).
+    const overrides = o.sizes && !untrusted ? await resolveRunnerLabelMaps(o.db, ctx.scope) : [];
+    // A stored tenant entry for a class the org may no longer select (the operator changed
+    // `tenantSelectable` or `orgs` after the map was set) fails the job with the reason, before any
+    // sandbox exists. It never falls back to the instance map or the default: that would hide
+    // size-dependent bugs behind confusing OOMs and timeouts.
+    const mapWhy = tenantMapRefusal(o.sizes, planned?.runsOn ?? [], {
       untrusted,
-      // Tenant label maps never apply to an untrusted run (sizeFor ignores labels for it anyway).
-      ...(o.sizes && !untrusted
-        ? { overrides: await resolveRunnerLabelMaps(o.db, ctx.scope) }
-        : {}),
+      overrides,
+      orgSlug: o.sizes && !untrusted ? (await getOrgById(o.db, ctx.scope.orgId))?.slug : undefined,
     });
+    if (mapWhy) {
+      await ctx.store.appendLog(0, new TextEncoder().encode(`${mapWhy}\n`));
+      o.out?.(ctx.job.jobKey, `[${ctx.job.jobKey}] ${mapWhy}\n`);
+      return { state: "failure", reason: mapWhy };
+    }
+    const size = sizeFor(o.sizes, planned?.runsOn ?? [], { untrusted, overrides });
     const realised = realiseSize(ctx.provider, size);
     if (!realised.ok) {
       const why = `unsupported: the sandbox provider cannot realise size class ${size.class ?? ""}: ${realised.reason}`;

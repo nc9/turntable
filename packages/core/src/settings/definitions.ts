@@ -355,7 +355,7 @@ const runnerLabelsCommon = {
   type: runnerLabelMap,
   default: {} as Record<string, string>,
   role: "release_operator" as const,
-  refuse: refuseLabelMap,
+  refuse: (m: Record<string, string>, ctx?: { orgSlug?: string }) => refuseLabelMap(m, ctx),
   // A bigger class costs the instance more: a value in an agent's context is not a human decision.
   mcpEditable: false,
   mcpReason: "it chooses how large a tenant's sandboxes are, so only a person changes it",
@@ -366,7 +366,7 @@ export const orgRunnerLabelsSetting = defineSetting({
   key: "runner_labels",
   scope: "org",
   description:
-    "Maps a `runs-on` label to the name of a sandbox size class the instance operator defined, for every project of the org. Overrides the instance label map; a project's `project_runner_labels` overrides this. A class the operator has not defined is refused, and the operator's ceilings still apply. An untrusted pull request ignores it.",
+    "Maps a `runs-on` label to the name of a sandbox size class the instance operator defined, for every project of the org. Overrides the instance label map; a project's `project_runner_labels` overrides this. A class the operator has not defined, or has not made available to the org (`tenantSelectable`, `orgs`), is refused, and the operator's ceilings still apply. An untrusted pull request ignores it.",
   toml: "runner_labels",
 });
 
@@ -375,7 +375,7 @@ export const projectRunnerLabelsSetting = defineSetting({
   key: "project_runner_labels",
   scope: "project",
   description:
-    "Maps a `runs-on` label to the name of a sandbox size class the instance operator defined, for this project. Overrides the org's `runner_labels` and the instance label map. A class the operator has not defined is refused, and the operator's ceilings still apply. An untrusted pull request ignores it.",
+    "Maps a `runs-on` label to the name of a sandbox size class the instance operator defined, for this project. Overrides the org's `runner_labels` and the instance label map. A class the operator has not defined, or has not made available to the org (`tenantSelectable`, `orgs`), is refused, and the operator's ceilings still apply. An untrusted pull request ignores it.",
   toml: "runner_labels",
 });
 

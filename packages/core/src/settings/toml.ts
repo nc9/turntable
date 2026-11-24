@@ -2,7 +2,7 @@
 // checked against the registry at load, so an unknown key or a bad value stops the boot naming the
 // key and the file. No file at all is fine: the layer is then empty.
 import { readFileSync } from "node:fs";
-import type { SettingDef, SettingsRegistry } from "./define";
+import type { RefuseContext, SettingDef, SettingsRegistry } from "./define";
 
 /** A value found in the file, with where it was written, for errors and for the lock reason. */
 export type TomlLayer = {
@@ -39,6 +39,7 @@ function readSection(
   table: Record<string, unknown>,
   defs: readonly SettingDef[],
   skip: ReadonlySet<string>,
+  ctx: RefuseContext = {},
 ): Map<string, unknown> {
   const byPath = new Map(defs.map((d) => [d.toml, d]));
   const out = new Map<string, unknown>();
@@ -54,7 +55,7 @@ function readSection(
             `${file}: ${at}${path} (setting ${def.key}): ${r.error.issues.map((i) => i.message).join("; ")}`,
           );
         }
-        const refused = def.refuse?.(r.data);
+        const refused = def.refuse?.(r.data, ctx);
         if (refused) {
           throw new SettingsConfigError(`${file}: ${at}${path} (setting ${def.key}): ${refused}`);
         }
@@ -88,7 +89,9 @@ export function readTomlSettings(
       const org = sectionOf(at, orgRaw);
       layer.orgs.set(
         orgSlug,
-        readSection(file, `${at}.`, org, registry.byScope("org"), new Set(["projects"])),
+        readSection(file, `${at}.`, org, registry.byScope("org"), new Set(["projects"]), {
+          orgSlug,
+        }),
       );
       if (org.projects === undefined) continue;
       for (const [projectSlug, projectRaw] of Object.entries(
@@ -103,6 +106,7 @@ export function readTomlSettings(
             sectionOf(pat, projectRaw),
             registry.byScope("project"),
             new Set(),
+            { orgSlug },
           ),
         );
       }

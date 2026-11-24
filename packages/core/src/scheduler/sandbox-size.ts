@@ -30,6 +30,7 @@ import { z } from "zod";
 import type { SandboxResources } from "@turntable/provider-sdk";
 
 const pos = (max: number) => z.number().int().positive().max(max);
+const ORG_SLUG = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/);
 const NAME = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 
 const SNAPSHOT = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/;
@@ -58,6 +59,13 @@ const classSchema = z
     snapshot: z.string().regex(SNAPSHOT).optional(),
     /** Per provider settings: `{ daytona: { snapshot }, docker: { image } }`. */
     providers: providerSpecific.optional(),
+    /**
+     * Whether an org or project label map may name this class. Default true. Set false for a class
+     * with cost or privilege (a macOS reservation, a Docker-capable sandbox).
+     */
+    tenantSelectable: z.boolean().default(true),
+    /** Org slugs that may name the class even when it is not `tenantSelectable`. */
+    orgs: z.array(ORG_SLUG).max(64).optional(),
   })
   .strict();
 
@@ -135,17 +143,29 @@ export function operatorSizes(): SandboxSizes | undefined {
 /** A tenant's label map: label to the NAME of a class. */
 export type LabelMap = Readonly<Record<string, string>>;
 
+/** Whether an org's label map may name this class: selectable, or the org is on its allowlist. */
+export function tenantMayName(c: SizeClassDef, orgSlug: string | undefined): boolean {
+  return c.tenantSelectable !== false || (orgSlug !== undefined && !!c.orgs?.includes(orgSlug));
+}
+
 /**
  * Why a tenant label map cannot be set: it may name only classes the operator defined. Undefined
- * when fine. Fixed words plus the label and class name (both are the caller's own input).
+ * when fine. Fixed words plus the label and class name (both are the caller's own input); it never
+ * names another org. A class that is not `tenantSelectable` is refused unless `ctx.orgSlug` is in
+ * the class's `orgs`.
  */
 export function refuseLabelMap(
   m: LabelMap,
+  ctx: { orgSlug?: string } = {},
   sizes: SandboxSizes | undefined = operator,
 ): string | undefined {
   for (const [label, cls] of Object.entries(m)) {
-    if (!sizes || !Object.hasOwn(sizes.classes, cls)) {
+    const def = sizes && Object.hasOwn(sizes.classes, cls) ? sizes.classes[cls] : undefined;
+    if (!def) {
       return `runner label ${labelText(label)} names size class ${labelText(cls)}, which the instance operator has not defined`;
+    }
+    if (!tenantMayName(def, ctx.orgSlug)) {
+      return `runner label ${labelText(label)} names size class ${labelText(cls)}, which is not available to this org`;
     }
   }
   return undefined;
@@ -276,14 +296,45 @@ export function sizeFor(
 }
 
 /** The first layer (most specific first) that maps any of the labels, and that class if defined. */
+function firstLayerHit<C>(
+  layers: readonly LabelMap[],
+  labels: readonly string[],
+  pick: (name: string | undefined) => [string, C] | undefined,
+): { label: string; hit: [string, C] } | undefined {
+  for (const layer of layers) {
+    for (const label of labels) {
+      const hit = pick(own(layer, label));
+      if (hit) return { label, hit };
+    }
+  }
+  return undefined;
+}
+
 function fromLayers<C>(
   layers: readonly LabelMap[],
   labels: readonly string[],
   pick: (name: string | undefined) => [string, C] | undefined,
 ): [string, C] | undefined {
-  for (const layer of layers) {
-    const hit = labels.map((l) => pick(own(layer, l))).find((x) => x !== undefined);
-    if (hit) return hit;
-  }
-  return undefined;
+  return firstLayerHit(layers, labels, pick)?.hit;
+}
+
+/**
+ * Run-time check of a stored tenant label map: the entry that would pick the class names one this
+ * org may no longer select (the operator changed `tenantSelectable` or `orgs` after the map was
+ * set). The job must FAIL with this reason, never fall back to the instance map or the default,
+ * which would hide size-dependent bugs. Undefined when fine. Untrusted runs never read tenant
+ * maps. Fixed words plus the label and class name; never another org.
+ */
+export function tenantMapRefusal(
+  cfg: SandboxSizes | undefined,
+  labels: readonly string[],
+  o: { untrusted?: boolean; overrides?: readonly LabelMap[]; orgSlug?: string | undefined },
+): string | undefined {
+  if (!cfg || o.untrusted === true) return undefined;
+  const found = firstLayerHit(o.overrides ?? [], labels, (name) => {
+    const c = own(cfg.classes, name);
+    return name !== undefined && c ? [name, c] : undefined;
+  });
+  if (!found || tenantMayName(found.hit[1], o.orgSlug)) return undefined;
+  return `unsupported: runner label \`${labelText(found.label)}\` maps to class \`${labelText(found.hit[0])}\`, which this org may not select; ask the operator or change the map`;
 }

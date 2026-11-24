@@ -7,8 +7,10 @@ import { dispatch, registry, type Credential } from "../src/ops";
 import { resolveRunnerLabelMaps } from "../src/scheduler/runner-labels";
 import {
   parseSandboxSizes,
+  refuseLabelMap,
   setOperatorSizes,
   sizeFor,
+  tenantMapRefusal,
   type SandboxSizes,
 } from "../src/scheduler/sandbox-size";
 import { loadSettingsRuntime } from "../src/settings/boot";
@@ -159,5 +161,93 @@ describe("resolution", () => {
       overrides: await resolveRunnerLabelMaps(db, a.scope, r),
     });
     expect(out).toMatchObject({ class: "small" });
+  });
+});
+
+describe("tenantSelectable and the org allowlist (#506)", () => {
+  const gated = (orgs?: string[]): SandboxSizes =>
+    parseSandboxSizes(
+      JSON.stringify({
+        classes: {
+          small: { cpus: 2 },
+          mac: { cpus: 4, tenantSelectable: false, ...(orgs ? { orgs } : {}) },
+          tiny: { cpus: 1 },
+        },
+        labels: { "op-mac": "mac" },
+        default: "small",
+        untrustedClass: "tiny",
+      }),
+      "test",
+    );
+
+  test("a plain class is tenantSelectable by default", () => {
+    expect(gated().classes.small?.tenantSelectable).toBe(true);
+    expect(gated().classes.mac?.tenantSelectable).toBe(false);
+  });
+
+  test("a map naming a non-selectable class is refused at set time, without naming another org", async () => {
+    setOperatorSizes(gated(["some-other-org"]));
+    const res = await setVia(rt(), "runner_labels", { x: "mac" });
+    expect(res.ok).toBe(false);
+    const why = refuseLabelMap({ x: "mac" }, { orgSlug: a.slug }) ?? "";
+    expect(why).toContain("mac");
+    expect(why).not.toContain("some-other-org");
+  });
+
+  test("an org on the class's allowlist can name it; another org cannot", async () => {
+    setOperatorSizes(gated([a.slug]));
+    expect((await setVia(rt(), "runner_labels", { x: "mac" })).ok).toBe(true);
+    expect((await setVia(rt(), "project_runner_labels", { y: "mac" })).ok).toBe(true);
+    setOperatorSizes(gated(["org-z"]));
+    expect((await setVia(rt(), "runner_labels", { x: "mac" })).ok).toBe(false);
+  });
+
+  test("turntable.toml: refused for a non-listed org, accepted for a listed one", () => {
+    setOperatorSizes(gated([a.slug]));
+    expect(() => rt(`[orgs.${a.slug}]\nrunner_labels = { x = "mac" }\n`)).not.toThrow();
+    expect(() => rt(`[orgs.other]\nrunner_labels = { x = "mac" }\n`)).toThrow(/mac/);
+  });
+
+  test("a stored map whose class became non-selectable is refused at run time, not downgraded", async () => {
+    setOperatorSizes(gated([a.slug]));
+    const r = rt();
+    expect((await setVia(r, "runner_labels", { "my-box": "mac" })).ok).toBe(true);
+    const maps = await resolveRunnerLabelMaps(db, a.scope, r);
+    const later = gated(); // the operator dropped the allowlist
+    const why = tenantMapRefusal(later, ["my-box"], { overrides: maps, orgSlug: a.slug }) ?? "";
+    expect(why).toContain(
+      "runner label `my-box` maps to class `mac`, which this org may not select",
+    );
+    expect(why).not.toContain(a.slug);
+    // the instance map does not rescue it, and an allowlisted org or an untrusted run is not refused
+    expect(
+      tenantMapRefusal(later, ["my-box", "op-mac"], { overrides: maps, orgSlug: a.slug }),
+    ).toBe(why);
+    expect(
+      tenantMapRefusal(gated([a.slug]), ["my-box"], { overrides: maps, orgSlug: a.slug }),
+    ).toBeUndefined();
+    expect(
+      tenantMapRefusal(later, ["my-box"], { untrusted: true, overrides: maps, orgSlug: a.slug }),
+    ).toBeUndefined();
+    // a label the map does not name is not refused
+    expect(
+      tenantMapRefusal(later, ["other"], { overrides: maps, orgSlug: a.slug }),
+    ).toBeUndefined();
+  });
+
+  test("the operator's instance map routes to it; untrusted still gets untrustedClass", () => {
+    const g = gated();
+    expect(sizeFor(g, ["op-mac"]).class).toBe("mac");
+    expect(
+      sizeFor(g, ["op-mac"], { untrusted: true, overrides: [{ "op-mac": "mac" }] }).class,
+    ).toBe("tiny");
+  });
+
+  test("an invalid orgs entry is rejected at config parse", () => {
+    for (const bad of [["bad slug"], [""], [1], Array.from({ length: 65 }, (_, i) => `o${i}`)]) {
+      expect(() =>
+        parseSandboxSizes(JSON.stringify({ classes: { c: { cpus: 1, orgs: bad } } }), "t"),
+      ).toThrow();
+    }
   });
 });
