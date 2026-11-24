@@ -1021,6 +1021,12 @@ export const approvers = pgTable(
     person: text("person").notNull(),
     /** The person's forge login, so a run's author cannot approve it. Null when not given. */
     forgeLogin: text("forge_login"),
+    /**
+     * The numeric GitHub account id the key was enrolled for. Step-up for a web session needs it
+     * to equal the session person's id; a row without one can never step up (re-enrol it).
+     * `forgeLogin` is display text for step-up.
+     */
+    githubUserId: text("github_user_id"),
     kind: text("kind").notNull(),
     /** WebAuthn credential id, base64url. Null for ed25519. */
     credentialId: text("credential_id"),
@@ -1093,6 +1099,8 @@ export const approverEnrolments = pgTable(
       .references(() => orgs.id),
     person: text("person").notNull(),
     forgeLogin: text("forge_login"),
+    /** The numeric GitHub account id, carried to the approver row at activation. */
+    githubUserId: text("github_user_id"),
     kind: text("kind").notNull(),
     credentialId: text("credential_id"),
     publicKey: text("public_key").notNull(),

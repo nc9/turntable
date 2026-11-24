@@ -1,5 +1,5 @@
 {
-  "id": "67aa1928-9a0b-454f-a496-b69cd72ae999",
+  "id": "08a166fa-3bc7-4925-bb52-4b546c292640",
   "prevId": "6150019f-218c-4b26-8cfb-02c3d35606d7",
   "version": "7",
   "dialect": "postgresql",
@@ -682,12 +682,6 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
-        },
-        "spent_at": {
-          "name": "spent_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -794,6 +788,12 @@
         },
         "forge_login": {
           "name": "forge_login",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "github_user_id": {
+          "name": "github_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -936,6 +936,12 @@
         },
         "forge_login": {
           "name": "forge_login",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "github_user_id": {
+          "name": "github_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false

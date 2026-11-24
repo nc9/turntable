@@ -57,10 +57,29 @@ import { ROLE_RANK } from "./roles";
  */
 export function assertMintable(
   creator: Principal,
-  request: { role: AgentRole; projectId: string | undefined; kind?: TokenKind },
+  request: {
+    role: AgentRole;
+    projectId: string | undefined;
+    kind?: TokenKind;
+    /** A fresh passkey step-up for exactly this request, which only a web session can hold. */
+    stepUp?: boolean;
+  },
 ): void {
   if (creator.kind === "session") {
-    throw new OpError("forbidden", "a web session cannot create tokens without passkey step-up");
+    if (request.stepUp !== true) {
+      throw new OpError("forbidden", "a web session cannot create tokens without passkey step-up");
+    }
+    // The person's role caps the token's, and an agent token tops out at operator.
+    if (ROLE_RANK[request.role] > ROLE_RANK[creator.role]) {
+      throw new OpError(
+        "forbidden",
+        "a token cannot have a higher role than the person minting it",
+      );
+    }
+    if ((request.kind ?? "agent") === "agent" && ROLE_RANK[request.role] > ROLE_RANK.operator) {
+      throw new OpError("forbidden", "an agent token can be created up to operator only");
+    }
+    return;
   }
   if (creator.kind === "member") return;
   if (creator.kind === "approver" || creator.kind === "instance") {

@@ -44,17 +44,41 @@ Every state-changing request from a session must carry an `Origin` header equal 
 
 ### What a session may do
 
-A session may call every read operation its role allows, and **one** write: `invite_member`. Every other write is refused, and the refusal is audited, until passkey step-up lands (see below). The rule is a default-deny list in the dispatcher (`SESSION_WRITE_OPS`), so a new write operation is closed to sessions until someone opens it.
+A session may call every read operation its role allows, and two writes with no step-up: `invite_member` for a viewer or member, and `session_step_up_challenge`. A few sensitive writes are open to it only with a fresh passkey step-up (see below). Every other write is refused, and the refusal is audited. The rules are default-deny lists in the dispatcher (`SESSION_WRITE_OPS`, `SESSION_STEP_UP_OPS`), so a new write operation is closed to sessions until someone opens it.
 
 ## Who may join: invites and the bootstrap
 
 Membership is created in one of two ways, never automatically.
 
-- **`invite_member`** (`POST /api/v1/members/invites`, not an MCP tool): `{github_login, role}`. Callable by a person's own token with `release_operator` or above, or by a signed-in admin or owner. A token may invite a viewer or member only; a signed-in **session** may also invite only a viewer or member (an admin or owner invite is refused with "needs passkey step-up or the instance operator" until step-up lands, so a stolen session cannot mint a persistent owner); a member may not invite above their own role; an agent token is refused. The invite lasts 7 days, and a newer invite for the same account replaces the older one. The org feed gets `org.member_invited`.
+- **`invite_member`** (`POST /api/v1/members/invites`, not an MCP tool): `{github_login, role}`. Callable by a person's own token with `release_operator` or above, or by a signed-in admin or owner. A token may invite a viewer or member only; a signed-in **session** may also invite only a viewer or member unless it carries a passkey step-up for that exact invite (so a stolen session cannot mint a persistent owner); a member may not invite above their own role; an agent token is refused. The invite lasts 7 days, and a newer invite for the same account replaces the older one. The org feed gets `org.member_invited`.
 - **`instance_bind_github_login`** (`POST /api/v1/instance/member-bindings`, a `tti_` token only, REST only): `{target_org, github_login, role, reason}`. The instance administrator uses it to give a new org its first admin or owner. It is audited in the system org's chain and in the org's own, and the org's feed gets `org.member_invited`. This is the only root of an admin or owner on an org with no admin who can invite.
 
 Both resolve the login to its **numeric GitHub user id when the invite is created** (`GET /users/{login}` with the App's credentials, through the guarded outbound client) and store the id on the invite. If GitHub cannot be asked, or has no such user, the invite is refused. At the invitee's first sign-in, Turntable matches on that id (the login is only for display), so an account renamed since the invite still gets in and a different account that now holds the old login does not. It binds the identity, consumes the invite and adds the membership in one transaction, emits `org.member_joined` and audits it as `member_joined`. An existing member keeps the role they have.
 
 ## Passkey step-up
 
-Planned and not in this release: a signed-in session will need a fresh passkey assertion (at most 5 minutes old, bound to the action) to mint tokens, change approvers and enrolment, loosen a setting, or approve. Until then those operations are refused for a session; use a token. Bearer tokens keep their rules.
+A session cookie alone can read and make low-risk invites. For the actions below, the signed-in person must also prove a **fresh passkey assertion** from their own enrolled passkey.
+
+| Action | Needs step-up |
+| --- | --- |
+| `create_api_token` | Always (the signed-in person must be an admin or owner). |
+| `invite_member` | Only for the `admin` and `owner` roles. |
+
+Not yet covered, and still refused for a session (use a token or the instance operator): approver and enrolment changes, and loosening a setting. Approvals themselves already need a signed statement, so a session cookie never approves anything.
+
+**Flow.**
+
+1. `session_step_up_challenge` (`POST /api/v1/session/step-up`) takes `{action, input}`: the action and the exact input it will be called with. It returns a single-use WebAuthn `challenge`, the person's eligible passkeys and an expiry.
+2. The browser signs the challenge with that passkey.
+3. The sensitive call carries `step_up: {id, approver, signature}` next to its normal input.
+
+**What it is bound to.**
+
+- The action name and a hash of the exact validated input and project scope. A step-up for `create_api_token {role: reader}` cannot authorize `{role: release_operator}`, or a different lifetime or kind.
+- The session that asked: another session of the same person cannot use it.
+- One use. It is spent when the call is accepted, whether or not the action then succeeds.
+- At most **5 minutes**. An expired, reused or wrong-action step-up is refused with `forbidden` and a `details.reason` of `step_up_expired`, `step_up_reused`, `step_up_wrong_action`, `step_up_bad_key`, `step_up_reenrol`, `step_up_bad_assertion`, `step_up_unknown` or `step_up_required`.
+
+**Which passkey.** A WebAuthn approver key enrolled in the org for **the signed-in person's numeric GitHub id**, not revoked and satisfying the org's key policy. The id is recorded at enrolment: `bootstrap_approver` and a token's `request_enrolment` resolve the forge login to its id through the App (and are refused if GitHub cannot be asked), and an enrolment made by a signed-in person for their own login records their session's id. The forge login on an approver is display text for step-up: a renamed account keeps working and a different account that now holds the old login does not. A key with no recorded id (enrolled before this, or by `turntable approvals bootstrap` on the host's CLI) can never satisfy a step-up and is refused with `step_up_reenrol`: re-enrol the passkey. The relying party is the public URL's host, as for approvals. Approval statements are unchanged and keep their own key binding.
+
+**Minting a token from the web.** A step-up'd admin or owner mints a token whose lifetime counts from now. No token's expiry caps it, so this resolves #455: an org whose token lineage ends at a dead root's expiry mints a fresh org token here before then. The existing rules still hold: at most 365 days, the token's role at most the minting person's, and an agent token at most `operator`. Bearer tokens keep their own rules and cannot carry a step-up.

@@ -182,7 +182,11 @@
       "sha256": "368ae3b2982142bdf1b3e7005877855619a49dc11ac9e57c4258441dfbaf9f70"
     },
     {
-      "tag": "0045_approval_records_spent",
+      "tag": "0045_approver_github_user_id",
+      "sha256": "23365c8c046b1ed262efe282d40311846f3ee66997e7e718300e75cd59539da9"
+    },
+    {
+      "tag": "0046_approval_records_spent",
       "sha256": "69f92de04ba3d2cb82538879f835ff06bb491f9590c2660f00a4ae6a22f4318b"
     }
   ],
@@ -252,7 +256,11 @@
       "sha256": "9e0653df5e51b83fd756062798c85e45d43e562932e78d44bcb91eca3908c4e5"
     },
     {
-      "tag": "0016_approval_records_spent",
+      "tag": "0016_approver_github_user_id",
+      "sha256": "bce9d48e0175ac71e6dbb2012d6c18e6393bf2c04eea9af0f6881271ed6679c4"
+    },
+    {
+      "tag": "0017_approval_records_spent",
       "sha256": "c57816a29b97a834e8d840e33d11534a5bf9320a9e98ede33d1b95366dc62a25"
     }
   ]

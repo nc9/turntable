@@ -46,7 +46,7 @@ export const inviteMemberOp = defineOp({
     "not repo access). The invite expires in 7 days, and a newer invite for the same login " +
     "replaces the older one. Who may call it: a person's own token with release_operator or " +
     "above (it may invite viewer or member only), or a signed-in admin or owner (up to their own " +
-    "role; only an owner invites an owner). An agent token is refused. Audited, and the org's " +
+    "role; only an owner invites an owner; a session needs a fresh passkey step-up, `step_up`, to invite an admin or owner). An agent token is refused. Audited, and the org's " +
     "feed gets an `org.member_invited` event. Not an MCP tool.",
   input: z.object({ github_login: login, role: z.enum(MEMBER_ROLES) }),
   output: inviteOutput,
@@ -69,9 +69,19 @@ export const inviteMemberOp = defineOp({
         throw new OpError("forbidden", "a token can invite a viewer or member only");
       }
     } else if (p.kind === "member" || p.kind === "session") {
-      // Until passkey step-up exists, a stolen session must never mint a persistent admin or owner.
-      if (p.kind === "session" && i.role !== "viewer" && i.role !== "member") {
-        throw new OpError("forbidden", "needs passkey step-up or the instance operator");
+      // A stolen session must never mint a persistent admin or owner: that needs a fresh passkey
+      // step-up for exactly this invite (the dispatcher bound it to this input).
+      if (
+        p.kind === "session" &&
+        i.role !== "viewer" &&
+        i.role !== "member" &&
+        ctx.stepUp?.action !== "invite_member"
+      ) {
+        throw new OpError(
+          "forbidden",
+          "inviting an admin or owner needs a passkey step-up (step_up_required) or the instance operator",
+          { reason: "step_up_required" },
+        );
       }
       if (ROLE_RANK[i.role] > ROLE_RANK[p.role]) {
         throw new OpError("forbidden", "you cannot invite a role above your own");
@@ -80,7 +90,10 @@ export const inviteMemberOp = defineOp({
       throw new OpError("forbidden", "not available to this principal");
     }
     // What this caller may grant, and so may replace: a token or session tops out at member.
-    const maxRank = p.kind === "member" ? ROLE_RANK[p.role] : ROLE_RANK.member;
+    const maxRank =
+      p.kind === "member" || (p.kind === "session" && ctx.stepUp?.action === "invite_member")
+        ? ROLE_RANK[p.role]
+        : ROLE_RANK.member;
     return await invite(
       ctx,
       i.github_login,

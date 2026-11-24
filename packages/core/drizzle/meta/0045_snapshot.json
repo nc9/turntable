@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a9dd1fae-2517-4e78-a0f6-1e15ab9b0b4b",
+  "id": "e64ebe86-0e0e-4a0b-a334-e996ea86807a",
   "prevId": "37eb0aca-d502-47eb-8ed6-948fd1c013ba",
   "tables": {
     "action_pins": {
@@ -697,13 +697,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "spent_at": {
-          "name": "spent_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -778,6 +771,13 @@
         },
         "forge_login": {
           "name": "forge_login",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "github_user_id": {
+          "name": "github_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -919,6 +919,13 @@
         },
         "forge_login": {
           "name": "forge_login",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "github_user_id": {
+          "name": "github_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

@@ -109,6 +109,7 @@ async function buildWorld(): Promise<World> {
     vault,
     webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
+    githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
   };
   const a = await seedTenant(db, "org-a");
   const b = await seedTenant(db, "org-b");
@@ -633,6 +634,8 @@ const UNREACHABLE: Record<string, string> = {
     "as get_setting: no shipped org or project setting to set; settings.test.ts covers the cross-tenant write",
   invite_member:
     "needs a GitHub App lookup of the login (a fake is wired in web-sign-in.test.ts, where who may invite, the role cap and replacement are covered); org B is probed and refused alike",
+  session_step_up_challenge:
+    "web sessions only: no token reaches it (the handler refuses a token principal alike); the binding, org scoping and single use are in session-step-up.test.ts",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

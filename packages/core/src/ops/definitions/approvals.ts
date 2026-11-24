@@ -28,6 +28,7 @@ import {
 import { approverIdentity, normalizeLogin, notCountingReason } from "../../approvals/identity";
 import { KeyPolicyError, keyPolicyViolation } from "../../approvals/key-policy";
 import { parseEd25519PublicKey } from "../../approvals/keys";
+import { resolveGithubUserId } from "../../approvals/github-id";
 import { dbKeyStore } from "../../approvals/store";
 import { signatureSchema, verifySignature, VerifyError } from "../../approvals/verify";
 import { verifyRegistration, WebAuthnError } from "../../approvals/webauthn";
@@ -38,6 +39,7 @@ import {
   purgeExpiredChallenges,
   recordIdentities,
   getApprover,
+  getIdentityByUserId,
   getEnrolment,
   getEnvPolicy,
   getKeyPolicy,
@@ -714,7 +716,8 @@ export const requestEnrolment = defineOp({
     "hardware policy). Nothing is " +
     "enrolled until a quorum of existing approvers signs it. Refused while no approver exists: " +
     "the first approver is enrolled from the server's CLI (the local trust root). Needs " +
-    "release_operator. Not available over MCP.",
+    "release_operator. The forge login is resolved to its numeric GitHub id through the App when " +
+    "the enrolment is requested (refused if it cannot be): web step-up matches on that id. Not available over MCP.",
   input: z.object({
     person: z.string().trim().min(1).max(200).describe("A name for the human who holds the key."),
     forge_login: z
@@ -827,6 +830,16 @@ export const requestEnrolment = defineOp({
         throw e;
       }
     }
+    // The numeric GitHub id the key is enrolled for. A session enrolling its own login records
+    // the session's id; anything else (a token) resolves the login now. Failure refuses.
+    let githubUserId: string | undefined;
+    if (ctx.principal.kind === "session") {
+      const own = await getIdentityByUserId(ctx.db, ctx.principal.id);
+      if (own && own.login.toLowerCase() === input.forge_login.trim().toLowerCase()) {
+        githubUserId = own.githubUserId;
+      }
+    }
+    githubUserId ??= await resolveGithubUserId(ctx.githubUsers, input.forge_login);
     try {
       const e = await insertEnrolment(
         ctx.db,
@@ -834,6 +847,7 @@ export const requestEnrolment = defineOp({
         {
           person: input.person,
           forgeLogin: input.forge_login,
+          githubUserId,
           ...key,
           requestedBy: principalLabel(ctx.principal),
           expiresAt: now + ENROLMENT_TTL_MS,

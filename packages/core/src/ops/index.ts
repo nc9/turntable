@@ -56,6 +56,7 @@ import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-req
 import { startInstallationClaim } from "./definitions/installation-claim";
 import { whoami } from "./definitions/whoami";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
+import { sessionStepUpChallenge } from "./definitions/session-step-up";
 import {
   addPassthroughHostOp,
   deletePassthroughHostOp,
@@ -181,6 +182,7 @@ export const registry = createRegistry([
   getReleaseRequestOp,
   startInstallationClaim,
   inviteMemberOp,
+  sessionStepUpChallenge,
   instanceBindGithubLoginOp,
   resyncInstallation,
   setOidcAudiencesOp,

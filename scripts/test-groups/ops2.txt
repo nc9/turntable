@@ -17,3 +17,4 @@ packages/core/tests/token-ops.test.ts
 packages/core/tests/token-realtime.test.ts
 packages/core/tests/web-sign-in.test.ts
 packages/core/tests/release-approval-v2.test.ts
+packages/core/tests/session-step-up.test.ts

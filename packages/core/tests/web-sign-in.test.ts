@@ -422,7 +422,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       expect(r.ok, role).toBe(false);
       if (!r.ok) {
         expect(r.error.code).toBe("forbidden");
-        expect(r.error.message).toBe("needs passkey step-up or the instance operator");
+        expect(r.error.message).toContain("passkey step-up");
       }
     }
     expect((await h.as(cookie, "invite_member", { github_login: "s-v", role: "viewer" })).ok).toBe(
@@ -709,7 +709,7 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     // instance ops are not for a session either
     const inst = await h.as(cookie, "instance_whoami");
     expect(inst.ok).toBe(false);
-    expect([...SESSION_WRITE_OPS]).toEqual(["invite_member"]);
+    expect([...SESSION_WRITE_OPS]).toEqual(["invite_member", "session_step_up_challenge"]);
   });
 
   test("REST: a cookie needs the exact public Origin on a state-changing request; a bearer is unaffected", async () => {

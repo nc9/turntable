@@ -32,6 +32,7 @@ import { type Credential, orgRole, type Principal } from "./principal";
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
+import { inputTarget, SESSION_STEP_UP_OPS, verifyStepUp, type VerifiedStepUp } from "./step-up";
 
 export type Transport = "mcp" | "rest";
 
@@ -152,11 +153,16 @@ const unknownTokenSource = (c: Credential): string =>
       : "none";
 
 /**
- * The writes a web session may make, until passkey step-up lands. Everything else that is not a
- * read (minting tokens, approvers and enrolment, loosening settings, approvals, ...) is refused
- * for a session by default, so a new op is closed to sessions until someone opens it here.
+ * The writes a web session may make with no step-up. Everything else that is not a read is
+ * refused for a session by default, so a new op is closed to sessions until someone opens it
+ * here, or in SESSION_STEP_UP_OPS (step-up.ts), where it also needs a fresh passkey assertion
+ * bound to the exact request. `invite_member` is in both: a viewer or member invite needs none,
+ * an admin or owner invite needs the step-up (the handler enforces it).
  */
-export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set(["invite_member"]);
+export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
+  "invite_member",
+  "session_step_up_challenge",
+]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(
@@ -245,7 +251,13 @@ async function authenticateSession(
     }
     throw new OpError("not_found", NO_SUCH_SCOPE);
   }
-  return { kind: "session", id: live.userId, orgId: pick.orgId, role: pick.role };
+  return {
+    kind: "session",
+    id: live.userId,
+    orgId: pick.orgId,
+    role: pick.role,
+    sessionHash: live.hash,
+  };
 }
 
 /**
@@ -392,7 +404,14 @@ export async function dispatch(
     if (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput)) {
       throw new OpError("invalid_input", "input must be a JSON object");
     }
-    const raw = rawInput as Record<string, unknown>;
+    // A step-up rides beside the input and is judged by the dispatcher, never by the schema.
+    const { step_up: stepUpRaw, ...raw } = rawInput as Record<string, unknown>;
+    if (stepUpRaw !== undefined && credential.kind !== "session") {
+      throw new OpError("invalid_input", "step_up is only for web sessions");
+    }
+    if (stepUpRaw !== undefined && !SESSION_STEP_UP_OPS.has(op.name)) {
+      throw new OpError("invalid_input", `${op.name} does not take a step-up`);
+    }
     // Instance ops and org ops never meet: an instance op takes the instance administrator and
     // no one else (an org token of any role is refused), and the administrator, who holds no org
     // grant, is refused every org op. The instance op's scope is the system org, where its audit
@@ -406,7 +425,12 @@ export async function dispatch(
     // A web session is default-deny for writes: only the named ones, whatever the member's role.
     // It is judged before the scope (a project-scoped op with no project would fail there first);
     // a member principal is bound to one org, so the refusal is audited in that org's chain.
-    if (credential.kind === "session" && op.effect !== "read" && !SESSION_WRITE_OPS.has(op.name)) {
+    if (
+      credential.kind === "session" &&
+      op.effect !== "read" &&
+      !SESSION_WRITE_OPS.has(op.name) &&
+      stepUpRaw === undefined
+    ) {
       await appendAudit(
         env.db,
         { orgId: principal.orgId },
@@ -421,7 +445,10 @@ export async function dispatch(
       ).catch(() => {});
       throw new OpError(
         "forbidden",
-        `${op.name} needs a passkey step-up, which a web session cannot give yet: use a token`,
+        SESSION_STEP_UP_OPS.has(op.name)
+          ? `${op.name} needs a fresh passkey step-up (step_up_required): call session_step_up_challenge`
+          : `${op.name} needs a passkey step-up, which this operation does not take for a web session: use a token`,
+        { reason: "step_up_required" },
       );
     }
     const scope: Scope =
@@ -454,7 +481,29 @@ export async function dispatch(
       if (audited) await audit("error:invalid_input", raw);
       throw err;
     }
+    let stepUp: VerifiedStepUp | undefined;
+    if (stepUpRaw !== undefined && principal.kind === "session") {
+      try {
+        stepUp = await verifyStepUp(
+          {
+            db: env.db,
+            rp: env.webauthn,
+            now: (env.now ?? Date.now)(),
+            orgId: scope.orgId,
+            sessionHash: principal.sessionHash,
+            userId: principal.id,
+            action: op.name,
+            target: inputTarget(input, scope.projectId),
+          },
+          stepUpRaw,
+        );
+      } catch (err) {
+        await audit(err instanceof OpError ? `error:${err.code}` : "error:internal", input);
+        throw err;
+      }
+    }
     const ctx = (db: Db): OpContext => ({
+      stepUp,
       db,
       scope,
       principal,

@@ -41,7 +41,7 @@ export const createApiToken = defineOp({
     "Creates a bearer token with a role (reader, operator or release_operator), scoped to the " +
     "org or to one project (pass project). The secret is returned once in `token` and cannot be " +
     "read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max " +
-    "365). Callable by an org admin (in-process) or by a bearer token of role operator or above " +
+    "365). Callable by an org admin (in-process), by a signed-in admin or owner on the web with a fresh passkey step-up for exactly this request (`step_up`, see `session_step_up_challenge`; the token's role is at most theirs and an agent token is at most operator), or by a bearer token of role operator or above " +
     "in its own org, which can never escalate: the new token's role is at most the caller's, " +
     "its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, " +
     "never the reverse or another project), and it expires no later than the caller does. " +
@@ -87,6 +87,17 @@ export const createApiToken = defineOp({
       if (!roleSatisfies(p.role, "admin")) {
         throw new OpError("forbidden", "only org admins can create tokens");
       }
+    } else if (p.kind === "session") {
+      // A signed-in person mints with a fresh passkey step-up for exactly this request, and only
+      // as an admin or owner. The token's role is capped by theirs (assertMintable), and its
+      // lifetime counts from now: no token's expiry caps it, so this is how an org whose token
+      // lineage is dying gets a fresh root (#455).
+      if (ctx.stepUp?.action !== "create_api_token") {
+        throw new OpError("forbidden", "minting from a web session needs a passkey step-up");
+      }
+      if (!roleSatisfies(p.role, "admin")) {
+        throw new OpError("forbidden", "only org admins can create tokens");
+      }
     } else if (p.kind !== "token") {
       throw new OpError("forbidden", "this principal cannot create tokens");
     }
@@ -96,6 +107,7 @@ export const createApiToken = defineOp({
       role: input.role,
       projectId: ctx.scope.projectId,
       kind: input.kind,
+      stepUp: ctx.stepUp?.action === "create_api_token",
     });
     const expiresAt = ctx.now() + input.expires_in_days * DAY_MS;
     if (p.kind === "token") {
