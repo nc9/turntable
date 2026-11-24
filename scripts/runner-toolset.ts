@@ -22,6 +22,11 @@ export interface Tool {
   note?: string;
   /** Which line of the output holds the version. Default 1. */
   line?: number;
+  /**
+   * An extended regex for the line that holds the version, instead of a line number: for a tool that
+   * may print a warning first (sudo prints "unable to resolve host" when the hostname is unknown).
+   */
+  match?: string;
 }
 
 export const TOOLS: readonly Tool[] = [
@@ -53,7 +58,7 @@ export const TOOLS: readonly Tool[] = [
   { name: "rsync", cmd: "rsync", version: ["--version"], github: true },
   { name: "openssl", cmd: "openssl", version: ["version"], github: true },
   { name: "ssh", cmd: "ssh", version: ["-V"], github: true },
-  { name: "sudo", cmd: "sudo", version: ["--version"], github: true },
+  { name: "sudo", cmd: "sudo", version: ["--version"], github: true, match: "^Sudo version" },
   { name: "perl", cmd: "perl", version: ["-e", "print $^V"], github: true },
   { name: "ruby", cmd: "ruby", version: ["--version"], github: true },
   { name: "java", cmd: "java", version: ["-version"], github: true },
@@ -74,7 +79,7 @@ export const END = "{/* toolset:end */}";
 export function probeScript(tools: readonly Tool[] = TOOLS): string {
   const lines = tools.map((t) => {
     const args = t.version.map((a) => `'${a}'`).join(" ");
-    return `if command -v ${t.cmd} >/dev/null 2>&1; then v=$(${t.cmd} ${args} 2>&1 | sed -n '${t.line ?? 1}p' | tr '\\t' ' ' | cut -c1-80); printf '%s\\tpresent\\t%s\\n' '${t.cmd}' "$v"; else printf '%s\\tabsent\\t\\n' '${t.cmd}'; fi`;
+    return `if command -v ${t.cmd} >/dev/null 2>&1; then v=$(${t.cmd} ${args} 2>&1 | ${t.match ? `grep -m1 -E '${t.match}'` : `sed -n '${t.line ?? 1}p'`} | tr '\\t' ' ' | cut -c1-80); printf '%s\\tpresent\\t%s\\n' '${t.cmd}' "$v"; else printf '%s\\tabsent\\t\\n' '${t.cmd}'; fi`;
   });
   return lines.join("\n");
 }

@@ -13,7 +13,7 @@ ARG PWSH_SHA256_ARM64=c0159b03e85f44ae1e7697818a011558da6c813d0aae848bf5ac13bf43
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends jq rsync zip unzip libicu72; \
+    apt-get install -y --no-install-recommends jq rsync zip unzip sudo libicu72; \
     rm -rf /var/lib/apt/lists/*; \
     case "${TARGETARCH:-amd64}" in \
       amd64) arch=x64; sum="${PWSH_SHA256_AMD64}" ;; \

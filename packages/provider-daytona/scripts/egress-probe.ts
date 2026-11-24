@@ -14,7 +14,9 @@
 //
 // Exit code: 1 when `none` or `deny-all-except-proxy` gave a real answer to any probe (the class is
 // not enforced on Daytona: refuse it, fail closed); 2 when a probe or control was inconclusive;
-// 3 for bad usage or a sandbox left behind; else 0.
+// 3 for bad usage or a sandbox left behind; else 0. Each class also reports `identity`
+// ({uid, user, sudo: ok|missing|denied}), informational only; with --require-sudo a sandbox that is
+// neither root-with-sudo nor passwordless-sudo gives exit code 4 (after codes 1 to 3, which win).
 import { readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { DaytonaProvider, networkSettingFor, type UsageRecord } from "../src/index";
@@ -30,6 +32,9 @@ import {
   renderForwardCheck,
   type ForwardCheck,
   exitCodeFor,
+  identityMeetsRequirement,
+  IDENTITY_ARGV,
+  parseIdentityOutput,
   parseGatewayFromProcNetRoute,
   parseRunnerOutput,
   reportProbe,
@@ -51,7 +56,7 @@ function usage(msg?: string): never {
       "usage: egress-probe.ts --i-have-approval --probe-zone <zone> [--key-file <path>]",
       "         [--allow-address <ipv4>] [--include-domain-mode --domain-allow <name>]",
       "         [--only none|deny-all-except-proxy|proxy-domain-filtered] [--public-name <name>] [--out <file>]",
-      "         [--forward-labels <10..200>]",
+      "         [--forward-labels <10..200>] [--require-sudo]",
       "       egress-probe.ts --render <report.json> --analytics-result <result.json>   (no network)",
       "",
       "  --i-have-approval    required: this creates real sandboxes in the account the key belongs to",
@@ -63,6 +68,7 @@ function usage(msg?: string): never {
       "  --public-name <name> the public name probed over HTTP(S) and DNS (default example.com)",
       "  --forward-labels <N> distinct names eprobe-<run>-<i>.<zone> sent per class for the analytics",
       "                       check (default 50, 10 to 200)",
+      "  --require-sudo       exit 4 when a sandbox is neither root-with-sudo nor passwordless-sudo",
       "  --render <report>    re-print a saved report; with --analytics-result <file> holding",
       "                       {class?, prefix, hits, sampleInterval, window} it records that result",
     ].join("\n"),
@@ -123,6 +129,7 @@ if (!probeZone || !HOSTNAME.test(probeZone)) usage("--probe-zone must be a DNS z
 const publicName = (opt("--public-name") ?? "example.com").toLowerCase();
 if (!HOSTNAME.test(publicName)) usage("--public-name must be a DNS name");
 const includeDomain = flag("--include-domain-mode");
+const requireSudo = flag("--require-sudo");
 const domainAllow = opt("--domain-allow")?.toLowerCase();
 const allowAddress = opt("--allow-address");
 const only = opt("--only") as EgressClass | undefined;
@@ -216,6 +223,8 @@ async function probeClass(cls: EgressClass, classIndex: number): Promise<ClassRe
     const route = await run(h.id, ["cat", "/proc/net/route"], 20);
     const gateway = parseGatewayFromProcNetRoute(route);
     console.log(`[${cls}] sandbox up; gateway ${gateway ?? "NOT FOUND"}`);
+    const identity = parseIdentityOutput(await run(h.id, [...IDENTITY_ARGV], 20)) ?? undefined;
+    console.log(`[${cls}] identity ${JSON.stringify(identity ?? "unreadable")}`);
     const plan = buildProbePlan({
       cls,
       publicName,
@@ -265,6 +274,7 @@ async function probeClass(cls: EgressClass, classIndex: number): Promise<ClassRe
       forwardedQueries: names.map((name) => ({ name, sentAt })),
       forwardCheck,
       probes,
+      ...(identity ? { identity } : {}),
     };
   } finally {
     await provider.destroy(h.id).catch((e) => console.error(`destroy failed: ${String(e)}`));
@@ -291,7 +301,8 @@ try {
 }
 
 const seconds = usageRecords.reduce((n, r) => n + r.seconds, 0);
-const code = exitCodeFor(reports);
+const sudoFailed = requireSudo && reports.some((r) => !identityMeetsRequirement(r.identity));
+const code = exitCodeFor(reports) || (sudoFailed ? 4 : 0);
 const full = {
   generatedAt: new Date().toISOString(),
   probeZone,
@@ -311,7 +322,7 @@ for (const r of reports) {
   const leaks = r.probes.filter((p) => p.verdict === "LEAK").map((p) => p.id);
   const inc = r.probes.filter((p) => p.verdict === "inconclusive").map((p) => p.id);
   console.log(
-    `${r.class}: ${r.probes.length} probes, LEAK [${leaks.join(", ")}], inconclusive [${inc.join(", ")}]`,
+    `${r.class}: ${r.probes.length} probes, LEAK [${leaks.join(", ")}], inconclusive [${inc.join(", ")}]; identity ${JSON.stringify(r.identity ?? null)}`,
   );
 }
 console.log(

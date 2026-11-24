@@ -15,6 +15,8 @@ import {
   buildProbePlan,
   decodeDnsResponse,
   exitCodeFor,
+  identityMeetsRequirement,
+  parseIdentityOutput,
   fromHex,
   frameDnsTcp,
   parseGatewayFromProcNetRoute,
@@ -378,5 +380,35 @@ describe("miss probability and interpretation", () => {
     const done = applyAnalytics(check, good);
     expect(done.verdict).toBe("no forwarding observed");
     expect(renderForwardCheck("none", done).join("\n")).toContain("no forwarding observed");
+  });
+});
+
+describe("identity probe parsing", () => {
+  test("root with sudo", () => {
+    const id = parseIdentityOutput("0\nroot\nsudo-ok\n");
+    expect(id).toEqual({ uid: 0, user: "root", sudo: "ok" });
+    expect(identityMeetsRequirement(id)).toBe(true);
+  });
+  test("root without sudo", () => {
+    const id = parseIdentityOutput("0\nroot\nsudo-missing\n");
+    expect(id).toEqual({ uid: 0, user: "root", sudo: "missing" });
+    expect(identityMeetsRequirement(id)).toBe(false);
+  });
+  test("a user with passwordless sudo", () => {
+    const id = parseIdentityOutput("1000\ndaytona\nsudo-ok\n");
+    expect(id).toEqual({ uid: 1000, user: "daytona", sudo: "ok" });
+    expect(identityMeetsRequirement(id)).toBe(true);
+  });
+  test("a user without sudo, and one that is denied", () => {
+    expect(parseIdentityOutput("1000\ndaytona\nsudo-missing\n")?.sudo).toBe("missing");
+    const denied = parseIdentityOutput("1000\ndaytona\nsudo-denied\n");
+    expect(denied).toEqual({ uid: 1000, user: "daytona", sudo: "denied" });
+    expect(identityMeetsRequirement(denied)).toBe(false);
+  });
+  test("garbage or no output", () => {
+    expect(parseIdentityOutput("")).toBeNull();
+    expect(parseIdentityOutput("sh: id: not found\n")).toBeNull();
+    expect(identityMeetsRequirement(null)).toBe(false);
+    expect(parseIdentityOutput("0\nroot\n")?.sudo).toBe("missing");
   });
 });

@@ -256,7 +256,40 @@ export type ClassReport = {
   /** The many-distinct-labels check, sized for a sampled analytics dataset. */
   forwardCheck?: ForwardCheck;
   probes: ProbeReport[];
+  /** Who the job user is inside this sandbox, and whether passwordless sudo works. Informational. */
+  identity?: IdentityReport;
 };
+
+// ---------------------------------------------------------------------------------------------
+// Identity: the job user must be root or have passwordless sudo, like GitHub-hosted runners.
+
+export type SudoState = "ok" | "missing" | "denied";
+export type IdentityReport = { uid: number; user: string; sudo: SudoState };
+
+/** The command run inside a sandbox; its output is read by `parseIdentityOutput`. */
+export const IDENTITY_ARGV: readonly string[] = [
+  "sh",
+  "-c",
+  "id -u; id -un; if command -v sudo >/dev/null 2>&1; then if sudo -n true >/dev/null 2>&1; then echo sudo-ok; else echo sudo-denied; fi; else echo sudo-missing; fi",
+];
+
+/** Parse the output of `IDENTITY_ARGV`: uid, user name, then a sudo-ok / sudo-denied / sudo-missing line. */
+export function parseIdentityOutput(out: string): IdentityReport | null {
+  const lines = out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+  if (lines.length < 2 || !/^\d+$/.test(lines[0]!)) return null;
+  const marker = lines.slice(2).find((l) => /^sudo-(ok|denied|missing)$/.test(l));
+  const sudo: SudoState =
+    marker === "sudo-ok" ? "ok" : marker === "sudo-denied" ? "denied" : "missing";
+  return { uid: Number(lines[0]), user: lines[1]!, sudo };
+}
+
+/** Meets the requirement: root with a working sudo, or a user with passwordless sudo. Both mean sudo is ok. */
+export function identityMeetsRequirement(id: IdentityReport | null | undefined): boolean {
+  return id?.sudo === "ok";
+}
 
 export function reportProbe(cls: EgressClass, probe: ProbeSpec, raw: RawOutcome): ProbeReport {
   return {
