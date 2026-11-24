@@ -348,7 +348,22 @@ async function ingestTag(
     poller.stop();
     throw new Error("the tag was not ingested");
   }
-  const jobs = await listJobs(db, scope, run.id);
+  // The run row is visible before everything the poller writes for it: its jobs, and the
+  // poll_tag_run audit row, which is appended after the run is created. Wait for both, so no
+  // assertion reads them before they exist.
+  const jobs = await until("the tag run's jobs", async () => {
+    const js = await listJobs(db, scope, run.id);
+    return js.some((j) => j.jobKey === "build") && js.some((j) => j.jobKey === "release")
+      ? js
+      : undefined;
+  }).catch(() => undefined);
+  const audited = await until("the poll_tag_run audit row", async () =>
+    (await listAudit(db, scope)).some((x) => x.op === "poll_tag_run") ? true : undefined,
+  ).catch(() => undefined);
+  if (!jobs || !audited) {
+    poller.stop();
+    throw new Error("the tag run was not fully written");
+  }
   return {
     runId: run.id,
     buildJobId: jobs.find((j) => j.jobKey === "build")!.id,
@@ -793,7 +808,7 @@ describe("the same path, from a signed tag push webhook through the poller", () 
     const audit = (await listAudit(w.db, w.scope)).find((x) => x.op === "poll_tag_run")!;
     expect(audit).toMatchObject({ outcome: "release" });
     await releaseAndVerify();
-  });
+  }, 30_000);
 
   test("a tag no ruleset protects is created held; only a release operator's approval lets it run, then the release flow completes", async () => {
     // First, the held state on its own: nothing runs until approval.
@@ -839,7 +854,7 @@ describe("the same path, from a signed tag push webhook through the poller", () 
     const jobs = await listJobs(w.db, w.scope, w.runId);
     expect(jobs.find((j) => j.jobKey === "build")!.state).toBe("queued");
     await releaseAndVerify();
-  });
+  }, 30_000);
 
   test.each([
     ["an annotated tag", false],
@@ -864,6 +879,7 @@ describe("the same path, from a signed tag push webhook through the poller", () 
       );
       await releaseAndVerify();
     },
+    30_000,
   );
 
   test("with a quorum of two, two approvers are not enough for a tag run: the signer refuses", async () => {
