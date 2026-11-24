@@ -41,6 +41,7 @@ export const EVENT_TYPES = [
   "job.state_changed",
   "attempt.step",
   "attempt.cut",
+  "attempt.infra_retry",
   "approval.required",
   "infra.error",
   "quota.warning",
@@ -385,6 +386,8 @@ export const jobAttempts = sqliteTable(
     sandboxId: text("sandbox_id"),
     exitCode: integer("exit_code"),
     errorClass: text("error_class"),
+    /** For an infra_error attempt: the named kind (`INFRA_KINDS`), null when none was known. */
+    infraKind: text("infra_kind"),
     /** Set when a person or agent asked for this attempt (a rerun); the reason they gave. */
     rerunReason: text("rerun_reason"),
     /** The forge check run reporting this attempt, so a retry or a re-attach updates it. */

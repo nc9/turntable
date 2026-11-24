@@ -127,6 +127,13 @@
       "when": 1795498978092,
       "tag": "0017_approval_records_spent",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795543196371,
+      "tag": "0018_attempt_infra_kind",
+      "breakpoints": true
     }
   ]
 }

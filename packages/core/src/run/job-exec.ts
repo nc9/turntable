@@ -9,6 +9,7 @@ import {
   type ActEvent,
   type ActTarball,
   type ActionFetcher,
+  type InfraKind,
   type JobPlan,
 } from "@turntable/act-runner";
 import type { Provider, ProxyEndpoint, SandboxResources } from "@turntable/provider-sdk";
@@ -95,6 +96,8 @@ export interface JobOutcome {
   /** act's exit code when it ran to the end. */
   actExitCode?: number;
   outputs?: Record<string, string>;
+  /** For infra_error: the named kind, when one is known. */
+  infraKind?: InfraKind;
 }
 
 const enc = new TextEncoder();
@@ -127,6 +130,7 @@ export async function executeJob(
     rawReason: string,
     code?: number,
     outputs?: Record<string, string>,
+    infraKind?: InfraKind,
   ): Promise<JobOutcome> => {
     const reason = clean(rawReason);
     const exitCode =
@@ -141,6 +145,7 @@ export async function executeJob(
       reason,
       ...(code !== undefined ? { actExitCode: code } : {}),
       ...(outputs ? { outputs } : {}),
+      ...(state === "infra_error" && infraKind ? { infraKind } : {}),
     };
   };
 
@@ -190,16 +195,19 @@ export async function executeJob(
     reason: string,
     code?: number,
     outputs?: Record<string, string>,
+    infraKind?: InfraKind,
   ): Promise<JobOutcome> => {
     clearInterval(idle);
     watch.clear();
     await log.close();
-    return finish(state, reason, code, outputs);
+    return finish(state, reason, code, outputs, infraKind);
   };
 
   // A resumed job owns the sandbox it re-attaches to from the start, so every exit destroys it.
   let sandboxId: string | undefined = resume?.sandboxId;
   let cancelled = env.signal?.aborted ?? false;
+  // True while `provider.create` is in flight: a throw then is a sandbox that could not be made.
+  let creating = false;
   const aborted = new Promise<"abort">((resolve) => {
     if (cancelled) resolve("abort");
     env.signal?.addEventListener("abort", () => {
@@ -235,6 +243,7 @@ export async function executeJob(
         );
       }
       const ttlSeconds = (env.timeoutSeconds ?? 3600) + 900;
+      creating = true;
       const sb = await env.provider.create({
         name: `tt-run-${ids.attemptId.toLowerCase()}`,
         labels: { "turntable.run": ids.runId, "turntable.job": ids.jobId },
@@ -251,6 +260,7 @@ export async function executeJob(
             ? { egress: pick, proxy: proxied.listen }
             : { egress: env.egress ?? "none" },
       });
+      creating = false;
       sandboxId = sb.id;
       // A provider with its own cap (Daytona) may end the sandbox sooner than asked: that is how
       // long it can outlive the attempt, so the quota grace follows it.
@@ -384,14 +394,20 @@ export async function executeJob(
       }
       if (next.done) {
         const r = next.value;
-        return await settle(r.state, r.reason, r.exitCode, r.outputs);
+        return await settle(r.state, r.reason, r.exitCode, r.outputs, r.infraKind);
       }
       if (next.value.kind === "act") onAct(next.value.event);
       else if (next.value.kind === "cut") log.cut(next.value.omittedBytes);
     }
   } catch (e) {
     if (cancelled) return await settle("cancelled", "cancelled by user");
-    return await settle("infra_error", e instanceof Error ? e.message : String(e));
+    return await settle(
+      "infra_error",
+      e instanceof Error ? e.message : String(e),
+      undefined,
+      undefined,
+      creating ? "sandbox_create_failed" : undefined,
+    );
   } finally {
     clearInterval(idle);
     if (sandboxId) {

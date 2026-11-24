@@ -458,6 +458,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       ...(res.actExitCode === undefined ? {} : { exitCode: res.actExitCode }),
       reason: res.reason,
       ...(res.outputs ? { outputs: res.outputs } : {}),
+      ...(res.infraKind ? { infraKind: res.infraKind } : {}),
     };
   };
 

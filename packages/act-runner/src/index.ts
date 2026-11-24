@@ -18,3 +18,4 @@ export * from "./taint";
 export * from "./nested-actions";
 export * from "./action-runtime";
 export * from "./step-env";
+export * from "./infra-kind";

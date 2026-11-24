@@ -34,6 +34,7 @@ import {
   updateAttempt,
 } from "./index";
 import { appendAudit } from "./audit";
+import { appendEvent } from "./events";
 import { notFrozen } from "./incident";
 import {
   emitQuotaNotices,
@@ -667,6 +668,8 @@ export type FinishInput = {
   state: "success" | "failure" | "skipped" | "infra_error" | "cancelled";
   exitCode?: number | null;
   errorClass?: string | null;
+  /** For infra_error: the named kind (`INFRA_KINDS`). */
+  infraKind?: string | null;
   /** Reconciler only: finish only if the lease has expired by this time. */
   expiredBefore?: number;
   /** How dependents of this job are resolved. Default: plain `needs`. */
@@ -705,6 +708,7 @@ export function finishAttempt(db: Db, scope: Scope, input: FinishInput): Promise
       state: input.state,
       exitCode: input.exitCode ?? null,
       errorClass: input.errorClass ?? null,
+      ...(input.state === "infra_error" && input.infraKind ? { infraKind: input.infraKind } : {}),
     });
     await tx.orm
       .update(s.jobAttempts)
@@ -867,6 +871,106 @@ export function requeueLostAttemptOnce(
     });
     return true;
   });
+}
+
+/**
+ * The one automatic retry of a transient infrastructure failure (#517). The failed attempt ends
+ * `infra_error` with its kind, the job goes back to `queued` under a NEW attempt (the same way
+ * `requeueLostAttemptOnce` does it, with no rerun reason, so it uses none of the commit's
+ * reruns), and the run's events and audit log record `attempt.infra_retry` with the kind.
+ *
+ * At most one per job: an earlier attempt of the job that ended with an infra kind (counted from
+ * the latest manual rerun, which starts a fresh budget) means no retry. The drain-cut requeue has
+ * its own limit and does not count here. The new attempt inherits the failed one's check, so the
+ * job keeps one check, which then shows the retry.
+ *
+ * Fenced like `finishAttempt` (the attempt must still run under `owner`). Returns true when it
+ * requeued; false (changing nothing) when the budget is spent or the lease is gone.
+ */
+export function requeueInfraFailureOnce(
+  db: Db,
+  scope: Scope,
+  input: { attemptId: string; owner: string; kind: string; reason: string; now: number },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [cur] = await tx.orm
+      .select()
+      .from(s.jobAttempts)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
+          eq(s.jobAttempts.id, input.attemptId),
+        ),
+      )
+      .limit(1);
+    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
+    if (await earlierInfraReason(tx, scope, cur)) return false;
+    await updateAttempt(tx, scope, cur.id, {
+      state: "infra_error",
+      errorClass: input.reason.slice(0, 200),
+      infraKind: input.kind,
+    });
+    await tx.orm
+      .update(s.jobAttempts)
+      .set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(s.jobAttempts.id, cur.id));
+    await transitionJob(tx, scope, cur.jobId, "infra_error", {
+      reason: `infra_retry:${input.kind}`,
+    });
+    const job = await transitionJob(tx, scope, cur.jobId, "queued", {
+      reason: `infra_retry:${input.kind}`,
+    });
+    const next = await createAttempt(tx, scope, { jobId: cur.jobId, provider: cur.provider });
+    if (next && cur.checkRunId) {
+      await tx.orm
+        .update(s.jobAttempts)
+        .set({ checkRunId: cur.checkRunId })
+        .where(eq(s.jobAttempts.id, next.id));
+    }
+    if (job) {
+      const states = effectiveStates(await listJobs(tx, scope, job.runId));
+      await setRunStatus(tx, scope, job.runId, aggregateRunStatus(states));
+      await appendEvent(tx, scope, {
+        type: "attempt.infra_retry",
+        runId: job.runId,
+        jobId: cur.jobId,
+        payload: { attempt_id: cur.id, next_attempt_id: next?.id ?? null, kind: input.kind },
+      });
+    }
+    await appendAudit(tx, scope, {
+      principalKind: "system",
+      principalId: "scheduler",
+      op: "attempt.infra_retry",
+      effect: "write",
+      outcome: "ok",
+      input: { attempt_id: cur.id, job_id: cur.jobId, kind: input.kind, at: input.now },
+    });
+    return true;
+  });
+}
+
+/**
+ * The reason of an earlier infra failure of this attempt's job that already used its one infra
+ * retry: an attempt that ended `infra_error` with a kind, since the latest manual rerun (which
+ * starts a fresh budget). Undefined when the budget is unspent.
+ */
+export async function earlierInfraReason(
+  db: Db,
+  scope: Scope,
+  cur: JobAttempt,
+): Promise<string | undefined> {
+  const all = await listAttempts(db, scope, cur.jobId);
+  const lastRerun = all.findLast((a) => a.rerunReason !== null)?.attempt ?? 0;
+  const spent = all.findLast(
+    (a) =>
+      a.id !== cur.id &&
+      a.attempt >= lastRerun &&
+      a.attempt < cur.attempt &&
+      a.state === "infra_error" &&
+      a.infraKind !== null,
+  );
+  return spent ? (spent.errorClass ?? "infra error") : undefined;
 }
 
 /** Running attempts whose lease has expired: their worker is gone. Oldest first. */
