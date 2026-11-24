@@ -805,7 +805,18 @@ export function markDrainCut(
 export function requeueLostAttemptOnce(
   db: Db,
   scope: Scope,
-  input: { attemptId: string; owner: string; errorClass: string; now: number },
+  input: {
+    attemptId: string;
+    owner: string;
+    errorClass: string;
+    now: number;
+    /**
+     * Default true: only an attempt whose lease expired (a vanished controller). A live drain cut
+     * of a shadow attempt (#480) passes false: this process still holds the lease and has just
+     * stopped the sandbox.
+     */
+    requireExpired?: boolean;
+  },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [cur] = await tx.orm
@@ -820,7 +831,12 @@ export function requeueLostAttemptOnce(
       )
       .limit(1);
     if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
-    if (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now) return false;
+    if (
+      input.requireExpired !== false &&
+      (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now)
+    ) {
+      return false;
+    }
     if (cur.errorClass !== DRAIN_CUT) return false;
     const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
       (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
@@ -892,6 +908,28 @@ export function countRunning(db: Db, orgId?: string): Promise<number> {
         ),
       );
     return Number(row?.n ?? 0);
+  });
+}
+
+/**
+ * Running attempts split by their project's checks mode (#480): `live` gates a check run, anything
+ * else (`shadow`, `off`) gates nothing. Instance-wide and unscoped like `countRunning`.
+ */
+export function countRunningByMode(db: Db): Promise<{ live: number; shadow: number }> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({ mode: s.projects.checksMode, n: sql<number>`count(*)`.mapWith(Number) })
+      .from(s.jobAttempts)
+      .innerJoin(s.projects, eq(s.projects.id, s.jobAttempts.projectId))
+      .where(eq(s.jobAttempts.state, "running"))
+      .groupBy(s.projects.checksMode);
+    let live = 0;
+    let shadow = 0;
+    for (const r of rows) {
+      if (r.mode === "live") live += Number(r.n);
+      else shadow += Number(r.n);
+    }
+    return { live, shadow };
   });
 }
 

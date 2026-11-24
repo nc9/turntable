@@ -44,4 +44,10 @@ export {
   type IsolationPolicy,
   type IsolationTrust,
 } from "./isolation";
-export { DrainState, processDrain, resetProcessDrain, type DrainSnapshot } from "./drain";
+export {
+  DrainState,
+  processDrain,
+  resetProcessDrain,
+  type DrainSnapshot,
+  type ShadowDrainMode,
+} from "./drain";
