@@ -62,6 +62,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: pausing every tenant's scheduling for a deploy is the operator's act, never an agent's",
   instance_drain_status:
     "instance administrator ops are REST only: it reports cross-tenant running counts, which never land in an agent's context",
+  instance_run_activity:
+    "instance administrator ops are REST only: cross-tenant run counts are the operator's deploy check, never an agent's",
   instance_bind_github_login:
     "instance administrator ops are REST only: granting an org's first admin or owner is the operator's act, never an agent's",
   invite_member:

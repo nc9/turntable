@@ -1027,3 +1027,59 @@ export function takeExpiredLease(
     return { attempt: attempt!, job: job!, run: run!, scope };
   });
 }
+
+export type OrgRunActivity = {
+  orgId: string;
+  runs: Record<string, number>;
+  jobs: Record<string, number>;
+  runningAttempts: number;
+  /** Start time (epoch ms) of the oldest running attempt, or null. */
+  oldestRunningStartedAt: number | null;
+};
+
+/**
+ * Counts only, per org: runs and jobs by state, running attempts and when the oldest began. No
+ * ids, refs or content leave this function. Instance-level (a deploy check across tenants), so
+ * it is unscoped like `countRunning`.
+ */
+export function instanceRunActivity(db: Db): Promise<OrgRunActivity[]> {
+  return db.run(async (h) => {
+    const n = sql<number>`count(*)`.mapWith(Number);
+    const runRows = await h.orm
+      .select({ orgId: s.runs.orgId, state: s.runs.status, n })
+      .from(s.runs)
+      .groupBy(s.runs.orgId, s.runs.status);
+    const jobRows = await h.orm
+      .select({ orgId: s.jobs.orgId, state: s.jobs.state, n })
+      .from(s.jobs)
+      .groupBy(s.jobs.orgId, s.jobs.state);
+    const attemptRows = await h.orm
+      .select({
+        orgId: s.jobAttempts.orgId,
+        n,
+        oldest: sql<number | null>`min(${s.jobAttempts.startedAt})`.mapWith((v) =>
+          v === null || v === undefined ? null : Number(v),
+        ),
+      })
+      .from(s.jobAttempts)
+      .where(eq(s.jobAttempts.state, "running"))
+      .groupBy(s.jobAttempts.orgId);
+    const out = new Map<string, OrgRunActivity>();
+    const of = (orgId: string): OrgRunActivity => {
+      let e = out.get(orgId);
+      if (!e) {
+        e = { orgId, runs: {}, jobs: {}, runningAttempts: 0, oldestRunningStartedAt: null };
+        out.set(orgId, e);
+      }
+      return e;
+    };
+    for (const r of runRows) of(r.orgId).runs[r.state] = Number(r.n);
+    for (const r of jobRows) of(r.orgId).jobs[r.state] = Number(r.n);
+    for (const r of attemptRows) {
+      const e = of(r.orgId);
+      e.runningAttempts = Number(r.n);
+      e.oldestRunningStartedAt = r.oldest;
+    }
+    return [...out.values()];
+  });
+}

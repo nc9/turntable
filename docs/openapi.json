@@ -10912,6 +10912,133 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/run-activity": {
+      "get": {
+        "operationId": "instance_run_activity",
+        "summary": "Counts of runs, jobs and running attempts per org, for a deploy check.",
+        "description": "Per org: the slug, runs and jobs by state (queued, running, awaiting_approval), running attempts and the start time of the oldest running attempt, with instance totals. Counts only: no run ids, refs, shas, workflow names, logs or repo names. Use it to find a quiet window before a deploy, with no tenant token. The read is audited in the system chain. Only the instance administrator can call it. Read-only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Read-only.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orgs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "runs": {
+                            "type": "object",
+                            "properties": {
+                              "queued": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "running": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "awaiting_approval": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Held for an approval."
+                              }
+                            },
+                            "required": ["queued", "running", "awaiting_approval"],
+                            "additionalProperties": false
+                          },
+                          "jobs": {
+                            "type": "object",
+                            "properties": {
+                              "queued": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "running": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "awaiting_approval": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Held for an approval."
+                              }
+                            },
+                            "required": ["queued", "running", "awaiting_approval"],
+                            "additionalProperties": false
+                          },
+                          "running_attempts": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "oldest_running_started_at": {
+                            "type": ["string", "null"]
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "runs",
+                          "jobs",
+                          "running_attempts",
+                          "oldest_running_started_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "total_running_attempts": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "orgs_with_running_attempts": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["orgs", "total_running_attempts", "orgs_with_running_attempts"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/ingest-status": {
       "get": {
         "operationId": "instance_ingest_status",
