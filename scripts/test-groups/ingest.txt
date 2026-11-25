@@ -7,3 +7,4 @@ packages/core/tests/poll-installation-token.test.ts
 packages/core/tests/poll-pr-cutoff.test.ts
 packages/core/tests/pr-event-facts.test.ts
 packages/core/tests/run-dispatch.test.ts
+packages/core/tests/poll-two-workflows.test.ts

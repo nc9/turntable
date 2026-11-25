@@ -148,6 +148,28 @@ export class Poller {
   }
 
   /**
+   * Every entry one poll of `repo` runs. A repo may have several static entries (one per workflow,
+   * for example `ci.yml` plus a tag-triggered `release.yml`, #549); each is planned on its own,
+   * keyed by its workflow. A bound repo has the one entry its settings make.
+   */
+  #cfgsFor(repo: string): PollRepoConfig[] {
+    const l = repo.toLowerCase();
+    const fixed = this.#o.config.repos.filter((r) => r.repo.toLowerCase() === l);
+    if (fixed.length > 0) return fixed;
+    const bound = this.#bound.get(l);
+    return bound ? [bound] : [];
+  }
+
+  /** Repo names once each (several entries of one repo are polled together). */
+  #repoNames(staticOnly = false): string[] {
+    const seen = new Map<string, string>();
+    for (const c of staticOnly ? this.#o.config.repos : this.#allRepos()) {
+      if (!seen.has(c.repo.toLowerCase())) seen.set(c.repo.toLowerCase(), c.repo);
+    }
+    return [...seen.values()];
+  }
+
+  /**
    * Reads the repos bound to projects that have ingest settings. New ones start polling (when
    * running), removed ones stop at their next tick. Invalid settings are logged and skipped.
    * Coalesced, and at most once per MIN_NUDGE_GAP_MS.
@@ -460,7 +482,7 @@ export class Poller {
   /** Polls every repo once, now. For tests. */
   async pollAll(): Promise<void> {
     await this.refreshBindings();
-    for (const cfg of this.#allRepos()) await this.#pollOne(cfg.repo);
+    for (const repo of this.#repoNames()) await this.#pollOne(repo);
   }
 
   /**
@@ -488,7 +510,7 @@ export class Poller {
     ingestStatus.running = true;
     ingestStatus.startedAt = this.#now();
     if (this.#anonymous) this.#warnAnonymous();
-    for (const cfg of this.#o.config.repos) void this.#loop(cfg.repo);
+    for (const repo of this.#repoNames(true)) void this.#loop(repo);
     if (this.#o.bindings) {
       void this.refreshBindings().catch((e) =>
         this.#o.log?.(`ingest bindings: ${e instanceof Error ? e.message : String(e)}`),
@@ -513,9 +535,10 @@ export class Poller {
   /** Polls one repo and returns how long to wait before the next poll. */
   async #pollOne(repo: string): Promise<number> {
     const cfg = this.#cfg(repo)!;
+    const cfgs = this.#cfgsFor(repo);
     const log = this.#o.log ?? (() => {});
     const status = ingestStatus.repos.get(repo) as RepoStatus;
-    const intervalMs = cfg.intervalSeconds * 1000;
+    const intervalMs = Math.min(...cfgs.map((c) => c.intervalSeconds)) * 1000;
     const now = this.#now();
 
     const { github, mode } = await this.#clientFor(cfg);
@@ -555,25 +578,34 @@ export class Poller {
 
     try {
       await this.#checkDrift(cfg, github);
-      const res = await pollRepo(
-        {
-          db: this.#o.db,
-          github,
-          provider: this.#o.config.provider,
-          overCap: this.#overCap,
-          tagCaches: this.#tagCaches,
-          ...(this.#o.now ? { now: this.#o.now } : {}),
-          log,
-        },
-        cfg,
-      );
+      let created = 0;
+      let skipped = false;
+      for (const entry of cfgs) {
+        const res = await pollRepo(
+          {
+            db: this.#o.db,
+            github,
+            provider: this.#o.config.provider,
+            overCap: this.#overCap,
+            tagCaches: this.#tagCaches,
+            ...(this.#o.now ? { now: this.#o.now } : {}),
+            log,
+          },
+          entry,
+        );
+        if (res.skipped) {
+          skipped = true;
+          continue;
+        }
+        created += res.created.length;
+        if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
+      }
       this.#failures.delete(repo);
-      if (res.skipped)
+      if (skipped)
         return finish("error", "bound to another project; poll entry is stale", intervalMs);
       status.lastSuccessAt = now;
-      status.runsCreated += res.created.length;
-      if (res.superseded.length > 0) this.#o.onSuperseded?.(res.superseded);
-      if (res.created.length > 0) this.#o.onQueued?.();
+      status.runsCreated += created;
+      if (created > 0) this.#o.onQueued?.();
       return finish("ok", null, intervalMs);
     } catch (err) {
       const failures = (this.#failures.get(repo) ?? 0) + 1;
