@@ -38,7 +38,12 @@ export const listProjects = defineOp({
         setup: z
           .enum(["active", "available"])
           .describe(
-            "active: ingest is on, a static poll entry names it, or it has runs. available: never set up.",
+            "active: added on purpose, ingest is on, a static poll entry names it, or it has runs. available: made by an installation sync before #577 and never set up (`instance_prune_unconfigured_projects` removes these).",
+          ),
+        no_access: z
+          .boolean()
+          .describe(
+            "True when the project's repo was unbound (the installation lost access, or it was removed) and none is bound now. Its history is kept.",
           ),
         repos: z.array(z.object({ forge: z.string(), owner: z.string(), repo: z.string() })),
       }),
@@ -69,7 +74,11 @@ export const listProjects = defineOp({
     const page = rows.slice(0, input.limit);
     const last = page.at(-1);
     return {
-      projects: page.map(({ oidcAudiences, ...p }) => ({ ...p, oidc_audiences: oidcAudiences })),
+      projects: page.map(({ oidcAudiences, noAccess, ...p }) => ({
+        ...p,
+        oidc_audiences: oidcAudiences,
+        no_access: noAccess,
+      })),
       next_cursor: rows.length > input.limit && last ? encodeCursorRaw(last.id) : null,
     };
   },

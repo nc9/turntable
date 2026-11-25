@@ -38,6 +38,8 @@ import {
   moveRepoBinding,
   orgTokenHistory,
   setOrgQuotas,
+  deleteProjectCascade,
+  listPruneCandidates,
 } from "../../db/repos";
 import { loadAuditKey } from "../../audit/checkpoint";
 import { SYSTEM_ORG_SLUG, systemOrgId } from "../../audit/failures";
@@ -54,6 +56,7 @@ import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
 import { ClaimError } from "../../github/claim";
 import { syncInstallation } from "../../github/installations";
+import { staticPollKey } from "../project-setup";
 import { resolveGithubUserId } from "../../approvals/github-id";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
@@ -713,7 +716,6 @@ export const instanceBindInstallationOp = defineOp({
     try {
       r = await syncInstallation(ctx.db, ctx.githubFacts, i.installation_id, {
         claimedBy: org.id,
-        newProjectMaxConcurrent: 0,
       });
     } catch (e) {
       if (e instanceof Error && e.message.includes("already claimed by another org")) {
@@ -761,6 +763,85 @@ export const instanceBindInstallationOp = defineOp({
       target_org: org.slug,
       bound: r.bound,
     };
+  },
+});
+
+export const instancePruneUnconfiguredProjectsOp = defineOp({
+  name: "instance_prune_unconfigured_projects",
+  summary:
+    "List or delete the projects an installation sync made that nobody set up (instance administrator only).",
+  description:
+    "Before #577 an installation sync made a project for every repository the installation could " +
+    "reach. This lists, and with `dry_run: false` deletes, the projects of `target_org` that " +
+    "were made that way and never set up: never added on purpose, bound (or once bound) through " +
+    "an installation, zero runs, every setting at its default (paused is the sync's default), no " +
+    "static poll entry naming it, no onboarding row, and no token, secret or other row scoped to " +
+    "it. A project with any of those is never listed. A dry run returns the list and its count. A " +
+    "non-dry run needs `expected_count`, the count of that dry run, and refuses (conflict, " +
+    "nothing deleted) when the list now has a different count. Each deletion is audited with " +
+    "the project's slug and repos in the system chain and in the org's chain. The system org is " +
+    "never a target. Only the instance administrator can call it. Not an MCP tool.",
+  input: z.object({
+    target_org: z.string().min(1).max(64).describe("Slug of the org to prune."),
+    dry_run: z.boolean().describe("True lists only. False deletes the listed projects."),
+    expected_count: z
+      .int()
+      .min(0)
+      .max(100_000)
+      .optional()
+      .describe("Required when dry_run is false: the count the dry run returned."),
+  }),
+  output: z.object({
+    target_org: z.string(),
+    dry_run: z.boolean(),
+    count: z.int().describe("Projects listed (a dry run) or deleted."),
+    projects: z.array(z.object({ slug: z.string(), repos: z.array(z.string()) })),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/prune-unconfigured-projects" },
+  mcp: false,
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    if (!i.dry_run && i.expected_count === undefined) {
+      throw new OpError("invalid_input", "expected_count is required when dry_run is false");
+    }
+    const prefix = staticPollKey(org.slug, "");
+    const staticPollSlugs = new Set(
+      (ctx.staticPollProjects ?? [])
+        .filter((k) => k.startsWith(prefix))
+        .map((k) => k.slice(prefix.length)),
+    );
+    const list = await listPruneCandidates(ctx.db, { orgId: org.id }, { staticPollSlugs });
+    const view = list.map((p) => ({ slug: p.slug, repos: p.repos }));
+    if (i.dry_run) {
+      return { target_org: org.slug, dry_run: true, count: list.length, projects: view };
+    }
+    if (list.length !== i.expected_count) {
+      throw new OpError(
+        "conflict",
+        `the list changed: ${list.length} projects qualify now, not ${i.expected_count}; run a dry run again`,
+        { count: list.length },
+      );
+    }
+    const system = { orgId: await systemOrgId(ctx.db) };
+    for (const p of list) {
+      if (!(await deleteProjectCascade(ctx.db, { orgId: org.id }, p.id))) continue;
+      const entry = {
+        principalKind: "instance" as const,
+        principalId: ctx.principal.id,
+        op: "instance_prune_unconfigured_projects",
+        effect: "write" as const,
+        outcome: "ok",
+        input: { target_org: org.slug, project: p.slug, repos: p.repos, project_id: p.id },
+      };
+      await appendAudit(ctx.db, { orgId: org.id }, entry);
+      await appendAudit(ctx.db, system, entry);
+    }
+    return { target_org: org.slug, dry_run: false, count: list.length, projects: view };
   },
 });
 

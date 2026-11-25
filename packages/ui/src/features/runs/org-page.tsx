@@ -46,7 +46,9 @@ function ProjectCard({
           aria-hidden="true"
         />
       </div>
-      <p className="truncate font-mono text-xs text-dim">{project.repo}</p>
+      <p className="truncate font-mono text-xs text-dim">
+        {project.repo || (project.noAccess ? "No repository access" : "")}
+      </p>
       <div className="flex items-center gap-4 text-[13px]">
         {last ? (
           <span className="inline-flex items-center gap-1.5">

@@ -158,6 +158,12 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
    * this content type instead of JSON. Never an MCP tool (`mcp` must be false).
    */
   download?: { contentType: string };
+  /**
+   * The op's `project` input NAMES a project that does not exist yet (`add_project`): it is the
+   * new project's slug, not a scope, so the dispatcher does not resolve it. A project-scoped
+   * token is refused by the op.
+   */
+  projectIsNew?: boolean;
   /** False keeps the op out of MCP tools: a value in tool input sits in an agent's context. */
   mcp?: boolean;
   /**
@@ -198,6 +204,7 @@ export type Op = {
   secretInputFields: readonly string[];
   logOmitFields: readonly string[];
   mcp: boolean;
+  projectIsNew: boolean;
   outsideTransaction: boolean;
   crossOrg: boolean;
   download: { contentType: string } | undefined;
@@ -266,9 +273,11 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
               .max(64)
               .optional()
               .describe(
-                spec.scope === "project"
-                  ? "Project slug. Required unless the token is scoped to one project."
-                  : "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+                spec.projectIsNew
+                  ? "The slug of the project to create. Default: derived from the repo name."
+                  : spec.scope === "project"
+                    ? "Project slug. Required unless the token is scoped to one project."
+                    : "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
               ),
           })
           .strict();
@@ -288,6 +297,7 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     secretInputFields: spec.secretInputFields ?? [],
     logOmitFields: spec.logOmitFields ?? [],
     mcp: spec.mcp ?? true,
+    projectIsNew: spec.projectIsNew ?? false,
     outsideTransaction: spec.outsideTransaction ?? false,
     crossOrg: spec.crossOrg ?? false,
     download: spec.download,

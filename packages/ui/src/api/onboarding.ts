@@ -36,7 +36,8 @@ export type OrgInstallation = {
 export type BoundInstallation = {
   installation_id: string;
   account_login: string;
-  projects: { slug: string; repo: string; created: boolean }[];
+  /** The org's projects already bound to it. Binding creates none (#577). */
+  projects: { slug: string; repo: string }[];
 };
 export type InstallationRepo = {
   repo: string;
@@ -46,6 +47,36 @@ export type InstallationRepo = {
   status: "new" | "in_org";
   mode: ChecksMode | null;
   paused: boolean;
+};
+/** An installation this org has claimed (`github_app_status`). */
+export type OrgInstallation = {
+  installation_id: string;
+  account_login: string;
+  status: string;
+};
+export type AddedProject = {
+  project: string;
+  repo: string;
+  created: boolean;
+  reattached: boolean;
+};
+export type RemovedProject = { project: string; unbound: string[]; deleted: boolean };
+/** A passkey confirmation for one exact action (`session_step_up_challenge`). */
+export type OnboardingStepUp = {
+  id: string;
+  challenge: string;
+  rpId: string;
+  passkeys: { approver: string; passkeyId: string }[];
+};
+export type OnboardingStepUpProof = {
+  id: string;
+  approver: string;
+  signature: {
+    credential_id: string;
+    client_data_json: string;
+    authenticator_data: string;
+    signature: string;
+  };
 };
 export type OnboardRepoRow = { repo_id: string; enable: boolean; mode?: ChecksMode };
 export type OnboardedProject = {
@@ -116,6 +147,28 @@ export interface OnboardingApi {
     installationId: string;
     repos: OnboardRepoRow[];
   }): Promise<OnboardedProject[]>;
+  /** The installations this org has claimed, for the Add repositories page. */
+  listOrgInstallations(args: { org: string }): Promise<OrgInstallation[]>;
+  /** Makes one repo the installation reaches a project (`add_project`); `project` names its slug. */
+  addProject(args: {
+    org: string;
+    installationId: string;
+    repo: string;
+    project?: string;
+  }): Promise<AddedProject>;
+  /**
+   * Unbinds a project's repo and keeps its history (`remove_project`). `deleteHistory` deletes
+   * the project and everything it ran, and needs `stepUp` (a passkey confirmation for exactly
+   * this call) from a web session.
+   */
+  removeProject(args: {
+    org: string;
+    project: string;
+    deleteHistory?: boolean;
+    stepUp?: OnboardingStepUpProof;
+  }): Promise<RemovedProject>;
+  /** Starts a passkey confirmation for `remove_project` with `delete_history`. */
+  removeProjectChallenge(args: { org: string; project: string }): Promise<OnboardingStepUp>;
   previewWorkflows(args: { org: string; project: string }): Promise<WorkflowPreview>;
   runDefaultBranch(args: {
     org: string;
@@ -258,6 +311,64 @@ export function createOnboardingApi(options: OnboardingApiOptions = {}): Onboard
           { org, installation_id: installationId, repos },
         )
       ).projects;
+    },
+    async listOrgInstallations({ org }) {
+      const w = await call<{ installations: (OrgInstallation & { status: string })[] }>(
+        "GET",
+        "/github/app",
+        { org },
+      );
+      return w.installations
+        .filter((i) => i.status === "active")
+        .map((i) => ({
+          installation_id: i.installation_id,
+          account_login: i.account_login,
+          status: i.status,
+        }));
+    },
+    addProject({ org, installationId, repo, project }) {
+      return call<AddedProject>(
+        "POST",
+        "/projects",
+        {},
+        { org, installation_id: installationId, repo, ...(project ? { project } : {}) },
+      );
+    },
+    removeProject({ org, project, deleteHistory, stepUp }) {
+      return call<RemovedProject>(
+        "POST",
+        "/remove-project",
+        {},
+        {
+          org,
+          project,
+          ...(deleteHistory ? { delete_history: true } : {}),
+          ...(stepUp ? { step_up: stepUp } : {}),
+        },
+      );
+    },
+    async removeProjectChallenge({ org, project }) {
+      const w = await call<{
+        step_up_id: string;
+        challenge: string;
+        rp_id: string;
+        passkeys: { approver: string; passkey_id: string }[];
+      }>(
+        "POST",
+        "/session/step-up",
+        {},
+        {
+          org,
+          action: "remove_project",
+          input: { org, project, delete_history: true },
+        },
+      );
+      return {
+        id: w.step_up_id,
+        challenge: w.challenge,
+        rpId: w.rp_id,
+        passkeys: w.passkeys.map((k) => ({ approver: k.approver, passkeyId: k.passkey_id })),
+      };
     },
     previewWorkflows({ org, project }) {
       return call<WorkflowPreview>("GET", "/workflow-preview", { org, project });

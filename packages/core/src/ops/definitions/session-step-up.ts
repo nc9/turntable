@@ -27,6 +27,7 @@ import {
 } from "./instance-app-secrets";
 import { createApiToken } from "./create-api-token";
 import { inviteMemberOp } from "./members";
+import { removeProject } from "./projects";
 import { setSettingOp } from "./settings";
 import {
   releaseCosignKeyRemove,
@@ -47,6 +48,7 @@ const MAX_OPEN_STEP_UPS = 10;
 const SCHEMAS: Record<string, z.ZodObject> = {
   create_api_token: createApiToken.input,
   invite_member: inviteMemberOp.input,
+  remove_project: removeProject.input,
   set_setting: setSettingOp.input,
   instance_rotate_webhook_secret: instanceRotateWebhookSecretOp.input,
   instance_replace_app_private_key: instanceReplaceAppPrivateKeyOp.input,

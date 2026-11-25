@@ -97,6 +97,8 @@ export const LANE_CONFIG_READ_OPS: ReadonlySet<string> = new Set([
 export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "create_api_token",
   "invite_member",
+  // Only with `delete_history`: deleting a project's runs and logs for good.
+  "remove_project",
   // Only for loosening a trust setting; the settings guard requires it then and no other time.
   "set_setting",
   ...LANE_CONFIG_WRITE_OPS,

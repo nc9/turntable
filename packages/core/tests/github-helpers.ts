@@ -1,3 +1,4 @@
+import { addProjectFor } from "../src/ops/definitions/projects";
 import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
 import { createOrg, openDatabase, setGithubApp, type Db } from "../src/db";
 import type { GithubFacts, GithubInstallationFacts, GithubRepoFacts } from "../src/github/api";
@@ -119,3 +120,18 @@ export const ownerOf100: FakeClaimUser = {
   installations: [{ id: "100", accountId: "7", accountLogin: "acme", accountType: "Organization" }],
   adminOf: ["acme"],
 };
+
+/**
+ * What an explicit `add_project` does for every repo the fake installation reaches: the way a
+ * test makes projects now that installation sync creates none (#577).
+ */
+export async function addAll(
+  db: Db,
+  orgId: string,
+  f: { repos: Map<string, GithubRepoFacts[]> },
+  installationId: string,
+): Promise<void> {
+  for (const r of f.repos.get(installationId) ?? []) {
+    await addProjectFor(db, orgId, installationId, r, undefined, Date.now());
+  }
+}

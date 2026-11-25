@@ -20,7 +20,6 @@ import {
   listMembershipsOfUser,
 } from "../../db/repos";
 import { syncInstallation } from "../../github/installations";
-import { POPUP_NEW_PROJECT_MAX_CONCURRENT } from "../../github/claim";
 import {
   notInstallationOwnerMessage,
   ownershipUnverifiableMessage,
@@ -190,14 +189,14 @@ export const bindInstallationOp = defineOp({
   name: "bind_installation",
   summary: "Connect a GitHub App installation you own to this org.",
   description:
-    "Binds an installation to the org of the signed-in session and syncs its repositories into " +
-    "projects. It reads `GET /user/installations` with the signed-in person's own GitHub token " +
+    "Binds an installation to the org of the signed-in session and records it. It creates NO " +
+    "project: a repository the installation can reach becomes a project only through " +
+    "`add_project` (the installation's access is a permission). It reads `GET /user/installations` with the signed-in person's own GitHub token " +
     "AT THIS MOMENT (never cached): an installation they cannot reach is not found, and one " +
     "they reach without owning (an organization they are only a member of) is refused. An " +
     "installation already connected to a different Turntable org is refused, and never moved. " +
-    "Only projects this call CREATES start paused (`max_concurrent` 0); projects the org " +
-    "already has keep every setting. Audited with the installation, its GitHub account and who " +
-    "bound it. Needs a signed-in web session of an org owner or admin: a token is refused " +
+    "Returns the org's projects already bound to the installation, which keep every setting. " +
+    "Audited with the installation, its GitHub account and who bound it. Needs a signed-in web session of an org owner or admin: a token is refused " +
     "(the person's own GitHub authorization is what proves ownership). Not available over MCP.",
   input: bindInstallationInput,
   output: bindInstallationOutput,
@@ -211,7 +210,7 @@ export const bindInstallationOp = defineOp({
   outsideTransaction: true,
   auditDetail: (out) => ({
     account_login: out.account_login,
-    created_projects: out.projects.filter((p) => p.created).length,
+    bound_projects: out.projects.length,
   }),
   async handler(ctx, i) {
     const p = ctx.principal;
@@ -256,7 +255,6 @@ export const bindInstallationOp = defineOp({
     try {
       r = await syncInstallation(ctx.db, ctx.githubFacts, i.installation_id, {
         claimedBy: ctx.scope.orgId,
-        newProjectMaxConcurrent: POPUP_NEW_PROJECT_MAX_CONCURRENT,
       });
     } catch (e) {
       // Another org took it between the check and the sync.
@@ -271,7 +269,6 @@ export const bindInstallationOp = defineOp({
     if (r.outcome === "unknown" || r.outcome === "deleted") {
       throw new OpError("not_found", "GitHub does not know that installation");
     }
-    const created = new Set(r.created.map((c) => c.projectId));
     const projects = [];
     for (const b of await listInstallationBindings(ctx.db, ctx.scope, i.installation_id)) {
       const project = await getProject(ctx.db, ctx.scope, b.projectId);
@@ -279,7 +276,6 @@ export const bindInstallationOp = defineOp({
       projects.push({
         slug: project.slug,
         repo: `${b.owner}/${b.repo}`,
-        created: created.has(b.projectId),
       });
     }
     return { installation_id: i.installation_id, account_login: inst.accountLogin, projects };

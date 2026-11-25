@@ -44,6 +44,7 @@ import {
   moveRepoBindingOp,
   instanceStartInstallationClaimOp,
   instanceBindInstallationOp,
+  instancePruneUnconfiguredProjectsOp,
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
@@ -121,6 +122,7 @@ import { getRun } from "./definitions/get-run";
 import { incidentFreeze, incidentStatus, incidentUnfreeze } from "./definitions/incident";
 import { sandboxUsageOp } from "./definitions/sandbox-usage";
 import { secretUsage } from "./definitions/secret-usage";
+import { addProject, removeProject } from "./definitions/projects";
 import { resyncInstallation } from "./definitions/resync-installation";
 import { ingestStatusOp } from "./definitions/ingest-status";
 import { instanceIngestStatusOp } from "./definitions/instance-ingest-status";
@@ -170,6 +172,8 @@ export const registry = createRegistry([
   runDispatch,
   listInstallationRepos,
   onboardRepos,
+  addProject,
+  removeProject,
   previewWorkflows,
   runDefaultBranch,
   approveRunOp,
@@ -203,6 +207,7 @@ export const registry = createRegistry([
   instanceBindInstallationOp,
   instanceRotateWebhookSecretOp,
   instanceReplaceAppPrivateKeyOp,
+  instancePruneUnconfiguredProjectsOp,
   instanceListOrgs,
   instanceDoctorOp,
   instanceDrainOp,
