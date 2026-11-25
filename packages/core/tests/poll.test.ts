@@ -29,6 +29,7 @@ import {
   pollRepo,
   RateLimited,
 } from "../src/poll";
+import type { PollAuthMode } from "../src/poll/status";
 
 let db: Db;
 let scope: Required<Scope>;
@@ -1053,4 +1054,27 @@ test("a closed PR's queued runs are cancelled with an audit entry; push runs and
   expect(
     (await listAudit(db, { orgId: scope.orgId })).filter((a) => a.op === "cancel"),
   ).toHaveLength(1);
+});
+
+test("an anonymous poll makes no pulls/{n} calls and cancels nothing; an installation poll cancels (#600)", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = [{ number: 3, user: "octocat", headSha: SHA("b"), headRepo: "acme/web" }];
+  await poll(gh);
+  gh.state.closed.add(3);
+  gh.state.pulls = [];
+  gh.state.calls.length = 0;
+  const cfg = config().repos[0]!;
+  const run = (authMode: PollAuthMode) =>
+    pollRepo(
+      { db, github: clientFor(gh), provider: "docker", now: () => 1_800_000_000_000, authMode },
+      cfg,
+    );
+  const prRuns = async () =>
+    (await listRuns(db, scope)).filter((r) => r.event === "pull_request" && r.prNumber === 3);
+  await run("anonymous");
+  expect(gh.state.calls.filter((c) => /\/pulls\/\d+$/.test(c.path))).toHaveLength(0);
+  expect((await prRuns())[0]!.status).toBe("queued");
+  await run("installation");
+  expect(gh.state.calls.filter((c) => /\/pulls\/\d+$/.test(c.path))).toHaveLength(1);
+  expect((await prRuns())[0]!.status).toBe("cancelled");
 });

@@ -40,6 +40,7 @@ import type { PollConfig, PollRepoConfig } from "./config";
 import { decideRun, type ForgePermission, needsApproval } from "../trust";
 import type { GithubClient, PullRequest, TagRuleset } from "./github";
 import { patternProtected, protectingRulesets, type TagProtection } from "./tag-protection";
+import type { PollAuthMode } from "./status";
 
 export type Candidate = {
   /** For a pull request: the base branch it targets. */
@@ -255,6 +256,11 @@ export type IngestDeps = {
   overCap?: Set<string>;
   /** Tag facts kept between polls by the long-lived poller. A poll with none keeps its own. */
   tagCaches?: TagCaches;
+  /**
+   * How the poll's client authenticates. An `anonymous` poll (60 requests per hour) skips the
+   * closed-PR check, whose per-PR reads would starve ingest. Left unset by direct callers.
+   */
+  authMode?: PollAuthMode;
 };
 
 export async function targetScope(db: Db, cfg: PollRepoConfig): Promise<Required<Scope>> {
@@ -813,9 +819,12 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
   }
 
   // Runs of pull requests that closed or merged since the last poll stop here, before new work.
-  await cancelClosedPrRuns(deps, cfg).catch((err) => {
-    log(`poll ${repo}: closed-PR cancel failed: ${String(err)}`);
-  });
+  // Skipped on an anonymous poll: up to 20 reads per poll would eat the 60 per hour budget.
+  if (deps.authMode !== "anonymous") {
+    await cancelClosedPrRuns(deps, cfg).catch((err) => {
+      log(`poll ${repo}: closed-PR cancel failed: ${String(err)}`);
+    });
+  }
 
   const candidates: Candidate[] = [];
   const head = await deps.github.branchHead(repo, cfg.defaultBranch);
