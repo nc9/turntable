@@ -614,14 +614,16 @@ describe("over MCP", () => {
       }
       await client.close();
       // an unknown ttu_ token is a 401 at the door, like any bad token
-      const bad = await fetch(url, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${generateUserToken()}`,
-          "content-type": "application/json",
-        },
-        body: "{}",
-      });
+      const bad = await server.fetch(
+        new Request(url.href, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${generateUserToken()}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        }),
+      );
       expect(bad.status).toBe(401);
     } finally {
       await server.stop(true);
