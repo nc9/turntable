@@ -9,10 +9,12 @@ import {
   findApiTokenByHash,
   getIdentityByUserId,
   findInstanceTokenByHash,
+  appendEvent,
   getOrgById,
   getOrgBySlug,
   getProjectBySlug,
   listMembershipsOfUser,
+  markApiTokenFirstUsed,
   type Scope,
   touchApiToken,
   touchInstanceToken,
@@ -92,6 +94,8 @@ export type DispatchEnv = {
   viaMcp?: boolean | undefined;
   /** GitHub calls made with a signed-in user's own token; absent when sign-in is not set up. */
   userGithub?: UserGithub | undefined;
+  /** The instance's public base URL (TURNTABLE_PUBLIC_URL); the onboarding token op needs it. */
+  publicUrl?: string | undefined;
 };
 
 export type DispatchResult =
@@ -183,6 +187,9 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // Onboarding (A3): owner or admin sessions only, by the ops' own `admin` role.
   "onboard_repos",
   "run_default_branch",
+  // Onboarding (D): the ONE mint with no step-up. It can only make a reader agent token that
+  // lives at most 30 days, five per org (see create-onboarding-agent-token.ts).
+  "create_onboarding_agent_token",
 ]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
@@ -213,6 +220,22 @@ export async function authenticate(
       row.id,
       now,
     ).catch(() => {});
+  }
+  if (row.firstUsedAt === null) {
+    // The conditional update lets exactly one of two concurrent first calls win; only the winner
+    // emits, in the same transaction, so a stamp without its event cannot be left behind. Best
+    // effort like the touch: a failure here must not fail the call.
+    const tokenKind = row.kind === "person" ? "person" : "agent";
+    await env.db
+      .transaction(async (tx) => {
+        if (!(await markApiTokenFirstUsed(tx, { orgId: row.orgId }, row.id, now))) return;
+        await appendEvent(
+          tx,
+          { orgId: row.orgId },
+          { type: "token.first_used", payload: { token_id: row.id, principal_kind: tokenKind } },
+        );
+      })
+      .catch(() => {});
   }
   return {
     kind: "token",
@@ -598,6 +621,7 @@ export async function dispatch(
       settings: env.settings,
       viaMcp: env.viaMcp,
       userGithub: env.userGithub,
+      publicUrl: env.publicUrl,
     });
     const target = op;
     if (!audited) {

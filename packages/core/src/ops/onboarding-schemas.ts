@@ -255,6 +255,12 @@ export const ONBOARDING_TOKEN_SECRET_FIELDS = ["token", "claude_command", "mcp_j
 export const createOnboardingAgentTokenInput = z.object({
   projects: z.array(projectSlug).max(20).optional().describe("Limit the token to these projects."),
   ttl_days: z.int().min(1).max(30).default(30).describe("Token lifetime in days, 1 to 30."),
+  onboarding_id: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe("Onboarding to record the token on; its first run fills in the prompt."),
 });
 export const createOnboardingAgentTokenOutput = z.object({
   token: z.string().describe("The bearer token. Shown once."),

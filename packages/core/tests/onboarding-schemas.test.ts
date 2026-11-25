@@ -159,6 +159,10 @@ describe("onboarding schemas", () => {
         projects: Array.from({ length: 21 }, () => "p"),
       }).success,
     ).toBe(false);
+    expect(s.createOnboardingAgentTokenInput.safeParse({ onboarding_id: "ob1" }).success).toBe(
+      true,
+    );
+    expect(s.createOnboardingAgentTokenInput.safeParse({ onboarding_id: "" }).success).toBe(false);
     expect(s.MAX_ACTIVE_ONBOARDING_TOKENS).toBe(5);
     expect([...s.ONBOARDING_TOKEN_SECRET_FIELDS]).toEqual(["token", "claude_command", "mcp_json"]);
     const out = {

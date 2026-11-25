@@ -60,6 +60,7 @@ import {
   previewWorkflows,
   runDefaultBranch,
 } from "./definitions/onboarding-repos";
+import { createOnboardingAgentToken, onboardingAck } from "./definitions/onboarding-agent";
 import { signRelease } from "./definitions/sign-release";
 import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
 import { getInstallationClaimOp, startInstallationClaim } from "./definitions/installation-claim";
@@ -136,6 +137,8 @@ export const registry = createRegistry([
   onboardRepos,
   previewWorkflows,
   runDefaultBranch,
+  createOnboardingAgentToken,
+  onboardingAck,
   approveRunOp,
   approveRunChallengeOp,
   signRelease,

@@ -127,6 +127,51 @@ export function touchApiToken(db: Db, scope: Scope, id: string, at: number): Pro
 }
 
 /**
+ * Stamps a token's first use. A conditional update (`first_used_at IS NULL`), so of two concurrent
+ * first calls exactly one gets `true` and may emit the event. Revoked tokens are never stamped.
+ */
+export function markApiTokenFirstUsed(
+  db: Db,
+  scope: Scope,
+  id: string,
+  at: number,
+): Promise<boolean> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .update(s.apiTokens)
+      .set({ firstUsedAt: at })
+      .where(scoped(scope, TOKEN_COLS, eq(s.apiTokens.id, id), isNull(s.apiTokens.firstUsedAt)))
+      .returning({ id: s.apiTokens.id });
+    return rows.length > 0;
+  });
+}
+
+/** Active (not revoked, not expired) tokens of the org with this name and role. */
+export function countActiveTokensNamed(
+  db: Db,
+  scope: Scope,
+  q: { name: string; role: AgentRole },
+  now: number,
+): Promise<number> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select({ n: sql<number>`count(*)` })
+      .from(s.apiTokens)
+      .where(
+        scoped(
+          { orgId: scope.orgId },
+          TOKEN_COLS,
+          eq(s.apiTokens.name, q.name),
+          eq(s.apiTokens.role, q.role),
+          isNull(s.apiTokens.revokedAt),
+          or(isNull(s.apiTokens.expiresAt), gt(s.apiTokens.expiresAt, now)),
+        ),
+      );
+    return Number(row?.n ?? 0);
+  });
+}
+
+/**
  * The org's token history, revoked and expired rows included (#367): whether it ever had a token,
  * and when the last of them stopped being usable (each token's earlier end, revoked or expired;
  * the latest over all). `lastEnd` is null while a token has no end yet, so only call it for an org

@@ -289,5 +289,12 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"onboardings\" ADD CONSTRAINT \"onboardings_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
       "CREATE INDEX \"onboardings_org_idx\" ON \"onboardings\" USING btree (\"org_id\",\"created_at\");"
     ]
+  },
+  {
+    "tag": "0020_api_token_first_used",
+    "when": 1795582532267,
+    "statements": [
+      "ALTER TABLE \"api_tokens\" ADD COLUMN \"first_used_at\" bigint;"
+    ]
   }
 ];

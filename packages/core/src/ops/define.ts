@@ -59,6 +59,8 @@ export type OpContext = {
   githubUsers?: GithubUserLookup | undefined;
   /** Calls GitHub with a signed-in user's own token (onboarding); absent without sign-in. */
   userGithub?: UserGithub | undefined;
+  /** The instance's public base URL, when one is configured. */
+  publicUrl?: string | undefined;
   /** The adapter that carried the call; undefined for in-process callers. */
   transport?: "mcp" | "rest" | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */

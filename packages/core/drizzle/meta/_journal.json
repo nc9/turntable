@@ -344,6 +344,13 @@
       "when": 1795572335585,
       "tag": "0048_onboardings",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1795582531669,
+      "tag": "0049_api_token_first_used",
+      "breakpoints": true
     }
   ]
 }

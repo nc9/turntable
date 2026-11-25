@@ -152,8 +152,10 @@ test("operations meet the agent-facing conventions", () => {
     }
     // writes need at least the operator role; reads may be readers
     // revoke_api_token is the exception: any token may revoke itself, whatever its role, and the
-    // handler refuses a reader revoking anyone else's.
-    if (op.effect !== "read" && op.name !== "revoke_api_token") {
+    // handler refuses a reader revoking anyone else's. onboarding_ack is the other: a reader's
+    // acknowledgement is audited (it is the record and the rate limit's count), and it changes
+    // nothing else.
+    if (op.effect !== "read" && op.name !== "revoke_api_token" && op.name !== "onboarding_ack") {
       expect(op.auth.minRole).not.toBe("reader");
     }
     // list ops page by cursor

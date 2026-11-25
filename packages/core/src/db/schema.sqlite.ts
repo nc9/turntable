@@ -58,6 +58,8 @@ export const EVENT_TYPES = [
   "org.member_invited",
   "org.member_joined",
   "installation_claim.updated",
+  "token.first_used",
+  "onboarding.agent_ack",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -496,6 +498,8 @@ export const apiTokens = sqliteTable(
     createdBy: text("created_by").notNull(),
     createdAt: createdAt(),
     lastUsedAt: integer("last_used_at", { mode: "number" }),
+    /** Set once, by the first authenticated call (a conditional update), never cleared. */
+    firstUsedAt: integer("first_used_at", { mode: "number" }),
     expiresAt: integer("expires_at", { mode: "number" }),
     revokedAt: integer("revoked_at", { mode: "number" }),
   },
