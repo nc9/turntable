@@ -17,6 +17,8 @@ import { roleSatisfies } from "../roles";
 import { assertMintable, generateToken, hashToken } from "../tokens";
 
 const DAY_MS = 86_400_000;
+const MINUTE_MS = 60_000;
+const DEFAULT_EXPIRES_IN_DAYS = 90;
 
 /** A token may have at most this many active children (a leaked token cannot fan out without bound). */
 export const MAX_ACTIVE_CHILD_TOKENS = 20;
@@ -41,7 +43,7 @@ export const createApiToken = defineOp({
     "Creates a bearer token with a role (reader, operator or release_operator), scoped to the " +
     "org or to one project (pass project). The secret is returned once in `token` and cannot be " +
     "read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max " +
-    "365). Callable by an org admin (in-process), by a signed-in admin or owner on the web with a fresh passkey step-up for exactly this request (`step_up`, see `session_step_up_challenge`; the token's role is at most theirs and an agent token is at most operator), or by a bearer token of role operator or above " +
+    "365) or after expires_in_minutes (5 to 1440, for a short-lived per-run token); give at most one of the two. A request whose expiry would pass the calling token's is refused, not clamped. Callable by an org admin (in-process), by a signed-in admin or owner on the web with a fresh passkey step-up for exactly this request (`step_up`, see `session_step_up_challenge`; the token's role is at most theirs and an agent token is at most operator), or by a bearer token of role operator or above " +
     "in its own org, which can never escalate: the new token's role is at most the caller's, " +
     "its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, " +
     "never the reverse or another project), and it expires no later than the caller does. " +
@@ -59,7 +61,18 @@ export const createApiToken = defineOp({
       .enum(TOKEN_KINDS)
       .default("agent")
       .describe("agent: an MCP client or script. person: a human's own token. Fixed at mint."),
-    expires_in_days: z.int().min(1).max(365).default(90),
+    expires_in_days: z
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .describe("Lifetime in days (default 90). Not with expires_in_minutes."),
+    expires_in_minutes: z
+      .int()
+      .min(5)
+      .max(1440)
+      .optional()
+      .describe("Lifetime in minutes, 5 to 1440. Not with expires_in_days."),
   }),
   output: z.object({
     id: z.string(),
@@ -81,6 +94,9 @@ export const createApiToken = defineOp({
     const p = ctx.principal;
     if (ctx.transport === "mcp" || ctx.viaMcp) {
       throw new OpError("forbidden", "create_api_token is not available over MCP");
+    }
+    if (input.expires_in_days !== undefined && input.expires_in_minutes !== undefined) {
+      throw new OpError("invalid_input", "give expires_in_days or expires_in_minutes, not both");
     }
     if (p.kind === "member") {
       // The in-process admin path, as before.
@@ -109,7 +125,11 @@ export const createApiToken = defineOp({
       kind: input.kind,
       stepUp: ctx.stepUp?.action === "create_api_token",
     });
-    const expiresAt = ctx.now() + input.expires_in_days * DAY_MS;
+    const lifetimeMs =
+      input.expires_in_minutes !== undefined
+        ? input.expires_in_minutes * MINUTE_MS
+        : (input.expires_in_days ?? DEFAULT_EXPIRES_IN_DAYS) * DAY_MS;
+    const expiresAt = ctx.now() + lifetimeMs;
     if (p.kind === "token") {
       const parent = await findApiTokenById(ctx.db, p.id);
       if (!parent || parent.revokedAt !== null || parent.orgId !== ctx.scope.orgId) {
@@ -150,7 +170,7 @@ export const createApiToken = defineOp({
       if (parent.expiresAt !== null && expiresAt > parent.expiresAt) {
         throw new OpError(
           "forbidden",
-          "a token cannot outlive the token that creates it; ask for a shorter expires_in_days",
+          "a token cannot outlive the token that creates it; ask for a shorter expires_in_days or expires_in_minutes",
         );
       }
     }

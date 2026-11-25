@@ -186,6 +186,16 @@ The pattern needs the prefix and exactly 43 base64url characters, which is disti
 
 To make your own secret scanner catch a leaked one too, register these as custom patterns (GitHub secret scanning custom patterns, GitGuardian custom detectors, gitleaks or trufflehog rules): `(?:tti|tt|lsi|ls)_[A-Za-z0-9_-]{43}`. Treat a match as a live credential: revoke it with `turntable token revoke <id>` and mint a new one. This repository has no scanner configuration of its own to extend.
 
+## Short-lived per-run tokens for orchestrators
+
+An orchestrator that starts agent runs should not hand every run its own long-lived token. Mint one delegated child per run instead, with `create_api_token` called by the orchestrator's token:
+
+- Scope it to the one project the run touches (`project`) and give it the least role that works.
+- Set the expiry to the run's deadline with `expires_in_minutes` (5 to 1440), not `expires_in_days`. Give one of the two, never both. The child may not outlive the orchestrator's own token, and a request that would is refused rather than shortened.
+- Revoke the child when the run ends (`revoke_api_token`), whatever the outcome. The expiry is the backstop for a run that dies before it can.
+
+Limits still apply to short-lived children: a token has at most 20 active children, a child's own children may not mint, and one lineage holds at most 50 live delegated tokens. An expired or revoked child no longer counts, so a per-run pattern does not exhaust the parent as long as runs end or expire.
+
 ## Web sessions and sign-in
 
 The web UI signs people in with GitHub through the instance's own GitHub App ([Signing in to the web UI](/web-sign-in)). The identity is the numeric GitHub user id; roles come only from Turntable's membership rows, created by an invite or by the instance administrator, never from GitHub org membership or repo access. The OAuth `state` is an HMAC with a single-use nonce that is also bound to the browser by a `__Host-` cookie, and the nonce is spent before the code is exchanged. The session cookie is `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`; only its hash is stored; it has an idle and an absolute lifetime and is revoked on sign-out. Every state-changing request from a session must carry an `Origin` equal to the configured public origin. A session is a REST credential only, and may make a few named writes with no step-up (`invite_member` for a viewer or member, and the onboarding writes below): every other write is refused by default or needs a fresh passkey step-up.

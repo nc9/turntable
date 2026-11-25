@@ -4175,7 +4175,7 @@
       "post": {
         "operationId": "create_api_token",
         "summary": "Create an agent token, scoped to the org or one project. Shown once.",
-        "description": "Creates a bearer token with a role (reader, operator or release_operator), scoped to the org or to one project (pass project). The secret is returned once in `token` and cannot be read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max 365). Callable by an org admin (in-process), by a signed-in admin or owner on the web with a fresh passkey step-up for exactly this request (`step_up`, see `session_step_up_challenge`; the token's role is at most theirs and an agent token is at most operator), or by a bearer token of role operator or above in its own org, which can never escalate: the new token's role is at most the caller's, its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, never the reverse or another project), and it expires no later than the caller does. `kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children, a delegated token's own children may not mint (depth limit), and one original root's whole lineage may hold at most 50 live delegated tokens, revoked or expired ones not counted (each a conflict; depth counts live ancestors only, so rotation works). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent tokens as run approvers, so mint a person token only for a human. Writes and is audited (the audit entry names the minting token), and emits an `org.token_minted` event. Not an MCP tool: credential minting is a REST act. Grant the least role and the narrowest scope that works.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Creates a bearer token with a role (reader, operator or release_operator), scoped to the org or to one project (pass project). The secret is returned once in `token` and cannot be read again: only its hash is stored. Tokens expire after expires_in_days (default 90, max 365) or after expires_in_minutes (5 to 1440, for a short-lived per-run token); give at most one of the two. A request whose expiry would pass the calling token's is refused, not clamped. Callable by an org admin (in-process), by a signed-in admin or owner on the web with a fresh passkey step-up for exactly this request (`step_up`, see `session_step_up_challenge`; the token's role is at most theirs and an agent token is at most operator), or by a bearer token of role operator or above in its own org, which can never escalate: the new token's role is at most the caller's, its scope is the caller's or narrower (an org-wide token may mint a project-scoped one, never the reverse or another project), and it expires no later than the caller does. `kind` is `agent` (default: an MCP client or script) or `person` (a human's own token); an agent token may mint only agent tokens, with a role of at most operator. A token may have at most 20 active children, a delegated token's own children may not mint (depth limit), and one original root's whole lineage may hold at most 50 live delegated tokens, revoked or expired ones not counted (each a conflict; depth counts live ancestors only, so rotation works). Revoking a token does not revoke what it minted unless the revoker is an admin or asks for `cascade` (see `revoke_api_token`). Fixed at mint time. Projects that set untrusted_run_approval to `no_agents` (the default) refuse agent tokens as run approvers, so mint a person token only for a human. Writes and is audited (the audit entry names the minting token), and emits an `org.token_minted` event. Not an MCP tool: credential minting is a REST act. Grant the least role and the narrowest scope that works.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -4202,10 +4202,16 @@
                     "enum": ["agent", "person"]
                   },
                   "expires_in_days": {
-                    "default": 90,
+                    "description": "Lifetime in days (default 90). Not with expires_in_minutes.",
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 365
+                  },
+                  "expires_in_minutes": {
+                    "description": "Lifetime in minutes, 5 to 1440. Not with expires_in_days.",
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 1440
                   },
                   "org": {
                     "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
