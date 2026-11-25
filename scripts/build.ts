@@ -4,7 +4,7 @@
 // TURNTABLE_SIGN_DARWIN=1 re-signs the darwin binary with rcodesign (ad-hoc) and verifies it.
 // Version comes from TURNTABLE_VERSION (a leading "v" is stripped) or root package.json.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertSafeDist } from "./release-checks";
 import { prepareCompileEntry } from "../packages/ui/scripts/compile-entry";
@@ -20,6 +20,12 @@ const dist = process.env.TURNTABLE_DIST
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
 const version = (process.env.TURNTABLE_VERSION ?? pkg.version).replace(/^v/, "");
+
+// CD writes the deployed commit into BUILD_SHA at the repo root (the image build context carries it).
+// Absent, or not a 40-hex sha, the build reports "unknown".
+const shaFile = join(root, "BUILD_SHA");
+const shaRaw = existsSync(shaFile) ? readFileSync(shaFile, "utf8").trim() : "";
+const buildSha = /^[0-9a-f]{40}$/.test(shaRaw) ? shaRaw : "unknown";
 
 const requested = process.argv.slice(2);
 const targets = requested.length > 0 ? requested : [...TARGETS];
@@ -46,7 +52,10 @@ for (const target of targets) {
     root,
     compile: { target: target as (typeof TARGETS)[number], outfile },
     minify: true,
-    define: { TURNTABLE_BUILD_VERSION: JSON.stringify(version) },
+    define: {
+      TURNTABLE_BUILD_VERSION: JSON.stringify(version),
+      TURNTABLE_BUILD_SHA: JSON.stringify(buildSha),
+    },
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);

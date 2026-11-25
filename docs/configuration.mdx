@@ -109,7 +109,7 @@ Every variable the server reads is listed, with its flag and default, in the [en
 
 | Path | Description |
 | --- | --- |
-| `GET /healthz` | JSON `{ "ok": true, "version": "..." }`. |
+| `GET /healthz` | JSON `{ "ok": true, "version": "...", "build_sha": "..." }`. `build_sha` is the commit CD stamped into the image, or `unknown`. |
 | `GET /openapi.json` | The OpenAPI 3.1 document for the REST API. |
 | `/api/v1/...` | The REST API, one route per [operation](/agent-interface). Webhooks arrive at `/api/v1/webhooks/github`. |
 | `/mcp` | MCP over HTTP. |

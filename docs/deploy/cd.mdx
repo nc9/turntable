@@ -1,0 +1,52 @@
+---
+title: Continuous deployment
+description: "How the hosted instance deploys every green main commit: the trigger, the safety holds, the volume backup and prune, verification, rollback and a manual deploy of a held commit."
+---
+
+The hosted instance deploys itself. This page describes the scripts in `scripts/cd/`; the workflow that runs them is `.github/workflows/deploy.yml`, reviewed by a maintainer. The scripts take injected `fetch`, GraphQL, git and clock functions, so their tests run against fakes and make no live call.
+
+## What triggers a deploy
+
+A successful CI run on `main` (a `push` run, not a pull request) starts the deploy workflow for that exact commit. Runs are serialised and never cancelled, and the newest green commit wins: a deploy of an older commit is held (see below), so a batch of merges deploys once. The workflow runs in the `production` environment.
+
+## The preflight and its holds
+
+`scripts/cd/preflight.ts` returns `{ deploy, held, migrations }`. It deploys only when nothing holds it. A hold stops the deploy and names its reasons.
+
+| Hold | Why |
+| --- | --- |
+| CI for the target is not `success` | Never deploy red. |
+| The target is not the newest green `main` commit | A newer commit will deploy instead. |
+| A new migration is not additive | The old release may break on the new schema, and a rollback would too. |
+| The target changes `.github/workflows/deploy.yml`, `scripts/cd/**`, `Dockerfile` or `railway.*` since the deployed commit | The pipeline that deploys itself needs a human review of its own change. |
+| No previous successful `production` deployment | Nothing to compare against. |
+
+The deployed commit is the one in the last successful `production` deployment record.
+
+### Migration classes
+
+`scripts/cd/migrations.ts` reads the new entries in both drizzle journals (`packages/core/drizzle` and `packages/core/drizzle-pg`) between the deployed and target commits. It splits each file into statements (drizzle's `--> statement-breakpoint` markers, then `;`) and classifies each statement.
+
+Additive: `CREATE TABLE`, `CREATE [UNIQUE] INDEX`, `ALTER TABLE ... ADD [COLUMN]` for a nullable column or one with a `DEFAULT`, and a foreign key added to a table created in the same migration.
+
+Not additive: everything else. That includes `DROP`, `RENAME`, `ALTER COLUMN`, a `NOT NULL` column without a default, a constraint on an existing table, `UPDATE`, `INSERT`, `DELETE`, `PRAGMA`, and the SQLite table rebuild (`CREATE TABLE __new_x`, `INSERT INTO __new_x`, `DROP TABLE x`, `ALTER TABLE __new_x RENAME`), which starts like an additive change and is not. A file is additive only when every statement is. The classifier test asserts a class and a reason for every migration file in the repository, so a new migration cannot land without its class being written down.
+
+## Backup and prune
+
+Before the deploy, `scripts/cd/backup.ts` creates a platform volume backup (`volumeInstanceBackupCreate`) and polls `volumeInstanceBackupList` until a backup newer than the start time appears. If none appears before the timeout, the deploy aborts. It then keeps the newest 3 backups: while more than 3 exist, it deletes the oldest, one at a time, waiting until each is gone and retrying when the platform answers "Backup deletion already in progress". It never deletes the new backup and never deletes while 3 or fewer exist.
+
+## Verify and rollback
+
+`scripts/cd/verify.ts` polls `/healthz` until it reports `"ok": true` and a `build_sha` (or `version`) equal to the target commit, or the timeout passes. During the drain the old instance still answers with its own sha, so a mismatch is retried and only fails at the timeout.
+
+The image build writes the deployed commit from a `BUILD_SHA` file at the repository root into the binary. Without that file (a local build) `build_sha` is `unknown`. `/healthz` is the unauthenticated version route; `version` is unchanged.
+
+If verification fails and no migration ran, the workflow redeploys the previous commit. If a migration ran, it stops and notifies: the database is never restored automatically, because that would discard data written since the backup. Restoring a backup is a maintainer's decision.
+
+## Deploy notes
+
+`scripts/cd/notes.ts` builds a markdown note for the GitHub Deployment record and the deploy log issue: the pull requests merged between the two commits, each migration with its class, the backup id and the timings. Pull request titles are escaped so they render as text.
+
+## Deploying a held commit by hand
+
+A held commit does not deploy until a maintainer reads the hold reasons and the diff, for a migration that means checking that the old release still runs on the new schema (or accepting the downtime). Then run the deploy workflow by hand (Actions, `deploy`, "Run workflow") for that commit with the acknowledgement input set. A manual run lifts the migration and pipeline holds only. A red CI or a commit that is not the newest green one still stops it. The backup, verify and notes steps run as usual.

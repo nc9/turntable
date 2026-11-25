@@ -32,7 +32,7 @@ import { createEventStream } from "./realtime/sse";
 import type { WebhookService } from "./webhooks/service";
 import { pageCsp, renderPage, servePageAsset } from "./pages/server-pages";
 import { serveUi } from "./ui-assets";
-import { VERSION } from "./version";
+import { BUILD_SHA, VERSION } from "./version";
 import type { RunDispatcher } from "./poll/dispatch";
 import type { DefaultBranchRunner, RepoReaderFactory } from "./poll/onboarding-forge";
 
@@ -95,8 +95,8 @@ export async function handleRequest(
     const body = processDrain.draining
       ? // Only the flag: /healthz is unauthenticated, so a running count would publish tenant
         // activity. The count is in the instance administrator's instance_drain_status.
-        { ok: true, version: VERSION, draining: true }
-      : { ok: true, version: VERSION };
+        { ok: true, version: VERSION, build_sha: BUILD_SHA, draining: true }
+      : { ok: true, version: VERSION, build_sha: BUILD_SHA };
     return Response.json(body, { headers: SECURITY_HEADERS });
   }
   if (url.pathname === "/openapi.json") {

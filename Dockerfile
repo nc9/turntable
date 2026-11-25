@@ -19,6 +19,8 @@ COPY packages/net/package.json packages/net/package.json
 COPY packages/proxy/package.json packages/proxy/package.json
 COPY packages/signer/package.json packages/signer/package.json
 RUN bun install --frozen-lockfile
+# `COPY . .` carries a BUILD_SHA file (the commit CD deploys) when the build context has one;
+# scripts/build.ts stamps it into the binary and /healthz reports it as build_sha, else "unknown".
 COPY . .
 RUN case "${TARGETARCH}" in \
       amd64) target=bun-linux-x64 ;; \
