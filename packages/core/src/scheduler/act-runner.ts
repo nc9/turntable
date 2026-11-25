@@ -787,8 +787,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
               await r.revoke();
               return {
                 state: "infra_error",
-                reason:
-                  "this job needs a GitHub token (a write permission, or a private repository), and a job with a token cannot run with open egress",
+                reason: `this job needs a GitHub token (a write permission, or a private repository), and a job with a token cannot run with open egress${r.needs.length > 0 ? ` (it needs: ${r.needs.join(", ")})` : ""}`,
               };
             } else {
               issued = r;

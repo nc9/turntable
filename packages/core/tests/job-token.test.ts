@@ -290,6 +290,39 @@ describe("a token only when it is needed", () => {
     }
   });
 
+  test("a checkout of another repository or with submodules keeps the token rule and names the need", async () => {
+    const co = (w: string): string =>
+      `    steps:\n      - uses: actions/checkout@v4\n        with:\n${w}`;
+    const cases: [string, string][] = [
+      ["          repository: acme/other\n", "another repository (acme/other)"],
+      ["          submodules: recursive\n", "submodules"],
+    ];
+    for (const [w, need] of cases) {
+      const { g, tokens } = await make(async () => false);
+      const r = await tokens.issue({
+        ...req("protected"),
+        workflowYaml: `name: t\non: push\njobs:\n  build:\n    runs-on: x\n${co(w)}`,
+      });
+      expect("none" in r).toBe(false);
+      expect(!("none" in r) && r.needs.join(" ")).toContain(need);
+      expect(minted(g)).toBe(1);
+    }
+    // The same repository by name is the delivered tree: no token.
+    const { g, tokens } = await make(async () => false);
+    const r = await tokens.issue({
+      ...req("protected"),
+      workflowYaml: `name: t\non: push\njobs:\n  build:\n    runs-on: x\n${co("          repository: Acme/App\n")}`,
+    });
+    expect("none" in r).toBe(true);
+    expect(minted(g)).toBe(0);
+  });
+
+  test("a write scope names itself in needs", async () => {
+    const { tokens } = await make(async () => false);
+    const r = await tokens.issue(req("protected", "    permissions:\n      issues: write\n"));
+    expect(!("none" in r) && r.needs).toEqual(["issues: write"]);
+  });
+
   test("when visibility is unknown, or the check fails, a read-only job still gets no token", async () => {
     for (const isPublic of [
       undefined,

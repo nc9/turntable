@@ -9,6 +9,7 @@ import {
   type PermissionLevel,
 } from "@turntable/act-runner";
 import { type SafeFetch, safeFetch } from "@turntable/net";
+import { parse } from "yaml";
 import type { TrustClass } from "../trust";
 
 export type Permissions = Record<string, PermissionLevel>;
@@ -85,6 +86,8 @@ export interface IssuedJobToken {
   expiresAt: number;
   permissions: Permissions;
   notes: string[];
+  /** What the job needed a token for beyond the tree Turntable delivers, for a refusal's message. */
+  needs: string[];
   /** Revokes it at GitHub. Idempotent, never throws. */
   revoke(): Promise<void>;
 }
@@ -119,6 +122,40 @@ export interface JobTokensOptions {
 export const isReadOnlyContents = (p: Readonly<Record<string, string>>): boolean =>
   Object.entries(p).every(([k, v]) => v === "read" && (k === "contents" || k === "metadata"));
 
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * What a job's checkout steps need that the delivered tree cannot give: another repository (a
+ * `repository:` input that is not this one, or an expression, which cannot be known) or
+ * submodules. Both keep the job on the token rule, since they would fetch with a credential.
+ */
+export function checkoutNeeds(workflowYaml: string, jobId: string, self: string): string[] {
+  let doc: unknown;
+  try {
+    doc = parse(workflowYaml, { merge: true });
+  } catch {
+    return [];
+  }
+  const jobs = isObj(doc) && isObj(doc.jobs) ? doc.jobs : {};
+  const job = jobs[jobId];
+  const steps = isObj(job) && Array.isArray(job.steps) ? job.steps : [];
+  const needs = new Set<string>();
+  for (const st of steps) {
+    if (!isObj(st) || typeof st.uses !== "string" || !st.uses.startsWith("actions/checkout@")) {
+      continue;
+    }
+    const w = isObj(st.with) ? st.with : {};
+    const repository = typeof w.repository === "string" ? w.repository.trim() : "";
+    if (repository !== "" && repository.toLowerCase() !== self.toLowerCase()) {
+      needs.add(`a checkout of another repository (${repository})`);
+    }
+    const sub = String(w.submodules ?? "false").toLowerCase();
+    if (sub === "true" || sub === "recursive") needs.add("a checkout with submodules");
+  }
+  return [...needs];
+}
+
 export class JobTokens {
   readonly #auth: TokenAuthority;
   readonly #isPublic:
@@ -148,7 +185,13 @@ export class JobTokens {
       r.klass,
       granted,
     );
-    if (isReadOnlyContents(capped.permissions)) {
+    const needs = [
+      ...Object.entries(capped.permissions)
+        .filter(([, v]) => v === "write")
+        .map(([k]) => `${k}: write`),
+      ...checkoutNeeds(r.workflowYaml, r.jobId, `${r.owner}/${r.repo}`),
+    ];
+    if (isReadOnlyContents(capped.permissions) && needs.length === 0) {
       let pub = false;
       try {
         pub = (await this.#isPublic?.(r.owner, r.repo, r.installationId)) ?? false;
@@ -176,6 +219,7 @@ export class JobTokens {
       expiresAt: minted.expiresAt,
       permissions: capped.permissions,
       notes: [...declared.notes, ...capped.notes],
+      needs,
       revoke: async () => {
         if (revoked) return;
         revoked = true;

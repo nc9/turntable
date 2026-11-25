@@ -357,6 +357,23 @@ describe("a token only when it is needed", () => {
     }
   });
 
+  test("a private repo's job that checks out another repository is still refused on open egress, naming it", async () => {
+    const wf =
+      "name: t\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" +
+      "a".repeat(40) +
+      "\n        with:\n          repository: acme/other-private\n";
+    const { gh, run, job } = await setupRun(wf, "protected");
+    await openEgress(run.id);
+    const { calls, tokens } = authority(async () => false, WRITE_GRANT);
+    const sched = await schedule(gh, tokens);
+    await sched.tick();
+    await sched.idle();
+    const [att] = await listAttempts(db, scope, job.id);
+    expect(att?.state).toBe("infra_error");
+    expect(att?.errorClass).toContain("another repository (acme/other-private)");
+    expect(calls.revoked).toEqual([TOKEN]);
+  });
+
   test("a release job with a write scope on a private repo is unchanged: a token, refused on open egress", async () => {
     const { gh, run, job } = await setupRun(WF(NEEDS_TOKEN), "release");
     await openEgress(run.id);

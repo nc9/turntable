@@ -19,6 +19,15 @@ src='${repo}'
 case "$TT_CHECKOUT_PATH" in
   /*|..|../*|*/..|*/../*) echo "checkout: path ($TT_CHECKOUT_PATH) must stay inside the workspace" >&2; exit 1 ;;
 esac
+# Only the delivered repository is here; another repository needs a credential and the network.
+if [ -n "\${TT_REPOSITORY:-}" ]; then
+  want_repo=$(printf '%s' "$TT_REPOSITORY" | tr 'A-Z' 'a-z')
+  self_repo=$(printf '%s' "\${GITHUB_REPOSITORY:-}" | tr 'A-Z' 'a-z')
+  if [ "$want_repo" != "$self_repo" ]; then
+    echo "checkout: repository $TT_REPOSITORY needs a GitHub token and a fetch; Turntable's checkout only provides the delivered repository" >&2
+    exit 1
+  fi
+fi
 dest="$GITHUB_WORKSPACE"
 if [ -n "$TT_CHECKOUT_PATH" ]; then dest="$GITHUB_WORKSPACE/$TT_CHECKOUT_PATH"; fi
 mkdir -p "$dest"
@@ -134,6 +143,7 @@ runs:
   steps:
     - shell: bash
       env:
+        TT_REPOSITORY: \${{ inputs.repository }}
         TT_CHECKOUT_PATH: \${{ inputs.path }}
         TT_REF: \${{ inputs.ref }}
         TT_FETCH_DEPTH: \${{ inputs.fetch-depth }}
