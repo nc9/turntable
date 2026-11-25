@@ -1,6 +1,7 @@
 // `turntable release init-key --name <key>`: creates the release lane's built-in signing key,
 // sealed under the release master key in the lane's own data directory, and prints the public key
 // (to pin outside the server, and to verify releases with `turntable verify`).
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { getOrgBySlug, getProjectBySlug, openDatabase } from "../db";
@@ -8,6 +9,8 @@ import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { AttestationStore } from "./attest";
 import { LaneConfig, validateRepo, validateTargetKey } from "./config";
 import { initReleaseKey } from "./init-key";
+import { cosignKeyId } from "./cosign";
+import { parseTarget, TARGET_KEY } from "./publish/config";
 import { fileKeyVault } from "./key-vault";
 import { keysDir } from "./serve";
 
@@ -15,9 +18,10 @@ export async function releaseCommand(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
   if (sub === "pin-repo") return pinRepo(rest);
   if (sub === "publish-target") return publishTarget(rest);
+  if (sub === "cosign-key") return cosignKey(rest);
   if (sub !== "init-key") {
     console.error(
-      "usage:\n  turntable release init-key --org <slug> --name <key> [--data-dir ./data]\n  turntable release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\n  turntable release publish-target set|remove|list --org <slug> --project <slug> [--key <name>] [...] (see docs/release-lane)\nRuns with the release role's environment (TURNTABLE_RELEASE_*).",
+      "usage:\n  turntable release init-key --org <slug> --name <key> [--data-dir ./data]\n  turntable release pin-repo --org <slug> --project <slug> --repo <owner/name> [--data-dir ./data]\n  turntable release cosign-key set|remove|list --org <slug> --project <slug> [--name <key>] [...] (see docs/release-lane)\n  turntable release publish-target set|remove|list --org <slug> --project <slug> [--key <name>] [...] (see docs/release-lane)\nRuns with the release role's environment (TURNTABLE_RELEASE_*).",
     );
     return 2;
   }
@@ -186,6 +190,97 @@ async function publishTarget(args: string[]): Promise<number> {
         realm_host: values["realm-host"],
       });
       console.log(`${values.org}/${values.project}: ${key} = ${JSON.stringify(target)}`);
+      return 0;
+    } finally {
+      attest.close();
+    }
+  } finally {
+    db.close();
+  }
+}
+
+const COSIGN_USAGE = `usage:
+  turntable release cosign-key set --org <slug> --project <slug> --name <key> --public-key-file <pem> \
+      --signs <artifact> --output-name <asset name> [--format detached-der-p256-sha256] \
+      [--manifest-key-id-field <field> [--manifest-artifacts-field artifacts]]
+  turntable release cosign-key remove --org <slug> --project <slug> --name <key>
+  turntable release cosign-key list --org <slug> --project <slug>
+Public keys only, stored in the release lane's own file. A configured key means every release of
+the project needs a valid co-signature from it, verified by the lane.`;
+
+/** Sets, removes or lists the project's co-signing keys (public material) in the lane's own file. */
+async function cosignKey(args: string[]): Promise<number> {
+  const [action, ...rest] = args;
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      org: { type: "string" },
+      project: { type: "string" },
+      name: { type: "string" },
+      "public-key-file": { type: "string" },
+      signs: { type: "string" },
+      "output-name": { type: "string" },
+      format: { type: "string" },
+      "manifest-key-id-field": { type: "string" },
+      "manifest-artifacts-field": { type: "string" },
+      "data-dir": { type: "string", default: "./data" },
+    },
+    strict: true,
+  });
+  if (!["set", "remove", "list"].includes(action ?? "") || !values.org || !values.project) {
+    console.error(COSIGN_USAGE);
+    return 2;
+  }
+  const cfg = releaseConfigFromEnv(process.env);
+  const db = openDatabase(join(resolve(values["data-dir"]), "turntable.db"));
+  try {
+    const org = await getOrgBySlug(db, values.org);
+    if (!org) throw new Error(`no org with slug ${values.org}`);
+    const project = await getProjectBySlug(db, { orgId: org.id }, values.project);
+    if (!project) throw new Error(`no project ${values.project} in org ${values.org}`);
+    const attest = new AttestationStore(join(resolve(cfg.dataDir), "attested.db"));
+    try {
+      if (action === "list") {
+        for (const k of attest.cosignKeys(org.id, project.id)) {
+          // The fingerprint, never the key.
+          console.log(
+            `${k.name}: key_id ${cosignKeyId(k.public_key_pem)} signs ${k.signs} -> ${k.output_name} (${k.format})`,
+          );
+        }
+        return 0;
+      }
+      if (!values.name) throw new Error("--name is required");
+      if (action === "remove") {
+        const gone = attest.removeCosignKey(org.id, project.id, values.name);
+        console.log(gone ? `removed ${values.name}` : `no co-signing key ${values.name}`);
+        return gone ? 0 : 1;
+      }
+      if (!values["public-key-file"]) throw new Error("--public-key-file is required");
+      const key = attest.setCosignKey(
+        org.id,
+        project.id,
+        {
+          name: values.name,
+          public_key_pem: readFileSync(values["public-key-file"], "utf8"),
+          signs: values.signs,
+          output_name: values["output-name"],
+          format: values.format ?? "detached-der-p256-sha256",
+          ...(values["manifest-key-id-field"]
+            ? {
+                manifest: {
+                  key_id_field: values["manifest-key-id-field"],
+                  ...(values["manifest-artifacts-field"]
+                    ? { artifacts_field: values["manifest-artifacts-field"] }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+        Date.now(),
+      );
+      console.log(
+        `${values.org}/${values.project}: ${key.name} key_id ${cosignKeyId(key.public_key_pem)} signs ${key.signs} -> ${key.output_name}`,
+      );
       return 0;
     } finally {
       attest.close();

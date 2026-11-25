@@ -20,6 +20,8 @@ export function createReleaseRequest(
     runId: string;
     tag: string;
     artifacts: readonly string[];
+    /** Co-signatures the requester carries (#544): untrusted, verified only by the lane. */
+    cosignatures?: readonly { name: string; signature_b64: string }[];
     requestedBy: string;
   },
 ): Promise<ReleaseRequest> {
@@ -32,6 +34,7 @@ export function createReleaseRequest(
       runId: input.runId,
       tag: input.tag,
       artifacts: JSON.stringify(input.artifacts),
+      cosignatures: input.cosignatures?.length ? JSON.stringify(input.cosignatures) : null,
       status: "pending",
       requestedBy: input.requestedBy,
     };

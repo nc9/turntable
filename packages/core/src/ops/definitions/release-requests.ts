@@ -19,6 +19,23 @@ const requestView = z.object({
   created_at: z.int(),
   finished_at: z.int().nullable(),
   key_id: z.string().nullable().describe("The id of the key that signed, when it signed."),
+  cosignatures: z
+    .array(
+      z.object({
+        name: z.string(),
+        status: z
+          .enum(["present", "verified", "missing", "invalid", "unexpected"])
+          .describe(
+            "present: carried, not yet checked by the lane. verified/missing/invalid/unexpected: the lane's verdict.",
+          ),
+        key_id: z
+          .string()
+          .optional()
+          .describe("Public-key fingerprint of the configured co-signing key. Never key material."),
+        reason: z.string().optional(),
+      }),
+    )
+    .describe("Co-signature status of the request: what was carried and what the lane found."),
 });
 
 const getView = requestView.extend({
@@ -37,6 +54,25 @@ function provenanceOf(r: ReleaseRequest): string | null {
   return envelope === undefined || envelope === null ? null : JSON.stringify(envelope);
 }
 
+type CosignView = z.infer<typeof requestView>["cosignatures"];
+
+/** The lane's verdict (written to facts) over what the request carried; read-only, no config. */
+function cosignView(r: ReleaseRequest): CosignView {
+  const carried = r.cosignatures
+    ? (JSON.parse(r.cosignatures) as { name: string }[]).map((c) => c.name)
+    : [];
+  let reports: CosignView = [];
+  try {
+    reports = r.facts
+      ? ((JSON.parse(r.facts) as { cosignatures?: CosignView }).cosignatures ?? [])
+      : [];
+  } catch {
+    reports = [];
+  }
+  if (reports.length > 0) return reports;
+  return carried.map((name) => ({ name, status: "present" as const }));
+}
+
 const view = (r: ReleaseRequest): z.infer<typeof requestView> => ({
   id: r.id,
   run_id: r.runId,
@@ -46,6 +82,7 @@ const view = (r: ReleaseRequest): z.infer<typeof requestView> => ({
   reason: r.reason,
   created_at: r.createdAt,
   finished_at: r.finishedAt,
+  cosignatures: cosignView(r),
   key_id: r.result ? ((JSON.parse(r.result) as { keyid?: string }).keyid ?? null) : null,
 });
 
@@ -57,12 +94,28 @@ export const requestReleaseOp = defineOp({
     "request names a run, the tag being released, the artifact names (never an approval environment: that is the project's own setting). It is " +
     "only a request: the release lane re-checks with the forge that the tag points at the run's " +
     "commit and recomputes the artifact digests itself, so nothing here can make it sign " +
-    "something it cannot verify. Poll get_release_request for the outcome. Needs one project and " +
+    "something it cannot verify. Optional cosignatures (name, signature_b64) carry co-signatures " +
+    "made off-instance by a client-pinned key; the lane alone verifies them against its " +
+    "configured public keys and refuses to sign or publish when a configured one is missing or " +
+    "bad. Poll get_release_request for the outcome. Needs one project and " +
     "release_operator or admin; audited. Not available over MCP.",
   input: z.object({
     run_id: z.string().min(1).max(40),
     tag: z.string().min(1).max(200),
     artifacts: z.array(z.string().min(1).max(200)).min(1).max(50),
+    cosignatures: z
+      .array(
+        z.object({
+          name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),
+          signature_b64: z.string().min(1).max(4096),
+        }),
+      )
+      .max(20)
+      .optional()
+      .describe(
+        "Co-signatures by a key your clients pin, made off-instance over the exact bytes of the " +
+          "configured artifact. The release lane verifies each against its configured public keys.",
+      ),
   }),
   output: requestView,
   effect: "write",
@@ -81,6 +134,7 @@ export const requestReleaseOp = defineOp({
       runId: i.run_id,
       tag: i.tag,
       artifacts: i.artifacts,
+      ...(i.cosignatures ? { cosignatures: i.cosignatures } : {}),
       requestedBy: `${ctx.principal.kind}:${ctx.principal.id}`,
     });
     return view(row);
@@ -94,8 +148,9 @@ export const getReleaseRequestOp = defineOp({
     "Returns one release request by id: its status (pending, claimed, signed, refused, error), the " +
     "refusal reason as a short code when the release lane refused it, and the key id when it " +
     "signed, and for a signed request `provenance`: the lane's signed DSSE envelope as JSON text " +
-    "(null otherwise), which a consumer verifies against the pinned public key. Needs one " +
-    "project and release_operator or admin. Read-only.",
+    "(null otherwise), which a consumer verifies against the pinned public key, and the " +
+    "co-signature status (present, verified, missing, invalid) with public-key fingerprints " +
+    "only. Needs one project and release_operator or admin. Read-only.",
   input: z.object({ id: z.string().min(1).max(40) }),
   output: getView,
   effect: "read",

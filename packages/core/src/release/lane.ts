@@ -20,6 +20,7 @@ import {
 } from "../db/repos";
 import { CONFIG_CHANGED_REASON, type AttestationStore } from "./attest";
 import type { ArtifactBytes } from "./artifacts";
+import { verifyCosignatures, type CosignInput, type VerifiedCosign } from "./cosign";
 import { ReleaseFiles } from "./files";
 import type { ForgeFacts } from "./forge";
 import { publishGithubRelease } from "./publish/github-release";
@@ -81,6 +82,17 @@ export type LaneDenial =
   | "unpack_failed"
   | "duplicate_subject"
   | "attestation_mismatch"
+  | "cosign_config_error"
+  | "cosign_bad_request"
+  | "cosign_missing"
+  | "cosign_unexpected"
+  | "cosign_duplicate"
+  | "cosign_bad_encoding"
+  | "cosign_artifact_missing"
+  | "cosign_artifact_differs"
+  | "cosign_manifest_check"
+  | "signature_invalid"
+  | "signature_not_minimal_der"
   | `signer:${string}`;
 
 export interface LaneOptions {
@@ -119,6 +131,8 @@ type Decision =
         envelope: unknown;
         /** The lane's configuration version the approval was judged under. */
         configVersion: number;
+        /** The co-signatures the lane verified (#544), published next to the provenance. */
+        cosignatures: VerifiedCosign[];
         /** The signed files, still unpacked; the lane removes them when it is done. */
         files: ReleaseFiles;
       };
@@ -161,6 +175,11 @@ export class ReleaseLane {
     let published: TargetResult[] = [];
     if (decision.status === "signed") {
       // Remembered in the lane's own file: what the release proxy may hand rules out for.
+      this.#o.attest.saveVerifiedCosignatures(
+        { ...scope, runId: req.runId },
+        decision.verified.cosignatures,
+        now(),
+      );
       this.#o.attest.approveRelease(
         { ...scope, runId: req.runId },
         {
@@ -302,6 +321,33 @@ export class ReleaseLane {
     // The unpacked files stay for the publish step when this signs, and go on any other outcome.
     let keep = false;
     try {
+      // Co-signatures (#544): checked here, by the lane, under the public keys in its own file,
+      // over the exact bytes it re-hashed, before anything is attested, signed or published.
+      let cosigs: VerifiedCosign[] = [];
+      {
+        let keys;
+        let carried: CosignInput[] = [];
+        try {
+          keys = this.#o.attest.cosignKeys(scope.orgId, scope.projectId);
+        } catch (e) {
+          return refuse(
+            "cosign_config_error",
+            (e instanceof Error ? e.message : String(e)).slice(0, 200),
+          );
+        }
+        try {
+          carried = req.cosignatures ? (JSON.parse(req.cosignatures) as CosignInput[]) : [];
+          if (!Array.isArray(carried)) throw new Error("not a list");
+        } catch {
+          return refuse("cosign_bad_request", "the carried co-signatures are not readable");
+        }
+        if (keys.length > 0 || carried.length > 0) {
+          const out = await verifyCosignatures(keys, carried, (n) => files.readBytes(n), digests);
+          facts.cosignatures = out.reports;
+          if (!out.ok) return refuse(out.reason as LaneDenial, out.detail);
+          cosigs = out.verified;
+        }
+      }
       // ...and what this lane attested for this TAG before, in a store the main process cannot
       // write. Keyed by the release identity, not the run: a new run for an attested tag gets no
       // fresh first sight, and a tag is never signed twice with different digests.
@@ -349,13 +395,29 @@ export class ReleaseLane {
       keep = true;
       return {
         status: "signed",
-        result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
+        result: {
+          keyid: out.keyid,
+          envelope: out.envelope,
+          subjects: out.subjects,
+          ...(cosigs.length > 0
+            ? {
+                cosignatures: cosigs.map((c) => ({
+                  name: c.name,
+                  key_id: c.keyId,
+                  signs: c.signs,
+                  output_name: c.outputName,
+                  signature_sha256: c.signatureSha256,
+                })),
+              }
+            : {}),
+        },
         facts,
         verified: {
           repo: pinned,
           sha: tag.sha,
           digests,
           envelope: out.envelope,
+          cosignatures: cosigs,
           files,
           configVersion,
         },
@@ -480,6 +542,9 @@ export class ReleaseLane {
       digests: v.digests,
       readBytes: async (name: string) => files?.readBytes(name),
       provenance: typeof v.envelope === "string" ? v.envelope : JSON.stringify(v.envelope),
+      cosignatures: this.#o.attest
+        .verifiedCosignatures({ ...scope, runId: req.runId })
+        .map((c) => ({ outputName: c.outputName, signature: c.signature })),
     };
     const out: TargetResult[] = [];
     // Where signed bytes go is the lane's configuration. An approval given under an older version

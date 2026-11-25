@@ -96,6 +96,8 @@ export interface PublishContext {
   readBytes(name: string): Promise<Uint8Array | undefined>;
   /** The signed provenance envelope, as JSON text. */
   provenance: string | undefined;
+  /** Lane-verified co-signatures (#544), published as release assets next to the provenance. */
+  cosignatures?: readonly { outputName: string; signature: Uint8Array }[];
 }
 
 export interface PublishCredentials {

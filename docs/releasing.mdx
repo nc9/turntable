@@ -167,7 +167,7 @@ Exit code 0 means verified, 1 not verified, 2 a usage error or an unreadable fil
 
 ## If your clients pin a signing key
 
-Some projects' clients accept a release only if a file, such as a manifest, is signed by a key pinned in the client. A key held by Turntable would be rejected. There are two ways to handle that.
+Some projects' clients accept a release only if a file, such as a manifest, is signed by a key pinned in the client. A key held by Turntable would be rejected. There are three ways to handle that. The most direct is a [lane-verified co-signature](#co-sign-with-the-key-your-clients-pin).
 
 ### Verify on Turntable, sign externally
 
@@ -177,11 +177,50 @@ Some projects' clients accept a release only if a file, such as a manifest, is s
 
 Two parts of this path are planned. Fetching the provenance envelope from the release request is planned ([#541](https://github.com/turntable-ci/turntable/issues/541)), and so is reading the lane's public key (`release_public_key`, [#541](https://github.com/turntable-ci/turntable/issues/541)). Until then, the envelope is not available yet when there is no GitHub release target. The public key is the one `turntable release init-key` printed when the key was created; there is no other command to read it again.
 
+### Co-sign with the key your clients pin
+
+The key's owner signs the exact release file off-instance, with the signer they already use. The release request carries that signature. The release lane, never the main process, verifies it against a public key you configure on the lane, and publishes it next to Turntable's own provenance. The lane never holds the private key and never receives it.
+
+**Configure the key** on the lane's host (public material only; it lives in the lane's own file, like publish targets):
+
+```sh
+turntable release cosign-key set --org acme --project web --name pinned \
+  --public-key-file pinned.pub.pem --signs manifest.json --output-name manifest.json.sig \
+  --manifest-key-id-field key_id
+turntable release cosign-key list --org acme --project web
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `--name` | A short name; the request refers to the key by it. |
+| `--public-key-file` | The PEM public key your clients pin. A private key is refused. |
+| `--signs` | The artifact in the release whose exact bytes are signed, for example `manifest.json`. |
+| `--output-name` | The release asset name the signature is published under, for example `manifest.json.sig`. |
+| `--format` | The signature format. Default and only one so far: `detached-der-p256-sha256`. |
+| `--manifest-key-id-field` | Optional. For a signed JSON manifest that lists the release's artifacts, also check the manifest's key id field and every listed `sha256` (see below). |
+
+Once a key is configured, every release of the project needs a valid co-signature from it. Names, signed artifacts and output names must be unique across a project's keys. Formats are pluggable; `detached-der-p256-sha256` matches clients that check an ECDSA P-256 signature over the SHA-256 of the exact file bytes, in minimal DER, one `<file>.sig` per signed file.
+
+**Sign and request.** Sign the file's bytes (for example `openssl dgst -sha256 -sign pinned.key -out manifest.json.sig manifest.json`), base64 the signature, and pass it:
+
+```json
+{ "run_id": "...", "tag": "v1.2.3", "artifacts": ["manifest.json", "app-linux-x64"],
+  "cosignatures": [{ "name": "pinned", "signature_b64": "MEUCIQ..." }] }
+```
+
+**What the lane checks, before it signs or publishes anything.** The signature is verified over the exact bytes of the named artifact, the bytes it re-hashed for the approved manifest, under the configured key. The encoding must be minimal DER; a non-minimal encoding of a valid signature is rejected, because strict clients reject it. With a manifest check configured, the manifest's key id (the first 16 hex characters of SHA-256 over the key's SPKI DER) must equal the configured key's id, and every artifact it lists must have the same `sha256` as the bytes the lane publishes. A missing, invalid, wrong-key, wrong-bytes, wrong-release, duplicate or unknown co-signature means nothing is signed or published, with a reason (see the table below).
+
+**What gets published.** Each verified signature is attached to the GitHub release as raw bytes under exactly its `output_name`, next to the provenance. The request result lists each co-signature's name, key id and signature digest.
+
+**See the status.** `get_release_request` returns `cosignatures`: each is `present` (carried, not yet checked), `verified`, `missing` or `invalid`, with the key's public fingerprint only.
+
+This version has no config operation yet, so the key is set with the CLI on the lane's host. A change to it is not yet bound into an earlier approval (that comes with the lane configuration operations of [#541](https://github.com/turntable-ci/turntable/issues/541)).
+
 ### A stepping stone
 
 A new client release pins a Turntable-held key in the client's spare (`next`) key slot. Once deployed clients trust it, Turntable signs the releases that follow.
 
-The key type matters. Turntable's provenance signature is Ed25519. Clients that pin an ECDSA P-256 key need a P-256 signer, which is planned ([#427](https://github.com/turntable-ci/turntable/issues/427), an AWS KMS P-256 signer). A lane-verified co-signature by the pinned key is planned too ([#544](https://github.com/turntable-ci/turntable/issues/544)).
+The key type matters. Turntable's provenance signature is Ed25519. Clients that pin an ECDSA P-256 key need a P-256 signer, which is planned ([#427](https://github.com/turntable-ci/turntable/issues/427), an AWS KMS P-256 signer).
 
 ## Common refusals
 
@@ -205,4 +244,7 @@ A `reason` on a release request comes from the lane (`release/lane.ts`) or the s
 | `artifact_bytes_missing`, `digest_mismatch`, `size_mismatch` | The lane could not read the bytes, or they differ from the record. | Check `TURNTABLE_RELEASE_ARTIFACT_DIR`; rebuild. |
 | `unpack_failed`, `duplicate_subject` | A zip the lane refuses to unpack, or two files with one name. | See the limits in [Artifacts from jobs](/release-lane#artifacts-from-jobs). |
 | `attestation_mismatch` | The tag was attested before with other digests. | Release a new tag. |
+| `cosign_missing`, `cosign_unexpected`, `cosign_duplicate`, `cosign_bad_encoding` | A configured co-signature was not carried, one names no configured key, one repeats, or one is not base64. | Send exactly one `cosignatures` entry per configured key. |
+| `signature_invalid`, `signature_not_minimal_der` | The signature does not verify over the exact bytes under the configured key, or is not minimal DER. | Sign this release's file with the pinned key and emit minimal DER. |
+| `cosign_artifact_missing`, `cosign_artifact_differs`, `cosign_manifest_check`, `cosign_config_error` | The signed file is not in the release, differs from the approved digest, fails the manifest check, or the lane's co-signing configuration is unreadable. | Check the `signs` artifact is requested, and the manifest's key id and `sha256` values. |
 | `frozen` | An incident freeze is on. | Unfreeze with `turntable incident unfreeze`; the request is then processed. |

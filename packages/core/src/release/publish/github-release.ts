@@ -77,6 +77,11 @@ export async function publishGithubRelease(
     const bytes = new TextEncoder().encode(ctx.provenance);
     want.set(t.provenanceAsset, { bytes, sha256: sha256(bytes) });
   }
+  // Lane-verified co-signatures go next to the provenance, under exactly their configured names.
+  for (const c of ctx.cosignatures ?? []) {
+    if (want.has(c.outputName)) return refuse("cosign_name_collision", c.outputName);
+    want.set(c.outputName, { bytes: c.signature, sha256: sha256(c.signature) });
+  }
   const expected = Object.fromEntries([...want].map(([n, v]) => [n, v.sha256]));
 
   const json = async <T>(
