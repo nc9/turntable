@@ -44,11 +44,14 @@ export function launcherArgv(
   shims = true,
 ): string[] {
   // `envFile` holds export lines that must not appear in an argv (a ps listing, a provider log):
-  // the launcher sources it and deletes it before act starts.
+  // the launcher sources it and deletes it before act starts. Only then does it set `umask 0022`
+  // (the sandbox exec starts under 077), so act and every step run with the umask a GitHub runner
+  // has: files 0644, directories 0755. Turntable's own files are written before and carry an
+  // explicit mode, so they never depend on this umask.
   return [
     "sh",
     "-c",
-    `${shims ? 'PATH="$1:$PATH"; ' : ""}f=$2; shift 2; ${shims ? "export PATH; " : ""}if [ -n "$f" ]; then . "$f"; rm -f "$f"; fi; exec env -u TERM "$@"`,
+    `${shims ? 'PATH="$1:$PATH"; ' : ""}f=$2; shift 2; ${shims ? "export PATH; " : ""}if [ -n "$f" ]; then . "$f"; rm -f "$f"; fi; umask 0022; exec env -u TERM "$@"`,
     "tt",
     shimDir,
     envFile,
@@ -280,3 +283,10 @@ for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /et
 done
 if [ -n "$sys" ]; then cat "$sys" "$1" > "$2"; else cp "$1" "$2"; fi
 `;
+
+/**
+ * Creates an empty file with mode 0600, owner-only from the first byte, so a provider's `put` that
+ * truncates in place never holds the content under a looser mode. Args: path. The caller still
+ * chmods after the put (a provider may replace the file instead of truncating it).
+ */
+export const PRECREATE_PRIVATE_SH = `umask 077; : > "$1" && chmod 600 "$1"`;

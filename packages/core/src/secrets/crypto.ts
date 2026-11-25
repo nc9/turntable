@@ -240,7 +240,7 @@ export function loadMasterKey(path: string): Buffer {
 /** Creates a new random master key file (mode 0600). Refuses to overwrite an existing one. */
 export function initMasterKey(path: string): void {
   if (existsSync(path)) throw new Error(`refusing to overwrite existing master key file ${path}`);
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, randomBytes(KEY_BYTES), { mode: 0o600, flag: "wx" });
   chmodSync(path, 0o600);
 }

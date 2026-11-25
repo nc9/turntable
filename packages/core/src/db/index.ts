@@ -133,7 +133,7 @@ export function openDatabase(path: string): Db {
     throw new Error("the process runs on Postgres but no database was configured");
   }
   migrateLegacyDbFiles(path);
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const sqlite = new Database(path, { create: true, strict: true });
   // First, before anything that takes a lock, so every later statement waits for another
   // connection's lock instead of failing at once (the CLI runs next to a server, or next to a
