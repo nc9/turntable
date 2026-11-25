@@ -4035,7 +4035,11 @@
                           "setup": {
                             "type": "string",
                             "enum": ["active", "available"],
-                            "description": "active: ingest is on, a static poll entry names it, or it has runs. available: never set up."
+                            "description": "active: added on purpose, ingest is on, a static poll entry names it, or it has runs. available: made by an installation sync before #577 and never set up (`instance_prune_unconfigured_projects` removes these)."
+                          },
+                          "no_access": {
+                            "type": "boolean",
+                            "description": "True when the project's repo was unbound (the installation lost access, or it was removed) and none is bound now. Its history is kept."
                           },
                           "repos": {
                             "type": "array",
@@ -4057,7 +4061,15 @@
                             }
                           }
                         },
-                        "required": ["id", "slug", "name", "oidc_audiences", "setup", "repos"],
+                        "required": [
+                          "id",
+                          "slug",
+                          "name",
+                          "oidc_audiences",
+                          "setup",
+                          "no_access",
+                          "repos"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -13884,6 +13896,111 @@
                     }
                   },
                   "required": ["installation_id", "account_login", "target_org", "bound"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/prune-unconfigured-projects": {
+      "post": {
+        "operationId": "instance_prune_unconfigured_projects",
+        "summary": "List or delete the projects an installation sync made that nobody set up (instance administrator only).",
+        "description": "Before #577 an installation sync made a project for every repository the installation could reach. This lists, and with `dry_run: false` deletes, the projects of `target_org` that were made that way and never set up: never added on purpose, bound (or once bound) through an installation, zero runs, every setting at its default (paused is the sync's default), no static poll entry naming it, no onboarding row, and no token, secret or other row scoped to it. A project with any of those is never listed. A dry run returns the list and its count. A non-dry run needs `expected_count`, the count of that dry run, and refuses (conflict, nothing deleted) when the list now has a different count. Each deletion is audited with the project's slug and repos in the system chain and in the org's chain. The system org is never a target. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org to prune."
+                  },
+                  "dry_run": {
+                    "type": "boolean",
+                    "description": "True lists only. False deletes the listed projects."
+                  },
+                  "expected_count": {
+                    "description": "Required when dry_run is false: the count the dry run returned.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100000
+                  }
+                },
+                "required": ["target_org", "dry_run"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "target_org": {
+                      "type": "string"
+                    },
+                    "dry_run": {
+                      "type": "boolean"
+                    },
+                    "count": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Projects listed (a dry run) or deleted."
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "slug": {
+                            "type": "string"
+                          },
+                          "repos": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": ["slug", "repos"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["target_org", "dry_run", "count", "projects"],
                   "additionalProperties": false
                 }
               }

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "8e354987-8143-4a10-8549-03831414a4a2",
+  "id": "ce4956e5-7267-4113-8c16-4ff8baacdb4d",
   "prevId": "153437b9-f3aa-45de-aa41-796da8e5a248",
   "tables": {
     "action_pins": {
@@ -3394,270 +3394,6 @@
         }
       }
     },
-    "notification_cursors": {
-      "name": "notification_cursors",
-      "columns": {
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "last_event_id": {
-          "name": "last_event_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "notification_prefs": {
-      "name": "notification_prefs",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "org_id": {
-          "name": "org_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(unixepoch() * 1000)"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "notification_prefs_user_id_users_id_fk": {
-          "name": "notification_prefs_user_id_users_id_fk",
-          "tableFrom": "notification_prefs",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "notification_prefs_user_id_org_id_project_id_kind_pk": {
-          "columns": [
-            "user_id",
-            "org_id",
-            "project_id",
-            "kind"
-          ],
-          "name": "notification_prefs_user_id_org_id_project_id_kind_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "notification_prefs_kind_check": {
-          "name": "notification_prefs_kind_check",
-          "value": "kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed')"
-        }
-      }
-    },
-    "notifications": {
-      "name": "notifications",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "org_id": {
-          "name": "org_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "dedupe_key": {
-          "name": "dedupe_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "count": {
-          "name": "count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 1
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(unixepoch() * 1000)"
-        },
-        "read_at": {
-          "name": "read_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "notifications_user_idx": {
-          "name": "notifications_user_idx",
-          "columns": [
-            "user_id",
-            "id"
-          ],
-          "isUnique": false
-        },
-        "notifications_dedupe_unique": {
-          "name": "notifications_dedupe_unique",
-          "columns": [
-            "user_id",
-            "kind",
-            "dedupe_key"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {
-        "notifications_user_id_users_id_fk": {
-          "name": "notifications_user_id_users_id_fk",
-          "tableFrom": "notifications",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "notifications_org_id_orgs_id_fk": {
-          "name": "notifications_org_id_orgs_id_fk",
-          "tableFrom": "notifications",
-          "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "notifications_project_id_org_id_projects_id_org_id_fk": {
-          "name": "notifications_project_id_org_id_projects_id_org_id_fk",
-          "tableFrom": "notifications",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id",
-            "org_id"
-          ],
-          "columnsTo": [
-            "id",
-            "org_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "notifications_kind_check": {
-          "name": "notifications_kind_check",
-          "value": "kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed')"
-        }
-      }
-    },
     "onboardings": {
       "name": "onboardings",
       "columns": {
@@ -4192,14 +3928,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "format": {
-          "name": "format",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'json'"
-        },
         "state": {
           "name": "state",
           "type": "text",
@@ -4301,10 +4029,6 @@
         "outbound_webhook_endpoints_state_check": {
           "name": "outbound_webhook_endpoints_state_check",
           "value": "state IN ('active', 'disabled')"
-        },
-        "outbound_webhook_endpoints_format_check": {
-          "name": "outbound_webhook_endpoints_format_check",
-          "value": "format IN ('json', 'slack')"
         }
       }
     },
@@ -4735,6 +4459,13 @@
         },
         "unbound_at": {
           "name": "unbound_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "added_at": {
+          "name": "added_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,

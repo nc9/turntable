@@ -203,6 +203,10 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   "onboarding_create_org",
   "start_installation_claim",
   "bind_installation",
+  // Adding a repo as a project and removing one (history is kept; deleting it needs the step-up,
+  // which `remove_project` takes only with `delete_history`).
+  "add_project",
+  "remove_project",
   // Onboarding (A3): owner or admin sessions only, by the ops' own `admin` role.
   "onboard_repos",
   "run_default_branch",
@@ -413,7 +417,7 @@ async function resolveScope(
   if (!org || org.id !== principal.orgId) throw new OpError("not_found", NO_SUCH_SCOPE);
   const grantProject = principal.kind === "token" ? principal.projectId : null;
   let projectId: string | undefined = grantProject ?? undefined;
-  if (projectSlug !== undefined) {
+  if (projectSlug !== undefined && !op.projectIsNew) {
     const project = await getProjectBySlug(db, { orgId: org.id }, projectSlug);
     if (!project || (grantProject !== null && project.id !== grantProject)) {
       throw new OpError("not_found", NO_SUCH_SCOPE);
@@ -452,8 +456,9 @@ function validateInput(op: Op, raw: Record<string, unknown>): Record<string, unk
   }
   // A cross-org read takes `org` and `project` as filters its handler narrows by.
   if (op.crossOrg) return parsed.data as Record<string, unknown>;
-  const { org: _org, project: _project, ...rest } = parsed.data as Record<string, unknown>;
-  return rest;
+  const { org: _org, project, ...rest } = parsed.data as Record<string, unknown>;
+  // The new project's slug is the op's own input (`add_project`), not a scope.
+  return op.projectIsNew && project !== undefined ? { ...rest, project } : rest;
 }
 
 function validateOutput(op: Op, output: unknown): unknown {

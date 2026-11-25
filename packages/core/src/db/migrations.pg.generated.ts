@@ -323,8 +323,16 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0025_notifications",
-    "when": 1795625046129,
+    "tag": "0025_project_added_at",
+    "when": 1795625039066,
+    "statements": [
+      "ALTER TABLE \"projects\" ADD COLUMN \"added_at\" bigint;",
+      "UPDATE \"projects\" SET \"added_at\" = \"created_at\" WHERE \"ingest_config\" IS NOT NULL OR EXISTS (SELECT 1 FROM \"runs\" WHERE \"runs\".\"project_id\" = \"projects\".\"id\");"
+    ]
+  },
+  {
+    "tag": "0026_notifications",
+    "when": 1795632438628,
     "statements": [
       "CREATE TABLE \"notification_cursors\" (\n\t\"name\" text PRIMARY KEY NOT NULL,\n\t\"last_event_id\" bigint DEFAULT 0 NOT NULL\n);",
       "CREATE TABLE \"notification_prefs\" (\n\t\"user_id\" text NOT NULL,\n\t\"org_id\" text DEFAULT '' NOT NULL,\n\t\"project_id\" text DEFAULT '' NOT NULL,\n\t\"kind\" text NOT NULL,\n\t\"enabled\" boolean NOT NULL,\n\t\"updated_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\tCONSTRAINT \"notification_prefs_user_id_org_id_project_id_kind_pk\" PRIMARY KEY(\"user_id\",\"org_id\",\"project_id\",\"kind\"),\n\tCONSTRAINT \"notification_prefs_kind_check\" CHECK (kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",

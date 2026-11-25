@@ -5,6 +5,7 @@ import {
   Menu,
   Moon,
   PlayCircle,
+  Plus,
   Search,
   Settings,
   Gauge,
@@ -155,6 +156,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           {...(onNavigate ? { onNavigate } : {})}
         >
           Usage
+        </NavLink>
+        <NavLink
+          to="/$org/-/repositories"
+          params={{ org: orgSlug }}
+          icon={<Plus />}
+          active={path === `${base}/-/repositories`}
+          {...(onNavigate ? { onNavigate } : {})}
+        >
+          Add repositories
         </NavLink>
         <NavLink
           to="/$org/-/settings"

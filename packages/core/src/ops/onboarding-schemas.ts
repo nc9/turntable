@@ -132,7 +132,6 @@ export const bindInstallationOutput = z.object({
     z.object({
       slug: projectSlug,
       repo: repoName,
-      created: z.boolean().describe("True when this call created the project."),
     }),
   ),
 });

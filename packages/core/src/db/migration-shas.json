@@ -214,7 +214,11 @@
       "sha256": "6970df8b52c5bdb977d6ab2e699162940277c46249f42f97962b32ac5d2444d3"
     },
     {
-      "tag": "0054_notifications",
+      "tag": "0054_project_added_at",
+      "sha256": "5c49838f05c7173fd45254b5b0020800053316689a56c9d7dd2d754e35542756"
+    },
+    {
+      "tag": "0055_notifications",
       "sha256": "c24c48598da9b07df7be090a0b55cd7db221312e155ffccb9a693fbc35b37686"
     }
   ],
@@ -316,7 +320,11 @@
       "sha256": "40908ec5092a6db606274c34167ddf1f3c6b8709737f334260b0e128ff9bd791"
     },
     {
-      "tag": "0025_notifications",
+      "tag": "0025_project_added_at",
+      "sha256": "c719bac33ff18cafd0f3a1631074280e6da90beb620102368f417af369785c68"
+    },
+    {
+      "tag": "0026_notifications",
       "sha256": "956d3e0f8cd52a0f6dd798300070f711d35ca5eda9ac2de3bddffd5bad492a24"
     }
   ]

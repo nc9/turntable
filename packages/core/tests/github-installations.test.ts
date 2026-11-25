@@ -8,35 +8,43 @@ import {
   listRepos,
 } from "../src/db";
 import { syncInstallation } from "../src/github/installations";
-import { fakeFacts, inst, repo, setup } from "./github-helpers";
+import { addProjectFor } from "../src/ops/definitions/projects";
+import { addAll, fakeFacts, inst, repo, setup } from "./github-helpers";
 
 describe("syncInstallation", () => {
-  test("maps the installation to the App's org and its repos to projects, from API facts", async () => {
+  test("records the installation from API facts and creates no project and no binding", async () => {
     const { db, org } = await setup();
     const f = fakeFacts();
     f.installations.set("100", inst("100"));
-    f.repos.set("100", [repo("1", "api"), repo("2", "web")]);
+    f.repos.set(
+      "100",
+      Array.from({ length: 50 }, (_, n) => repo(String(n + 1), `repo-${n + 1}`)),
+    );
     const r = await syncInstallation(db, f.facts, "100");
-    expect(r).toMatchObject({ outcome: "synced", bound: ["acme/api", "acme/web"], conflicts: [] });
+    expect(r).toMatchObject({ outcome: "synced", bound: [], conflicts: [] });
+    expect(r.reachable).toHaveLength(50);
     expect(await getInstallation(db, "100")).toMatchObject({
       orgId: org.id,
       accountLogin: "acme",
       status: "active",
       appId: "42",
     });
+    expect(await listProjects(db, { orgId: org.id })).toHaveLength(0);
+  });
+
+  test("an explicit add creates one project with its binding", async () => {
+    const { db, org } = await setup();
+    const f = fakeFacts();
+    f.installations.set("100", inst("100"));
+    f.repos.set("100", [repo("1", "api"), repo("2", "web")]);
+    await syncInstallation(db, f.facts, "100");
+    await addProjectFor(db, org.id, "100", repo("1", "api"), undefined, 1);
     const projects = await listProjects(db, { orgId: org.id });
-    expect(projects.map((p) => p.slug).sort()).toEqual(["api", "web"]);
-    const bound = await listRepos(db, {
-      orgId: org.id,
-      projectId: projects.find((p) => p.slug === "api")!.id,
-    });
-    expect(bound).toHaveLength(1);
-    expect(bound[0]).toMatchObject({
-      owner: "acme",
-      repo: "api",
-      installationId: "100",
-      forgeRepoId: "1",
-    });
+    expect(projects.map((p) => p.slug)).toEqual(["api"]);
+    expect(projects[0]!.addedAt).toBe(1);
+    expect(await listRepos(db, { orgId: org.id, projectId: projects[0]!.id })).toMatchObject([
+      { owner: "acme", repo: "api", installationId: "100", forgeRepoId: "1" },
+    ]);
   });
 
   test("idempotent: a replay changes nothing", async () => {
@@ -45,6 +53,7 @@ describe("syncInstallation", () => {
     f.installations.set("100", inst("100"));
     f.repos.set("100", [repo("1", "api")]);
     await syncInstallation(db, f.facts, "100");
+    await addAll(db, org.id, f, "100");
     const again = await syncInstallation(db, f.facts, "100");
     expect(again.bound).toEqual([]);
     expect(await listProjects(db, { orgId: org.id })).toHaveLength(1);
@@ -68,6 +77,7 @@ describe("syncInstallation", () => {
     f.installations.set("100", inst("100"));
     f.repos.set("100", [repo("1", "real")]);
     await syncInstallation(db, f.facts, "100");
+    await addAll(db, org.id, f, "100");
     const slugs = (await listProjects(db, { orgId: org.id })).map((p) => p.slug);
     expect(slugs).toEqual(["real"]);
   });
@@ -92,9 +102,13 @@ describe("syncInstallation", () => {
     f.repos.set("100", [repo("1", "api"), repo("2", "web")]);
     const r = await syncInstallation(db, f.facts, "100");
     expect(r.conflicts).toEqual(["acme/api"]);
-    expect(r.bound).toEqual(["acme/web"]);
+    expect(r.reachable).toEqual(["acme/web"]);
     expect(await listRepos(db, { orgId: other.id, projectId: p.id })).toHaveLength(1);
-    expect((await listProjects(db, { orgId: org.id })).map((x) => x.slug)).toEqual(["web"]);
+    expect(await listProjects(db, { orgId: org.id })).toHaveLength(0);
+    // An explicit add of the other org's repo is refused too.
+    await expect(addProjectFor(db, org.id, "100", repo("1", "api"), undefined, 1)).rejects.toThrow(
+      /already connected/,
+    );
   });
 
   test("a repo removed from the installation is unbound; a suspended installation binds nothing new", async () => {
@@ -103,6 +117,7 @@ describe("syncInstallation", () => {
     f.installations.set("100", inst("100"));
     f.repos.set("100", [repo("1", "api"), repo("2", "web")]);
     await syncInstallation(db, f.facts, "100");
+    await addAll(db, org.id, f, "100");
     f.repos.set("100", [repo("1", "api")]);
     const r = await syncInstallation(db, f.facts, "100");
     expect(r.unbound).toEqual(["acme/web"]);
@@ -122,6 +137,7 @@ describe("syncInstallation", () => {
     f.installations.set("100", inst("100"));
     f.repos.set("100", [repo("1", "api")]);
     await syncInstallation(db, f.facts, "100");
+    await addAll(db, org.id, f, "100");
     f.installations.delete("100");
     const r = await syncInstallation(db, f.facts, "100");
     expect(r).toMatchObject({ outcome: "deleted", unbound: ["acme/api"] });

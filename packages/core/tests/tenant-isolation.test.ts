@@ -694,6 +694,8 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App to list the installation's repos; org B is probed and gets not_found for A's installation id, and the ownership check is in onboarding-repos.test.ts (another org's installation looks like none)",
   onboard_repos:
     "needs an admin: no token holds that role, so every token principal of A and B is refused alike; the org scoping (an installation of another org looks like none) and the batch are in onboarding-repos.test.ts",
+  add_project:
+    "needs an admin (no token holds that role) and a configured GitHub App, so every token principal of A and B is refused alike; the installation scoping (another org's installation looks like none), the repo check and the audit are in projects-add-remove.test.ts",
   preview_workflows:
     "needs a configured GitHub App and a repo reader; org B is probed and finds no such project of its own, and the preview itself is in onboarding-repos.test.ts",
   run_default_branch:

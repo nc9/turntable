@@ -2,6 +2,7 @@
 // self-serve org settings and rate limit, the sealed user-to-server token, list_user_installations
 // and bind_installation. A fake GitHub (a fetch stub) stands behind the OAuth exchange, the token
 // refresh and the user endpoints; everything else is the real thing, on SQLite and Postgres.
+import { addProjectFor } from "../src/ops/definitions/projects";
 import { afterAll, describe, expect, test } from "bun:test";
 import { systemOrgId } from "../src/audit/failures";
 import {
@@ -967,47 +968,38 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       expect((await bind("101")).ok).toBe(true);
     });
 
-    test("only projects this bind creates start paused; existing projects keep every setting through a re-bind", async () => {
+    test("a bind creates no project; a project the org added keeps every setting through a re-bind", async () => {
       const { h, bind } = await binder();
       const first = await bind();
       expect(first.ok).toBe(true);
       if (!first.ok) return;
-      expect(
-        (first.output as { projects: { created: boolean }[] }).projects.map((p) => p.created),
-      ).toEqual([true, true]);
-      const rows = await listProjects(h.db, { orgId: h.tenant.id });
-      expect(rows.map((p) => p.maxConcurrent)).toEqual([0, 0]);
-      // the owner tunes one project and un-pauses it; another keeps its pause
-      const api = rows.find((p) => p.slug === "api")!;
+      expect((first.output as { projects: unknown[] }).projects).toEqual([]);
+      expect(await listProjects(h.db, { orgId: h.tenant.id })).toEqual([]);
+      // the org adds one repo on purpose, tunes it, then binds again
+      const api = await addProjectFor(
+        h.db,
+        h.tenant.id,
+        "100",
+        repo("1", "api"),
+        undefined,
+        Date.now(),
+      );
       await setProjectSandboxSettings(
         h.db,
-        { orgId: h.tenant.id, projectId: api.id },
-        {
-          maxConcurrent: 7,
-          sandboxSnapshot: "tuned-snapshot",
-        },
+        { orgId: h.tenant.id, projectId: api.projectId },
+        { maxConcurrent: 7, sandboxSnapshot: "tuned-snapshot" },
       );
       const snapshot = await listProjects(h.db, { orgId: h.tenant.id });
-      expect(snapshot.find((p) => p.slug === "api")).toMatchObject({
-        maxConcurrent: 7,
-        sandboxSnapshot: "tuned-snapshot",
-      });
+      expect(snapshot).toHaveLength(1);
       // GitHub grants a third repo; bind again
       h.facts.repos.set("100", [repo("1", "api"), repo("2", "web"), repo("3", "docs")]);
       const again = await bind();
       expect(again.ok).toBe(true);
       if (!again.ok) return;
-      const out = again.output as { projects: { slug: string; created: boolean }[] };
-      expect(out.projects.map((p) => [p.slug, p.created]).toSorted()).toEqual([
-        ["api", false],
-        ["docs", true],
-        ["web", false],
-      ]);
+      const out = again.output as { projects: { slug: string }[] };
+      expect(out.projects.map((p) => p.slug)).toEqual(["api"]);
       const after = await listProjects(h.db, { orgId: h.tenant.id });
-      for (const before of snapshot) {
-        expect(after.find((p) => p.id === before.id)).toEqual(before); // every column unchanged
-      }
-      expect(after.find((p) => p.slug === "docs")!.maxConcurrent).toBe(0);
+      expect(after).toEqual(snapshot); // no project made, every column unchanged
     });
 
     test("only a signed-in owner or admin session can bind: a token, a member session and a viewer are refused", async () => {
@@ -1120,7 +1112,7 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       expect(JSON.parse(row!.input)).toMatchObject({
         installation_id: "100",
         account_login: "acme",
-        created_projects: 2,
+        bound_projects: 0,
       });
       expect(await listMembershipsOfUser(h.db, userId)).toHaveLength(1);
     });

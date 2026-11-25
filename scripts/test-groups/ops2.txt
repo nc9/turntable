@@ -33,3 +33,7 @@ packages/core/tests/github-avatar.test.ts
 packages/core/tests/github-installer.test.ts
 packages/core/tests/notifications.test.ts
 packages/core/tests/outbound-webhooks-slack.test.ts
+packages/core/tests/projects-add-remove.test.ts
+packages/core/tests/instance-prune-projects.test.ts
+packages/core/tests/checks-every-job-631.test.ts
+packages/core/tests/checks-backfill.test.ts

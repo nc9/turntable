@@ -150,6 +150,7 @@ export type WireProjects = {
     slug: string;
     name: string;
     setup: "active" | "available";
+    no_access?: boolean;
     repos: { forge: string; owner: string; repo: string }[];
   }[];
   next_cursor: string | null;

@@ -367,6 +367,7 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       });
       return w.projects.map((p) => ({
         setup: p.setup,
+        ...(p.no_access ? { noAccess: true } : {}),
         id: p.slug,
         orgId,
         slug: p.slug,
