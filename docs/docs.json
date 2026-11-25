@@ -32,6 +32,7 @@
           "releasing",
           "github-app",
           "hosted",
+          "design/release-lane-hosted",
           "tenant-isolation",
           "postgres",
           "instance-admin",
