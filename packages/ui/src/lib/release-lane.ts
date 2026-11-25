@@ -86,6 +86,28 @@ export function signingInput(f: {
   };
 }
 
+/** The input of `release_cosign_key_set` from the form's text fields. */
+export function cosignKeyInput(f: {
+  targetOrg: string;
+  targetProject: string;
+  name: string;
+  publicKeyPem: string;
+  signs: string;
+  outputName: string;
+  manifestBinaries: boolean;
+}): Record<string, unknown> {
+  return {
+    target_org: f.targetOrg.trim(),
+    target_project: f.targetProject.trim(),
+    name: f.name.trim(),
+    public_key_pem: f.publicKeyPem.trim(),
+    signs: f.signs.trim(),
+    output_name: f.outputName.trim(),
+    format: "detached-der-p256-sha256",
+    ...(f.manifestBinaries ? { manifest_binaries: true } : {}),
+  };
+}
+
 /** The input of `release_publish_target_set` from the form: only the fields its kind takes. */
 export function targetInput(f: {
   targetOrg: string;
@@ -110,6 +132,8 @@ export function targetInput(f: {
     out.accept_long_lived_token = f.acceptLongLived;
   } else if (f.kind === "github-release") {
     if (listOf(f.fields.assets ?? "").length > 0) out.assets = listOf(f.fields.assets ?? "");
+    if (listOf(f.fields.asset_artifacts ?? "").length > 0)
+      out.asset_artifacts = listOf(f.fields.asset_artifacts ?? "");
     put("provenance_asset");
   } else {
     for (const k of ["registry", "repository", "manifest", "username", "secret", "realm_host"]) {

@@ -313,5 +313,13 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE \"github_installations\" ADD COLUMN \"permissions\" text;"
     ]
+  },
+  {
+    "tag": "0024_release_request_cosignatures",
+    "when": 1795611794978,
+    "statements": [
+      "ALTER TABLE \"release_requests\" ADD COLUMN \"cosignatures\" text;",
+      "ALTER TABLE \"release_requests\" ADD COLUMN \"dry_run\" boolean DEFAULT false NOT NULL;"
+    ]
   }
 ];

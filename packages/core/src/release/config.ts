@@ -8,6 +8,7 @@ import { vaultCandidates } from "../db/repos";
 import type { SecretVault } from "../secrets/vault";
 import { VaultInputError } from "../secrets/vault";
 import type { AttestationStore } from "./attest";
+import { CosignConfigError, cosignFingerprint, cosignKeyId, type CosignKey } from "./cosign";
 import { initReleaseKey, readReleaseKey, ReleaseKeyError, type ReleaseKeyInfo } from "./init-key";
 import type { FileKeyVault } from "./key-vault";
 import { parseTarget, PublishConfigError, TARGET_KEY } from "./publish/config";
@@ -28,6 +29,8 @@ export type TargetFields = {
   tag?: string | undefined;
   access?: string | undefined;
   assets?: readonly string[] | undefined;
+  /** github-release: artifacts whose every file is attached. */
+  asset_artifacts?: readonly string[] | undefined;
   /** A name, or `none` for no provenance asset. */
   provenance_asset?: string | undefined;
   accept_long_lived_token?: boolean | undefined;
@@ -70,6 +73,7 @@ export function buildTarget(f: TargetFields): PublishTarget {
             kind: "github-release",
             ...mode,
             assets: [...(f.assets ?? [])],
+            assetArtifacts: [...(f.asset_artifacts ?? [])],
             ...(f.provenance_asset !== undefined
               ? { provenanceAsset: f.provenance_asset === "none" ? null : f.provenance_asset }
               : {}),
@@ -125,6 +129,29 @@ export type TargetView = {
   settings: Record<string, unknown>;
 };
 
+/** A co-signing key as the lane reports it: fingerprints and what it signs, never key material. */
+export type CosignKeyView = {
+  name: string;
+  /** First 16 hex of sha256 over the SPKI DER: the id a client pins. */
+  key_id: string;
+  /** The full sha256 over the SPKI DER. */
+  spki_sha256: string;
+  signs: string;
+  output_name: string;
+  format: string;
+  manifest: boolean;
+};
+
+const cosignView = (k: CosignKey): CosignKeyView => ({
+  name: k.name,
+  key_id: cosignKeyId(k.public_key_pem),
+  spki_sha256: cosignFingerprint(k.public_key_pem),
+  signs: k.signs,
+  output_name: k.output_name,
+  format: k.format,
+  manifest: k.manifest !== undefined,
+});
+
 export type LaneConfigSnapshot = {
   config_version: number;
   pinned_repo: string | null;
@@ -179,6 +206,31 @@ export class LaneConfig {
   removeTarget(orgId: string, projectId: string, key: string): boolean {
     validateTargetKey(key);
     return this.#o.attest.removePublishTarget(orgId, projectId, key);
+  }
+
+  /** Sets (or replaces) a co-signing key of a project. Bumps the config version. */
+  setCosignKey(orgId: string, projectId: string, raw: unknown): CosignKeyView {
+    try {
+      return cosignView(
+        this.#o.attest.setCosignKey(orgId, projectId, raw, (this.#o.now ?? Date.now)()),
+      );
+    } catch (e) {
+      if (e instanceof CosignConfigError) throw new LaneConfigError(e.message);
+      throw e;
+    }
+  }
+
+  removeCosignKey(orgId: string, projectId: string, name: string): boolean {
+    return this.#o.attest.removeCosignKey(orgId, projectId, name);
+  }
+
+  listCosignKeys(orgId: string, projectId: string): CosignKeyView[] {
+    try {
+      return this.#o.attest.cosignKeys(orgId, projectId).map(cosignView);
+    } catch (e) {
+      if (e instanceof CosignConfigError) throw new LaneConfigError(e.message);
+      throw e;
+    }
   }
 
   async snapshot(orgId: string, projectId: string): Promise<LaneConfigSnapshot> {

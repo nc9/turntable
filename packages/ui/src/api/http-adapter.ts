@@ -28,6 +28,7 @@ import type {
   LaneAction,
   LaneConfig,
   LaneKey,
+  LaneCosignKey,
   LaneSecretStatus,
   StepUpChallenge,
   Whoami,
@@ -272,6 +273,8 @@ const LANE_PATHS: Record<LaneAction, string> = {
   release_publish_target_delete: "/release-lane/publish-targets/delete",
   release_set_project_signing: "/release-lane/project-signing",
   release_secret_set: "/release-lane/secrets",
+  release_cosign_key_set: "/release-lane/cosign-keys",
+  release_cosign_key_remove: "/release-lane/cosign-keys/delete",
 };
 
 export function createHttpApi(options: HttpApiOptions): TurntableApi {
@@ -724,6 +727,35 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         { org: org(), target_org: targetOrg },
       );
       return { keyid: w.keyid, publicKeyPem: w.public_key_pem, createdAt: w.created_at };
+    },
+
+    async laneCosignKeys({ targetOrg, targetProject }) {
+      const w = await call<{
+        keys: {
+          name: string;
+          key_id: string;
+          spki_sha256: string;
+          signs: string;
+          output_name: string;
+          format: string;
+          manifest: boolean;
+        }[];
+        config_version: number;
+      }>("GET", "/release-lane/cosign-keys", {
+        org: org(),
+        target_org: targetOrg,
+        target_project: targetProject,
+      });
+      const keys: LaneCosignKey[] = w.keys.map((k) => ({
+        name: k.name,
+        keyId: k.key_id,
+        spkiSha256: k.spki_sha256,
+        signs: k.signs,
+        outputName: k.output_name,
+        format: k.format,
+        manifest: k.manifest,
+      }));
+      return { keys, configVersion: w.config_version };
     },
 
     async laneSecretStatus({ targetOrg, targetProject, name }): Promise<LaneSecretStatus> {

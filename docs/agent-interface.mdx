@@ -89,6 +89,9 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `get_action_pins` | `GET /api/v1/action-pins` | yes |  | read | reader | token | The remembered tag-to-sha pins of a project, with any unaccepted tag moves. |
 | `get_artifacts` | `GET /api/v1/runs/{run_id}/artifacts` | yes |  | read | reader | token | The artifacts a run recorded, with their provenance. |
 | `check_artifact_consumption` | `POST /api/v1/artifacts/check-consumption` | yes |  | read | reader | token | Whether a run may consume artifacts of other runs, and as what. |
+| `get_artifact` | `GET /api/v1/runs/{run_id}/artifacts/{name}` | no |  | read | reader | token | Download one stored artifact of a run as it was uploaded (a zip, or one raw file). |
+| `get_artifact_file` | `GET /api/v1/runs/{run_id}/artifacts/{name}/files/{path}` | no |  | read | reader | token | Download ONE file out of a stored artifact zip of a run. |
+| `get_artifact_files` | `GET /api/v1/runs/{run_id}/artifacts/{name}/files` | yes |  | read | reader | token | The files inside one stored artifact of a run, by path and size. |
 | `github_app_status` | `GET /api/v1/github/app` | yes |  | read | release_operator | token | Whether this org owns the GitHub App, and its own installations and bound repos. |
 | `instance_github_app_status` | none | no |  | read | admin | instance | The GitHub App's state on this instance, for the instance administrator. |
 | `get_quotas` | `GET /api/v1/quotas` | yes |  | read | reader | token | The org's quotas, what is used against each, and why work is held. |
@@ -146,8 +149,9 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `incident_status` | `GET /api/v1/incident` | yes | `turntable incident status` | read | reader | token | Whether the scope is frozen, why, and which secrets still need rotation. |
 | `secret_usage` | `GET /api/v1/secrets/usage` | yes |  | read | release_operator | token | Where a secret was used in a time range: runs, jobs, attempts and destinations. |
 | `sandbox_usage` | `GET /api/v1/usage/sandbox` | yes |  | read | reader | token | Exact sandbox time per UTC day: from the provider's create to its confirmed destroy. |
-| `request_release` | `POST /api/v1/release-requests` | no |  | write | release_operator | token | Ask the release lane to sign the artifacts of a tagged run. |
+| `request_release` | `POST /api/v1/release-requests` | no |  | write | operator | token | Ask the release lane to sign the artifacts of a tagged run (or dry-run it). |
 | `get_release_request` | `GET /api/v1/release-requests/{id}` | yes |  | read | release_operator | token | The state of a release request: pending, signed, or refused with a reason. |
+| `get_release_approval` | `GET /api/v1/runs/{run_id}/release-approval` | no |  | read | release_operator | token | The release approval a run holds: the manifest digest approved and the lane config version. |
 | `start_installation_claim` | `POST /api/v1/github/installation-claims` | no |  | write | release_operator | token | Get the link that connects a GitHub installation to this org. |
 | `get_installation_claim` | `GET /api/v1/github/installation-claims/{claim_id}` | no |  | read | release_operator | token | Read where an installation claim of this org stands. |
 | `bind_installation` | `POST /api/v1/github/installations/bind` | no |  | write | admin | token | Connect a GitHub App installation you own to this org. |
@@ -158,6 +162,9 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `session_step_up_challenge` | `POST /api/v1/session/step-up` | no |  | write | viewer | token | Start a passkey step-up for one sensitive action from a web session. |
 | `release_key_show` | `GET /api/v1/release-lane/keys/{name}` | no |  | read | owner | token | The public half of an org's release signing key, for the operator org's owner. |
 | `release_secret_status` | `GET /api/v1/release-lane/secrets` | no |  | read | owner | token | Whether a lane secret was set for a project, when and by whom. Never the value. |
+| `release_cosign_key_set` | `POST /api/v1/release-lane/cosign-keys` | no |  | write | owner | token | Set a project's co-signing key (a client-pinned public key), in the release lane. |
+| `release_cosign_key_remove` | `POST /api/v1/release-lane/cosign-keys/delete` | no |  | destructive | owner | token | Remove a project's co-signing key, in the release lane. |
+| `release_cosign_key_list` | `GET /api/v1/release-lane/cosign-keys` | no |  | read | owner | token | A project's co-signing keys, by fingerprint. |
 | `release_pin_repo` | `POST /api/v1/release-lane/pin-repo` | no |  | write | owner | token | Pin the repository a project releases from, in the release lane. |
 | `release_publish_target_set` | `POST /api/v1/release-lane/publish-targets` | no |  | write | owner | token | Declare or replace a publish target of a project, in the release lane. |
 | `release_publish_target_list` | `GET /api/v1/release-lane/publish-targets` | no |  | read | owner | token | A project's release lane configuration: the pin and each publish target. |

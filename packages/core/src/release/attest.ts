@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { BUSY_TIMEOUT_MS, enableWal } from "../db/sqlite-wal";
+import { checkCosignSet, parseCosignKey, type CosignKey } from "./cosign";
 import { parseTarget } from "./publish/config";
 import type { PublishTarget } from "./publish/types";
 
@@ -73,6 +74,22 @@ export class AttestationStore {
       "CREATE TABLE IF NOT EXISTS lane_config (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)",
     );
     this.#db.run("INSERT OR IGNORE INTO lane_config VALUES (1, 0)");
+    // Co-signing keys (#544): public material only, set by the operator in this file. Neither a
+    // pull request nor the main process can touch it, and the main process never reads it.
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS cosign_keys (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT NOT NULL,
+         config TEXT NOT NULL, set_at INTEGER NOT NULL, PRIMARY KEY (org_id, project_id, name))`,
+    );
+    // The co-signatures the lane verified for a run, kept so a later publish (finalize) attaches
+    // exactly those. Written only after verification.
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS verified_cosignatures (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL, name TEXT NOT NULL,
+         output_name TEXT NOT NULL, key_id TEXT NOT NULL, signs TEXT NOT NULL,
+         signature_b64 TEXT NOT NULL, verified_at INTEGER NOT NULL,
+         PRIMARY KEY (org_id, project_id, run_id, name))`,
+    );
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS pinned_repos (
          org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL,
@@ -396,6 +413,98 @@ export class AttestationStore {
   configChangedSince(id: { orgId: string; projectId: string; runId: string }): boolean {
     const a = this.approvedRelease(id);
     return a !== undefined && a.configVersion !== this.configVersion();
+  }
+
+  /** Sets (or replaces) one co-signing key. Validated here; a set that repeats a name, signed file or output name is refused. */
+  setCosignKey(orgId: string, projectId: string, raw: unknown, now: number): CosignKey {
+    const key = parseCosignKey(raw);
+    checkCosignSet([...this.cosignKeys(orgId, projectId).filter((k) => k.name !== key.name), key]);
+    this.#db
+      .query(
+        "INSERT INTO cosign_keys VALUES (?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, name) DO UPDATE SET config = excluded.config, set_at = excluded.set_at",
+      )
+      .run(orgId, projectId, key.name, JSON.stringify(key), now);
+    // A change of the co-signing requirement is a change of the lane's configuration: an approval
+    // given before it must be given again (#544).
+    this.bumpConfigVersion();
+    return key;
+  }
+
+  removeCosignKey(orgId: string, projectId: string, name: string): boolean {
+    const gone =
+      this.#db
+        .query("DELETE FROM cosign_keys WHERE org_id = ? AND project_id = ? AND name = ?")
+        .run(orgId, projectId, name).changes > 0;
+    if (gone) this.bumpConfigVersion();
+    return gone;
+  }
+
+  /**
+   * The configured co-signing keys, validated again as read. An unreadable row throws: a release
+   * that needs a co-signature must never go through because its requirement could not be read.
+   */
+  cosignKeys(orgId: string, projectId: string): CosignKey[] {
+    return this.#db
+      .query<{ config: string }, [string, string]>(
+        "SELECT config FROM cosign_keys WHERE org_id = ? AND project_id = ? ORDER BY name",
+      )
+      .all(orgId, projectId)
+      .map((r) => parseCosignKey(JSON.parse(r.config)));
+  }
+
+  saveVerifiedCosignatures(
+    id: { orgId: string; projectId: string; runId: string },
+    rows: readonly {
+      name: string;
+      outputName: string;
+      keyId: string;
+      signs: string;
+      signature: Uint8Array;
+    }[],
+    now: number,
+  ): void {
+    this.#db
+      .query("DELETE FROM verified_cosignatures WHERE org_id = ? AND project_id = ? AND run_id = ?")
+      .run(id.orgId, id.projectId, id.runId);
+    for (const r of rows) {
+      this.#db
+        .query("INSERT INTO verified_cosignatures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(
+          id.orgId,
+          id.projectId,
+          id.runId,
+          r.name,
+          r.outputName,
+          r.keyId,
+          r.signs,
+          Buffer.from(r.signature).toString("base64"),
+          now,
+        );
+    }
+  }
+
+  verifiedCosignatures(id: { orgId: string; projectId: string; runId: string }): {
+    name: string;
+    outputName: string;
+    keyId: string;
+    signs: string;
+    signature: Uint8Array;
+  }[] {
+    return this.#db
+      .query<
+        { name: string; output_name: string; key_id: string; signs: string; signature_b64: string },
+        [string, string, string]
+      >(
+        "SELECT name, output_name, key_id, signs, signature_b64 FROM verified_cosignatures WHERE org_id = ? AND project_id = ? AND run_id = ? ORDER BY name",
+      )
+      .all(id.orgId, id.projectId, id.runId)
+      .map((r) => ({
+        name: r.name,
+        outputName: r.output_name,
+        keyId: r.key_id,
+        signs: r.signs,
+        signature: new Uint8Array(Buffer.from(r.signature_b64, "base64")),
+      }));
   }
 
   close(): void {

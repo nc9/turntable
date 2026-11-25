@@ -3,7 +3,7 @@
 // value is held in this component only until the call is made, then cleared, never shown again.
 import { useState, type ReactNode } from "react";
 import { getBackend } from "@/api";
-import type { LaneAction, LaneConfig, LaneKey, LaneSecretStatus } from "@/api/types";
+import type { LaneAction, LaneConfig, LaneCosignKey, LaneKey, LaneSecretStatus } from "@/api/types";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useWhoami } from "@/lib/directory";
 import {
   canConfigureLane,
+  cosignKeyInput,
   fingerprintOf,
   runLaneWrite,
   signingInput,
@@ -228,13 +229,14 @@ const KINDS = ["npm", "github-release", "oci-image"] as const;
 const KIND_FIELDS: Record<(typeof KINDS)[number], [string, string][]> = {
   npm: [
     ["package", "Package name"],
-    ["artifact", "Tarball artifact"],
+    ["artifact", "Artifact holding the tarball (its single .tgz is published)"],
     ["secret", "Lane secret name"],
     ["tag", "dist-tag (default latest)"],
     ["access", "Access (public or restricted)"],
   ],
   "github-release": [
-    ["assets", "Assets (comma separated)"],
+    ["asset_artifacts", "Artifacts whose every file is attached (comma separated)"],
+    ["assets", "Individual files to attach (comma separated)"],
     ["provenance_asset", "Provenance asset (or none)"],
   ],
   "oci-image": [
@@ -358,6 +360,117 @@ function PublishTargets() {
                   acceptLongLived: accept,
                 }),
                 (o) => `Saved ${String(o.key)} (lane config version ${String(o.config_version)}).`,
+              )
+              .then((o) => (o ? load() : undefined))
+          }
+        >
+          {CONFIRM}
+        </Button>
+      </div>
+      <Outcome error={w.error} notice={w.notice} />
+    </Section>
+  );
+}
+
+function CosignKeys() {
+  const { api } = getBackend();
+  const w = useLaneWrite();
+  const [org, setOrg] = useState("");
+  const [project, setProject] = useState("");
+  const [keys, setKeys] = useState<LaneCosignKey[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [pem, setPem] = useState("");
+  const [signs, setSigns] = useState("manifest.json");
+  const [outputName, setOutputName] = useState("manifest.json.sig");
+  const [manifest, setManifest] = useState(true);
+  const load = () => {
+    setLoadError(null);
+    api.laneCosignKeys({ targetOrg: org.trim(), targetProject: project.trim() }).then(
+      (r) => setKeys(r.keys),
+      (e: unknown) => {
+        setKeys(null);
+        setLoadError(e instanceof Error ? e.message : "Could not read the co-signing keys.");
+      },
+    );
+  };
+  return (
+    <Section
+      title="Co-signing keys"
+      hint="The public key your clients pin. A release is signed and published only with a valid co-signature by it, made off the instance. Public keys only; any change needs the release approved again."
+    >
+      <Target org={org} project={project} setOrg={setOrg} setProject={setProject} />
+      <div>
+        <Button size="sm" variant="secondary" disabled={!org || !project} onClick={load}>
+          Load keys
+        </Button>
+      </div>
+      <Outcome error={loadError} notice={null} />
+      {keys ? (
+        <ul className="text-xs">
+          {keys.length === 0 ? <li>No co-signing key is set.</li> : null}
+          {keys.map((k) => (
+            <li key={k.name} className="mt-1 flex items-center gap-2">
+              <span className="font-mono">{k.name}</span> key id{" "}
+              <span className="font-mono">{k.keyId}</span>, signs {k.signs} as {k.outputName}
+              {k.manifest ? ", and every binary it lists" : ""}
+              <Button
+                size="xs"
+                variant="destructive"
+                disabled={w.busy}
+                onClick={() =>
+                  void w
+                    .run(
+                      "release_cosign_key_remove",
+                      { target_org: org.trim(), target_project: project.trim(), name: k.name },
+                      () => `Removed ${k.name}.`,
+                    )
+                    .then(() => load())
+                }
+              >
+                Remove
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Text label="Key name" value={name} onChange={setName} placeholder="pinned" />
+        <Text label="File it signs" value={signs} onChange={setSigns} />
+        <Text label="Signature asset name" value={outputName} onChange={setOutputName} />
+      </div>
+      <label className={field}>
+        Public key (PEM, ECDSA P-256)
+        <textarea
+          className="min-h-24 rounded-md border border-line-strong bg-surface p-2 font-mono text-xs text-foreground"
+          value={pem}
+          onChange={(e) => setPem(e.target.value)}
+          spellCheck={false}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-xs">
+        <input type="checkbox" checked={manifest} onChange={(e) => setManifest(e.target.checked)} />
+        The signed file is a manifest of binaries (each binary is co-signed too)
+      </label>
+      <div>
+        <Button
+          size="sm"
+          disabled={w.busy || !org || !project || !name || !pem || !signs || !outputName}
+          onClick={() =>
+            void w
+              .run(
+                "release_cosign_key_set",
+                cosignKeyInput({
+                  targetOrg: org,
+                  targetProject: project,
+                  name,
+                  publicKeyPem: pem,
+                  signs,
+                  outputName,
+                  manifestBinaries: manifest,
+                }),
+                (o) =>
+                  `Saved ${String(o.name)}, key id ${String(o.key_id)} (lane config version ${String(o.config_version)}).`,
               )
               .then((o) => (o ? load() : undefined))
           }
@@ -563,6 +676,7 @@ export function ReleaseLanePage() {
       <PinRepo />
       <SigningKey />
       <PublishTargets />
+      <CosignKeys />
       <ProjectSigning />
       <Secret />
     </div>

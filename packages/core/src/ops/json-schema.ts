@@ -20,4 +20,7 @@ function toSchema(schema: z.ZodType, io: "input" | "output"): JsonSchema {
 }
 
 export const inputJsonSchema = (op: Op): JsonSchema => toSchema(op.input, "input");
-export const outputJsonSchema = (op: Op): JsonSchema => toSchema(op.output, "output");
+export const outputJsonSchema = (op: Op): JsonSchema =>
+  op.download
+    ? { type: "string", format: "binary", description: "The bytes, not JSON." }
+    : toSchema(op.output, "output");

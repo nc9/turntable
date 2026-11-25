@@ -40,6 +40,9 @@ export const CONFIG_ACTIONS = [
   "key_init",
   "key_public",
   "signing_changed",
+  "cosign_set",
+  "cosign_remove",
+  "cosign_list",
 ] as const;
 /** Actions about an org's signing keys: they name an org and no project. */
 const ORG_ACTIONS: readonly string[] = ["key_init", "key_public"];
@@ -224,6 +227,15 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
         }
         case "target_delete":
           return done({ removed: cfg.lane.removeTarget(orgId, projectId!, String(a.key ?? "")) });
+        case "cosign_set":
+          // Public material only; the lane validates it again and bumps its config version.
+          return done({ key: cfg.lane.setCosignKey(orgId, projectId!, a.key) });
+        case "cosign_remove":
+          return done({
+            removed: cfg.lane.removeCosignKey(orgId, projectId!, String(a.name ?? "")),
+          });
+        case "cosign_list":
+          return done({ keys: cfg.lane.listCosignKeys(orgId, projectId!) });
         case "secret_set":
           return done(
             await cfg.lane.setSecret(

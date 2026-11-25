@@ -220,6 +220,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     laneWrite: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     laneConfig: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     laneKey: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    laneCosignKeys: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     laneSecretStatus: () => Promise.reject(new Error("The demo has no release lane to configure.")),
     rotateWebhookSecret: () => Promise.reject(new Error("The demo has no GitHub App.")),
     replaceAppPrivateKey: () => Promise.reject(new Error("The demo has no GitHub App.")),

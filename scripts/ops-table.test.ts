@@ -76,6 +76,18 @@ const MCP_OFF: Record<string, string> = {
     "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
   release_key_show:
     "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
+  get_artifact:
+    "REST only: it streams bytes, which an MCP tool result cannot carry (get_artifact_files lists them)",
+  get_artifact_file:
+    "REST only: it streams bytes, which an MCP tool result cannot carry (get_artifact_files lists them)",
+  get_release_approval:
+    "REST only: it is what a client that co-signs reads to compare its own hash with the approved digest, and no agent should be the one that signs",
+  release_cosign_key_set:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_cosign_key_remove:
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_cosign_key_list:
+    "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
   release_secret_status:
     "web only: it shows when and by whom a lane secret was set, never the value, to the operator org owner in the browser",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",

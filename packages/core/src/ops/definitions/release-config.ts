@@ -146,7 +146,11 @@ const targetFields = {
     .optional()
     .describe("npm and github-release; an image is always compat."),
   package: z.string().max(214).optional().describe("npm: the package name."),
-  artifact: z.string().max(200).optional().describe("npm: the tarball artifact."),
+  artifact: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("npm: the ARTIFACT holding the tarball; the lane publishes its single .tgz file."),
   secret: z
     .string()
     .max(128)
@@ -156,7 +160,18 @@ const targetFields = {
     ),
   tag: z.string().max(64).optional().describe("npm: the dist-tag (default latest)."),
   access: z.enum(["public", "restricted"]).optional().describe("npm: access."),
-  assets: z.array(z.string().max(200)).max(50).optional().describe("github-release: the assets."),
+  assets: z
+    .array(z.string().max(200))
+    .max(50)
+    .optional()
+    .describe("github-release: individual files to attach, by their path in the release."),
+  asset_artifacts: z
+    .array(z.string().max(200))
+    .max(20)
+    .optional()
+    .describe(
+      "github-release: artifact names (upload-artifact names) whose EVERY file is attached under its own basename. The name stays the same across releases.",
+    ),
   provenance_asset: z
     .string()
     .max(200)
@@ -688,5 +703,140 @@ export const releaseSecretStatus = defineOp({
       };
     }
     return { set: false, set_at: null, set_by: null };
+  },
+});
+
+const cosignOutput = z.object({
+  name: z.string(),
+  key_id: z
+    .string()
+    .describe("First 16 hex of sha256 over the key's SPKI DER: what a client pins."),
+  spki_sha256: z.string().describe("The full sha256 over the key's SPKI DER."),
+  signs: z.string(),
+  output_name: z.string(),
+  format: z.string(),
+  manifest: z.boolean(),
+});
+
+const cosignName = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,39}$/)
+  .describe("A short lower-case name for the co-signing key.");
+
+export const releaseCosignKeySet = defineOp({
+  name: "release_cosign_key_set",
+  summary: "Set a project's co-signing key (a client-pinned public key), in the release lane.",
+  description:
+    "Declares the PUBLIC key a client pins, in the release lane's own file: the release lane " +
+    "refuses to sign or publish a release unless the request carries a valid co-signature by it " +
+    "over `signs` (a file in the release, by its path in the artifact). With " +
+    "`manifest_binaries: true` the signed file is a JSON manifest `{ version, signing_key_id, " +
+    "binaries: { <platform>: { filename, sha256 } } }` and the key must also sign every listed " +
+    "binary (`<filename>.sig`). Only a public key is accepted; a private key is refused. Replaces " +
+    "a key of the same name. Bumps the lane's config version, so a release approved earlier must " +
+    "be approved again. " +
+    stepUpNote +
+    "Audited with the key's fingerprint and name, never the key. Refused when the lane is not " +
+    "configured. Not an MCP tool.",
+  input: z.object({
+    ...scopeFields,
+    name: cosignName,
+    public_key_pem: z.string().min(1).max(4096).describe("The public key, SPKI PEM (ECDSA P-256)."),
+    signs: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("The file in the release the key signs, by its path in the artifact."),
+    output_name: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe("The release asset name of the signature (a plain name)."),
+    format: z.string().max(64).default("detached-der-p256-sha256"),
+    manifest_binaries: z
+      .boolean()
+      .optional()
+      .describe("The signed file is a manifest with a `binaries` map, each binary co-signed too."),
+  }),
+  output: cosignOutput.extend({ config_version: version }),
+  effect: "write",
+  auth: { type: "token", minRole: "owner" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/release-lane/cosign-keys" },
+  mcp: false,
+  outsideTransaction: true,
+  logOmitFields: ["public_key_pem"],
+  auditDetail: (o) => ({ key_id: o.key_id, spki_sha256: o.spki_sha256 }),
+  async handler(ctx, i) {
+    requireStepUp(ctx, "release_cosign_key_set");
+    // A private key never travels: refused here before anything is sent. Everything else (the
+    // key's type, the format, the names) is validated by the lane, which stores it.
+    if (i.public_key_pem.includes("PRIVATE"))
+      throw new OpError("invalid_input", "only a public key may be set");
+    const scope = await resolveLaneTarget(ctx.db, i);
+    const r = await toLane(ctx, "cosign_set", scope, {
+      key: {
+        name: i.name,
+        public_key_pem: i.public_key_pem,
+        signs: i.signs,
+        output_name: i.output_name,
+        format: i.format,
+        ...(i.manifest_binaries ? { manifest: { shape: "binaries-map" } } : {}),
+      },
+    });
+    const k = cosignOutput.safeParse(r.key);
+    if (!k.success) throw unexpected();
+    return { ...k.data, config_version: Number(r.config_version) };
+  },
+});
+
+export const releaseCosignKeyRemove = defineOp({
+  name: "release_cosign_key_remove",
+  summary: "Remove a project's co-signing key, in the release lane.",
+  description:
+    "Removes one co-signing key of a project from the release lane's own file. Bumps the lane's " +
+    "config version (a release approved earlier must be approved again). " +
+    stepUpNote +
+    "Audited with the key's name. Refused when the lane is not configured. Not an MCP tool.",
+  input: z.object({ ...scopeFields, name: cosignName }),
+  output: z.object({ removed: z.boolean(), config_version: version }),
+  effect: "destructive",
+  auth: { type: "token", minRole: "owner" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/release-lane/cosign-keys/delete" },
+  mcp: false,
+  outsideTransaction: true,
+  async handler(ctx, i) {
+    requireStepUp(ctx, "release_cosign_key_remove");
+    const scope = await resolveLaneTarget(ctx.db, i);
+    const r = await toLane(ctx, "cosign_remove", scope, { name: i.name });
+    return { removed: r.removed === true, config_version: Number(r.config_version) };
+  },
+});
+
+export const releaseCosignKeyList = defineOp({
+  name: "release_cosign_key_list",
+  summary: "A project's co-signing keys, by fingerprint.",
+  description:
+    "Returns each co-signing key of a project as the release lane's file holds it: name, key id, " +
+    "SPKI fingerprint, what it signs and the signature's asset name. Public information only, no " +
+    "key material. The project must belong to `target_org`. Read-only, no step-up. Refused when " +
+    "the lane is not configured. Not an MCP tool.",
+  input: z.object({ ...scopeFields }),
+  output: z.object({ keys: z.array(cosignOutput), config_version: version }),
+  effect: "read",
+  auth: { type: "token", minRole: "owner" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/release-lane/cosign-keys" },
+  mcp: false,
+  async handler(ctx, i) {
+    const scope = await resolveLaneTarget(ctx.db, i);
+    const r = await toLane(ctx, "cosign_list", scope, {});
+    const keys = z.array(cosignOutput).safeParse(r.keys);
+    if (!keys.success) throw unexpected();
+    return { keys: keys.data, config_version: Number(r.config_version) };
   },
 });

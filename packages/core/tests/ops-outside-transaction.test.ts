@@ -9,6 +9,8 @@ const ALLOWED_OUTSIDE_TRANSACTION = [
   "instance_replace_app_private_key", // calls GET /app on GitHub to verify the new key before the swap, which must not hold the write lock; the seal and the swap are one db.transaction after the verification, and the audit row follows in its own short transaction
   "instance_rotate_webhook_secret", // PATCHes the new secret to GitHub (/app/hook/config), which must not hold the write lock; the seal commits first and a GitHub refusal restores the old secret and expiry, and the audit row follows in its own short transaction
   "onboard_repos", // asks GitHub for the installation's repos first; all writes are one inner transaction (all or nothing)
+  "release_cosign_key_remove", // same: a lane channel round trip
+  "release_cosign_key_set", // same: a lane channel round trip; the lane's own file changes, not this database
   "release_init_key", // same: a lane channel round trip; the key is generated and sealed in the lane's own directory, not in this database
   "release_pin_repo", // a message to the release lane over its channel must not hold the DB write lock; the lane's own file is what changes, not this database
   "release_publish_target_delete", // same: a lane channel round trip

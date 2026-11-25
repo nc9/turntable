@@ -21,7 +21,13 @@ import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
-import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
+import {
+  checkArtifactConsumption,
+  getArtifact,
+  getArtifactFile,
+  getArtifactFiles,
+  listArtifacts,
+} from "./definitions/artifacts";
 import {
   instanceDoctorOp,
   instanceDrainOp,
@@ -70,7 +76,11 @@ import {
   runDefaultBranch,
 } from "./definitions/onboarding-repos";
 import { signRelease } from "./definitions/sign-release";
-import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
+import {
+  getReleaseApprovalOp,
+  getReleaseRequestOp,
+  requestReleaseOp,
+} from "./definitions/release-requests";
 import { getInstallationClaimOp, startInstallationClaim } from "./definitions/installation-claim";
 import {
   bindInstallationOp,
@@ -85,6 +95,9 @@ import { sessionStepUpChallenge } from "./definitions/session-step-up";
 import {
   releaseKeyShow,
   releaseSecretStatus,
+  releaseCosignKeySet,
+  releaseCosignKeyRemove,
+  releaseCosignKeyList,
   releasePinRepo,
   releasePublishTargetDelete,
   releasePublishTargetList,
@@ -174,6 +187,9 @@ export const registry = createRegistry([
   listActionPinsOp,
   listArtifacts,
   checkArtifactConsumption,
+  getArtifact,
+  getArtifactFile,
+  getArtifactFiles,
   githubAppStatus,
   instanceGithubAppStatus,
   getQuotas,
@@ -233,6 +249,7 @@ export const registry = createRegistry([
   sandboxUsageOp,
   requestReleaseOp,
   getReleaseRequestOp,
+  getReleaseApprovalOp,
   startInstallationClaim,
   getInstallationClaimOp,
   bindInstallationOp,
@@ -243,6 +260,9 @@ export const registry = createRegistry([
   sessionStepUpChallenge,
   releaseKeyShow,
   releaseSecretStatus,
+  releaseCosignKeySet,
+  releaseCosignKeyRemove,
+  releaseCosignKeyList,
   releasePinRepo,
   releasePublishTargetSet,
   releasePublishTargetList,

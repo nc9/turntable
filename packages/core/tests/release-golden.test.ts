@@ -813,9 +813,10 @@ async function releaseAndVerify(): Promise<void> {
 
   // strict publish: npm holds the verified tarball's integrity; GitHub holds a published
   // release with the binary and the lane's provenance
+  // the GitHub release first, then npm (the explicit order, whatever the keys are called)
   expect(done.result.published).toMatchObject([
-    { target: "npm", state: "published" },
     { target: "release", state: "published" },
+    { target: "npm", state: "published" },
   ]);
   expect(w.net.npm.get("1.0.0")).toBe(
     `sha512-${createHash("sha512").update(w.tarball).digest("base64")}`,
@@ -1225,8 +1226,8 @@ describe("the approval binds the lane's configuration version (#541)", () => {
     }
     const refused = await w.lane.finalize({ ...w.scope, runId: w.runId });
     expect(refused.map((r) => [r.target, r.state, r.reason])).toEqual([
-      ["npm", "refused", CONFIG_CHANGED],
       ["release", "refused", CONFIG_CHANGED],
+      ["npm", "refused", CONFIG_CHANGED],
     ]);
     expect(w.net.npm.size).toBe(0);
     expect(w.net.release).toBeUndefined();

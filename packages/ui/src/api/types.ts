@@ -619,7 +619,9 @@ export type LaneAction =
   | "release_publish_target_set"
   | "release_publish_target_delete"
   | "release_set_project_signing"
-  | "release_secret_set";
+  | "release_secret_set"
+  | "release_cosign_key_set"
+  | "release_cosign_key_remove";
 
 /** A publish target as the lane's file holds it: never a secret value. */
 export type LaneTarget = {
@@ -634,6 +636,17 @@ export type LaneConfig = {
   pinnedRepo: string | null;
   configVersion: number;
   targets: LaneTarget[];
+};
+
+/** A project's co-signing key as the lane reports it: fingerprints only, never key material. */
+export type LaneCosignKey = {
+  name: string;
+  keyId: string;
+  spkiSha256: string;
+  signs: string;
+  outputName: string;
+  format: string;
+  manifest: boolean;
 };
 
 /** The public half of a release signing key. */

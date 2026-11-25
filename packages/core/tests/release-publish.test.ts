@@ -666,11 +666,11 @@ describe("what governs every target", () => {
     expect(reqs).toEqual([]);
   });
 
-  test("targets run in key order and each is recorded and audited", async () => {
+  test("targets run in the explicit order (release, then npm) and each is recorded and audited", async () => {
     declare("release", GH);
     declare("npm", NPM);
     const { published } = await run();
-    expect(published.map((p) => p.target)).toEqual(["npm", "release"]);
+    expect(published.map((p) => p.target)).toEqual(["release", "npm"]);
     const outcomes = (await audits()).map((r) => r.outcome);
     expect(outcomes).toContain("publish:npm:published");
     expect(outcomes).toContain("publish:release:published");

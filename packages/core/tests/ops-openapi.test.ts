@@ -42,7 +42,15 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
       expect(["get", "post", "delete"]).toContain(method);
       expect(ids.has(op.operationId)).toBe(false);
       ids.add(op.operationId);
-      expect(op.responses["200"].content["application/json"].schema.type).toBe("object");
+      // A download op (artifact bytes) answers an octet stream, not JSON.
+      if (registry.get(op.operationId)?.download) {
+        expect(op.responses["200"].content["application/octet-stream"].schema).toMatchObject({
+          type: "string",
+          format: "binary",
+        });
+      } else {
+        expect(op.responses["200"].content["application/json"].schema.type).toBe("object");
+      }
       // Signature ops take a signed statement, and account ops a web session cookie: no bearer token.
       expect(op.security).toEqual(
         ["signature", "account"].includes(registry.get(op.operationId)?.auth.type ?? "")
@@ -109,7 +117,10 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "approve_run_challenge",
     "create_api_token",
     "enrolment_challenge",
+    "get_artifact",
+    "get_artifact_file",
     "get_installation_claim",
+    "get_release_approval",
     "incident_unfreeze",
     "invite_member",
     "key_policy_challenge",

@@ -334,6 +334,9 @@ describe("not over MCP, and not without a lane", () => {
     "release_set_project_signing",
     "release_key_show",
     "release_secret_status",
+    "release_cosign_key_set",
+    "release_cosign_key_remove",
+    "release_cosign_key_list",
   ];
 
   test("every one is off MCP, and neither an instance token nor a session is a credential there", async () => {

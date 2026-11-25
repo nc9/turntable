@@ -117,6 +117,26 @@ export class SigningService {
     this.#o = o;
   }
 
+  /**
+   * A dry run's question: is the project's signing key there to sign with? Reads the key's public
+   * half only; signs nothing, reads and spends no approval.
+   */
+  async checkKey(scope: Required<Scope>): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const project = await getProjectSigning(this.#o.db, scope);
+    if (!project.signingKey) return { ok: false, reason: "no signing key is set for the project" };
+    const key = parseKeyRef(project.signingKey);
+    const signer = key ? this.#o.signers[key.backend] : undefined;
+    if (!key || !signer)
+      return { ok: false, reason: "the lane has no backend for the signing key" };
+    const keyRef = key.backend === "builtin" ? builtinKeyRef(scope.orgId, key.keyRef) : key.keyRef;
+    try {
+      await signer.publicKey(keyRef);
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "the lane does not hold the project's signing key" };
+    }
+  }
+
   async signRelease(scope: Required<Scope>, req: SignRequest): Promise<SignOutcome> {
     const { db } = this.#o;
     const deny = async (

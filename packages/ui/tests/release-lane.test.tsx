@@ -9,6 +9,7 @@ import type { LaneAction, StepUpChallenge, StepUpProof } from "../src/api/types"
 import { SecretFormView, KeyView } from "../src/features/settings/release-lane-page";
 import {
   canConfigureLane,
+  cosignKeyInput,
   fingerprintOf,
   listOf,
   runLaneWrite,
@@ -175,6 +176,44 @@ describe("form helpers", () => {
   });
 });
 
+describe("co-signing keys", () => {
+  test("the form's input is exactly what the op takes, public key only", () => {
+    expect(
+      cosignKeyInput({
+        targetOrg: " acme ",
+        targetProject: "web",
+        name: "pinned",
+        publicKeyPem: " PEM ",
+        signs: "manifest.json",
+        outputName: "manifest.json.sig",
+        manifestBinaries: true,
+      }),
+    ).toEqual({
+      target_org: "acme",
+      target_project: "web",
+      name: "pinned",
+      public_key_pem: "PEM",
+      signs: "manifest.json",
+      output_name: "manifest.json.sig",
+      format: "detached-der-p256-sha256",
+      manifest_binaries: true,
+    });
+  });
+
+  test("the github-release form carries asset_artifacts", () => {
+    expect(
+      targetInput({
+        targetOrg: "acme",
+        targetProject: "web",
+        key: "gh",
+        kind: "github-release",
+        fields: { asset_artifacts: "release-binaries, other" },
+        acceptLongLived: false,
+      }),
+    ).toMatchObject({ asset_artifacts: ["release-binaries", "other"] });
+  });
+});
+
 describe("the write-only secret form", () => {
   const view = (over: Partial<Parameters<typeof SecretFormView>[0]> = {}) =>
     renderToStaticMarkup(
@@ -286,6 +325,37 @@ describe("the wire", () => {
     expect(calls[0]!.url.searchParams.get("target_project")).toBe("web");
     const cfg = await api.laneConfig({ targetOrg: "acme", targetProject: "web" });
     expect(cfg.targets[0]).toMatchObject({ key: "npm", hasCredential: true });
+  });
+
+  test("the co-signing keys read maps to fingerprints only, and a write posts to its path", async () => {
+    const { api, calls } = make((url) =>
+      url.pathname.endsWith("/cosign-keys")
+        ? json({
+            config_version: 4,
+            keys: [
+              {
+                name: "pinned",
+                key_id: "0123456789abcdef",
+                spki_sha256: "f".repeat(64),
+                signs: "manifest.json",
+                output_name: "manifest.json.sig",
+                format: "detached-der-p256-sha256",
+                manifest: true,
+              },
+            ],
+          })
+        : json({}),
+    );
+    const r = await api.laneCosignKeys({ targetOrg: "acme", targetProject: "web" });
+    expect(r.configVersion).toBe(4);
+    expect(r.keys[0]).toMatchObject({ name: "pinned", keyId: "0123456789abcdef", manifest: true });
+    expect(JSON.stringify(r)).not.toContain("PUBLIC KEY");
+    await api.laneWrite({
+      action: "release_cosign_key_remove",
+      input: { target_org: "acme", target_project: "web", name: "pinned" },
+      stepUp: { id: "i".repeat(20), approver: "a", signature: { ...sig } },
+    });
+    expect(calls.at(-1)!.url.pathname).toBe("/api/v1/release-lane/cosign-keys/delete");
   });
 
   test("whoami carries operator_org", async () => {

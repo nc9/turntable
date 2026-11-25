@@ -79,15 +79,17 @@ turntable release publish-target set --org acme --project web --key npm \
   --accept-long-lived-token
 turntable release publish-target set --org acme --project web --key release \
   --kind github-release --assets cli-linux,cli-darwin
+turntable release publish-target set --org acme --project web --key release \
+  --kind github-release --asset-artifacts release-binaries
 turntable release publish-target list --org acme --project web
 ```
 
-- **npm** needs `--accept-long-lived-token`: npm trusted publishing does not accept self-hosted issuers, so the lane holds a long-lived granular token in the vault (release trust class, destination `registry.npmjs.org`, no environment). The lane builds the publish request from the tarball it hashed: the package name, the version and the tag must all match, private packages are refused, and an existing version is accepted only if its integrity equals ours.
-- **GitHub Releases** are created as a draft, the assets are uploaded, every asset is downloaded again and hashed, and only then is the draft published. The provenance envelope is attached as `provenance.intoto.json` unless disabled. A published release is never modified: it is accepted if its assets match, refused if not. The write credential is `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN`, held by the lane only.
+- **npm**'s `--artifact` is the ARTIFACT (an `upload-artifact` name) holding the tarball: the lane publishes the single `.tgz` file inside it and refuses an artifact with none or several. The older meaning, the tarball file's own name, still works for a strict target. (A compat target still takes the file name.) It needs `--accept-long-lived-token`: npm trusted publishing does not accept self-hosted issuers, so the lane holds a long-lived granular token in the vault (release trust class, destination `registry.npmjs.org`, no environment). The lane builds the publish request from the tarball it hashed: the package name, the version and the tag must all match, private packages are refused, and an existing version is accepted only if its integrity equals ours.
+- **GitHub Releases** list `assets` (single files, by their path in the release) and/or `asset_artifacts` (every file of each named artifact, published under its own basename: a plain name, never a path, with no collision between files, the provenance or a co-signature). They are created as a draft, the assets are uploaded, every asset is downloaded again and hashed, and only then is the draft published. The provenance envelope is attached as `provenance.intoto.json` unless disabled. A published release is never modified: it is accepted if its assets match, refused if not. The write credential is `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN`, held by the lane only.
 - A target names only artifacts the request asked for. Each target's state is stored per tag, so a partial publish resumes and a finished target is not repeated. An incident freeze stops publishing target by target.
 - Credentials are never audited or stored in results. Every outcome is audited as `publish:<key>:<state>`.
 
-Targets run in key order and a failed target does not undo a signed release.
+Targets run in a fixed order, never the key order: GitHub releases, then npm, then images. npm is published only after the GitHub release is published; if that release failed, npm is skipped (never attempted) and recorded as `skipped` with the reason `github_release_not_published`. A failed target does not undo a signed release.
 
 ### Compat mode: the job publishes, the lane holds the credential
 

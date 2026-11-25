@@ -84,7 +84,7 @@ A session cookie alone can read and make low-risk invites. For the actions below
 | --- | --- |
 | `create_api_token` | Always (the signed-in person must be an admin or owner). |
 | `invite_member` | Only for the `admin` and `owner` roles. |
-| `release_pin_repo`, `release_init_key`, `release_publish_target_set`, `release_publish_target_delete`, `release_secret_set`, `release_set_project_signing` | Only for an owner of the operator org, in that org. See [the release lane's hosted setup](/release-lane#hosted-setup-no-shell). A secret value is bound by its digest (`value_sha256`) in the challenge. |
+| `release_pin_repo`, `release_init_key`, `release_publish_target_set`, `release_publish_target_delete`, `release_secret_set`, `release_set_project_signing`, `release_cosign_key_set`, `release_cosign_key_remove` | Only for an owner of the operator org, in that org. See [the release lane's hosted setup](/release-lane#hosted-setup-no-shell). A secret value is bound by its digest (`value_sha256`) in the challenge. |
 
 Not yet covered, and still refused for a session (use a token or the instance operator): approver and enrolment changes, and loosening a setting. Approvals themselves already need a signed statement, so a session cookie never approves anything.
 

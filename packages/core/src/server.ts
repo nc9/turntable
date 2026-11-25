@@ -5,6 +5,7 @@ import type { Db } from "./db";
 import type { BackupConfig } from "./db/backup";
 import type { SettingsRuntime } from "./settings/resolve";
 import { registry } from "./ops";
+import type { ArtifactBlobs } from "./ops/define";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
 import {
@@ -165,6 +166,8 @@ export type ServeOptions = {
   webauthn?: RelyingParty;
   /** The release lane's config channel, when configured (the instance's `release_*` ops). */
   releaseConfig?: LaneConfigClient;
+  /** The artifact store's reads (the artifact download ops); absent when artifacts are off. */
+  artifactBlobs?: ArtifactBlobs;
   /** The operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
   operatorOrgSlug?: string;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
@@ -201,6 +204,7 @@ export function startServer(options: ServeOptions) {
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     releaseConfig: options.releaseConfig,
+    artifactBlobs: options.artifactBlobs,
     operatorOrgSlug: options.operatorOrgSlug,
     instanceOrgCap: options.instanceOrgCap,
     staticPollProjects: options.staticPollProjects,
