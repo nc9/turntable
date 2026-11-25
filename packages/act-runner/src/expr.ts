@@ -86,6 +86,10 @@ type Node =
   | { k: "lit"; v: Value }
   | { k: "ctx"; name: string }
   | { k: "get"; obj: Node; key: Node }
+  /** `obj.*`, only valid when a property follows (see `pluck`). */
+  | { k: "star"; obj: Node }
+  /** `obj.*.a.b`: the object filter. `a.b` is read from each element (array) or value (object). */
+  | { k: "pluck"; obj: Node; path: string[] }
   | { k: "call"; name: string; args: Node[] }
   | { k: "not"; a: Node }
   | { k: "bin"; op: string; a: Node; b: Node };
@@ -143,11 +147,18 @@ function parse(src: string): Node {
         p += 1;
         const t = toks[p];
         if (t?.t === "op" && t.v === "*") {
-          throw new ExprError("object filter", "the .* object filter is not supported");
+          p += 1;
+          n = { k: "star", obj: n };
+          if (!isOp(".")) {
+            throw new ExprError("object filter", "the .* object filter needs a property after it");
+          }
+          continue;
         }
         if (t?.t !== "id") throw new ExprError("syntax", "expected a property name after .");
         p += 1;
-        n = { k: "get", obj: n, key: { k: "lit", v: t.v } };
+        if (n.k === "star") n = { k: "pluck", obj: n.obj, path: [t.v] };
+        else if (n.k === "pluck") n = { ...n, path: [...n.path, t.v] };
+        else n = { k: "get", obj: n, key: { k: "lit", v: t.v } };
       } else if (isOp("[")) {
         p += 1;
         const key = or();
@@ -335,6 +346,23 @@ function ev(n: Node, ctx: ExprContext): Value {
       return ctx.contexts[n.name] ?? ctx.contexts[n.name.toLowerCase()] ?? null;
     case "get":
       return lookup(ev(n.obj, ctx), ev(n.key, ctx));
+    case "star":
+      throw new ExprError("object filter", "the .* object filter needs a property after it");
+    case "pluck": {
+      const src = ev(n.obj, ctx);
+      const items: Value[] = Array.isArray(src)
+        ? src
+        : typeof src === "object" && src !== null
+          ? Object.values(src)
+          : [];
+      const out: Value[] = [];
+      for (const it of items) {
+        let v: Value = it;
+        for (const k of n.path) v = lookup(v, k);
+        if (v !== null) out.push(v);
+      }
+      return out;
+    }
     case "call":
       return call(
         n.name,
@@ -402,7 +430,8 @@ export function referencedContexts(expr: string): Set<string> {
     else if (n.k === "get") {
       walk(n.obj);
       walk(n.key);
-    } else if (n.k === "call") {
+    } else if (n.k === "star" || n.k === "pluck") walk(n.obj);
+    else if (n.k === "call") {
       if (["success", "failure", "cancelled"].includes(n.name.toLowerCase())) out.add("status");
       n.args.forEach(walk);
     } else if (n.k === "not") walk(n.a);
@@ -425,6 +454,9 @@ export function hasStatusFunction(expr: string): boolean {
         return STATUS_FUNCTIONS.includes(n.name.toLowerCase()) || n.args.some(walk);
       case "get":
         return walk(n.obj) || walk(n.key);
+      case "star":
+      case "pluck":
+        return walk(n.obj);
       case "not":
         return walk(n.a);
       case "bin":

@@ -31,4 +31,5 @@ packages/core/tests/my-pending-approvals-parity.test.ts
 packages/core/tests/my-activity-feed.test.ts
 packages/core/tests/github-avatar.test.ts
 packages/core/tests/github-installer.test.ts
+packages/core/tests/checks-every-job-631.test.ts
 packages/core/tests/checks-backfill.test.ts
