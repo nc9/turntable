@@ -9,3 +9,4 @@ packages/core/tests/bootstrap-approver.test.ts
 packages/core/tests/instance-revoke-org-token.test.ts
 packages/core/tests/first-approver-passkey.test.ts
 packages/core/tests/sandbox-minutes-598.test.ts
+packages/core/tests/instance-app-secrets.test.ts

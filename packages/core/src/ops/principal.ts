@@ -63,7 +63,11 @@ export type Principal =
 
 /** What a caller presents to the dispatcher. */
 export type Credential =
-  | { kind: "bearer"; token: string }
+  /**
+   * `sessionCookie` rides with a `tti_` token ONLY (REST, for the instance step-up ops): the
+   * signed-in person whose passkey vouches for the instance administrator's call.
+   */
+  | { kind: "bearer"; token: string; sessionCookie?: string | undefined }
   /**
    * The request carries its own proof: a signed statement in the input. Only signature ops accept
    * it, and the dispatcher verifies the signature before anything else runs.

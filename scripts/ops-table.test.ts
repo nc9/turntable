@@ -93,6 +93,12 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: starting a tenant's GitHub claim is the operator's act, never an agent's",
   instance_bind_installation:
     "instance administrator ops are REST only: binding a tenant's GitHub installation is the operator's act, never an agent's",
+  instance_rotate_webhook_secret:
+    "instance administrator ops are REST only: the new webhook secret is shown once to a person with a passkey, never to an agent",
+  instance_replace_app_private_key:
+    "instance administrator ops are REST only: the App's private key is uploaded by a person with a passkey, never through an agent",
+  instance_step_up_challenge:
+    "instance administrator ops are REST only: a passkey challenge belongs to the signed-in person, never an agent",
   instance_drain:
     "instance administrator ops are REST only: pausing every tenant's scheduling for a deploy is the operator's act, never an agent's",
   instance_drain_status:
@@ -163,7 +169,8 @@ describe("what an agent is shown", () => {
     for (const op of registry.ops.filter((o) => o.secretInputFields.length > 0)) {
       expect(op.mcp).toBe(false);
       expect(tools.some((t) => t.name === op.name)).toBe(false);
-      expect(inOpenApi.has(op.name)).toBe(false);
+      // Instance administrator ops are always documented (the route, never a value).
+      if (op.auth.type !== "instance") expect(inOpenApi.has(op.name)).toBe(false);
     }
   });
 

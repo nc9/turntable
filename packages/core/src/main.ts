@@ -1135,6 +1135,7 @@ async function serve(args: string[]): Promise<void> {
         // no org token reaches either, so a hosted instance serves it too.
         doctor: doctorRun,
         auditStore,
+        ...(appAuth ? { appAuth } : {}),
         forwarded,
       })
     : undefined;

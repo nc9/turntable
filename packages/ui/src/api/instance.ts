@@ -2,6 +2,7 @@
 // (`/api/v1/instance/*`). It holds the `tti_` token and nothing else; the org client never sees it
 // and this one never sees an org token. Every refusal is thrown with the server's own message.
 import { getInstanceToken, disconnectInstance } from "@/lib/instance-auth";
+import { signWithPasskey } from "@/lib/webauthn";
 import { ApiError, mapSetting } from "./http-adapter";
 import type { OrgQuotas, Setting } from "./types";
 import type { WireError, WireQuotas, WireSetting } from "./wire";
@@ -29,6 +30,13 @@ export type CreatedProject = { org: string; project: string; id: string; name: s
 export type BackupResult = { path: string; sizeBytes: number; sha256: string };
 export type RotatedToken = { id: string; secret: string; expiresAt: number; revokedId: string };
 
+export type RotatedWebhookSecret = {
+  secret: string;
+  fingerprint: string;
+  overlapUntil: number;
+};
+export type ReplacedKey = { fingerprint: string; appId: string };
+
 export interface InstanceApi {
   whoami(): Promise<InstanceWhoami>;
   listOrgs(): Promise<InstanceOrg[]>;
@@ -43,6 +51,10 @@ export interface InstanceApi {
   }): Promise<ProjectSettings>;
   dbBackup(): Promise<BackupResult>;
   rotateToken(): Promise<RotatedToken>;
+  /** Passkey step-up, then rotate the App webhook secret. The secret is in this result only. */
+  rotateWebhookSecret(args: { overlapMinutes: number }): Promise<RotatedWebhookSecret>;
+  /** Passkey step-up, then upload a new private key for the same App. */
+  replaceAppPrivateKey(args: { privateKey: string }): Promise<ReplacedKey>;
 }
 
 export type InstanceApiOptions = {
@@ -64,7 +76,13 @@ export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const base = `${options.baseUrl ?? ""}/api/v1/instance`;
 
-  async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  async function call<T>(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+    /** The App-secret ops also carry the signed-in session cookie (same origin), for the passkey. */
+    withSession = false,
+  ): Promise<T> {
     const token = options.token();
     if (!token)
       throw new ApiError(401, "unauthenticated", "Not signed in as instance administrator");
@@ -77,7 +95,7 @@ export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       cache: "no-store",
-      credentials: "omit",
+      credentials: withSession ? "same-origin" : "omit",
       referrerPolicy: "no-referrer",
     });
     if (!res.ok) {
@@ -107,7 +125,67 @@ export function createInstanceApi(options: InstanceApiOptions): InstanceApi {
     usage: w.usage,
   });
 
+  /** Challenge, passkey signature, then the action: the step-up for exactly this input. */
+  async function steppedUp<T>(
+    action: string,
+    path: string,
+    input: Record<string, unknown>,
+  ): Promise<T> {
+    const c = await call<{
+      step_up_id: string;
+      challenge: string;
+      rp_id: string;
+      passkeys: { approver: string; passkey_id: string }[];
+    }>("POST", "/step-up", { action, input }, true);
+    const key = c.passkeys[0];
+    if (!key)
+      throw new ApiError(403, "forbidden", "No passkey of yours is enrolled in the operator org");
+    const sig = await signWithPasskey({
+      challenge: c.challenge,
+      rpId: c.rp_id,
+      passkeyId: key.passkey_id,
+    });
+    return call<T>(
+      "POST",
+      path,
+      {
+        ...input,
+        step_up: {
+          id: c.step_up_id,
+          approver: key.approver,
+          signature: {
+            credential_id: sig.credential_id,
+            client_data_json: sig.client_data_json,
+            authenticator_data: sig.authenticator_data,
+            signature: sig.signature,
+          },
+        },
+      },
+      true,
+    );
+  }
+
   return {
+    async rotateWebhookSecret({ overlapMinutes }) {
+      const w = await steppedUp<{ secret: string; fingerprint: string; overlap_until: string }>(
+        "instance_rotate_webhook_secret",
+        "/github-app/webhook-secret/rotate",
+        { overlap_minutes: overlapMinutes },
+      );
+      return {
+        secret: w.secret,
+        fingerprint: w.fingerprint,
+        overlapUntil: ms(w.overlap_until) ?? 0,
+      };
+    },
+    async replaceAppPrivateKey({ privateKey }) {
+      const w = await steppedUp<{ fingerprint: string; app_id: string }>(
+        "instance_replace_app_private_key",
+        "/github-app/private-key",
+        { private_key: privateKey },
+      );
+      return { fingerprint: w.fingerprint, appId: w.app_id };
+    },
     async whoami() {
       const w = await call<{ id: string; name: string; expires_at: string | null }>(
         "GET",

@@ -41,6 +41,11 @@ import {
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
+import {
+  instanceReplaceAppPrivateKeyOp,
+  instanceRotateWebhookSecretOp,
+  instanceStepUpChallengeOp,
+} from "./definitions/instance-app-secrets";
 import { instanceRevokeOrgTokenOp } from "./definitions/instance-revoke-org-token";
 import { githubAppStatus, instanceGithubAppStatus } from "./definitions/github-app-status";
 import { getQuotas } from "./definitions/quotas";
@@ -181,6 +186,9 @@ export const registry = createRegistry([
   moveRepoBindingOp,
   instanceStartInstallationClaimOp,
   instanceBindInstallationOp,
+  instanceStepUpChallengeOp,
+  instanceRotateWebhookSecretOp,
+  instanceReplaceAppPrivateKeyOp,
   instanceListOrgs,
   instanceDoctorOp,
   instanceDrainOp,

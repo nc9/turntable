@@ -8,6 +8,33 @@ import { SECRET_WEBHOOK, SECRET_WEBHOOK_PREVIOUS } from "./app-auth";
 
 export const DEFAULT_OVERLAP_MS = 24 * 3_600_000;
 
+/** The longest overlap the web and REST rotation allows, and its default. */
+export const WEB_OVERLAP_MAX_MS = 3_600_000;
+
+/**
+ * Seals a new webhook secret under the current master key and keeps the old one as `previous`
+ * until `now + overlapMs`. Returns the new secret (the caller decides who sees it). It does not
+ * touch GitHub. A second rotation inside the window replaces `previous` with the secret it
+ * rotates away from, so at most two secrets ever verify; an expired `previous` is simply
+ * overwritten here, and the webhook handler ignores it from `previousSecretExpiresAt` on.
+ */
+export async function sealRotatedWebhookSecret(
+  db: Db,
+  store: SecretSeal,
+  opts: { overlapMs: number; now?: () => number },
+): Promise<{ secret: string; overlapUntil: number; orgId: string; appId: string; old: string }> {
+  const app = await getGithubApp(db);
+  if (!app) throw new Error("no GitHub App is configured");
+  const old = await store.get(app.orgId, SECRET_WEBHOOK);
+  if (!old) throw new Error("the current webhook secret is missing from the secret store");
+  const until = (opts.now ?? Date.now)() + opts.overlapMs;
+  const fresh = randomBytes(32).toString("hex");
+  await store.set(app.orgId, SECRET_WEBHOOK_PREVIOUS, old);
+  await setPreviousSecretExpiry(db, app.appId, until);
+  await store.set(app.orgId, SECRET_WEBHOOK, fresh);
+  return { secret: fresh, overlapUntil: until, orgId: app.orgId, appId: app.appId, old };
+}
+
 /**
  * Rotates the webhook secret with an overlap window. The old secret becomes `previous` and keeps
  * verifying until the window ends; the new one is pushed to GitHub (PATCH /app/hook/config). If
@@ -19,16 +46,17 @@ export async function rotateWebhookSecret(
   auth: AppAuth,
   opts: { overlapMs?: number; now?: () => number; fetch?: SafeFetch } = {},
 ): Promise<{ overlapUntil: number }> {
-  const app = await getGithubApp(db);
-  if (!app) throw new Error("no GitHub App is configured");
-  const old = await store.get(app.orgId, SECRET_WEBHOOK);
-  if (!old) throw new Error("the current webhook secret is missing from the secret store");
-  const until = (opts.now ?? Date.now)() + (opts.overlapMs ?? DEFAULT_OVERLAP_MS);
-  const fresh = randomBytes(32).toString("hex");
-
-  await store.set(app.orgId, SECRET_WEBHOOK_PREVIOUS, old);
-  await setPreviousSecretExpiry(db, app.appId, until);
-  await store.set(app.orgId, SECRET_WEBHOOK, fresh);
+  const {
+    secret: fresh,
+    overlapUntil: until,
+    orgId,
+    appId,
+    old,
+  } = await sealRotatedWebhookSecret(db, store, {
+    overlapMs: opts.overlapMs ?? DEFAULT_OVERLAP_MS,
+    ...(opts.now ? { now: opts.now } : {}),
+  });
+  const app = { orgId, appId };
   try {
     const res = await (opts.fetch ?? safeFetch)(`${auth.apiBase}/app/hook/config`, {
       method: "PATCH",

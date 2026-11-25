@@ -111,8 +111,14 @@ The endpoint, `POST /api/v1/webhooks/github`, requires `TURNTABLE_MASTER_KEY_FIL
 ```sh
 turntable github-app rotate-webhook-secret
 ```
-
 A new secret is generated and set on the App through the GitHub API. The old one stays valid for 24 hours so in-flight deliveries still verify. If GitHub refuses the change, nothing changes locally.
+
+## Rotating without a shell
+
+On a hosted instance with no shell, use the web UI under Instance administrator, App secrets (or the REST ops `instance_rotate_webhook_secret` and `instance_replace_app_private_key`). Each needs the instance token, your signed-in web session and a passkey tap, with the passkey enrolled in the org that owns the App.
+
+- **Webhook secret.** The new secret is shown once. Paste it into the App's webhook settings on GitHub. The old one also verifies for the overlap (default and at most one hour), then only the new one does.
+- **Private key.** Generate a new key in the App's settings on GitHub and upload the file. The server checks it with `GET /app` for the same App before it swaps; a bad file or another App's key is refused and the old key stays. Afterwards, delete the old key on GitHub.
 
 ## Installation tokens
 

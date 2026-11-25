@@ -12664,6 +12664,255 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/instance/step-up": {
+      "post": {
+        "operationId": "instance_step_up_challenge",
+        "summary": "Start a passkey step-up for one instance App-secret action (instance administrator).",
+        "description": "Needs the instance token AND the signed-in web session of a person with a passkey in the operator org (the org that owns the GitHub App). Names an action (instance_rotate_webhook_secret or instance_replace_app_private_key) and the exact `input` it will be called with, and returns a single-use WebAuthn challenge bound to the action, a hash of that input, the instance token and the session. The action then carries `step_up`. Lasts 5 minutes. Changes nothing else. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "input": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                },
+                "required": ["action", "input"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "step_up_id": {
+                      "type": "string"
+                    },
+                    "challenge": {
+                      "type": "string",
+                      "description": "base64url: the WebAuthn challenge to sign."
+                    },
+                    "rp_id": {
+                      "type": "string"
+                    },
+                    "passkeys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "approver": {
+                            "type": "string"
+                          },
+                          "passkey_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["approver", "passkey_id"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["step_up_id", "challenge", "rp_id", "passkeys", "expires_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/github-app/webhook-secret/rotate": {
+      "post": {
+        "operationId": "instance_rotate_webhook_secret",
+        "summary": "Rotate the GitHub App's webhook secret (instance administrator, passkey step-up).",
+        "description": "Generates a new webhook secret on the server, seals it under the current master key and returns it ONCE, in this response only, for you to paste into the App's settings on GitHub. The previous secret also verifies until `overlap_until` (default and at most 1 hour), then only the new one does. Needs the instance token, the signed-in web session of a person with a passkey in the operator org, and a fresh `step_up` for exactly this input (`instance_step_up_challenge`). Audited by fingerprint, never the value. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "overlap_minutes": {
+                    "default": 60,
+                    "description": "How long the previous secret also verifies, in minutes (1 to 60, default 60).",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 60
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "secret": {
+                      "type": "string",
+                      "description": "The new webhook secret. Shown once."
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "overlap_until": {
+                      "type": "string"
+                    },
+                    "approved_by": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["secret", "fingerprint", "overlap_until", "approved_by"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/github-app/private-key": {
+      "post": {
+        "operationId": "instance_replace_app_private_key",
+        "summary": "Replace the GitHub App's private key (instance administrator, passkey step-up).",
+        "description": "Uploads a new private key (PEM) for the SAME App. Before the swap the instance signs an App JWT with it and calls `GET /app` on GitHub: the App id must match the configured App, else the call is refused and the old key stays. The key is sealed under the current master key and is never returned. Afterwards, delete the old key in the App's settings on GitHub. Needs the instance token, the signed-in web session of a person with a passkey in the operator org, and a fresh `step_up` for exactly this input. Audited by key fingerprint only. Over https or loopback only. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "private_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16384,
+                    "description": "The new private key, PEM."
+                  }
+                },
+                "required": ["private_key"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "approved_by": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["fingerprint", "app_id", "approved_by"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/instance/doctor": {
       "get": {
         "operationId": "instance_doctor",

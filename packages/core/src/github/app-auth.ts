@@ -141,6 +141,16 @@ export class AppAuth {
     return this.#o.apiBase ?? "https://api.github.com";
   }
 
+  /** The fetch this minter uses, so a caller that talks to GitHub as the App goes the same way. */
+  get fetcher(): SafeFetch {
+    return this.#o.fetch ?? safeFetch;
+  }
+
+  /** The current App's id and private key, as the minter reads them. */
+  async credentials(): Promise<{ appId: string; pem: string }> {
+    return this.#credentials();
+  }
+
   async #credentials(): Promise<{ appId: string; pem: string }> {
     const app = await getGithubApp(this.#o.db);
     if (!app) throw new Error("no GitHub App is configured (run: turntable github-app create)");
