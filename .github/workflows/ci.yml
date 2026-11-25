@@ -106,6 +106,12 @@ jobs:
         run: bun run scripts/ops-table.ts --check
       - name: The configuration reference matches the code
         run: bun run scripts/config-reference.ts --check
+      - name: The OpenAPI document matches the registry
+        run: bun run openapi:check
+      - name: The MCP tool list matches the registry
+        run: bun run mcp-tools:check
+      - name: The page tokens match the UI styles
+        run: bun run page-css:check
       - name: Migrations match schema and embedded modules are current (SQLite and Postgres)
         timeout-minutes: 5
         run: |
