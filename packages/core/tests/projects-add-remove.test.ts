@@ -267,11 +267,13 @@ describe("remove_project", () => {
     ] as const) {
       const scope = await scopeOf(slug);
       await call(as("admin"), "remove_project", { project: slug });
-      // clear the forge id so the match falls to the name path
-      await db.orm
-        .update(projects)
-        .set({ lastForgeRepoId: null })
-        .where(eq(projects.id, scope.projectId));
+      if (slug === "web") {
+        // legacy row: no forge id, so only the exact full name matches
+        await db.orm
+          .update(projects)
+          .set({ lastForgeRepoId: null })
+          .where(eq(projects.id, scope.projectId));
+      }
       const back = await call(as("admin"), "add_project", {
         installation_id: "100",
         repo: repoName,
@@ -280,6 +282,53 @@ describe("remove_project", () => {
       expect(await listRepos(db, scope)).toHaveLength(1);
     }
     expect(await listProjects(db, { orgId })).toHaveLength(2);
+  });
+
+  test("a removed project is never inherited by another repo with the same short name (#653)", async () => {
+    f.repos.set("100", [repo("1", "api"), repo("9", "api", "bob")]);
+    await syncInstallation(db, f.facts, "100");
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/api" });
+    const old = await scopeOf("api");
+    await createRun(db, old, {
+      workflowPath: ".github/workflows/ci.yml",
+      event: "push",
+      ref: "refs/heads/main",
+    });
+    await call(as("admin"), "remove_project", { project: "api" });
+    const r = await call(as("admin"), "add_project", { installation_id: "100", repo: "bob/api" });
+    expect(r.ok && r.output).toMatchObject({
+      project: "bob-api",
+      created: true,
+      reattached: false,
+    });
+    expect(await listRepos(db, old)).toEqual([]);
+    expect(await listRuns(db, old)).toHaveLength(1);
+    expect(await listProjects(db, { orgId })).toHaveLength(2);
+  });
+
+  test("a legacy NULL-id project re-attaches only on the exact full name (#653)", async () => {
+    f.repos.set("100", [repo("1", "api"), repo("9", "api", "bob")]);
+    await syncInstallation(db, f.facts, "100");
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/api" });
+    const old = await scopeOf("api");
+    await db.orm.update(projects).set({ name: "acme/api" }).where(eq(projects.id, old.projectId));
+    await call(as("admin"), "remove_project", { project: "api" });
+    await db.orm
+      .update(projects)
+      .set({ lastForgeRepoId: null })
+      .where(eq(projects.id, old.projectId));
+    const other = await call(as("admin"), "add_project", {
+      installation_id: "100",
+      repo: "bob/api",
+    });
+    expect(other.ok && other.output).toMatchObject({ created: true, reattached: false });
+    expect(await listRepos(db, old)).toEqual([]);
+    const same = await call(as("admin"), "add_project", {
+      installation_id: "100",
+      repo: "acme/api",
+    });
+    expect(same.ok && same.output).toMatchObject({ project: "api", reattached: true });
+    expect(await listRepos(db, old)).toHaveLength(1);
   });
 
   test("delete_history: a token, an admin and an owner session without a step-up are refused; nothing is deleted", async () => {
