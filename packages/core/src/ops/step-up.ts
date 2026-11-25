@@ -76,6 +76,8 @@ export const LANE_CONFIG_WRITE_OPS: ReadonlySet<string> = new Set([
   "release_secret_set",
   "release_init_key",
   "release_set_project_signing",
+  "release_cosign_key_set",
+  "release_cosign_key_remove",
 ]);
 
 /** The lane's configuration reads: the same credential, no step-up. */
@@ -83,6 +85,7 @@ export const LANE_CONFIG_READ_OPS: ReadonlySet<string> = new Set([
   "release_publish_target_list",
   "release_key_show",
   "release_secret_status",
+  "release_cosign_key_list",
 ]);
 
 /**

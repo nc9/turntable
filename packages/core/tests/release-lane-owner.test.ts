@@ -2,7 +2,7 @@
 // operator org, with a fresh passkey step-up in that org. An instance token, an org token, MCP, an
 // owner of another org and a non-owner member of the operator org are all refused, for every op.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,10 @@ let dir: string;
 let h: Harness;
 
 const P = (t: Tenant) => ({ target_org: t.slug, target_project: t.projectSlug });
+const COSIGN_PEM = generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+  .publicKey.export({ type: "spki", format: "pem" })
+  .toString();
+
 type Case = { op: string; input: (t: Tenant) => Record<string, unknown> };
 const WRITES: Case[] = [
   { op: "release_pin_repo", input: (t) => ({ ...P(t), repo: "acme/web" }) },
@@ -47,10 +51,22 @@ const WRITES: Case[] = [
     input: (t) => ({ ...P(t), signing_key: "builtin:release" }),
   },
   { op: "release_publish_target_delete", input: (t) => ({ ...P(t), key: "npm" }) },
+  {
+    op: "release_cosign_key_set",
+    input: (t) => ({
+      ...P(t),
+      name: "pinned",
+      public_key_pem: COSIGN_PEM,
+      signs: "manifest.json",
+      output_name: "manifest.json.sig",
+    }),
+  },
+  { op: "release_cosign_key_remove", input: (t) => ({ ...P(t), name: "pinned" }) },
 ];
 const SIGN = WRITES.find((c) => c.op === "release_set_project_signing")!;
 const READS: Case[] = [
   { op: "release_publish_target_list", input: P },
+  { op: "release_cosign_key_list", input: P },
   { op: "release_key_show", input: (t) => ({ target_org: t.slug, name: "release" }) },
   { op: "release_secret_status", input: (t) => ({ ...P(t), name: "NPM_TOKEN" }) },
 ];

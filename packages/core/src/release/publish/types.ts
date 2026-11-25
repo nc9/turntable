@@ -26,7 +26,10 @@ export interface NpmTarget {
   mode: PublishMode;
   /** The package name; the tarball's own package.json must say exactly this. */
   package: string;
-  /** The recorded artifact that is the `npm pack` tarball. */
+  /**
+   * The recorded ARTIFACT (an upload-artifact name) holding the `npm pack` tarball: the lane takes
+   * the single `.tgz` file inside it. (The name of the tarball file itself still works.)
+   */
   artifact: string;
   tag: string;
   access: "public" | "restricted";
@@ -38,8 +41,13 @@ export interface NpmTarget {
 export interface GithubReleaseTarget {
   kind: "github-release";
   mode: PublishMode;
-  /** Recorded artifacts to attach. */
+  /** Individual files to attach, by their path in the release, under that name. */
   assets: string[];
+  /**
+   * Recorded artifacts (upload-artifact names) whose files are ALL attached, each under its own
+   * basename. Unlike a version, an artifact name stays the same across releases.
+   */
+  assetArtifacts?: string[] | undefined;
   /** Name of the signed provenance asset; null to attach none. */
   provenanceAsset: string | null;
 }
@@ -72,7 +80,14 @@ export interface OciTarget {
 
 export type PublishTarget = NpmTarget | GithubReleaseTarget | OciTarget;
 
-export type TargetState = "published" | "already" | "refused" | "failed" | "pending";
+export type TargetState =
+  | "published"
+  | "already"
+  | "refused"
+  | "failed"
+  | "pending"
+  /** Not attempted, because what it must follow did not succeed. */
+  | "skipped";
 
 export interface TargetResult {
   /** The target's key in the project's declaration. */
@@ -94,6 +109,8 @@ export interface PublishContext {
   /** Recomputed by the lane from the bytes; publishers hash again before sending. */
   digests: Readonly<Record<string, string>>;
   readBytes(name: string): Promise<Uint8Array | undefined>;
+  /** The files of one recorded artifact, by path (a raw artifact is its own one file). */
+  filesOf(artifact: string): string[];
   /** The signed provenance envelope, as JSON text. */
   provenance: string | undefined;
   /** Lane-verified co-signatures (#544), published as release assets next to the provenance. */

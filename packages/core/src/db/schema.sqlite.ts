@@ -1284,10 +1284,15 @@ export const releaseRequests = sqliteTable(
     /** JSON array of artifact names. */
     artifacts: text("artifacts").notNull(),
     /**
-     * JSON array of `{ name, signature_b64 }`: co-signatures the requester carries for the lane to
+     * JSON array of `{ name, file?, signature_b64 }`: co-signatures the requester carries for the lane to
      * verify (#544). Untrusted input; the lane checks each against its own configured public keys.
      */
     cosignatures: text("cosignatures"),
+    /**
+     * A dry run: the lane verifies everything a real request does and returns the publish plan,
+     * and signs and publishes nothing. No approval is read or spent.
+     */
+    dryRun: integer("dry_run", { mode: "boolean" }).notNull().default(false),
     status: text("status").notNull().default("pending"),
     /** Why it was refused or errored: a short code. */
     reason: text("reason"),

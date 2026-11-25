@@ -704,6 +704,12 @@ const UNREACHABLE: Record<string, string> = {
     "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
   release_key_show:
     "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_cosign_key_set:
+    "lane configuration (#541, #544): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts and release-cosign-manifest.test.ts",
+  release_cosign_key_remove:
+    "lane configuration (#541, #544): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts and release-cosign-manifest.test.ts",
+  release_cosign_key_list:
+    "lane configuration (#541, #544): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts and release-cosign-manifest.test.ts",
   release_secret_status:
     "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
   doctor:

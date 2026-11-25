@@ -23,13 +23,18 @@ import type { ArtifactBytes } from "./artifacts";
 import { verifyCosignatures, type CosignInput, type VerifiedCosign } from "./cosign";
 import { ReleaseFiles } from "./files";
 import type { ForgeFacts } from "./forge";
-import { publishGithubRelease } from "./publish/github-release";
+import { planAssets, publishGithubRelease } from "./publish/github-release";
 import { verifyOciImage } from "./publish/oci";
-import { publishNpm } from "./publish/npm";
-import type { PublishWiring, TargetResult } from "./publish/types";
+import { inspectNpmTarball, npmTarballOf, publishNpm } from "./publish/npm";
+import type { PublishTarget, PublishWiring, TargetResult } from "./publish/types";
 
 /** The part of the signing service the lane uses (SigningService.signRelease). */
 export interface ReleaseSigner {
+  /** A dry run's check that the project's signing key is there to sign with. Signs nothing. */
+  checkKey?(scope: {
+    orgId: string;
+    projectId: string;
+  }): Promise<{ ok: true } | { ok: false; reason: string }>;
   signRelease(
     scope: { orgId: string; projectId: string },
     req: {
@@ -91,6 +96,10 @@ export type LaneDenial =
   | "cosign_artifact_missing"
   | "cosign_artifact_differs"
   | "cosign_manifest_check"
+  | "run_not_successful"
+  | "no_signing_key"
+  | "npm_tarball_check"
+  | "publish_plan_refused"
   | "signature_invalid"
   | "signature_not_minimal_der"
   | `signer:${string}`;
@@ -137,7 +146,28 @@ type Decision =
         files: ReleaseFiles;
       };
     }
+  | {
+      /** A dry run: everything was verified; nothing was signed or published. */
+      status: "planned";
+      result: unknown;
+      facts: Record<string, unknown>;
+    }
   | { status: "refused"; reason: LaneDenial; detail?: string; facts: Record<string, unknown> };
+
+const KIND_RANK: Record<string, number> = { "github-release": 0, npm: 1, "oci-image": 2 };
+
+/**
+ * The order targets are published in, explicit and never the key order: the GitHub release first
+ * (draft, every asset, published once), then npm (only once that release is published), then an
+ * image (whether its provenance could go on a release asset depends on the release targets). Within
+ * one kind, by key.
+ */
+export function publishOrder(targets: Record<string, PublishTarget>): string[] {
+  return Object.keys(targets).toSorted(
+    (a, b) =>
+      KIND_RANK[targets[a]!.kind]! - KIND_RANK[targets[b]!.kind]! || (a < b ? -1 : a > b ? 1 : 0),
+  );
+}
 
 export class ReleaseLane {
   readonly #o: LaneOptions;
@@ -156,7 +186,7 @@ export class ReleaseLane {
     const scope = { orgId: req.orgId, projectId: req.projectId };
     let decision: Decision;
     try {
-      decision = await this.#decide(req, scope);
+      decision = await this.#decide(req, scope, req.dryRun === true);
     } catch (err) {
       // A forge or filesystem failure: nothing was signed, and the request says so.
       const msg = err instanceof Error ? err.message : String(err);
@@ -168,6 +198,18 @@ export class ReleaseLane {
         now(),
       );
       await this.#audit(scope, req, "error:lane_error", { detail: msg.slice(0, 300) });
+      return true;
+    }
+    if (decision.status === "planned") {
+      // A dry run ends here: no approval was read or spent, nothing was signed or published.
+      await finishReleaseRequest(
+        this.#o.db,
+        req.id,
+        this.#o.owner,
+        { status: "signed", result: decision.result, facts: decision.facts },
+        now(),
+      );
+      await this.#audit(scope, req, "dry_run:ok", decision.facts);
       return true;
     }
     // Signed: now publish what was verified. A failure here never un-signs the release; each
@@ -242,6 +284,7 @@ export class ReleaseLane {
   async #decide(
     req: ReleaseRequest,
     scope: { orgId: string; projectId: string },
+    dry: boolean,
   ): Promise<Decision> {
     const facts: Record<string, unknown> = { tag: req.tag, run: req.runId };
     const refuse = (reason: LaneDenial, detail?: string): Decision => ({
@@ -268,6 +311,8 @@ export class ReleaseLane {
     if (run.repo.toLowerCase() !== pinned)
       return refuse("repo_mismatch", `the project is pinned to ${pinned}`);
     if (run.ref !== `refs/tags/${req.tag}`) return refuse("ref_mismatch", `run ref is ${run.ref}`);
+    if (dry && run.status !== "success")
+      return refuse("run_not_successful", `the run is ${run.status}`);
 
     // The forge, asked here, with this lane's own credential: the tag must exist and must point
     // at exactly the commit the run says it built.
@@ -342,7 +387,17 @@ export class ReleaseLane {
           return refuse("cosign_bad_request", "the carried co-signatures are not readable");
         }
         if (keys.length > 0 || carried.length > 0) {
-          const out = await verifyCosignatures(keys, carried, (n) => files.readBytes(n), digests);
+          const out = await verifyCosignatures(
+            keys,
+            carried,
+            {
+              read: (n) => files.readBytes(n),
+              artifactOf: (n) => files.artifactOf(n),
+              filesOf: (a) => files.filesOf(a),
+            },
+            digests,
+            req.tag,
+          );
           facts.cosignatures = out.reports;
           if (!out.ok) return refuse(out.reason as LaneDenial, out.detail);
           cosigs = out.verified;
@@ -359,6 +414,33 @@ export class ReleaseLane {
       };
       const c = this.#o.attest.checkRelease(identity, digests);
       if (c.state === "mismatch") return refuse("attestation_mismatch", c.why);
+      if (dry) {
+        // Everything above is what a real request checks. From here a real one signs; this one
+        // checks the signing key is there and plans the publish, and stops.
+        if (!this.#o.signer.checkKey)
+          return refuse("no_signing_key", "this lane's signer cannot check its key");
+        const key = await this.#o.signer.checkKey(scope);
+        if (!key.ok) return refuse("no_signing_key", key.reason);
+        const planned = await this.#plan(req, scope, files, cosigs);
+        if (!planned.ok) return refuse(planned.reason as LaneDenial, planned.detail);
+        return {
+          status: "planned",
+          result: {
+            dry_run: true,
+            plan: planned.plan,
+            ...(cosigs.length > 0
+              ? {
+                  cosignatures: cosigs.map((x) => ({
+                    name: x.name,
+                    key_id: x.keyId,
+                    output_name: x.outputName,
+                  })),
+                }
+              : {}),
+          },
+          facts: { ...facts, dry_run: true },
+        };
+      }
       const now = (this.#o.now ?? Date.now)();
       // The configuration the approval is judged against, and (below) the one the signed release
       // is recorded under: a change in between leaves it stale, so a publish refuses.
@@ -428,7 +510,72 @@ export class ReleaseLane {
   }
 
   /**
-   * Publishes to each declared target, in key order. Before each: an incident freeze stops it. A
+   * What a dry run reports: for each configured target what it would publish, in publish order,
+   * checked the way a publish checks it (names, tarball, version). Reads only; sends nothing.
+   */
+  async #plan(
+    req: ReleaseRequest,
+    scope: { orgId: string; projectId: string },
+    files: ReleaseFiles,
+    cosigs: readonly VerifiedCosign[],
+  ): Promise<
+    | { ok: true; plan: { targets: unknown[]; note?: string } }
+    | { ok: false; reason: string; detail: string }
+  > {
+    const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
+    const keys = publishOrder(targets);
+    if (keys.length === 0) return { ok: true, plan: { targets: [], note: "none configured" } };
+    const ctx = {
+      filesOf: (a: string) => files.filesOf(a),
+      digests: files.digests,
+      cosignatures: cosigs.map((c) => ({ outputName: c.outputName, signature: c.signature })),
+    };
+    const out: unknown[] = [];
+    for (const key of keys) {
+      const t = targets[key]!;
+      const no = (reason: string, detail: string) => ({
+        ok: false as const,
+        reason: "publish_plan_refused",
+        detail: `${key}: ${reason}: ${detail}`,
+      });
+      if (t.kind === "github-release") {
+        const missing = t.assets.filter((n) => !(n in files.digests));
+        if (missing.length > 0) return no("artifact_not_requested", missing.join(", "));
+        const p = planAssets(t, ctx, true);
+        if (!p.ok) return no(p.reason, p.detail);
+        out.push({
+          key,
+          kind: t.kind,
+          order: out.length + 1,
+          assets: p.assets.map((a) => a.asset),
+        });
+      } else if (t.kind === "npm") {
+        const found = npmTarballOf(ctx, t.artifact);
+        if (!found.ok) return no(found.reason, found.detail);
+        const bytes = await files.readBytes(found.file);
+        const insp = bytes ? inspectNpmTarball(bytes, t.package, req.tag) : undefined;
+        if (!insp?.ok)
+          return no(insp?.reason ?? "artifact_bytes_missing", insp?.detail ?? found.file);
+        out.push({
+          key,
+          kind: t.kind,
+          order: out.length + 1,
+          package: t.package,
+          file: found.file,
+          version: insp.version,
+          dist_tag: t.tag,
+          after: keys.filter((k) => targets[k]!.kind === "github-release"),
+        });
+      } else {
+        if (!(t.manifest in files.digests)) return no("artifact_not_requested", t.manifest);
+        out.push({ key, kind: t.kind, order: out.length + 1, manifest: t.manifest, tags: t.tags });
+      }
+    }
+    return { ok: true, plan: { targets: out } };
+  }
+
+  /**
+   * Publishes to each declared target, in the explicit order of publishOrder. Before each: an incident freeze stops it. A
    * target already done is not repeated. Whatever happens is recorded and audited, never a credential.
    */
   /**
@@ -444,7 +591,7 @@ export class ReleaseLane {
     const approved = this.#o.attest.approvedRelease(a);
     if (!approved) return [{ target: "*", state: "refused", reason: "not_approved" }];
     const req = (await listReleaseRequests(this.#o.db, scope, 200))
-      .filter((r) => r.runId === a.runId && r.status === "signed")
+      .filter((r) => r.runId === a.runId && r.status === "signed" && r.dryRun !== true)
       .at(-1);
     if (!req) return [{ target: "*", state: "refused", reason: "no_signed_request" }];
     const tag = await this.#o.forge.tagCommit(approved.repo, approved.tag);
@@ -526,11 +673,7 @@ export class ReleaseLane {
   ): Promise<TargetResult[]> {
     const w = this.#o.publish;
     const targets = this.#o.attest.publishTargets(scope.orgId, scope.projectId);
-    // Images last: whether their provenance could go on a release asset depends on what happened
-    // to the release targets in this same pass.
-    const keys = Object.keys(targets).toSorted(
-      (a, b) => Number(targets[a]!.kind === "oci-image") - Number(targets[b]!.kind === "oci-image"),
-    );
+    const keys = publishOrder(targets);
     if (!w || keys.length === 0) return [];
     const now = this.#o.now ?? Date.now;
     const id = { orgId: scope.orgId, projectId: scope.projectId, repo: v.repo, tag: req.tag };
@@ -541,6 +684,7 @@ export class ReleaseLane {
       tag: req.tag,
       digests: v.digests,
       readBytes: async (name: string) => files?.readBytes(name),
+      filesOf: (artifact: string) => files?.filesOf(artifact) ?? [],
       provenance: typeof v.envelope === "string" ? v.envelope : JSON.stringify(v.envelope),
       cosignatures: this.#o.attest
         .verifiedCosignatures({ ...scope, runId: req.runId })
@@ -580,10 +724,33 @@ export class ReleaseLane {
         out.push({ target: key, state: "already", reason: "recorded" });
         continue;
       }
+      // npm goes out only once the GitHub release of this release is published (or was): a release
+      // that failed leaves npm untouched, never attempted.
+      if (t.kind === "npm") {
+        const gh = out.filter((r) => targets[r.target]?.kind === "github-release");
+        const blocked = gh.filter((r) => r.state !== "published" && r.state !== "already");
+        if (blocked.length > 0) {
+          await record({
+            target: key,
+            state: "skipped",
+            reason: "github_release_not_published",
+            detail: `not attempted: ${blocked.map((r) => `${r.target} is ${r.state}`).join(", ")}`,
+          });
+          continue;
+        }
+      }
       // A target may name only artifacts this request asked for and the lane verified.
-      const named =
-        t.kind === "npm" ? [t.artifact] : t.kind === "oci-image" ? [t.manifest] : t.assets;
-      const stray = named.filter((n) => !(n in v.digests));
+      const stray =
+        t.kind === "npm"
+          ? ctx.filesOf(t.artifact).length === 0 && !(t.artifact in v.digests)
+            ? [t.artifact]
+            : []
+          : t.kind === "oci-image"
+            ? [t.manifest].filter((n) => !(n in v.digests))
+            : [
+                ...t.assets.filter((n) => !(n in v.digests)),
+                ...(t.assetArtifacts ?? []).filter((n) => ctx.filesOf(n).length === 0),
+              ];
       if (stray.length > 0) {
         await record({
           target: key,

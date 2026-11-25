@@ -28,6 +28,8 @@ export class ReleaseFiles {
   readonly #owner = new Map<string, { kind: "raw"; artifact: string } | { kind: "file" }>();
   /** Which unpacked archive (by index) holds each file. */
   readonly #where = new Map<string, number>();
+  /** The artifact each file came from. */
+  readonly #artifact = new Map<string, string>();
   #dir: string | undefined;
   #reader: ArtifactBytes | undefined;
 
@@ -63,6 +65,7 @@ export class ReleaseFiles {
           return fail({ ok: false, reason: "duplicate_subject", detail: name });
         files.digests[name] = sha256(bytes);
         files.#owner.set(name, { kind: "raw", artifact: name });
+        files.#artifact.set(name, name);
         continue;
       }
       if (files.#dir === undefined) {
@@ -89,9 +92,23 @@ export class ReleaseFiles {
         files.digests[f.name] = f.sha256;
         files.#owner.set(f.name, { kind: "file" });
         files.#where.set(f.name, index);
+        files.#artifact.set(f.name, name);
       }
     }
     return { ok: true, files };
+  }
+
+  /** The artifact (upload-artifact name) a file came from. */
+  artifactOf(file: string): string | undefined {
+    return this.#artifact.get(file);
+  }
+
+  /** Every file of one artifact, by path, sorted. */
+  filesOf(artifact: string): string[] {
+    return [...this.#artifact]
+      .filter(([, a]) => a === artifact)
+      .map(([f]) => f)
+      .toSorted();
   }
 
   /** The bytes of a signed file, read back from where it was unpacked (or the raw artifact). */

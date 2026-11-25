@@ -9194,7 +9194,7 @@
       "post": {
         "operationId": "request_release",
         "summary": "Ask the release lane to sign the artifacts of a tagged run.",
-        "description": "Queues a request for the release lane, a separate process that holds the signing keys. The request names a run, the tag being released, the artifact names (never an approval environment: that is the project's own setting). It is only a request: the release lane re-checks with the forge that the tag points at the run's commit and recomputes the artifact digests itself, so nothing here can make it sign something it cannot verify. Poll get_release_request for the outcome. Needs one project and release_operator or admin; audited. Not available over MCP.\n\nRequired role: release_operator. Side effects: write; audited.",
+        "description": "Queues a request for the release lane, a separate process that holds the signing keys. The request names a run, the tag being released, the artifact names (never an approval environment: that is the project's own setting). It is only a request: the release lane re-checks with the forge that the tag points at the run's commit and recomputes the artifact digests itself, so nothing here can make it sign something it cannot verify. Optional cosignatures (name, signature_b64) carry co-signatures made off-instance by a client-pinned key; the lane alone verifies them against its configured public keys and refuses to sign or publish when a configured one is missing or bad. Poll get_release_request for the outcome. With dry_run: true the lane verifies everything (the run is finished, successful and built from the tag, every digest, the manifest and every .sig, the version, the signing key) and returns the publish plan, and signs and publishes nothing; it needs no approval and spends none. Needs one project and release_operator or admin (operator too, for a dry run); audited. Not available over MCP.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -9221,6 +9221,35 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 200
+                    }
+                  },
+                  "dry_run": {
+                    "description": "Verify and plan only: nothing is signed or published, no approval is spent.",
+                    "type": "boolean"
+                  },
+                  "cosignatures": {
+                    "description": "Co-signatures by a key your clients pin, made off-instance over the exact bytes of the configured artifact. The release lane verifies each against its configured public keys.",
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                        },
+                        "file": {
+                          "description": "For a key with a manifest check: the binary this signature is over. Absent: the key's own signed file (the manifest).",
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$"
+                        },
+                        "signature_b64": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        }
+                      },
+                      "required": ["name", "signature_b64"]
                     }
                   },
                   "org": {
@@ -9267,7 +9296,12 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["pending", "claimed", "signed", "refused", "error"]
+                      "enum": ["pending", "claimed", "signed", "verified", "refused", "error"],
+                      "description": "verified: a dry run that passed every check (nothing was signed or published); signed: the lane signed."
+                    },
+                    "dry_run": {
+                      "type": "boolean",
+                      "description": "True for a request made with dry_run: it signs nothing."
                     },
                     "reason": {
                       "description": "Why the release lane refused, as a short code.",
@@ -9293,6 +9327,36 @@
                     "key_id": {
                       "description": "The id of the key that signed, when it signed.",
                       "type": ["string", "null"]
+                    },
+                    "cosignatures": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "file": {
+                            "description": "The manifest's binary this signature is over, when it is not the manifest.",
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["present", "verified", "missing", "invalid", "unexpected"],
+                            "description": "present: carried, not yet checked by the lane. verified/missing/invalid/unexpected: the lane's verdict."
+                          },
+                          "key_id": {
+                            "description": "Public-key fingerprint of the configured co-signing key. Never key material.",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["name", "status"],
+                        "additionalProperties": false
+                      },
+                      "description": "Co-signature status of the request: what was carried and what the lane found."
                     }
                   },
                   "required": [
@@ -9301,10 +9365,12 @@
                     "tag",
                     "artifacts",
                     "status",
+                    "dry_run",
                     "reason",
                     "created_at",
                     "finished_at",
-                    "key_id"
+                    "key_id",
+                    "cosignatures"
                   ],
                   "additionalProperties": false
                 }
@@ -9330,7 +9396,7 @@
           }
         ],
         "x-turntable-effect": "write",
-        "x-turntable-min-role": "release_operator",
+        "x-turntable-min-role": "operator",
         "x-turntable-untrusted-output": false
       }
     },
@@ -9338,7 +9404,7 @@
       "get": {
         "operationId": "get_release_request",
         "summary": "The state of a release request: pending, signed, or refused with a reason.",
-        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed, and for a signed request `provenance`: the lane's signed DSSE envelope as JSON text (null otherwise), which a consumer verifies against the pinned public key. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed, and for a signed request `provenance`: the lane's signed DSSE envelope as JSON text (null otherwise), which a consumer verifies against the pinned public key, and the co-signature status (present, verified, missing, invalid) with public-key fingerprints only. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
         "parameters": [
           {
             "name": "id",
@@ -9398,7 +9464,12 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["pending", "claimed", "signed", "refused", "error"]
+                      "enum": ["pending", "claimed", "signed", "verified", "refused", "error"],
+                      "description": "verified: a dry run that passed every check (nothing was signed or published); signed: the lane signed."
+                    },
+                    "dry_run": {
+                      "type": "boolean",
+                      "description": "True for a request made with dry_run: it signs nothing."
                     },
                     "reason": {
                       "description": "Why the release lane refused, as a short code.",
@@ -9425,6 +9496,64 @@
                       "description": "The id of the key that signed, when it signed.",
                       "type": ["string", "null"]
                     },
+                    "cosignatures": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "file": {
+                            "description": "The manifest's binary this signature is over, when it is not the manifest.",
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["present", "verified", "missing", "invalid", "unexpected"],
+                            "description": "present: carried, not yet checked by the lane. verified/missing/invalid/unexpected: the lane's verdict."
+                          },
+                          "key_id": {
+                            "description": "Public-key fingerprint of the configured co-signing key. Never key material.",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["name", "status"],
+                        "additionalProperties": false
+                      },
+                      "description": "Co-signature status of the request: what was carried and what the lane found."
+                    },
+                    "plan": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "targets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              }
+                            },
+                            "note": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["targets"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "For a dry run that passed: the publish plan, the configured targets in publish order with the assets each would publish (or `none configured`). Null otherwise."
+                    },
                     "provenance": {
                       "description": "The lane's signed DSSE envelope (the provenance) as JSON text, for a signed request; null otherwise. Verify it against the pinned public key (release_public_key, `turntable verify --pubkey`); the server's copy is not trusted, the signature is.",
                       "type": ["string", "null"]
@@ -9436,10 +9565,13 @@
                     "tag",
                     "artifacts",
                     "status",
+                    "dry_run",
                     "reason",
                     "created_at",
                     "finished_at",
                     "key_id",
+                    "cosignatures",
+                    "plan",
                     "provenance"
                   ],
                   "additionalProperties": false

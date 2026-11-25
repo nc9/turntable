@@ -9,8 +9,6 @@ import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { AttestationStore } from "./attest";
 import { LaneConfig, validateRepo, validateTargetKey } from "./config";
 import { initReleaseKey } from "./init-key";
-import { cosignKeyId } from "./cosign";
-import { parseTarget, TARGET_KEY } from "./publish/config";
 import { fileKeyVault } from "./key-vault";
 import { keysDir } from "./serve";
 
@@ -100,7 +98,7 @@ const PUBLISH_USAGE = `usage:
       --package <name> --artifact <tarball artifact> --secret <vault secret> [--tag latest] \
       [--access public|restricted] --accept-long-lived-token
   turntable release publish-target set --org <slug> --project <slug> --key <name> --kind github-release \
-      --assets <a,b,...> [--provenance-asset <name>|none]
+      [--assets <a,b,...>] [--asset-artifacts <a,b,...>] [--provenance-asset <name>|none]
   turntable release publish-target set --org <slug> --project <slug> --key <name> --kind oci-image \
       --registry ghcr.io --repository <owner/name> --manifest <manifest artifact> --tags v1,latest \
       --username <registry user> --secret <vault secret> [--realm-host <token host>]
@@ -127,6 +125,7 @@ async function publishTarget(args: string[]): Promise<number> {
       tag: { type: "string" },
       access: { type: "string" },
       assets: { type: "string" },
+      "asset-artifacts": { type: "string" },
       "provenance-asset": { type: "string" },
       "accept-long-lived-token": { type: "boolean" },
       mode: { type: "string" },
@@ -180,6 +179,7 @@ async function publishTarget(args: string[]): Promise<number> {
         tag: values.tag,
         access: values.access,
         assets: list(values.assets),
+        asset_artifacts: list(values["asset-artifacts"]),
         provenance_asset: values["provenance-asset"],
         accept_long_lived_token: values["accept-long-lived-token"],
         registry: values.registry,
@@ -201,11 +201,12 @@ async function publishTarget(args: string[]): Promise<number> {
 
 const COSIGN_USAGE = `usage:
   turntable release cosign-key set --org <slug> --project <slug> --name <key> --public-key-file <pem> \
-      --signs <artifact> --output-name <asset name> [--format detached-der-p256-sha256] \
-      [--manifest-key-id-field <field> [--manifest-artifacts-field artifacts]]
+      --signs <file> --output-name <asset name> [--format detached-der-p256-sha256] \
+      [--manifest-binaries]
   turntable release cosign-key remove --org <slug> --project <slug> --name <key>
   turntable release cosign-key list --org <slug> --project <slug>
-Public keys only, stored in the release lane's own file. A configured key means every release of
+A thin client of the release_cosign_key_* operations (the same LaneConfig code the web app's
+Release lane page calls). Public keys only, stored in the release lane's own file. A configured key means every release of
 the project needs a valid co-signature from it, verified by the lane.`;
 
 /** Sets, removes or lists the project's co-signing keys (public material) in the lane's own file. */
@@ -221,8 +222,7 @@ async function cosignKey(args: string[]): Promise<number> {
       signs: { type: "string" },
       "output-name": { type: "string" },
       format: { type: "string" },
-      "manifest-key-id-field": { type: "string" },
-      "manifest-artifacts-field": { type: "string" },
+      "manifest-binaries": { type: "boolean" },
       "data-dir": { type: "string", default: "./data" },
     },
     strict: true,
@@ -240,46 +240,33 @@ async function cosignKey(args: string[]): Promise<number> {
     if (!project) throw new Error(`no project ${values.project} in org ${values.org}`);
     const attest = new AttestationStore(join(resolve(cfg.dataDir), "attested.db"));
     try {
+      const config = new LaneConfig({ attest });
       if (action === "list") {
-        for (const k of attest.cosignKeys(org.id, project.id)) {
+        for (const k of config.listCosignKeys(org.id, project.id)) {
           // The fingerprint, never the key.
           console.log(
-            `${k.name}: key_id ${cosignKeyId(k.public_key_pem)} signs ${k.signs} -> ${k.output_name} (${k.format})`,
+            `${k.name}: key_id ${k.key_id} signs ${k.signs} -> ${k.output_name} (${k.format}${k.manifest ? ", manifest of binaries" : ""})`,
           );
         }
         return 0;
       }
       if (!values.name) throw new Error("--name is required");
       if (action === "remove") {
-        const gone = attest.removeCosignKey(org.id, project.id, values.name);
+        const gone = config.removeCosignKey(org.id, project.id, values.name);
         console.log(gone ? `removed ${values.name}` : `no co-signing key ${values.name}`);
         return gone ? 0 : 1;
       }
       if (!values["public-key-file"]) throw new Error("--public-key-file is required");
-      const key = attest.setCosignKey(
-        org.id,
-        project.id,
-        {
-          name: values.name,
-          public_key_pem: readFileSync(values["public-key-file"], "utf8"),
-          signs: values.signs,
-          output_name: values["output-name"],
-          format: values.format ?? "detached-der-p256-sha256",
-          ...(values["manifest-key-id-field"]
-            ? {
-                manifest: {
-                  key_id_field: values["manifest-key-id-field"],
-                  ...(values["manifest-artifacts-field"]
-                    ? { artifacts_field: values["manifest-artifacts-field"] }
-                    : {}),
-                },
-              }
-            : {}),
-        },
-        Date.now(),
-      );
+      const key = config.setCosignKey(org.id, project.id, {
+        name: values.name,
+        public_key_pem: readFileSync(values["public-key-file"], "utf8"),
+        signs: values.signs,
+        output_name: values["output-name"],
+        format: values.format ?? "detached-der-p256-sha256",
+        ...(values["manifest-binaries"] ? { manifest: { shape: "binaries-map" } } : {}),
+      });
       console.log(
-        `${values.org}/${values.project}: ${key.name} key_id ${cosignKeyId(key.public_key_pem)} signs ${key.signs} -> ${key.output_name}`,
+        `${values.org}/${values.project}: ${key.name} key_id ${key.key_id} signs ${key.signs} -> ${key.output_name}`,
       );
       return 0;
     } finally {

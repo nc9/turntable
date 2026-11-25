@@ -115,19 +115,13 @@ const wiring: PublishWiring = {
   githubUploads: "https://up.gh.test",
 };
 
-/** A manifest listing the release's binary, in the shape the optional check reads. */
-const manifestFor = (p: Pair, bin: Uint8Array, over: Record<string, unknown> = {}): Uint8Array =>
-  enc(
-    JSON.stringify({
-      key_id: cosignKeyId(p.pem),
-      artifacts: [{ name: "cli-linux", sha256: sha256(bin) }],
-      ...over,
-    }),
-  );
+/** A manifest document (the per-binary manifest check has its own tests, release-cosign-manifest). */
+const manifestFor = (p: Pair, bin: Uint8Array): Uint8Array =>
+  enc(JSON.stringify({ signing_key_id: cosignKeyId(p.pem), sha256: sha256(bin) }));
 
 const BIN = enc("linux binary");
 
-function configure(p: Pair, manifest = true): void {
+function configure(p: Pair, manifest = false): void {
   attest.setCosignKey(
     a.orgId,
     a.projectId,
@@ -137,7 +131,7 @@ function configure(p: Pair, manifest = true): void {
       signs: "manifest.json",
       output_name: "manifest.json.sig",
       format: "detached-der-p256-sha256",
-      ...(manifest ? { manifest: { key_id_field: "key_id" } } : {}),
+      ...(manifest ? { manifest: { shape: "binaries-map" } } : {}),
     },
     0,
   );
@@ -311,23 +305,6 @@ describe("a co-signature that is missing or bad publishes nothing", () => {
     configure(pair);
     const row = await release(goodSig(pair, enc("something else")));
     expect(row).toMatchObject({ status: "refused", reason: "signature_invalid" });
-    nothingPublished();
-  });
-
-  test("wrong manifest digest: the manifest lists other bytes than the lane publishes", async () => {
-    blobs.set("manifest.json", manifestFor(pair, enc("other binary")));
-    configure(pair);
-    const row = await release(goodSig());
-    expect(row).toMatchObject({ status: "refused", reason: "cosign_manifest_check" });
-    expect(row.detail).toContain("differs from the bytes the lane publishes");
-    nothingPublished();
-  });
-
-  test("manifest key id that is not the configured key's id", async () => {
-    blobs.set("manifest.json", manifestFor(pair, BIN, { key_id: "0123456789abcdef" }));
-    configure(pair);
-    const row = await release(goodSig());
-    expect(row).toMatchObject({ status: "refused", reason: "cosign_manifest_check" });
     nothingPublished();
   });
 

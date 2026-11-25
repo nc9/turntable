@@ -338,6 +338,25 @@ describe("approve, then sign the same manifest", () => {
     expect(JSON.stringify(audit.input)).toContain(c.manifest_sha256);
   });
 
+  test("checkKey (a dry run's question) signs nothing and spends no approval", async () => {
+    const { runId } = await mkRun();
+    await approveAs("alice", runId);
+    await finish(runId);
+    expect(await service.checkKey(scope)).toEqual({ ok: true });
+    expect(await service.checkKey(scope)).toEqual({ ok: true });
+    expect(await denials()).toEqual([]); // no signing audit row at all
+    // the approval is still there: the real signature goes through, once
+    expect((await sign(runId)).ok).toBe(true);
+    expect(await sign(runId)).toMatchObject({ ok: false, reason: "approval_spent" });
+  });
+
+  test("checkKey says when there is no key to sign with", async () => {
+    await setProjectSigning(db, scope, { signingKey: "builtin:missing" });
+    expect(await service.checkKey(scope)).toMatchObject({ ok: false });
+    await setProjectSigning(db, scope, { signingKey: "unknown-backend:x" });
+    expect(await service.checkKey(scope)).toMatchObject({ ok: false });
+  });
+
   test("replay: a second signature of the same approval is refused as spent", async () => {
     const { runId } = await mkRun();
     await approveAs("alice", runId);

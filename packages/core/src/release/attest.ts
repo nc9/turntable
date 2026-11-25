@@ -424,15 +424,19 @@ export class AttestationStore {
         "INSERT INTO cosign_keys VALUES (?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, name) DO UPDATE SET config = excluded.config, set_at = excluded.set_at",
       )
       .run(orgId, projectId, key.name, JSON.stringify(key), now);
+    // A change of the co-signing requirement is a change of the lane's configuration: an approval
+    // given before it must be given again (#544).
+    this.bumpConfigVersion();
     return key;
   }
 
   removeCosignKey(orgId: string, projectId: string, name: string): boolean {
-    return (
+    const gone =
       this.#db
         .query("DELETE FROM cosign_keys WHERE org_id = ? AND project_id = ? AND name = ?")
-        .run(orgId, projectId, name).changes > 0
-    );
+        .run(orgId, projectId, name).changes > 0;
+    if (gone) this.bumpConfigVersion();
+    return gone;
   }
 
   /**

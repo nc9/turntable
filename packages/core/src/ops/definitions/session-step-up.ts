@@ -25,6 +25,8 @@ import { createApiToken } from "./create-api-token";
 import { inviteMemberOp } from "./members";
 import { setSettingOp } from "./settings";
 import {
+  releaseCosignKeyRemove,
+  releaseCosignKeySet,
   releaseInitKey,
   releasePinRepo,
   releasePublishTargetDelete,
@@ -52,6 +54,8 @@ for (const op of [
   releaseSecretSet,
   releaseInitKey,
   releaseSetProjectSigning,
+  releaseCosignKeySet,
+  releaseCosignKeyRemove,
 ]) {
   LANE_OPS[op.name] = op;
   SCHEMAS[op.name] = op.input as z.ZodObject;

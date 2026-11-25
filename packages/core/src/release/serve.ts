@@ -49,7 +49,10 @@ export const signingWiring: WiringFactory = ({ db, masterKey, dataDir, builderId
     builderId,
   });
   return {
-    signer: { signRelease: (scope, req) => service.signRelease(scope, req) },
+    signer: {
+      signRelease: (scope, req) => service.signRelease(scope, req),
+      checkKey: (scope) => service.checkKey(scope),
+    },
     records: {
       async recorded(scope, runId, names) {
         const rows = await getRunArtifactsByName(db, scope, runId, names);

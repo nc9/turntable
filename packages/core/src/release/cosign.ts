@@ -11,16 +11,18 @@ export class CosignConfigError extends Error {}
 export const COSIGN_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$/;
 const OUTPUT_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$/;
-const FIELD = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const MAX_SIG = 4096;
 
-/** What a pinned client checks about a signed JSON manifest listing the release's artifacts. */
+/**
+ * The manifest shape a pinned client checks (a pinned client's): `{ version, signing_key_id,
+ * binaries: { "<platform-arch>": { filename, sha256 } } }`. A fixed shape, not a configurable one.
+ */
 export interface ManifestCheck {
-  /** The manifest field holding the co-signing key's id. */
-  key_id_field: string;
-  /** The manifest field holding the list of `{ name, sha256 }` entries (default `artifacts`). */
-  artifacts_field: string;
+  shape: "binaries-map";
 }
+
+/** Files of the manifest's artifact that are not binaries and need no signature of their own. */
+const MANIFEST_COMPANIONS: readonly string[] = ["SHA256SUMS"];
 
 export interface CosignKey {
   name: string;
@@ -32,7 +34,7 @@ export interface CosignKey {
   output_name: string;
   /** A format id from FORMATS. */
   format: string;
-  /** Optional `manifest-lists-artifacts` check, for a signed JSON manifest. */
+  /** Optional manifest check: the signed file is a JSON manifest of signed binaries. */
   manifest?: ManifestCheck;
 }
 
@@ -41,6 +43,14 @@ export function cosignKeyId(key: KeyObject | string): string {
   const k = typeof key === "string" ? createPublicKey(key) : key;
   const der = k.export({ type: "spki", format: "der" });
   return createHash("sha256").update(der).digest("hex").slice(0, 16);
+}
+
+/** The full SHA-256 over the key's SPKI DER (hex): the fingerprint the audit trail records. */
+export function cosignFingerprint(key: KeyObject | string): string {
+  const k = typeof key === "string" ? createPublicKey(key) : key;
+  return createHash("sha256")
+    .update(k.export({ type: "spki", format: "der" }))
+    .digest("hex");
 }
 
 // ---- formats: the plug point ----
@@ -157,14 +167,11 @@ export function parseCosignKey(raw: unknown): CosignKey {
   fmt!.checkKey(pub);
   if (o.manifest !== undefined && o.manifest !== null) {
     need(typeof o.manifest === "object" && !Array.isArray(o.manifest), "manifest is an object");
-    const m = o.manifest as Record<string, unknown>;
-    const mc: ManifestCheck = {
-      key_id_field: String(m.key_id_field ?? ""),
-      artifacts_field: String(m.artifacts_field ?? "artifacts"),
-    };
-    need(FIELD.test(mc.key_id_field), "manifest.key_id_field must be a plain field name");
-    need(FIELD.test(mc.artifacts_field), "manifest.artifacts_field must be a plain field name");
-    key.manifest = mc;
+    need(
+      (o.manifest as Record<string, unknown>).shape === "binaries-map",
+      'manifest.shape must be "binaries-map"',
+    );
+    key.manifest = { shape: "binaries-map" };
   }
   return key;
 }
@@ -189,8 +196,10 @@ export function checkCosignSet(keys: readonly CosignKey[]): void {
 
 // ---- verification ----
 
+/** One carried co-signature: over the key's `signs` file, or (with `file`) over a manifest's binary. */
 export interface CosignInput {
   name: string;
+  file?: string;
   signature_b64: string;
 }
 
@@ -198,6 +207,8 @@ export type CosignStatus = "verified" | "missing" | "invalid" | "unexpected";
 
 export interface CosignReport {
   name: string;
+  /** The binary this report is about, for a manifest's per-binary signature. */
+  file?: string;
   status: CosignStatus;
   /** Public-key fingerprint (never key material). Absent for an unknown name. */
   key_id?: string;
@@ -205,9 +216,12 @@ export interface CosignReport {
 }
 
 export interface VerifiedCosign {
+  /** The key name, plus `/<file>` for a binary's signature: unique per run. */
   name: string;
   keyId: string;
+  /** The file in the release whose bytes were signed. */
   signs: string;
+  /** The release asset name the signature is published under. */
   outputName: string;
   /** The signature bytes as published. */
   signature: Uint8Array;
@@ -218,120 +232,236 @@ export type CosignOutcome =
   | { ok: true; reports: CosignReport[]; verified: VerifiedCosign[] }
   | { ok: false; reason: string; detail: string; reports: CosignReport[] };
 
+/** What verification reads of the release: its files (unpacked from the artifacts) by path. */
+export interface CosignFiles {
+  /** The EXACT bytes of a file, as the lane re-hashed them for the approved manifest. */
+  read(file: string): Promise<Uint8Array | undefined>;
+  /** The artifact a file came from. */
+  artifactOf(file: string): string | undefined;
+  /** Every file of an artifact. */
+  filesOf(artifact: string): string[];
+}
+
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const stripV = (v: string): string => v.replace(/^v/, "");
 
 /**
  * Verifies the carried co-signatures against the configured keys. Every configured key needs
- * one; an unknown name or a repeat is refused. `bytesOf` returns the EXACT bytes of an artifact
- * as the lane re-hashed them for the approved manifest; `digests` is the lane's own digest map.
+ * one over its `signs` file; a key with a manifest check needs one more over each binary the
+ * manifest lists (and no other). An unknown name, a repeat or a stray one is refused. `digests` is
+ * the lane's own digest map by file path; `tag` is the release tag the manifest's version must match.
  */
 export async function verifyCosignatures(
   keys: readonly CosignKey[],
   carried: readonly CosignInput[],
-  bytesOf: (artifact: string) => Promise<Uint8Array | undefined>,
+  files: CosignFiles,
   digests: Readonly<Record<string, string>>,
+  tag: string,
 ): Promise<CosignOutcome> {
   const reports: CosignReport[] = [];
   const verified: VerifiedCosign[] = [];
   const byName = new Map(keys.map((k) => [k.name, k]));
   const given = new Map<string, CosignInput>();
+  const used = new Set<string>();
   let firstFail: { reason: string; detail: string } | undefined;
   const fail = (reason: string, detail: string): void => {
     firstFail ??= { reason, detail };
   };
+  const refKey = (c: { name: string; file?: string | undefined }): string =>
+    c.file === undefined ? c.name : `${c.name}/${c.file}`;
   for (const c of carried) {
-    if (!byName.has(c.name)) {
-      reports.push({ name: c.name, status: "unexpected", reason: "cosign_unexpected" });
-      fail("cosign_unexpected", `${c.name} is not a configured co-signing key`);
-    } else if (given.has(c.name)) {
-      reports.push({ name: c.name, status: "invalid", reason: "cosign_duplicate" });
-      fail("cosign_duplicate", `${c.name} is given twice`);
-    } else given.set(c.name, c);
+    const bad = (reason: string, detail: string, status: CosignStatus): void => {
+      reports.push({
+        name: c.name,
+        ...(c.file === undefined ? {} : { file: c.file }),
+        status,
+        reason,
+      });
+      fail(reason, detail);
+    };
+    const k = byName.get(c.name);
+    if (!k) bad("cosign_unexpected", `${c.name} is not a configured co-signing key`, "unexpected");
+    else if (c.file !== undefined && !k.manifest)
+      bad("cosign_unexpected", `${c.name} signs one file, not a manifest's binaries`, "unexpected");
+    else if (given.has(refKey(c)))
+      bad("cosign_duplicate", `${refKey(c)} is given twice`, "invalid");
+    else given.set(refKey(c), c);
   }
+  const decode = (c: CosignInput): Uint8Array | undefined =>
+    c.signature_b64.length > MAX_SIG || !B64.test(c.signature_b64)
+      ? undefined
+      : new Uint8Array(Buffer.from(c.signature_b64, "base64"));
+
   for (const k of keys) {
     const keyId = cosignKeyId(k.public_key_pem);
-    const c = given.get(k.name);
-    const bad = (reason: string, detail: string): void => {
-      reports.push({ name: k.name, status: "invalid", key_id: keyId, reason });
+    const pub = createPublicKey(k.public_key_pem);
+    const fmt = FORMATS[k.format]!;
+    const bad = (reason: string, detail: string, file?: string): void => {
+      reports.push({
+        name: k.name,
+        ...(file === undefined ? {} : { file }),
+        status: "invalid",
+        key_id: keyId,
+        reason,
+      });
       fail(reason, `${k.name}: ${detail}`);
     };
-    if (!c) {
-      reports.push({ name: k.name, status: "missing", key_id: keyId, reason: "cosign_missing" });
-      fail("cosign_missing", `${k.name} must co-sign ${k.signs}`);
+    /** Checks one signature over one file's exact bytes; returns the verified record or undefined. */
+    const check = async (
+      c: CosignInput | undefined,
+      file: string,
+      outputName: string,
+      reportFile?: string,
+    ): Promise<VerifiedCosign | undefined> => {
+      if (!c) {
+        reports.push({
+          name: k.name,
+          ...(reportFile === undefined ? {} : { file: reportFile }),
+          status: "missing",
+          key_id: keyId,
+          reason: "cosign_missing",
+        });
+        fail("cosign_missing", `${k.name} must co-sign ${file}`);
+        return undefined;
+      }
+      used.add(refKey(c));
+      const sig = decode(c);
+      if (!sig) {
+        bad("cosign_bad_encoding", "signature_b64 is not base64", reportFile);
+        return undefined;
+      }
+      const signed = await files.read(file);
+      if (!signed || !(file in digests)) {
+        bad("cosign_artifact_missing", `${file} is not a file of this release`, reportFile);
+        return undefined;
+      }
+      // The bytes checked are the bytes whose digest the approved manifest binds.
+      if (createHash("sha256").update(signed).digest("hex") !== digests[file]) {
+        bad("cosign_artifact_differs", `${file} differs from the approved digest`, reportFile);
+        return undefined;
+      }
+      const res = fmt.verify(pub, signed, sig);
+      if (!res.ok) {
+        bad(
+          res.reason,
+          `the signature over ${file} does not verify under the configured key`,
+          reportFile,
+        );
+        return undefined;
+      }
+      reports.push({
+        name: k.name,
+        ...(reportFile === undefined ? {} : { file: reportFile }),
+        status: "verified",
+        key_id: keyId,
+      });
+      return {
+        name: reportFile === undefined ? k.name : `${k.name}/${reportFile}`,
+        keyId,
+        signs: file,
+        outputName,
+        signature: sig,
+        signatureSha256: createHash("sha256").update(sig).digest("hex"),
+      };
+    };
+
+    const head = await check(given.get(k.name), k.signs, k.output_name);
+    if (!head) continue;
+    verified.push(head);
+    if (!k.manifest) continue;
+
+    // The manifest: the exact bytes just verified, read as the fixed shape.
+    const parsed = parseManifest(await files.read(k.signs), keyId, tag);
+    if (typeof parsed === "string") {
+      bad("cosign_manifest_check", parsed);
       continue;
     }
-    if (c.signature_b64.length > MAX_SIG || !B64.test(c.signature_b64)) {
-      bad("cosign_bad_encoding", "signature_b64 is not base64");
-      continue;
-    }
-    const sig = new Uint8Array(Buffer.from(c.signature_b64, "base64"));
-    const signed = await bytesOf(k.signs);
-    if (!signed || !(k.signs in digests)) {
-      bad("cosign_artifact_missing", `${k.signs} is not an artifact of this release`);
-      continue;
-    }
-    // The bytes checked are the bytes whose digest the approved manifest binds.
-    if (createHash("sha256").update(signed).digest("hex") !== digests[k.signs]) {
-      bad("cosign_artifact_differs", `${k.signs} differs from the approved digest`);
-      continue;
-    }
-    const res = FORMATS[k.format]!.verify(createPublicKey(k.public_key_pem), signed, sig);
-    if (!res.ok) {
-      bad(res.reason, `the signature over ${k.signs} does not verify under the configured key`);
-      continue;
-    }
-    if (k.manifest) {
-      const why = await checkManifest(k, keyId, signed, bytesOf, digests);
-      if (why) {
-        bad("cosign_manifest_check", why);
+    const listed = new Set<string>();
+    const outputs = new Set<string>([k.output_name]);
+    for (const [platform, e] of Object.entries(parsed.binaries)) {
+      if (listed.has(e.filename)) {
+        bad("cosign_manifest_check", `${platform}: ${e.filename} is listed twice`);
         continue;
       }
+      listed.add(e.filename);
+      if (!(e.filename in digests) || !(await files.read(e.filename))) {
+        bad("cosign_manifest_check", `${platform}: ${e.filename} is not a file of this release`);
+        continue;
+      }
+      if (e.sha256 !== digests[e.filename]) {
+        bad(
+          "cosign_manifest_check",
+          `${platform}: the manifest's sha256 for ${e.filename} differs from the bytes the lane publishes`,
+        );
+        continue;
+      }
+      const out = `${e.filename}.sig`;
+      if (!OUTPUT_NAME.test(out) || out in digests || outputs.has(out)) {
+        bad("cosign_manifest_check", `${platform}: ${out} is not a usable signature asset name`);
+        continue;
+      }
+      outputs.add(out);
+      const v = await check(given.get(`${k.name}/${e.filename}`), e.filename, out, e.filename);
+      if (v) verified.push(v);
     }
-    reports.push({ name: k.name, status: "verified", key_id: keyId });
-    verified.push({
-      name: k.name,
-      keyId,
-      signs: k.signs,
-      outputName: k.output_name,
-      signature: sig,
-      signatureSha256: createHash("sha256").update(sig).digest("hex"),
+    // No unsigned binary beside the signed ones: every other file of the manifest's artifact
+    // must be the manifest itself or a known companion.
+    const art = files.artifactOf(k.signs);
+    for (const f of art === undefined ? [] : files.filesOf(art)) {
+      if (f === k.signs || listed.has(f) || MANIFEST_COMPANIONS.includes(f)) continue;
+      bad("cosign_manifest_check", `${f} is in ${art} but not listed in the manifest (unsigned)`);
+    }
+  }
+  // A signature that matched no file the lane checked.
+  for (const [ref, c] of given) {
+    if (used.has(ref) || !byName.has(c.name)) continue;
+    reports.push({
+      name: c.name,
+      ...(c.file === undefined ? {} : { file: c.file }),
+      status: "unexpected",
+      reason: "cosign_unexpected",
     });
+    fail("cosign_unexpected", `${ref} signs a file the manifest does not list`);
   }
   if (firstFail) return { ok: false, ...firstFail, reports };
   return { ok: true, reports, verified };
 }
 
-/** `manifest-lists-artifacts`: the key id and every listed artifact digest must match. */
-async function checkManifest(
-  k: CosignKey,
+/** The fixed manifest shape; returns the problem as a string, or the parsed manifest. */
+function parseManifest(
+  bytes: Uint8Array | undefined,
   keyId: string,
-  manifestBytes: Uint8Array,
-  bytesOf: (artifact: string) => Promise<Uint8Array | undefined>,
-  digests: Readonly<Record<string, string>>,
-): Promise<string | undefined> {
-  const m = k.manifest!;
+  tag: string,
+): { binaries: Record<string, { filename: string; sha256: string }> } | string {
   let doc: unknown;
   try {
-    doc = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
+    doc = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
-    return `${k.signs} is not a JSON manifest`;
+    return "the signed file is not a JSON manifest";
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc))
-    return `${k.signs} is not a JSON object`;
+    return "the manifest is not a JSON object";
   const o = doc as Record<string, unknown>;
-  if (o[m.key_id_field] !== keyId)
-    return `the manifest's ${m.key_id_field} is not the configured key's id ${keyId}`;
-  const list = o[m.artifacts_field];
-  if (!Array.isArray(list)) return `the manifest has no ${m.artifacts_field} list`;
-  for (const e of list) {
-    const x = e as { name?: unknown; sha256?: unknown };
-    if (typeof x?.name !== "string" || typeof x.sha256 !== "string")
-      return "a manifest entry lacks a name or sha256";
-    if (!(x.name in digests) || !(await bytesOf(x.name)))
-      return `the manifest lists ${x.name}, which is not an artifact of this release`;
-    if (x.sha256.toLowerCase() !== digests[x.name]) {
-      return `the manifest's sha256 for ${x.name} differs from the bytes the lane publishes`;
-    }
+  if (o.signing_key_id !== keyId)
+    return `the manifest's signing_key_id is not the configured key's id ${keyId}`;
+  if (typeof o.version !== "string" || stripV(o.version) !== stripV(tag))
+    return `the manifest's version does not match the tag ${tag}`;
+  const b = o.binaries;
+  if (typeof b !== "object" || b === null || Array.isArray(b) || Object.keys(b).length === 0)
+    return "the manifest's binaries is not a non-empty map";
+  const out: Record<string, { filename: string; sha256: string }> = {};
+  for (const [platform, e] of Object.entries(b)) {
+    const x = e as { filename?: unknown; sha256?: unknown } | null;
+    if (
+      typeof x !== "object" ||
+      x === null ||
+      typeof x.filename !== "string" ||
+      typeof x.sha256 !== "string"
+    )
+      return `${platform}: an entry needs a filename and a sha256`;
+    if (!HEX64.test(x.sha256)) return `${platform}: sha256 must be 64 lowercase hex characters`;
+    out[platform] = { filename: x.filename, sha256: x.sha256 };
   }
-  return undefined;
+  return { binaries: out };
 }

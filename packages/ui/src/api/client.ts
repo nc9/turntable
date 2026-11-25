@@ -37,6 +37,7 @@ import type {
   LaneAction,
   LaneConfig,
   LaneKey,
+  LaneCosignKey,
   LaneSecretStatus,
   StepUpChallenge,
   StepUpProof,
@@ -227,6 +228,11 @@ export interface TurntableApi {
   }): Promise<Record<string, unknown>>;
   laneConfig(args: { targetOrg: string; targetProject: string }): Promise<LaneConfig>;
   laneKey(args: { targetOrg: string; name: string }): Promise<LaneKey>;
+  /** A project's co-signing keys (public information: fingerprints, what each signs). */
+  laneCosignKeys(args: {
+    targetOrg: string;
+    targetProject: string;
+  }): Promise<{ keys: LaneCosignKey[]; configVersion: number }>;
   laneSecretStatus(args: {
     targetOrg: string;
     targetProject: string;

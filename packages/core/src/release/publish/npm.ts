@@ -79,6 +79,30 @@ export function inspectNpmTarball(
   return { ok: true, version, manifest, readmes };
 }
 
+/**
+ * The tarball a strict npm target publishes: the single `.tgz` file of the named ARTIFACT. An
+ * artifact that is one raw file, or a name that is itself a file of the release, is that file
+ * (the older meaning of `artifact`).
+ */
+export function npmTarballOf(
+  ctx: Pick<PublishContext, "filesOf" | "digests">,
+  artifact: string,
+): { ok: true; file: string } | { ok: false; reason: string; detail: string } {
+  const files = ctx.filesOf(artifact);
+  if (files.length === 1 && files[0] === artifact) return { ok: true, file: artifact };
+  if (files.length > 0) {
+    const tgz = files.filter((f) => f.endsWith(".tgz"));
+    if (tgz.length === 1) return { ok: true, file: tgz[0]! };
+    return {
+      ok: false,
+      reason: tgz.length === 0 ? "no_tarball" : "ambiguous_tarball",
+      detail: `${artifact} holds ${tgz.length} .tgz files, expected exactly one`,
+    };
+  }
+  if (artifact in ctx.digests) return { ok: true, file: artifact };
+  return { ok: false, reason: "artifact_bytes_missing", detail: artifact };
+}
+
 export async function publishNpm(
   key: string,
   t: NpmTarget,
@@ -106,11 +130,14 @@ export async function publishNpm(
     ...(detail ? { detail } : {}),
   });
 
-  const bytes = await ctx.readBytes(t.artifact);
-  if (!bytes) return refuse("artifact_bytes_missing", t.artifact);
+  const found = npmTarballOf(ctx, t.artifact);
+  if (!found.ok) return refuse(found.reason, found.detail);
+  const file = found.file;
+  const bytes = await ctx.readBytes(file);
+  if (!bytes) return refuse("artifact_bytes_missing", file);
   // The bytes sent are the bytes the lane verified.
   const sha = createHash("sha256").update(bytes).digest("hex");
-  if (ctx.digests[t.artifact] !== sha) return refuse("digest_mismatch", t.artifact);
+  if (ctx.digests[file] !== sha) return refuse("digest_mismatch", file);
 
   const insp = inspectNpmTarball(bytes, t.package, ctx.tag);
   if (!insp.ok) return refuse(insp.reason, insp.detail);
