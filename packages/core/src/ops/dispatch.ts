@@ -215,7 +215,8 @@ async function laneGate(
   name: string,
 ): Promise<void> {
   const refuse = async (): Promise<never> => {
-    if (principal.kind === "session" || principal.kind === "token") {
+    // Every org-bound principal's refusal is audited in its org's chain (a member principal too).
+    if (principal.kind === "session" || principal.kind === "token" || principal.kind === "member") {
       await appendAudit(
         env.db,
         { orgId: principal.orgId },
