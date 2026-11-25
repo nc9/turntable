@@ -158,6 +158,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `release_publish_target_list` | none | no |  | read | admin | instance | A project's release lane configuration: the pin and each publish target. |
 | `release_publish_target_delete` | none | no |  | destructive | admin | instance | Remove a publish target of a project, in the release lane. |
 | `release_secret_set` | none | no |  | write | admin | instance | Set a lane secret (a publish credential) for a project, in the release lane's vault. |
+| `release_init_key` | none | no |  | write | admin | instance | Create the release lane's signing key for an org, inside the lane. |
+| `release_public_key` | `GET /api/v1/release/keys/{name}` | yes |  | read | reader | token | The public half of an org's release signing key, to pin and verify releases with. |
 | `instance_bind_github_login` | none | no |  | write | admin | instance | Grant an org role to a GitHub login (instance administrator only). |
 | `resync_installation` | `POST /api/v1/github/installations/{installation_id}/resync` | yes |  | write | release_operator | token | Re-sync one GitHub App installation of this org with GitHub. |
 | `set_oidc_audiences` | `POST /api/v1/oidc-audiences` | no |  | write | admin | token | Limit the OIDC audiences a project's jobs may ask for, or lift the limit. |

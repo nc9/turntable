@@ -25,6 +25,7 @@ import {
 } from "../db/repos";
 import { manifestSha256 } from "../release/manifest";
 import type { ReleaseApprovalVerifier, ApprovalSubject } from "./approvals";
+import { CONFIG_CHANGED_REASON } from "../release/attest";
 import { decideSigning, type SigningDenial } from "./policy";
 
 export type Backend = "builtin" | "aws-kms" | "gcp-kms";
@@ -66,6 +67,11 @@ export interface SignRequest {
         ref: string;
         subjects: readonly Artifact[];
         archives?: readonly Artifact[] | undefined;
+        /**
+         * The lane's configuration version now: a release approval given under another version
+         * does not count (the pin, targets or secrets changed since the approver looked).
+         */
+        configVersion?: number | undefined;
       }
     | undefined;
 }
@@ -151,6 +157,9 @@ export class SigningService {
             headSha: run.sha,
             workflowHash,
             manifestSha256: manifest,
+            ...(req.verified?.configVersion !== undefined
+              ? { laneConfigVersion: req.verified.configVersion }
+              : {}),
           };
     const approval =
       subject === undefined ? undefined : await this.#o.approvals.verify(subject, environment);
@@ -167,6 +176,13 @@ export class SigningService {
     });
     if (!decision.ok) {
       // A classified reason for a release approval that exists but does not cover these bytes.
+      if (
+        decision.reason === "no_approval" &&
+        approval?.approved === false &&
+        approval.reason === "config_changed"
+      ) {
+        return deny("config_changed", CONFIG_CHANGED_REASON, { manifest_sha256: manifest });
+      }
       if (
         decision.reason === "no_approval" &&
         approval?.approved === false &&

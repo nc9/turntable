@@ -40,6 +40,7 @@ import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
 import { instanceStepUpTarget } from "./instance-step-up";
 import {
   inputTarget,
+  INSTANCE_ORG_STEP_UP_OPS,
   INSTANCE_STEP_UP_OPS,
   SESSION_STEP_UP_OPS,
   verifyStepUp,
@@ -608,7 +609,12 @@ export async function dispatch(
           );
         }
         // The org that must sign is the one the call names; its enrolled approvers are the factor.
-        const t = await instanceStepUpTarget(env.db, input, op.secretInputFields);
+        const t = await instanceStepUpTarget(
+          env.db,
+          input,
+          op.secretInputFields,
+          INSTANCE_ORG_STEP_UP_OPS.has(op.name),
+        );
         stepUp = await verifyStepUp(
           {
             db: env.db,

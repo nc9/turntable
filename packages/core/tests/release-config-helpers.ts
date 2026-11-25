@@ -20,6 +20,7 @@ import type { AttestationStore } from "../src/release/attest";
 import { startChannel, type RunningChannel } from "../src/release/channel";
 import { createLaneConfigClient } from "../src/release/channel-client";
 import { LaneConfig } from "../src/release/config";
+import type { FileKeyVault } from "../src/release/key-vault";
 import type { ReleaseProxy } from "../src/release/proxy";
 import { SecretVault } from "../src/secrets/vault";
 
@@ -73,6 +74,8 @@ export async function opsHarness(o: {
   attest: AttestationStore;
   orgId: string;
   lane?: boolean;
+  /** The lane's sealed signing keys; absent, the lane has no release master key. */
+  keys?: FileKeyVault;
   /** Console calls made while this harness runs are kept here (the server log capture). */
   captureConsole?: boolean;
 }) {
@@ -84,6 +87,7 @@ export async function opsHarness(o: {
     vault,
     db: o.db,
     githubCredential: true,
+    ...(o.keys ? { keys: o.keys } : {}),
   });
   const requestKey = randomBytes(32).toString("hex");
   const configKey = randomBytes(32).toString("hex");

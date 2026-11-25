@@ -218,6 +218,8 @@ export class AttestationStore {
       artifacts: readonly string[];
       /** The signed provenance, as JSON text, kept so a later publish attaches the lane's own. */
       envelope?: string;
+      /** The config version the approval was judged under; default: the version now. */
+      configVersion?: number;
     },
     now: number,
     ttlMs: number = APPROVAL_TTL_MS,
@@ -230,7 +232,13 @@ export class AttestationStore {
         .query(
           "UPDATE approved_releases SET expires_at = ?, config_version = ? WHERE org_id = ? AND project_id = ? AND run_id = ?",
         )
-        .run(now + ttlMs, this.configVersion(), id.orgId, id.projectId, id.runId);
+        .run(
+          now + ttlMs,
+          r.configVersion ?? this.configVersion(),
+          id.orgId,
+          id.projectId,
+          id.runId,
+        );
       return true;
     }
     this.#db
@@ -250,7 +258,7 @@ export class AttestationStore {
         now,
         r.envelope ?? null,
         now + ttlMs,
-        this.configVersion(),
+        r.configVersion ?? this.configVersion(),
       );
     return true;
   }

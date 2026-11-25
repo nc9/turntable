@@ -460,7 +460,11 @@ export const releaseApprovalChallenge = defineOp({
     "run (the run's release-class artifacts, or the names given), as name, sha256 and size. The " +
     "release lane signs only an artifact set with exactly that digest, once. Refused when no " +
     "artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key " +
-    "signs `canonical`. Issuing a statement approves nothing. Not available over MCP.",
+    "signs `canonical`. The statement also binds `lane_config_version`, read from the release lane " +
+    "when it is issued: the lane refuses to sign or publish if its configuration (pin, targets, " +
+    "secrets) changed since, with `release lane config changed since approval; re-approve`. " +
+    "Refused when the lane's config channel is not configured or cannot be reached. " +
+    "Issuing a statement approves nothing. Not available over MCP.",
   input: z.object({
     run_id: z.string().min(1).max(64),
     approver: z.string().min(1).max(64).describe("The approver key id that will sign."),
@@ -530,6 +534,32 @@ export const releaseApprovalChallenge = defineOp({
         throw new OpError("conflict", `release_manifest_unknown: ${e.message}`);
       throw e;
     }
+    // The lane's configuration version, read from the lane now: the approver signs over the pin,
+    // targets and secrets as they stand, and the lane refuses to sign or publish if they move.
+    if (!ctx.releaseConfig) {
+      throw new OpError(
+        "unavailable",
+        "release_lane_unreachable: the release lane's config channel is not configured here, so the lane's configuration version cannot be bound into the approval",
+        { reason: "lane_not_configured" },
+      );
+    }
+    const laneVersion = await ctx.releaseConfig.call("version", {
+      orgId: ctx.scope.orgId,
+      projectId: ctx.scope.projectId,
+    });
+    if (!laneVersion.ok) {
+      throw new OpError(
+        "unavailable",
+        `release_lane_unreachable: could not read the release lane's configuration version (${laneVersion.reason})`,
+        { reason: "lane_unreachable" },
+      );
+    }
+    const laneConfigVersion = Number(
+      (laneVersion.result as { config_version?: unknown }).config_version,
+    );
+    if (!Number.isInteger(laneConfigVersion) || laneConfigVersion < 0) {
+      throw new OpError("unavailable", "release_lane_unreachable: the lane returned no version");
+    }
     const { org, project } = await slugs(ctx);
     const statement = releaseStatementSchema.parse({
       type: RELEASE_STATEMENT_TYPE,
@@ -540,6 +570,7 @@ export const releaseApprovalChallenge = defineOp({
       workflow_hash: trust.workflowHash,
       environment,
       manifest_sha256: manifest,
+      lane_config_version: laneConfigVersion,
       approver: input.approver,
       expires_at: now + input.ttl_minutes * 60_000,
       nonce: nonce(),

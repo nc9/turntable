@@ -8,6 +8,8 @@ import { vaultCandidates } from "../db/repos";
 import type { SecretVault } from "../secrets/vault";
 import { VaultInputError } from "../secrets/vault";
 import type { AttestationStore } from "./attest";
+import { initReleaseKey, readReleaseKey, ReleaseKeyError, type ReleaseKeyInfo } from "./init-key";
+import type { FileKeyVault } from "./key-vault";
 import { parseTarget, PublishConfigError, TARGET_KEY } from "./publish/config";
 import type { PublishTarget } from "./publish/types";
 
@@ -137,6 +139,11 @@ export interface LaneConfigOptions {
   /** Whether the lane holds its GitHub publish token (for a github-release target). */
   githubCredential?: boolean | undefined;
   npmRegistry?: string | undefined;
+  /**
+   * The lane's signing keys, sealed under the release master key. Absent: the release master key
+   * is not configured here, and creating or reading a key is refused.
+   */
+  keys?: FileKeyVault | undefined;
   now?: () => number;
 }
 
@@ -189,6 +196,43 @@ export class LaneConfig {
       pinned_repo: this.#o.attest.pinnedRepo(orgId, projectId) ?? null,
       targets,
     };
+  }
+
+  /**
+   * Creates the org's signing key `name`, inside the lane: the private half is sealed under the
+   * release master key and never leaves. Refuses a name already taken and an unset master key.
+   * Returns the public half only.
+   */
+  async initKey(orgId: string, name: string): Promise<ReleaseKeyInfo> {
+    const keys = this.#needKeys();
+    try {
+      return await initReleaseKey({ vault: keys, orgId, name, refuseExisting: true });
+    } catch (e) {
+      if (e instanceof ReleaseKeyError) throw new LaneConfigError(e.message);
+      throw e;
+    }
+  }
+
+  /** The public half of the org's signing key `name`. */
+  async publicKey(orgId: string, name: string): Promise<ReleaseKeyInfo> {
+    const keys = this.#needKeys();
+    try {
+      const k = await readReleaseKey({ vault: keys, orgId, name });
+      if (!k) throw new LaneConfigError("no such release key");
+      return k;
+    } catch (e) {
+      if (e instanceof ReleaseKeyError) throw new LaneConfigError(e.message);
+      throw e;
+    }
+  }
+
+  #needKeys(): FileKeyVault {
+    if (!this.#o.keys) {
+      throw new LaneConfigError(
+        "the release master key is not configured on this lane, so it holds no signing keys",
+      );
+    }
+    return this.#o.keys;
   }
 
   async #hasSecret(orgId: string, projectId: string, name: string): Promise<boolean> {

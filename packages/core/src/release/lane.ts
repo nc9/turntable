@@ -43,6 +43,8 @@ export interface ReleaseSigner {
         subjects: readonly { name: string; sha256: string }[];
         /** The zips the subjects were unpacked from, with the digest of each zip. */
         archives?: readonly { name: string; sha256: string }[];
+        /** The lane's own configuration version, read before signing: an approval must name it. */
+        configVersion?: number;
       };
     },
   ): Promise<
@@ -115,6 +117,8 @@ type Decision =
         sha: string;
         digests: Record<string, string>;
         envelope: unknown;
+        /** The lane's configuration version the approval was judged under. */
+        configVersion: number;
         /** The signed files, still unpacked; the lane removes them when it is done. */
         files: ReleaseFiles;
       };
@@ -165,6 +169,7 @@ export class ReleaseLane {
           sha: decision.verified.sha,
           artifacts: Object.keys(decision.verified.digests),
           envelope: JSON.stringify(decision.verified.envelope),
+          configVersion: decision.verified.configVersion,
         },
         now(),
       );
@@ -309,6 +314,9 @@ export class ReleaseLane {
       const c = this.#o.attest.checkRelease(identity, digests);
       if (c.state === "mismatch") return refuse("attestation_mismatch", c.why);
       const now = (this.#o.now ?? Date.now)();
+      // The configuration the approval is judged against, and (below) the one the signed release
+      // is recorded under: a change in between leaves it stale, so a publish refuses.
+      const configVersion = this.#o.attest.configVersion();
       this.#o.attest.attestRelease(identity, digests, now);
 
       if ((await getFreeze(this.#o.db, scope)).frozen) return refuse("frozen");
@@ -326,6 +334,7 @@ export class ReleaseLane {
           ref: `refs/tags/${req.tag}`,
           subjects,
           ...(files.archives.length > 0 ? { archives: files.archives } : {}),
+          configVersion,
         },
       });
       if (!out.ok) return refuse(`signer:${out.reason}`, out.detail);
@@ -342,7 +351,14 @@ export class ReleaseLane {
         status: "signed",
         result: { keyid: out.keyid, envelope: out.envelope, subjects: out.subjects },
         facts,
-        verified: { repo: pinned, sha: tag.sha, digests, envelope: out.envelope, files },
+        verified: {
+          repo: pinned,
+          sha: tag.sha,
+          digests,
+          envelope: out.envelope,
+          files,
+          configVersion,
+        },
       };
     } finally {
       if (!keep) await files.dispose();

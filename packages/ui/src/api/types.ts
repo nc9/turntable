@@ -311,6 +311,8 @@ export type ReleaseStatement = Omit<ApprovalStatement, "type"> & {
   type: "turntable.approve_release.v2";
   /** sha256 hex of the canonical manifest of the artifacts the release lane will sign. */
   manifest_sha256: string;
+  /** The release lane's configuration version the approver signs over (the pin, targets, secrets). */
+  lane_config_version: number;
 };
 
 export type ReleaseApprovalChallenge = ApprovalChallenge<ReleaseStatement> & {

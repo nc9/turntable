@@ -87,7 +87,14 @@ export const INSTANCE_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "release_publish_target_set",
   "release_publish_target_delete",
   "release_secret_set",
+  "release_init_key",
 ]);
+
+/**
+ * The instance step-up ops that name an org and no project (`target_org` and no
+ * `target_project`): a signing key belongs to the org.
+ */
+export const INSTANCE_ORG_STEP_UP_OPS: ReadonlySet<string> = new Set(["release_init_key"]);
 
 /** The principal a step-up challenge row is issued to. */
 export const stepUpHolder = (kind: "session" | "instance", id: string): string => `${kind}:${id}`;

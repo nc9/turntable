@@ -7487,7 +7487,7 @@
       "post": {
         "operationId": "release_approval_challenge",
         "summary": "Issue the statement an approver signs to approve a release's artifacts.",
-        "description": "Builds the turntable.approve_release.v2 statement for a run whose jobs wait on the project's release environment, and its single-use challenge. The statement binds the org, project, run, head sha, workflow hash, environment, the approver's key id, an expiry, a nonce and manifest_sha256: the digest the server computes from the artifacts it has recorded for the run (the run's release-class artifacts, or the names given), as name, sha256 and size. The release lane signs only an artifact set with exactly that digest, once. Refused when no artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key signs `canonical`. Issuing a statement approves nothing. Not available over MCP.\n\nRequired role: operator. Side effects: write; audited.",
+        "description": "Builds the turntable.approve_release.v2 statement for a run whose jobs wait on the project's release environment, and its single-use challenge. The statement binds the org, project, run, head sha, workflow hash, environment, the approver's key id, an expiry, a nonce and manifest_sha256: the digest the server computes from the artifacts it has recorded for the run (the run's release-class artifacts, or the names given), as name, sha256 and size. The release lane signs only an artifact set with exactly that digest, once. Refused when no artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key signs `canonical`. The statement also binds `lane_config_version`, read from the release lane when it is issued: the lane refuses to sign or publish if its configuration (pin, targets, secrets) changed since, with `release lane config changed since approval; re-approve`. Refused when the lane's config channel is not configured or cannot be reached. Issuing a statement approves nothing. Not available over MCP.\n\nRequired role: operator. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -9323,7 +9323,7 @@
       "get": {
         "operationId": "get_release_request",
         "summary": "The state of a release request: pending, signed, or refused with a reason.",
-        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
+        "description": "Returns one release request by id: its status (pending, claimed, signed, refused, error), the refusal reason as a short code when the release lane refused it, and the key id when it signed, and for a signed request `provenance`: the lane's signed DSSE envelope as JSON text (null otherwise), which a consumer verifies against the pinned public key. Needs one project and release_operator or admin. Read-only.\n\nRequired role: release_operator. Read-only.",
         "parameters": [
           {
             "name": "id",
@@ -9409,6 +9409,10 @@
                     "key_id": {
                       "description": "The id of the key that signed, when it signed.",
                       "type": ["string", "null"]
+                    },
+                    "provenance": {
+                      "description": "The lane's signed DSSE envelope (the provenance) as JSON text, for a signed request; null otherwise. Verify it against the pinned public key (release_public_key, `turntable verify --pubkey`); the server's copy is not trusted, the signature is.",
+                      "type": ["string", "null"]
                     }
                   },
                   "required": [
@@ -9420,7 +9424,8 @@
                     "reason",
                     "created_at",
                     "finished_at",
-                    "key_id"
+                    "key_id",
+                    "provenance"
                   ],
                   "additionalProperties": false
                 }
@@ -9844,6 +9849,101 @@
         ],
         "x-turntable-effect": "write",
         "x-turntable-min-role": "viewer",
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/release/keys/{name}": {
+      "get": {
+        "operationId": "release_public_key",
+        "summary": "The public half of an org's release signing key, to pin and verify releases with.",
+        "description": "Returns the public key of the org's release signing key `name`: `keyid`, `public_key_pem` (SPKI PEM, Ed25519), `created_at` and `status`. It is public material: anyone who can read the org may call it, over REST or MCP, and it is what `turntable verify --pubkey` checks a release against. Compare its fingerprint with the one recorded out of band when the key was created (release_init_key); never trust it from this response alone. Read-only. Refused when the release lane is not configured or has no such key.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "The key's name, as a project's `builtin:<name>` signing key setting.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keyid": {
+                      "type": "string",
+                      "description": "Hex sha256 of the public key (SPKI DER): its stable id."
+                    },
+                    "public_key_pem": {
+                      "type": "string",
+                      "description": "The public key, SPKI PEM, Ed25519."
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "description": "When the lane sealed the key, as an ISO timestamp."
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["active"],
+                      "description": "The key's state."
+                    }
+                  },
+                  "required": ["keyid", "public_key_pem", "created_at", "status"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
         "x-turntable-untrusted-output": false
       }
     },
@@ -11063,6 +11163,11 @@
                         "type": "string",
                         "pattern": "^[0-9a-f]{64,64}$"
                       },
+                      "lane_config_version": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
                       "approver": {
                         "type": "string",
                         "minLength": 1,
@@ -11087,6 +11192,7 @@
                       "workflow_hash",
                       "environment",
                       "manifest_sha256",
+                      "lane_config_version",
                       "approver",
                       "expires_at",
                       "nonce"
@@ -14500,7 +14606,7 @@
       "post": {
         "operationId": "instance_step_up_challenge",
         "summary": "Start a passkey step-up for one release lane configuration change.",
-        "description": "Names a release lane configuration op (release_pin_repo, release_publish_target_set, release_publish_target_delete or release_secret_set) and the exact `input` it will be called with, and returns a single-use WebAuthn challenge. For release_secret_set send `value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and the approver's device never sees it. A passkey enrolled as an approver in `target_org` signs `challenge`; the configuration call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature) beside its input. The step-up is bound to the instance token, the op and a hash of that exact input, so it authorizes no other op and no other parameters, can be used once, and lasts 5 minutes. Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "description": "Names a release lane configuration op (release_pin_repo, release_publish_target_set, release_publish_target_delete, release_secret_set or release_init_key) and the exact `input` it will be called with, and returns a single-use WebAuthn challenge. For release_secret_set send `value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and the approver's device never sees it. A passkey enrolled as an approver in `target_org` signs `challenge`; the configuration call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature) beside its input. The step-up is bound to the instance token, the op and a hash of that exact input, so it authorizes no other op and no other parameters, can be used once, and lasts 5 minutes. Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -15040,6 +15146,88 @@
           }
         ],
         "x-turntable-effect": "destructive",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/release/keys": {
+      "post": {
+        "operationId": "release_init_key",
+        "summary": "Create the release lane's signing key for an org, inside the lane.",
+        "description": "Generates an Ed25519 signing key INSIDE the release lane and seals it under the release master key in the lane's own directory: the private key is never returned, exported, logged or audited, and the main process never holds it. Returns the public half only (`keyid`, `public_key_pem`, `created_at`): record its fingerprint out of band, then pin it where releases are verified. Refuses a name that already exists in the org (it never overwrites; rotation is a separate act) and refuses when the lane has no release master key. A project signs with it by setting its signing key to `builtin:<name>`. Needs the instance administrator's token AND a fresh passkey step-up from an approver enrolled in `target_org`: call instance_step_up_challenge for this exact input, sign its challenge with the passkey, and send the assertion as `step_up` beside the input. The step-up is bound to this op and input, single-use, and lasts 5 minutes. Refused when the lane is not configured. Audited with the key id and who. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org that owns the project."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The key's name, as a project's `builtin:<name>` signing key setting."
+                  }
+                },
+                "required": ["target_org", "name"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keyid": {
+                      "type": "string",
+                      "description": "Hex sha256 of the public key (SPKI DER): its stable id."
+                    },
+                    "public_key_pem": {
+                      "type": "string",
+                      "description": "The public key, SPKI PEM, Ed25519."
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "description": "When the lane sealed the key, as an ISO timestamp."
+                    }
+                  },
+                  "required": ["keyid", "public_key_pem", "created_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
         "x-turntable-instance-only": true,
         "x-turntable-untrusted-output": false
       }

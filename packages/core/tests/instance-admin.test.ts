@@ -277,6 +277,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_step_up_challenge",
       "instance_whoami",
       "move_repo_binding",
+      "release_init_key",
       "release_pin_repo",
       "release_publish_target_delete",
       "release_publish_target_list",

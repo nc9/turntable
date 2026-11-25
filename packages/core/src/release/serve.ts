@@ -163,6 +163,7 @@ export async function serveRelease(
                     vault,
                     db,
                     githubCredential: cfg.githubPublishToken !== undefined,
+                    keys: fileKeyVault(keysDir(resolve(cfg.dataDir)), masterKey),
                   }),
                 },
               }

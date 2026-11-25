@@ -154,6 +154,8 @@ describe("the lane signs only what it has checked itself", () => {
           repo: "acme/web",
           ref: "refs/tags/v1.0.0",
           subjects: [{ name: "turntable-linux-x64", sha256: digest("binary-bytes") }],
+          // the lane's own config version, so the service counts only an approval given under it
+          configVersion: attest.configVersion(),
         },
       },
     ]);

@@ -36,7 +36,12 @@ export const CONFIG_ACTIONS = [
   "target_set",
   "target_delete",
   "secret_set",
+  "version",
+  "key_init",
+  "key_public",
 ] as const;
+/** Actions about an org's signing keys: they name an org and no project. */
+const ORG_ACTIONS: readonly string[] = ["key_init", "key_public"];
 export type ConfigAction = (typeof CONFIG_ACTIONS)[number];
 
 /** The MAC fields of a config message: the action and the canonical form of its arguments. */
@@ -171,35 +176,55 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
     const orgId = typeof a.orgId === "string" && ID.test(a.orgId) ? a.orgId : undefined;
     const projectId =
       typeof a.projectId === "string" && ID.test(a.projectId) ? a.projectId : undefined;
-    if (!orgId || !projectId) return json(400, { ok: false, reason: "malformed" });
+    const orgLevel = ORG_ACTIONS.includes(action);
+    if (!orgId || (!orgLevel && !projectId)) return json(400, { ok: false, reason: "malformed" });
     // The lane's own check: the project is the org's. A message cannot name another org's project.
-    if (!(await getProject(o.db, { orgId }, projectId)))
+    if (!orgLevel && !(await getProject(o.db, { orgId }, projectId!)))
       return json(404, { ok: false, reason: "no such project in that org" });
     // Every answer carries the config version after the change, read once the change is made.
     const done = (r: object): Response =>
       json(200, { ok: true, result: { ...r, config_version: cfg.lane.version } });
     try {
       switch (action as ConfigAction) {
+        case "version":
+          return done({});
+        case "key_init": {
+          const k = await cfg.lane.initKey(orgId, String(a.name ?? ""));
+          return done({
+            keyid: k.keyid,
+            public_key_pem: k.publicKeyPem,
+            created_at: k.createdAt,
+          });
+        }
+        case "key_public": {
+          const k = await cfg.lane.publicKey(orgId, String(a.name ?? ""));
+          return done({
+            keyid: k.keyid,
+            public_key_pem: k.publicKeyPem,
+            created_at: k.createdAt,
+            status: "active",
+          });
+        }
         case "snapshot":
-          return done(await cfg.lane.snapshot(orgId, projectId));
+          return done(await cfg.lane.snapshot(orgId, projectId!));
         case "pin_repo":
-          return done({ repo: cfg.lane.pinRepo(orgId, projectId, String(a.repo ?? "")) });
+          return done({ repo: cfg.lane.pinRepo(orgId, projectId!, String(a.repo ?? "")) });
         case "target_set": {
           const target = cfg.lane.setTarget(
             orgId,
-            projectId,
+            projectId!,
             String(a.key ?? ""),
             (a.fields ?? {}) as TargetFields,
           );
           return done({ kind: target.kind });
         }
         case "target_delete":
-          return done({ removed: cfg.lane.removeTarget(orgId, projectId, String(a.key ?? "")) });
+          return done({ removed: cfg.lane.removeTarget(orgId, projectId!, String(a.key ?? "")) });
         case "secret_set":
           return done(
             await cfg.lane.setSecret(
               orgId,
-              projectId,
+              projectId!,
               String(a.name ?? ""),
               String(a.value ?? ""),
               String(a.actor ?? "").slice(0, 100),

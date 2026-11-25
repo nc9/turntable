@@ -109,6 +109,23 @@ async function buildWorld(): Promise<World> {
     vault,
     webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
+    // A release challenge binds the lane's config version, and release_public_key reads a key,
+    // both from the lane: fixed answers here. The lane's own org scoping is in release-keys.test.ts.
+    releaseConfig: {
+      call: async (action: string) => ({
+        ok: true as const,
+        result:
+          action === "key_public"
+            ? {
+                keyid: "k".repeat(64),
+                public_key_pem: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n",
+                created_at: 1_700_000_000_000,
+                status: "active",
+                config_version: 0,
+              }
+            : { config_version: 0 },
+      }),
+    },
     githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
     // `run_dispatch` needs the poller and a forge; this stand-in honours its contract (the run
     // lands in the scope the dispatcher resolved, and nowhere else) so the op is reached for

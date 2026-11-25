@@ -17,10 +17,11 @@ import { SECRET_NAME } from "../../release/publish/types";
 import { iso } from "../common";
 import { defineOp, type Op, type OpContext } from "../define";
 import { OpError } from "../errors";
-import { resolveLaneTarget } from "../instance-step-up";
+import { resolveLaneOrg, resolveLaneTarget } from "../instance-step-up";
 import {
   inputTarget,
   instanceStepUpKeys,
+  INSTANCE_ORG_STEP_UP_OPS,
   INSTANCE_STEP_UP_OPS,
   STEP_UP_KIND,
   STEP_UP_TTL_MS,
@@ -50,7 +51,7 @@ const stepUpNote =
 async function toLane(
   ctx: OpContext,
   action: ConfigAction,
-  scope: { orgId: string; projectId: string },
+  scope: { orgId: string; projectId?: string },
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const client = ctx.releaseConfig;
@@ -319,6 +320,111 @@ export const releasePublishTargetList = defineOp({
   },
 });
 
+const keyName = z
+  .string()
+  .min(1)
+  .max(64)
+  .describe("The key's name, as a project's `builtin:<name>` signing key setting.");
+
+const keyOutput = z.object({
+  keyid: z.string().describe("Hex sha256 of the public key (SPKI DER): its stable id."),
+  public_key_pem: z.string().describe("The public key, SPKI PEM, Ed25519."),
+  created_at: z.string().describe("When the lane sealed the key, as an ISO timestamp."),
+});
+
+export const releaseInitKey = defineOp({
+  name: "release_init_key",
+  summary: "Create the release lane's signing key for an org, inside the lane.",
+  description:
+    "Generates an Ed25519 signing key INSIDE the release lane and seals it under the release " +
+    "master key in the lane's own directory: the private key is never returned, exported, " +
+    "logged or audited, and the main process never holds it. Returns the public half only " +
+    "(`keyid`, `public_key_pem`, `created_at`): record its fingerprint out of band, then pin it " +
+    "where releases are verified. Refuses a name that already exists in the org (it never " +
+    "overwrites; rotation is a separate act) and refuses when the lane has no release master " +
+    "key. A project signs with it by setting its signing key to `builtin:<name>`. " +
+    stepUpNote +
+    "Refused when the lane is not configured. Audited with the key id and who. Not an MCP tool.",
+  input: z.object({
+    target_org: scopeFields.target_org,
+    name: keyName,
+  }),
+  output: keyOutput,
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/release/keys" },
+  mcp: false,
+  outsideTransaction: true,
+  auditDetail: (o) => ({ keyid: o.keyid }),
+  async handler(ctx, i) {
+    requireStepUp(ctx, "release_init_key");
+    const { orgId } = await resolveLaneOrg(ctx.db, i);
+    const r = await toLane(ctx, "key_init", { orgId }, { name: i.name });
+    const k = laneKey.safeParse(r);
+    if (!k.success) throw unexpected();
+    return {
+      keyid: k.data.keyid,
+      public_key_pem: k.data.public_key_pem,
+      created_at: iso(k.data.created_at)!,
+    };
+  },
+});
+
+export const releasePublicKey = defineOp({
+  name: "release_public_key",
+  summary: "The public half of an org's release signing key, to pin and verify releases with.",
+  description:
+    "Returns the public key of the org's release signing key `name`: `keyid`, `public_key_pem` " +
+    "(SPKI PEM, Ed25519), `created_at` and `status`. It is public material: anyone who can read " +
+    "the org may call it, over REST or MCP, and it is what `turntable verify --pubkey` checks a " +
+    "release against. Compare its fingerprint with the one recorded out of band when the key was " +
+    "created (release_init_key); never trust it from this response alone. Read-only. Refused when " +
+    "the release lane is not configured or has no such key.",
+  input: z.object({ name: keyName }),
+  output: keyOutput.extend({ status: z.enum(["active"]).describe("The key's state.") }),
+  effect: "read",
+  auth: { type: "token", minRole: "reader" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/release/keys/{name}" },
+  async handler(ctx, i) {
+    let r;
+    try {
+      r = await toLane(ctx, "key_public", { orgId: ctx.scope.orgId }, { name: i.name });
+    } catch (e) {
+      if (
+        e instanceof OpError &&
+        e.code === "invalid_input" &&
+        e.message === "no such release key"
+      ) {
+        throw new OpError("not_found", "no such release key");
+      }
+      throw e;
+    }
+    const k = laneKey.safeParse(r);
+    if (!k.success) throw unexpected();
+    return {
+      keyid: k.data.keyid,
+      public_key_pem: k.data.public_key_pem,
+      created_at: iso(k.data.created_at)!,
+      status: "active" as const,
+    };
+  },
+});
+
+/** What the lane answers for a key: checked, so a malformed answer is an error, not a crash. */
+const laneKey = z.object({
+  keyid: z.string().min(1),
+  public_key_pem: z.string().min(1),
+  created_at: z.number().int().nonnegative(),
+});
+const unexpected = (): OpError =>
+  new OpError("unavailable", "the release lane gave an unexpected answer", {
+    reason: "lane_refused",
+  });
+
 /** The ops a step-up may be started for, by name: the schema their input is judged with. */
 const STEP_UP_OPS: Record<string, Op> = {};
 for (const op of [
@@ -326,6 +432,7 @@ for (const op of [
   releasePublishTargetSet,
   releasePublishTargetDelete,
   releaseSecretSet,
+  releaseInitKey,
 ]) {
   STEP_UP_OPS[op.name] = op;
 }
@@ -337,7 +444,7 @@ export const instanceStepUpChallenge = defineOp({
   summary: "Start a passkey step-up for one release lane configuration change.",
   description:
     "Names a release lane configuration op (release_pin_repo, release_publish_target_set, " +
-    "release_publish_target_delete or release_secret_set) and the exact `input` it will be called " +
+    "release_publish_target_delete, release_secret_set or release_init_key) and the exact `input` it will be called " +
     "with, and returns a single-use WebAuthn challenge. For release_secret_set send " +
     "`value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the " +
     "field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and " +
@@ -398,7 +505,10 @@ export const instanceStepUpChallenge = defineOp({
     }
     const validated = { ...(parsed.data as Record<string, unknown>) };
     for (const f of op.secretInputFields) delete validated[f];
-    const { orgId, projectId } = await resolveLaneTarget(ctx.db, validated);
+    const orgLevel = INSTANCE_ORG_STEP_UP_OPS.has(i.action);
+    const { orgId, projectId } = orgLevel
+      ? { ...(await resolveLaneOrg(ctx.db, validated)), projectId: undefined }
+      : await resolveLaneTarget(ctx.db, validated);
     const keys = await instanceStepUpKeys(ctx.db, orgId);
     if (keys.length === 0) {
       throw new OpError(

@@ -2,6 +2,7 @@
 // and gives the job that instead of the worker's own proxy. The worker holds the request key
 // only. What comes back is an endpoint and an attempt-scoped proxy credential, never a publish
 // credential.
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { controlPost, type ControlTarget } from "@turntable/net";
 import type { AttemptCredential } from "@turntable/proxy";
@@ -144,7 +145,10 @@ export function createLaneConfigClient(o: {
   return {
     async call(action, rawArgs) {
       // What is MACed is what the lane will parse: the arguments after a JSON round trip.
-      const args = JSON.parse(JSON.stringify(rawArgs)) as Record<string, unknown>;
+      // A nonce makes each message's MAC its own: two identical reads in one millisecond are not a replay.
+      const args = JSON.parse(
+        JSON.stringify({ ...rawArgs, nonce: randomBytes(8).toString("hex") }),
+      ) as Record<string, unknown>;
       const ts = now();
       let res;
       try {

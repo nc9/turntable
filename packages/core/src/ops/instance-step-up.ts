@@ -63,12 +63,36 @@ export async function resolveLaneTarget(
   return { orgId: org.id, projectId: project.id };
 }
 
-/** The target a step-up for this call binds (see `inputTarget`), and the org that must sign it. */
+/** Resolves the org an org-level instance op names (`target_org`); the system org is never a target. */
+export async function resolveLaneOrg(
+  db: Db,
+  input: Record<string, unknown>,
+): Promise<{ orgId: string }> {
+  const slug = input.target_org;
+  if (typeof slug !== "string") throw new OpError("invalid_input", "target_org is required");
+  const org = slug === SYSTEM_ORG_SLUG ? undefined : await getOrgBySlug(db, slug);
+  if (!org) throw new OpError("not_found", "org not found");
+  return { orgId: org.id };
+}
+
+/**
+ * The target a step-up for this call binds (see `inputTarget`), and the org that must sign it.
+ * An org-level op (a signing key) has no project: its target binds the input alone.
+ */
 export async function instanceStepUpTarget(
   db: Db,
   input: Record<string, unknown>,
   secretFields: readonly string[],
-): Promise<{ orgId: string; projectId: string; target: string }> {
+  orgLevel = false,
+): Promise<{ orgId: string; projectId: string | undefined; target: string }> {
+  if (orgLevel) {
+    const { orgId } = await resolveLaneOrg(db, input);
+    return {
+      orgId,
+      projectId: undefined,
+      target: inputTarget(boundInput(input, secretFields), undefined),
+    };
+  }
   const { orgId, projectId } = await resolveLaneTarget(db, input);
   return { orgId, projectId, target: inputTarget(boundInput(input, secretFields), projectId) };
 }

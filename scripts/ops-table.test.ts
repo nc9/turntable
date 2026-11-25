@@ -58,6 +58,8 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
   instance_step_up_challenge:
     "instance administrator ops are REST only: a passkey step-up for the release lane's configuration is a human act",
+  release_init_key:
+    "instance administrator ops are REST only: creating the release signing key is a human-approved act, and its public half is read with release_public_key",
   release_pin_repo:
     "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
   release_publish_target_set:
