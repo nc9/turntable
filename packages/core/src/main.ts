@@ -57,7 +57,8 @@ import { systemOrgId } from "./audit/failures";
 import { SecretStore } from "./secrets/store";
 import { relyingPartyFromEnv } from "./approvals/config";
 import { createOidcHandler, type OidcHandler } from "./oidc/http";
-import { WebhookService } from "./webhooks/service";
+import { NotificationEngine } from "./notifications/rules";
+import { defaultSettleMs, WebhookService } from "./webhooks/service";
 import { OidcIssuer, parseAllowClasses } from "./oidc/issuer";
 import { JobOidc } from "./oidc/job-delivery";
 import { artifactTargetOf, githubTargetOf, SecretsProxy, withSecretsProxy } from "./proxy";
@@ -863,6 +864,18 @@ async function serve(args: string[]): Promise<void> {
   let auditStore: SecretStore | undefined;
   let oidc: OidcHandler | undefined;
   let jobOidc: JobOidc | undefined;
+  // The notification rule engine (#611): reads the event feed, writes per-person rows. Needs no
+  // key, so it runs with or without a master key, in the process that serves the API.
+  if (roles.has("web")) {
+    auditStops.push(
+      new NotificationEngine({
+        db,
+        settings,
+        settleMs: defaultSettleMs(),
+        log: (m) => console.warn(`[turntable] ${m}`),
+      }).start(),
+    );
+  }
   let outboundWebhooks: WebhookService | undefined;
   if (masterKeys) {
     const masterKey = masterKeys.key;

@@ -153,7 +153,12 @@ test("operations meet the agent-facing conventions", () => {
     // writes need at least the operator role; reads may be readers
     // revoke_api_token is the exception: any token may revoke itself, whatever its role, and the
     // handler refuses a reader revoking anyone else's.
-    if (op.effect !== "read" && op.name !== "revoke_api_token") {
+    // notifications_ack and set_notification_prefs change only the caller's own rows and refuse
+    // every token: a viewer reads their inbox, so a viewer may clear it.
+    if (
+      op.effect !== "read" &&
+      !["revoke_api_token", "notifications_ack", "set_notification_prefs"].includes(op.name)
+    ) {
       expect(op.auth.minRole).not.toBe("reader");
     }
     // list ops page by cursor

@@ -679,6 +679,10 @@ const UNREACHABLE: Record<string, string> = {
     "web sessions only: no token reaches it (the handler refuses a token principal alike); the binding, org scoping and single use are in session-step-up.test.ts",
   my_pending_approvals:
     "web sessions only: a token of any kind, A's or B's, is refused by the handler (a person's inbox). What a session sees, per org and per person, is in my-pending-approvals.test.ts",
+  get_notification_prefs:
+    "web sessions only: a token of any kind is refused by the handler (a person's own preferences). Per-person scoping is in notifications.test.ts",
+  set_notification_prefs:
+    "web sessions only: a token of any kind is refused by the handler (a person's own preferences). Per-person scoping and the org membership check are in notifications.test.ts",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

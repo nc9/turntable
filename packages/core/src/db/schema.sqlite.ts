@@ -1429,6 +1429,80 @@ export const quotaNotices = sqliteTable(
   (t) => [primaryKey({ columns: [t.orgId, t.metric, t.level, t.window] })],
 );
 
+// ---- notifications (#611) ----
+
+export const NOTIFICATION_KINDS = [
+  "run_failed",
+  "infra_errors",
+  "work_held",
+  "approval_waiting",
+  "checkout_auth_failed",
+  "dogfood_red",
+  "deploy_failed",
+] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+
+/**
+ * One row per person per notification. Ids and an escaped, truncated title only: no free text
+ * from the forge reaches a template. `dedupe_key` makes a rule fire once (a run id, or a
+ * project and a 30 minute window for coalesced infra errors); `count` is the coalesced total.
+ */
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id"),
+    kind: text("kind").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+    runId: text("run_id"),
+    count: integer("count", { mode: "number" }).notNull().default(1),
+    /** Escaped and truncated forge text (or empty). Never rendered as markup. */
+    title: text("title").notNull().default(""),
+    createdAt: createdAt(),
+    readAt: integer("read_at", { mode: "number" }),
+  },
+  (t) => [
+    foreignKey({ columns: [t.projectId, t.orgId], foreignColumns: [projects.id, projects.orgId] }),
+    check("notifications_kind_check", inList("kind", NOTIFICATION_KINDS)),
+    unique("notifications_dedupe_unique").on(t.userId, t.kind, t.dedupeKey),
+    index("notifications_user_idx").on(t.userId, t.id),
+  ],
+);
+
+/**
+ * A person's choice per kind. `org_id` and `project_id` are empty strings for "every org" and
+ * "every project"; the most specific row wins. Absent rows fall back to the defaults.
+ */
+export const notificationPrefs = sqliteTable(
+  "notification_prefs",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    orgId: text("org_id").notNull().default(""),
+    projectId: text("project_id").notNull().default(""),
+    kind: text("kind").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.orgId, t.projectId, t.kind] }),
+    check("notification_prefs_kind_check", inList("kind", NOTIFICATION_KINDS)),
+  ],
+);
+
+/** How far the rule engine has read the event feed. One row per engine. */
+export const notificationCursors = sqliteTable("notification_cursors", {
+  name: text("name").primaryKey(),
+  lastEventId: integer("last_event_id", { mode: "number" }).notNull().default(0),
+});
+
 // ---- outbound webhooks (#25) ----
 
 export const WEBHOOK_STATES = ["active", "disabled"] as const;

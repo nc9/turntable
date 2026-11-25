@@ -807,6 +807,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
       "set_setting", // each setting's own role; loosening a trust setting also needs a step-up
+      "notifications_ack", // a person's own notification rows (#611)
+      "set_notification_prefs", // a person's own preferences (#611)
     ]);
   });
 

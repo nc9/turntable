@@ -188,6 +188,9 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // trust setting also needs the step-up (the guard enforces it: set_setting is in
   // SESSION_STEP_UP_OPS for that case only).
   "set_setting",
+  // A person's own notifications and preferences (#611): rows keyed by the session's user.
+  "notifications_ack",
+  "set_notification_prefs",
 ]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */

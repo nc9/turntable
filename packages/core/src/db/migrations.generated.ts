@@ -567,5 +567,16 @@ export const migrations: Migration[] = [
     "statements": [
       "CREATE TABLE `github_installation_installers` (\n\t`installation_id` text PRIMARY KEY NOT NULL,\n\t`installer_github_id` text NOT NULL,\n\t`installer_login` text NOT NULL,\n\t`recorded_at` integer NOT NULL\n);"
     ]
+  },
+  {
+    "tag": "0051_notifications",
+    "when": 1795603292910,
+    "statements": [
+      "CREATE TABLE `notification_cursors` (\n\t`name` text PRIMARY KEY NOT NULL,\n\t`last_event_id` integer DEFAULT 0 NOT NULL\n);",
+      "CREATE TABLE `notification_prefs` (\n\t`user_id` text NOT NULL,\n\t`org_id` text DEFAULT '' NOT NULL,\n\t`project_id` text DEFAULT '' NOT NULL,\n\t`kind` text NOT NULL,\n\t`enabled` integer NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`user_id`, `org_id`, `project_id`, `kind`),\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"notification_prefs_kind_check\" CHECK(kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",
+      "CREATE TABLE `notifications` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`kind` text NOT NULL,\n\t`dedupe_key` text NOT NULL,\n\t`run_id` text,\n\t`count` integer DEFAULT 1 NOT NULL,\n\t`title` text DEFAULT '' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`read_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"notifications_kind_check\" CHECK(kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",
+      "CREATE INDEX `notifications_user_idx` ON `notifications` (`user_id`,`id`);",
+      "CREATE UNIQUE INDEX `notifications_dedupe_unique` ON `notifications` (`user_id`,`kind`,`dedupe_key`);"
+    ]
   }
 ];

@@ -204,6 +204,10 @@
     {
       "tag": "0050_installation_installer",
       "sha256": "8099738932b5529359567d4f37cc7f89ef9152f83b4a8ce7c281cfff085876f7"
+    },
+    {
+      "tag": "0051_notifications",
+      "sha256": "d7ddcde4dffa9b4ac3afcb809bbc2dcacbc89e6e41b5e3072f0be301a90eee86"
     }
   ],
   "pg": [
@@ -294,6 +298,10 @@
     {
       "tag": "0021_installation_installer",
       "sha256": "ace2209310e9e936215e8f6a27806a8280f8995d9aa1af9a0eb5482da6032eff"
+    },
+    {
+      "tag": "0022_notifications",
+      "sha256": "7dd85de86481608429e1fbe7032c7d2afb643937360d8d1bdcf6247cb6af51e5"
     }
   ]
 }

@@ -126,6 +126,10 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `approval_status` | `GET /api/v1/approvals/status` | yes |  | read | reader | token | Which environments of a run wait for approval, and who has approved so far. |
 | `approvers_overview` | `GET /api/v1/approvers` | yes |  | read | reader | token | Enrolled approvers, pending enrolments and the per-environment approval policies. |
 | `my_pending_approvals` | `GET /api/v1/my/pending-approvals` | yes |  | read | reader | token | Approvals waiting on the signed-in person, across every org they belong to. |
+| `my_notifications` | `GET /api/v1/my/notifications` | yes |  | read | reader | token | The signed-in person's notifications across every org they belong to, newest first. |
+| `notifications_ack` | `POST /api/v1/my/notifications/ack` | yes |  | write | reader | token | Mark notifications read: the named ids, or all of the caller's unread ones. |
+| `get_notification_prefs` | `GET /api/v1/my/notification-prefs` | yes |  | read | reader | token | The signed-in person's notification preferences and the defaults. |
+| `set_notification_prefs` | `POST /api/v1/my/notification-prefs/set` | yes |  | write | reader | token | Turn one notification kind on or off, for all orgs, one org or one project. |
 | `approval_challenge` | `POST /api/v1/approvals/challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a run in an environment. |
 | `release_approval_challenge` | `POST /api/v1/approvals/release-challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a release's artifacts. |
 | `enrolment_challenge` | `POST /api/v1/approvers/challenge` | no |  | write | release_operator | token | Issue the statement an approver signs to approve enrolling a new key. |
