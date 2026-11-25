@@ -736,13 +736,13 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     },
 
     async rotateWebhookSecret({ overlapMinutes, stepUp }) {
-      const w = await call<{ secret: string; fingerprint: string; overlap_until: string }>(
+      const w = await call<{ fingerprint: string; overlap_until: string }>(
         "POST",
         "/app-secrets/webhook-secret/rotate",
         {},
         { org: org(), overlap_minutes: overlapMinutes, step_up: stepUp },
       );
-      return { secret: w.secret, fingerprint: w.fingerprint, overlapUntil: w.overlap_until };
+      return { fingerprint: w.fingerprint, overlapUntil: w.overlap_until };
     },
 
     async replaceAppPrivateKey({ privateKey, stepUp }) {

@@ -88,9 +88,15 @@ async function harness() {
   let t = 1_700_000_000_000;
   // The fake GitHub: GET /app answers with the App whose registered key signed the JWT.
   const registered: Reg[] = [];
-  const github = { calls: 0 };
+  const github = { calls: 0, hookSecrets: [] as string[], refuseHook: false };
   const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
     github.calls += 1;
+    if (String(url).endsWith("/app/hook/config")) {
+      expect(init?.method).toBe("PATCH");
+      if (github.refuseHook) return new Response("{}", { status: 422 });
+      github.hookSecrets.push((JSON.parse(String(init?.body)) as { secret: string }).secret);
+      return new Response("{}", { status: 200 });
+    }
     expect(String(url).endsWith("/app")).toBe(true);
     const bearer = String((init?.headers as Record<string, string>).authorization).slice(7);
     const [h, p, sig] = bearer.split(".");
@@ -314,7 +320,7 @@ describe("rotate the webhook secret", () => {
     expect(r.ok).toBe(false);
   });
 
-  test("both secrets verify inside the window and only the new one after it; the value is shown once", async () => {
+  test("GitHub receives the new secret; both verify inside the window and only the new one after it; no response, log, event or audit holds a secret", async () => {
     const h = await harness();
     const o = await h.person("olive", h.org.id, "owner");
     const old = (await h.store.get(h.org.id, SECRET_WEBHOOK))!;
@@ -329,28 +335,48 @@ describe("rotate the webhook secret", () => {
     spies.forEach((u) => u());
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const out = r.output as { secret: string; fingerprint: string; overlap_until: string };
-    expect(out.secret).toMatch(/^[0-9a-f]{64}$/);
-    expect(await h.post(out.secret)).toBe(202);
+    const out = r.output as Record<string, unknown>;
+    expect(Object.keys(out).sort()).toEqual(["fingerprint", "overlap_until"]);
+    expect(h.github.hookSecrets).toHaveLength(1);
+    const fresh = h.github.hookSecrets[0]!;
+    expect(fresh).toMatch(/^[0-9a-f]{64}$/);
+    expect(fresh).not.toBe(old);
+    expect(await h.store.get(h.org.id, SECRET_WEBHOOK)).toBe(fresh);
+    expect(await h.post(fresh)).toBe(202);
     expect(await h.post(old)).toBe(202);
     h.advance(HOUR - 1);
     expect(await h.post(old)).toBe(202);
     h.advance(2);
     expect(await h.post(old)).toBe(401);
-    expect(await h.post(out.secret)).toBe(202);
-    // The value appears in no audit row, event or log line; the fingerprint and the person do.
+    expect(await h.post(fresh)).toBe(202);
+    // The value appears in no response, audit row, event, log line or plaintext column.
     const rows = JSON.stringify(await listAudit(h.db, { orgId: h.org.id }));
     const events = JSON.stringify(
       await listEvents(h.db, { orgId: h.org.id }, { after: 0, limit: 1000 }),
     );
-    for (const hay of [rows, events, logs.join("\n")]) {
-      expect(hay.includes(out.secret)).toBe(false);
+    const raw = await h.db.run((x) => x.orm.select().from(schema.secrets));
+    for (const hay of [JSON.stringify(out), rows, events, logs.join("\n"), JSON.stringify(raw)]) {
+      expect(hay.includes(fresh)).toBe(false);
       expect(hay.includes(old)).toBe(false);
     }
-    expect(rows.includes(out.fingerprint)).toBe(true);
+    expect(rows.includes(out.fingerprint as string)).toBe(true);
     expect(rows.includes('"session"')).toBe(true);
-    const raw = await h.db.run((x) => x.orm.select().from(schema.secrets));
-    expect(JSON.stringify(raw).includes(out.secret)).toBe(false);
+  });
+
+  test("a GitHub refusal restores the old secret and the error says GitHub refused", async () => {
+    const h = await harness();
+    const o = await h.person("olive", h.org.id, "owner");
+    const old = (await h.store.get(h.org.id, SECRET_WEBHOOK))!;
+    h.github.refuseHook = true;
+    const su = await h.stepUp(o, ROTATE, {});
+    const r = await h.as(o.cookie, ROTATE, { step_up: su });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("GitHub refused");
+    expect(await h.store.get(h.org.id, SECRET_WEBHOOK)).toBe(old);
+    expect(await h.post(old)).toBe(202);
+    h.advance(HOUR + 1);
+    expect(await h.post(old)).toBe(202);
+    expect(h.github.hookSecrets).toHaveLength(0);
   });
 });
 

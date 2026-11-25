@@ -1001,10 +1001,10 @@ describe("App-secret calls", () => {
 
   test("the rotation posts the step-up beside the org and returns the one-time secret", async () => {
     const { api, calls } = make(() =>
-      json({ secret: "s-1", fingerprint: "SHA256:x", overlap_until: "2026-11-25T10:00:00.000Z" }),
+      json({ fingerprint: "SHA256:x", overlap_until: "2026-11-25T10:00:00.000Z" }),
     );
     const r = await api.rotateWebhookSecret({ overlapMinutes: 30, stepUp: proof });
-    expect(r.secret).toBe("s-1");
+    expect(r).toEqual({ fingerprint: "SHA256:x", overlapUntil: "2026-11-25T10:00:00.000Z" });
     expect(calls[0]!.url.pathname).toBe("/api/v1/app-secrets/webhook-secret/rotate");
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
       org: "acme",

@@ -1,12 +1,12 @@
 // Rotating the GitHub App's webhook secret and private key without a shell (#586). A signed-in
 // owner of the operator org does it with a fresh passkey step-up (see ../step-up.ts). Neither
-// value is returned, logged, evented or audited except the new webhook secret, which is in the
-// response of ONE call; the private key is only ever uploaded.
+// value is ever returned, logged, evented or audited: the webhook secret is generated, sealed and
+// pushed to GitHub in the op, and the private key is only ever uploaded.
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { z } from "zod";
 import { getGithubApp, type GithubApp } from "../../db/repos";
 import { SECRET_PRIVATE_KEY, signAppJwt } from "../../github/app-auth";
-import { sealRotatedWebhookSecret, WEB_OVERLAP_MAX_MS } from "../../github/rotation";
+import { rotateWebhookSecret, WEB_OVERLAP_MAX_MS } from "../../github/rotation";
 import { iso } from "../common";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
@@ -54,16 +54,16 @@ export const instanceRotateWebhookSecretOp = defineOp({
   summary: "Rotate the GitHub App's webhook secret (instance administrator, passkey step-up).",
   description:
     "Generates a new webhook secret on the server, seals it under the current master key and " +
-    "returns it ONCE, in this response only, for you to paste into the App's settings on GitHub. " +
-    "The previous secret also verifies until `overlap_until` (default and at most 1 hour), then " +
-    "only the new one does. Only a signed-in web session of an OWNER of the operator org (the org " +
-    "that owns the GitHub App) may call it, with a fresh passkey `step_up` for exactly this input " +
-    "(`session_step_up_challenge`); a `tti_` token, an org token and any other org are refused. " +
-    "Audited by fingerprint, never the value. Not an MCP tool.",
+    "pushes it to GitHub (`PATCH /app/hook/config`, signed as the App). The secret is never " +
+    "returned or shown. If GitHub refuses, nothing changes locally and the old secret stays " +
+    "current. The previous secret also verifies until `overlap_until` (default and at most 1 " +
+    "hour), then only the new one does. Only a signed-in web session of an OWNER of the operator " +
+    "org (the org that owns the GitHub App) may call it, with a fresh passkey `step_up` for " +
+    "exactly this input (`session_step_up_challenge`); a `tti_` token, an org token and any " +
+    "other org are refused. Audited by fingerprint, never the value. Not an MCP tool.",
   input: rotateInput,
   output: z.object({
-    secret: z.string().describe("The new webhook secret. Shown once."),
-    fingerprint: z.string(),
+    fingerprint: z.string().describe("Fingerprint of the new secret; the secret is never shown."),
     overlap_until: z.string(),
   }),
   effect: "write",
@@ -72,30 +72,33 @@ export const instanceRotateWebhookSecretOp = defineOp({
   scope: "org",
   http: { method: "POST", path: "/app-secrets/webhook-secret/rotate" },
   mcp: false,
-  oneTimeSecretFields: ["secret"],
+  outsideTransaction: true,
   auditDetail: (o) => ({
     fingerprint: o.fingerprint,
     overlap_until: o.overlap_until,
   }),
   async handler(ctx, i) {
-    if (!ctx.auditStore) throw new OpError("unavailable", "no master key: the secret store is off");
+    const store = ctx.auditStore;
+    const auth = ctx.appAuth;
+    if (!store || !auth) throw new OpError("unavailable", "no master key or GitHub App configured");
     await requireOperatorOwner(ctx);
-    let r;
     try {
-      // Runs in the dispatcher's transaction: the store is rebound to it, so the two seals, the
-      // expiry and the audit row commit together or not at all.
-      r = await sealRotatedWebhookSecret(ctx.db, ctx.auditStore.withDb(ctx.db), {
+      // The seal commits first, then GitHub is called; if GitHub refuses, the old secret and
+      // expiry are restored. The dispatcher writes the audit row (by fingerprint) afterwards.
+      const r = await rotateWebhookSecret(ctx.db, store, auth, {
         overlapMs: i.overlap_minutes * 60_000,
         now: ctx.now,
+        fetch: auth.fetcher,
+        audit: false,
       });
+      return { fingerprint: r.fingerprint, overlap_until: iso(r.overlapUntil)! };
     } catch (e) {
-      throw new OpError("unavailable", e instanceof Error ? e.message : "rotation failed");
+      const m = e instanceof Error ? e.message : "rotation failed";
+      throw new OpError(
+        "unavailable",
+        m.startsWith("GitHub refused") ? `${m}: GitHub refused, the old secret stays current` : m,
+      );
     }
-    return {
-      secret: r.secret,
-      fingerprint: fingerprint(r.secret),
-      overlap_until: iso(r.overlapUntil)!,
-    };
   },
 });
 

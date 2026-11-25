@@ -11,8 +11,8 @@ type Action = "instance_rotate_webhook_secret" | "instance_replace_app_private_k
 /**
  * Rotate the GitHub App's webhook secret and replace its private key without a shell. Shown to
  * an owner only; the server also refuses anyone who is not an owner of the org that owns the App,
- * and each action needs a passkey tap for exactly that request. The new webhook secret lives in
- * this component's state until it is dismissed; the key file is read, sent and dropped.
+ * and each action needs a passkey tap for exactly that request. The webhook secret is never shown: the
+ * server pushes it to GitHub itself. The key file is read, sent and dropped.
  */
 export function AppSecretsSection() {
   const { api } = getBackend();
@@ -20,9 +20,7 @@ export function AppSecretsSection() {
   const [minutes, setMinutes] = useState("60");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [shown, setShown] = useState<{ secret: string; fingerprint: string; until: string } | null>(
-    null,
-  );
+  const [shown, setShown] = useState<{ fingerprint: string; until: string } | null>(null);
   const [replaced, setReplaced] = useState<string | null>(null);
   const file = useRef<HTMLInputElement>(null);
   if (who.data?.role !== "owner") return null;
@@ -67,7 +65,7 @@ export function AppSecretsSection() {
         overlap_minutes: overlapMinutes,
       });
       const r = await api.rotateWebhookSecret({ overlapMinutes, stepUp });
-      setShown({ secret: r.secret, fingerprint: r.fingerprint, until: r.overlapUntil });
+      setShown({ fingerprint: r.fingerprint, until: r.overlapUntil });
     });
 
   const upload = () =>
@@ -87,14 +85,14 @@ export function AppSecretsSection() {
     <section className="mt-8 space-y-4 rounded-xl border border-line p-4">
       <h2 className="text-base font-semibold">GitHub App secrets</h2>
       <p className="text-sm text-dim">
-        For the org that owns the GitHub App. Each change needs a passkey tap. Neither value is
-        shown again after this page.
+        For the org that owns the GitHub App. Each change needs a passkey tap. Neither value is ever
+        shown.
       </p>
       <div className="space-y-2">
         <h3 className="text-sm font-medium">Webhook secret</h3>
         <p className="text-sm text-dim">
-          Generates a new secret and shows it once. Paste it into the App&apos;s webhook settings on
-          GitHub. The old secret also works for the overlap, then stops.
+          Generates a new secret and updates it on GitHub for you. It is never shown. The old secret
+          also works for the overlap, then stops.
         </p>
         <label htmlFor="overlap" className="block text-sm">
           Overlap in minutes (1 to 60)
@@ -109,16 +107,11 @@ export function AppSecretsSection() {
           {busy ? "Working" : "Rotate webhook secret"}
         </Button>
         {shown ? (
-          <div role="status" className="rounded-lg border border-line p-3 text-sm">
-            <p>Copy this now. It is not shown again.</p>
-            <code className="mt-2 block break-all font-mono text-[13px]">{shown.secret}</code>
-            <p className="mt-2 text-dim">
-              Fingerprint {shown.fingerprint}. The old secret works until {shown.until}.
-            </p>
-            <Button variant="ghost" onClick={() => setShown(null)}>
-              Done, hide it
-            </Button>
-          </div>
+          <RotatedNotice
+            fingerprint={shown.fingerprint}
+            until={shown.until}
+            onDismiss={() => setShown(null)}
+          />
         ) : null}
       </div>
       <div className="space-y-2">
@@ -147,5 +140,24 @@ export function AppSecretsSection() {
         </p>
       ) : null}
     </section>
+  );
+}
+
+/** What an owner sees after a rotation: no secret, only that GitHub was updated. */
+export function RotatedNotice(props: {
+  fingerprint: string;
+  until: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div role="status" className="rounded-lg border border-line p-3 text-sm">
+      <p>Rotated; GitHub&apos;s webhook secret was updated.</p>
+      <p className="mt-2 text-dim">
+        Fingerprint {props.fingerprint}. The old secret works until {props.until}.
+      </p>
+      <Button variant="ghost" onClick={props.onDismiss}>
+        Dismiss
+      </Button>
+    </div>
   );
 }

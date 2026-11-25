@@ -232,11 +232,11 @@ export interface TurntableApi {
     targetProject: string;
     name: string;
   }): Promise<LaneSecretStatus>;
-  /** The operator org's owner rotates the App webhook secret (needs `stepUp`). The secret is in this result only. */
+  /** The operator org's owner rotates the App webhook secret (needs `stepUp`). The secret is never returned. */
   rotateWebhookSecret(args: {
     overlapMinutes: number;
     stepUp: StepUpProof;
-  }): Promise<{ secret: string; fingerprint: string; overlapUntil: string }>;
+  }): Promise<{ fingerprint: string; overlapUntil: string }>;
   /** The operator org's owner uploads a new private key for the same App (needs `stepUp`). */
   replaceAppPrivateKey(args: {
     privateKey: string;

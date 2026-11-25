@@ -1,5 +1,5 @@
 import { type SafeFetch, safeFetch } from "@turntable/net";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "../db";
 import { appendAudit, getGithubApp, setPreviousSecretExpiry } from "../db/repos";
 import type { SecretStore as SecretSeal } from "../secrets/store";
@@ -44,8 +44,14 @@ export async function rotateWebhookSecret(
   db: Db,
   store: SecretSeal,
   auth: AppAuth,
-  opts: { overlapMs?: number; now?: () => number; fetch?: SafeFetch } = {},
-): Promise<{ overlapUntil: number }> {
+  opts: {
+    overlapMs?: number;
+    now?: () => number;
+    fetch?: SafeFetch;
+    /** Append the CLI audit row (default). The op path is audited by the dispatcher instead. */
+    audit?: boolean;
+  } = {},
+): Promise<{ overlapUntil: number; fingerprint: string }> {
   const {
     secret: fresh,
     overlapUntil: until,
@@ -75,17 +81,20 @@ export async function rotateWebhookSecret(
     await setPreviousSecretExpiry(db, app.appId, null);
     throw e;
   }
-  await appendAudit(
-    db,
-    { orgId: app.orgId },
-    {
-      principalKind: "cli",
-      principalId: "local",
-      op: "github_webhook_secret_rotate",
-      effect: "write",
-      outcome: "ok",
-      input: { app_id: app.appId, overlap_until: until },
-    },
-  );
-  return { overlapUntil: until };
+  if (opts.audit !== false) {
+    await appendAudit(
+      db,
+      { orgId: app.orgId },
+      {
+        principalKind: "cli",
+        principalId: "local",
+        op: "github_webhook_secret_rotate",
+        effect: "write",
+        outcome: "ok",
+        input: { app_id: app.appId, overlap_until: until },
+      },
+    );
+  }
+  const fingerprint = `SHA256:${createHash("sha256").update(fresh).digest("base64").replace(/=+$/, "")}`;
+  return { overlapUntil: until, fingerprint };
 }
