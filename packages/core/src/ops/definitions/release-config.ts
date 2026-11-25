@@ -17,6 +17,8 @@ import { SECRET_NAME } from "../../release/publish/types";
 import { iso } from "../common";
 import { defineOp, type Op, type OpContext } from "../define";
 import { OpError } from "../errors";
+import { principalLabel } from "../principal";
+import { releaseKeyReads } from "../read-rate-limit";
 import { resolveLaneOrg, resolveLaneTarget } from "../instance-step-up";
 import {
   inputTarget,
@@ -381,7 +383,8 @@ export const releasePublicKey = defineOp({
     "the org may call it, over REST or MCP, and it is what `turntable verify --pubkey` checks a " +
     "release against. Compare its fingerprint with the one recorded out of band when the key was " +
     "created (release_init_key); never trust it from this response alone. Read-only. Refused when " +
-    "the release lane is not configured or has no such key.",
+    "the release lane is not configured or has no such key. Rate limited per token (30 reads a " +
+    "minute): past that it is refused with rate_limited and a retry_after_seconds.",
   input: z.object({ name: keyName }),
   output: keyOutput.extend({ status: z.enum(["active"]).describe("The key's state.") }),
   effect: "read",
@@ -390,6 +393,8 @@ export const releasePublicKey = defineOp({
   scope: "org",
   http: { method: "GET", path: "/release/keys/{name}" },
   async handler(ctx, i) {
+    // Per token, before the lane is asked: a burst of reads is refused with rate_limited.
+    releaseKeyReads.take(principalLabel(ctx.principal), ctx.now());
     let r;
     try {
       r = await toLane(ctx, "key_public", { orgId: ctx.scope.orgId }, { name: i.name });

@@ -641,6 +641,33 @@ export async function checkChannel(i: DoctorInputs): Promise<DoctorCheck> {
       );
 }
 
+/**
+ * A release approval challenge reads the lane's configuration version over the config channel, so
+ * with no way to it every release approval is refused (it fails closed). Passes when no release
+ * lane is configured at all.
+ */
+export async function checkConfigChannel(i: DoctorInputs): Promise<DoctorCheck> {
+  const area = "release";
+  if (!i.releaseLaneExpected)
+    return pass(
+      "release_config_channel",
+      area,
+      "no release lane is configured, so there is no config channel to reach",
+    );
+  const r = i.configChannel
+    ? await i.configChannel()
+    : ({ ok: false, reason: "TURNTABLE_PUBLISH_CONFIG_KEY_FILE is not set" } as const);
+  return r.ok
+    ? pass("release_config_channel", area, "the release lane's config channel answers")
+    : fail(
+        "release_config_channel",
+        area,
+        "release lane config channel unreachable: release approvals will be refused",
+        `Set TURNTABLE_PUBLISH_CONFIG_KEY_FILE on this process to the lane's TURNTABLE_RELEASE_CHANNEL_CONFIG_KEY_FILE and check the channel address (${r.reason}).`,
+        "detail" in r ? r.detail : undefined,
+      );
+}
+
 export async function checkQuotas(i: DoctorInputs): Promise<DoctorCheck> {
   const area = "limits";
   if (!i.db)
@@ -807,6 +834,7 @@ export async function runDoctor(i: DoctorInputs): Promise<DoctorReport> {
     ...(await safe("forwarded_headers", "network", () => checkForwarded(i))),
     ...(await safe("https_redirect", "network", () => checkHttpsRedirect(i))),
     ...(await safe("release_channel", "release", () => checkChannel(i))),
+    ...(await safe("release_config_channel", "release", () => checkConfigChannel(i))),
     ...(await safe("quotas", "limits", () => checkQuotas(i))),
     ...(await safe("poll_health", "ingest", () => checkPollHealth())),
     ...(await safe("draining", "scheduler", () => checkDraining())),

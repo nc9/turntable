@@ -23,6 +23,7 @@ import { auditStateDir, type MasterKeys, parseMasterKeyValue } from "../secrets/
 import { createProvider } from "../scheduler/providers";
 import { resolveProviderConfig } from "../serve-config";
 import { channelMac } from "../release/channel";
+import { laneConfigClientFromEnv } from "../release/channel-client";
 import { MISSING_DATABASE } from "./checks";
 import type {
   ChannelProbe,
@@ -249,6 +250,43 @@ export function channelProbe(
   };
 }
 
+const LANE_VARS = [
+  "TURNTABLE_PUBLISH_CHANNEL_KEY_FILE",
+  "TURNTABLE_PUBLISH_CHANNEL_SOCKET",
+  "TURNTABLE_PUBLISH_CHANNEL_URL",
+  "TURNTABLE_PUBLISH_CONFIG_KEY_FILE",
+] as const;
+
+/** A release lane is expected when any variable that points this process at one is set. */
+export const releaseLaneExpected = (env: Record<string, string | undefined>): boolean =>
+  LANE_VARS.some((n) => Boolean(env[n]?.trim()));
+
+/**
+ * Asks the lane's config channel a read that changes nothing (the public key of a key that does
+ * not exist): an answer, even a refusal of the input, proves the address and the config key.
+ */
+export function configChannelProbe(
+  env: Record<string, string | undefined>,
+): (() => Promise<ChannelProbe>) | undefined {
+  if (!env.TURNTABLE_PUBLISH_CONFIG_KEY_FILE?.trim()) return undefined;
+  return async () => {
+    let client;
+    try {
+      client = laneConfigClientFromEnv(env);
+    } catch (e) {
+      return {
+        ok: false,
+        reason: "the config channel configuration is incomplete",
+        detail: String(e instanceof Error ? e.message : e).slice(0, 120),
+      };
+    }
+    if (!client) return { ok: false, reason: "TURNTABLE_PUBLISH_CONFIG_KEY_FILE is not set" };
+    const r = await client.call("key_public", { orgId: "doctor-probe", name: "doctor-probe" });
+    if (r.ok || r.kind === "invalid") return { ok: true };
+    return { ok: false, reason: r.reason };
+  };
+}
+
 export interface RealOptions {
   env: Record<string, string | undefined>;
   dataDir: string;
@@ -340,6 +378,8 @@ export function realInputs(o: RealOptions): { inputs: DoctorInputs; close(): voi
         hosted: o.hosted,
       }),
       channel: channelProbe(o.env),
+      releaseLaneExpected: releaseLaneExpected(o.env),
+      configChannel: configChannelProbe(o.env),
       observed: o.observed,
       now: Date.now,
     },

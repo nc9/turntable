@@ -41,7 +41,7 @@ import {
   setRunStatus,
   type Db,
 } from "../src/db";
-import { setApproveRunMinRole } from "../src/db/repos";
+import { getJob, getRun, setApproveRunMinRole, transitionJob } from "../src/db/repos";
 import { createWebhookHandler } from "../src/github/webhook";
 import { SECRET_WEBHOOK } from "../src/github/app-auth";
 import { dispatch, registry } from "../src/ops";
@@ -183,8 +183,8 @@ interface World {
   request(artifacts?: string[]): Promise<string>;
   /**
    * Approve the run again, under the lane's configuration as it now is. The release job waits for
-   * approval once, so a re-approval needs it waiting again: the test puts it back (a re-run of the
-   * release job), then one more approver signs a fresh statement.
+   * approval once, so a re-approval reruns only that job through the `rerun` op (it waits again),
+   * then one more approver signs a fresh statement. No direct DB writes.
    */
   reapprove(): Promise<void>;
   state(id: string): Promise<{ status: string; reason: string | null; result: any }>;
@@ -682,17 +682,35 @@ async function world(
     binary,
     tarball,
     async reapprove() {
-      await db.run(async (h) => {
-        await h.orm
-          .update(schema.jobs)
-          .set({ state: "awaiting_approval" })
-          .where(eq(schema.jobs.id, jobId));
+      // The real path, no direct DB writes: the release job finished (the way a scheduler ends
+      // it), the operator reruns ONLY that job through the `rerun` op, the fresh attempt waits for
+      // approval, one more approver signs a statement under the lane's current version, and the
+      // job runs and succeeds again.
+      const finish = async (): Promise<void> => {
+        const j = await getJob(db, scope, jobId);
+        if (j?.state === "queued") await transitionJob(db, scope, jobId, "running");
+        if ((await getJob(db, scope, jobId))?.state === "running") {
+          await transitionJob(db, scope, jobId, "success", { exitCode: 0 });
+        }
+        const run = await getRun(db, scope, runId);
+        if (run?.status === "queued") await setRunStatus(db, scope, runId, "running");
+        if ((await getRun(db, scope, runId))?.status === "running") {
+          await setRunStatus(db, scope, runId, "success");
+        }
+      };
+      await finish();
+      const rr = await call(operatorTok, "rerun", {
+        run_id: runId,
+        jobs: ["release"],
+        reason: "lane config changed after approval",
       });
+      if (!rr.ok) throw new Error(`rerun: ${rr.error.code} ${rr.error.message}`);
+      const out = rr.output as { reruns: { job_key: string; state: string }[] };
+      if (out.reruns.length !== 1 || out.reruns[0]!.state !== "awaiting_approval") {
+        throw new Error(`rerun did not wait for approval: ${JSON.stringify(out.reruns)}`);
+      }
       await approveOnce(100 + reapprovals++);
-      // releasing the job set the run going again; the build had finished, as it had before
-      await db.run(async (h) => {
-        await h.orm.update(schema.runs).set({ status: "success" }).where(eq(schema.runs.id, runId));
-      });
+      await finish();
     },
     async request(artifacts = ["cli-linux", "web-1.0.0.tgz"]) {
       const r = await call(releaseTok, "request_release", {

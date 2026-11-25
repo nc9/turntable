@@ -9856,7 +9856,7 @@
       "get": {
         "operationId": "release_public_key",
         "summary": "The public half of an org's release signing key, to pin and verify releases with.",
-        "description": "Returns the public key of the org's release signing key `name`: `keyid`, `public_key_pem` (SPKI PEM, Ed25519), `created_at` and `status`. It is public material: anyone who can read the org may call it, over REST or MCP, and it is what `turntable verify --pubkey` checks a release against. Compare its fingerprint with the one recorded out of band when the key was created (release_init_key); never trust it from this response alone. Read-only. Refused when the release lane is not configured or has no such key.\n\nRequired role: reader. Read-only.",
+        "description": "Returns the public key of the org's release signing key `name`: `keyid`, `public_key_pem` (SPKI PEM, Ed25519), `created_at` and `status`. It is public material: anyone who can read the org may call it, over REST or MCP, and it is what `turntable verify --pubkey` checks a release against. Compare its fingerprint with the one recorded out of band when the key was created (release_init_key); never trust it from this response alone. Read-only. Refused when the release lane is not configured or has no such key. Rate limited per token (30 reads a minute): past that it is refused with rate_limited and a retry_after_seconds.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "name",

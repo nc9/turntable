@@ -11,6 +11,7 @@ import type { Db } from "../src/db";
 import * as s from "../src/db/schema";
 import { dispatch, registry } from "../src/ops";
 import { mcpTools } from "../src/ops/mcp";
+import { READ_LIMIT } from "../src/ops/read-rate-limit";
 import { AttestationStore } from "../src/release/attest";
 import { fileKeyVault, type FileKeyVault } from "../src/release/key-vault";
 import { opsHarness, type Harness } from "./release-config-helpers";
@@ -244,6 +245,27 @@ describe("release_public_key", () => {
       { name: "release", org: a.slug },
     );
     expect(named.ok).toBe(false);
+  });
+
+  test("a burst past the per-token read limit is refused with rate_limited; another token is not", async () => {
+    await h.signedCall("release_init_key", INIT(a));
+    const t1 = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const t2 = (await mintToken(db, { orgId: a.orgId }, "reader")).secret;
+    const ask = (tok: string) =>
+      dispatch(
+        { ...h.env, allowInstance: false, transport: "rest" },
+        { kind: "bearer", token: tok },
+        "release_public_key",
+        { name: "release" },
+      );
+    for (let n = 0; n < READ_LIMIT; n++) expect((await ask(t1)).ok, `read ${n}`).toBe(true);
+    const over = await ask(t1);
+    expect(over.ok).toBe(false);
+    if (!over.ok) {
+      expect(over.error.code).toBe("rate_limited");
+      expect(over.error.message).toMatch(/^too many reads: try again in \d+s$/);
+    }
+    expect((await ask(t2)).ok).toBe(true);
   });
 
   test("without a lane it is refused as unavailable; without a token it is refused", async () => {
