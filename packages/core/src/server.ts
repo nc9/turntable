@@ -51,6 +51,30 @@ const SECURITY_HEADERS = {
 /** Handler for `/api/v1/*`; resolves to undefined for any other path. */
 export type ApiHandler = (req: Request, peer?: string) => Promise<Response | undefined>;
 
+const OAUTH_PATHS = ["/.well-known", "/register", "/authorize", "/token", "/oauth"] as const;
+const underPath = (path: string, base: string): boolean =>
+  path === base || path.startsWith(`${base}/`);
+
+/**
+ * Paths no page answers: OAuth discovery and endpoints (this server has no OAuth), and any
+ * `/api` or `/mcp` path nothing else matched. A client parses these as JSON, so never the app.
+ */
+function jsonNotFound(path: string): Response | undefined {
+  const oauth = OAUTH_PATHS.some((b) => underPath(path, b));
+  if (!oauth && !underPath(path, "/api") && !underPath(path, "/mcp")) return undefined;
+  const message = oauth
+    ? "this server does not implement OAuth; send a bearer token in the Authorization header"
+    : "no such path";
+  return new Response(JSON.stringify({ error: { code: "not_found", message } }), {
+    status: 404,
+    headers: {
+      ...SECURITY_HEADERS,
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 const OPENAPI = JSON.stringify(buildOpenApi(registry, VERSION));
 
 export async function handleRequest(
@@ -61,6 +85,8 @@ export async function handleRequest(
   const apiResponse = await api?.(req, peer);
   if (apiResponse) return apiResponse;
   const url = new URL(req.url);
+  const unrouted = jsonNotFound(url.pathname);
+  if (unrouted) return unrouted;
   if (req.method !== "GET" && req.method !== "HEAD") {
     return new Response("method not allowed", { status: 405, headers: SECURITY_HEADERS });
   }
