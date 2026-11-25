@@ -17,6 +17,7 @@ import {
   listInstallationBindings,
   type RepoBinding,
   setInstallationStatus,
+  followRepoBinding,
   unbindRepo,
   upsertInstallation,
 } from "../db/repos";
@@ -43,6 +44,8 @@ export interface SyncResult {
   /** Polled repos (a binding with no installation) now served by this installation. */
   adopted: string[];
   unbound: string[];
+  /** Bindings of this org that followed a renamed or transferred repo (by forge repo id), by new slug. */
+  followed: string[];
   /** Repos left alone because they are already bound elsewhere. */
   conflicts: string[];
   /** Projects this sync created (a reattached or adopted project is not one), by repo. */
@@ -72,6 +75,7 @@ export async function syncInstallation(
     bound: [],
     adopted: [],
     unbound: [],
+    followed: [],
     conflicts: [],
     created: [],
   };
@@ -129,7 +133,71 @@ export async function syncInstallation(
       // org with no installation is a polled repo: adopt it (it keeps its project) when its
       // forge repo id is unset or matches, so checks can be posted for it. Anything else is
       // another owner's: an installation must never take it.
-      if (found.orgId === orgId && found.installationId === installationId) continue;
+      const sameSlug =
+        found.owner === repo.owner.toLowerCase() && found.repo === repo.name.toLowerCase();
+      if (
+        found.orgId === orgId &&
+        found.installationId === installationId &&
+        (sameSlug || found.forgeRepoId !== repo.id)
+      )
+        continue;
+      if (found.forgeRepoId === repo.id && !sameSlug) {
+        // The same forge repo id under a new slug: renamed or transferred. In this org the binding
+        // follows it in place (the project keeps its runs and settings). In another org it is
+        // never moved by a sync: the operator's `move_repo_binding` is the path.
+        if (found.orgId === orgId) {
+          if (
+            await followRepoBinding(db, scope, found.id, {
+              owner: repo.owner,
+              repo: repo.name,
+              installationId,
+              forgeRepoId: repo.id,
+            })
+          ) {
+            await appendAudit(
+              db,
+              { orgId, projectId: found.projectId },
+              {
+                principalKind: "system",
+                principalId: "github-installation",
+                op: "follow_repo_binding",
+                effect: "write",
+                outcome: "ok",
+                input: {
+                  from: `${found.owner}/${found.repo}`,
+                  repo: repo.fullName,
+                  installationId,
+                  previousInstallationId: found.installationId,
+                  projectId: found.projectId,
+                  forgeRepoId: repo.id,
+                },
+              },
+            );
+            result.followed.push(repo.fullName);
+            continue;
+          }
+        } else {
+          await appendAudit(
+            db,
+            { orgId: found.orgId, projectId: found.projectId },
+            {
+              principalKind: "system",
+              principalId: "github-installation",
+              op: "follow_repo_binding",
+              effect: "write",
+              outcome: "error:other_org",
+              input: {
+                from: `${found.owner}/${found.repo}`,
+                repo: repo.fullName,
+                installationId,
+                forgeRepoId: repo.id,
+              },
+            },
+          );
+        }
+        result.conflicts.push(repo.fullName);
+        continue;
+      }
       if (found.orgId === orgId && found.installationId === null) {
         const adopted =
           (found.forgeRepoId === null || found.forgeRepoId === repo.id) &&

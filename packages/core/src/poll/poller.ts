@@ -87,6 +87,8 @@ function trustClassOfRun(trust: string | null): TrustClass {
 
 /** Below this many requests left in the window the poller stops asking until it resets. */
 const RESERVE = POLL_RESERVE;
+/** The longest the first poll waits for the installations to load at startup. */
+const INSTALLS_WARMUP_MS = 5000;
 /** The fewest ms between two polls of one repo that webhooks asked for. */
 export const MIN_NUDGE_GAP_MS = 5000;
 
@@ -118,6 +120,12 @@ export class Poller {
   readonly #boundIds = new Map<string, { orgId: string; projectId: string }>();
   /** The GitHub default branch last reported as drifted, per repo, so each change is said once. */
   readonly #drift = new Map<string, string>();
+  /** Static entries whose repo moved: lower-case configured slug to the slug of the binding found by forge repo id. */
+  readonly #effective = new Map<string, string>();
+  /** The forge repo id each `org/project/slug` entry had when its slug matched a binding. */
+  readonly #slugIds = new Map<string, string>();
+  /** Failed id checks (`key|binding id`), so a stale entry costs one GitHub call per interval. */
+  readonly #notMoved = new Map<string, number>();
   #refreshing: Promise<void> | undefined;
   #lastRefresh = 0;
   #refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -156,10 +164,11 @@ export class Poller {
   #cfgsFor(repo: string): PollRepoConfig[] {
     const l = repo.toLowerCase();
     const all = this.#o.config.repos;
+    const eff = this.#effective.get(l);
     const fixed = all
       .filter((r) => r.repo.toLowerCase() === l)
       // The primary workflow keeps the plain check names; the others are named by workflow.
-      .map((r) => ({ ...r, primary: isPrimaryEntry(all, r) }));
+      .map((r) => ({ ...r, primary: isPrimaryEntry(all, r), ...(eff ? { repo: eff } : {}) }));
     if (fixed.length > 0) return fixed;
     const bound = this.#bound.get(l);
     return bound ? [bound] : [];
@@ -275,17 +284,81 @@ export class Poller {
    */
   async #refreshInstalls(pending: ReadonlyMap<string, PollRepoConfig>): Promise<void> {
     if (!this.#o.auth) return;
+    const rows = await listInstalledRepos(this.#o.db);
     const next = new Map<string, string>();
-    for (const b of await listInstalledRepos(this.#o.db)) {
-      const key = `${b.owner}/${b.repo}`.toLowerCase();
-      const cfg =
-        this.#o.config.repos.find((c) => c.repo.toLowerCase() === key) ?? pending.get(key);
-      if (!cfg || (cfg.org ?? "local") !== b.orgSlug || (cfg.project ?? "local") !== b.projectSlug)
+    const moved = new Map<string, string>();
+    const cfgs = new Map<string, PollRepoConfig>();
+    for (const [key, cfg] of pending) cfgs.set(key, cfg);
+    for (const c of this.#o.config.repos) cfgs.set(c.repo.toLowerCase(), c);
+    for (const [key, cfg] of cfgs) {
+      const org = cfg.org ?? "local";
+      const project = cfg.project ?? "local";
+      const mine = rows.filter((b) => b.orgSlug === org && b.projectSlug === project);
+      const same = mine.find((b) => `${b.owner}/${b.repo}`.toLowerCase() === key);
+      if (same) {
+        next.set(key, same.installationId);
+        if (same.forgeRepoId !== null)
+          this.#slugIds.set(`${org}/${project}/${key}`, same.forgeRepoId);
         continue;
-      if (!next.has(key)) next.set(key, b.installationId);
+      }
+      // The entry's slug matches no binding of its own project. The repo may have been renamed or
+      // transferred and its binding followed it by forge repo id: take that binding only when it
+      // is this project's and its id is the one this entry's slug had (recorded, or confirmed with
+      // GitHub). Never by name alone, never a binding of another project or org.
+      if (!this.#o.config.repos.some((c) => c.repo.toLowerCase() === key)) continue;
+      const taken = new Set(this.#o.config.repos.map((c) => c.repo.toLowerCase()));
+      const candidates = mine.filter(
+        (b) => b.forgeRepoId !== null && !taken.has(`${b.owner}/${b.repo}`.toLowerCase()),
+      );
+      const recorded = this.#slugIds.get(`${org}/${project}/${key}`);
+      let found =
+        recorded === undefined ? undefined : candidates.find((b) => b.forgeRepoId === recorded);
+      if (!found && recorded === undefined) {
+        const hits: typeof candidates = [];
+        for (const b of candidates.slice(0, 5)) {
+          if (await this.#sameRepoId(cfg.repo, b)) hits.push(b);
+        }
+        if (hits.length === 1) found = hits[0];
+      }
+      if (!found) continue;
+      next.set(key, found.installationId);
+      moved.set(key, `${found.owner}/${found.repo}`);
     }
     this.#installs = next;
+    this.#effective.clear();
+    for (const [key, v] of moved) this.#effective.set(key, v);
     for (const key of this.#installed.keys()) if (!next.has(key)) this.#installed.delete(key);
+    for (const c of this.#o.config.repos) {
+      const st = ingestStatus.repos.get(c.repo);
+      if (st) st.effectiveRepo = moved.get(c.repo.toLowerCase());
+    }
+  }
+
+  /** Whether GitHub says `slug` (redirected when renamed) is the repo with `b`'s forge repo id. */
+  async #sameRepoId(
+    slug: string,
+    b: { owner: string; repo: string; installationId: string; forgeRepoId: string | null },
+  ): Promise<boolean> {
+    const memo = `${slug.toLowerCase()}|${b.owner}/${b.repo}|${b.forgeRepoId}`;
+    const last = this.#notMoved.get(memo);
+    if (last !== undefined && this.#now() - last < 600_000) return false;
+    try {
+      const { token } = await (this.#o.auth as InstallationMinter).mint(b.installationId, {
+        repositories: [b.repo],
+        permissions: POLL_PERMISSIONS,
+      });
+      const client = new GithubClient({
+        ...(this.#o.fetch ? { fetch: this.#o.fetch } : {}),
+        baseUrl: this.#o.config.apiBaseUrl,
+        ...(this.#o.now ? { now: this.#o.now } : {}),
+        token,
+      });
+      if ((await client.repoIdentity(slug)).id === b.forgeRepoId) return true;
+    } catch {
+      // unknown: treated as not the same repo
+    }
+    this.#notMoved.set(memo, this.#now());
+    return false;
   }
 
   /**
@@ -301,9 +374,10 @@ export class Poller {
     const key = cfg.repo.toLowerCase();
     const installationId = this.#installs.get(key);
     if (!this.#o.auth || !installationId) return fallback;
+    const slug = this.#effective.get(key) ?? cfg.repo;
     try {
       const { token } = await this.#o.auth.mint(installationId, {
-        repositories: [cfg.repo.split("/")[1] as string],
+        repositories: [slug.split("/")[1] as string],
         permissions: POLL_PERMISSIONS,
       });
       let client = this.#installed.get(key);
@@ -409,8 +483,10 @@ export class Poller {
     scope: Required<Scope>,
     repo: string | undefined,
   ): Promise<DefaultBranchRunResult> {
-    const cfg = await this.#projectCfg(scope, repo);
-    const { github } = await this.#clientFor(cfg);
+    const configured = await this.#projectCfg(scope, repo);
+    const { github } = await this.#clientFor(configured);
+    const eff = this.#effective.get(configured.repo.toLowerCase());
+    const cfg = eff ? { ...configured, repo: eff } : configured;
     const head = await github.branchHead(cfg.repo, cfg.defaultBranch);
     const existing = async (): Promise<DefaultBranchRunResult | undefined> => {
       const [run] = await queryRuns(this.#o.db, scope, {
@@ -473,7 +549,7 @@ export class Poller {
     // An agent token's policy is checked from the ref name before any forge call (a client may
     // mint an installation token).
     refuseAgentByName(cfg, req);
-    const { github } = await this.#clientFor(cfg);
+    const { github } = await this.#clientFor(repoCfg);
     const out = await dispatchWorkflow(
       {
         db: this.#o.db,
@@ -522,17 +598,32 @@ export class Poller {
     ingestStatus.running = true;
     ingestStatus.startedAt = this.#now();
     if (this.#anonymous) this.#warnAnonymous();
-    for (const repo of this.#repoNames(true)) void this.#loop(repo);
+    const begin = (): void => {
+      if (this.#running) for (const repo of this.#repoNames(true)) void this.#loop(repo);
+    };
+    const log = (e: unknown): void =>
+      this.#o.log?.(`ingest bindings: ${e instanceof Error ? e.message : String(e)}`);
     if (this.#o.bindings) {
-      void this.refreshBindings().catch((e) =>
-        this.#o.log?.(`ingest bindings: ${e instanceof Error ? e.message : String(e)}`),
-      );
-      this.#refreshTimer = setInterval(() => {
-        void this.refreshBindings().catch((e) =>
-          this.#o.log?.(`ingest bindings: ${e instanceof Error ? e.message : String(e)}`),
-        );
-      }, 60_000);
+      this.#refreshTimer = setInterval(() => void this.refreshBindings().catch(log), 60_000);
     }
+    if (!this.#o.auth) {
+      begin();
+      if (this.#o.bindings) void this.refreshBindings().catch(log);
+      return;
+    }
+    // The installations are read before the first poll (a short wait, best effort), so a repo
+    // with an installation is not polled with the fallback token after a restart (#568).
+    const warm = this.#o.bindings
+      ? this.refreshBindings()
+      : this.#refreshInstalls(new Map()).catch(log);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, INSTALLS_WARMUP_MS);
+    });
+    void Promise.race([warm.catch(log), limit]).then(() => {
+      clearTimeout(timer);
+      begin();
+    });
   }
 
   stop(): void {
@@ -684,6 +775,10 @@ export class Poller {
    */
   nudge(repo: string): boolean {
     if (!this.#running) return false;
+    // A webhook naming the new slug of a moved repo wakes the entry that still has the old one.
+    for (const [key, eff] of this.#effective) {
+      if (eff.toLowerCase() === repo.toLowerCase()) repo = key;
+    }
     const cfg = this.#cfg(repo);
     if (!cfg) {
       // Maybe a project was just given ingest settings: look once, then act if it is now known.

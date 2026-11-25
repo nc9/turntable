@@ -199,6 +199,18 @@ export class GithubClient {
     return b;
   }
 
+  /** The repo's stable forge id and current full name (a renamed repo's old slug redirects). */
+  async repoIdentity(repo: string): Promise<{ id: string; fullName: string }> {
+    const body = (await this.#get(`/repos/${repo}`)) as { id?: unknown; full_name?: unknown };
+    if (
+      (typeof body.id !== "number" && typeof body.id !== "string") ||
+      typeof body.full_name !== "string"
+    ) {
+      throw new GithubError(502, `/repos/${repo}`);
+    }
+    return { id: String(body.id), fullName: body.full_name };
+  }
+
   async branchHead(repo: string, branch: string): Promise<BranchHead> {
     const body = (await this.#get(`/repos/${repo}/commits/${encodeURIComponent(branch)}`)) as {
       sha?: string;

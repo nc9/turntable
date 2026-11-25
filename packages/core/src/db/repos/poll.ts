@@ -855,6 +855,7 @@ export function listInstalledRepos(db: Db): Promise<
     owner: string;
     repo: string;
     installationId: string;
+    forgeRepoId: string | null;
   }[]
 > {
   return db.run(async (h) => {
@@ -866,6 +867,7 @@ export function listInstalledRepos(db: Db): Promise<
         repo: s.projectRepos.repo,
         forge: s.projectRepos.forge,
         installationId: s.projectRepos.installationId,
+        forgeRepoId: s.projectRepos.forgeRepoId,
       })
       .from(s.projectRepos)
       .innerJoin(
@@ -885,6 +887,7 @@ export function listInstalledRepos(db: Db): Promise<
               owner: r.owner,
               repo: r.repo,
               installationId: r.installationId,
+              forgeRepoId: r.forgeRepoId,
             },
           ]
         : [],
