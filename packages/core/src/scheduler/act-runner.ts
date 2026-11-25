@@ -19,6 +19,7 @@ import {
   planJob,
   rebuildArgv,
   splitJob,
+  workflowFullHistoryJobs,
   workflowHeadCheckouts,
 } from "@turntable/act-runner";
 import type { JobArtifactProvider } from "../artifacts/job";
@@ -86,7 +87,7 @@ export interface RepoSource {
   checkout(
     run: Run,
     repo: { owner: string; repo: string; installationId?: string | null | undefined } | undefined,
-    opts?: { signal?: AbortSignal | undefined },
+    opts?: { signal?: AbortSignal | undefined; fullHistory?: boolean | undefined },
   ): Promise<Checkout>;
 }
 
@@ -203,6 +204,7 @@ export function gitRepoSource(
         }
         const res = await runCheckoutChild({
           ...(token ? { token } : {}),
+          ...(opts?.fullHistory ? { fullHistory: true } : {}),
           owner,
           repo,
           sha,
@@ -590,6 +592,36 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           state: "infra_error",
           reason: `workflow ${dbRun.workflowPath} not found at ${dbRun.sha}`,
         };
+      }
+      // Depth 1 is the default. Only a job whose checkout asks for more (fetch-depth 0, a depth
+      // above 1, fetch-tags) gets the full history, the tags and the default branch: the commit is
+      // fetched again that way, and fails with the reason when the repository is over the caps.
+      if (repo && !dbRun.local) {
+        let wantsFull = false;
+        try {
+          const jobs = workflowFullHistoryJobs(workflowYaml);
+          const pj = job.planned ? (JSON.parse(job.planned) as PlannedJob) : undefined;
+          wantsFull = jobs[pj?.id ?? job.jobKey] === true;
+        } catch {
+          // a workflow that does not parse fails in the planner below, with its own reason
+        }
+        if (wantsFull) {
+          checkout.dispose?.();
+          try {
+            checkout = await o.source.checkout(
+              dbRun,
+              { owner: repo.owner, repo: repo.repo, installationId: repo.installationId },
+              { signal: ctx.signal, fullHistory: true },
+            );
+          } catch (e) {
+            if (e instanceof CheckoutAuthError)
+              return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
+            return {
+              state: "infra_error",
+              reason: `checkout: ${clean(e instanceof Error ? e.message : String(e), 400)}`,
+            };
+          }
+        }
       }
       // An untrusted run starts only with an approval bound to this exact sha and workflow. The
       // approval op checks the same thing; this is the backstop for a run that got here some

@@ -40,6 +40,8 @@ export interface FetchLimits {
   maxTreeBytes: number;
   /** Largest gzip tarball written for the sandbox. Default 256 MiB. */
   maxTarballBytes: number;
+  /** Most tags a full-history delivery takes. Default 10 000. */
+  maxRefs: number;
   /** Wall clock for the whole fetch: the requests, and the parsing and writing after them. */
   timeoutMs: number;
 }
@@ -53,6 +55,7 @@ export const DEFAULT_FETCH_LIMITS: FetchLimits = {
   maxEntries: 300_000,
   maxTreeBytes: 32 * 1024 * 1024,
   maxTarballBytes: 256 * 1024 * 1024,
+  maxRefs: 10_000,
   timeoutMs: 300_000,
 };
 
@@ -145,6 +148,12 @@ export interface FetchOptions {
    * the URL's own origin and repository path; a redirect while it is held is refused.
    */
   token?: string;
+  /**
+   * Deliver the whole history of the commit (no `deepen`), plus every tag and the default branch's
+   * tip, instead of the one commit at depth 1. Every limit still applies, and a repository over one
+   * fails (`GitFetchError`); it is never cut down to a shallow one.
+   */
+  fullHistory?: boolean;
 }
 
 /** The checkout child's exit status when the forge refused the credential. */
@@ -169,6 +178,15 @@ export interface FetchedCommit {
   tree: string;
   /** The commit message's subject line. */
   subject: string;
+  /** True when the whole history was delivered (no shallow roots). */
+  full: boolean;
+  /**
+   * With `full`: the refs to write, by full name (`refs/tags/v1`, `refs/remotes/origin/main`,
+   * `refs/heads/main`), each pointing at an object in `objects`.
+   */
+  refs: { name: string; oid: string }[];
+  /** With `full`: every object reachable from the wants, all verified present. */
+  reachable?: Set<string>;
 }
 
 export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
@@ -255,14 +273,83 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   if (!v2 || !caps.some((c) => c === "fetch" || c.startsWith("fetch=")))
     throw new GitFetchError("the server does not offer git protocol v2 fetch");
 
-  // 2. One commit, depth 1.
+  // 2. Which refs to want. A full delivery asks the server for HEAD (the default branch) and the
+  // tags; the commit itself is always wanted by sha.
+  const wants = new Set<string>([o.sha]);
+  const refs: { name: string; oid: string }[] = [];
+  if (o.fullHistory) {
+    if (!caps.some((c) => c === "ls-refs" || c.startsWith("ls-refs=")))
+      throw new GitFetchError("the server does not offer git protocol v2 ls-refs");
+    const lsRes = await f(`${base}/git-upload-pack`, {
+      method: "POST",
+      headers: {
+        ...common,
+        ...authFor(`${base}/git-upload-pack`),
+        "content-type": "application/x-git-upload-pack-request",
+        accept: "application/x-git-upload-pack-result",
+      },
+      body: concat([
+        pkt("command=ls-refs\n"),
+        pkt("agent=turntable\n"),
+        pkt("object-format=sha1\n"),
+        DELIM,
+        pkt("symrefs\n"),
+        pkt("ref-prefix HEAD\n"),
+        pkt("ref-prefix refs/tags/\n"),
+        FLUSH,
+      ]),
+      timeoutMs: left(),
+      maxBytes: 16 * 1024 * 1024,
+      redirect: "error",
+    });
+    if (refused(lsRes.status))
+      throw new GitAuthError(lsRes.status, `the server answered HTTP ${lsRes.status} to ls-refs`);
+    if (!lsRes.ok) throw new GitFetchError(`the server answered HTTP ${lsRes.status} to ls-refs`);
+    let headOid: string | undefined;
+    let defaultBranch: string | undefined;
+    const tags = new Map<string, string>();
+    for (const p of packets(new Uint8Array(await lsRes.arrayBuffer()))) {
+      if (p.kind !== "data") continue;
+      const line = dec.decode(p.data).trim();
+      if (line.startsWith("ERR "))
+        throw new GitFetchError(`the server refused: ${clean(line.slice(4))}`);
+      const [oid = "", name = "", ...attrs] = line.split(" ");
+      if (!/^[0-9a-f]{40}$/.test(oid)) continue;
+      if (name === "HEAD") {
+        headOid = oid;
+        const target = attrs.find((a) => a.startsWith("symref-target:"))?.slice(14);
+        if (target?.startsWith("refs/heads/")) defaultBranch = target.slice("refs/heads/".length);
+      } else if (name.startsWith("refs/tags/")) {
+        if (!validRefName(name))
+          throw new GitFetchError(
+            `the repository has a tag with an unsafe name: ${JSON.stringify(clean(name, 60))}`,
+          );
+        tags.set(name, oid);
+        if (tags.size > limits.maxRefs)
+          throw new GitFetchError(`the repository has more than ${limits.maxRefs} tags`);
+      }
+    }
+    for (const [name, oid] of tags) {
+      wants.add(oid);
+      refs.push({ name, oid });
+    }
+    if (headOid !== undefined && defaultBranch !== undefined) {
+      if (!validRefName(`refs/heads/${defaultBranch}`))
+        throw new GitFetchError("the default branch has an unsafe name");
+      wants.add(headOid);
+      refs.push({ name: `refs/heads/${defaultBranch}`, oid: headOid });
+      refs.push({ name: `refs/remotes/origin/${defaultBranch}`, oid: headOid });
+    }
+  }
+
+  // 3. The fetch: one commit at depth 1, or (full) every want with no depth.
   const body = concat([
     pkt(`command=${GIT_FETCH_COMMAND}\n`),
     pkt("agent=turntable\n"),
     pkt("object-format=sha1\n"),
     DELIM,
-    pkt(`want ${o.sha}\n`),
-    pkt("deepen 1\n"),
+    ...[...wants].map((w) => pkt(`want ${w}\n`)),
+    ...(o.fullHistory ? [] : [pkt("deepen 1\n")]),
     pkt("no-progress\n"),
     pkt("ofs-delta\n"),
     pkt("done\n"),
@@ -311,7 +398,7 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   left();
   const objects = readPack(concat(pack), limits, deadline, o.checkpoint);
 
-  // 3. The commit asked for must be in it, with its own sha.
+  // 4. The commit asked for must be in it, with its own sha.
   const commit = objects.get(o.sha);
   if (!commit || commit.type !== "commit")
     throw new GitFetchError("the pack does not contain the requested commit");
@@ -327,7 +414,78 @@ export async function fetchCommit(o: FetchOptions): Promise<FetchedCommit> {
   if (!objects.has(tree)) throw new GitFetchError("the pack does not contain the commit's tree");
   const sep = text.indexOf("\n\n");
   const subject = sep < 0 ? "" : (text.slice(sep + 2).split("\n", 1)[0] ?? "");
-  return { sha: o.sha, objects, parents, tree, subject };
+  if (!o.fullHistory) return { sha: o.sha, objects, parents, tree, subject, full: false, refs: [] };
+  // A full delivery is complete or it is nothing: every commit, tree and blob the wants reach
+  // must be in the pack, or the history would look whole to git and not be.
+  const reachable = assertConnected(objects, [...wants], limits, o.checkpoint);
+  return { sha: o.sha, objects, parents, tree, subject, full: true, refs, reachable };
+}
+
+/** A ref name git accepts (git-check-ref-format), and nothing that could break a packed-refs line. */
+export function validRefName(name: string): boolean {
+  if (name.length > 255 || name.length === 0) return false;
+  if (/[\u0000-\u0020\u007f~^:?*[\\]/.test(name)) return false;
+  if (name.includes("..") || name.includes("@{") || name.includes("//")) return false;
+  if (name.endsWith("/") || name.endsWith(".") || name === "@") return false;
+  return name
+    .split("/")
+    .every((part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+/**
+ * Walks everything the roots reach (tags to their targets, commits to parents and trees, trees to
+ * entries) and fails when any object is missing. Returns the set walked. Tree entries are read
+ * leniently here (only mode and oid): these objects go into `.git`, never onto the disk as files.
+ */
+function assertConnected(
+  objects: Map<string, GitObject>,
+  roots: string[],
+  limits: FetchLimits,
+  checkpoint?: () => void,
+): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...roots];
+  const need = (oid: string): void => {
+    if (!seen.has(oid)) stack.push(oid);
+  };
+  let n = 0;
+  while (stack.length > 0) {
+    const oid = stack.pop() as string;
+    if (seen.has(oid)) continue;
+    const obj = objects.get(oid);
+    if (!obj)
+      throw new GitFetchError("the history is not complete: the pack lacks an object it reaches");
+    seen.add(oid);
+    n += 1;
+    if (n % 1024 === 0) checkpoint?.();
+    if (obj.type === "commit") {
+      const m = /^tree ([0-9a-f]{40})\n((?:parent [0-9a-f]{40}\n)*)author /.exec(
+        dec.decode(obj.data),
+      );
+      if (!m) throw new GitFetchError("a commit header is malformed");
+      need(m[1] as string);
+      for (const x of (m[2] as string).matchAll(/parent ([0-9a-f]{40})\n/g)) need(x[1] as string);
+    } else if (obj.type === "tag") {
+      const m = /^object ([0-9a-f]{40})\n/.exec(dec.decode(obj.data.subarray(0, 64)));
+      if (!m) throw new GitFetchError("a tag object is malformed");
+      need(m[1] as string);
+    } else if (obj.type === "tree") {
+      if (obj.data.length > limits.maxTreeBytes)
+        throw new GitFetchError("a tree object is too large");
+      let i = 0;
+      const d = obj.data;
+      while (i < d.length) {
+        const sp = d.indexOf(0x20, i);
+        const nul = sp < 0 ? -1 : d.indexOf(0, sp + 1);
+        if (sp < 0 || nul < 0 || nul + 21 > d.length)
+          throw new GitFetchError("a tree is malformed");
+        if (dec.decode(d.subarray(i, sp)) !== "160000")
+          need(Buffer.from(d.subarray(nul + 1, nul + 21)).toString("hex"));
+        i = nul + 21;
+      }
+    }
+  }
+  return seen;
 }
 
 const hostPath = (u: string): string => {
@@ -720,7 +878,7 @@ export function materialize(
   let bytes = 0;
   // The folded paths of symlinks the tree made. Nothing is written at or below one.
   const symlinks = new Set<string>();
-  const reachable = new Set<string>([c.sha, c.tree]);
+  const reachable = new Set<string>(c.reachable ?? [c.sha, c.tree]);
   const index: IndexEntry[] = [];
   const underSymlink = (key: string): boolean => {
     let at = key.indexOf("/");
@@ -819,7 +977,16 @@ export function materialize(
     join(git, "config"),
     `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[remote "origin"]\n\turl = ${remoteUrl}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`,
   );
-  if (c.parents.length > 0) writeFileSync(join(git, "shallow"), `${c.sha}\n`);
+  // `shallow` only when the history was cut. A full delivery is checked complete (every commit,
+  // tree and blob reachable is present), so it has no such file, and says so truthfully.
+  if (!c.full && c.parents.length > 0) writeFileSync(join(git, "shallow"), `${c.sha}\n`);
+  if (c.refs.length > 0) {
+    // packed-refs: no file per ref, so no ref name can collide on a case-folding disk or escape.
+    const lines = [...new Map(c.refs.map((r) => [r.name, r.oid])).entries()]
+      .toSorted((a, b) => Buffer.compare(Buffer.from(a[0]), Buffer.from(b[0])))
+      .map(([name, oid]) => `${oid} ${name}\n`);
+    writeFileSync(join(git, "packed-refs"), `# pack-refs with: sorted \n${lines.join("")}`);
+  }
   for (const oid of reachable) {
     const obj = c.objects.get(oid);
     if (!obj) throw new GitFetchError("the pack lacks an object the commit reaches");

@@ -160,6 +160,8 @@ export interface ChildRequest {
   url?: string;
   /** A repo-scoped installation token: handed to the child on stdin, never in argv or env. */
   token?: string | undefined;
+  /** Deliver the full history, tags and default branch (a job asked for `fetch-depth: 0`). */
+  fullHistory?: boolean;
   dir: string;
   out: string;
   allowHosts?: readonly string[];
@@ -193,8 +195,22 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null, cap: number
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** Runs the checkout in a child and waits for it. Throws, with the reason in short clean words, on any failure. */
+/**
+ * Runs the checkout in a child and waits for it. Throws, with the reason in short clean words, on
+ * any failure. A full-history delivery that fails (over a cap, too slow, too much memory) says so:
+ * it is never cut down to a shallow one.
+ */
 export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
+  try {
+    return await runChild(r);
+  } catch (e) {
+    if (!r.fullHistory || e instanceof CheckoutAuthError || !(e instanceof Error)) throw e;
+    e.message = `fetch-depth 0 needs the full history, which could not be delivered for this run: ${e.message}`;
+    throw e;
+  }
+}
+
+async function runChild(r: ChildRequest): Promise<ChildResult> {
   const cfg = { ...DEFAULT_CHECKOUT_CONFIG, ...r.config };
   const limits: Partial<FetchLimits> = {
     ...DEFAULT_FETCH_LIMITS,
@@ -218,6 +234,7 @@ export async function runCheckoutChild(r: ChildRequest): Promise<ChildResult> {
     String(cfg.memoryMb),
     ...(r.url ? ["--url", r.url] : []),
     ...(r.token ? ["--token-stdin"] : []),
+    ...(r.fullHistory ? ["--full-history"] : []),
     ...(r.allowHosts ?? []).flatMap((h) => ["--allow-host", h]),
     // Nothing after this is an option, whatever a name looks like.
     "--",
