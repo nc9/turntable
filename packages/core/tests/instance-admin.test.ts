@@ -263,6 +263,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "instance_org_summary",
       "instance_revoke_org_token",
       "instance_run_activity",
+      "instance_run_summary",
       "instance_set_setting",
       "instance_start_installation_claim",
       "instance_whoami",
