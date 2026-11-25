@@ -28,6 +28,7 @@
     "test:docker": "TT_DOCKER_CONFORMANCE=1 bun scripts/run-test-group.ts docker",
     "test:core2": "bun scripts/run-test-group.ts core2",
     "test:ops": "bun scripts/run-test-group.ts ops",
+    "mcp-tools:check": "bun run scripts/mcp-tools.ts --check",
     "openapi:gen": "bun run --cwd packages/core openapi:gen",
     "typecheck:act-runner": "bun run --cwd packages/act-runner typecheck",
     "test:act": "bun scripts/run-test-group.ts act",
