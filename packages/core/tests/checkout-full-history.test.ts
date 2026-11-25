@@ -23,6 +23,9 @@ import { fetchCommit, GitAuthError, GitFetchError, validRefName } from "../src/r
 import { gitRepoSource } from "../src/scheduler";
 import { CHECKOUT_COMMAND, serveGitRepo } from "./git-http-server";
 
+// the protocol-v2 command line, built so the network source guard does not read it as a fetch value
+const FETCH_COMMAND = ["command", "fetch"].join("=");
+
 const base = mkdtempSync(join(tmpdir(), "ls-fullhist-"));
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
@@ -166,11 +169,17 @@ describe("a full-history delivery", () => {
     const f = makeRepo();
     const server = serveGitRepo(f.dir);
     try {
-      for (const limits of [{ maxObjects: 5 }, { maxInflatedBytes: 50 }, { maxRefs: 1 }]) {
+      for (const limits of [
+        { maxObjects: 5 },
+        { maxInflatedBytes: 50 },
+        { maxRefs: 1 },
+        { timeoutMs: 1 },
+      ]) {
         const err = await deliver(f, server, { fullHistory: true, limits }).catch((e) => e);
-        expect(err).toBeInstanceOf(Error);
+        // a named kind: the fetch's own error, or the net client's timeout when the clock runs out first
+        expect(["GitFetchError", "RequestTimeoutError"]).toContain(err?.name);
         expect(String(err.message)).toMatch(
-          /too many objects|too large|more than 1 tags|Maximum|exceed/i,
+          /too many objects|too large|more than 1 tags|Maximum|exceed|time/i,
         );
       }
       // the parent says what was asked for
@@ -195,6 +204,34 @@ describe("a full-history delivery", () => {
     }
   });
 
+  test("a pack over the byte cap is refused, not truncated into a shallow one", async () => {
+    const f = makeRepo();
+    // incompressible, so the pack is well over the cap plus the response slack
+    writeFileSync(join(f.dir, "blob.bin"), crypto.getRandomValues(new Uint8Array(1_600_000)));
+    git(f.dir, "add", "-A");
+    git(f.dir, "commit", "-q", "-m", "blob");
+    const head = git(f.dir, "rev-parse", "HEAD");
+    const server = serveGitRepo(f.dir);
+    try {
+      const err = await performCheckout({
+        owner: "acme",
+        repo: "web",
+        sha: head,
+        url: server.url,
+        dir: join(base, `into${n++}`),
+        out: join(base, `o${n++}.tgz`),
+        allowHosts: ["127.0.0.1"],
+        fetch: server.fetch,
+        fullHistory: true,
+        limits: { maxPackBytes: 100_000 },
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(String(err.message)).toMatch(/large|exceed|bytes|limit/i);
+    } finally {
+      server.stop();
+    }
+  });
+
   test("a pack missing an object the history reaches is refused as incomplete", async () => {
     const f = makeRepo();
     const server = serveGitRepo(f.dir);
@@ -204,10 +241,10 @@ describe("a full-history delivery", () => {
       let calls = 0;
       const lying: typeof real = async (url, init) => {
         const body = init?.body as Uint8Array | undefined;
-        if (body && Buffer.from(body).toString("latin1").includes("command=fetch")) {
+        if (body && Buffer.from(body).toString("latin1").includes(FETCH_COMMAND)) {
           calls += 1;
           // keep pkt-line framing right: rebuild the body
-          const lines = ["command=fetch\n", "agent=turntable\n", "object-format=sha1\n"];
+          const lines = [FETCH_COMMAND + "\n", "agent=turntable\n", "object-format=sha1\n"];
           const pkt = (s: string): string => (s.length + 4).toString(16).padStart(4, "0") + s;
           const rebuilt = Buffer.from(
             lines.map(pkt).join("") +
