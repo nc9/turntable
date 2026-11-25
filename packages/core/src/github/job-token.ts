@@ -88,6 +88,8 @@ export interface IssuedJobToken {
   notes: string[];
   /** What the job needed a token for beyond the tree Turntable delivers, for a refusal's message. */
   needs: string[];
+  /** Shadow: declared permissions were lowered to read. */
+  lowered?: boolean;
   /** Revokes it at GitHub. Idempotent, never throws. */
   revoke(): Promise<void>;
 }
@@ -101,11 +103,22 @@ export interface IssueRequest {
   klass: TrustClass;
   workflowYaml: string;
   jobId: string;
+  /**
+   * The project's checks_mode is not `live` (GitHub Actions is still the system of record): the
+   * token is capped to `contents: read` and `metadata: read` for every class, so a side-by-side
+   * run can never repeat a write. Read by the caller at issue time from the effective setting.
+   */
+  readOnly?: boolean;
 }
+
+/** The notice a side-by-side run gets when its declared permissions were lowered. */
+export const SHADOW_LOWERED_NOTICE = "shadow: GITHUB_TOKEN write permissions lowered to read";
 
 /** Why no token was minted, for the job's log. */
 export interface NoToken {
   none: string;
+  /** Shadow: declared permissions were lowered to read before it was decided no token is needed. */
+  lowered?: boolean;
 }
 
 export interface JobTokensOptions {
@@ -185,6 +198,14 @@ export class JobTokens {
       r.klass,
       granted,
     );
+    let lowered = false;
+    if (r.readOnly === true) {
+      const asked = declared.declared ? declared.permissions : DEFAULT_PERMISSIONS;
+      lowered = !isReadOnlyContents(
+        Object.fromEntries(Object.entries(asked).filter(([k]) => isMappablePermission(k))),
+      );
+      capped.permissions = { contents: "read", metadata: "read" };
+    }
     const needs = [
       ...Object.entries(capped.permissions)
         .filter(([, v]) => v === "write")
@@ -201,14 +222,31 @@ export class JobTokens {
       if (pub) {
         return {
           none: `no token: ${r.owner}/${r.repo} is public and the job needs nothing beyond contents read, which the controller already delivers`,
+          ...(lowered ? { lowered } : {}),
         };
+      }
+      if (r.readOnly === true && lowered) {
+        // Private, and the job declared more than contents read (it likely calls the API): a
+        // read-only token, never a write one.
+        return this.#mint(r, capped, declared.notes, needs, lowered);
       }
       // A private repository's tree is fetched by the control plane and delivered to the job (the
       // in-job checkout is a stub), so contents read alone needs no token in the job either.
       return {
+        ...(lowered ? { lowered } : {}),
         none: "the private repository's tree was delivered by Turntable; a step that calls the GitHub API needs a write permission declared, which needs restricted egress or the secrets proxy",
       };
     }
+    return this.#mint(r, capped, declared.notes, needs, lowered);
+  }
+
+  async #mint(
+    r: IssueRequest,
+    capped: CappedPermissions,
+    declaredNotes: string[],
+    needs: string[],
+    lowered: boolean,
+  ): Promise<IssuedJobToken> {
     const minted = await this.#auth.mintFresh(r.installationId, {
       repositories: [r.repo],
       permissions: capped.permissions as Record<string, "read" | "write">,
@@ -218,8 +256,9 @@ export class JobTokens {
       token: minted.token,
       expiresAt: minted.expiresAt,
       permissions: capped.permissions,
-      notes: [...declared.notes, ...capped.notes],
+      notes: [...declaredNotes, ...capped.notes],
       needs,
+      ...(lowered ? { lowered } : {}),
       revoke: async () => {
         if (revoked) return;
         revoked = true;

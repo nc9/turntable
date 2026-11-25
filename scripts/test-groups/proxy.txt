@@ -8,3 +8,4 @@ packages/core/tests/proxy-rules-ops.test.ts
 packages/core/tests/job-token.test.ts
 packages/core/tests/job-token-proxy.test.ts
 packages/core/tests/job-token-runner.test.ts
+packages/core/tests/job-token-shadow.test.ts

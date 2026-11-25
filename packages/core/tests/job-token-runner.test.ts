@@ -14,6 +14,7 @@ import {
   openDatabase,
   readLog,
   type Scope,
+  setProjectChecksMode,
 } from "../src/db";
 import * as s from "../src/db/schema";
 import { eq } from "drizzle-orm";
@@ -107,6 +108,8 @@ async function setupRun(yaml: string, klass?: string) {
   const [run] = await listRuns(db, scope);
   // The repo is bound to an App installation.
   await db.orm.update(s.projectRepos).set({ installationId: "100" });
+  // These cases are about a live project's token; a side-by-side one is read-only (job-token-shadow).
+  await setProjectChecksMode(db, scope, "live");
   if (klass) {
     // An untrusted run starts only with an approval bound to its sha and workflow.
     const hash = createHash("sha256").update(yaml).digest("hex");
