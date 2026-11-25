@@ -36,6 +36,7 @@ import {
   getJob,
   insertApprover,
   listAudit,
+  listEvents,
   listJobs,
   openDatabase,
   setEnvPolicy,
@@ -1425,6 +1426,27 @@ describe("review hardening", () => {
       ed25519_public_key: generateEd25519().publicSpki,
     });
     expect(ok2.ok).toBe(true);
+  });
+
+  test("a requested enrolment puts an approval.changed event on the feed: ids and kind, no text (#545)", async () => {
+    await ed25519Approver("alice");
+    const r = await ok(releaseTok, "request_enrolment", {
+      person: "carl",
+      forge_login: "carl-gh",
+      ed25519_public_key: generateEd25519().publicSpki,
+    });
+    const evs = await listEvents(
+      db,
+      { orgId: scope.orgId },
+      {
+        after: 0,
+        limit: 200,
+        types: ["approval.changed"],
+      },
+    );
+    expect(evs.map((e) => JSON.parse(e.payload as string))).toEqual([
+      { kind: "enrolment_approval", item_id: r.enrolment_id, change: "pending" },
+    ]);
   });
 
   test("a setup with fewer approvers than an environment needs says so, in the API and the CLI", async () => {

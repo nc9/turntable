@@ -7,6 +7,7 @@ import type {
   ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
+  PendingApproval,
   SandboxUsage,
   PolicyStatement,
   ApproveResult,
@@ -41,6 +42,7 @@ import type {
   WireApprovalStatus,
   WireReleaseChallenge,
   WireApprovers,
+  WireMyPendingApprovals,
   WireChallenge,
   WireEnrolmentApproval,
   WireEnrolmentRequest,
@@ -751,6 +753,23 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         })),
         limitMinutesPerDay: limit,
       };
+    },
+
+    async myPendingApprovals(): Promise<PendingApproval[]> {
+      // The op answers for every org the person belongs to; the call itself needs one named.
+      const w = await call<WireMyPendingApprovals>("GET", "/my/pending-approvals", {
+        org: org(),
+      });
+      return w.items.map((i) => ({
+        id: i.id,
+        kind: i.kind,
+        org: i.org,
+        project: i.project,
+        ...(i.environment !== undefined ? { environment: i.environment } : {}),
+        createdAt: ms(i.created_at) ?? 0,
+        ...(i.expires_at !== undefined ? { expiresAt: i.expires_at } : {}),
+        link: i.link,
+      }));
     },
 
     async approversOverview(): Promise<ApproversOverview> {

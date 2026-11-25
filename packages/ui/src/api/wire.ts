@@ -253,6 +253,25 @@ export type WireApprovalStatus = {
   }[];
 };
 
+/** `my_pending_approvals`: ids, slugs, environment names and times only. */
+export type WireMyPendingApprovals = {
+  items: {
+    id: string;
+    kind:
+      | "release_approval"
+      | "environment_approval"
+      | "untrusted_run_approval"
+      | "enrolment_approval"
+      | "key_policy_approval";
+    org: string;
+    project: string;
+    environment?: string;
+    created_at: string;
+    expires_at?: number;
+    link: string;
+  }[];
+};
+
 export type WireApprovers = {
   approvers: {
     id: string;

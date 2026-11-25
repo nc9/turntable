@@ -7,6 +7,7 @@ import type {
   WireConsumption,
   WireQuotas,
   WireApprovers,
+  WireMyPendingApprovals,
   WireChallenge,
   WireEnrolmentApproval,
   WireEnrolmentRequest,
@@ -654,4 +655,27 @@ test("sandbox_usage: the days and totals the Usage page reads", () => {
     "attempts",
     "estimated_attempts",
   ]);
+});
+
+test("my_pending_approvals: path and item fields", () => {
+  const o = op("/my/pending-approvals", "get");
+  expect(o.operationId).toBe("my_pending_approvals");
+  const body = ok(o);
+  expectKeys(body, ["items"]);
+  const item = body.properties!.items!.items!;
+  expectKeys(item, ["id", "kind", "org", "project", "created_at", "link"]);
+  expect(Object.keys(item.properties ?? {})).toEqual(
+    expect.arrayContaining(
+      keysOf<WireMyPendingApprovals["items"][number]>({
+        id: true,
+        kind: true,
+        org: true,
+        project: true,
+        environment: true,
+        created_at: true,
+        expires_at: true,
+        link: true,
+      }),
+    ),
+  );
 });
