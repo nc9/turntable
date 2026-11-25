@@ -30,10 +30,56 @@ export interface ManifestOptions {
 }
 
 /**
- * Least privilege: checks write (the only write, used later to report results); contents,
- * metadata and pull requests read. `installation` and `installation_repositories` events are sent
- * to every App without subscribing, so they are not listed (GitHub rejects unknown default_events).
+ * The permissions the App asks for. Widened by the maintainer: an installation made earlier keeps
+ * its old accepted set until an owner accepts this one, so token mints check the installation's
+ * accepted set first (app-auth.ts). Not requested on purpose: workflows, administration write,
+ * secrets and webhooks. `emails` is an account permission, `members` and
+ * `organization_actions_variables` are organization permissions.
  */
+export const APP_PERMISSIONS: Readonly<Record<string, "read" | "write">> = {
+  actions: "read",
+  actions_variables: "read",
+  administration: "read",
+  attestations: "write",
+  checks: "write",
+  contents: "write",
+  deployments: "write",
+  emails: "read",
+  environments: "read",
+  issues: "write",
+  members: "read",
+  merge_queues: "read",
+  metadata: "read",
+  organization_actions_variables: "read",
+  packages: "write",
+  pages: "write",
+  pull_requests: "write",
+  security_events: "write",
+  statuses: "write",
+};
+
+/**
+ * The events the App subscribes to. `installation` and `installation_repositories` are sent to
+ * every App without subscribing, so they are not listed (GitHub rejects unknown default_events).
+ */
+export const APP_EVENTS: readonly string[] = [
+  "check_run",
+  "check_suite",
+  "create",
+  "delete",
+  "issue_comment",
+  "membership",
+  "merge_group",
+  "organization",
+  "pull_request",
+  "pull_request_review",
+  "push",
+  "repository",
+  "repository_ruleset",
+  "workflow_dispatch",
+  "workflow_run",
+];
+
 export function buildManifest(o: ManifestOptions): Record<string, unknown> {
   const base = o.url.replace(/\/+$/, "");
   return {
@@ -44,13 +90,8 @@ export function buildManifest(o: ManifestOptions): Record<string, unknown> {
     // A private App installs only on its owner's account. The claim flow exists for other accounts
     // to install it, and an unclaimed installation is ignored, so it is public only then.
     public: o.claimFlow === true,
-    default_permissions: {
-      checks: "write",
-      contents: "read",
-      metadata: "read",
-      pull_requests: "read",
-    },
-    default_events: ["push", "pull_request", "check_run"],
+    default_permissions: { ...APP_PERMISSIONS },
+    default_events: [...APP_EVENTS],
     ...(o.claimFlow
       ? {
           setup_url: `${base}/api/v1/github/setup`,

@@ -13,3 +13,4 @@ packages/core/tests/github-claim-consume-pin.test.ts
 packages/core/tests/instance-start-claim.test.ts
 packages/core/tests/claim-key-and-cookies.test.ts
 packages/core/tests/github-user-lookup.test.ts
+packages/core/tests/github-app-permissions.test.ts

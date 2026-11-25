@@ -3,6 +3,7 @@
 // and are never returned by any query written for an API response.
 import {
   and,
+  count,
   asc,
   desc,
   eq,
@@ -175,6 +176,8 @@ export type InstallationInput = {
   status: InstallationStatus;
   /** Already validated to the avatar origin; undefined leaves a stored one as it is. */
   avatarUrl?: string | undefined;
+  /** The accepted permissions GitHub reported; undefined leaves the stored set as it is. */
+  permissions?: Record<string, string> | undefined;
 };
 
 export function upsertInstallation(
@@ -188,6 +191,7 @@ export function upsertInstallation(
       .insert(s.githubInstallations)
       .values({
         ...input,
+        permissions: input.permissions === undefined ? null : JSON.stringify(input.permissions),
         avatarUrl: input.avatarUrl ?? null,
         avatarSyncedAt: input.avatarUrl === undefined ? null : now,
         orgId: scope.orgId,
@@ -204,6 +208,9 @@ export function upsertInstallation(
           repositorySelection: input.repositorySelection,
           status: input.status,
           updatedAt: now,
+          ...(input.permissions === undefined
+            ? {}
+            : { permissions: JSON.stringify(input.permissions) }),
           ...(input.avatarUrl === undefined
             ? {}
             : { avatarUrl: input.avatarUrl, avatarSyncedAt: now }),
@@ -731,14 +738,40 @@ export function listUnfinishedDeliveries(db: Db, limit = 50): Promise<WebhookDel
   );
 }
 
-/** Retention: drops deliveries received before `before` (epoch ms). Returns how many. */
-export function purgeDeliveries(db: Db, before: number): Promise<number> {
+/**
+ * Retention: drops deliveries received before `before` (epoch ms), then, when more than `maxRows`
+ * remain, the oldest finished ones beyond that (a delivery still `received` is never dropped: it
+ * is the retry queue). Returns how many rows went.
+ */
+export function purgeDeliveries(db: Db, before: number, maxRows?: number): Promise<number> {
   return db.run(async (h) => {
     const rows = await h.orm
       .delete(s.webhookDeliveries)
       .where(lt(s.webhookDeliveries.receivedAt, before))
       .returning({ id: s.webhookDeliveries.id });
-    return rows.length;
+    let dropped = rows.length;
+    if (maxRows !== undefined) {
+      const [c] = await h.orm.select({ n: count() }).from(s.webhookDeliveries);
+      const excess = Number(c?.n ?? 0) - maxRows;
+      if (excess > 0) {
+        const old = await h.orm
+          .select({ id: s.webhookDeliveries.id })
+          .from(s.webhookDeliveries)
+          .where(ne(s.webhookDeliveries.status, "received"))
+          .orderBy(asc(s.webhookDeliveries.receivedAt))
+          .limit(excess);
+        if (old.length > 0) {
+          await h.orm.delete(s.webhookDeliveries).where(
+            inArray(
+              s.webhookDeliveries.id,
+              old.map((r) => r.id),
+            ),
+          );
+          dropped += old.length;
+        }
+      }
+    }
+    return dropped;
   });
 }
 
@@ -959,6 +992,45 @@ export function countInstallationsByStatus(db: Db): Promise<Record<InstallationS
     const counts: Record<InstallationStatus, number> = { active: 0, suspended: 0, deleted: 0 };
     for (const r of rows) counts[r.status as InstallationStatus] += 1;
     return counts;
+  });
+}
+
+/** Every live (not deleted) installation with the permissions last read for it; null = never read. */
+export function listInstallationPermissions(
+  db: Db,
+  limit: number,
+): Promise<
+  {
+    installationId: string;
+    accountLogin: string;
+    status: InstallationStatus;
+    permissions: Record<string, string> | null;
+  }[]
+> {
+  return db.run(async (h) => {
+    const rows = await h.orm
+      .select({
+        installationId: s.githubInstallations.installationId,
+        accountLogin: s.githubInstallations.accountLogin,
+        status: s.githubInstallations.status,
+        permissions: s.githubInstallations.permissions,
+      })
+      .from(s.githubInstallations)
+      .where(ne(s.githubInstallations.status, "deleted"))
+      .orderBy(asc(s.githubInstallations.installationId))
+      .limit(limit);
+    return rows.map((r) => {
+      let permissions: Record<string, string> | null = null;
+      try {
+        const v: unknown = r.permissions === null ? null : JSON.parse(r.permissions);
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          permissions = v as Record<string, string>;
+        }
+      } catch {
+        permissions = null;
+      }
+      return { ...r, status: r.status as InstallationStatus, permissions };
+    });
   });
 }
 

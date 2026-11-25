@@ -861,6 +861,8 @@ export const githubInstallations = pgTable(
     avatarUrl: text("avatar_url"),
     avatarSyncedAt: bigint("avatar_synced_at", { mode: "number" }),
     repositorySelection: text("repository_selection").notNull(),
+    /** JSON object of the permissions the installation has accepted, as GitHub reported them; null until read. */
+    permissions: text("permissions"),
     status: text("status").notNull().default("active"),
     createdAt: createdAt(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull().default(nowMs),

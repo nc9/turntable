@@ -10,6 +10,8 @@ export interface GithubInstallationFacts {
   account: { login: string; id: string; type: string; avatarUrl?: string | undefined };
   repositorySelection: string;
   suspended: boolean;
+  /** The permissions the installation has accepted. Absent from an older fake. */
+  permissions?: Record<string, string> | undefined;
 }
 
 export interface GithubRepoFacts {
@@ -55,6 +57,7 @@ export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): Gi
         account: { login: string; id: number; type: string; avatar_url?: unknown };
         repository_selection: string;
         suspended_at: string | null;
+        permissions?: unknown;
       };
       return {
         id: String(j.id),
@@ -67,6 +70,7 @@ export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): Gi
         },
         repositorySelection: j.repository_selection,
         suspended: j.suspended_at !== null,
+        permissions: sanitizePermissions(j.permissions),
       };
     },
     async listInstallationRepos(installationId) {
@@ -168,4 +172,12 @@ export function githubUserLookup(
       return j.login.toLowerCase() === login.toLowerCase() ? String(j.id) : undefined;
     },
   };
+}
+
+/** Only string levels under string names; anything else is "unknown" (undefined). */
+export function sanitizePermissions(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, l] of Object.entries(v)) if (typeof l === "string") out[k] = l;
+  return out;
 }

@@ -38,7 +38,13 @@ import {
   SETUP_FAILURES_PER_MINUTE,
   type HostedManifestHandler,
 } from "../src/github/hosted-manifest";
-import { AppStateError, storeApp, type ManifestConversion } from "../src/github/manifest";
+import {
+  APP_EVENTS,
+  APP_PERMISSIONS,
+  AppStateError,
+  storeApp,
+  type ManifestConversion,
+} from "../src/github/manifest";
 import { hashToken } from "../src/ops/tokens";
 import { startServer } from "../src/server";
 import { SecretStore } from "../src/secrets/store";
@@ -95,13 +101,8 @@ const make = (extra: { claimFlow?: boolean } = {}) =>
           name: c.name,
           slug: c.slug,
           owner: { login: c.owner.login },
-          permissions: {
-            checks: "write",
-            contents: "read",
-            metadata: "read",
-            pull_requests: "read",
-          },
-          events: ["push", "pull_request", "check_run"],
+          permissions: { ...APP_PERMISSIONS },
+          events: [...APP_EVENTS],
         };
         return Response.json(appOverride ? appOverride(info) : info);
       }
@@ -281,12 +282,43 @@ describe("starting the flow", () => {
     expect(m.redirect_url).toBe(`${BASE}${MANIFEST_CALLBACK_PATH}`);
     expect(m.hook_attributes.url).toBe(`${BASE}/api/v1/webhooks/github`);
     expect(m.default_permissions).toEqual({
+      actions: "read",
+      actions_variables: "read",
+      administration: "read",
+      attestations: "write",
       checks: "write",
-      contents: "read",
+      contents: "write",
+      deployments: "write",
+      emails: "read",
+      environments: "read",
+      issues: "write",
+      members: "read",
+      merge_queues: "read",
       metadata: "read",
-      pull_requests: "read",
+      organization_actions_variables: "read",
+      packages: "write",
+      pages: "write",
+      pull_requests: "write",
+      security_events: "write",
+      statuses: "write",
     });
-    expect(m.default_events).toEqual(["push", "pull_request", "check_run"]);
+    expect(m.default_events).toEqual([
+      "check_run",
+      "check_suite",
+      "create",
+      "delete",
+      "issue_comment",
+      "membership",
+      "merge_group",
+      "organization",
+      "pull_request",
+      "pull_request_review",
+      "push",
+      "repository",
+      "repository_ruleset",
+      "workflow_dispatch",
+      "workflow_run",
+    ]);
     expect(m.public).toBe(false);
     // Not set unless the claim flow is on.
     expect(m.setup_url).toBeUndefined();
@@ -860,11 +892,11 @@ describe("the App that comes back must be the one that was asked for", () => {
   test("permissions broader than the manifest's store nothing, narrower or equal are fine", async () => {
     appOverride = (a) => ({
       ...a,
-      permissions: { checks: "write", contents: "write", metadata: "read" },
+      permissions: { checks: "write", workflows: "write", metadata: "read" },
     });
     await refused();
     await releaseFlow();
-    appOverride = (a) => ({ ...a, permissions: { checks: "write", administration: "read" } });
+    appOverride = (a) => ({ ...a, permissions: { checks: "write", administration: "write" } });
     await refused();
     await releaseFlow();
     appOverride = (a) => ({ ...a, permissions: { contents: "read", checks: "read" } });
