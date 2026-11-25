@@ -735,6 +735,26 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
       return { set: w.set, setAt: w.set_at, setBy: w.set_by };
     },
 
+    async rotateWebhookSecret({ overlapMinutes, stepUp }) {
+      const w = await call<{ fingerprint: string; overlap_until: string }>(
+        "POST",
+        "/app-secrets/webhook-secret/rotate",
+        {},
+        { org: org(), overlap_minutes: overlapMinutes, step_up: stepUp },
+      );
+      return { fingerprint: w.fingerprint, overlapUntil: w.overlap_until };
+    },
+
+    async replaceAppPrivateKey({ privateKey, stepUp }) {
+      const w = await call<{ fingerprint: string; app_id: string }>(
+        "POST",
+        "/app-secrets/private-key",
+        {},
+        { org: org(), private_key: privateKey, step_up: stepUp },
+      );
+      return { fingerprint: w.fingerprint, appId: w.app_id };
+    },
+
     async setSetting({ key, value, unset, project, stepUp }): Promise<Setting> {
       return mapSetting(
         await call<WireSetting>(

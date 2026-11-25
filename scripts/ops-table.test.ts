@@ -93,6 +93,10 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: starting a tenant's GitHub claim is the operator's act, never an agent's",
   instance_bind_installation:
     "instance administrator ops are REST only: binding a tenant's GitHub installation is the operator's act, never an agent's",
+  instance_rotate_webhook_secret:
+    "REST and web only: the new webhook secret is shown once to an owner with a passkey, never to an agent",
+  instance_replace_app_private_key:
+    "REST and web only: the App's private key is uploaded by an owner with a passkey, never through an agent",
   instance_drain:
     "instance administrator ops are REST only: pausing every tenant's scheduling for a deploy is the operator's act, never an agent's",
   instance_drain_status:

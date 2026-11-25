@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/empty-state";
 import { useScope } from "@/features/shell/scope";
 import { ApprovalNotifyToggle } from "@/features/shell/approval-notifications";
+import { AppSecretsSection } from "./app-secrets-section";
 import { SettingsSection } from "./settings-section";
 
 export function OrgSettingsPage() {
@@ -16,6 +17,7 @@ export function OrgSettingsPage() {
       </p>
       <ApprovalNotifyToggle />
       <div className="mt-6">{scope.org ? <SettingsSection key={scope.org.id} /> : null}</div>
+      {scope.org ? <AppSecretsSection key={`app-${scope.org.id}`} /> : null}
     </div>
   );
 }

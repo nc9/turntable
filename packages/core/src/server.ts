@@ -1,3 +1,4 @@
+import type { AppAuth } from "./github/app-auth";
 import type { ArtifactService } from "./artifacts/service";
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
@@ -176,6 +177,8 @@ export type ServeOptions = {
   trustForwardedProto?: boolean;
   /** The secret store, for `instance_audit_verify`'s public keys. */
   auditStore?: SecretStore | undefined;
+  /** The App credential minter, for the instance App-secret ops. */
+  appAuth?: AppAuth | undefined;
   /** The readiness checks, served by the `doctor` operation. */
   doctor?: () => Promise<DoctorReport>;
   /** Counts the forwarded headers requests carry, for doctor to compare with the settings. */
@@ -203,6 +206,7 @@ export function startServer(options: ServeOptions) {
     staticPollProjects: options.staticPollProjects,
     doctor: options.doctor,
     auditStore: options.auditStore,
+    appAuth: options.appAuth,
     backup: options.backup,
     settings: options.settings,
   };

@@ -27,6 +27,7 @@ import type { UserGithub } from "../auth/user-tokens";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { AppAuth } from "../github/app-auth";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import type { RunDispatcher } from "../poll/dispatch";
@@ -106,6 +107,8 @@ export type DispatchEnv = {
   viaMcp?: boolean | undefined;
   /** GitHub calls made with a signed-in user's own token; absent when sign-in is not set up. */
   userGithub?: UserGithub | undefined;
+  /** The GitHub App's credential minter; the App-secret ops need it. */
+  appAuth?: AppAuth | undefined;
 };
 
 export type DispatchResult =
@@ -686,6 +689,7 @@ export async function dispatch(
       settings: env.settings,
       viaMcp: env.viaMcp,
       userGithub: env.userGithub,
+      appAuth: env.appAuth,
     });
     const target = op;
     if (!audited) {

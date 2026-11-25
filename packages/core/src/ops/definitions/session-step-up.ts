@@ -21,6 +21,10 @@ import {
   stepUpHash,
   stepUpKeys,
 } from "../step-up";
+import {
+  instanceReplaceAppPrivateKeyOp,
+  instanceRotateWebhookSecretOp,
+} from "./instance-app-secrets";
 import { createApiToken } from "./create-api-token";
 import { inviteMemberOp } from "./members";
 import { setSettingOp } from "./settings";
@@ -33,7 +37,7 @@ import {
   releaseSetProjectSigning,
 } from "./release-config";
 import type { Op } from "../define";
-import { resolveLaneOrg, resolveLaneTarget } from "../lane-target";
+import { resolveLaneOrg, resolveLaneTarget, secretDigest } from "../lane-target";
 
 const MAX_OPEN_STEP_UPS = 10;
 
@@ -42,6 +46,8 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   create_api_token: createApiToken.input,
   invite_member: inviteMemberOp.input,
   set_setting: setSettingOp.input,
+  instance_rotate_webhook_secret: instanceRotateWebhookSecretOp.input,
+  instance_replace_app_private_key: instanceReplaceAppPrivateKeyOp.input,
 };
 /** The lane configuration ops (#541), whose schemas and secret fields the challenge honours too. */
 const LANE_OPS: Record<string, Op> = {};
@@ -63,7 +69,7 @@ export const sessionStepUpChallenge = defineOp({
   summary: "Start a passkey step-up for one sensitive action from a web session.",
   description:
     "Web sessions only. Names an action (create_api_token, invite_member for an admin or " +
-    "owner, or set_setting to loosen a trust setting) and the exact `input` the action will be called with (project scope included), and " +
+    "owner, set_setting to loosen a trust setting, or, for an owner of the operator org, instance_rotate_webhook_secret or instance_replace_app_private_key) and the exact `input` the action will be called with (project scope included), and " +
     "returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs " +
     "`challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the " +
     "assertion's credential_id, client_data_json, authenticator_data and signature). The step-up " +
@@ -90,6 +96,8 @@ export const sessionStepUpChallenge = defineOp({
   scope: "org",
   http: { method: "POST", path: "/session/step-up" },
   mcp: false,
+  // The action input can carry a secret (the App private key): the audit keeps the action name only.
+  logOmitFields: ["input"],
   async handler(ctx, i) {
     const p = ctx.principal;
     if (p.kind !== "session" || !p.sessionHash) {
@@ -99,6 +107,12 @@ export const sessionStepUpChallenge = defineOp({
       throw new OpError("unavailable", "WebAuthn is not configured on this server");
     }
     const schema = SCHEMAS[i.action];
+    // The dispatcher binds every op's secret fields by digest. A non-lane op (the App private key)
+    // is challenged with its value, as the person's own session sends it, and bound by the same digest.
+    const plainSecretFields =
+      i.action === instanceReplaceAppPrivateKeyOp.name
+        ? instanceReplaceAppPrivateKeyOp.secretInputFields
+        : [];
     if (!schema || !SESSION_STEP_UP_OPS.has(i.action)) {
       throw new OpError("invalid_input", `${i.action} does not take a step-up`);
     }
@@ -130,6 +144,9 @@ export const sessionStepUpChallenge = defineOp({
       delete given[`${f}_sha256`];
       given[f] = "x";
     }
+    for (const f of plainSecretFields) {
+      if (typeof given[f] === "string") digests[`${f}_sha256`] = secretDigest(f, given[f]);
+    }
     const parsed = schema.safeParse(given);
     if (!parsed.success) {
       throw new OpError("invalid_input", "input does not match that action's schema");
@@ -138,6 +155,7 @@ export const sessionStepUpChallenge = defineOp({
     const { org, project, ...restAll } = parsed.data as Record<string, unknown>;
     const rest = { ...restAll };
     for (const f of lane?.secretInputFields ?? []) delete rest[f];
+    for (const f of plainSecretFields) delete rest[f];
     // The target org and project must exist as a pair, as the op itself will resolve them.
     if (lane) {
       if (lane.name === "release_init_key") await resolveLaneOrg(ctx.db, rest);

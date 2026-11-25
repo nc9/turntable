@@ -15,6 +15,7 @@ import type { SecretVault } from "../secrets/vault";
 import type { DoctorReport } from "../doctor/types";
 import type { BackupConfig } from "../db/backup";
 import type { SettingsRuntime } from "../settings/resolve";
+import type { AppAuth } from "../github/app-auth";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
 
@@ -89,6 +90,8 @@ export type OpContext = {
    * action and target (#430). Absent otherwise: a handler that opens a session path must require it.
    */
   stepUp?: { action: string; target: string | undefined } | undefined;
+  /** The App's credential minter and secret store; absent without a master key. */
+  appAuth?: AppAuth | undefined;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {

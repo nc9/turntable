@@ -97,6 +97,9 @@ export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   // Only for loosening a trust setting; the settings guard requires it then and no other time.
   "set_setting",
   ...LANE_CONFIG_WRITE_OPS,
+  // The GitHub App's webhook secret and private key (#586): an owner of the operator org only.
+  "instance_rotate_webhook_secret",
+  "instance_replace_app_private_key",
 ]);
 
 /** The principal a step-up challenge row is issued to. */
@@ -193,8 +196,7 @@ export async function verifyStepUp(
   const su = parsed.data;
   const row = await getChallenge(o.db, o.orgId, su.id);
   // Not ours (another kind, another person's session): the same answer as an unknown id.
-  const holder = stepUpHolder(o.userId);
-  if (!row || row.kind !== STEP_UP_KIND || row.principal !== holder) {
+  if (!row || row.kind !== STEP_UP_KIND || row.principal !== `session:${o.userId}`) {
     throw refuse("step_up_unknown", "no such step-up");
   }
   if (row.usedAt !== null) throw refuse("step_up_reused", "that step-up was already used");
