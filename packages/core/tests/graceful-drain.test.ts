@@ -18,6 +18,7 @@ import {
   listEvents,
   markDrainCut,
   recordTrustClass,
+  updateAttempt,
   upsertStep,
   openDatabase,
   type Scope,
@@ -217,10 +218,22 @@ describe("restart recovery of an attempt a drain cut", () => {
   describe("the drain-cut rule (#565)", () => {
     const NOT_RETRIED =
       "cut by a drain after steps started; not retried for a protected or release job: rerun it by hand";
-    async function cutJob(klass: string | null, stepsStarted: boolean) {
+    // `launch`: how far the runner got. "none" = cut while the sandbox was being created;
+    // "exec" = sandbox and exec recorded (the step rows may lag, so none is not proof).
+    async function cutJob(
+      klass: string | null,
+      stepsStarted: boolean,
+      launch: "none" | "sandbox" | "exec" = stepsStarted ? "exec" : "none",
+    ) {
       const q = await queueJob(a.scope);
       await claim("old");
       if (klass) expect(await recordTrustClass(db, a.scope, q.attempt.id, "old", klass)).toBe(true);
+      if (launch !== "none") {
+        await updateAttempt(db, a.scope, q.attempt.id, {
+          sandboxId: "sb-1",
+          ...(launch === "exec" ? { execId: "ex-1" } : {}),
+        });
+      }
       if (stepsStarted) {
         await upsertStep(db, a.scope, {
           attemptId: q.attempt.id,
@@ -281,6 +294,28 @@ describe("restart recovery of an attempt a drain cut", () => {
       expect(attempts).toHaveLength(2);
       expect(attempts[1]).toMatchObject({ state: "queued" });
       expect((await getJob(db, a.scope, q.job.id))?.state).toBe("queued");
+      expect(await notRetried(q.job.id)).toHaveLength(0);
+    });
+
+    test("a protected attempt with an exec and no step rows (the stream lagged) is not requeued", async () => {
+      const { q, attempts } = await cutJob("protected", false, "exec");
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]).toMatchObject({ state: "infra_error", errorClass: NOT_RETRIED });
+      expect(await notRetried(q.job.id)).toHaveLength(1);
+      const audit = await listAudit(db, { orgId: a.orgId }, { limit: 100 });
+      expect(audit.some((r) => r.op === "attempt.drain_cut_not_retried")).toBe(true);
+    });
+
+    test("a sandbox recorded but no exec id yet (exec.start may have run) is not requeued", async () => {
+      const { attempts } = await cutJob("release", false, "sandbox");
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]!.errorClass).toBe(NOT_RETRIED);
+    });
+
+    test("a protected attempt cut while its sandbox was being created is requeued once", async () => {
+      const { q, attempts } = await cutJob("protected", false, "none");
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1]).toMatchObject({ state: "queued" });
       expect(await notRetried(q.job.id)).toHaveLength(0);
     });
 

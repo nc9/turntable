@@ -815,13 +815,18 @@ export type RequeueLostResult = "requeued" | "not_retried" | "no";
  * that already lost an attempt this way is left to the caller, which finishes it as `infra_error`.
  * Fenced like `finishAttempt`: only a still-running attempt whose lease expired before `now`.
  *
- * The requeue follows the infra-retry rule (#565): only when the attempt's recorded trust class
- * passes `retryableAfterSteps`, or no step had started (evidence: an `attempt_steps` row, which the
- * runner writes the moment act reports a step start). Otherwise a protected or release job may
- * have deployed or published, so nothing is changed except an `attempt.drain_cut_not_retried`
- * event and audit entry, and "not_retried" is returned: the caller ends the attempt `infra_error`
- * with `DRAIN_CUT_NOT_RETRIED`. An attempt with no recorded class counts as not a pull request.
- * A step the runner started but had not yet recorded is not seen (the evidence lags by a write).
+ * The requeue follows the infra-retry rule (#565), failing safe: only when the attempt's recorded
+ * trust class passes `retryableAfterSteps`, or act provably never ran. A step row is NOT proof that
+ * no step ran: it is written when the controller reads act's step-start event, so it lags the
+ * sandbox, and a drain cut is exactly when the controller vanished. So the exec rule is: no step
+ * row with `started_at` AND no `exec_id` AND no `sandbox_id`. The runner records `sandbox_id`
+ * (awaited) before it uploads anything or starts act, and records `exec_id` only AFTER
+ * `exec.start` returned, so a NULL `exec_id` alone would not prove act never started; a NULL
+ * `sandbox_id` does (the cut came while the sandbox was being created). Otherwise a protected or
+ * release job may have deployed or published, so nothing is changed except an
+ * `attempt.drain_cut_not_retried` event and audit entry, and "not_retried" is returned: the
+ * caller ends the attempt `infra_error` with `DRAIN_CUT_NOT_RETRIED`. An attempt with no recorded
+ * class counts as not a pull request.
  *
  * Returns "requeued", "not_retried" (see above) or "no" (not eligible: the caller finishes it).
  */
@@ -868,17 +873,20 @@ export function requeueLostAttemptOnce(
     );
     if (earlier.length > 0) return "no";
     if (!input.retryableAfterSteps(cur.trustClass)) {
-      const [started] = await tx.orm
-        .select({ stepKey: s.attemptSteps.stepKey })
-        .from(s.attemptSteps)
-        .where(
-          scoped(
-            scope,
-            { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
-            and(eq(s.attemptSteps.attemptId, cur.id), isNotNull(s.attemptSteps.startedAt)),
-          ),
-        )
-        .limit(1);
+      const launched = cur.sandboxId !== null || cur.execId !== null;
+      const [started] = launched
+        ? [{ stepKey: "" }]
+        : await tx.orm
+            .select({ stepKey: s.attemptSteps.stepKey })
+            .from(s.attemptSteps)
+            .where(
+              scoped(
+                scope,
+                { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+                and(eq(s.attemptSteps.attemptId, cur.id), isNotNull(s.attemptSteps.startedAt)),
+              ),
+            )
+            .limit(1);
       if (started) {
         const job = await getJob(tx, scope, cur.jobId);
         await appendEvent(tx, scope, {
