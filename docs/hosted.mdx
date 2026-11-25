@@ -83,6 +83,43 @@ When the lane runs in the same process as the main service, give that process bo
 
 Keep the new key in your secrets manager as well as in the platform variable. Losing it loses every stored secret.
 
+## Running the release lane on one hosted service
+
+Today a single hosted service cannot run the web app and the release lane together. This section says what is true now, why, and what would have to change. It is not a recipe that works; do not plan a release on a one-service host until the blockers below are closed.
+
+**What works today.** `TURNTABLE_ROLES=release` selects the lane from the environment (every `serve` flag has a variable, so the entrypoint `serve --data-dir /data` needs no change). The lane runs alone: the role list `web,worker,release` is refused at boot, and a process with the release role starts no web server, API or UI. A service started that way serves nothing a person can reach, so nobody can call `request_release`. A main process (no `--roles`, or `web`, `worker`, `poller`) ignores every `TURNTABLE_RELEASE_*` variable and warns that they were ignored.
+
+**Why two services do not work on Railway yet.** The lane needs three things from the main service, and none is shared between two Railway services:
+
+| The lane needs | Why a second service cannot have it today |
+| --- | --- |
+| The request queue and run records | With SQLite this is one file on one volume, and a Railway volume attaches to one service. It works with a shared Postgres (`TURNTABLE_DATABASE_URL` on both services). |
+| Artifact bytes | The artifact store is the local directory `<data dir>/artifacts`, and the lane reads `TURNTABLE_RELEASE_ARTIFACT_DIR` from a local path. There is no remote artifact backend, so a lane on another volume sees no bytes and refuses with `artifact_bytes_missing`. |
+| The config channel (the `release_*` operations and `release_approval_challenge`) | It is a unix socket, or TCP with mutual TLS through certificate files (`TURNTABLE_RELEASE_CHANNEL_TCP`, `_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`) plus key files. These are files, not variables, and a shell-less host has no way to create them. |
+
+**What the lane needs when it does run** (so you can prepare). On its own service, all variables on the lane's side only:
+
+| Variable | Required | Secret | Value |
+| --- | --- | --- | --- |
+| `TURNTABLE_ROLES` | yes | no | `release` |
+| `TURNTABLE_RELEASE_MASTER_KEY` | yes (or `_FILE`, not both) | yes | 32 bytes as base64 or hex; see [the release lane's key](#the-release-lanes-key) |
+| `TURNTABLE_RELEASE_DATA_DIR` | yes | no | A directory on the lane's own volume, for example `/data/release` |
+| `TURNTABLE_RELEASE_GITHUB_TOKEN` | yes | yes | A read-only token for contents and refs of the release repository |
+| `TURNTABLE_RELEASE_ARTIFACT_DIR` | yes | no | The directory holding the artifact store's bytes, laid out `<run id>/<name>` (the main service's `<data dir>/artifacts`) |
+| `TURNTABLE_RELEASE_BUILDER_ID` | yes | no | The instance's public URL |
+| `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN` | only to publish a GitHub release | yes | A token that may write releases to the release repository |
+| `TURNTABLE_RELEASE_POLL_MS` | no | no | Default 5000 |
+
+Each missing required variable stops the lane at boot with `the release role needs <NAME>`. On the main service set `TURNTABLE_ARTIFACTS_URL` (this turns the artifact store on). The lane's GitHub credentials are static tokens today. A GitHub App installation token would be minted by the existing App code (`AppAuth`), and the lane's publish path already asks a function for the token on each use; the forge client that re-checks tags still takes one fixed token, so using an installation token means giving the lane the App's private key or a minting step and changing that client. That is a security decision: the App key would then be in a process that signs releases.
+
+**The smallest change that would make one service possible.** Allow the roles `web,worker,release` in one process, with three differences from the separate lane:
+
+1. The lane reads the artifact store directly, not through `TURNTABLE_RELEASE_ARTIFACT_DIR`.
+2. The channel is an in-process call, with no socket or key files.
+3. The lane keeps its own master key, data directory and signing key.
+
+What would no longer hold is the process boundary: code running in the web or worker role shares memory with the signer, so a memory-reading flaw in either reaches the signing key. What would still hold is that the lane re-checks the tag at the forge with its own credential, never trusts the main rows for what it signs, compares artifact digests against the bytes itself, and that the main roles never sign. Whether that trade is acceptable is the maintainers' decision, and it is not implemented.
+
 ## Instance administrator access on a host with no shell
 
 To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is active, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
