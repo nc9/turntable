@@ -602,6 +602,9 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
   await client.branchHead("acme/web", "main"); // a conditional repeat
   await client.collaboratorPermission("acme/web", "octocat").catch(() => {});
   await client.branchProtected("acme/web", "main").catch(() => {});
+  // listDir is a read-only contents listing (a single GET); the stub's 500 is swallowed here
+  await client.listDir("acme/web", ".github/workflows", SHA("a")).catch(() => {});
+  expect(seen.some((s) => s.url.includes("/contents/.github/workflows?ref="))).toBe(true);
   expect(seen.length).toBeGreaterThanOrEqual(5);
   for (const s of seen) {
     expect(s.method).toBe("GET");
@@ -622,6 +625,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "fileAt",
     "firstParentChain",
     "firstParentsSince",
+    "listDir",
     "openPulls",
     "peelTag",
     "pushEvents",
