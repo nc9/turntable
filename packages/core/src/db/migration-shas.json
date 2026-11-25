@@ -192,6 +192,10 @@
     {
       "tag": "0047_attempt_infra_kind",
       "sha256": "21eba4ac4550b17179ae13ec623e1c034867b237536f73f2983a02e429d93799"
+    },
+    {
+      "tag": "0048_onboardings",
+      "sha256": "f0eaed0782a1ff3febecef9cc752bdeca7a2c77f618b3fdefc4a8fdcfd133d57"
     }
   ],
   "pg": [
@@ -270,6 +274,10 @@
     {
       "tag": "0018_attempt_infra_kind",
       "sha256": "cc5adc9859b4ccb06919a450c6d7f6f426f9d9a87402597df95ae21c68f4d25d"
+    },
+    {
+      "tag": "0019_onboardings",
+      "sha256": "e848adfc061105a5164faa169b04b2334dd50bec7915852b1221385a34d9d8d0"
     }
   ]
 }

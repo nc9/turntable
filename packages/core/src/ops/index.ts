@@ -54,6 +54,12 @@ import { listOrgs } from "./definitions/list-orgs";
 import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
 import { runDispatch } from "./definitions/run-dispatch";
+import {
+  listInstallationRepos,
+  onboardRepos,
+  previewWorkflows,
+  runDefaultBranch,
+} from "./definitions/onboarding-repos";
 import { signRelease } from "./definitions/sign-release";
 import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
 import { getInstallationClaimOp, startInstallationClaim } from "./definitions/installation-claim";
@@ -126,6 +132,10 @@ export const registry = createRegistry([
   cancel,
   rerun,
   runDispatch,
+  listInstallationRepos,
+  onboardRepos,
+  previewWorkflows,
+  runDefaultBranch,
   approveRunOp,
   approveRunChallengeOp,
   signRelease,

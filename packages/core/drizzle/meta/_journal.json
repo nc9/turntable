@@ -337,6 +337,13 @@
       "when": 1795543195856,
       "tag": "0047_attempt_infra_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1795572335585,
+      "tag": "0048_onboardings",
+      "breakpoints": true
     }
   ]
 }

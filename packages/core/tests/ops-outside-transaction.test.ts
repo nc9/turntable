@@ -5,7 +5,9 @@ import { registry } from "../src/ops";
 const ALLOWED_OUTSIDE_TRANSACTION = [
   "bind_installation", // reads GitHub with the user's token (several calls) before and while it syncs; a partial bind is repaired by running it again (sync is idempotent)
   "db_backup", // cannot run inside a transaction
+  "onboard_repos", // asks GitHub for the installation's repos first; all writes are one inner transaction (all or nothing)
   "resync_installation", // makes GitHub API calls, which must not hold the write transaction
+  "run_default_branch", // forge round trips (head, workflow) must not hold the DB write lock; the run is written in the poller path's own transaction
   "run_dispatch", // forge round trips (ref resolve, workflow fetch) must not hold the DB write lock; all writes are in one inner transaction
 ];
 

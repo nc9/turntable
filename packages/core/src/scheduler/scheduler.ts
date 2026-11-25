@@ -9,7 +9,6 @@ import {
   earlierInfraReason,
   CONTROLLER_LOST,
   finishAttempt,
-  getProjectChecksMode,
   heartbeatAttempt,
   ifLeaseHeld,
   markDrainCut,
@@ -22,6 +21,7 @@ import {
   resetAttemptOutput,
   upsertStep,
 } from "../db/repos";
+import { effectiveChecksMode } from "../ops/setting-guard";
 import { ambientSettings } from "../settings/ambient";
 import { preemptMaxPerJobSetting, preemptWindowMinutesSetting } from "../settings/definitions";
 import { resolveSetting, type SettingsRuntime } from "../settings/resolve";
@@ -144,7 +144,15 @@ export class Scheduler {
     for (const [id, a] of [...this.#active.entries()]) {
       if (this.#cutting.has(id)) continue;
       try {
-        if ((await getProjectChecksMode(this.#o.db, a.scope)) === "live") continue;
+        if (
+          (await effectiveChecksMode(
+            this.#o.settings ?? ambientSettings(),
+            this.#o.db,
+            a.scope.orgId,
+            a.scope.projectId,
+          )) === "live"
+        )
+          continue;
         if (!(await markDrainCut(this.#o.db, a.scope, id, this.owner))) continue;
       } catch (err) {
         this.#o.log(`could not cut ${id} for the drain: ${String(err)}`);

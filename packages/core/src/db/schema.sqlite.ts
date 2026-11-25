@@ -1314,6 +1314,30 @@ export const installationClaims = sqliteTable(
   (t) => [index("installation_claims_org_idx").on(t.orgId, t.createdAt)],
 );
 
+// ---- onboarding (A3) ----
+
+/**
+ * One row per onboarding of an org through the web wizard or an agent: the installation it bound,
+ * the first run it started and the agent token it minted, each filled in as the steps happen. Not
+ * unique per org: an org may onboard again. Written by `run_default_branch` (`first_run_id`) and
+ * by the lanes that bind the installation and mint the token.
+ */
+export const onboardings = sqliteTable(
+  "onboardings",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    installationId: text("installation_id"),
+    firstRunId: text("first_run_id"),
+    agentTokenId: text("agent_token_id"),
+    createdAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
+  },
+  (t) => [index("onboardings_org_idx").on(t.orgId, t.createdAt)],
+);
+
 // ---- cache service (#38) ----
 
 /**

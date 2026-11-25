@@ -211,7 +211,15 @@ export type PreviewWorkflowsOutput = z.infer<typeof previewWorkflowsOutput>;
 
 // ---- 10. run_default_branch ----
 
-export const runDefaultBranchInput = z.object({ project: projectSlug });
+export const runDefaultBranchInput = z.object({
+  project: projectSlug,
+  onboarding_id: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe("Onboarding to record this run on, as its first run."),
+});
 export const runDefaultBranchOutput = z.object({
   run_id: z.string().describe("Run id."),
   sha: z.string().describe("Commit the run is for."),

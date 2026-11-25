@@ -34,6 +34,7 @@ import { pageCsp, renderPage, servePageAsset } from "./pages/server-pages";
 import { serveUi } from "./ui-assets";
 import { VERSION } from "./version";
 import type { RunDispatcher } from "./poll/dispatch";
+import type { DefaultBranchRunner, RepoReaderFactory } from "./poll/onboarding-forge";
 
 const PLACEHOLDER_HTML = renderPage({
   title: "Turntable",
@@ -114,6 +115,8 @@ export type ServeOptions = {
   githubFacts?: GithubFacts;
   /** Starts `workflow_dispatch` runs (the poller), for `run_dispatch`. */
   runDispatcher?: RunDispatcher;
+  repoReader?: RepoReaderFactory;
+  defaultBranchRunner?: DefaultBranchRunner;
   /** Resolves a GitHub login to its numeric id, for invites. */
   githubUsers?: GithubUserLookup;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
@@ -153,6 +156,8 @@ export function startServer(options: ServeOptions) {
     githubFacts: options.githubFacts,
     githubUsers: options.githubUsers,
     runDispatcher: options.runDispatcher,
+    repoReader: options.repoReader,
+    defaultBranchRunner: options.defaultBranchRunner,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,

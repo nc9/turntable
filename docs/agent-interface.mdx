@@ -70,6 +70,10 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `cancel` | `POST /api/v1/runs/{run_id}/cancel` | yes |  | destructive | operator | token | Cancel a run: queued, running and waiting jobs become cancelled. |
 | `rerun` | `POST /api/v1/runs/{run_id}/rerun` | yes |  | write | operator | token | Rerun failed jobs of a run, or named jobs, with a reason. Capped per commit. |
 | `run_dispatch` | `POST /api/v1/dispatches` | yes |  | write | release_operator | token | Start a workflow_dispatch run of one workflow at a branch or tag. |
+| `list_installation_repos` | `GET /api/v1/installation-repos` | yes |  | read | reader | token | The repos a GitHub App installation grants, with their project, mode and paused state. |
+| `onboard_repos` | `POST /api/v1/onboard-repos` | no |  | write | admin | token | Turn CI on or off for a batch of an installation's repos, in one transaction. |
+| `preview_workflows` | `GET /api/v1/workflow-preview` | yes |  | read | reader | token | Dry-run Turntable's planner over a project's workflow files at the default branch. |
+| `run_default_branch` | `POST /api/v1/run-default-branch` | no |  | write | admin | token | Run CI once for the default branch's head, as a push run. |
 | `approve_run` | `POST /api/v1/runs/{run_id}/approve` | yes |  | write | operator (per org policy) | token | Approve a run held for an untrusted author, bound to its head sha and workflow hash. |
 | `approve_run_challenge` | `POST /api/v1/runs/{run_id}/approve-challenge` | no |  | write | operator | token | Issue the statement an approver signs to approve a run held for an untrusted author. |
 | `sign_release` | none | no |  | write | owner | signature | Sign the recorded artifacts of a release run (human-signed assertion required). |
