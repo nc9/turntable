@@ -9947,6 +9947,88 @@
         "x-turntable-untrusted-output": false
       }
     },
+    "/release/signing": {
+      "get": {
+        "operationId": "release_project_signing",
+        "summary": "The project's effective release signing settings.",
+        "description": "Returns how this project signs releases, with defaults applied: `signing_key` (the key reference, or null when none is set), `keyid` (the hex sha256 of the public key for a `builtin:` key the release lane holds; null for any other key, or when the lane cannot be asked), `signing_environment` (default `release`) and `release_refs` (default `refs/tags/v*`). Nothing secret. Read-only, over REST and MCP. Rate limited per token (30 reads a minute): past that it is refused with rate_limited and a retry_after_seconds.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug. Required unless the token is scoped to one project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "signing_key": {
+                      "type": ["string", "null"]
+                    },
+                    "keyid": {
+                      "type": ["string", "null"]
+                    },
+                    "signing_environment": {
+                      "type": "string"
+                    },
+                    "release_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["signing_key", "keyid", "signing_environment", "release_refs"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
+      }
+    },
     "/github/installations/{installation_id}/resync": {
       "post": {
         "operationId": "resync_installation",
@@ -14606,7 +14688,7 @@
       "post": {
         "operationId": "instance_step_up_challenge",
         "summary": "Start a passkey step-up for one release lane configuration change.",
-        "description": "Names a release lane configuration op (release_pin_repo, release_publish_target_set, release_publish_target_delete, release_secret_set or release_init_key) and the exact `input` it will be called with, and returns a single-use WebAuthn challenge. For release_secret_set send `value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and the approver's device never sees it. A passkey enrolled as an approver in `target_org` signs `challenge`; the configuration call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature) beside its input. The step-up is bound to the instance token, the op and a hash of that exact input, so it authorizes no other op and no other parameters, can be used once, and lasts 5 minutes. Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "description": "Names a release lane configuration op (release_pin_repo, release_publish_target_set, release_publish_target_delete, release_secret_set, release_init_key or release_set_project_signing) and the exact `input` it will be called with, and returns a single-use WebAuthn challenge. For release_secret_set send `value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and the approver's device never sees it. A passkey enrolled as an approver in `target_org` signs `challenge`; the configuration call then carries `step_up: {id, approver, signature}` (the assertion's credential_id, client_data_json, authenticator_data and signature) beside its input. The step-up is bound to the instance token, the op and a hash of that exact input, so it authorizes no other op and no other parameters, can be used once, and lasts 5 minutes. Issuing a challenge changes nothing else. Audited. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
         "parameters": [],
         "requestBody": {
           "required": true,
@@ -15204,6 +15286,119 @@
                     }
                   },
                   "required": ["keyid", "public_key_pem", "created_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/release/project-signing": {
+      "post": {
+        "operationId": "release_set_project_signing",
+        "summary": "Set how a project signs releases: its signing key, approval environment and ref patterns.",
+        "description": "Sets a project's signing key reference, approval environment and release ref patterns, with exactly the validation of `turntable policy set --signing-key --signing-environment --release-refs` (the same code) and the same stored settings. A `builtin:<name>` key must exist in the release lane for `target_org` (see release_init_key and release_public_key); a missing one is refused. Bumps the lane's config version, so a release approved earlier must be approved again. Needs the instance administrator's token AND a fresh passkey step-up from an approver enrolled in `target_org`: call instance_step_up_challenge for this exact input, sign its challenge with the passkey, and send the assertion as `step_up` beside the input. The step-up is bound to this op and input, single-use, and lasts 5 minutes. Refused when the lane is not configured. Audited with the key name, environment and refs (nothing secret). Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the org that owns the project."
+                  },
+                  "target_project": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the project, looked up inside that org."
+                  },
+                  "signing_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "The key reference: `builtin:<name>` (a key in the lane for this org, see release_init_key), `aws-kms:<key>` or `gcp-kms:<key version>`."
+                  },
+                  "signing_environment": {
+                    "description": "The environment whose approval signing needs (default `release`).",
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "release_refs": {
+                    "description": "The ref patterns that count as a release (default `refs/tags/v*`).",
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 220
+                    }
+                  }
+                },
+                "required": ["target_org", "target_project", "signing_key"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "signing_key": {
+                      "type": "string"
+                    },
+                    "signing_environment": {
+                      "type": "string"
+                    },
+                    "release_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "config_version": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The lane's configuration version after the change."
+                    }
+                  },
+                  "required": [
+                    "signing_key",
+                    "signing_environment",
+                    "release_refs",
+                    "config_version"
+                  ],
                   "additionalProperties": false
                 }
               }

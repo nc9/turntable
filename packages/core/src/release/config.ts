@@ -158,6 +158,11 @@ export class LaneConfig {
     return this.#o.attest.configVersion();
   }
 
+  /** A project's signing settings changed (in the main database): earlier approvals must be renewed. */
+  bumpVersion(): number {
+    return this.#o.attest.bumpConfigVersion();
+  }
+
   pinRepo(orgId: string, projectId: string, repo: string): string {
     validateRepo(repo);
     this.#o.attest.pinRepo(orgId, projectId, repo, (this.#o.now ?? Date.now)());

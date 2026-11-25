@@ -6,3 +6,4 @@ packages/core/tests/release-unpack.test.ts
 packages/core/tests/release-lane-zip.test.ts
 packages/core/tests/release-config-ops.test.ts
 packages/core/tests/release-keys.test.ts
+packages/core/tests/release-signing-ops.test.ts

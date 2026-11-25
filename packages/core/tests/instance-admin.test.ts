@@ -283,6 +283,7 @@ describe("no org principal reaches an instance op, and the instance token reache
       "release_publish_target_list",
       "release_publish_target_set",
       "release_secret_set",
+      "release_set_project_signing",
       "rotate_instance_token",
       "set_project_settings",
       "set_quotas",

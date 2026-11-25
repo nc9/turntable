@@ -85,6 +85,8 @@ import {
   releaseSecretSet,
   releaseInitKey,
   releasePublicKey,
+  releaseSetProjectSigning,
+  releaseProjectSigning,
 } from "./definitions/release-config";
 import {
   addPassthroughHostOp,
@@ -236,6 +238,8 @@ export const registry = createRegistry([
   releaseSecretSet,
   releaseInitKey,
   releasePublicKey,
+  releaseSetProjectSigning,
+  releaseProjectSigning,
   instanceBindGithubLoginOp,
   resyncInstallation,
   setOidcAudiencesOp,

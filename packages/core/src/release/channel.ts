@@ -39,6 +39,7 @@ export const CONFIG_ACTIONS = [
   "version",
   "key_init",
   "key_public",
+  "signing_changed",
 ] as const;
 /** Actions about an org's signing keys: they name an org and no project. */
 const ORG_ACTIONS: readonly string[] = ["key_init", "key_public"];
@@ -207,6 +208,9 @@ export async function startChannel(o: ChannelOptions): Promise<RunningChannel> {
         }
         case "snapshot":
           return done(await cfg.lane.snapshot(orgId, projectId!));
+        case "signing_changed":
+          cfg.lane.bumpVersion();
+          return done({});
         case "pin_repo":
           return done({ repo: cfg.lane.pinRepo(orgId, projectId!, String(a.repo ?? "")) });
         case "target_set": {

@@ -12,6 +12,7 @@ const ALLOWED_OUTSIDE_TRANSACTION = [
   "release_publish_target_delete", // same: a lane channel round trip
   "release_publish_target_set", // same: a lane channel round trip
   "release_secret_set", // same: a lane channel round trip, and the vault write is the lane's own
+  "release_set_project_signing", // lane channel round trips (check the key, bump the version) around one project row write: they must not hold the DB write lock
   "resync_installation", // makes GitHub API calls, which must not hold the write transaction
   "run_default_branch", // forge round trips (head, workflow) must not hold the DB write lock; the run is written in the poller path's own transaction
   "run_dispatch", // forge round trips (ref resolve, workflow fetch) must not hold the DB write lock; all writes are in one inner transaction

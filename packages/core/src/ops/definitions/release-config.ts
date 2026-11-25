@@ -9,12 +9,19 @@
 // ../instance-step-up.ts). None of these is an MCP tool.
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { countOpenChallenges, insertChallenge, purgeExpiredChallenges } from "../../db/repos";
+import {
+  getProjectSigning,
+  setProjectSigning,
+  countOpenChallenges,
+  insertChallenge,
+  purgeExpiredChallenges,
+} from "../../db/repos";
 import type { ConfigAction } from "../../release/channel";
 import { buildTarget, validateRepo, validateTargetKey } from "../../release/config";
 import { LaneConfigError } from "../../release/config";
 import { SECRET_NAME } from "../../release/publish/types";
 import { iso } from "../common";
+import { validateSigningPatch } from "../policy-cli";
 import { defineOp, type Op, type OpContext } from "../define";
 import { OpError } from "../errors";
 import { principalLabel } from "../principal";
@@ -430,6 +437,156 @@ const unexpected = (): OpError =>
     reason: "lane_refused",
   });
 
+const signingFields = {
+  signing_key: z
+    .string()
+    .min(1)
+    .max(300)
+    .describe(
+      "The key reference: `builtin:<name>` (a key in the lane for this org, see release_init_key), `aws-kms:<key>` or `gcp-kms:<key version>`.",
+    ),
+  signing_environment: z
+    .string()
+    .max(64)
+    .optional()
+    .describe("The environment whose approval signing needs (default `release`)."),
+  release_refs: z
+    .array(z.string().max(220))
+    .max(50)
+    .optional()
+    .describe("The ref patterns that count as a release (default `refs/tags/v*`)."),
+};
+
+export const releaseSetProjectSigning = defineOp({
+  name: "release_set_project_signing",
+  summary:
+    "Set how a project signs releases: its signing key, approval environment and ref patterns.",
+  description:
+    "Sets a project's signing key reference, approval environment and release ref patterns, with " +
+    "exactly the validation of `turntable policy set --signing-key --signing-environment " +
+    "--release-refs` (the same code) and the same stored settings. A `builtin:<name>` key must " +
+    "exist in the release lane for `target_org` (see release_init_key and release_public_key); a " +
+    "missing one is refused. Bumps the lane's config version, so a release approved earlier must " +
+    "be approved again. " +
+    stepUpNote +
+    "Refused when the lane is not configured. Audited with the key name, environment and refs " +
+    "(nothing secret). Not an MCP tool.",
+  input: z.object({
+    target_org: scopeFields.target_org,
+    target_project: scopeFields.target_project,
+    ...signingFields,
+  }),
+  output: z.object({
+    signing_key: z.string(),
+    signing_environment: z.string(),
+    release_refs: z.array(z.string()),
+    config_version: version,
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/release/project-signing" },
+  mcp: false,
+  outsideTransaction: true,
+  async handler(ctx, i) {
+    requireStepUp(ctx, "release_set_project_signing");
+    try {
+      await validateSigningPatch({
+        signingKey: i.signing_key,
+        ...(i.signing_environment === undefined ? {} : { environment: i.signing_environment }),
+        ...(i.release_refs === undefined ? {} : { releaseRefs: i.release_refs }),
+      });
+    } catch (e) {
+      throw new OpError("invalid_input", e instanceof Error ? e.message : String(e));
+    }
+    const scope = await resolveLaneTarget(ctx.db, i);
+    if (i.signing_key.startsWith("builtin:")) {
+      // The lane is asked first: a name it does not hold is refused, and an unreachable lane is too.
+      try {
+        await toLane(ctx, "key_public", { orgId: scope.orgId }, { name: i.signing_key.slice(8) });
+      } catch (e) {
+        if (
+          e instanceof OpError &&
+          e.code === "invalid_input" &&
+          e.message === "no such release key"
+        ) {
+          throw new OpError(
+            "invalid_input",
+            `no such release key: the lane holds no key named ${i.signing_key.slice(8)} for this org (create it with release_init_key)`,
+          );
+        }
+        throw e;
+      }
+    }
+    // The version is bumped before the write and again after it: an approval made in between is
+    // stale either way, and a failure of the first bump changes nothing.
+    await toLane(ctx, "signing_changed", { ...scope }, {});
+    await setProjectSigning(ctx.db, scope, {
+      signingKey: i.signing_key,
+      ...(i.signing_environment === undefined ? {} : { environment: i.signing_environment }),
+      ...(i.release_refs === undefined ? {} : { releaseRefs: i.release_refs }),
+    });
+    const bumped = await toLane(ctx, "signing_changed", { ...scope }, {});
+    const now = await getProjectSigning(ctx.db, scope);
+    return {
+      signing_key: now.signingKey ?? i.signing_key,
+      signing_environment: now.environment,
+      release_refs: now.releaseRefs,
+      config_version: Number(bumped.config_version),
+    };
+  },
+});
+
+export const releaseProjectSigning = defineOp({
+  name: "release_project_signing",
+  summary: "The project's effective release signing settings.",
+  description:
+    "Returns how this project signs releases, with defaults applied: `signing_key` (the key " +
+    "reference, or null when none is set), `keyid` (the hex sha256 of the public key for a " +
+    "`builtin:` key the release lane holds; null for any other key, or when the lane cannot be " +
+    "asked), `signing_environment` (default `release`) and `release_refs` (default " +
+    "`refs/tags/v*`). Nothing secret. Read-only, over REST and MCP. Rate limited per token " +
+    "(30 reads a minute): past that it is refused with rate_limited and a retry_after_seconds.",
+  input: z.object({}),
+  output: z.object({
+    signing_key: z.string().nullable(),
+    keyid: z.string().nullable(),
+    signing_environment: z.string(),
+    release_refs: z.array(z.string()),
+  }),
+  effect: "read",
+  auth: { type: "token", minRole: "reader" },
+  untrustedOutput: false,
+  scope: "project",
+  http: { method: "GET", path: "/release/signing" },
+  async handler(ctx) {
+    releaseKeyReads.take(principalLabel(ctx.principal), ctx.now());
+    const s = await getProjectSigning(ctx.db, ctx.scope);
+    let keyid: string | null = null;
+    if (s.signingKey?.startsWith("builtin:") && ctx.releaseConfig) {
+      try {
+        const r = await toLane(
+          ctx,
+          "key_public",
+          { orgId: ctx.scope.orgId },
+          { name: s.signingKey.slice(8) },
+        );
+        const k = laneKey.safeParse(r);
+        if (k.success) keyid = k.data.keyid;
+      } catch {
+        keyid = null;
+      }
+    }
+    return {
+      signing_key: s.signingKey,
+      keyid,
+      signing_environment: s.environment,
+      release_refs: s.releaseRefs,
+    };
+  },
+});
+
 /** The ops a step-up may be started for, by name: the schema their input is judged with. */
 const STEP_UP_OPS: Record<string, Op> = {};
 for (const op of [
@@ -438,6 +595,7 @@ for (const op of [
   releasePublishTargetDelete,
   releaseSecretSet,
   releaseInitKey,
+  releaseSetProjectSigning,
 ]) {
   STEP_UP_OPS[op.name] = op;
 }
@@ -449,7 +607,7 @@ export const instanceStepUpChallenge = defineOp({
   summary: "Start a passkey step-up for one release lane configuration change.",
   description:
     "Names a release lane configuration op (release_pin_repo, release_publish_target_set, " +
-    "release_publish_target_delete, release_secret_set or release_init_key) and the exact `input` it will be called " +
+    "release_publish_target_delete, release_secret_set, release_init_key or release_set_project_signing) and the exact `input` it will be called " +
     "with, and returns a single-use WebAuthn challenge. For release_secret_set send " +
     "`value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the " +
     "field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and " +

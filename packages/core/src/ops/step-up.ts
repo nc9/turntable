@@ -88,6 +88,7 @@ export const INSTANCE_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "release_publish_target_delete",
   "release_secret_set",
   "release_init_key",
+  "release_set_project_signing",
 ]);
 
 /**
