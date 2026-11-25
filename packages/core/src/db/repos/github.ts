@@ -375,6 +375,87 @@ export function moveRepoBinding(
 }
 
 /**
+ * Follows a repo that was renamed or transferred: updates the binding of THIS org whose forge repo
+ * id is `to.forgeRepoId` to the new slug and installation, in place. The project keeps its id, runs
+ * and settings; the poll markers and run repo names of the old slug are carried to the new one so
+ * the next poll does not run the same commits again. Refuses (false) when the binding is not this
+ * org's, has another forge repo id, or another binding already holds the new slug. One transaction.
+ */
+export function followRepoBinding(
+  db: Db,
+  scope: Scope,
+  bindingId: string,
+  to: { owner: string; repo: string; installationId: string; forgeRepoId: string },
+): Promise<boolean> {
+  const owner = to.owner.toLowerCase();
+  const repo = to.repo.toLowerCase();
+  return db.transaction(async (h) => {
+    const [b] = await h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(
+        scoped(
+          scope,
+          { orgId: s.projectRepos.orgId },
+          eq(s.projectRepos.id, bindingId),
+          eq(s.projectRepos.forgeRepoId, to.forgeRepoId),
+        ),
+      )
+      .limit(1);
+    if (!b) return false;
+    const [taken] = await h.orm
+      .select({ id: s.projectRepos.id })
+      .from(s.projectRepos)
+      .where(
+        and(
+          eq(s.projectRepos.forge, b.forge),
+          eq(s.projectRepos.owner, owner),
+          eq(s.projectRepos.repo, repo),
+          ne(s.projectRepos.id, bindingId),
+        ),
+      )
+      .limit(1);
+    if (taken) return false;
+    await h.orm
+      .update(s.projectRepos)
+      .set({ owner, repo, installationId: to.installationId })
+      .where(eq(s.projectRepos.id, bindingId));
+    const oldSlug = `${b.owner}/${b.repo}`;
+    const newSlug = `${owner}/${repo}`;
+    if (oldSlug !== newSlug) {
+      const seen = await h.orm
+        .select()
+        .from(s.pollSeen)
+        .where(and(eq(s.pollSeen.projectId, b.projectId), eq(s.pollSeen.repo, oldSlug)));
+      for (let i = 0; i < seen.length; i += SEEN_COPY_CHUNK) {
+        await h.orm
+          .insert(s.pollSeen)
+          .values(seen.slice(i, i + SEEN_COPY_CHUNK).map((r) => ({ ...r, repo: newSlug })))
+          .onConflictDoNothing();
+      }
+      await h.orm
+        .delete(s.pollSeen)
+        .where(and(eq(s.pollSeen.projectId, b.projectId), eq(s.pollSeen.repo, oldSlug)));
+      await h.orm
+        .update(s.runs)
+        .set({ repo: newSlug })
+        .where(
+          and(
+            eq(s.runs.orgId, b.orgId),
+            eq(s.runs.projectId, b.projectId),
+            eq(s.runs.repo, oldSlug),
+          ),
+        );
+    }
+    await clearRecentDismissals(h, { orgId: b.orgId, projectId: b.projectId }, [
+      "no_binding",
+      "no_installation",
+    ]);
+    return true;
+  });
+}
+
+/**
  * Adopts a binding made without an installation (a polled repo) into an installation: sets its
  * installation id, and its forge repo id when it had none. The project stays. Only a binding of
  * this org with a null installation, and a null or equal forge repo id, is touched.

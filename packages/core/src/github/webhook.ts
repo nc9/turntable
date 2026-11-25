@@ -225,8 +225,11 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
       } catch {
         return json(400, { error: "body is not JSON" });
       }
-      const handled = HANDLED.has(event);
       const action = typeof payload.action === "string" ? payload.action : undefined;
+      // A rename or transfer re-syncs the installation, so its binding follows the repo by id.
+      const handled =
+        HANDLED.has(event) ||
+        (event === "repository" && (action === "renamed" || action === "transferred"));
       const instId = payload.installation?.id;
 
       const stored = await recordDelivery(o.db, {

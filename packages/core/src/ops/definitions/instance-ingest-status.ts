@@ -51,6 +51,13 @@ export const instanceIngestStatusOp = defineOp({
         org: z.string(),
         project: z.string(),
         repo: z.string(),
+        effective_repo: z
+          .string()
+          .optional()
+          .describe(
+            "Set when the repo was renamed or transferred: the slug actually polled, found by forge repo id. The poll entry's repo should be updated to it.",
+          ),
+        warning: z.string().optional().describe("Something the operator should change."),
         interval_seconds: z.int(),
         last_poll_at: z.string().nullable(),
         last_success_at: z
@@ -116,6 +123,12 @@ export const instanceIngestStatusOp = defineOp({
         org: r.org,
         project: r.project,
         repo: r.repo,
+        ...(r.effectiveRepo !== undefined
+          ? {
+              effective_repo: r.effectiveRepo,
+              warning: `update the poll entry's repo to ${r.effectiveRepo}`,
+            }
+          : {}),
         interval_seconds: r.intervalSeconds,
         last_poll_at: iso(r.lastPollAt),
         last_success_at: iso(r.lastSuccessAt),

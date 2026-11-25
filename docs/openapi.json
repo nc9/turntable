@@ -13050,6 +13050,14 @@
                           "repo": {
                             "type": "string"
                           },
+                          "effective_repo": {
+                            "description": "Set when the repo was renamed or transferred: the slug actually polled, found by forge repo id. The poll entry's repo should be updated to it.",
+                            "type": "string"
+                          },
+                          "warning": {
+                            "description": "Something the operator should change.",
+                            "type": "string"
+                          },
                           "interval_seconds": {
                             "type": "integer",
                             "minimum": -9007199254740991,

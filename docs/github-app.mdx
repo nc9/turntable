@@ -56,7 +56,7 @@ Most granted repositories are never set up for CI, so a project the sync created
 
 ### Re-granting a repo
 
-When an installation drops a repo (or is deleted), the sync unbinds it and records on the project which forge repo id it lost and when (`last_forge_repo_id`, `unbound_at`). The project, its settings and its runs stay. If the same forge repo id is granted again, the sync re-attaches it to that project instead of creating a new one, clears the two columns and writes a `reattach_repo_binding` audit entry. Three rules hold: the project must be in the same org as the installation, the forge repo id must match (never the name alone, so a renamed or recreated repo gets a new project), and the project must have no binding now. With several candidates, the most recently unbound wins. The decision reads only these columns, never the audit log. Projects unbound before this existed have no columns set and are not re-attached.
+When an installation drops a repo (or is deleted), the sync unbinds it and records on the project which forge repo id it lost and when (`last_forge_repo_id`, `unbound_at`). The project, its settings and its runs stay. If the same forge repo id is granted again, the sync re-attaches it to that project instead of creating a new one, clears the two columns and writes a `reattach_repo_binding` audit entry. Three rules hold: the project must be in the same org as the installation, the forge repo id must match (never the name alone, so a recreated repo gets a new project; a renamed or transferred one is followed, see below), and the project must have no binding now. With several candidates, the most recently unbound wins. The decision reads only these columns, never the audit log. Projects unbound before this existed have no columns set and are not re-attached.
 
 ### Moving a polled repo to the App
 
@@ -66,6 +66,14 @@ An installation that was synced before this adoption existed has its polled repo
 
 - **Boot sweep.** After the server is listening, it re-runs the sync for each active installation whose org still has a binding with no installation. It does not delay startup or `/healthz`, it makes no GitHub call when no org has such a binding, and running it again changes nothing. Failures are logged and audited as `adopt_sweep`.
 - **`resync_installation`.** An org-level token with `release_operator` or higher re-syncs one installation id its org owns (`POST /api/v1/github/installations/{installation_id}/resync`, also an MCP tool) and gets back what was bound, adopted, unbound or left alone. Another org's installation id is `not_found`. It is limited to 6 calls a minute per org and then refused with `rate_limited`. Every call is audited.
+
+### Renamed or transferred repos
+
+A repo keeps its GitHub repo id when it is renamed or transferred. When a sync (an installation sync, an `installation_repositories` event, or a `repository` `renamed` or `transferred` event) sees a repo id that already has a binding in the same Turntable org under another slug or installation, the binding is updated in place: new owner and name, new installation. The project keeps its id, settings, runs and history, and the sync writes a `follow_repo_binding` audit entry. The installation that lost the repo does not unbind it: its removal event or sync no longer lists a binding that moved. For a transfer, claim the new owner's installation into the same org as the old one.
+
+A binding in a different org is never moved by a sync, because that would let one tenant take another's project by installing the App on a transferred repo. The sync refuses, records a `follow_repo_binding` audit entry with the outcome `error:other_org` in the org that holds the binding, and the instance admin can still move it with `move_repo_binding`. A repo with another id under the old name never inherits the binding.
+
+A static poll entry follows the binding of its own org and project. If the entry says `A/x` and its project's binding now says `B/x` with the same repo id, the poller polls `B/x` with the new installation's token and does not report `stale_binding`. `instance_ingest_status` shows `effective_repo` and the warning "update the poll entry's repo to B/x". Update the entry's `repo` to the new slug at your next restart or config change; until then the entry keeps working.
 
 ## Webhook verification
 

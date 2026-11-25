@@ -7,6 +7,8 @@ export type RepoStatus = {
   repo: string;
   org: string;
   project: string;
+  /** Set when the repo moved: the slug polled (same forge repo id), while `repo` is the configured one. */
+  effectiveRepo?: string | undefined;
   /** The configured poll interval for this repo (poll config entry or binding settings). */
   intervalSeconds: number;
   lastPollAt: number | null;
