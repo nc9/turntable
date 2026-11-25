@@ -35,6 +35,15 @@ export const INFRA_KINDS = {
     beforeSteps: true,
     label: "the checkout was refused by GitHub",
   },
+  /**
+   * GitHub rate limited the control plane's action lookups past the job's wait budget (#621).
+   * Nothing ran, so it is safe for every trust class; the retry waits for the reset first.
+   */
+  github_rate_limited: {
+    transient: true,
+    beforeSteps: true,
+    label: "GitHub rate limited the action lookups",
+  },
   /** Everything else: a deterministic or unknown cause. Never retried. */
   other: {
     transient: false,

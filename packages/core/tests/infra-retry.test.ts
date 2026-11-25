@@ -125,6 +125,33 @@ const transient = (kind: InfraKind, reason: string): AttemptOutcome => ({
 
 for (const [name, open] of dialects) {
   describe(`infra retry (${name})`, () => {
+    test("a GitHub rate limit requeues the attempt after the reset delay, for every class (#621)", async () => {
+      for (const klass of ["protected", "release", "trusted_pr"]) {
+        const t = await setup(open);
+        const s = t.sched(
+          t.script(
+            [
+              {
+                ...transient("github_rate_limited", "rate limited (HTTP 403)"),
+                retryAfterMs: 120,
+              },
+              { state: "success", reason: "ok" },
+            ],
+            klass,
+          ),
+        );
+        const started = Date.now();
+        await t.drive(s);
+        const attempts = await listAttempts(t.db, t.scope, t.job.id);
+        // Not failed: the first attempt is kept as infra_error, the retry ran and passed.
+        expect(attempts.map((a) => a.state)).toEqual(["infra_error", "success"]);
+        expect(attempts[0]!.infraKind).toBe("github_rate_limited");
+        // The retry waited for the reset, not immediately.
+        expect(Date.now() - started).toBeGreaterThanOrEqual(100);
+        expect((await getJob(t.db, t.scope, t.job.id))!.state).toBe("success");
+      }
+    });
+
     test("a transient kind on the first attempt makes one new attempt on a fresh sandbox; the first is released and kept", async () => {
       const t = await setup(open);
       const s = t.sched(

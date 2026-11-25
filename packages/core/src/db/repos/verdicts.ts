@@ -1,12 +1,12 @@
 // Persisted action verdicts (see `action_verdicts`). Part of the only code allowed to name
 // tenant tables.
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, inArray, lt, not, or } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { requireProject, type Scope, scoped } from "./scope";
 
 /** `_auth` verdicts were learned with a credential and are kept apart from anonymous ones. */
-export type VerdictKind = "resolve" | "resolve_auth" | "reach" | "reach_auth";
+export type VerdictKind = "resolve" | "resolve_auth" | "reach" | "reach_auth" | "public";
 
 const COLS = { orgId: s.actionVerdicts.orgId, projectId: s.actionVerdicts.projectId };
 
@@ -74,13 +74,16 @@ export function putVerdict(
         ],
         set: { verdict: v.verdict ? 1 : 0, checkedAt: now },
       });
-    await tx.orm
-      .delete(s.actionVerdicts)
-      .where(
-        and(
-          scoped(scope, COLS),
-          lt(s.actionVerdicts.checkedAt, now - (opts.keepMs ?? 7 * 86_400_000)),
+    await tx.orm.delete(s.actionVerdicts).where(
+      and(
+        scoped(scope, COLS),
+        lt(s.actionVerdicts.checkedAt, now - (opts.keepMs ?? 7 * 86_400_000)),
+        // A verified commit is immutable (#621): its yes verdict is never aged out.
+        or(
+          not(inArray(s.actionVerdicts.kind, ["reach", "reach_auth"])),
+          not(eq(s.actionVerdicts.verdict, 1)),
         ),
-      );
+      ),
+    );
   });
 }

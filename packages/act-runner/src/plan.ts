@@ -525,7 +525,7 @@ export function githubResolver(
       res = opts.backoff ? await fetchWithBackoff(f, url, init, opts.backoff) : await f(url, init);
     } catch (e) {
       if (e instanceof RateLimitedError) {
-        throw new InfraError(`resolving ${owner}/${repo}@${ref}: ${e.message}`);
+        throw new InfraError(`resolving ${owner}/${repo}@${ref}: ${e.message}`, e);
       }
       // The network, not the workflow: retryable. A refused address is not.
       if (e instanceof SsrfError) throw new PlanError("outbound-address", e.message);

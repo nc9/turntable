@@ -46,7 +46,7 @@ import { clean, DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
 import { scrubToken } from "../run/scrub-token";
 import { tarballReader } from "../run/tarball-reader";
 import { resolvePlanActions } from "../pins";
-import type { ForgeToken } from "../pins/forge-token";
+import { normalizeForgeToken, type ForgeToken } from "../pins/forge-token";
 import {
   actionCredentials,
   credentialedReachability,
@@ -54,13 +54,19 @@ import {
 } from "../pins/action-credentials";
 import { githubReachability } from "../pins/reachability";
 import { cachedReachability, cachedResolver, type VerdictTtl } from "../pins/verdict-cache";
-import { createBackoff, type SafeFetch } from "@turntable/net";
+import { createBackoff, RateLimitedError, type SafeFetch } from "@turntable/net";
 import type { ReachabilityChecker } from "../pins/reachability";
 import { type RunStore, stepInputOf } from "../run/store";
 import { createHash } from "node:crypto";
 import type { IssuedJobToken, JobTokens } from "../github/job-token";
 import type { JobOidc } from "../oidc/job-delivery";
-import { getActionPolicy, getProjectSandboxSettings, parseTrust } from "../db/repos";
+import {
+  getActionPolicy,
+  getProjectSandboxSettings,
+  getVerdict,
+  parseTrust,
+  putVerdict,
+} from "../db/repos";
 import { resolveRunnerLabelMaps } from "./runner-labels";
 import { realiseSize } from "./realise-size";
 import {
@@ -713,7 +719,8 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
         // The run's own GitHub credential (never an unauthenticated 60-per-hour budget when one
         // exists), a rate-limit wait shared by everything this job fetches, and verdicts kept in
         // the database so a restart or a parallel job does not ask again.
-        const token = await o.forgeToken?.({ run: dbRun, scope: ctx.scope });
+        const cred = normalizeForgeToken(await o.forgeToken?.({ run: dbRun, scope: ctx.scope }));
+        const token = cred?.token;
         const backoff = createBackoff({
           ...o.backoff,
           onWait: (ms, why) =>
@@ -739,6 +746,26 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           // A local run is the operator's own checkout: trusted, whatever event it simulates.
           untrusted: klass === "untrusted_pr" && !dbRun.local,
           local: dbRun.local,
+          publicActions: cred?.publicActions === true,
+          publicCache: {
+            get: async (repo) =>
+              (
+                await getVerdict(
+                  o.db,
+                  ctx.scope,
+                  { kind: "public", repo },
+                  PUBLIC_TTL_MS,
+                  o.now?.() ?? Date.now(),
+                )
+              )?.verdict === true,
+            put: (repo) =>
+              putVerdict(
+                o.db,
+                ctx.scope,
+                { kind: "public", repo, sha: "", verdict: true },
+                { now: o.now?.() ?? Date.now() },
+              ),
+          },
           backoff,
           ...(o.fetch ? { fetch: o.fetch } : {}),
         });
@@ -781,6 +808,19 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
           await ctx.store.appendLog(0, new TextEncoder().encode(`${msg}\n`));
           o.out?.(job.jobKey, `[${job.jobKey}] ${msg}\n`);
           return { state: "failure", reason: msg };
+        }
+        // GitHub's limit outlasted this job's wait budget: nothing ran, so requeue the attempt
+        // (once, after the reset) instead of failing the job (#621).
+        const limited = rateLimitOf(err);
+        if (limited) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await ctx.store.appendLog(0, new TextEncoder().encode(`${msg}\n`));
+          return {
+            state: "infra_error",
+            infraKind: "github_rate_limited",
+            reason: msg,
+            ...(limited.waitMs !== undefined ? { retryAfterMs: limited.waitMs } : {}),
+          };
         }
         throw err;
       }
@@ -1012,3 +1052,19 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
     }
   };
 }
+
+/** The rate limit behind an error (it is wrapped in an InfraError on the way up), if any. */
+function rateLimitOf(err: unknown): RateLimitedError | undefined {
+  for (let e: unknown = err, i = 0; e instanceof Error && i < 4; i++) {
+    if (e instanceof RateLimitedError) return e;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
+ * How long "this action repo is public" is remembered (#621). Short, because the check is what
+ * keeps a repo made private from being read with a token: a second run in the window makes no
+ * call, and a repo made private is noticed within it.
+ */
+const PUBLIC_TTL_MS = 10 * 60_000;
