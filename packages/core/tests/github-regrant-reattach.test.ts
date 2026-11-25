@@ -46,6 +46,17 @@ describe("re-grant re-attaches a binding-only repo", () => {
     expect((await getProjectSandboxSettings(db, scope))?.maxConcurrent).toBe(3);
   });
 
+  test("a project created with the short name re-attaches by forge repo id (#653)", async () => {
+    const { db, org, f, project } = await granted();
+    expect(project.name).toBe("api");
+    f.installations.delete("100");
+    await syncInstallation(db, f.facts, "100");
+    f.installations.set("100", inst("100"));
+    await syncInstallation(db, f.facts, "100");
+    expect((await listProjects(db, { orgId: org.id })).map((p) => p.id)).toEqual([project.id]);
+    expect(await listRepos(db, { orgId: org.id, projectId: project.id })).toHaveLength(1);
+  });
+
   test("a deleted installation then a fresh grant re-attaches too", async () => {
     const { db, org, f, project } = await granted();
     f.installations.delete("100");

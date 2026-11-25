@@ -17,6 +17,8 @@ import {
   openDatabase,
   type Db,
 } from "../src/db";
+import { eq } from "drizzle-orm";
+import { projects } from "../src/db/schema";
 import { putStoredSetting, upsertInstallation } from "../src/db/repos";
 import { syncInstallation } from "../src/github/installations";
 import { dispatch, registry, type Principal } from "../src/ops";
@@ -69,6 +71,12 @@ describe("add_project", () => {
     const audit = (await listAudit(db, { orgId })).filter((a) => a.op === "add_project");
     expect(audit).toHaveLength(1);
     expect(JSON.parse(audit[0]!.input)).toMatchObject({ project_slug: "api", repo: "acme/api" });
+  });
+
+  test("the project is named after the short repo name (#653)", async () => {
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/web" });
+    const p = await getProjectBySlug(db, { orgId }, "web");
+    expect(p?.name).toBe("web");
   });
 
   test("the project slug is optional, validated, and never an existing one", async () => {
@@ -246,6 +254,32 @@ describe("remove_project", () => {
     expect(await listRepos(db, scope)).toHaveLength(1);
     expect(await listProjects(db, { orgId })).toHaveLength(1);
     expect(await listRuns(db, scope)).toHaveLength(1);
+  });
+
+  test("a short-named and a legacy full-named project both re-attach after a remove (#653)", async () => {
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/api" });
+    await call(as("admin"), "add_project", { installation_id: "100", repo: "acme/web" });
+    // web keeps the legacy owner/name it had before the short-name change
+    await db.orm.update(projects).set({ name: "acme/web" }).where(eq(projects.slug, "web"));
+    for (const [slug, repoName] of [
+      ["api", "acme/api"],
+      ["web", "acme/web"],
+    ] as const) {
+      const scope = await scopeOf(slug);
+      await call(as("admin"), "remove_project", { project: slug });
+      // clear the forge id so the match falls to the name path
+      await db.orm
+        .update(projects)
+        .set({ lastForgeRepoId: null })
+        .where(eq(projects.id, scope.projectId));
+      const back = await call(as("admin"), "add_project", {
+        installation_id: "100",
+        repo: repoName,
+      });
+      expect(back.ok && back.output).toMatchObject({ project: slug, reattached: true });
+      expect(await listRepos(db, scope)).toHaveLength(1);
+    }
+    expect(await listProjects(db, { orgId })).toHaveLength(2);
   });
 
   test("delete_history: a token, an admin and an owner session without a step-up are refused; nothing is deleted", async () => {

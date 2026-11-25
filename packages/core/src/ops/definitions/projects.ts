@@ -119,7 +119,10 @@ export async function addProjectFor(
     if (
       existing &&
       existing.addedAt !== null &&
-      existing.name === repo.fullName &&
+      // Accept both the legacy full name and the short name: this slug-collision path has no
+      // forge repo id to key on (that case is handled by findReattachableProject above), so the
+      // name is the only match key left, and projects named before #653 carry the full name.
+      (existing.name === repo.fullName || existing.name === repo.name) &&
       (await listProjectBindings(db, scope, existing.id)).length === 0
     ) {
       await bindRepo(
@@ -144,7 +147,7 @@ export async function addProjectFor(
     if (existing) continue;
     const project = await createProject(db, scope, {
       slug: candidate,
-      name: repo.fullName,
+      name: repo.name,
       addedAt: now,
     });
     await bindRepo(
