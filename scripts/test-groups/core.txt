@@ -2,3 +2,4 @@ packages/core/tests/db.test.ts
 packages/core/tests/server.test.ts
 packages/core/tests/job-state.test.ts
 packages/core/tests/missing-tool-watch.test.ts
+packages/core/tests/project-setup.test.ts

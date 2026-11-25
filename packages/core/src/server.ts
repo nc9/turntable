@@ -149,6 +149,8 @@ export type ServeOptions = {
   appManifest?: HostedManifestHandler;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
+  /** `org-slug/project-slug` pairs the poll config names statically, for `list_projects`. */
+  staticPollProjects?: readonly string[] | undefined;
   /** What `db_backup` needs: the data dir and database file, or the Postgres marker. */
   backup?: BackupConfig;
   /** The settings registry with its environment and turntable.toml layers (settings/boot.ts). */
@@ -187,6 +189,7 @@ export function startServer(options: ServeOptions) {
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     instanceOrgCap: options.instanceOrgCap,
+    staticPollProjects: options.staticPollProjects,
     doctor: options.doctor,
     auditStore: options.auditStore,
     backup: options.backup,

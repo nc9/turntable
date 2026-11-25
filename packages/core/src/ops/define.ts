@@ -63,6 +63,8 @@ export type OpContext = {
   transport?: "mcp" | "rest" | undefined;
   /** The instance's per-org concurrency cap, for the instance ops that clamp to it. */
   instanceOrgCap?: number | undefined;
+  /** `org-slug/project-slug` pairs the running poll config names statically; empty when none. */
+  staticPollProjects?: readonly string[] | undefined;
   /** Where `db_backup` may write; absent when the server was not set up for it. */
   backup?: BackupConfig | undefined;
   /** Outbound webhooks; absent without a master key. */

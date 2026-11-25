@@ -67,6 +67,43 @@ function ProjectCard({
   );
 }
 
+/** Repos installation sync bound that were never set up: a count, and a plain list to set one up. */
+export function AvailableRepositories({
+  projects,
+  orgSlug,
+}: {
+  projects: Project[];
+  orgSlug: string;
+}) {
+  if (projects.length === 0) return null;
+  return (
+    <details className="mt-6 rounded-xl border border-line" data-testid="available-repositories">
+      <summary className="cursor-pointer px-4 py-2.5 text-sm font-medium">
+        Available repositories ({projects.length})
+      </summary>
+      <ul className="border-t border-line">
+        {projects.map((p) => (
+          <li
+            key={p.id}
+            className="flex items-center gap-3 border-b border-line px-4 py-2 last:border-b-0"
+          >
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-dim">
+              {p.repo || p.slug}
+            </span>
+            <Link
+              to="/$org/$project/settings"
+              params={{ org: orgSlug, project: p.slug }}
+              className="text-sm font-medium"
+            >
+              Set up
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export function OrgPage() {
   const scope = useScope();
   const projectIds = useMemo(() => (scope.projects ?? []).map((p) => p.id), [scope.projects]);
@@ -91,6 +128,8 @@ export function OrgPage() {
     );
   if (scope.error) return <ErrorState message={scope.error} />;
 
+  const activeProjects = (scope.projects ?? []).filter((p) => p.setup !== "available");
+  const availableProjects = (scope.projects ?? []).filter((p) => p.setup === "available");
   const running = runs.filter((r) => r.status === "running");
   const needsAttention = runs
     .filter(
@@ -119,17 +158,18 @@ export function OrgPage() {
             <Skeleton key={i} className="h-28" />
           ))}
         </div>
-      ) : scope.projects.length === 0 ? (
+      ) : activeProjects.length === 0 ? (
         <EmptyState icon={<FolderGit2 />} title="No projects yet" action={<ConnectButton />}>
           Bind a repo to create the first project.
         </EmptyState>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {scope.projects.map((p) => (
+          {activeProjects.map((p) => (
             <ProjectCard key={p.id} project={p} runs={runs} orgSlug={scope.orgSlug as string} />
           ))}
         </div>
       )}
+      <AvailableRepositories projects={availableProjects} orgSlug={scope.orgSlug as string} />
 
       <h2 className="mb-3 mt-10 text-sm font-semibold">Needs attention</h2>
       {needsAttention.length === 0 ? (

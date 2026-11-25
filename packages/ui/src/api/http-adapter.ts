@@ -337,8 +337,13 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
     },
 
     async listProjects(orgId: string): Promise<Project[]> {
-      const w = await call<WireProjects>("GET", "/projects", { org: orgId, limit: 100 });
+      const w = await call<WireProjects>("GET", "/projects", {
+        org: orgId,
+        limit: 100,
+        include_available: "true",
+      });
       return w.projects.map((p) => ({
+        setup: p.setup,
         id: p.slug,
         orgId,
         slug: p.slug,

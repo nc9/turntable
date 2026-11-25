@@ -6,6 +6,7 @@ import {
   bindRepo,
   createOrg,
   createProject,
+  createRun,
   getProjectChecksMode,
   listAudit,
   listRuns,
@@ -218,6 +219,64 @@ describe("list_installation_repos", () => {
       installation_id: INSTALL,
     });
     expect(code(r)).toBe("not_found");
+  });
+});
+
+describe("list_projects setup state", () => {
+  const list = async (include?: boolean, e = env()) =>
+    out<{ projects: { slug: string; setup: string }[] }>(
+      await dispatch(
+        e,
+        asPrincipal(session()),
+        "list_projects",
+        include === undefined ? {} : { include_available: include },
+      ),
+    );
+  const slugs = (r: { projects: { slug: string }[] }) => r.projects.map((p) => p.slug).toSorted();
+
+  test("sync-created projects with no ingest are hidden unless asked for", async () => {
+    expect(slugs(await list())).toEqual([]);
+    const all = await list(true);
+    expect(slugs(all)).toEqual(["api", "web"]);
+    expect(all.projects.every((p) => p.setup === "available")).toBe(true);
+  });
+
+  test("onboard_repos makes a project active", async () => {
+    out(
+      await dispatch(env(), asPrincipal(session()), "onboard_repos", {
+        installation_id: INSTALL,
+        repos: [
+          { repo_id: "1001", enable: true },
+          { repo_id: "1002", enable: false },
+        ],
+      }),
+    );
+    const r = await list();
+    expect(r.projects).toMatchObject([{ slug: "web", setup: "active" }]);
+    expect(slugs(await list(true))).toEqual(["api", "web"]);
+  });
+
+  test("a static poll entry names a project", async () => {
+    const r = await list(false, env({ staticPollProjects: ["acme/api", "other/web"] }));
+    expect(slugs(r)).toEqual(["api"]);
+  });
+
+  test("a project with a run is active", async () => {
+    await createRun(db, scopeOf("web"), {
+      workflowPath: ".github/workflows/ci.yml",
+      event: "push",
+      ref: "refs/heads/main",
+    });
+    expect(slugs(await list())).toEqual(["web"]);
+  });
+
+  test("paging over a mix keeps the cursor honest", async () => {
+    await setProjectIngest(db, scopeOf("api"), "{}");
+    const first = out<{ projects: { slug: string }[]; next_cursor: string | null }>(
+      await dispatch(env(), asPrincipal(session()), "list_projects", { limit: 1 }),
+    );
+    expect(first.projects).toHaveLength(1);
+    expect(first.next_cursor).toBeNull();
   });
 });
 

@@ -5,6 +5,7 @@ import type { Db } from "..";
 import { DIALECT } from "../dialect";
 import * as s from "../schema";
 import type { AgentRole, JobState, TokenKind } from "../schema";
+import { type ProjectSetup, projectSetup } from "../../ops/project-setup";
 import { ulid } from "../ulid";
 import { type Scope, scoped } from "./scope";
 
@@ -502,6 +503,8 @@ export type ProjectWithRepos = {
   repos: { forge: string; owner: string; repo: string }[];
   /** The OIDC audiences the project's jobs may mint for, or null when any audience is allowed. */
   oidcAudiences: string[] | null;
+  /** Derived: see `projectSetup`. */
+  setup: ProjectSetup;
 };
 
 function parseAudiences(raw: string | null): string[] | null {
@@ -518,23 +521,85 @@ function parseAudiences(raw: string | null): string[] | null {
 export function queryProjects(
   db: Db,
   scope: Scope,
-  opts: { afterId?: string | undefined; limit: number },
+  opts: {
+    afterId?: string | undefined;
+    limit: number;
+    /** Also return projects that were never set up (`setup: "available"`). */
+    includeAvailable?: boolean | undefined;
+    /** Slugs of this org's projects that a static poll entry names. */
+    staticPollSlugs?: ReadonlySet<string> | undefined;
+  },
 ): Promise<ProjectWithRepos[]> {
   return db.run(async (h) => {
-    const rows = await h.orm
-      .select()
-      .from(s.projects)
-      .where(
-        scoped(
-          scope,
-          { orgId: s.projects.orgId },
-          scope.projectId === undefined ? undefined : eq(s.projects.id, scope.projectId),
-          opts.afterId === undefined ? undefined : gt(s.projects.id, opts.afterId),
-        ),
-      )
-      .orderBy(asc(s.projects.id))
-      .limit(opts.limit);
-    if (rows.length === 0) return [];
+    const BATCH = 200;
+    const picked: { row: typeof s.projects.$inferSelect; setup: ProjectSetup }[] = [];
+    let after = opts.afterId;
+    // Page through the projects in id order and keep what passes: the setup rule lives in one place.
+    while (picked.length < opts.limit) {
+      const rows = await h.orm
+        .select()
+        .from(s.projects)
+        .where(
+          scoped(
+            scope,
+            { orgId: s.projects.orgId },
+            scope.projectId === undefined ? undefined : eq(s.projects.id, scope.projectId),
+            after === undefined ? undefined : gt(s.projects.id, after),
+          ),
+        )
+        .orderBy(asc(s.projects.id))
+        .limit(BATCH);
+      if (rows.length === 0) break;
+      const withRuns = new Set(
+        (
+          await h.orm
+            .selectDistinct({ id: s.runs.projectId })
+            .from(s.runs)
+            .where(
+              scoped(
+                scope,
+                { orgId: s.runs.orgId },
+                inArray(
+                  s.runs.projectId,
+                  rows.map((r) => r.id),
+                ),
+              ),
+            )
+        ).map((r) => r.id),
+      );
+      const bound = await h.orm
+        .select({
+          projectId: s.projectRepos.projectId,
+          installationId: s.projectRepos.installationId,
+        })
+        .from(s.projectRepos)
+        .where(
+          scoped(
+            scope,
+            { orgId: s.projectRepos.orgId },
+            inArray(
+              s.projectRepos.projectId,
+              rows.map((r) => r.id),
+            ),
+          ),
+        );
+      const viaInstallation = new Set(
+        bound.filter((r) => r.installationId !== null).map((r) => r.projectId),
+      );
+      for (const row of rows) {
+        const setup = projectSetup({
+          fromInstallation: viaInstallation.has(row.id),
+          ingestConfig: row.ingestConfig,
+          inStaticPoll: opts.staticPollSlugs?.has(row.slug) ?? false,
+          hasRuns: withRuns.has(row.id),
+        });
+        if (setup === "active" || opts.includeAvailable) picked.push({ row, setup });
+        if (picked.length >= opts.limit) break;
+      }
+      after = rows.at(-1)!.id;
+      if (rows.length < BATCH) break;
+    }
+    if (picked.length === 0) return [];
     const repos = await h.orm
       .select()
       .from(s.projectRepos)
@@ -544,16 +609,17 @@ export function queryProjects(
           { orgId: s.projectRepos.orgId },
           inArray(
             s.projectRepos.projectId,
-            rows.map((r) => r.id),
+            picked.map((r) => r.row.id),
           ),
         ),
       )
       .orderBy(asc(s.projectRepos.owner), asc(s.projectRepos.repo));
-    return rows.map((p) => ({
+    return picked.map(({ row: p, setup }) => ({
       id: p.id,
       slug: p.slug,
       name: p.name,
       oidcAudiences: parseAudiences(p.oidcAudiences),
+      setup,
       repos: repos
         .filter((r) => r.projectId === p.id)
         .map((r) => ({ forge: r.forge, owner: r.owner, repo: r.repo })),

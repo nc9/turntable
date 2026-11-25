@@ -70,6 +70,7 @@ export type DispatchEnv = {
   transport?: Transport | undefined;
   /** The instance's per-org concurrency cap (`--org-cap`), the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
+  staticPollProjects?: readonly string[] | undefined;
   /** The data dir and database file `db_backup` works on; `{ dialect: "pg" }` on Postgres. */
   backup?: BackupConfig | undefined;
   webhooks?: WebhookService | undefined;
@@ -598,6 +599,7 @@ export async function dispatch(
       webauthn: env.webauthn,
       transport: env.transport,
       instanceOrgCap: env.instanceOrgCap,
+      staticPollProjects: env.staticPollProjects,
       backup: env.backup,
       attestationAnchors: env.attestationAnchors,
       doctor: env.doctor,
