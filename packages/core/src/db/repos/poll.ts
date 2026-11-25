@@ -618,6 +618,49 @@ export function listUnreportedSkips(
   );
 }
 
+/**
+ * True when a run has been superseded (#648): a job of it was cancelled by a newer run of its
+ * concurrency group, or a newer run exists for the same repo, sha and workflow file (for example
+ * the re-ingest after a draft PR is marked ready). Its skipped checks must not be posted: the
+ * newer run owns the check names on that sha, and GitHub shows the newest check run per name.
+ */
+export function isRunSuperseded(db: Db, run: Run): Promise<boolean> {
+  return db.run(async (h) => {
+    const [newer] = await h.orm
+      .select({ id: s.runs.id })
+      .from(s.runs)
+      .where(
+        and(
+          eq(s.runs.orgId, run.orgId),
+          eq(s.runs.projectId, run.projectId),
+          eq(s.runs.workflowPath, run.workflowPath),
+          sameRepoAs(run),
+          run.sha === null ? isNull(s.runs.sha) : eq(s.runs.sha, run.sha),
+          sql`${s.runs.id} > ${run.id}`,
+          eq(s.runs.local, false),
+        ),
+      )
+      .limit(1);
+    if (newer) return true;
+    const [cut] = await h.orm
+      .select({ id: s.jobAttempts.id })
+      .from(s.jobAttempts)
+      .innerJoin(s.jobs, eq(s.jobs.id, s.jobAttempts.jobId))
+      .where(
+        and(
+          eq(s.jobs.runId, run.id),
+          eq(s.jobAttempts.state, "cancelled"),
+          or(
+            eq(s.jobAttempts.errorClass, "superseded by a newer run"),
+            eq(s.jobAttempts.errorClass, "replaced by a newer pending run"),
+          ),
+        ),
+      )
+      .limit(1);
+    return cut !== undefined;
+  });
+}
+
 /** Marks a skipped attempt as having nothing to post (and why), so the sweep stops selecting it. */
 export function dismissSkippedCheck(
   db: Db,

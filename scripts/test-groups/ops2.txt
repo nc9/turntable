@@ -37,3 +37,4 @@ packages/core/tests/projects-add-remove.test.ts
 packages/core/tests/instance-prune-projects.test.ts
 packages/core/tests/checks-every-job-631.test.ts
 packages/core/tests/checks-backfill.test.ts
+packages/core/tests/skipped-superseded-648.test.ts

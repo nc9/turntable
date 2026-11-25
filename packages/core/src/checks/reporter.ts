@@ -14,6 +14,7 @@ import {
   getAttemptCheckRunId,
   getOrgById,
   listAttempts,
+  isRunSuperseded,
   listJobs,
   listUnreportedSkips,
   listProjects,
@@ -339,6 +340,8 @@ export class CheckReporter {
     const { db } = this.#o;
     const { scope, run, job, attempt } = claim;
     if ((await getAttemptCheckRunId(db, scope, attempt.id)) !== null) return "posted";
+    // A newer run owns this sha's check names (#648): posting now could land after its checks.
+    if (await isRunSuperseded(db, run)) return { nothing: "superseded" };
     const target = await this.#gate(claim);
     if ("reason" in target) return { nothing: target.reason };
     const all = await listJobs(db, scope, run.id);

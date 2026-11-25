@@ -6,7 +6,8 @@ import * as s from "../schema";
 import type { Scope } from "./scope";
 
 /** Why a skipped attempt had nothing to post. */
-export type DismissReason = "checks_off" | "local_run" | "no_binding" | "no_installation";
+export type DismissReason =
+  "checks_off" | "local_run" | "no_binding" | "no_installation" | "superseded";
 
 /** Only dismissals this recent are cleared by an event, so an old backlog stays dismissed. */
 export const DISMISS_CLEAR_WINDOW_MS = 24 * 60 * 60 * 1000;
