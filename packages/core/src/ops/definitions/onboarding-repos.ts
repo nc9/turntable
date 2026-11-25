@@ -40,6 +40,7 @@ import {
 } from "../onboarding-schemas";
 import { describeDispatchInputs } from "../../poll/dispatch-inputs";
 import { effectiveChecksMode } from "../setting-guard";
+import { addProjectFor } from "./projects";
 import { setSetting } from "./settings";
 
 /** Defaults an enabled repo gets. The size class is the instance default: nothing to set. */
@@ -202,8 +203,9 @@ export const onboardRepos = defineOp({
     `${CHECKS_MODE_LABELS.off}. ${CHECKS_MODE_LABELS.shadow}. ${CHECKS_MODE_LABELS.live}. ` +
     "Any mode needs owner or admin, the same role as `set_setting`. Everything goes through the same setters as the " +
     "settings and project-settings ops, so a value locked by the environment or turntable.toml " +
-    "refuses the whole call. A repo the installation does not grant, or that has no project yet " +
-    "(bind the installation first), refuses the whole call and nothing changes. Needs owner or admin; an " +
+    "refuses the whole call. A repo the installation does not grant refuses the whole call and " +
+    "nothing changes. `enable: true` on a repo that is not a project yet ADDS it first, exactly as " +
+    "`add_project` does (the installation's access alone never makes a project). Needs owner or admin; an " +
     "agent token is refused. Audited.",
   input: onboardReposInput,
   output: onboardReposOutput,
@@ -238,11 +240,8 @@ export const onboardRepos = defineOp({
         throw new OpError("invalid_input", `repo ${r.repo_id} is not granted by this installation`);
       }
       const binding = byRepoId.get(r.repo_id);
-      if (!binding) {
-        throw new OpError(
-          "invalid_input",
-          `${repo.fullName} has no project yet: bind the installation first`,
-        );
+      if (!binding && !r.enable) {
+        throw new OpError("invalid_input", `${repo.fullName} has no project: nothing to pause`);
       }
       if (r.enable && (repo.defaultBranch === undefined || !BRANCH.test(repo.defaultBranch))) {
         throw new OpError(
@@ -250,7 +249,7 @@ export const onboardRepos = defineOp({
           `GitHub gave no usable default branch for ${repo.fullName}`,
         );
       }
-      return { want: r, repo, projectId: binding.projectId };
+      return { want: r, repo, projectId: binding?.projectId };
     });
     // The caller's GitHub login: only a web session has one.
     const login =
@@ -263,7 +262,34 @@ export const onboardRepos = defineOp({
     return ctx.db.transaction(
       async (tx) => {
         const projects: z.infer<typeof onboardReposOutput>["projects"] = [];
-        for (const { want, repo, projectId } of plan) {
+        for (const step of plan) {
+          const { want, repo } = step;
+          let projectId = step.projectId;
+          if (projectId === undefined) {
+            // The explicit add, the same code `add_project` runs: a repo the installation grants
+            // becomes a project only here.
+            const added = await addProjectFor(
+              tx,
+              orgId,
+              i.installation_id,
+              repo,
+              undefined,
+              ctx.now(),
+            );
+            projectId = added.projectId;
+            await appendAudit(
+              tx,
+              { orgId, projectId },
+              {
+                principalKind: ctx.principal.kind,
+                principalId: ctx.principal.id,
+                op: "add_project",
+                effect: "write",
+                outcome: "ok",
+                input: { project: added.slug, repo: repo.fullName, via: "onboard_repos" },
+              },
+            );
+          }
           const scope = { orgId, projectId };
           const project = await getProject(tx, { orgId }, projectId);
           if (!project) throw new OpError("not_found", "no such project");

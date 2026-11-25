@@ -17,6 +17,8 @@ import {
 import {
   createOnboarding,
   getOnboarding,
+  getProjectBySlug,
+  listRepos,
   getProjectIngest,
   getProjectSandboxSettings,
   setProjectIngest,
@@ -399,7 +401,7 @@ describe("onboard_repos", () => {
     expect(await getProjectIngest(db, scopeOf("api"))).toBeNull();
   });
 
-  test("a repo the installation does not grant, or that has no project, is refused whole", async () => {
+  test("a repo the installation does not grant is refused whole; pausing a repo that is not a project is refused", async () => {
     expect(
       code(
         await call(session(), [
@@ -408,8 +410,24 @@ describe("onboard_repos", () => {
         ]),
       ),
     ).toBe("invalid_input");
-    expect(code(await call(session(), [{ repo_id: "1003", enable: true }]))).toBe("invalid_input");
+    expect(code(await call(session(), [{ repo_id: "1003", enable: false }]))).toBe("invalid_input");
     expect(await getProjectIngest(db, scopeOf("web"))).toBeNull();
+  });
+
+  test("enabling a granted repo that is not a project adds it first, exactly as add_project does", async () => {
+    const r = await call(session(), [{ repo_id: "1003", enable: true }]);
+    expect(r.ok).toBe(true);
+    const p = await getProjectBySlug(db, { orgId }, "new-one");
+    expect(p).toBeDefined();
+    expect(p!.addedAt).not.toBeNull();
+    expect(await listRepos(db, { orgId, projectId: p!.id })).toMatchObject([
+      { owner: "acme", repo: "new-one", installationId: INSTALL, forgeRepoId: "1003" },
+    ]);
+    expect(
+      (await listAudit(db, { orgId })).some(
+        (a) => a.op === "add_project" && JSON.parse(a.input).via === "onboard_repos",
+      ),
+    ).toBe(true);
   });
 
   test("more than 100 repos, or a repo twice, is refused", async () => {

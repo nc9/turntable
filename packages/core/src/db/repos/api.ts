@@ -505,6 +505,8 @@ export type ProjectWithRepos = {
   oidcAudiences: string[] | null;
   /** Derived: see `projectSetup`. */
   setup: ProjectSetup;
+  /** Had a binding that the installation's access loss removed, and has none now (#577). */
+  noAccess: boolean;
 };
 
 function parseAudiences(raw: string | null): string[] | null {
@@ -592,6 +594,7 @@ export function queryProjects(
           ingestConfig: row.ingestConfig,
           inStaticPoll: opts.staticPollSlugs?.has(row.slug) ?? false,
           hasRuns: withRuns.has(row.id),
+          added: row.addedAt !== null,
         });
         if (setup === "active" || opts.includeAvailable) picked.push({ row, setup });
         if (picked.length >= opts.limit) break;
@@ -620,6 +623,7 @@ export function queryProjects(
       name: p.name,
       oidcAudiences: parseAudiences(p.oidcAudiences),
       setup,
+      noAccess: p.unboundAt !== null && !repos.some((r) => r.projectId === p.id),
       repos: repos
         .filter((r) => r.projectId === p.id)
         .map((r) => ({ forge: r.forge, owner: r.owner, repo: r.repo })),

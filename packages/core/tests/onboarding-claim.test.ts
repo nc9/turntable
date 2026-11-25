@@ -329,7 +329,7 @@ describe.each(dialects)("onboarding claim popup (%s)", (_n, open) => {
     expect(st.ok && st.output).toMatchObject({ state: "expired" });
   });
 
-  test("projects a popup claim creates start paused; a plain claim's do not (unchanged behavior)", async () => {
+  test("a popup claim and a plain claim create no project", async () => {
     const popup = await harness();
     const o1 = await popup.mkSession(popup.tenant, "owner", "olive");
     const r1 = await popup.as(o1, "start_installation_claim", { popup: true });
@@ -342,8 +342,8 @@ describe.each(dialects)("onboarding claim popup (%s)", (_n, open) => {
       code: "code-owner",
       nonce: a.claim_id,
     });
-    const paused = await listProjects(popup.db, { orgId: popup.tenant.id });
-    expect(paused.map((p) => p.maxConcurrent)).toEqual([0]);
+    // The claim records the installation and makes no project: a repo is added on purpose (#577).
+    expect(await listProjects(popup.db, { orgId: popup.tenant.id })).toEqual([]);
 
     const plain = await harness();
     const o2 = await plain.mkSession(plain.tenant, "owner", "olive");
@@ -357,9 +357,7 @@ describe.each(dialects)("onboarding claim popup (%s)", (_n, open) => {
       code: "code-owner",
       nonce: b.claim_id,
     });
-    expect(
-      (await listProjects(plain.db, { orgId: plain.tenant.id })).map((p) => p.maxConcurrent),
-    ).toEqual([null]);
+    expect(await listProjects(plain.db, { orgId: plain.tenant.id })).toEqual([]);
   });
 });
 

@@ -14,7 +14,11 @@ import type { WebSessions } from "../src/auth/web-sessions";
 import {
   addMember,
   createOrg,
+  createProject,
+  createRun,
   createUser,
+  getProjectBySlug,
+  listRuns,
   insertApprover,
   listAudit,
   openDatabase,
@@ -498,5 +502,40 @@ describe("session passkey step-up", () => {
     const rows = await h.db.run((x) => x.orm.select().from(schema.approverEnrolments));
     expect(rows.find((r) => r.forgeLogin === "carol")!.githubUserId).toBe("gh-carol");
     expect(rows.find((r) => r.forgeLogin === "dave")!.githubUserId).toBe("4004");
+  });
+});
+
+describe("remove_project with delete_history (#577)", () => {
+  test("the owner session needs a step-up bound to that exact request; with it the history is deleted, once", async () => {
+    const h = await harness();
+    const p = await createProject(h.db, { orgId: h.org.id }, { slug: "old", name: "old" });
+    const scope = { orgId: h.org.id, projectId: p.id };
+    await createRun(h.db, scope, {
+      workflowPath: ".github/workflows/ci.yml",
+      event: "push",
+      ref: "refs/heads/main",
+    });
+    const input = { project: "old", delete_history: true };
+    const refused = await h.as(h.ONE, "remove_project", input);
+    expect(reasonOf(refused)).toBe("step_up_required");
+    // a step-up for a different request does not open it
+    const other = await h.stepUp("remove_project", { project: "old", delete_history: false });
+    const wrong = await h.as(h.ONE, "remove_project", { ...input, step_up: other });
+    expect(reasonOf(wrong)).toBe("step_up_wrong_action");
+    expect(await listRuns(h.db, scope)).toHaveLength(1);
+    const su = await h.stepUp("remove_project", input);
+    const ok = await h.as(h.ONE, "remove_project", { ...input, step_up: su });
+    expect(ok.ok).toBe(true);
+    expect(await listRuns(h.db, scope)).toEqual([]);
+    expect(await getProjectBySlug(h.db, { orgId: h.org.id }, "old")).toBeUndefined();
+    const again = await h.as(h.ONE, "remove_project", { ...input, step_up: su });
+    expect(again.ok).toBe(false);
+  });
+
+  test("without delete_history a session unbinds with no step-up", async () => {
+    const h = await harness();
+    await createProject(h.db, { orgId: h.org.id }, { slug: "old", name: "old" });
+    const r = await h.as(h.ONE, "remove_project", { project: "old" });
+    expect(r.ok && r.output).toEqual({ project: "old", unbound: [], deleted: false });
   });
 });

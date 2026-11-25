@@ -18,6 +18,7 @@ import { InstanceQuotasPage } from "@/features/instance/quotas-page";
 import { InstanceProjectsPage } from "@/features/instance/projects-page";
 import { InstanceBackupsPage } from "@/features/instance/backups-page";
 import { InstanceTokenPage } from "@/features/instance/token-page";
+import { AddRepositoriesPage } from "@/features/onboarding/add-repositories";
 import { OnboardingPage, validateOnboardingSearch } from "@/features/onboarding/wizard";
 import { parseFeedSearch } from "@/lib/activity";
 import { sanitizeNext } from "@/lib/session";
@@ -143,6 +144,12 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const addRepositoriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/repositories",
+  component: AddRepositoriesPage,
+});
+
 const orgSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$org/-/settings",
@@ -197,6 +204,7 @@ export const routeTree = rootRoute.addChildren([
   orgSettingsRoute,
   releaseLaneRoute,
   settingsRoute,
+  addRepositoriesRoute,
 ]);
 
 export const router = createRouter({

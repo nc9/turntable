@@ -125,7 +125,7 @@ test("a transfer keeps the project; the poll entry follows the binding with the 
   const projects = await listProjects(w.db, { orgId: w.org.id });
 
   const r = await transfer(w, w.org.id);
-  expect(r).toMatchObject({ followed: ["bco/x"], created: [], conflicts: [], bound: [] });
+  expect(r).toMatchObject({ followed: ["bco/x"], conflicts: [], bound: [] });
   // The old installation no longer lists it: its sync detaches nothing that moved.
   expect(await syncInstallation(w.db, w.f.facts, "100")).toMatchObject({ unbound: [] });
   expect(await listRepos(w.db, w.scope)).toMatchObject([
@@ -157,7 +157,7 @@ test("a transfer into a different org is not followed; the operator path still w
   const w = await world();
   const other = await createOrg(w.db, { slug: "other", name: "Other" });
   const r = await transfer(w, other.id);
-  expect(r).toMatchObject({ followed: [], conflicts: ["bco/x"], created: [], bound: [] });
+  expect(r).toMatchObject({ followed: [], conflicts: ["bco/x"], reachable: [], bound: [] });
   expect(await listRepos(w.db, w.scope)).toMatchObject([
     { owner: "aco", repo: "x", installationId: "100" },
   ]);
@@ -177,7 +177,7 @@ test("a rename within one account updates the slug in place", async () => {
   const w = await world();
   w.f.repos.set("100", [repo(ID, "y", "aco")]);
   const r = await syncInstallation(w.db, w.f.facts, "100");
-  expect(r).toMatchObject({ followed: ["aco/y"], created: [], unbound: [] });
+  expect(r).toMatchObject({ followed: ["aco/y"], reachable: [], unbound: [] });
   expect(await listRepos(w.db, w.scope)).toMatchObject([
     { owner: "aco", repo: "y", installationId: "100" },
   ]);

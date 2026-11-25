@@ -40,6 +40,7 @@ export * from "./run-summary";
 export * from "./instance-tokens";
 export * from "./poll";
 export * from "./onboardings";
+export * from "./project-delete";
 export * from "./dismissals";
 export * from "./readiness";
 export * from "./usage";
@@ -124,7 +125,7 @@ export function createProject(
   db: Db,
   scope: Scope,
   /** `maxConcurrent` 0 creates the project paused: it holds every job until someone raises it. */
-  input: { slug: string; name: string; maxConcurrent?: number },
+  input: { slug: string; name: string; maxConcurrent?: number; addedAt?: number },
 ): Promise<Project> {
   return db.run(async (h) => {
     const id = ulid();

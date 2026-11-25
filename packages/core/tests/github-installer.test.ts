@@ -158,7 +158,8 @@ describe.each(dialects)("org installation ownership (%s)", (_n, open) => {
     h.users.set("c", h.userOf());
     expect((await h.claim("c")).status).toBe(200);
     expect((await getInstallation(h.db, "100"))?.orgId).toBe(h.tenant.id);
-    expect(await listProjects(h.db, { orgId: h.tenant.id })).toHaveLength(2);
+    // The installation is a permission: no project exists until someone adds a repo (#577).
+    expect(await listProjects(h.db, { orgId: h.tenant.id })).toHaveLength(0);
   });
 
   test("another recorded installer with membership 403: refused ownership_unverifiable", async () => {
@@ -293,7 +294,8 @@ describe.each(dialects)("org installation ownership (%s)", (_n, open) => {
       const r = await bind(h);
       expect(r.ok).toBe(true);
       expect((await getInstallation(h.db, "100"))?.orgId).toBe(h.tenant.id);
-      expect(await listProjects(h.db, { orgId: h.tenant.id })).toHaveLength(2);
+      // The installation is a permission: no project exists until someone adds a repo (#577).
+      expect(await listProjects(h.db, { orgId: h.tenant.id })).toHaveLength(0);
       const chain = await listAudit(h.db, { orgId: h.tenant.id });
       const row = chain.find((e) => e.op === "instance_bind_installation");
       expect(JSON.parse(row!.input)).toMatchObject({

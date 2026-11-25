@@ -455,7 +455,7 @@
         },
         "types": {
           "description": "Only these event types. Comma-separated in a query string.",
-          "maxItems": 23,
+          "maxItems": 26,
           "type": "array",
           "items": {
             "type": "string",
@@ -467,7 +467,9 @@
               "attempt.step",
               "attempt.cut",
               "attempt.infra_retry",
+              "attempt.drain_cut_not_retried",
               "approval.required",
+              "approval.changed",
               "infra.error",
               "quota.warning",
               "quota.reached",
@@ -480,6 +482,7 @@
               "org.tokens_exhausted",
               "org.token_revoked",
               "org.installation_claim_started_by_instance",
+              "org.installation_bound_by_instance",
               "org.member_invited",
               "org.member_joined",
               "installation_claim.updated"
@@ -1085,6 +1088,10 @@
           "type": "string",
           "maxLength": 200
         },
+        "include_available": {
+          "description": "Also list projects that were never set up (setup \"available\", typically created by installation sync). Default false: only active projects.",
+          "type": "boolean"
+        },
         "org": {
           "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
           "type": "string",
@@ -1286,6 +1293,66 @@
           "type": "string",
           "maxLength": 64
         },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "my_activity_feed",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "default": "all",
+          "description": "running: not finished; failed: failure or infra error; all: everything.",
+          "type": "string",
+          "enum": ["running", "failed", "all"]
+        },
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "my_pending_approvals",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
         "org": {
           "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
           "type": "string",

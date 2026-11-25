@@ -596,6 +596,32 @@ export function listInstallationBindings(
   );
 }
 
+/** Every binding of one project. */
+export function listProjectBindings(
+  db: Db,
+  scope: Scope,
+  projectId: string,
+): Promise<RepoBinding[]> {
+  return db.run((h) =>
+    h.orm
+      .select()
+      .from(s.projectRepos)
+      .where(
+        scoped(scope, { orgId: s.projectRepos.orgId }, eq(s.projectRepos.projectId, projectId)),
+      ),
+  );
+}
+
+/** Drops the lost forge repo id a project waits to be re-granted by (an explicit removal). */
+export async function forgetLostBinding(db: Db, scope: Scope, projectId: string): Promise<void> {
+  await db.run((h) =>
+    h.orm
+      .update(s.projects)
+      .set({ lastForgeRepoId: null })
+      .where(scoped(scope, { orgId: s.projects.orgId }, eq(s.projects.id, projectId))),
+  );
+}
+
 /**
  * Removes a binding and notes on its project which forge repo id it lost and when, so a re-grant
  * can find the project again. Both writes are in one transaction.
@@ -648,6 +674,8 @@ export function findReattachableProject(
           { orgId: s.projects.orgId },
           eq(s.projects.lastForgeRepoId, forgeRepoId),
           isNotNull(s.projects.unboundAt),
+          // Only a project someone added on purpose (or that already ran): sync makes none.
+          isNotNull(s.projects.addedAt),
         ),
       )
       .orderBy(desc(s.projects.unboundAt), desc(s.projects.id));

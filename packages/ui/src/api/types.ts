@@ -25,6 +25,8 @@ export type Project = {
   repo: string;
   /** "available": created by installation sync and never set up for CI. Absent means active. */
   setup?: "active" | "available";
+  /** The repo was unbound (access lost or removed); the project and its history are kept. */
+  noAccess?: boolean;
 };
 
 /** How far a run is trusted, decided by the server from re-fetched forge facts. */
