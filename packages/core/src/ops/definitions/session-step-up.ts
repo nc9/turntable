@@ -21,6 +21,7 @@ import {
   stepUpKeys,
 } from "../step-up";
 import { createApiToken } from "./create-api-token";
+import { createUserToken } from "./user-tokens";
 import { inviteMemberOp } from "./members";
 
 const MAX_OPEN_STEP_UPS = 10;
@@ -28,6 +29,7 @@ const MAX_OPEN_STEP_UPS = 10;
 /** The schema each step-up action validates its input with, exactly as the dispatcher does. */
 const SCHEMAS: Record<string, z.ZodObject> = {
   create_api_token: createApiToken.input,
+  create_user_token: createUserToken.input,
   invite_member: inviteMemberOp.input,
 };
 
@@ -35,7 +37,7 @@ export const sessionStepUpChallenge = defineOp({
   name: "session_step_up_challenge",
   summary: "Start a passkey step-up for one sensitive action from a web session.",
   description:
-    "Web sessions only. Names an action (create_api_token, or invite_member for an admin or " +
+    "Web sessions only. Names an action (create_api_token, create_user_token, or invite_member for an admin or " +
     "owner) and the exact `input` the action will be called with (project scope included), and " +
     "returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs " +
     "`challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the " +

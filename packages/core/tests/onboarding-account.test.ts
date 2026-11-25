@@ -238,7 +238,7 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
   }
 
   // -------------------------------------------------------------------------------------------
-  test("registry-wide: an account principal is refused by every op that does not declare account, and exactly three declare it", async () => {
+  test("registry-wide: an account principal is refused by every op that does not declare account, and exactly five declare it", async () => {
     const h = await harness();
     const account: Principal = {
       kind: "account",
@@ -253,7 +253,13 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
         .filter((o) => o.auth.type === "account")
         .map((o) => o.name)
         .toSorted(),
-    ).toEqual(["list_my_orgs", "list_user_installations", "onboarding_create_org"]);
+    ).toEqual([
+      "list_my_orgs",
+      "list_user_installations",
+      "list_user_tokens",
+      "onboarding_create_org",
+      "revoke_user_token",
+    ]);
     for (const op of registry.ops) {
       const r = await dispatch(h.env, { kind: "principal", principal: account }, op.name, {});
       if (op.auth.type === "account") continue;

@@ -7,7 +7,11 @@ import type { Db } from "../db";
 import {
   appendAudit,
   findApiTokenByHash,
+  findUserTokenByHash,
   getIdentityByUserId,
+  getUserIdByGithubUserId,
+  recordUserTokenOrg,
+  touchUserToken,
   findInstanceTokenByHash,
   getOrgById,
   getOrgBySlug,
@@ -35,7 +39,7 @@ import { authenticateSigned } from "./signed";
 import { type Credential, orgRole, type Principal, principalId } from "./principal";
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
-import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
+import { hashToken, looksLikeInstanceToken, looksLikeToken, looksLikeUserToken } from "./tokens";
 import { inputTarget, SESSION_STEP_UP_OPS, verifyStepUp, type VerifiedStepUp } from "./step-up";
 
 export type Transport = "mcp" | "rest";
@@ -183,7 +187,19 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // Onboarding (A3): owner or admin sessions only, by the ops' own `admin` role.
   "onboard_repos",
   "run_default_branch",
+  // Revoking your own user token (an `account` op): no step-up, so a lost token can be killed fast.
+  "revoke_user_token",
 ]);
+
+/**
+ * What a multi-org user token (`ttu_`, #547) may write: exactly what a web session may write
+ * with no step-up (SESSION_WRITE_OPS), minus the ops that need a session (the step-up challenge,
+ * onboarding and installation binding) and minus every token-minting op. `invite_member` stays:
+ * its handler refuses an admin or owner invite without a step-up, which a user token cannot hold.
+ * Everything else that is not a read is refused, so a new op is closed to user tokens until
+ * someone opens it here. Reads follow the member's role, as for a session.
+ */
+export const USER_TOKEN_WRITE_OPS: ReadonlySet<string> = new Set(["invite_member"]);
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(
@@ -198,6 +214,7 @@ export async function authenticate(
   if (credential.kind === "signed") throw new AuthFailure();
   const token = credential.token;
   if (looksLikeInstanceToken(token)) return authenticateInstance(env, token);
+  if (looksLikeUserToken(token)) return authenticateUser(env, token, orgHint);
   // One message for every failure, so a caller cannot tell a wrong token from a revoked one.
   if (!looksLikeToken(token)) throw new AuthFailure();
   const row = await findApiTokenByHash(env.db, hashToken(token));
@@ -222,6 +239,79 @@ export async function authenticate(
     role: row.role as Extract<Principal, { kind: "token" }>["role"],
     // Only an explicit `person` is one; anything else, a missing value included, is an agent.
     tokenKind: row.kind === "person" ? "person" : "agent",
+  };
+}
+
+/**
+ * Checks that a bearer token is live without picking an org: the MCP adapters call it once per
+ * connection so a bad token is a 401. A user token has no org until a call names one, so it is
+ * judged on its own row only; every call is judged again, with its org, by `dispatch`.
+ */
+export async function checkBearer(env: DispatchEnv, token: string): Promise<void> {
+  if (looksLikeUserToken(token)) {
+    await findLiveUserToken(env, token);
+    return;
+  }
+  await authenticate(env, { kind: "bearer", token });
+}
+
+async function findLiveUserToken(
+  env: DispatchEnv,
+  token: string,
+): Promise<NonNullable<Awaited<ReturnType<typeof findUserTokenByHash>>>> {
+  const row = await findUserTokenByHash(env.db, hashToken(token));
+  const now = (env.now ?? Date.now)();
+  if (!row || row.revokedAt !== null || row.expiresAt <= now) {
+    throw new AuthFailure(row ? await systemOrgId(env.db) : undefined, row?.id);
+  }
+  return row;
+}
+
+/**
+ * A `ttu_` token (#547). Bound to a GitHub user id, not an org. EVERY call resolves the org it
+ * names and the holder's CURRENT membership there, from the database, with no caching: the role
+ * is the membership's, mapped as a web session's is. No org named is refused with a reason; no
+ * membership (or no such org) is the same `not_found` as for a session.
+ */
+async function authenticateUser(env: DispatchEnv, token: string, org: unknown): Promise<Principal> {
+  const row = await findLiveUserToken(env, token);
+  const now = (env.now ?? Date.now)();
+  if (org === undefined) {
+    throw new OpError(
+      "invalid_input",
+      "org is required: a user token works in every org you belong to, so each call must name one",
+      { reason: "org_required" },
+    );
+  }
+  if (typeof org !== "string") throw new OpError("invalid_input", "org must be a string");
+  const userId = await getUserIdByGithubUserId(env.db, row.githubUserId);
+  const pick = userId
+    ? (await listMembershipsOfUser(env.db, userId)).find((m) => m.slug === org)
+    : undefined;
+  if (!pick) throw new OpError("not_found", NO_SUCH_SCOPE);
+  if (row.lastUsedAt === null || now - row.lastUsedAt > TOUCH_INTERVAL_MS) {
+    await touchUserToken(env.db, row.id, now).catch(() => {});
+  }
+  // First use in this org: one entry in the user's chain (the system chain, where account-level
+  // entries go: there is no per-user chain) and one in the org's. Neither holds the token.
+  if (await recordUserTokenOrg(env.db, row.id, pick.orgId, now)) {
+    const entry = {
+      principalKind: "user",
+      principalId: row.id,
+      op: "user_token_first_use",
+      effect: "write",
+      outcome: "ok",
+      input: { token_id: row.id, github_user_id: row.githubUserId, org: pick.slug },
+    };
+    await appendAudit(env.db, { orgId: await systemOrgId(env.db) }, entry).catch(() => {});
+    await appendAudit(env.db, { orgId: pick.orgId }, entry).catch(() => {});
+  }
+  return {
+    kind: "user",
+    id: row.id,
+    orgId: pick.orgId,
+    role: pick.role,
+    githubUserId: row.githubUserId,
   };
 }
 
@@ -516,6 +606,26 @@ export async function dispatch(
           ? `${op.name} needs a fresh passkey step-up (step_up_required): call session_step_up_challenge`
           : `${op.name} needs a passkey step-up, which this operation does not take for a web session: use a token`,
         { reason: "step_up_required" },
+      );
+    }
+    // A user token is default-deny for writes, like a session, with its own (shorter) list.
+    if (principal.kind === "user" && op.effect !== "read" && !USER_TOKEN_WRITE_OPS.has(op.name)) {
+      await appendAudit(
+        env.db,
+        { orgId: principal.orgId },
+        {
+          principalKind: principal.kind,
+          principalId: principalId(principal),
+          op: op.name,
+          effect: op.effect,
+          outcome: "error:forbidden",
+          input: redactInput(op, raw),
+        },
+      ).catch(() => {});
+      throw new OpError(
+        "forbidden",
+        `${op.name} is not available to a user token: use a web session (a passkey step-up, if the operation needs one)`,
+        { reason: "user_token_refused" },
       );
     }
     // An account has no org: its calls are scoped to the system org (where an instance call goes

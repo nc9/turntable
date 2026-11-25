@@ -46,6 +46,7 @@ import {
   setProjectSettings,
 } from "./definitions/project-settings";
 import { createApiToken } from "./definitions/create-api-token";
+import { createUserToken, listUserTokensOp, revokeUserTokenOp } from "./definitions/user-tokens";
 import { listApiTokensOp } from "./definitions/list-api-tokens";
 import { revokeApiTokenOp } from "./definitions/revoke-api-token";
 import { events } from "./definitions/events";
@@ -111,7 +112,13 @@ import {
 } from "./definitions/settings";
 import { createRegistry } from "./registry";
 
-export { authenticate, dispatch, type DispatchEnv, type DispatchResult } from "./dispatch";
+export {
+  authenticate,
+  checkBearer,
+  dispatch,
+  type DispatchEnv,
+  type DispatchResult,
+} from "./dispatch";
 export { defineOp, type Op, type OpContext, type OpSpec } from "./define";
 export { type Credential, type Principal } from "./principal";
 export { createRegistry, type OpRegistry } from "./registry";
@@ -145,6 +152,9 @@ export const registry = createRegistry([
   listProjects,
   ingestStatusOp,
   createApiToken,
+  createUserToken,
+  listUserTokensOp,
+  revokeUserTokenOp,
   listApiTokensOp,
   revokeApiTokenOp,
   listActionPinsOp,

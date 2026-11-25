@@ -33,6 +33,10 @@ const MCP_OFF: Record<string, string> = {
   onboarding_create_org: "an account session (a person in a browser) creates it: never a token",
   list_my_orgs: "an account session (a person in a browser) reads it: never a token",
   list_user_installations: "an account session (a person in a browser) reads it: never a token",
+  list_user_tokens: "an account session (a person in a browser) reads it: never a token",
+  revoke_user_token: "an account session (a person in a browser) revokes it: never a token",
+  create_user_token:
+    "token minting: a web session with a passkey step-up only, never into an agent's context",
   set_proxy_rule: "decides where a secret may be sent: a limit-raising setter",
   add_proxy_passthrough_host: "widens the egress of secret-bearing jobs: a limit-raising setter",
   accept_action_move: "a trust decision: it blesses a moved action tag for protected runs",

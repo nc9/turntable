@@ -4,7 +4,7 @@
 import { statSync, readFileSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { authenticate, type DispatchEnv } from "../ops";
+import { checkBearer, type DispatchEnv } from "../ops";
 import { createMcpServer } from "./server";
 
 /** Reads a token from a file that only its owner can read. */
@@ -28,7 +28,7 @@ export async function runMcpStdio(o: {
   onClose?: () => void;
 }): Promise<{ close(): Promise<void> }> {
   // Fail at start with a clear message, not on the first tool call.
-  await authenticate(o.env, { kind: "bearer", token: o.token });
+  await checkBearer(o.env, o.token);
   const server = createMcpServer(o.env, o.token);
   if (o.onClose) server.onclose = o.onClose;
   await server.connect(new StdioServerTransport(o.stdin, o.stdout));
