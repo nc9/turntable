@@ -574,5 +574,13 @@ export const migrations: Migration[] = [
     "statements": [
       "ALTER TABLE `github_installations` ADD `permissions` text;"
     ]
+  },
+  {
+    "tag": "0053_release_request_cosignatures",
+    "when": 1795611794380,
+    "statements": [
+      "ALTER TABLE `release_requests` ADD `cosignatures` text;",
+      "ALTER TABLE `release_requests` ADD `dry_run` integer DEFAULT false NOT NULL;"
+    ]
   }
 ];

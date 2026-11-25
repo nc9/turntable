@@ -36,7 +36,13 @@ afterAll(async () => {
 
 // Ops that set the REST header but are not an MCP tool (`mcp: false`), so no MCP result exists to
 // mark. A new entry needs a look: if the op should be an MCP tool, it is marked automatically.
-const REST_ONLY_UNTRUSTED = ["webhook_deliveries"];
+const REST_ONLY_UNTRUSTED = [
+  // streams bytes; `get_artifact_files` lists files over MCP
+  "get_artifact",
+  // streams bytes; `get_artifact_files` lists files over MCP
+  "get_artifact_file",
+  "webhook_deliveries",
+];
 
 test("every op that sets the REST header is exposed over MCP, or listed as REST only", () => {
   const mcp = new Set(mcpTools(registry).map((t) => t.name));
