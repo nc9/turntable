@@ -207,8 +207,9 @@ describe("one check for the shards of a job", () => {
   });
 
   test("a job that is not split is reported exactly as before: one check per attempt", async () => {
+    // Two workflows: a newer run of the same workflow on one sha supersedes the older (#648).
     const x = await world.claim();
-    const y = await world.claim();
+    const y = await world.claim("test", ".github/workflows/other.yml");
     const { api, runs } = fakeApi();
     const r = rep(api);
     r.started(x);
