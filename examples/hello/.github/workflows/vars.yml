@@ -1,0 +1,18 @@
+name: vars
+on: push
+jobs:
+  vars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ vars.TURNTABLE_CI == 'true' && 1 || 0 }}
+      - name: A step if on a var
+        if: vars.X == 'y'
+        run: echo "if-check=ran"
+      - name: A step env from a var
+        env:
+          FROM_VAR: ${{ vars.X }}
+        run: |
+          echo "env-check=$FROM_VAR"
+          echo "run-check=${{ vars.TRICKY }}"

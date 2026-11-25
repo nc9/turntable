@@ -247,6 +247,26 @@ export function proxyEnvFile(url: string, bundle: string): string {
   ]);
 }
 
+/**
+ * A dotenv file for act's `--var-file`: `NAME="value"`, double-quoted so a value keeps its spaces,
+ * `#` and `=`. Backslash, quote, `$` (act expands `$X` in a double-quoted value) and newlines are
+ * escaped. Names are checked: a bad one would be a line the parser reads differently.
+ */
+export function varFileOf(vars: Readonly<Record<string, string>>): string {
+  let out = "";
+  for (const [k, v] of Object.entries(vars)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`invalid variable name: ${k}`);
+    const e = v
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, "\\$")
+      .replace(/\r/g, "\\r")
+      .replace(/\n/g, "\\n");
+    out += `${k}="${e}"\n`;
+  }
+  return out;
+}
+
 /** `export` lines for a file the launcher sources (see launcherArgv). Values are quoted. */
 export function envFileOf(vars: readonly (readonly [string, string])[]): string {
   return `${vars.map(([k, v]) => `export ${k}=${q(v)}`).join("\n")}\n`;
