@@ -480,3 +480,77 @@ describe("after a GitHub App installation binds the repository", () => {
     expect(w.gh.state.calls.some((c) => c.path.includes("release.yml"))).toBe(false);
   });
 });
+
+describe("run_default_branch uses the primary entry (#564)", () => {
+  // Both workflows run on a push to main, so the entry chosen is visible in the run it makes.
+  const PUSH_RELEASE = RELEASE.replace("tags: ['v*']", "branches: [main]");
+  const planVars = async (runId: string) => {
+    const all = await db.run((h) => h.orm.select().from(s.runs));
+    return (JSON.parse(all.find((r) => r.id === runId)!.plan!) as { vars: Record<string, string> })
+      .vars;
+  };
+
+  test("two entries with the primary listed second: the primary's workflow and vars run", async () => {
+    const w = world({
+      releaseYaml: PUSH_RELEASE,
+      ciExtra: { vars: { WHICH: "ci" } },
+      releaseExtra: { vars: { WHICH: "release" }, primary: true },
+    });
+    const p = new Poller({ db, config: w.config, fetch: w.fetch, now: () => now });
+    const r = await p.runDefaultBranch(scope, "acme/web");
+    expect(r.created).toBe(true);
+    expect((await byWorkflow(RELEASE_PATH)).map((x) => x.id)).toEqual([r.runId]);
+    expect(await byWorkflow(CI_PATH)).toHaveLength(0);
+    expect(await planVars(r.runId)).toEqual({ WHICH: "release" });
+  });
+
+  test("two entries with none marked: the first listed is primary, as before", async () => {
+    const w = world({
+      releaseYaml: PUSH_RELEASE,
+      ciExtra: { vars: { WHICH: "ci" } },
+      releaseExtra: { vars: { WHICH: "release" } },
+    });
+    const p = new Poller({ db, config: w.config, fetch: w.fetch, now: () => now });
+    const r = await p.runDefaultBranch(scope, "acme/web");
+    expect((await byWorkflow(CI_PATH)).map((x) => x.id)).toEqual([r.runId]);
+    expect(await planVars(r.runId)).toEqual({ WHICH: "ci" });
+  });
+
+  test("one entry: unchanged", async () => {
+    const w = world({ ciExtra: { vars: { WHICH: "ci" } } });
+    const config = pollConfigSchema.parse({
+      allowUnauthenticated: true,
+      repos: [w.config.repos[0]],
+    });
+    const p = new Poller({ db, config, fetch: w.fetch, now: () => now });
+    const r = await p.runDefaultBranch(scope, "acme/web");
+    expect((await byWorkflow(CI_PATH)).map((x) => x.id)).toEqual([r.runId]);
+    expect(await planVars(r.runId)).toEqual({ WHICH: "ci" });
+  });
+
+  test("no entry (a binding only): unchanged, and a project with nothing is refused", async () => {
+    const w = world();
+    await bindRepo(db, scope, {
+      forge: "github",
+      owner: "acme",
+      repo: "web",
+      installationId: "9001",
+    });
+    await setIngestPolicy(db, "local", "local", "on", {
+      defaultBranch: "main",
+      workflow: CI_PATH,
+    });
+    // A config needs one entry: an unrelated repo, so acme/web has only its binding.
+    const none = pollConfigSchema.parse({
+      allowUnauthenticated: true,
+      repos: [{ repo: "static/other", workflow: CI_PATH, defaultBranch: "main" }],
+    });
+    const p = new Poller({ db, config: none, fetch: w.fetch, now: () => now, bindings: true });
+    const r = await p.runDefaultBranch(scope, "acme/web");
+    expect((await byWorkflow(CI_PATH)).map((x) => x.id)).toEqual([r.runId]);
+    const bare = new Poller({ db, config: none, fetch: w.fetch, now: () => now });
+    await expect(bare.runDefaultBranch(scope, "acme/web")).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+});
