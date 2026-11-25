@@ -83,6 +83,54 @@ When the lane runs in the same process as the main service, give that process bo
 
 Keep the new key in your secrets manager as well as in the platform variable. Losing it loses every stored secret.
 
+## Running the release lane on one hosted service
+
+Today a single hosted service cannot run the web app and the release lane together. This section says what is true now, why, and what would have to change. It is not a recipe that works; do not plan a release on a one-service host until the blockers below are closed.
+
+**What works today.** `TURNTABLE_ROLES=release` selects the lane from the environment (every `serve` flag has a variable, so the entrypoint `serve --data-dir /data` needs no change). The lane runs alone: the role list `web,worker,release` is refused at boot, and a process with the release role starts no web server, API or UI. A service started that way serves nothing a person can reach, so nobody can call `request_release`. A main process (no `--roles`, or `web`, `worker`, `poller`) ignores every `TURNTABLE_RELEASE_*` variable and warns that they were ignored.
+
+**Why two services do not work on Railway yet.** The lane needs three things from the main service, and none is shared between two Railway services:
+
+| The lane needs | Why a second service cannot have it today |
+| --- | --- |
+| The request queue and run records | With SQLite this is one file on one volume, and a Railway volume attaches to one service. It works with a shared Postgres (`TURNTABLE_DATABASE_URL` on both services). |
+| Artifact bytes | The artifact store is the local directory `<data dir>/artifacts`, and the lane reads `TURNTABLE_RELEASE_ARTIFACT_DIR` from a local path. There is no remote artifact backend, so a lane on another volume sees no bytes and refuses with `artifact_bytes_missing`. |
+| The config channel (the `release_*` operations and `release_approval_challenge`) | It is a unix socket, or TCP with mutual TLS through certificate files (`TURNTABLE_RELEASE_CHANNEL_TCP`, `_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`) plus key files. These are files, not variables, and a shell-less host has no way to create them. |
+
+**What the lane needs when it does run** (so you can prepare). On its own service, all variables on the lane's side only:
+
+| Variable | Required | Secret | Value |
+| --- | --- | --- | --- |
+| `TURNTABLE_ROLES` | yes | no | `release` |
+| `TURNTABLE_RELEASE_MASTER_KEY` | yes (or `_FILE`, not both) | yes | 32 bytes as base64 or hex; see [the release lane's key](#the-release-lanes-key) |
+| `TURNTABLE_RELEASE_DATA_DIR` | yes | no | A directory on the lane's own volume, for example `/data/release` |
+| `TURNTABLE_RELEASE_GITHUB_TOKEN` | yes | yes | A read-only token for contents and refs of the release repository |
+| `TURNTABLE_RELEASE_ARTIFACT_DIR` | yes | no | The directory holding the artifact store's bytes, laid out `<run id>/<name>` (the main service's `<data dir>/artifacts`) |
+| `TURNTABLE_RELEASE_BUILDER_ID` | yes | no | The instance's public URL |
+| `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN` | only to publish a GitHub release | yes | A token that may write releases to the release repository |
+| `TURNTABLE_RELEASE_POLL_MS` | no | no | Default 5000 |
+
+Each missing required variable stops the lane at boot with `the release role needs <NAME>`. On the main service set `TURNTABLE_ARTIFACTS_URL` (this turns the artifact store on). The lane's GitHub credentials are static tokens today. A GitHub App installation token would be minted by the existing App code (`AppAuth`), and the lane's publish path already asks a function for the token on each use; the forge client that re-checks tags still takes one fixed token, so using an installation token means giving the lane the App's private key or a minting step and changing that client. That is a security decision: the App key would then be in a process that signs releases.
+
+**Four ways to run the lane on hosted.** None except A exists today. Nothing below is implemented.
+
+| | A. Not on single-service hosted (today) | B. One process | C. Two services and shared object storage | D. Two processes in one container |
+| --- | --- | --- | --- | --- |
+| Shape | Release is not available | `web,worker,release` in one process, in-process channel | Lane service plus main service, artifact bytes in an object store | `serve` starts the release role as a child of the same binary, unix socket in the container |
+| Process boundary | n/a | None: one address space | Strong: separate hosts | Kept: separate processes and memory; same container and volume |
+| Key and credentials | n/a | Lane key and tokens in the web process's memory | Only on the lane service | Only in the child, with a different key from main |
+| What the compromise of web or worker code reaches | n/a | The signing key | The main database only | The child's key only if the attacker also gets same-user process access (see below) |
+| Code size | 0 | Small: allow the role combination, call the lane in process, read the store directly | Large: a remote artifact backend for both the store and the lane's reader, a channel over TCP with mTLS without files, a shared database | Medium: spawn in `serve`, pass only the `TURNTABLE_RELEASE_*` variables to the child, socket and per-boot channel keys, same-volume artifact directory |
+| Needs from Railway | One service | One service | Two services, a shared Postgres, an object store, private networking | One service and one volume |
+
+**D in detail.** The parent starts first, takes every `TURNTABLE_RELEASE_*` variable out of its own environment before anything else loads, and starts the same binary with `--roles release` and only those variables (plus the data directory). The child keeps its own master key, data directory and signing keys, reads the main database for requests, reads the artifact directory on the same volume (`<data dir>/artifacts`, read-only through the existing path checks), and listens on a unix socket in the container for the channel. The parent can reach the lane only over that socket, with a config key that is not the worker's. The lane still re-checks tags at the forge with its own credential, still compares digests against the bytes itself, and never trusts main's rows for what it signs. The main roles never sign.
+
+**The honest weakness of D.** The parent saw the lane's variables at boot, so a compromise of the parent before it removed them would see them. After that, the child's memory and environment are separate, but a process running as the same user can read `/proc/<pid>/environ` and may attach with ptrace unless the platform forbids it. To make the boundary real, the child should run as a different user than the parent (the image starts as root and drops, so the parent can start the child under another user before it drops itself) and the lane's directory and key must belong to that user. Without that, D is better than B only against bugs that do not give code execution as the same user. The release key also stays in the platform's variable store, so Railway's own access to it does not change.
+
+**Recommendation.** Use A until D exists. D is the lead candidate for the maintainers to approve, because it keeps the separate-process rule with one service. B is cheapest but removes that rule. C is the strongest but needs infrastructure the project does not have.
+
+**The GitHub credential plan (for any option).** Keep static read and publish tokens first. Later, an App installation token for the release repository can replace them: the lane's publish path already asks a function for the token on each use, and the tag re-check client would have to take a function too (about 60 to 100 lines). The cost is that the App private key must reach the lane.
+
 ## Instance administrator access on a host with no shell
 
 To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is active, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
