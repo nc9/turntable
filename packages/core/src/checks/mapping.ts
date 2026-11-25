@@ -14,12 +14,40 @@ export function plain(text: string, max = 100): string {
 }
 
 /**
+ * What a non-primary workflow's checks are named under (#549): the workflow's `name:`, or its
+ * file name without the extension. Undefined for the primary workflow, whose checks keep the plain
+ * names. Stored in the run's plan when the run is made; repo text, so cleaned like any other.
+ */
+export function checkScopeFor(
+  primary: boolean | undefined,
+  workflowPath: string,
+  workflowName: string | null | undefined,
+): string | undefined {
+  if (primary !== false) return undefined;
+  const file = (workflowPath.split("/").pop() ?? workflowPath).replace(/\.ya?ml$/i, "");
+  return plain(workflowName?.trim() || file, 60) || plain(file, 60);
+}
+
+/** The `checkScope` a run's stored plan carries, cleaned; undefined when it has none. */
+export function checkScopeOf(plan: string | null | undefined): string | undefined {
+  if (!plan) return undefined;
+  try {
+    const v = (JSON.parse(plan) as { checkScope?: unknown }).checkScope;
+    return typeof v === "string" && plain(v, 60) !== "" ? plain(v, 60) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The check name: `shadow / <job>` in shadow mode (so a required-check rule never matches it),
  * `turntable / <job>` in live mode, plus the matrix leg when the job has one.
  */
 export function checkName(
   mode: Exclude<ChecksMode, "off">,
   job: { name: string; matrix: string | null },
+  /** A non-primary workflow's name (`checkScopeOf` its run's plan): `turntable / <scope> / <job>`. */
+  scope?: string | undefined,
 ): string {
   let leg = "";
   if (job.matrix) {
@@ -31,7 +59,8 @@ export function checkName(
       // an unreadable matrix adds no leg
     }
   }
-  return `${mode === "shadow" ? "shadow" : "turntable"} / ${plain(job.name)}${leg}`;
+  const mid = scope ? `${plain(scope, 60)} / ` : "";
+  return `${mode === "shadow" ? "shadow" : "turntable"} / ${mid}${plain(job.name)}${leg}`;
 }
 
 const WORD: Record<AttemptResult, string> = {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { checkName } from "../../checks/mapping";
+import { checkName, checkScopeOf } from "../../checks/mapping";
 import { jobsForRuns, listRepos, runsForSha } from "../../db/repos";
 import type { RunJobRow } from "../../db/repos";
 import type { JobState } from "../../db/schema";
@@ -147,7 +147,7 @@ export const checksForSha = defineOp({
         state: r.status as JobState,
         jobs: all.slice(0, MAX_JOBS_PER_RUN).map((j) => ({
           job_id: j.id,
-          check_name: checkName(mode, j),
+          check_name: checkName(mode, j, checkScopeOf(r.plan)),
           conclusion: j.state,
           attempt: j.attempt,
         })),

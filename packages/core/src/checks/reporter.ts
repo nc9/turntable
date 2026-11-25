@@ -29,6 +29,7 @@ import { type CheckRunBody, type CheckRunsApi, CheckRunsError } from "./client";
 import {
   type AttemptResult,
   checkName,
+  checkScopeOf,
   classifyInfra,
   infraRetryLine,
   refusalSentence,
@@ -318,7 +319,7 @@ export class CheckReporter {
     const { scope, run, job, attempt } = claim;
     const { mode, token } = target;
     const externalId = mine ? `shards-${run.id}-${mine.id}` : `skipped-${job.id}`;
-    const name = checkName(mode, job);
+    const name = checkName(mode, job, checkScopeOf(run.plan));
     const runUrl = await this.#runUrl(claim);
     const reason = skipReasonFor({
       errorClass: attempt.errorClass,
@@ -363,7 +364,7 @@ export class CheckReporter {
     const target = await this.#target(claim);
     if (!target) return;
     const { mode, token, repo, sha } = target;
-    const checkName_ = checkName(mode, job);
+    const checkName_ = checkName(mode, job, checkScopeOf(claim.run.plan));
     const runUrl = await this.#runUrl(claim);
     let id = await getAttemptCheckRunId(db, scope, attempt.id);
     // A job the operator splits across sandboxes has ONE check, under the job's own name, shared

@@ -203,6 +203,43 @@ Runs started by `turntable run` are claimed only by the process that started the
 - **The job plan is stored on the attempt when it starts,** so a restarted server re-attaches to a running job with no repo fetch and no network.
 - **Concurrency groups** are tracked per project. A new run whose workflow sets `concurrency` with `cancel-in-progress: true` supersedes older unfinished runs of the same group: the new run is created first, then the older run's queued and running jobs are cancelled and the workers of the running ones are told to stop and their sandboxes destroyed. A group without `cancel-in-progress` queues like GitHub's: at most one run is running and one is pending. A new run waits behind the running one (its jobs are not claimed yet), and a newer pending run replaces the older pending one, which is cancelled. Reusable workflows and expression-built matrices are reported as unsupported.
 
+### Two workflows for one repository
+
+One repository can feed one project through two workflows, for example `ci.yml` for pushes, pull requests and the merge queue, and a `release.yml` for release tags. Declare one entry per workflow. Both name the same `repo`, `org` and `project`:
+
+```json
+{
+  "tokenFile": "/etc/turntable/github-token",
+  "repos": [
+    {
+      "repo": "acme/web",
+      "workflow": ".github/workflows/ci.yml",
+      "defaultBranch": "main",
+      "prMode": "allowlist",
+      "authors": ["octocat"],
+      "mergeQueue": true,
+      "vars": { "TURNTABLE_CI": "true" }
+    },
+    {
+      "repo": "acme/web",
+      "workflow": ".github/workflows/release.yml",
+      "defaultBranch": "main",
+      "tagRefs": ["refs/tags/v*"],
+      "prMode": "off",
+      "vars": { "TURNTABLE_CI": "true" }
+    }
+  ]
+}
+```
+
+- Each entry plans only its own workflow. A new `v*` tag runs `release.yml` and no `ci.yml` run is made for the tag, because only the second entry lists `tagRefs`. A branch push runs `ci.yml`; `release.yml` is read at that commit too, but its `on:` filters (tags only) make no run. Keep the entries' `on:` triggers disjoint, or one commit runs both.
+- What is remembered is per workflow: the seen-set (`poll_seen`) is keyed by repo, workflow path, event and sha, so each (workflow, event, sha) runs once however often the repo is polled. `maxRunsPerHour` is counted for the repo as a whole, across both entries.
+- One poll of the repo (on its interval, or woken by a webhook) runs each entry in the order listed. The shorter `intervalSeconds` of the entries is used.
+- The project's concurrency cap (`max_concurrent`) is one cap for the project: attempts of both workflows count against it.
+- Check names keep required contexts stable. One entry per project and repo is the **primary** workflow: its jobs post `turntable / <job>` (`shadow / <job>` in shadow mode), exactly as with one workflow, so a branch rule that requires `turntable / build` never moves. Set `"primary": true` on an entry to choose it. Otherwise the first entry listed for the project and repo is primary, and a single entry always is. Marking two entries primary is refused when the config loads. Every other workflow posts `turntable / <workflow name> / <job>` (`shadow / <workflow name> / <job>`), where the workflow name is its `name:`, or its file name without the extension when it has none. In the example, `ci.yml` jobs stay `turntable / build` and a `quality` job in `release.yml` posts `turntable / Release / quality`, so it never overwrites or shares a context with `ci.yml`'s `quality`. The workflow name is repo text and is shown as plain text.
+- `workflow_dispatch` runs use the entry of the dispatched workflow: its `vars`, protected refs and tag rules. A workflow with no poll entry for that repo is refused with `no poll entry for <workflow> in <repo>`; it never falls back to another entry.
+- This is for a static poll config. A repo bound by a GitHub App installation and enabled with `turntable policy set --ingest on` has a single workflow in its settings. When a poll entry exists for the same repo, the entries win and the binding's settings are not used.
+
 ## Report results to GitHub as check runs
 
 With a GitHub App configured, the worker can report each job to GitHub as a check run on the run's head commit. It is off by default and set per project from the CLI only (no operation can change it, so an agent cannot turn it on):

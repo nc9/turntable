@@ -116,6 +116,14 @@ export const pollConfigSchema = z
             org: z.string().min(1).default("local"),
             project: z.string().min(1).default("local"),
             workflow: z.string().min(1).describe("Workflow path, e.g. .github/workflows/ci.yml"),
+            /**
+             * The primary workflow of this project's repo (#549): its jobs keep the plain check
+             * names (`turntable / <job>`), so required contexts never move. Any other workflow of
+             * the same repo posts `turntable / <workflow name> / <job>`. Exactly one entry per
+             * project and repo is primary; a single entry is primary by default, and with several
+             * and none marked the first one is.
+             */
+            primary: z.boolean().optional(),
             defaultBranch: z.string().min(1),
             /** Seconds between polls of this repo. 60 to 120 is the intended range. */
             intervalSeconds: z.int().min(30).max(3600).default(60),
@@ -184,6 +192,20 @@ export const pollConfigSchema = z
       .min(1),
   })
   .strict()
+  .superRefine((c, ctx) => {
+    const marked = new Map<string, number>();
+    c.repos.forEach((r, i) => {
+      if (r.primary !== true) return;
+      const key = primaryGroup(r);
+      if (marked.has(key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["repos", i, "primary"],
+          message: `two poll entries of ${r.repo} in project ${r.org}/${r.project} are marked primary (repos.${marked.get(key)} and repos.${i}); exactly one may be`,
+        });
+      } else marked.set(key, i);
+    });
+  })
   .refine((c) => c.tokenFile === undefined || c.tokenEnv === undefined, {
     path: ["tokenEnv"],
     message: "set only one of tokenFile and tokenEnv",
@@ -193,6 +215,29 @@ export const pollConfigSchema = z
     message:
       "required (polling must be authenticated): tokenFile or tokenEnv; set allowUnauthenticated to opt out",
   });
+
+type PrimaryKey = { org: string; project: string; repo: string };
+
+/** The entries one primary is chosen among: one project's entries for one repo. */
+function primaryGroup(r: PrimaryKey): string {
+  return `${r.org}\u0000${r.project}\u0000${r.repo.toLowerCase()}`;
+}
+
+/**
+ * Whether `entry` is the primary workflow of its project and repo: the one marked `primary`, else
+ * (none marked) the first entry of that group. A lone entry is primary. `all` is the static
+ * entries in file order.
+ */
+export function isPrimaryEntry(
+  all: readonly (PrimaryKey & { primary?: boolean | undefined })[],
+  entry: PrimaryKey & { primary?: boolean | undefined },
+): boolean {
+  const key = primaryGroup(entry);
+  const group = all.filter((r) => primaryGroup(r) === key);
+  if (group.length === 0) return true;
+  const marked = group.find((r) => r.primary === true);
+  return (marked ?? group[0]) === entry;
+}
 
 /**
  * What a project stores to have a repo ingested from its installation binding, with no entry in

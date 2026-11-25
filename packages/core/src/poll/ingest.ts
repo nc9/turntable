@@ -33,6 +33,7 @@ import {
   validateJobGraph,
 } from "../db/repos";
 import { assertRepoRelative, MAX_REPO_FILE_BYTES } from "../run/safe-read";
+import { checkScopeFor } from "../checks/mapping";
 import type { PollConfig, PollRepoConfig } from "./config";
 import { decideRun, type ForgePermission, needsApproval } from "../trust";
 import type { GithubClient, PullRequest, TagRuleset } from "./github";
@@ -1001,6 +1002,7 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
       ...(changedFiles ? { changedFiles } : {}),
     };
     const workflowName = describeWorkflow(yaml)?.name ?? undefined;
+    const scopeName = checkScopeFor(cfg.primary, cfg.workflow, workflowName);
     const githubExtra: Record<string, Value> = {
       sha: c.sha,
       ...(c.actor ? { actor: c.actor } : {}),
@@ -1164,6 +1166,8 @@ export async function pollRepo(deps: IngestDeps, cfg: PollRepoConfig): Promise<I
           // Jobs whose own steps check out the PR head: the demotion rule makes them untrusted.
           ...(headCheckoutJobs.length > 0 ? { headCheckouts: headCheckoutJobs } : {}),
           ...(wp.concurrency ? { concurrency: wp.concurrency } : {}),
+          // A non-primary workflow's checks are named under its own name (#549).
+          ...(scopeName ? { checkScope: scopeName } : {}),
         }),
         ...(group ? { concurrencyGroup: group } : {}),
         trust: JSON.stringify(decision),
