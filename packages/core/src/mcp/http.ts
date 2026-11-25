@@ -42,7 +42,13 @@ export function createMcpHttp(env: DispatchEnv): (req: Request) => Promise<Respo
       await authenticate(env, { kind: "bearer", token });
     } catch (err) {
       if (err instanceof OpError) {
-        return failure(err, { "www-authenticate": 'Bearer realm="turntable"' });
+        // RFC 6750: a token was sent and refused, so say so; a missing one carries no error.
+        return failure(
+          err,
+          err.code === "unauthenticated"
+            ? { "www-authenticate": 'Bearer realm="turntable", error="invalid_token"' }
+            : { "www-authenticate": 'Bearer realm="turntable"' },
+        );
       }
       throw err;
     }
