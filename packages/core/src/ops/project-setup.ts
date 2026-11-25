@@ -12,15 +12,17 @@ export type ProjectSetupFacts = {
   hasRuns: boolean;
   /** A repo of the project is bound through a GitHub App installation (what the sync does). */
   fromInstallation: boolean;
+  /** Someone added the project on purpose (`add_project`, `onboard_repos`). */
+  added: boolean;
 };
 
 /**
  * `available` only for a project the installation sync created and nobody set up. A project that
- * was made on purpose (no installation binding) is `active`, as is one with ingest on, a static
+ * was made on purpose (no installation binding, or added with `add_project`) is `active`, as is one with ingest on, a static
  * poll entry naming it, or any run.
  */
 export function projectSetup(f: ProjectSetupFacts): ProjectSetup {
-  if (!f.fromInstallation) return "active";
+  if (!f.fromInstallation || f.added) return "active";
   if (f.ingestConfig !== null && f.ingestConfig !== "") return "active";
   if (f.inStaticPoll || f.hasRuns) return "active";
   return "available";

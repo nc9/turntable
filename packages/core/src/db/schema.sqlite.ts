@@ -206,6 +206,12 @@ export const projects = sqliteTable(
     lastForgeRepoId: text("last_forge_repo_id"),
     unboundAt: integer("unbound_at", { mode: "number" }),
     /**
+     * When someone ADDED this project on purpose (`add_project`, `onboard_repos`). Null: made by
+     * installation sync before an add was a separate step (#577) or by another path. Marks the
+     * project as not prunable and as one a re-grant may re-attach.
+     */
+    addedAt: integer("added_at", { mode: "number" }),
+    /**
      * Who may approve a run held for an untrusted author: `human` (only an enrolled approver's
      * signature), `no_agents` (default: not over MCP, not with an agent token) or `any`. Raising
      * it to `any` is an instance-administrator act and is audited.

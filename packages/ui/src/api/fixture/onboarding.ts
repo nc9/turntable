@@ -127,6 +127,27 @@ export function createFixtureOnboarding(): OnboardingApi {
           paused: r.paused,
         }));
     },
+    async addProject({ repo }) {
+      const r = repos.find((x) => x.repo === repo);
+      if (!r)
+        throw new ApiError(400, "invalid_input", `${repo} is not reachable by this installation`);
+      const created = r.project === null;
+      r.project ??= repo.split("/")[1] as string;
+      r.status = "in_org";
+      return { project: r.project, repo, created, reattached: false };
+    },
+    async removeProject({ project, deleteHistory }) {
+      const r = repos.find((x) => x.project === project);
+      if (r) {
+        r.project = null;
+        r.status = "new";
+        r.mode = null;
+      }
+      return { project, unbound: r ? [r.repo] : [], deleted: deleteHistory === true };
+    },
+    async removeProjectChallenge() {
+      throw new ApiError(400, "unavailable", "The demo has no passkeys to confirm with.");
+    },
     async previewWorkflows() {
       return {
         sha: "0123456789abcdef0123456789abcdef01234567",

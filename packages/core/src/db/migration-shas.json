@@ -212,6 +212,10 @@
     {
       "tag": "0053_release_request_cosignatures",
       "sha256": "6970df8b52c5bdb977d6ab2e699162940277c46249f42f97962b32ac5d2444d3"
+    },
+    {
+      "tag": "0054_project_added_at",
+      "sha256": "5c49838f05c7173fd45254b5b0020800053316689a56c9d7dd2d754e35542756"
     }
   ],
   "pg": [
@@ -310,6 +314,10 @@
     {
       "tag": "0024_release_request_cosignatures",
       "sha256": "40908ec5092a6db606274c34167ddf1f3c6b8709737f334260b0e128ff9bd791"
+    },
+    {
+      "tag": "0025_project_added_at",
+      "sha256": "c719bac33ff18cafd0f3a1631074280e6da90beb620102368f417af369785c68"
     }
   ]
 }

@@ -824,6 +824,8 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       "onboarding_create_org",
       "start_installation_claim",
       "bind_installation",
+      "add_project", // owner or admin adds a repo as a project; the op's own `admin` role gates it
+      "remove_project", // owner or admin unbinds; delete_history also needs owner and a step-up
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
       "run_dispatch", // owner or admin starts a workflow_dispatch run; the op's release_operator role gates it (#617)

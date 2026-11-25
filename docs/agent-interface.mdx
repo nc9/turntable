@@ -72,6 +72,8 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `run_dispatch` | `POST /api/v1/dispatches` | yes |  | write | release_operator | token | Start a workflow_dispatch run of one workflow at a branch or tag. |
 | `list_installation_repos` | `GET /api/v1/installation-repos` | yes |  | read | reader | token | The repos a GitHub App installation grants, with their project, mode and paused state. |
 | `onboard_repos` | `POST /api/v1/onboard-repos` | no |  | write | admin | token | Turn CI on or off for a batch of an installation's repos, in one transaction. |
+| `add_project` | `POST /api/v1/projects` | no |  | write | admin | token | Add a repository an installation can reach as a project. |
+| `remove_project` | `POST /api/v1/remove-project` | no |  | write | admin | token | Stop using a project: unbind its repo and keep its history, or delete it. |
 | `preview_workflows` | `GET /api/v1/workflow-preview` | yes |  | read | reader | token | Dry-run Turntable's planner over a project's workflow files at the default branch. |
 | `run_default_branch` | `POST /api/v1/run-default-branch` | no |  | write | admin | token | Run CI once for the default branch's head, as a push run. |
 | `approve_run` | `POST /api/v1/runs/{run_id}/approve` | yes |  | write | operator (per org policy) | token | Approve a run held for an untrusted author, bound to its head sha and workflow hash. |
@@ -105,6 +107,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_bind_installation` | none | no |  | write | admin | instance | Bind a GitHub App installation to an org when its owner cannot claim it (instance administrator only). |
 | `instance_rotate_webhook_secret` | `POST /api/v1/app-secrets/webhook-secret/rotate` | no |  | write | owner | token | Rotate the GitHub App's webhook secret (instance administrator, passkey step-up). |
 | `instance_replace_app_private_key` | `POST /api/v1/app-secrets/private-key` | no |  | write | owner | token | Replace the GitHub App's private key (instance administrator, passkey step-up). |
+| `instance_prune_unconfigured_projects` | none | no |  | write | admin | instance | List or delete the projects an installation sync made that nobody set up (instance administrator only). |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
 | `instance_doctor` | none | no |  | read | admin | instance | The instance's readiness report, for the instance administrator. |
 | `instance_drain` | none | no |  | write | admin | instance | Stop starting new attempts so a deploy does not cut running jobs (instance administrator). |

@@ -104,9 +104,6 @@ export class ClaimError extends Error {
 export const POPUP_NONCE_PREFIX = "popup.";
 export const isPopupClaim = (nonce: string): boolean => nonce.startsWith(POPUP_NONCE_PREFIX);
 
-/** `max_concurrent` of a project a popup claim creates: paused until onboarding enables it. */
-export const POPUP_NEW_PROJECT_MAX_CONCURRENT = 0;
-
 /** An installation a GitHub user can reach, with the account it is on. */
 export interface UserInstallation {
   id: string;
@@ -483,11 +480,6 @@ export class InstallationClaims {
     try {
       r = await syncInstallation(this.#o.db, facts, q.installationId, {
         claimedBy: st.o,
-        // A popup claim belongs to onboarding: what it creates waits, paused, for the person to
-        // pick repos. The configure-page claim and the hosted claim link keep their behavior.
-        ...(isPopupClaim(st.n)
-          ? { newProjectMaxConcurrent: POPUP_NEW_PROJECT_MAX_CONCURRENT }
-          : {}),
       });
     } catch (e) {
       throw new ClaimError(409, e instanceof Error ? e.message : "could not bind the installation");
