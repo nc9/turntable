@@ -15,6 +15,8 @@ export interface Layout {
   outputsDir: string;
   /** The event payload act reads with --eventpath, when the plan has one. */
   eventFile: string;
+  /** The run's `vars.*` act reads with --var-file (0600), when the plan has any. */
+  varsFile: string;
 }
 
 export function layoutFor(root: string = DEFAULT_ROOT): Layout {
@@ -28,5 +30,6 @@ export function layoutFor(root: string = DEFAULT_ROOT): Layout {
     shims: `${root}/shims`,
     outputsDir: `${root}/outputs`,
     eventFile: `${root}/event.json`,
+    varsFile: `${root}/job.vars`,
   };
 }

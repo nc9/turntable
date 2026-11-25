@@ -664,6 +664,7 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
                 readFile: checkout.readFile,
                 split: true,
                 failOnLint,
+                ...(planned.vars ? { vars: planned.vars } : {}),
                 ...(docker ? { docker } : {}),
                 eventPayload: buildActEvent(dbRun),
                 ...root,

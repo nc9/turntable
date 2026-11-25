@@ -109,6 +109,11 @@ export interface PlannedJob {
   shard?: { index: number; total: number; partition: string[][] };
   /** The job's `runs-on` labels, interpolated at plan time. The operator's sandbox size map reads these. */
   runsOn?: string[];
+  /**
+   * The run's `vars.*` the planner evaluated with, as strings. Stored with the job so act is given
+   * the same values (see JobPlan.vars) and a resumed job uses what was stored, not a fresh read.
+   */
+  vars?: Record<string, string>;
 }
 
 /**
@@ -603,6 +608,13 @@ export function planWorkflow(
         outputs,
         // Shards of one job always all run: the workflow's own steps run every suite even when
         // one is red, and the job's result is the fold of the shards.
+        ...(Object.keys(opts.vars ?? {}).length > 0
+          ? {
+              vars: Object.fromEntries(
+                Object.entries(opts.vars ?? {}).map(([k, v]) => [k, String(v)]),
+              ),
+            }
+          : {}),
         failFast: rule ? false : failFast,
         ...(rule
           ? {
