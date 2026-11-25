@@ -64,6 +64,31 @@ export const stepUpInputSchema = z
 export type StepUpInput = z.infer<typeof stepUpInputSchema>;
 
 /**
+ * The release lane's configuration writes (#541). The lane decides where signed bytes go, so only
+ * a signed-in WEB SESSION of an owner of the operator org (the org that owns the GitHub App, the
+ * bootstrap org) may change it, and only with a fresh passkey step-up in that org. A `tti_`
+ * instance token, an org token and MCP are all refused (see `laneGate` in dispatch.ts).
+ */
+export const LANE_CONFIG_WRITE_OPS: ReadonlySet<string> = new Set([
+  "release_pin_repo",
+  "release_publish_target_set",
+  "release_publish_target_delete",
+  "release_secret_set",
+  "release_init_key",
+  "release_set_project_signing",
+  "release_cosign_key_set",
+  "release_cosign_key_remove",
+]);
+
+/** The lane's configuration reads: the same credential, no step-up. */
+export const LANE_CONFIG_READ_OPS: ReadonlySet<string> = new Set([
+  "release_publish_target_list",
+  "release_key_show",
+  "release_secret_status",
+  "release_cosign_key_list",
+]);
+
+/**
  * The ops a session may call with a step-up. The step-up binds the op name AND a hash of its
  * exact validated input and project scope (`inputTarget`), so a step-up for one request cannot
  * authorize a different one of the same op (a reader token's step-up never mints a
@@ -74,7 +99,14 @@ export const SESSION_STEP_UP_OPS: ReadonlySet<string> = new Set([
   "invite_member",
   // Only for loosening a trust setting; the settings guard requires it then and no other time.
   "set_setting",
+  ...LANE_CONFIG_WRITE_OPS,
+  // The GitHub App's webhook secret and private key (#586): an owner of the operator org only.
+  "instance_rotate_webhook_secret",
+  "instance_replace_app_private_key",
 ]);
+
+/** The principal a step-up challenge row is issued to. */
+export const stepUpHolder = (id: string): string => `session:${id}`;
 
 /** The target a step-up binds for a call: sha256 of the canonical validated input plus project scope. */
 export function inputTarget(input: Record<string, unknown>, projectId: string | undefined): string {
@@ -153,6 +185,7 @@ export async function verifyStepUp(
     now: number;
     orgId: string;
     sessionHash: string | undefined;
+    /** The person's user id. */
     userId: string;
     action: string;
     target: string | undefined;

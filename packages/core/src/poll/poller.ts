@@ -110,6 +110,7 @@ export class Poller {
   #installs = new Map<string, string>();
   /** When a mint failure was last logged, per repo: one warning per interval. */
   readonly #mintWarned = new Map<string, number>();
+  readonly #anonCancelNoted = new Set<string>();
   readonly #tagCaches = newTagCaches();
   readonly #busy = new Set<string>();
   readonly #again = new Set<string>();
@@ -491,7 +492,7 @@ export class Poller {
     repo: string | undefined,
   ): Promise<DefaultBranchRunResult> {
     const configured = await this.#projectCfg(scope, repo);
-    const { github } = await this.#clientFor(configured);
+    const { github, mode } = await this.#clientFor(configured);
     const eff = this.#effective.get(configured.repo.toLowerCase());
     const cfg = eff ? { ...configured, repo: eff } : configured;
     const head = await github.branchHead(cfg.repo, cfg.defaultBranch);
@@ -518,6 +519,7 @@ export class Poller {
         db: this.#o.db,
         github,
         provider: this.#o.config.provider,
+        authMode: mode,
         ...(this.#o.now ? { now: this.#o.now } : {}),
         ...(this.#o.log ? { log: this.#o.log } : {}),
       },
@@ -653,6 +655,10 @@ export class Poller {
 
     const { github, mode } = await this.#clientFor(cfg);
     status.authMode = mode;
+    if (mode === "anonymous" && !this.#anonCancelNoted.has(repo)) {
+      this.#anonCancelNoted.add(repo);
+      log(`poll ${repo}: anonymous poll, the closed-PR cancel check is skipped`);
+    }
 
     const finish = (
       outcome: RepoStatus["lastOutcome"],
@@ -698,6 +704,7 @@ export class Poller {
             provider: this.#o.config.provider,
             overCap: this.#overCap,
             tagCaches: this.#tagCaches,
+            authMode: mode,
             ...(this.#o.now ? { now: this.#o.now } : {}),
             log,
           },

@@ -346,22 +346,15 @@ export async function showChecksMode(
 }
 
 /**
- * Sets how a project signs releases: the ref patterns that count as a release and the key to sign
- * with. Without --project, every project of the org. A key reference is `builtin:<name>`,
- * `aws-kms:<key id or ARN>` or `gcp-kms:<key version name>`.
+ * The validation of a project's signing settings, shared by the CLI (`policy set --signing-key`,
+ * `--signing-environment`, `--release-refs`) and the release_set_project_signing op. Throws an
+ * Error naming the flag; an empty signing key clears it.
  */
-export async function setSigningPolicy(
-  db: Db,
-  orgSlug: string,
-  projectSlug: string | undefined,
-  patch: {
-    releaseRefs?: string[] | undefined;
-    signingKey?: string | undefined;
-    environment?: string | undefined;
-  },
-): Promise<
-  { project: string; releaseRefs: string[]; signingKey: string | null; environment: string }[]
-> {
+export async function validateSigningPatch(patch: {
+  releaseRefs?: string[] | undefined;
+  signingKey?: string | undefined;
+  environment?: string | undefined;
+}): Promise<void> {
   const { parseKeyRef } = await import("../signing");
   if (patch.signingKey !== undefined && patch.signingKey !== "" && !parseKeyRef(patch.signingKey)) {
     throw new Error("--signing-key must be builtin:<name>, aws-kms:<key> or gcp-kms:<key version>");
@@ -382,6 +375,26 @@ export async function setSigningPolicy(
       throw new Error(`--release-refs entry ${r} must be a refs/heads/ or refs/tags/ pattern`);
     }
   }
+}
+
+/**
+ * Sets how a project signs releases: the ref patterns that count as a release and the key to sign
+ * with. Without --project, every project of the org. A key reference is `builtin:<name>`,
+ * `aws-kms:<key id or ARN>` or `gcp-kms:<key version name>`.
+ */
+export async function setSigningPolicy(
+  db: Db,
+  orgSlug: string,
+  projectSlug: string | undefined,
+  patch: {
+    releaseRefs?: string[] | undefined;
+    signingKey?: string | undefined;
+    environment?: string | undefined;
+  },
+): Promise<
+  { project: string; releaseRefs: string[]; signingKey: string | null; environment: string }[]
+> {
+  await validateSigningPatch(patch);
   const org = await orgOf(db, orgSlug);
   const projects = projectSlug
     ? [await getProjectBySlug(db, { orgId: org.id }, projectSlug)]

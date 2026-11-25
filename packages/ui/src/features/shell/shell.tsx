@@ -13,11 +13,14 @@ import {
   Wifi,
   WifiOff,
   ChartColumn,
+  PackageCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { IncidentBanner } from "./incident-banner";
+import { useWhoami } from "@/lib/directory";
+import { canConfigureLane } from "@/lib/release-lane";
 import { ApprovalNotifyBanner, useApprovalNotifications } from "./approval-notifications";
 import { NotificationBell } from "./notification-bell";
 import {
@@ -102,6 +105,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const scope = useScope();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const { orgSlug, projectSlug } = scope;
+  const who = useWhoami();
   if (!orgSlug) return null;
   const base = `/${orgSlug}`;
   return (
@@ -161,6 +165,17 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         >
           Org settings
         </NavLink>
+        {canConfigureLane(who.data ?? undefined) && who.data?.org === orgSlug ? (
+          <NavLink
+            to="/$org/-/release-lane"
+            params={{ org: orgSlug }}
+            icon={<PackageCheck />}
+            active={path === `${base}/-/release-lane`}
+            {...(onNavigate ? { onNavigate } : {})}
+          >
+            Release lane
+          </NavLink>
+        ) : null}
       </div>
       <div className="flex flex-col gap-0.5">
         <p className="px-2 pb-1 text-xs text-faint">Projects</p>

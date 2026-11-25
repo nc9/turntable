@@ -137,6 +137,7 @@ export type WireWhoami = {
   org: string;
   project: string | null;
   expires_at: string | null;
+  operator_org: boolean;
 };
 
 export type WireOrgs = {

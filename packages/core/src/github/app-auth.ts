@@ -30,6 +30,32 @@ export interface TokenScope {
   permissions?: Readonly<Record<string, "read" | "write">>;
 }
 
+/** A scoped mint asked for a permission the installation has not accepted (GitHub would answer 422). */
+export class PermissionNotAcceptedError extends Error {
+  readonly missing: readonly string[];
+  constructor(missing: readonly string[]) {
+    super(
+      `the installation has not accepted ${missing.join(", ")}: an owner must accept the App's new permissions on GitHub`,
+    );
+    this.name = "PermissionNotAcceptedError";
+    this.missing = missing;
+  }
+}
+
+/** The requested permissions an accepted set does not cover (a write request needs write). */
+export function missingPermissions(
+  accepted: Readonly<Record<string, string>>,
+  wanted: Readonly<Record<string, string>>,
+): string[] {
+  return Object.entries(wanted)
+    .filter(([k, level]) => {
+      const have = accepted[k];
+      return have === undefined || (level === "write" && have !== "write");
+    })
+    .map(([k, level]) => `${k}:${level}`)
+    .toSorted();
+}
+
 export interface MintedToken {
   token: string;
   expiresAt: number;
@@ -44,6 +70,9 @@ export interface AppAuthOptions {
   now?: () => number;
 }
 
+/** How long an installation's accepted permission set is trusted before it is read again. */
+const ACCEPTED_TTL_MS = 5 * 60_000;
+
 /** Refresh when fewer than this many ms of life remain. */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 
@@ -55,6 +84,7 @@ export const REFRESH_MARGIN_MS = 5 * 60_000;
 export class AppAuth {
   readonly #o: AppAuthOptions;
   readonly #cache = new Map<string, MintedToken>();
+  readonly #accepted = new Map<string, { at: number; perms: Readonly<Record<string, string>> }>();
 
   constructor(o: AppAuthOptions) {
     this.#o = o;
@@ -67,8 +97,58 @@ export class AppAuth {
     return n;
   }
 
+  /**
+   * Fails with a clear error when the installation has not accepted a requested permission. The
+   * accepted set is read from GitHub and cached per installation for five minutes; a cached
+   * "missing" is re-read once before it is believed, so an owner's acceptance takes effect at
+   * once. When the set cannot be read, the mint goes ahead and GitHub is the check.
+   */
+  async #checkAccepted(installationId: string, scope: TokenScope): Promise<void> {
+    if (!scope.permissions || Object.keys(scope.permissions).length === 0) return;
+    const now = (this.#o.now ?? Date.now)();
+    const hit = this.#accepted.get(installationId);
+    if (hit && now - hit.at < ACCEPTED_TTL_MS) {
+      if (missingPermissions(hit.perms, scope.permissions).length === 0) return;
+    }
+    let perms: Readonly<Record<string, string>> | undefined;
+    try {
+      perms = await this.#readAccepted(installationId);
+    } catch {
+      return;
+    }
+    if (!perms) return;
+    this.#accepted.set(installationId, { at: now, perms });
+    const missing = missingPermissions(perms, scope.permissions);
+    if (missing.length > 0) throw new PermissionNotAcceptedError(missing);
+  }
+
+  async #readAccepted(
+    installationId: string,
+  ): Promise<Readonly<Record<string, string>> | undefined> {
+    const res = await (this.#o.fetch ?? safeFetch)(
+      `${this.apiBase}/app/installations/${encodeURIComponent(installationId)}`,
+      { headers: this.#headers(await this.appJwt()), signal: AbortSignal.timeout(30_000) },
+    );
+    if (!res.ok) return undefined;
+    const json = (await res.json()) as { permissions?: unknown };
+    const p = json.permissions;
+    return p && typeof p === "object" && !Array.isArray(p)
+      ? (p as Record<string, string>)
+      : undefined;
+  }
+
   get apiBase(): string {
     return this.#o.apiBase ?? "https://api.github.com";
+  }
+
+  /** The fetch this minter uses, so a caller that talks to GitHub as the App goes the same way. */
+  get fetcher(): SafeFetch {
+    return this.#o.fetch ?? safeFetch;
+  }
+
+  /** The current App's id and private key, as the minter reads them. */
+  async credentials(): Promise<{ appId: string; pem: string }> {
+    return this.#credentials();
   }
 
   async #credentials(): Promise<{ appId: string; pem: string }> {
@@ -99,6 +179,7 @@ export class AppAuth {
    * job and another job cannot be handed it. Callers revoke it when they are done.
    */
   async mintFresh(installationId: string, scope: TokenScope = {}): Promise<MintedToken> {
+    await this.#checkAccepted(installationId, scope);
     const body: Record<string, unknown> = {};
     if (scope.repositories) body.repositories = [...scope.repositories];
     if (scope.permissions) body.permissions = scope.permissions;
@@ -155,6 +236,7 @@ export class AppAuth {
     const hit = this.#cache.get(key);
     if (hit && hit.expiresAt - REFRESH_MARGIN_MS > now) return hit;
 
+    await this.#checkAccepted(installationId, scope);
     const body: Record<string, unknown> = {};
     if (scope.repositories) body.repositories = [...scope.repositories];
     if (scope.permissions) body.permissions = scope.permissions;

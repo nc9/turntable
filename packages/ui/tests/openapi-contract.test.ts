@@ -228,6 +228,7 @@ test("whoami, list_orgs and list_projects", () => {
       org: true,
       project: true,
       expires_at: true,
+      operator_org: true,
     }),
   );
   const orgs = ok(op("/orgs", "get"));

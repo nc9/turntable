@@ -4,7 +4,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
+  addMember,
   bindRepo,
+  createUser,
   createOrg,
   createProject,
   getRun,
@@ -611,5 +613,64 @@ describe("release approval binds the dispatched sha's workflow", () => {
     const good = await approve(two, h2);
     if (!good.ok) throw new Error(`${good.error.code}: ${good.error.message}`);
     expect((await getRun(db, w.a.scope, two.run_id))!.status).not.toBe("awaiting_approval");
+  });
+});
+
+describe("a web session (#617)", () => {
+  // A fake session store: the cookie names a user, and the membership row gives the role.
+  async function sessionFor(w: Awaited<ReturnType<typeof world>>, role: s.MemberRole) {
+    const user = await createUser(db, { displayName: `u-${role}` });
+    await addMember(db, { orgId: w.a.scope.orgId }, { userId: user.id, role });
+    const env = {
+      ...w.env,
+      sessions: { resolve: async () => ({ userId: user.id, hash: `h-${role}` }) },
+    } as unknown as typeof w.env;
+    return (input: Record<string, unknown>) =>
+      dispatch(env, { kind: "session", cookie: "c" }, "run_dispatch", {
+        org: w.a.org,
+        project: "app",
+        workflow: ".github/workflows/release.yml",
+        ref: "main",
+        ...input,
+      });
+  }
+
+  test("an owner and an admin dispatch with choice and boolean inputs, no step-up", async () => {
+    const w = await world();
+    for (const role of ["owner", "admin"] as const) {
+      const run = await sessionFor(w, role);
+      const res = await run({ inputs: { version: "1.0", channel: "beta", dry_run: "true" } });
+      if (!res.ok) throw new Error(`${res.error.code}: ${res.error.message}`);
+      const out = res.output as { run_id: string; input_names: string[] };
+      expect(out.input_names).toContain("channel");
+      const plan = JSON.parse((await getRun(db, w.a.scope, out.run_id))!.plan!);
+      expect(plan.inputs.channel).toBe("beta");
+      expect(plan.inputs.dry_run).toBe(true);
+    }
+  });
+
+  test("a bad choice is refused for a session as for a token", async () => {
+    const w = await world();
+    const run = await sessionFor(w, "owner");
+    const res = await run({ inputs: { version: "1", channel: "nope" } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe("invalid_input");
+  });
+
+  test("a member and a viewer are refused by role, and nothing is created", async () => {
+    const w = await world();
+    for (const role of ["member", "viewer"] as const) {
+      const res = await (await sessionFor(w, role))({ inputs: { version: "1" } });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe("forbidden");
+    }
+    expect(await listRuns(db, w.a.scope, { limit: 10 })).toEqual([]);
+  });
+
+  test("a release tag dispatched by an owner session is held for approval", async () => {
+    const w = await world({ tagRefs: ["refs/tags/v*"] });
+    const res = await (await sessionFor(w, "owner"))({ ref: "v1.0.0", inputs: { version: "1" } });
+    if (!res.ok) throw new Error(`${res.error.code}: ${res.error.message}`);
+    expect(res.output).toMatchObject({ trust_class: "release", state: "awaiting_approval" });
   });
 });

@@ -16,6 +16,7 @@ import {
   notInArray,
   sql,
 } from "drizzle-orm";
+import { retryableAfterSteps } from "@turntable/act-runner";
 import type { Db } from "..";
 import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
@@ -23,6 +24,7 @@ import * as s from "../schema";
 import {
   appendLog,
   createAttempt,
+  getJob,
   getRun,
   listAttempts,
   type Job,
@@ -216,7 +218,9 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     const pass = async (
       klass: "all" | "normal" | "yield",
       probe: boolean,
-    ): Promise<Claim | { blockedOrg: string } | undefined> => {
+    ): Promise<Claim | { blockedOrgs: string[] } | undefined> => {
+      // A probe collects the first claimable-but-for-room attempt of each org, in claim order.
+      const hits: string[] = [];
       const classFilter =
         klass === "all" || yieldIds.size === 0
           ? []
@@ -359,7 +363,11 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
                 if (legsRunning >= planned.maxParallel) continue;
               }
             }
-            if (probe) return { blockedOrg: orgId };
+            if (probe) {
+              hits.push(orgId);
+              open.delete(orgId);
+              break;
+            }
             const claimed = await tx.orm
               .update(s.jobAttempts)
               .set({ leaseOwner: o.owner, leaseExpiresAt: o.now + o.leaseMs, heartbeatAt: o.now })
@@ -385,7 +393,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           }
         }
       }
-      return undefined;
+      return probe && hits.length > 0 ? { blockedOrgs: hits } : undefined;
     };
 
     if (yieldIds.size === 0) return (await pass("all", false)) as Claim | undefined;
@@ -394,22 +402,26 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     // Nothing normal could be claimed. If a normal attempt waits only for room, free a slot by
     // preempting the newest yield attempt holding one, then claim for the waiting attempt. One
     // victim per call, so a fan-out of waiting normal attempts preempts one yield attempt each.
-    const blocked = await pass("normal", true);
-    const orgFull =
-      blocked !== undefined &&
-      "blockedOrg" in blocked &&
-      (perOrg.get(blocked.blockedOrg) ?? 0) >= capOf(blocked.blockedOrg);
-    // Preempt only when a cap is actually full. Normal work that is claimable with room under
-    // both caps (or that lost a claim race) must take no yield attempt's slot.
-    if (blocked && "blockedOrg" in blocked && (orgFull || total >= o.globalCap)) {
-      const victim = await newestYieldAttempt(tx, yieldIds, {
-        ...(orgFull ? { orgId: blocked.blockedOrg } : {}),
-        ...(o.onlyRun ? { onlyRun: o.onlyRun } : {}),
-        limit: o.preemptLimit ?? DEFAULT_PREEMPT_LIMIT,
-        now: o.now,
-      });
-      if (victim) {
-        await preemptAttempt(tx, victim, blocked.blockedOrg, o.now);
+    const probed = await pass("normal", true);
+    // Each candidate is one that nothing but a full cap holds back (the probe skips project caps,
+    // freezes, quota holds, gates and groups). A preemption is made only for a candidate it lets
+    // start: after the victim leaves, both the global cap and the candidate's org cap have room.
+    // The first candidate with a fitting victim wins, so one that cannot be helped (its org is
+    // full of normal work) never masks another that can.
+    if (probed && "blockedOrgs" in probed) {
+      for (const orgId of probed.blockedOrgs) {
+        const orgFull = (perOrg.get(orgId) ?? 0) >= capOf(orgId);
+        if (!orgFull && total < o.globalCap) continue; // lost a claim race: no cap to relieve
+        const victim = await newestYieldAttempt(tx, yieldIds, {
+          ...(orgFull ? { orgId } : {}),
+          ...(o.onlyRun ? { onlyRun: o.onlyRun } : {}),
+          limit: o.preemptLimit ?? DEFAULT_PREEMPT_LIMIT,
+          now: o.now,
+        });
+        if (!victim) continue;
+        const orgAfter = (perOrg.get(orgId) ?? 0) - (victim.orgId === orgId ? 1 : 0);
+        if (total - 1 >= o.globalCap || orgAfter >= capOf(orgId)) continue; // would not make room
+        await preemptAttempt(tx, victim, orgId, o.now);
         // The slot is free for the claim below: update the counts read at the start.
         total--;
         perOrg.set(victim.orgId, (perOrg.get(victim.orgId) ?? 1) - 1);
@@ -419,6 +431,11 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     return (await pass("yield", false)) as Claim | undefined;
   });
 }
+
+/** Trust classes that pass `retryableAfterSteps`, as a list for the victim query. */
+const RETRYABLE_CLASSES: string[] = ["trusted_pr", "untrusted_pr", "protected", "release"].filter(
+  retryableAfterSteps,
+);
 
 /** The attempt error class of a preempted attempt: requeued, never a failure. */
 export const PREEMPTED = "preempted";
@@ -463,6 +480,8 @@ async function newestYieldAttempt(
       and(
         eq(s.jobAttempts.state, "running"),
         inArray(s.jobAttempts.projectId, [...yieldIds]),
+        // Only a class that is safe to rerun (#565); an unrecorded class is never a victim.
+        inArray(s.jobAttempts.trustClass, RETRYABLE_CLASSES),
         within.orgId ? eq(s.jobAttempts.orgId, within.orgId) : undefined,
         within.onlyRun ? eq(s.jobs.runId, within.onlyRun) : eq(s.runs.local, false),
         spent.length > 0
@@ -799,12 +818,35 @@ export function markDrainCut(
 }
 
 /**
+ * The reason a drain-cut attempt ends with when it is not requeued because steps may have run for
+ * a protected or release job (#565). Exact text: a deploy note greps for it.
+ */
+export const DRAIN_CUT_NOT_RETRIED =
+  "cut by a drain after steps started; not retried for a protected or release job: rerun it by hand";
+
+export type RequeueLostResult = "requeued" | "not_retried" | "no";
+
+/**
  * A job whose controller vanished after a drain timeout cut it (`markDrainCut`) is requeued ONCE
  * as an infra error: the lost attempt ends `infra_error` (never `failure`), the job goes back to
  * `queued` with a NEW attempt and no rerun reason (it uses none of the commit's reruns). A job
  * that already lost an attempt this way is left to the caller, which finishes it as `infra_error`.
  * Fenced like `finishAttempt`: only a still-running attempt whose lease expired before `now`.
- * Returns true when it requeued.
+ *
+ * The requeue follows the infra-retry rule (#565), failing safe: only when the attempt's recorded
+ * trust class passes `retryableAfterSteps`, or act provably never ran. A step row is NOT proof that
+ * no step ran: it is written when the controller reads act's step-start event, so it lags the
+ * sandbox, and a drain cut is exactly when the controller vanished. So the exec rule is: no step
+ * row with `started_at` AND no `exec_id` AND no `sandbox_id`. The runner records `sandbox_id`
+ * (awaited) before it uploads anything or starts act, and records `exec_id` only AFTER
+ * `exec.start` returned, so a NULL `exec_id` alone would not prove act never started; a NULL
+ * `sandbox_id` does (the cut came while the sandbox was being created). Otherwise a protected or
+ * release job may have deployed or published, so nothing is changed except an
+ * `attempt.drain_cut_not_retried` event and audit entry, and "not_retried" is returned: the
+ * caller ends the attempt `infra_error` with `DRAIN_CUT_NOT_RETRIED`. An attempt with no recorded
+ * class counts as not a pull request.
+ *
+ * Returns "requeued", "not_retried" (see above) or "no" (not eligible: the caller finishes it).
  */
 export function requeueLostAttemptOnce(
   db: Db,
@@ -820,9 +862,11 @@ export function requeueLostAttemptOnce(
      * stopped the sandbox.
      */
     requireExpired?: boolean;
+    /** The trust-class half of the rule: `retryableAfterSteps` from `@turntable/act-runner`. */
+    retryableAfterSteps: (trustClass: string | null) => boolean;
   },
-): Promise<boolean> {
-  return db.transaction(async (tx) => {
+): Promise<RequeueLostResult> {
+  return db.transaction(async (tx): Promise<RequeueLostResult> => {
     const [cur] = await tx.orm
       .select()
       .from(s.jobAttempts)
@@ -834,18 +878,65 @@ export function requeueLostAttemptOnce(
         ),
       )
       .limit(1);
-    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return false;
+    if (!cur || cur.state !== "running" || cur.leaseOwner !== input.owner) return "no";
     if (
       input.requireExpired !== false &&
       (cur.leaseExpiresAt === null || cur.leaseExpiresAt >= input.now)
     ) {
-      return false;
+      return "no";
     }
-    if (cur.errorClass !== DRAIN_CUT) return false;
+    if (cur.errorClass !== DRAIN_CUT) return "no";
     const earlier = (await listAttempts(tx, scope, cur.jobId)).filter(
       (a) => a.id !== cur.id && a.errorClass?.startsWith(CONTROLLER_LOST),
     );
-    if (earlier.length > 0) return false;
+    if (earlier.length > 0) return "no";
+    if (!input.retryableAfterSteps(cur.trustClass)) {
+      const launched = cur.sandboxId !== null || cur.execId !== null;
+      const [started] = launched
+        ? [{ stepKey: "" }]
+        : await tx.orm
+            .select({ stepKey: s.attemptSteps.stepKey })
+            .from(s.attemptSteps)
+            .where(
+              scoped(
+                scope,
+                { orgId: s.attemptSteps.orgId, projectId: s.attemptSteps.projectId },
+                and(eq(s.attemptSteps.attemptId, cur.id), isNotNull(s.attemptSteps.startedAt)),
+              ),
+            )
+            .limit(1);
+      if (started) {
+        const job = await getJob(tx, scope, cur.jobId);
+        await appendEvent(tx, scope, {
+          type: "attempt.drain_cut_not_retried",
+          runId: job?.runId,
+          jobId: cur.jobId,
+          attemptId: cur.id,
+          payload: {
+            attempt_id: cur.id,
+            job_id: cur.jobId,
+            org_id: scope.orgId,
+            project_id: scope.projectId ?? null,
+            trust_class: cur.trustClass ?? null,
+          },
+        });
+        await appendAudit(tx, scope, {
+          principalKind: "system",
+          principalId: "scheduler",
+          op: "attempt.drain_cut_not_retried",
+          effect: "write",
+          outcome: "ok",
+          input: {
+            attempt_id: cur.id,
+            job_id: cur.jobId,
+            org_id: scope.orgId,
+            project_id: scope.projectId ?? null,
+            at: input.now,
+          },
+        });
+        return "not_retried";
+      }
+    }
     await updateAttempt(tx, scope, cur.id, {
       state: "infra_error",
       errorClass: input.errorClass,
@@ -869,7 +960,7 @@ export function requeueLostAttemptOnce(
       outcome: "ok",
       input: { attempt_id: cur.id, job_id: cur.jobId, at: input.now },
     });
-    return true;
+    return "requeued";
   });
 }
 

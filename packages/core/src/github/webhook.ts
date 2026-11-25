@@ -30,7 +30,9 @@ import { clientAddress, parseTrustedProxies, type TrustedProxies } from "./trust
 export const WEBHOOK_PATH = "/api/v1/webhooks/github";
 /** GitHub's maximum webhook payload. */
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;
-const RETENTION_MS = 30 * 86_400_000;
+/** Deliveries are kept 14 days or this many rows, whichever is smaller. */
+const RETENTION_MS = 14 * 86_400_000;
+export const MAX_DELIVERY_ROWS = 50_000;
 const HANDLED = new Set(["installation", "installation_repositories"]);
 /**
  * Events that only wake the poller for the repo they name. A webhook never creates a run and never
@@ -267,7 +269,7 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
       sinceLastPurge += 1;
       if (sinceLastPurge >= 100) {
         sinceLastPurge = 0;
-        void purgeDeliveries(o.db, now() - RETENTION_MS);
+        void purgeDeliveries(o.db, now() - RETENTION_MS, MAX_DELIVERY_ROWS);
       }
       if (handled) track(delivery);
       const repo = payload.repository?.full_name;

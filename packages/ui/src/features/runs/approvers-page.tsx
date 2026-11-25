@@ -10,7 +10,9 @@ import { useScope } from "@/features/shell/scope";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { useAsync } from "@/lib/use-async";
 import { createPasskey, signWithPasskey, webauthnAvailable } from "@/lib/webauthn";
+import { LOGIN_PATH, useSession } from "@/lib/session";
 import { sanitize } from "@/log/parser";
+import { ApiError } from "@/api/http-adapter";
 
 /** Approver keys, the approval policy, and enrolling a new passkey (which needs a quorum). */
 export function ApproversPage() {
@@ -26,6 +28,11 @@ export function ApproversPage() {
   const [kpYubikey, setKpYubikey] = useState<boolean | null>(null);
   const [kpAaguids, setKpAaguids] = useState<string | null>(null);
   const [kpSigner, setKpSigner] = useState("");
+  const session = useSession();
+  const isOwner =
+    session.status === "signed-in" &&
+    session.orgs.some((o) => o.slug === scope.orgSlug && o.role === "owner");
+  const [needSignIn, setNeedSignIn] = useState(false);
   const simulated = api.capabilities.simulatedCeremony;
   const canCeremony = simulated || webauthnAvailable();
 
@@ -115,6 +122,29 @@ export function ApproversPage() {
       return `Requested. It becomes an approver when ${r.required} existing ${r.required === 1 ? "approver signs" : "approvers sign"} it.`;
     });
 
+  // The org's first approver, self-serve (#587): an owner's session, a GitHub sign-in under ten
+  // minutes old. A stale sign-in sends the person through GitHub again.
+  const enrolFirst = () =>
+    run(async () => {
+      try {
+        const rc = await api.firstApproverChallenge();
+        const person = session.login ?? "owner";
+        const created = simulated
+          ? { clientDataJson: "fixture", attestationObject: "fixture" }
+          : await createPasskey({
+              challenge: rc.challenge,
+              rpId: rc.rpId,
+              person,
+              attestation: rc.attestation,
+            });
+        await api.enrolFirstApprover({ webauthn: { challenge: rc.challenge, ...created } });
+        return "Your passkey is enrolled as the first approver. New keys now need a quorum of approvers.";
+      } catch (e) {
+        if (e instanceof ApiError && e.reason === "fresh_sign_in_required") setNeedSignIn(true);
+        throw e;
+      }
+    });
+
   const approveEnrolment = (enrolmentId: string) =>
     run(async () => {
       const approverId = signer[enrolmentId];
@@ -169,11 +199,30 @@ export function ApproversPage() {
           Enrolled keys
         </h2>
         {d.approvers.length === 0 ? (
-          <p className="rounded-xl border border-line p-4 text-sm text-dim">
-            No approver is enrolled. The first one is enrolled from the server:{" "}
-            <code className="font-mono text-xs">turntable approvals bootstrap</code>. After that,
-            new keys need a quorum of existing approvers.
-          </p>
+          <div className="space-y-3 rounded-xl border border-line p-4 text-sm text-dim">
+            <p>
+              No approver is enrolled.{" "}
+              {isOwner
+                ? "As an owner of this org you can enrol your own passkey as the first approver. After that, new keys need a quorum of existing approvers."
+                : "An owner of this org enrols the first approver with a passkey on this page. After that, new keys need a quorum of existing approvers. On a self-hosted server it can also be enrolled from the server's CLI (turntable approvals bootstrap)."}
+            </p>
+            {isOwner ? (
+              needSignIn ? (
+                <p>
+                  Enrolling the first approver needs a GitHub sign-in from the last 10 minutes.{" "}
+                  <a href={LOGIN_PATH} className="font-medium text-fg underline underline-offset-4">
+                    Sign in with GitHub again
+                  </a>
+                  , then come back to this page.
+                </p>
+              ) : (
+                <Button type="button" disabled={busy || !canCeremony} onClick={enrolFirst}>
+                  <KeyRound className="size-4" aria-hidden="true" />
+                  Enrol as first approver
+                </Button>
+              )
+            ) : null}
+          </div>
         ) : (
           <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
             {d.approvers.map((a) => (

@@ -53,7 +53,13 @@ async function delivered(): Promise<{ dir: string; shas: string[] }> {
 /** Runs the stub's script the way act would: inputs as env, a fresh workspace. */
 async function checkout(
   repo: string,
-  inputs: { path?: string; ref?: string; depth?: string; submodules?: string } = {},
+  inputs: {
+    path?: string;
+    ref?: string;
+    depth?: string;
+    submodules?: string;
+    repository?: string;
+  } = {},
 ) {
   const ws = join(tmp, `ws-${++n}`);
   mkdirSync(ws, { recursive: true });
@@ -67,6 +73,7 @@ async function checkout(
     TT_REF: inputs.ref ?? "",
     TT_FETCH_DEPTH: inputs.depth ?? "1",
     TT_SUBMODULES: inputs.submodules ?? "false",
+    TT_REPOSITORY: inputs.repository ?? "",
   });
   return { ws, ...r };
 }
@@ -79,7 +86,13 @@ describe("checkout stub inputs", () => {
   test("the action declares the inputs and passes them to the script as env", () => {
     const y = checkoutStubAction("/tmp/tt-act/repo");
     for (const i of ["ref", "path", "fetch-depth", "submodules"]) expect(y).toContain(`${i}:`);
-    for (const e of ["TT_REF", "TT_FETCH_DEPTH", "TT_SUBMODULES", "TT_CHECKOUT_PATH"]) {
+    for (const e of [
+      "TT_REF",
+      "TT_FETCH_DEPTH",
+      "TT_SUBMODULES",
+      "TT_CHECKOUT_PATH",
+      "TT_REPOSITORY",
+    ]) {
       expect(y).toContain(e);
     }
   });
@@ -91,6 +104,16 @@ describe("checkout stub inputs", () => {
     expect((await head(r.ws)).out).toBe(shas[0]!);
     expect(readFileSync(join(r.ws, "a.txt"), "utf8")).toBe("three\n");
     expect(await count(r.ws)).toBe(1);
+  });
+
+  test("the same repository by name is satisfied by the delivered tree; another one is refused", async () => {
+    const { dir, shas } = await delivered();
+    const same = await checkout(dir, { repository: "Acme/App" });
+    expect(same.code).toBe(0);
+    expect((await head(same.ws)).out).toBe(shas[0]!);
+    const other = await checkout(dir, { repository: "acme/other-private" });
+    expect(other.code).not.toBe(0);
+    expect(other.err).toContain("repository acme/other-private needs a GitHub token");
   });
 
   test("fetch-depth: 0 is the full history, N is N generations, and a merge is cut per parent", async () => {

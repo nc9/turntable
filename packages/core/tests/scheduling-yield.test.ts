@@ -4,7 +4,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
   appendLog,
-  claimNextAttempt,
+  claimNextAttempt as rawClaimNextAttempt,
   countRunning,
   createAttempt,
   createJob,
@@ -21,6 +21,7 @@ import {
   onAttemptsCancelled,
   openDatabase,
   readLog,
+  recordTrustClass,
   recordExec,
   type Scope,
 } from "../src/db";
@@ -32,11 +33,27 @@ import { sandboxUsageByProject } from "../src/db/repos/usage";
 import { putStoredSetting } from "../src/db/repos/settings";
 
 let db: Db;
+/** The trust class the next claims record, as the runner does once it has resolved the class. */
+let klass: string | null = "trusted_pr";
+
+/** Claims, then records the class like the scheduler does, so the attempt is a known class. */
+async function claimNextAttempt(
+  d: Db,
+  o: Parameters<typeof rawClaimNextAttempt>[1],
+): ReturnType<typeof rawClaimNextAttempt> {
+  const c = await rawClaimNextAttempt(d, o);
+  if (c && klass) {
+    const scope = { orgId: c.attempt.orgId, projectId: c.attempt.projectId };
+    await recordTrustClass(d, scope, c.attempt.id, o.owner, klass);
+  }
+  return c;
+}
 let normal: Required<Scope>;
 let yielding: Required<Scope>;
 const T0 = 1_800_000_000_000;
 
 beforeEach(async () => {
+  klass = "trusted_pr";
   db = openDatabase(":memory:");
   const org = await createOrg(db, { slug: "acme", name: "acme" });
   const a = await createProject(db, { orgId: org.id }, { slug: "app", name: "app" });
@@ -459,9 +476,8 @@ test("preemption counts and the minutes split: per project, per job and per clas
   expect(mine.preemptedSeconds).toBeGreaterThanOrEqual(110);
   expect(mine.preemptedSeconds).toBeLessThan(total);
   expect(total - mine.preemptedSeconds).toBeCloseTo(60, 0); // the useful minute
-  const other = rows.find((r) => r.projectId === normal.projectId)!;
-  expect(other.preemptions).toBe(0);
-  expect(other.preemptedSeconds).toBe(0);
+  // The normal project's attempt never recorded a sandbox, so it has no usage and is left out (#598).
+  expect(rows.find((r) => r.projectId === normal.projectId)).toBeUndefined();
 });
 
 test("the scheduler reads the preemption limit from the settings: a locked max of 1 stops the second preemption", async () => {
@@ -491,4 +507,50 @@ test("the scheduler reads the preemption limit from the settings: a locked max o
     state: "running",
   });
   await sched.stop({ abort: true });
+});
+
+/** A yield attempt running as `cls`, then a normal attempt waiting at a full cap of 1. */
+async function waitingBehind(cls: string | null) {
+  klass = cls;
+  const y = await queue(yielding);
+  expect((await claim({ globalCap: 1 }))!.attempt.id).toBe(y.attemptId);
+  klass = "trusted_pr";
+  const n = await queue(normal);
+  return { y, n };
+}
+
+test("a running trusted_pr yield attempt is preempted", async () => {
+  const { y, n } = await waitingBehind("trusted_pr");
+  expect((await claim({ globalCap: 1 }))!.attempt.id).toBe(n.attemptId);
+  expect((await listAttempts(db, yielding, y.jobId))[0]!.errorClass).toBe("preempted");
+});
+
+test.each(["protected", "release", null])(
+  "a running %p yield attempt is never preempted: normal work waits",
+  async (cls) => {
+    const { y, n } = await waitingBehind(cls);
+    expect(await claim({ globalCap: 1 })).toBeUndefined();
+    expect((await listAttempts(db, yielding, y.jobId)).map((a) => a.state)).toEqual(["running"]);
+    expect((await getJob(db, normal, n.jobId))!.state).toBe("queued");
+    // Once it finishes, the normal job gets the slot.
+    await finishOk(yielding, y.attemptId);
+    expect((await claim({ globalCap: 1 }))!.attempt.id).toBe(n.attemptId);
+  },
+);
+
+test("a protected main-push yield attempt runs to completion while normal work waits at the cap", async () => {
+  const { y, n } = await waitingBehind("protected");
+  for (let i = 0; i < 3; i++) expect(await claim({ globalCap: 1 })).toBeUndefined();
+  const attempts = await listAttempts(db, yielding, y.jobId);
+  expect(attempts.map((a) => [a.attempt, a.state, a.errorClass])).toEqual([[1, "running", null]]);
+  await finishOk(yielding, y.attemptId);
+  expect((await getJob(db, yielding, y.jobId))!.state).toBe("success");
+  expect((await claim({ globalCap: 1 }))!.attempt.id).toBe(n.attemptId);
+});
+
+test("queued yield attempts of any class still go after normal work", async () => {
+  const y = await queue(yielding);
+  const n = await queue(normal);
+  expect((await claim(big))!.attempt.id).toBe(n.attemptId);
+  expect((await claim(big))!.attempt.id).toBe(y.attemptId);
 });

@@ -37,6 +37,11 @@ import type {
   OrgQuotas,
   RerunResult,
   Setting,
+  LaneAction,
+  LaneConfig,
+  LaneKey,
+  LaneCosignKey,
+  LaneSecretStatus,
   StepUpChallenge,
   StepUpProof,
   Whoami,
@@ -161,6 +166,18 @@ export interface TurntableApi {
     expiresAt: number;
     attestation: "none" | "direct";
   }>;
+  /** A challenge for the org's first approver passkey: an owner's web session only (#587). */
+  firstApproverChallenge(): Promise<{
+    challenge: string;
+    rpId: string;
+    expiresAt: number;
+    attestation: "none" | "direct";
+  }>;
+  /** Enrols the org's first approver with that passkey. Owner session, fresh GitHub sign-in. */
+  enrolFirstApprover(args: {
+    person?: string;
+    webauthn: { challenge: string; clientDataJson: string; attestationObject: string };
+  }): Promise<{ approverId: string; person: string; keyFingerprint: string; warnings: string[] }>;
   /** The statement an approver signs to change the key policy (a quorum applies it). */
   keyPolicyChallenge(args: {
     mode: "any" | "hardware";
@@ -216,9 +233,45 @@ export interface TurntableApi {
   }): Promise<Setting>;
   /** Starts a passkey confirmation for `set_setting` with exactly `input` (`session_step_up_challenge`). */
   stepUpChallenge(args: {
-    action: "set_setting";
+    action:
+      | "set_setting"
+      | LaneAction
+      | "instance_rotate_webhook_secret"
+      | "instance_replace_app_private_key";
     input: Record<string, unknown>;
   }): Promise<StepUpChallenge>;
+  /**
+   * The release lane's configuration (operator org owners only). A write carries the passkey
+   * step-up for exactly this `input` (snake_case, as the op takes it; a secret `value` is bound by
+   * `value_sha256` in the challenge, never sent to it).
+   */
+  laneWrite(args: {
+    action: LaneAction;
+    input: Record<string, unknown>;
+    stepUp: StepUpProof;
+  }): Promise<Record<string, unknown>>;
+  laneConfig(args: { targetOrg: string; targetProject: string }): Promise<LaneConfig>;
+  laneKey(args: { targetOrg: string; name: string }): Promise<LaneKey>;
+  /** A project's co-signing keys (public information: fingerprints, what each signs). */
+  laneCosignKeys(args: {
+    targetOrg: string;
+    targetProject: string;
+  }): Promise<{ keys: LaneCosignKey[]; configVersion: number }>;
+  laneSecretStatus(args: {
+    targetOrg: string;
+    targetProject: string;
+    name: string;
+  }): Promise<LaneSecretStatus>;
+  /** The operator org's owner rotates the App webhook secret (needs `stepUp`). The secret is never returned. */
+  rotateWebhookSecret(args: {
+    overlapMinutes: number;
+    stepUp: StepUpProof;
+  }): Promise<{ fingerprint: string; overlapUntil: string }>;
+  /** The operator org's owner uploads a new private key for the same App (needs `stepUp`). */
+  replaceAppPrivateKey(args: {
+    privateKey: string;
+    stepUp: StepUpProof;
+  }): Promise<{ fingerprint: string; appId: string }>;
   /** Whether scheduling is frozen for the org (or the project, when given), and why. */
   incidentStatus(args?: { project?: string }): Promise<IncidentStatus>;
   cancel(args: { runId: string }): Promise<void>;

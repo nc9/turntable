@@ -42,7 +42,15 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
       expect(["get", "post", "delete"]).toContain(method);
       expect(ids.has(op.operationId)).toBe(false);
       ids.add(op.operationId);
-      expect(op.responses["200"].content["application/json"].schema.type).toBe("object");
+      // A download op (artifact bytes) answers an octet stream, not JSON.
+      if (registry.get(op.operationId)?.download) {
+        expect(op.responses["200"].content["application/octet-stream"].schema).toMatchObject({
+          type: "string",
+          format: "binary",
+        });
+      } else {
+        expect(op.responses["200"].content["application/json"].schema.type).toBe("object");
+      }
       // Signature ops take a signed statement, and account ops a web session cookie: no bearer token.
       expect(op.security).toEqual(
         ["signature", "account"].includes(registry.get(op.operationId)?.auth.type ?? "")
@@ -69,7 +77,7 @@ test("the generated document is a structurally valid OpenAPI 3.1 document", () =
     [
       ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
       ...registry.signatureOps(),
-      ...registry.instanceOps(),
+      ...registry.instanceOps().filter((o) => o.secretInputFields.length === 0),
       ...registry.accountOps(),
     ]
       .map((o) => o.name)
@@ -109,7 +117,10 @@ test("MCP tool list equals the registry minus signature ops", () => {
     "approve_run_challenge",
     "create_api_token",
     "enrolment_challenge",
+    "get_artifact",
+    "get_artifact_file",
     "get_installation_claim",
+    "get_release_approval",
     "incident_unfreeze",
     "invite_member",
     "key_policy_challenge",
@@ -227,8 +238,8 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
     // OpenAPI lists every REST route that carries no secret value, MCP only the agent-safe ones.
     // Instance ops are listed in OpenAPI (REST, instance token) and never as MCP tools.
     const inOpenApi =
-      op.auth.type === "instance" ||
       op.auth.type === "account" ||
+      (op.auth.type === "instance" && op.secretInputFields.length === 0) ||
       (registry.documentedOps().includes(op) && (op.mcp || op.secretInputFields.length === 0));
     expect(tools.has(op.name)).toBe(documented);
     expect(operationIds.has(op.name)).toBe(inOpenApi);
@@ -251,8 +262,8 @@ test("every non-signature op is in every adapter that exists: REST, OpenAPI and 
     [
       ...registry.documentedOps().filter((o) => o.mcp || o.secretInputFields.length === 0),
       ...registry.signatureOps(),
+      ...registry.instanceOps().filter((o) => o.secretInputFields.length === 0),
       ...registry.accountOps(),
-      ...registry.instanceOps(),
     ]
       .map((o) => o.name)
       .toSorted(),

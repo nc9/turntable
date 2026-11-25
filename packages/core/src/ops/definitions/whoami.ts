@@ -26,6 +26,9 @@ export const whoami = defineOp({
       .nullable()
       .describe("Project slug the grant is limited to; null for the org."),
     expires_at: z.string().nullable(),
+    operator_org: z
+      .boolean()
+      .describe("True when this org is the operator org, whose owners configure the release lane."),
   }),
   effect: "read",
   auth: { type: "token", minRole: "reader" },
@@ -52,6 +55,7 @@ export const whoami = defineOp({
       org: org.slug,
       project: project?.slug ?? null,
       expires_at: iso(token?.expiresAt),
+      operator_org: org.slug === (ctx.operatorOrgSlug ?? "local"),
     };
   },
 });

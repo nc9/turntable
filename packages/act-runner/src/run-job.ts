@@ -24,6 +24,8 @@ import {
   launcherArgv,
   PROXY_BUNDLE_SH,
   envFileOf,
+  PRECREATE_PRIVATE_SH,
+  varFileOf,
   proxyEnvFile,
   SHIM_NAMES,
   STEP_ENV,
@@ -375,6 +377,8 @@ export async function* runJob(
     let envFile = "";
     if (envText !== "") {
       envFile = `${L.root}/job.env`;
+      const pre = await execShort(provider, sandboxId, PRECREATE_PRIVATE_SH, [envFile], retry);
+      if (pre.exitCode !== 0) return fail("cannot protect the job environment file");
       await withRetry(
         () => provider.files.put(sandboxId, envFile, enc.encode(envText)),
         maxErr,
@@ -382,6 +386,19 @@ export async function* runJob(
       );
       const m = await execShort(provider, sandboxId, 'chmod 600 "$1"', [envFile], retry);
       if (m.exitCode !== 0) return fail("cannot protect the job environment file");
+    }
+
+    // The run's vars: a 0600 file act reads once at start, removed when the job ends.
+    if (plan.vars && Object.keys(plan.vars).length > 0) {
+      const pre = await execShort(provider, sandboxId, PRECREATE_PRIVATE_SH, [L.varsFile], retry);
+      if (pre.exitCode !== 0) return fail("cannot protect the job vars file");
+      await withRetry(
+        () => provider.files.put(sandboxId, L.varsFile, enc.encode(varFileOf(plan.vars ?? {}))),
+        maxErr,
+        pollMs,
+      );
+      const m = await execShort(provider, sandboxId, 'chmod 600 "$1"', [L.varsFile], retry);
+      if (m.exitCode !== 0) return fail("cannot protect the job vars file");
     }
 
     // Pin every `uses:` to its sha in the files act will read.
@@ -420,7 +437,12 @@ export async function* runJob(
       pollMs,
     );
     await opts.onExec?.({ sandboxId, execId });
-    return yield* watchExec(provider, sandboxId, execId, opts, plan);
+    const result = yield* watchExec(provider, sandboxId, execId, opts, plan);
+    if (plan.vars) {
+      // Best effort: the sandbox is torn down after the job anyway.
+      await execShort(provider, sandboxId, 'rm -f "$1"', [L.varsFile], retry).catch(() => {});
+    }
+    return result;
   } catch (e) {
     if (e instanceof PlanError) return fail(`plan rejected: ${e.message}`);
     if (e instanceof SandboxNotFoundError)

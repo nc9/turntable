@@ -246,7 +246,14 @@ beforeEach(async () => {
   orgId = org.id;
   scope = { orgId, projectId: project.id };
   // A real-minted token and the real clock: nothing here uses a fixed epoch.
-  env = { registry, db, webauthn: RP };
+  // The challenge binds the lane's configuration version, read from the lane. This test signs
+  // with the service directly (no lane), so the lane is a fixed version 3.
+  env = {
+    registry,
+    db,
+    webauthn: RP,
+    releaseConfig: { call: async () => ({ ok: true, result: { config_version: 3 } }) },
+  };
   operatorTok = (await mintToken(db, { orgId }, "operator")).secret;
   await setProjectSigning(db, scope, { signingKey: "builtin:release", environment: "release" });
   for (const environment of ["release", "production"]) {
@@ -329,6 +336,25 @@ describe("approve, then sign the same manifest", () => {
       (x) => x.op === "sign_release" && x.outcome === "ok",
     )!;
     expect(JSON.stringify(audit.input)).toContain(c.manifest_sha256);
+  });
+
+  test("checkKey (a dry run's question) signs nothing and spends no approval", async () => {
+    const { runId } = await mkRun();
+    await approveAs("alice", runId);
+    await finish(runId);
+    expect(await service.checkKey(scope)).toEqual({ ok: true });
+    expect(await service.checkKey(scope)).toEqual({ ok: true });
+    expect(await denials()).toEqual([]); // no signing audit row at all
+    // the approval is still there: the real signature goes through, once
+    expect((await sign(runId)).ok).toBe(true);
+    expect(await sign(runId)).toMatchObject({ ok: false, reason: "approval_spent" });
+  });
+
+  test("checkKey says when there is no key to sign with", async () => {
+    await setProjectSigning(db, scope, { signingKey: "builtin:missing" });
+    expect(await service.checkKey(scope)).toMatchObject({ ok: false });
+    await setProjectSigning(db, scope, { signingKey: "unknown-backend:x" });
+    expect(await service.checkKey(scope)).toMatchObject({ ok: false });
   });
 
   test("replay: a second signature of the same approval is refused as spent", async () => {

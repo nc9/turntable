@@ -6,12 +6,20 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { INSTALL_SHIMS_SH, launcherArgv, SHIM_NAMES, STEP_ENV, STEP_SHIM } from "../src/step-env";
+import {
+  INSTALL_SHIMS_SH,
+  launcherArgv,
+  PRECREATE_PRIVATE_SH,
+  SHIM_NAMES,
+  STEP_ENV,
+  STEP_SHIM,
+} from "../src/step-env";
 
 /**
  * The real tool, never an interpreter shim of a Turntable job these tests may themselves run in
@@ -399,6 +407,65 @@ describe("the step environment", () => {
     expect(out).toContain("lang=C.UTF-8");
     expect(out).toContain("lcall=C.UTF-8");
     expect(out).toContain("pager=cat");
+  });
+});
+
+describe("steps run with umask 022, after Turntable's own files are written (issue 627)", () => {
+  test("the launcher sets umask 0022 after it sources and removes the env file, before act", () => {
+    const script = launcherArgv("/s", ["act"], "/tmp/x.env")[2] ?? "";
+    const src = script.indexOf('. "$f"');
+    const rm = script.indexOf('rm -f "$f"');
+    const um = script.indexOf("umask 0022");
+    const exec = script.indexOf("exec env");
+    expect(src).toBeGreaterThanOrEqual(0);
+    expect(um).toBeGreaterThan(rm);
+    expect(rm).toBeGreaterThan(src);
+    expect(exec).toBeGreaterThan(um);
+  });
+
+  test("started under umask 077, a step creates 644 files and 755 directories; the env file is read first", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tt-umask-"));
+    try {
+      const envFile = join(dir, "job.env");
+      // Made the way run-job makes it: 0600 before any content.
+      writeFileSync(envFile, "export TT_MARK=hello\n", { mode: 0o600 });
+      chmodSync(envFile, 0o600);
+      const body =
+        'echo "mark=$TT_MARK"; echo "umask=$(umask)"; touch f; mkdir d; echo "file=$(stat -c %a f)"; echo "dir=$(stat -c %a d)"; [ -e "$1" ] && echo envfile-present || echo envfile-gone';
+      const p = Bun.spawn(
+        [
+          "sh",
+          "-c",
+          `umask 077; exec "$@"`,
+          "x",
+          ...launcherArgv(dir, ["sh", "-c", body, "s", envFile], envFile, false),
+        ],
+        { cwd: dir, env: { PATH: "/usr/bin:/bin" }, stdout: "pipe" },
+      );
+      const out = await new Response(p.stdout).text();
+      await p.exited;
+      expect(out).toContain("mark=hello");
+      expect(out).toContain("umask=0022");
+      expect(out).toContain("file=644");
+      expect(out).toContain("dir=755");
+      expect(out).toContain("envfile-gone");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the file is pre-created 0600 before content is put", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tt-umask-"));
+    try {
+      const f = join(dir, "job.env");
+      const p = Bun.spawn(["sh", "-c", `umask 000; ${PRECREATE_PRIVATE_SH}`, "x", f], {
+        stdout: "pipe",
+      });
+      await p.exited;
+      expect(statSync(f).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -4,7 +4,7 @@
 import { readCookie, SESSION_COOKIE } from "../auth/web-sessions";
 import { type DispatchEnv, dispatch } from "./dispatch";
 import type { Credential } from "./principal";
-import type { Op } from "./define";
+import type { DownloadOutput, Op } from "./define";
 import { OpError, errorBody } from "./errors";
 import { inputJsonSchema, type JsonSchema } from "./json-schema";
 
@@ -42,7 +42,9 @@ function compile(op: Op): Route {
       const m = /^\{(.+)\}$/.exec(part);
       if (!m) return part.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
       params.push(m[1]!);
-      return "([^/]+)";
+      // A parameter named `path` (or ending `_path`) is a file path inside something: it may hold
+      // slashes. It is validated by the op, which refuses any `..` segment.
+      return m[1] === "path" || m[1]!.endsWith("_path") ? "(.+)" : "([^/]+)";
     })
     .join("");
   const props = inputJsonSchema(op).properties ?? {};
@@ -221,6 +223,20 @@ export function createRestApi(
             ? { "www-authenticate": 'Bearer realm="turntable"' }
             : {},
         );
+      }
+      if (route.op.download) {
+        // The bytes themselves: a plain octet stream, named by its basename, never sniffed or rendered.
+        const d = result.output as DownloadOutput;
+        return new Response(d.body, {
+          status: 200,
+          headers: {
+            ...API_HEADERS,
+            "content-type": route.op.download.contentType,
+            "content-length": String(d.size),
+            "content-disposition": `attachment; filename="${d.filename.replaceAll(/[^A-Za-z0-9._+-]/g, "_")}"`,
+            ...(result.untrusted ? UNTRUSTED_HEADERS : {}),
+          },
+        });
       }
       return json(result.output, 200, result.untrusted ? UNTRUSTED_HEADERS : {});
     } catch (err) {

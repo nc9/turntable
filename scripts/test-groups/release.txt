@@ -4,3 +4,10 @@ packages/core/tests/release-compat.test.ts
 packages/core/tests/release-oci.test.ts
 packages/core/tests/release-unpack.test.ts
 packages/core/tests/release-lane-zip.test.ts
+packages/core/tests/release-config-ops.test.ts
+packages/core/tests/release-keys.test.ts
+packages/core/tests/release-signing-ops.test.ts
+packages/core/tests/release-lane-owner.test.ts
+packages/core/tests/release-cosign.test.ts
+packages/core/tests/release-cosign-manifest.test.ts
+packages/core/tests/release-artifact-bytes.test.ts

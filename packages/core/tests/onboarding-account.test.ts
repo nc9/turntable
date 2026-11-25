@@ -266,7 +266,10 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
         .filter((o) => o.crossOrg)
         .map((o) => [o.name, o.effect])
         .toSorted(),
-    ).toEqual([["my_activity_feed", "read"]]);
+    ).toEqual([
+      ["my_activity_feed", "read"],
+      ["my_notifications", "read"],
+    ]);
     for (const op of registry.ops) {
       const r = await dispatch(h.env, { kind: "principal", principal: account }, op.name, {});
       if (op.auth.type === "account" || op.crossOrg) continue;

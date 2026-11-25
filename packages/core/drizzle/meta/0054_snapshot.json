@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "16b42f9e-b275-4618-9430-9426e877c33d",
-  "prevId": "6f0a5889-cb8c-4050-93bb-706821f0c8fd",
+  "id": "8e354987-8143-4a10-8549-03831414a4a2",
+  "prevId": "153437b9-f3aa-45de-aa41-796da8e5a248",
   "tables": {
     "action_pins": {
       "name": "action_pins",
@@ -2168,6 +2168,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "permissions": {
+          "name": "permissions",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "status": {
@@ -5149,6 +5156,21 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "cosignatures": {
+          "name": "cosignatures",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "dry_run": {
+          "name": "dry_run",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "status": {
           "name": "status",

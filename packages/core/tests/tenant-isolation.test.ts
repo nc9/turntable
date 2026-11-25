@@ -109,6 +109,23 @@ async function buildWorld(): Promise<World> {
     vault,
     webhooks,
     webauthn: { rpId: "ci.example.com", origins: ["https://ci.example.com"] },
+    // A release challenge binds the lane's config version, and release_public_key reads a key,
+    // both from the lane: fixed answers here. The lane's own org scoping is in release-keys.test.ts.
+    releaseConfig: {
+      call: async (action: string) => ({
+        ok: true as const,
+        result:
+          action === "key_public"
+            ? {
+                keyid: "k".repeat(64),
+                public_key_pem: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n",
+                created_at: 1_700_000_000_000,
+                status: "active",
+                config_version: 0,
+              }
+            : { config_version: 0 },
+      }),
+    },
     githubUsers: { idOfLogin: async (l: string) => `gh-${l.toLowerCase()}` },
     // `run_dispatch` needs the poller and a forge; this stand-in honours its contract (the run
     // lands in the scope the dispatcher resolved, and nowhere else) so the op is reached for
@@ -647,10 +664,24 @@ async function call(w: World, who: Who, op: Op, input: Record<string, unknown>):
 
 /** Ops no token can call, and ops with no input to aim. Each needs a reason. */
 const UNREACHABLE: Record<string, string> = {
+  get_artifact:
+    "the fixture has no artifact store (artifacts are off), so the call is refused for A as well; B is still probed and finds no such artifact of its own. The bytes, the traversal refusals and the other-org not_found are in release-artifact-bytes.test.ts",
+  get_artifact_file:
+    "the fixture has no artifact store (artifacts are off), so the call is refused for A as well; B is still probed and finds no such artifact of its own. The bytes, the traversal refusals and the other-org not_found are in release-artifact-bytes.test.ts",
+  get_artifact_files:
+    "the fixture has no artifact store (artifacts are off), so the call is refused for A as well; B is still probed and finds no such artifact of its own. The bytes, the traversal refusals and the other-org not_found are in release-artifact-bytes.test.ts",
   release_approval_challenge:
     "needs a run whose jobs wait on the project's release environment with recorded release-class artifacts, which the fixture lacks; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such run. The approval itself is covered in release-approval-v2.test.ts",
   key_policy_challenge:
     "a hardware policy needs a counted passkey with an allowed AAGUID, and the fixture approvers are ed25519; refused by the handler for A as well. B is still probed: it reaches the handler and finds no such approver of its own",
+  first_approver_challenge:
+    "owner web sessions only (every token of A and B is refused alike); a session works in its own org alone, and first-approver-passkey.test.ts covers the gate",
+  enrol_first_approver:
+    "owner web sessions only (every token of A and B is refused alike); a session works in its own org alone, and first-approver-passkey.test.ts covers the gate",
+  instance_rotate_webhook_secret:
+    "session only (a token is refused alike) and an owner of the org that owns the GitHub App, with a passkey step-up; B is probed and refused; the checks are in instance-app-secrets.test.ts",
+  instance_replace_app_private_key:
+    "session only (a token is refused alike) and an owner of the org that owns the GitHub App, with a passkey step-up; B is probed and refused; the checks are in instance-app-secrets.test.ts",
   start_installation_claim:
     "needs a configured GitHub App; the claim flow's tenant checks are in hosted-app.test.ts",
   bind_installation:
@@ -667,6 +698,30 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App and a repo reader; org B is probed and finds no such project of its own, and the preview itself is in onboarding-repos.test.ts",
   run_default_branch:
     "needs an admin (no token holds that role) and the poller; org B is probed and finds no such project or onboarding of its own, and the run, the onboarding row's org check and the refusals are in onboarding-repos.test.ts",
+  release_pin_repo:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_publish_target_set:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_publish_target_delete:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_secret_set:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_init_key:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_set_project_signing:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_publish_target_list:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_key_show:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_cosign_key_set:
+    "lane configuration (#541, #544): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts and release-cosign-manifest.test.ts",
+  release_cosign_key_remove:
+    "lane configuration (#541, #544): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts and release-cosign-manifest.test.ts",
+  release_cosign_key_list:
+    "lane configuration (#541, #544): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts and release-cosign-manifest.test.ts",
+  release_secret_status:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
   doctor:
     "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
   get_setting:

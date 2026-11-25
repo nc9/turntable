@@ -1,6 +1,6 @@
 {
-  "id": "fd82ef54-38d8-4f60-9598-edd8970f9ad5",
-  "prevId": "cfa31f94-a809-4d47-bd7f-2f0e5e451067",
+  "id": "dfa02026-dbed-4732-8433-9129780c6c3c",
+  "prevId": "13cbb88c-c60b-4b38-a4a5-aec3c62c7960",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2252,6 +2252,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "permissions": {
+          "name": "permissions",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "status": {
           "name": "status",
@@ -5244,6 +5250,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "cosignatures": {
+          "name": "cosignatures",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dry_run": {
+          "name": "dry_run",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "status": {
           "name": "status",

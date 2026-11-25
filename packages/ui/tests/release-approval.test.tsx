@@ -38,6 +38,7 @@ const statementFor = async (over: Partial<ReleaseStatement> = {}): Promise<Relea
   workflow_hash: "ab".repeat(32),
   environment: "release",
   manifest_sha256: await manifestDigest(artifacts),
+  lane_config_version: 2,
   approver: "ap1",
   expires_at: 1,
   nonce: "n".repeat(20),

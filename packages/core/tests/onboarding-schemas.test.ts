@@ -135,14 +135,25 @@ describe("onboarding schemas", () => {
       triggers: ["push"],
       ingested: true,
       too_large: false,
+      dispatch_inputs: null,
       jobs: [{ job_id: "b", name: null, verdict: "run" }],
     };
     expect(
-      s.previewWorkflowsOutput.safeParse({ sha: "a", truncated: false, workflows: [wf] }).success,
+      s.previewWorkflowsOutput.safeParse({
+        sha: "a",
+        truncated: false,
+        default_branch: "main",
+        workflows: [wf],
+      }).success,
     ).toBe(true);
     const bad = { ...wf, jobs: [{ job_id: "b", name: null, verdict: "maybe" }] };
     expect(
-      s.previewWorkflowsOutput.safeParse({ sha: "a", truncated: false, workflows: [bad] }).success,
+      s.previewWorkflowsOutput.safeParse({
+        sha: "a",
+        truncated: false,
+        default_branch: "main",
+        workflows: [bad],
+      }).success,
     ).toBe(false);
   });
   test("run_default_branch", () => {

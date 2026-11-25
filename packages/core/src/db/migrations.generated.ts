@@ -569,20 +569,29 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0051_notifications",
-    "when": 1795603292910,
+    "tag": "0051_installation_permissions",
+    "when": 1795603696280,
+    "statements": [
+      "ALTER TABLE `github_installations` ADD `permissions` text;"
+    ]
+  },
+  {
+    "tag": "0053_release_request_cosignatures",
+    "when": 1795611794380,
+    "statements": [
+      "ALTER TABLE `release_requests` ADD `cosignatures` text;",
+      "ALTER TABLE `release_requests` ADD `dry_run` integer DEFAULT false NOT NULL;"
+    ]
+  },
+  {
+    "tag": "0054_notifications",
+    "when": 1795625045460,
     "statements": [
       "CREATE TABLE `notification_cursors` (\n\t`name` text PRIMARY KEY NOT NULL,\n\t`last_event_id` integer DEFAULT 0 NOT NULL\n);",
       "CREATE TABLE `notification_prefs` (\n\t`user_id` text NOT NULL,\n\t`org_id` text DEFAULT '' NOT NULL,\n\t`project_id` text DEFAULT '' NOT NULL,\n\t`kind` text NOT NULL,\n\t`enabled` integer NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tPRIMARY KEY(`user_id`, `org_id`, `project_id`, `kind`),\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"notification_prefs_kind_check\" CHECK(kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",
       "CREATE TABLE `notifications` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`kind` text NOT NULL,\n\t`dedupe_key` text NOT NULL,\n\t`run_id` text,\n\t`count` integer DEFAULT 1 NOT NULL,\n\t`title` text DEFAULT '' NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`read_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"notifications_kind_check\" CHECK(kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",
       "CREATE INDEX `notifications_user_idx` ON `notifications` (`user_id`,`id`);",
-      "CREATE UNIQUE INDEX `notifications_dedupe_unique` ON `notifications` (`user_id`,`kind`,`dedupe_key`);"
-    ]
-  },
-  {
-    "tag": "0052_webhook_slack_format",
-    "when": 1795603776088,
-    "statements": [
+      "CREATE UNIQUE INDEX `notifications_dedupe_unique` ON `notifications` (`user_id`,`kind`,`dedupe_key`);",
       "PRAGMA foreign_keys=OFF;",
       "CREATE TABLE `__new_outbound_webhook_endpoints` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`project_id` text,\n\t`url` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`event_types` text,\n\t`format` text DEFAULT 'json' NOT NULL,\n\t`state` text DEFAULT 'active' NOT NULL,\n\t`disabled_reason` text,\n\t`consecutive_failures` integer DEFAULT 0 NOT NULL,\n\t`cursor` integer DEFAULT 0 NOT NULL,\n\t`created_by` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`project_id`,`org_id`) REFERENCES `projects`(`id`,`org_id`) ON UPDATE no action ON DELETE no action,\n\tCONSTRAINT \"outbound_webhook_endpoints_state_check\" CHECK(state IN ('active', 'disabled')),\n\tCONSTRAINT \"outbound_webhook_endpoints_format_check\" CHECK(format IN ('json', 'slack'))\n);",
       "INSERT INTO `__new_outbound_webhook_endpoints`(\"id\", \"org_id\", \"project_id\", \"url\", \"description\", \"event_types\", \"format\", \"state\", \"disabled_reason\", \"consecutive_failures\", \"cursor\", \"created_by\", \"created_at\", \"updated_at\") SELECT \"id\", \"org_id\", \"project_id\", \"url\", \"description\", \"event_types\", \"format\", \"state\", \"disabled_reason\", \"consecutive_failures\", \"cursor\", \"created_by\", \"created_at\", \"updated_at\" FROM `outbound_webhook_endpoints`;",

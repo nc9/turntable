@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
@@ -8,6 +8,7 @@ import { SHIM_NAMES } from "../src/step-env";
 import {
   drain,
   planJob,
+  planWorkflow,
   resolveActions,
   resumeJob,
   runJob,
@@ -170,6 +171,63 @@ describe("the secrets-proxy environment", () => {
     for (const a of argvs) expect(a).not.toContain(CRED);
     // The file was made private before the launcher read it.
     expect(argvs.some((a) => a.includes("chmod 600"))).toBe(true);
+  });
+});
+
+describe("file modes (issue 627)", () => {
+  test("act and its steps run with umask 022 while the env and vars files are 0600 before and after the put", async () => {
+    const p = world.provider();
+    const { id } = await p.create(spec);
+    const plan = planJob(WF, "hello", {
+      workflowPath: ".github/workflows/ci.yml",
+      readFile: () => undefined,
+      root: `${world.sandboxDir(id)}/tt`,
+      vars: { X: "y" },
+    });
+    const act = await fakeAct(
+      await fixture("success.jsonl"),
+      0,
+      `echo "umask=$(umask)"; t=$(mktemp -d); touch "$t/f"; mkdir "$t/d"; echo "file=$(stat -c %a "$t/f")"; echo "dir=$(stat -c %a "$t/d")"; rm -rf "$t"`,
+    );
+    const modes: Record<string, number> = {};
+    const put = p.files.put.bind(p.files);
+    p.files.put = async (sid, path, bytes) => {
+      if (path.endsWith("job.env") || path === plan.layout.varsFile) {
+        // Already there and private before the content arrives.
+        modes[`${path.split("/").pop()}:before`] = statSync(path).mode & 0o777;
+      }
+      await put(sid, path, bytes);
+      if (path.endsWith("job.env") || path === plan.layout.varsFile) {
+        modes[`${path.split("/").pop()}:after`] = statSync(path).mode & 0o777;
+      }
+    };
+    const events: RunEvent[] = [];
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        plan,
+        {
+          repoTarball: await tarWith({ "README.md": "hi\n" }),
+          act,
+          githubToken: "tok-not-real",
+        },
+        { pollMs: 50 },
+      ),
+      (e) => events.push(e),
+    );
+    const log = events
+      .filter((e) => e.kind === "log")
+      .map((e) => new TextDecoder().decode(e.bytes))
+      .join("");
+    expect(result.state).toBe("success");
+    expect(log).toContain("umask=0022");
+    expect(log).toContain("file=644");
+    expect(log).toContain("dir=755");
+    expect(modes["job.env:before"]).toBe(0o600);
+    expect(modes["job.env:after"]).toBe(0o600);
+    expect(modes[`${plan.layout.varsFile.split("/").pop()}:before`]).toBe(0o600);
+    expect(modes[`${plan.layout.varsFile.split("/").pop()}:after`]).toBe(0o600);
   });
 });
 
@@ -489,5 +547,81 @@ describe("the OIDC request variables", () => {
     expect(log).toContain("url=https://ci.example.test/oidc/acme/token?api-version=2.0");
     expect(log).toContain("tok=placeholder-value");
     expect(argvs.join("\n")).not.toContain("placeholder-value");
+  });
+});
+
+describe("the run's vars (issue 613)", () => {
+  const VARS = { TURNTABLE_CI: "true", X: "y", TRICKY: 'a "q" $HOME\nb\\c' };
+
+  test("reach act through a 0600 var file that is not in an argv and is removed after", async () => {
+    const p = world.provider();
+    const { id } = await p.create(spec);
+    const plan = planJob(WF, "hello", {
+      workflowPath: ".github/workflows/ci.yml",
+      readFile: () => undefined,
+      root: `${world.sandboxDir(id)}/tt`,
+      vars: VARS,
+    });
+    const file = plan.layout.varsFile;
+    expect(plan.vars).toEqual(VARS);
+    const act = await fakeAct(
+      await fixture("success.jsonl"),
+      0,
+      `echo "mode=$(stat -c %a '${file}')"; echo "args=$*"; sed 's/^/var:/' '${file}'`,
+    );
+    const argvs: string[] = [];
+    const start = p.exec.start.bind(p.exec);
+    p.exec.start = (sid, o) => {
+      argvs.push(o.argv.join("\u0000"));
+      return start(sid, o);
+    };
+    const events: RunEvent[] = [];
+    const result = await drain(
+      runJob(
+        p,
+        id,
+        plan,
+        { repoTarball: await tarWith({ "README.md": "hi\n" }), act },
+        { pollMs: 50 },
+      ),
+      (e) => events.push(e),
+    );
+    const log = events
+      .filter((e) => e.kind === "log")
+      .map((e) => new TextDecoder().decode(e.bytes))
+      .join("");
+    expect(result.state).toBe("success");
+    expect(log).toContain("mode=600");
+    expect(log).toContain(`--var-file ${file}`);
+    expect(log).toContain('var:TURNTABLE_CI="true"');
+    expect(log).toContain('var:X="y"');
+    expect(log).toContain('var:TRICKY="a \\"q\\" \\$HOME\\nb\\\\c"');
+    for (const a of argvs) expect(a).not.toContain("TURNTABLE_CI");
+    expect(existsSync(file)).toBe(false);
+  });
+
+  test("a run with no vars passes no --var-file and writes no file", async () => {
+    const { p, id, plan, repoTarball } = await setup();
+    expect(plan.vars).toBeUndefined();
+    expect(plan.argv).not.toContain("--var-file");
+    const act = await fakeAct(await fixture("success.jsonl"), 0, `echo "args=$*"`);
+    const events: RunEvent[] = [];
+    const result = await drain(runJob(p, id, plan, { repoTarball, act }, { pollMs: 50 }), (e) =>
+      events.push(e),
+    );
+    expect(result.state).toBe("success");
+    expect(existsSync(plan.layout.varsFile)).toBe(false);
+  });
+
+  test("planWorkflow stores the planner's vars on each job and planJob takes them", () => {
+    const wp = planWorkflow(
+      WF,
+      { name: "push", ref: "refs/heads/main" },
+      {
+        readFile: () => undefined,
+        vars: VARS,
+      },
+    );
+    expect(wp.jobs[0]?.vars).toEqual(VARS);
   });
 });

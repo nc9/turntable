@@ -57,6 +57,8 @@ export interface PlanOptions {
    * step shims are not used. Set only by the scheduler for a job routed to the docker class.
    */
   docker?: { image: string };
+  /** The run's `vars.*` (the planner's own object, from PlannedJob.vars), handed to act. */
+  vars?: Record<string, string>;
 }
 
 export interface PlannedAction {
@@ -165,6 +167,8 @@ export interface JobPlan {
    * (its runner image, `container:` and `services:`), for the sandbox preflight.
    */
   docker?: { image: string; images: string[] };
+  /** The run's `vars.*`, written to `layout.varsFile` and read by act with `--var-file`. */
+  vars?: Record<string, string>;
   /** Full command: act binary then args. Run with cwd = layout.repo. */
   argv: string[];
   cwd: string;
@@ -337,6 +341,7 @@ export function planJob(workflowYaml: string, jobId: string, opts: PlanOptions):
     ...(opts.docker
       ? { docker: { image: opts.docker.image, images: dockerImages(job, opts.docker.image) } }
       : {}),
+    ...(opts.vars && Object.keys(opts.vars).length > 0 ? { vars: { ...opts.vars } } : {}),
     argv: [],
     cwd: layout.repo,
   };
@@ -390,6 +395,9 @@ function withArgv(plan: JobPlan): JobPlan {
     "1",
     "--no-skip-checkout",
     ...(plan.eventJson === undefined ? [] : ["--eventpath", plan.layout.eventFile]),
+    // The run's vars, from a 0600 file (values stay out of the argv), so act evaluates `vars.*` in
+    // step `if:`, `with:` and `env:` as the planner did.
+    ...(plan.vars && Object.keys(plan.vars).length > 0 ? ["--var-file", plan.layout.varsFile] : []),
     // act's artifact and cache servers bind the outbound IP by default and fail with no network
     // ("lookup <nil>"). Loopback works with egress none.
     "--artifact-server-addr",
@@ -517,7 +525,7 @@ export function githubResolver(
       res = opts.backoff ? await fetchWithBackoff(f, url, init, opts.backoff) : await f(url, init);
     } catch (e) {
       if (e instanceof RateLimitedError) {
-        throw new InfraError(`resolving ${owner}/${repo}@${ref}: ${e.message}`);
+        throw new InfraError(`resolving ${owner}/${repo}@${ref}: ${e.message}`, e);
       }
       // The network, not the workflow: retryable. A refused address is not.
       if (e instanceof SsrfError) throw new PlanError("outbound-address", e.message);

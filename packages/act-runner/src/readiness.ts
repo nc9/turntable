@@ -1,4 +1,4 @@
-import { ExprError, evaluateCondition, type ExprContext, type Value } from "./expr";
+import { ExprError, evaluateJobCondition, type ExprContext, type Value } from "./expr";
 import type { NeedResult } from "./split";
 import type { PlannedJob } from "./workflow-plan";
 
@@ -121,7 +121,7 @@ export function jobReadiness(
     status: { needs: Object.values(byId).map((n) => n.result), cancelled: false },
   };
   try {
-    if (!evaluateCondition(job.ifExpr, exprCtx)) {
+    if (!evaluateJobCondition(job.ifExpr, exprCtx)) {
       return {
         decision: "skip",
         reason: `if: ${String(job.ifExpr ?? "success()").trim()} is false`,

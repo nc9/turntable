@@ -18,14 +18,16 @@ import {
   touchInstanceToken,
 } from "../db/repos";
 import type { DoctorReport } from "../doctor/types";
-import type { Op, OpContext } from "./define";
+import type { ArtifactBlobs, Op, OpContext } from "./define";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { LaneConfigClient } from "../release/channel-client";
 import type { WebSessions } from "../auth/web-sessions";
 import type { UserGithub } from "../auth/user-tokens";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
+import type { AppAuth } from "../github/app-auth";
 import type { SecretStore } from "../secrets/store";
 import type { SecretVault } from "../secrets/vault";
 import type { RunDispatcher } from "../poll/dispatch";
@@ -36,7 +38,15 @@ import { type Credential, orgRole, type Principal, principalId } from "./princip
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
-import { inputTarget, SESSION_STEP_UP_OPS, verifyStepUp, type VerifiedStepUp } from "./step-up";
+import { boundInput } from "./lane-target";
+import {
+  inputTarget,
+  LANE_CONFIG_READ_OPS,
+  LANE_CONFIG_WRITE_OPS,
+  SESSION_STEP_UP_OPS,
+  verifyStepUp,
+  type VerifiedStepUp,
+} from "./step-up";
 
 export type Transport = "mcp" | "rest";
 
@@ -76,6 +86,12 @@ export type DispatchEnv = {
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party for human approvals (TURNTABLE_PUBLIC_URL or the WEBAUTHN vars). */
   webauthn?: RelyingParty | undefined;
+  /** The release lane's config channel; absent when no lane is configured on this instance. */
+  releaseConfig?: LaneConfigClient | undefined;
+  /** The artifact store's reads, for the download ops; absent when artifacts are off. */
+  artifactBlobs?: ArtifactBlobs | undefined;
+  /** Slug of the operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
+  operatorOrgSlug?: string | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
   /** The secret store, for ops that read an org's audit public key; absent without a master key. */
@@ -93,6 +109,8 @@ export type DispatchEnv = {
   viaMcp?: boolean | undefined;
   /** GitHub calls made with a signed-in user's own token; absent when sign-in is not set up. */
   userGithub?: UserGithub | undefined;
+  /** The GitHub App's credential minter; the App-secret ops need it. */
+  appAuth?: AppAuth | undefined;
 };
 
 export type DispatchResult =
@@ -175,6 +193,10 @@ const unknownTokenSource = (c: Credential): string =>
 export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   "invite_member",
   "session_step_up_challenge",
+  // The org owner's own first approver passkey (#587): the ops require an owner session whose
+  // GitHub sign-in is under 10 minutes old, and refuse every token, instance call and MCP.
+  "first_approver_challenge",
+  "enrol_first_approver",
   // Onboarding. Creating an org is gated by `self_serve_orgs` and a rate limit in its handler.
   // The claim link only starts a flow (ownership of the GitHub installation is checked when it
   // binds), and `bind_installation` re-checks that with the user's own GitHub token every time.
@@ -184,6 +206,10 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // Onboarding (A3): owner or admin sessions only, by the ops' own `admin` role.
   "onboard_repos",
   "run_default_branch",
+  // A human starts a workflow_dispatch run from the web (#617): the op's own `release_operator`
+  // role gates it, and a release-class run is still held for approval before any signing or
+  // publishing, so no step-up (a dispatch is not an approval).
+  "run_dispatch",
   // An owner or admin session sets its org's settings, by each setting's own role. Loosening a
   // trust setting also needs the step-up (the guard enforces it: set_setting is in
   // SESSION_STEP_UP_OPS for that case only).
@@ -191,7 +217,58 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // A person's own notifications and preferences (#611): rows keyed by the session's user.
   "notifications_ack",
   "set_notification_prefs",
+
+  // Cancel and rerun from the run and job pages: audited, low-risk writes, gated by each op's own
+  // `operator` role exactly as for a token. No step-up.
+  "cancel",
+  "rerun",
 ]);
+
+/**
+ * Refuses every caller of a lane configuration op but an OWNER of the operator org on a web
+ * session. A refusal is audited in the caller's own org's chain (a write) and reads the same
+ * whatever the reason.
+ */
+async function laneGate(
+  env: DispatchEnv,
+  credential: Credential,
+  principal: Principal,
+  name: string,
+): Promise<void> {
+  const refuse = async (): Promise<never> => {
+    // Every org-bound principal's refusal is audited in its org's chain (a member principal too).
+    if (principal.kind === "session" || principal.kind === "token" || principal.kind === "member") {
+      await appendAudit(
+        env.db,
+        { orgId: principal.orgId },
+        {
+          principalKind: principal.kind,
+          principalId: principalId(principal),
+          op: name,
+          effect: LANE_CONFIG_WRITE_OPS.has(name) ? "write" : "read",
+          outcome: "error:forbidden",
+          input: { reason: "not_operator_org_owner" },
+        },
+      ).catch(() => {});
+    }
+    throw new OpError(
+      "forbidden",
+      `${name} is for a signed-in owner of the operator org, in the web app`,
+      { reason: "lane_operator_owner_only" },
+    );
+  };
+  if (
+    credential.kind !== "session" ||
+    env.viaMcp === true ||
+    env.transport === "mcp" ||
+    principal.kind !== "session" ||
+    principal.role !== "owner"
+  ) {
+    return refuse();
+  }
+  const operator = await getOrgBySlug(env.db, env.operatorOrgSlug ?? "local");
+  if (!operator || operator.id !== principal.orgId) return refuse();
+}
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(
@@ -503,6 +580,12 @@ export async function dispatch(
     if (op.auth.type !== "instance" && principal.kind === "instance") {
       throw new OpError("forbidden", "an instance token holds no org grant");
     }
+    // The release lane's configuration (#541) takes ONE credential: a signed-in web session of an
+    // owner of the operator org. An org token, an in-process principal, MCP and a `tti_` token
+    // (refused above) are not it. This runs before the step-up is looked at and before the scope.
+    if (LANE_CONFIG_WRITE_OPS.has(op.name) || LANE_CONFIG_READ_OPS.has(op.name)) {
+      await laneGate(env, credential, principal, op.name);
+    }
     // A web session is default-deny for writes: only the named ones, whatever the member's role.
     // It is judged before the scope (a project-scoped op with no project would fail there first);
     // a member principal is bound to one org, so the refusal is audited in that org's chain.
@@ -580,7 +663,7 @@ export async function dispatch(
             sessionHash: principal.sessionHash,
             userId: principal.id,
             action: op.name,
-            target: inputTarget(input, scope.projectId),
+            target: inputTarget(boundInput(input, op.secretInputFields), scope.projectId),
           },
           stepUpRaw,
         );
@@ -604,6 +687,9 @@ export async function dispatch(
       defaultBranchRunner: env.defaultBranchRunner,
       webhooks: env.webhooks,
       webauthn: env.webauthn,
+      releaseConfig: env.releaseConfig,
+      artifactBlobs: env.artifactBlobs,
+      operatorOrgSlug: env.operatorOrgSlug,
       transport: env.transport,
       instanceOrgCap: env.instanceOrgCap,
       staticPollProjects: env.staticPollProjects,
@@ -614,6 +700,7 @@ export async function dispatch(
       settings: env.settings,
       viaMcp: env.viaMcp,
       userGithub: env.userGithub,
+      appAuth: env.appAuth,
     });
     const target = op;
     if (!audited) {

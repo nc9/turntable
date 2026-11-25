@@ -7,6 +7,12 @@ const SECRETISH = /secret|password|passwd|private_?key|api_?key|token_value|cred
 /** Exact names that look like credentials; allowed only as a declared one-time secret. */
 const TOKENISH = /^(token|access_token|refresh_token|bearer|authorization|auth_token)$/i;
 
+/**
+ * Boolean presence flags: they say whether a credential exists and carry none (`has_credential` on
+ * a release lane target). Allowed by exact name.
+ */
+const PRESENCE_FLAGS = new Set(["has_credential"]);
+
 function names(schema: JsonSchema | undefined, out: Set<string>): void {
   if (!schema || typeof schema !== "object") return;
   for (const [name, prop] of Object.entries(schema.properties ?? {})) {
@@ -36,7 +42,7 @@ export function lintOutputSchemas(registry: OpRegistry): string[] {
   const findings: string[] = [];
   for (const op of registry.ops) {
     for (const name of outputFieldNames(op)) {
-      if (op.oneTimeSecretFields.includes(name)) continue;
+      if (op.oneTimeSecretFields.includes(name) || PRESENCE_FLAGS.has(name)) continue;
       if (SECRETISH.test(name) || TOKENISH.test(name)) {
         findings.push(`${op.name}: output field "${name}" looks like a secret`);
       }

@@ -13,6 +13,7 @@ import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../src/github
 import { SecretStore } from "../src/secrets/store";
 import {
   checkChannel,
+  checkConfigChannel,
   checkDatabase,
   checkForwarded,
   checkGithubApp,
@@ -28,7 +29,7 @@ import {
 } from "../src/doctor/checks";
 import { doctorCommand, renderReport } from "../src/doctor/cli";
 import { ForwardedObserver } from "../src/doctor/observe";
-import { channelProbe, readerOf } from "../src/doctor/real";
+import { channelProbe, configChannelProbe, readerOf } from "../src/doctor/real";
 import {
   forApi,
   report,
@@ -526,6 +527,36 @@ describe("quotas", () => {
       sql`INSERT INTO org_quotas (org_id, max_concurrent, updated_by, updated_at) VALUES (${orgId}, 4, 'test', 0)`,
     );
     expect(await checkQuotas(base({ hosted: true }))).toMatchObject({ status: "pass" });
+  });
+});
+
+describe("the release lane config channel", () => {
+  const MSG = "release lane config channel unreachable: release approvals will be refused";
+  const probe = (ok: boolean) => async () =>
+    ok ? ({ ok: true } as const) : ({ ok: false, reason: "not reachable" } as const);
+
+  test("no main-side config channel client: no release lane configured, passes", async () => {
+    const r = await checkConfigChannel(base({}));
+    expect(r).toMatchObject({ status: "pass" });
+    expect(r.summary).toContain("no release lane configured");
+  });
+  test("a client and a reachable lane: passes", async () => {
+    const r = await checkConfigChannel(base({ configChannel: probe(true) }));
+    expect(r).toMatchObject({ status: "pass" });
+  });
+  test("a client and an unreachable lane: fails with the exact message", async () => {
+    const down = await checkConfigChannel(base({ configChannel: probe(false) }));
+    expect(down).toMatchObject({ status: "fail", summary: MSG });
+  });
+  test("real doctor inputs probe only when the config key is set", () => {
+    expect(configChannelProbe({ TURNTABLE_PUBLISH_CHANNEL_SOCKET: "/s" })).toBeUndefined();
+    expect(configChannelProbe({})).toBeUndefined();
+    expect(
+      configChannelProbe({
+        TURNTABLE_PUBLISH_CONFIG_KEY_FILE: "/k",
+        TURNTABLE_PUBLISH_CHANNEL_SOCKET: "/s",
+      }),
+    ).toBeDefined();
   });
 });
 

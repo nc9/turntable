@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { safeFetch, type SafeFetch } from "@turntable/net";
 import type { GithubReleaseTarget, PublishContext, TargetResult } from "./types";
 
+const ASSET_BASENAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$/;
 const MAX_ASSET = 512 * 1024 * 1024;
 
 interface Asset {
@@ -25,6 +26,58 @@ export interface GithubReleaseOptions {
 }
 
 const sha256 = (b: Uint8Array): string => createHash("sha256").update(b).digest("hex");
+
+export type AssetPlan =
+  | { ok: true; assets: { asset: string; file?: string }[] }
+  | { ok: false; reason: string; detail: string };
+
+/**
+ * The assets a release would carry and where each comes from: the target's `assets` (a file under
+ * its own path), EVERY file of each `assetArtifacts` artifact under its basename (a validated plain
+ * name), the provenance, and the verified co-signatures. A name used twice is refused. Nothing is
+ * read, so a dry run plans with it too.
+ */
+export function planAssets(
+  t: GithubReleaseTarget,
+  ctx: Pick<PublishContext, "filesOf" | "cosignatures">,
+  hasProvenance: boolean,
+): AssetPlan {
+  const assets: { asset: string; file?: string }[] = [];
+  const seen = new Set<string>();
+  const add = (asset: string, file?: string): string | undefined => {
+    if (seen.has(asset)) return asset;
+    seen.add(asset);
+    assets.push(file === undefined ? { asset } : { asset, file });
+    return undefined;
+  };
+  for (const name of t.assets) {
+    const dup = add(name, name);
+    if (dup) return { ok: false, reason: "asset_name_collision", detail: dup };
+  }
+  // Every file of each named artifact, under its own basename: a plain name, never a path.
+  for (const artifact of t.assetArtifacts ?? []) {
+    const files = ctx.filesOf(artifact);
+    if (files.length === 0) return { ok: false, reason: "artifact_empty", detail: artifact };
+    for (const file of files) {
+      const base = file.slice(file.lastIndexOf("/") + 1);
+      if (!ASSET_BASENAME.test(base))
+        return { ok: false, reason: "bad_asset_name", detail: `${artifact}: ${file}` };
+      const dup = add(base, file);
+      if (dup) return { ok: false, reason: "asset_name_collision", detail: dup };
+    }
+  }
+  if (t.provenanceAsset !== null) {
+    if (!hasProvenance)
+      return { ok: false, reason: "no_provenance", detail: "the lane signed nothing to attach" };
+    const dup = add(t.provenanceAsset);
+    if (dup) return { ok: false, reason: "asset_name_collision", detail: dup };
+  }
+  for (const c of ctx.cosignatures ?? []) {
+    const dup = add(c.outputName);
+    if (dup) return { ok: false, reason: "cosign_name_collision", detail: dup };
+  }
+  return { ok: true, assets };
+}
 
 export async function publishGithubRelease(
   key: string,
@@ -63,19 +116,24 @@ export async function publishGithubRelease(
 
   // What the release must hold: every asset by name and digest. The bytes are re-read here and
   // re-hashed, so what is attached is what the lane verified.
+  const planned = planAssets(t, ctx, ctx.provenance !== undefined);
+  if (!planned.ok) return refuse(planned.reason, planned.detail);
   const want = new Map<string, { bytes: Uint8Array; sha256: string }>();
-  for (const name of t.assets) {
-    const bytes = await ctx.readBytes(name);
-    if (!bytes) return refuse("artifact_bytes_missing", name);
+  for (const p of planned.assets) {
+    if (p.file === undefined) continue;
+    const bytes = await ctx.readBytes(p.file);
+    if (!bytes) return refuse("artifact_bytes_missing", p.file);
     const d = sha256(bytes);
-    if (ctx.digests[name] !== d) return refuse("digest_mismatch", name);
-    want.set(name, { bytes, sha256: d });
+    if (ctx.digests[p.file] !== d) return refuse("digest_mismatch", p.file);
+    want.set(p.asset, { bytes, sha256: d });
   }
   if (t.provenanceAsset !== null) {
-    if (ctx.provenance === undefined)
-      return refuse("no_provenance", "the lane signed nothing to attach");
-    const bytes = new TextEncoder().encode(ctx.provenance);
+    const bytes = new TextEncoder().encode(ctx.provenance!);
     want.set(t.provenanceAsset, { bytes, sha256: sha256(bytes) });
+  }
+  // Lane-verified co-signatures go next to the provenance, under exactly their names.
+  for (const c of ctx.cosignatures ?? []) {
+    want.set(c.outputName, { bytes: c.signature, sha256: sha256(c.signature) });
   }
   const expected = Object.fromEntries([...want].map(([n, v]) => [n, v.sha256]));
 

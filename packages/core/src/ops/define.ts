@@ -3,6 +3,7 @@ import type { Db } from "../db";
 import type { Scope } from "../db/repos";
 import type { TrustAnchors } from "../approvals/attestation";
 import type { RelyingParty } from "../approvals/webauthn";
+import type { LaneConfigClient } from "../release/channel-client";
 import type { WebhookService } from "../webhooks/service";
 import type { GithubFacts, GithubUserLookup } from "../github/api";
 import type { InstallationClaims } from "../github/claim";
@@ -14,6 +15,7 @@ import type { SecretVault } from "../secrets/vault";
 import type { DoctorReport } from "../doctor/types";
 import type { BackupConfig } from "../db/backup";
 import type { SettingsRuntime } from "../settings/resolve";
+import type { AppAuth } from "../github/app-auth";
 import type { Principal } from "./principal";
 import type { Role } from "./roles";
 
@@ -71,6 +73,12 @@ export type OpContext = {
   webhooks?: WebhookService | undefined;
   /** WebAuthn relying party (id and allowed origins); absent when not configured. */
   webauthn?: RelyingParty | undefined;
+  /** The release lane's config channel (the `release_*` ops); absent when no lane is configured. */
+  releaseConfig?: LaneConfigClient | undefined;
+  /** The stored artifact bytes, for the ops that serve them; absent when artifacts are off. */
+  artifactBlobs?: ArtifactBlobs | undefined;
+  /** Slug of the operator org (the bootstrap org, default `local`): the only org whose owners configure the lane. */
+  operatorOrgSlug?: string | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent (tests inject their own). */
   attestationAnchors?: TrustAnchors | undefined;
   /** Runs the readiness checks against the running server; absent where there is no server. */
@@ -84,6 +92,25 @@ export type OpContext = {
    * action and target (#430). Absent otherwise: a handler that opens a session path must require it.
    */
   stepUp?: { action: string; target: string | undefined } | undefined;
+  /** The App's credential minter and secret store; absent without a master key. */
+  appAuth?: AppAuth | undefined;
+};
+
+/** Read access to the stored bytes of a run's artifact, as the artifact store holds them. */
+export interface ArtifactBlobs {
+  /** The stored blob, hashed on this read, or null when it is not there. */
+  open(runId: string, name: string): Promise<{ size: number; sha256: string; file: Blob } | null>;
+}
+
+/**
+ * What a download op's handler returns: the bytes and how to present them. The REST adapter sends
+ * `body` as the response; the output is not JSON (OpenAPI says `application/octet-stream`).
+ */
+export type DownloadOutput = {
+  body: Blob | Uint8Array;
+  /** The basename for `Content-Disposition`; a plain name. */
+  filename: string;
+  size: number;
 };
 
 export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
@@ -126,6 +153,11 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
    * in every audit entry. Unlike `secretInputFields` they may travel over http and in OpenAPI.
    */
   logOmitFields?: readonly string[];
+  /**
+   * A download op: its handler returns a DownloadOutput, and the REST adapter streams `body` with
+   * this content type instead of JSON. Never an MCP tool (`mcp` must be false).
+   */
+  download?: { contentType: string };
   /** False keeps the op out of MCP tools: a value in tool input sits in an agent's context. */
   mcp?: boolean;
   /**
@@ -168,6 +200,7 @@ export type Op = {
   mcp: boolean;
   outsideTransaction: boolean;
   crossOrg: boolean;
+  download: { contentType: string } | undefined;
   auditDetail?: ((output: unknown) => Record<string, unknown>) | undefined;
   handler(ctx: OpContext, input: unknown): Promise<unknown>;
 };
@@ -185,6 +218,8 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
   if (spec.crossOrg && (spec.effect !== "read" || spec.auth.type !== "token")) {
     throw new Error(`${spec.name}: crossOrg is for token-auth read ops only`);
   }
+  if (spec.download && spec.mcp !== false)
+    throw new Error(`${spec.name}: a download op cannot be an MCP tool (set mcp: false)`);
   if (spec.summary.length === 0 || spec.summary.length > 120) {
     throw new Error(`${spec.name}: summary must be 1 to 120 characters`);
   }
@@ -255,6 +290,7 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     mcp: spec.mcp ?? true,
     outsideTransaction: spec.outsideTransaction ?? false,
     crossOrg: spec.crossOrg ?? false,
+    download: spec.download,
     auditDetail: spec.auditDetail ? (out) => spec.auditDetail!(out as z.infer<O>) : undefined,
     handler: (ctx, raw) => spec.handler(ctx, raw as z.infer<I>),
   };

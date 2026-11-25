@@ -116,6 +116,7 @@ export async function syncInstallation(
     accountId: inst.account.id,
     accountType: inst.account.type,
     avatarUrl: inst.account.avatarUrl,
+    permissions: inst.permissions,
     repositorySelection: inst.repositorySelection,
     status: inst.suspended ? "suspended" : "active",
   });

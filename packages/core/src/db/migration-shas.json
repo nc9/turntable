@@ -206,12 +206,16 @@
       "sha256": "8099738932b5529359567d4f37cc7f89ef9152f83b4a8ce7c281cfff085876f7"
     },
     {
-      "tag": "0051_notifications",
-      "sha256": "d7ddcde4dffa9b4ac3afcb809bbc2dcacbc89e6e41b5e3072f0be301a90eee86"
+      "tag": "0051_installation_permissions",
+      "sha256": "8a489b058e5b57bc34f22a46e32d11d4d22155926ba0258a7373ff2809972962"
     },
     {
-      "tag": "0052_webhook_slack_format",
-      "sha256": "26711ec309e746a9afede898e5eab48d5b4732a46f9373a282d2c1b2b14d9ad1"
+      "tag": "0053_release_request_cosignatures",
+      "sha256": "6970df8b52c5bdb977d6ab2e699162940277c46249f42f97962b32ac5d2444d3"
+    },
+    {
+      "tag": "0054_notifications",
+      "sha256": "c24c48598da9b07df7be090a0b55cd7db221312e155ffccb9a693fbc35b37686"
     }
   ],
   "pg": [
@@ -304,12 +308,16 @@
       "sha256": "ace2209310e9e936215e8f6a27806a8280f8995d9aa1af9a0eb5482da6032eff"
     },
     {
-      "tag": "0022_notifications",
-      "sha256": "7dd85de86481608429e1fbe7032c7d2afb643937360d8d1bdcf6247cb6af51e5"
+      "tag": "0022_installation_permissions",
+      "sha256": "f77da1f1077b9d619f956ee17df234a81230a84c6f9daaa83ccca0a20c63a12d"
     },
     {
-      "tag": "0023_webhook_slack_format",
-      "sha256": "27f11e159c776d5922cc3c38dca8d78a6347d1690bbbb25078e084a7599a0383"
+      "tag": "0024_release_request_cosignatures",
+      "sha256": "40908ec5092a6db606274c34167ddf1f3c6b8709737f334260b0e128ff9bd791"
+    },
+    {
+      "tag": "0025_notifications",
+      "sha256": "956d3e0f8cd52a0f6dd798300070f711d35ca5eda9ac2de3bddffd5bad492a24"
     }
   ]
 }

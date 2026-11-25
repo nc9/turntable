@@ -35,6 +35,20 @@ export interface ActionCredentialOptions {
    * workflow. A server run keeps the strict per-action rule.
    */
   local?: boolean;
+  /**
+   * The token is an App installation token: like `local`, it is sent for any action repo that
+   * passes the public check, since the check fails closed on a private or missing repo. Still
+   * never for an untrusted run.
+   */
+  publicActions?: boolean;
+  /**
+   * Remembers, across runs and restarts, that a repo was found public, so a second run does not
+   * ask again. Only a pass is stored. A failure or a refusal never is.
+   */
+  publicCache?: {
+    get(repo: string): Promise<boolean>;
+    put(repo: string): Promise<void>;
+  };
   backoff: Backoff;
   fetch?: SafeFetch;
   apiBase?: string;
@@ -59,7 +73,7 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
     own !== null && `${owner}/${repo}`.toLowerCase() === own;
   const tokenFor = (owner: string, repo: string): string | undefined => {
     if (!o.token || o.untrusted) return undefined;
-    if (isOwn(owner, repo) || o.local === true) return o.token;
+    if (isOwn(owner, repo) || o.local === true || o.publicActions === true) return o.token;
     return o.allowedOwners?.includes(owner.toLowerCase()) ? o.token : undefined;
   };
   const assertPublic = (owner: string, repo: string): Promise<void> => {
@@ -69,6 +83,7 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
     let p = checked.get(key);
     if (!p) {
       p = (async () => {
+        if (await o.publicCache?.get(key)) return;
         let res: Response;
         try {
           res = await fetchWithBackoff(
@@ -111,6 +126,7 @@ export function actionCredentials(o: ActionCredentialOptions): ActionCredentials
         if (info.private !== false) {
           throw new InfraError(`checking whether ${key} is public: no visibility in the response`);
         }
+        await o.publicCache?.put(key).catch(() => undefined);
       })();
       checked.set(key, p);
       // Recorded only when the check passed: a refusal or a failure is asked again next time.

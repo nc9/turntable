@@ -42,6 +42,7 @@ export const EVENT_TYPES = [
   "attempt.step",
   "attempt.cut",
   "attempt.infra_retry",
+  "attempt.drain_cut_not_retried",
   "approval.required",
   "approval.changed",
   "infra.error",
@@ -847,6 +848,8 @@ export const githubInstallations = sqliteTable(
     avatarUrl: text("avatar_url"),
     avatarSyncedAt: integer("avatar_synced_at", { mode: "number" }),
     repositorySelection: text("repository_selection").notNull(),
+    /** JSON object of the permissions the installation has accepted, as GitHub reported them; null until read. */
+    permissions: text("permissions"),
     status: text("status").notNull().default("active"),
     createdAt: createdAt(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull().default(nowMs),
@@ -1280,6 +1283,16 @@ export const releaseRequests = sqliteTable(
     tag: text("tag").notNull(),
     /** JSON array of artifact names. */
     artifacts: text("artifacts").notNull(),
+    /**
+     * JSON array of `{ key, file, signature_b64 }`: co-signatures the requester carries for the lane to
+     * verify (#544). Untrusted input; the lane checks each against its own configured public keys.
+     */
+    cosignatures: text("cosignatures"),
+    /**
+     * A dry run: the lane verifies everything a real request does and returns the publish plan,
+     * and signs and publishes nothing. No approval is read or spent.
+     */
+    dryRun: integer("dry_run", { mode: "boolean" }).notNull().default(false),
     status: text("status").notNull().default("pending"),
     /** Why it was refused or errored: a short code. */
     reason: text("reason"),

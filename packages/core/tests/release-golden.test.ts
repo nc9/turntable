@@ -18,6 +18,7 @@ import { tarDirectory } from "@turntable/act-runner";
 import type { SafeFetch } from "@turntable/net";
 import { LocalSigner, sha256Hex } from "@turntable/signer";
 import { generateEd25519, signEd25519 } from "../src/approvals/keys";
+import { RELEASE_STATEMENT_TYPE, releaseStatementSchema } from "../src/approvals/statement";
 import {
   clearFreeze,
   createAttempt,
@@ -40,7 +41,7 @@ import {
   setRunStatus,
   type Db,
 } from "../src/db";
-import { setApproveRunMinRole } from "../src/db/repos";
+import { getJob, getRun, setApproveRunMinRole, transitionJob } from "../src/db/repos";
 import { createWebhookHandler } from "../src/github/webhook";
 import { SECRET_WEBHOOK } from "../src/github/app-auth";
 import { dispatch, registry } from "../src/ops";
@@ -48,6 +49,8 @@ import { Poller, pollConfigSchema } from "../src/poll";
 import { SecretStore } from "../src/secrets/store";
 import { makeGithub } from "./github-stub";
 import { AttestationStore } from "../src/release/attest";
+import type { LaneConfigClient } from "../src/release/channel-client";
+import type { FileKeyVault } from "../src/release/key-vault";
 import { dirArtifacts } from "../src/release/artifacts";
 import { githubForge } from "../src/release/forge";
 import { fileKeyVault } from "../src/release/key-vault";
@@ -58,6 +61,7 @@ import { builtinKeyRef } from "../src/signing";
 import { decideRun } from "../src/trust";
 import { verifyCommand } from "../src/verify/cli";
 import { mintToken } from "./ops-helpers";
+import { opsHarness } from "./release-config-helpers";
 
 const SHA = "a".repeat(40);
 const TAG = "v1.0.0";
@@ -172,9 +176,17 @@ interface World {
   releaseTok: string;
   dir: string;
   publicKeyPem: string;
+  /** The lane's sealed signing keys (the vault `release_public_key` reads through the channel). */
+  keys: FileKeyVault;
   binary: Uint8Array;
   tarball: Uint8Array;
   request(artifacts?: string[]): Promise<string>;
+  /**
+   * Approve the run again, under the lane's configuration as it now is. The release job waits for
+   * approval once, so a re-approval reruns only that job through the `rerun` op (it waits again),
+   * then one more approver signs a fresh statement. No direct DB writes.
+   */
+  reapprove(): Promise<void>;
   state(id: string): Promise<{ status: string; reason: string | null; result: any }>;
   signAudits(): Promise<string[]>;
   /** Set when the run came from a signed tag push webhook through the poller. */
@@ -423,7 +435,45 @@ async function world(
   ).secret;
   const operatorTok = (await mintToken(db, { orgId: org.id }, "operator", { kind: "person" }))
     .secret;
-  const env = { registry, db };
+  // The lane's own file, configured BEFORE anyone approves: a release approval binds the lane's
+  // configuration version (the pin, targets and secrets the approver saw), which the server reads
+  // from the lane when it issues the challenge. Here the lane's version is read straight from its
+  // file, through the same call shape the config channel answers.
+  const attest = new AttestationStore(join(dir, "attested.db"));
+  attest.pinRepo(org.id, project.id, "acme/web", Date.now());
+  attest.setPublishTarget(
+    org.id,
+    project.id,
+    "npm",
+    {
+      kind: "npm",
+      mode: "strict",
+      package: "@acme/web",
+      artifact: "web-1.0.0.tgz",
+      tag: "latest",
+      access: "public",
+      secret: "NPM_TOKEN",
+    },
+    Date.now(),
+  );
+  attest.setPublishTarget(
+    org.id,
+    project.id,
+    "release",
+    {
+      kind: "github-release",
+      mode: "strict",
+      assets: ["cli-linux"],
+      provenanceAsset: "provenance.intoto.json",
+    },
+    Date.now(),
+  );
+  const laneVersion: LaneConfigClient = {
+    async call() {
+      return { ok: true, result: { config_version: attest.configVersion() } };
+    },
+  };
+  const env = { registry, db, releaseConfig: laneVersion };
   const call = (tok: string, op: string, input: unknown) =>
     dispatch(env, { kind: "bearer", token: tok }, op, input);
 
@@ -522,44 +572,47 @@ async function world(
       size: bytes.length,
     });
   }
+  let reapprovals = 0;
+  /** One approver (a new key, a new person) signs one release statement for the run. */
+  const approveOnce = async (n: number): Promise<void> => {
+    const key = generateEd25519();
+    const approver = await insertApprover(
+      db,
+      org.id,
+      {
+        person: `rel${n}`,
+        forgeLogin: `releaser${n}`,
+        kind: "ed25519",
+        publicKey: key.publicSpki,
+        alg: "EdDSA",
+        createdBy: "test",
+      },
+      Date.now(),
+    );
+    const c = await call(operatorTok, "release_approval_challenge", {
+      run_id: runId,
+      approver: approver.id,
+      project: "web",
+    });
+    if (!c.ok) {
+      ingested?.stop();
+      throw new Error(`challenge: ${c.error.message}`);
+    }
+    const ch = c.output as { statement: unknown; canonical: string };
+    const r = await dispatch(env, { kind: "signed" }, "approve_release", {
+      statement: ch.statement,
+      signature: { kind: "ed25519", signature: signEd25519(key.privatePem, ch.canonical) },
+    });
+    if (!r.ok) {
+      ingested?.stop();
+      throw new Error(`approve: ${r.error.message}`);
+    }
+  };
   if (o.approve !== false && !o.fork) {
     // One approver per required identity: distinct forge logins, none of them the (unknown) author.
     const quorum = o.ingest?.quorum ?? 1;
     const needed = quorum + (o.ingest && o.ingest.allowAuthorApproval === false ? 1 : 0);
-    for (let n = 0; n < (o.ingest?.approvers ?? needed); n += 1) {
-      const key = generateEd25519();
-      const approver = await insertApprover(
-        db,
-        org.id,
-        {
-          person: `rel${n}`,
-          forgeLogin: `releaser${n}`,
-          kind: "ed25519",
-          publicKey: key.publicSpki,
-          alg: "EdDSA",
-          createdBy: "test",
-        },
-        Date.now(),
-      );
-      const c = await call(operatorTok, "release_approval_challenge", {
-        run_id: runId,
-        approver: approver.id,
-        project: "web",
-      });
-      if (!c.ok) {
-        ingested?.stop();
-        throw new Error(`challenge: ${c.error.message}`);
-      }
-      const ch = c.output as { statement: unknown; canonical: string };
-      const r = await dispatch(env, { kind: "signed" }, "approve_release", {
-        statement: ch.statement,
-        signature: { kind: "ed25519", signature: signEd25519(key.privatePem, ch.canonical) },
-      });
-      if (!r.ok) {
-        ingested?.stop();
-        throw new Error(`approve: ${r.error.message}`);
-      }
-    }
+    for (let n = 0; n < (o.ingest?.approvers ?? needed); n += 1) await approveOnce(n);
   }
 
   // 3. The job finished; the bytes sit where the lane reads them.
@@ -574,7 +627,8 @@ async function world(
   // 4. The release lane: its own key, its own file, the real signing service and approval
   //    verifier, the real vault for the npm token, strict publish targets.
   const masterKey = randomBytes(32);
-  const local = new LocalSigner(fileKeyVault(keysDir(dir), masterKey));
+  const keys = fileKeyVault(keysDir(dir), masterKey);
+  const local = new LocalSigner(keys);
   const ref = builtinKeyRef(org.id, "release");
   await local.ensureKey(ref);
   const publicKeyPem = (await local.publicKey(ref)).publicKeyPem;
@@ -584,35 +638,6 @@ async function world(
     trustClasses: ["release"],
   });
   const vault = new SecretVault({ db, masterKey, lane: "release" });
-  const attest = new AttestationStore(join(dir, "attested.db"));
-  attest.pinRepo(org.id, project.id, "acme/web", Date.now());
-  attest.setPublishTarget(
-    org.id,
-    project.id,
-    "npm",
-    {
-      kind: "npm",
-      mode: "strict",
-      package: "@acme/web",
-      artifact: "web-1.0.0.tgz",
-      tag: "latest",
-      access: "public",
-      secret: "NPM_TOKEN",
-    },
-    Date.now(),
-  );
-  attest.setPublishTarget(
-    org.id,
-    project.id,
-    "release",
-    {
-      kind: "github-release",
-      mode: "strict",
-      assets: ["cli-linux"],
-      provenanceAsset: "provenance.intoto.json",
-    },
-    Date.now(),
-  );
   const lane = new ReleaseLane({
     db,
     forge: githubForge({
@@ -653,8 +678,40 @@ async function world(
     releaseTok,
     dir,
     publicKeyPem,
+    keys,
     binary,
     tarball,
+    async reapprove() {
+      // The real path, no direct DB writes: the release job finished (the way a scheduler ends
+      // it), the operator reruns ONLY that job through the `rerun` op, the fresh attempt waits for
+      // approval, one more approver signs a statement under the lane's current version, and the
+      // job runs and succeeds again.
+      const finish = async (): Promise<void> => {
+        const j = await getJob(db, scope, jobId);
+        if (j?.state === "queued") await transitionJob(db, scope, jobId, "running");
+        if ((await getJob(db, scope, jobId))?.state === "running") {
+          await transitionJob(db, scope, jobId, "success", { exitCode: 0 });
+        }
+        const run = await getRun(db, scope, runId);
+        if (run?.status === "queued") await setRunStatus(db, scope, runId, "running");
+        if ((await getRun(db, scope, runId))?.status === "running") {
+          await setRunStatus(db, scope, runId, "success");
+        }
+      };
+      await finish();
+      const rr = await call(operatorTok, "rerun", {
+        run_id: runId,
+        jobs: ["release"],
+        reason: "lane config changed after approval",
+      });
+      if (!rr.ok) throw new Error(`rerun: ${rr.error.code} ${rr.error.message}`);
+      const out = rr.output as { reruns: { job_key: string; state: string }[] };
+      if (out.reruns.length !== 1 || out.reruns[0]!.state !== "awaiting_approval") {
+        throw new Error(`rerun did not wait for approval: ${JSON.stringify(out.reruns)}`);
+      }
+      await approveOnce(100 + reapprovals++);
+      await finish();
+    },
     async request(artifacts = ["cli-linux", "web-1.0.0.tgz"]) {
       const r = await call(releaseTok, "request_release", {
         run_id: runId,
@@ -683,6 +740,33 @@ async function world(
       ingested?.stop();
     },
   };
+}
+
+/** A lane config client answering the version from the lane's own file. */
+const laneVersionOf = (attest: AttestationStore): LaneConfigClient => ({
+  async call() {
+    return { ok: true, result: { config_version: attest.configVersion() } };
+  },
+});
+
+/** A fresh ed25519 approver of the world's org (a challenge is issued for one). */
+let approverSeq = 0;
+async function anApprover(world: World): Promise<{ id: string }> {
+  const key = generateEd25519();
+  approverSeq += 1;
+  return insertApprover(
+    world.db,
+    world.orgId,
+    {
+      person: `extra${approverSeq}`,
+      forgeLogin: `extra${approverSeq}`,
+      kind: "ed25519",
+      publicKey: key.publicSpki,
+      alg: "EdDSA",
+      createdBy: "test",
+    },
+    Date.now(),
+  );
 }
 
 let w: World;
@@ -729,9 +813,10 @@ async function releaseAndVerify(): Promise<void> {
 
   // strict publish: npm holds the verified tarball's integrity; GitHub holds a published
   // release with the binary and the lane's provenance
+  // the GitHub release first, then npm (the explicit order, whatever the keys are called)
   expect(done.result.published).toMatchObject([
-    { target: "npm", state: "published" },
     { target: "release", state: "published" },
+    { target: "npm", state: "published" },
   ]);
   expect(w.net.npm.get("1.0.0")).toBe(
     `sha512-${createHash("sha512").update(w.tarball).digest("base64")}`,
@@ -1038,5 +1123,234 @@ describe("one negative per gate: nothing is signed, nothing is published", () =>
     expect(await w.lane.processNext()).toBe(true);
     expect((await w.state(id)).status).toBe("signed");
     expect(w.net.npm.size).toBe(1);
+  });
+});
+
+const CONFIG_CHANGED = "release lane config changed since approval; re-approve";
+
+describe("the approval binds the lane's configuration version (#541)", () => {
+  const bump = (): void => void w.attest.bumpConfigVersion();
+  const detailOf = async (id: string): Promise<string | null> =>
+    (await getReleaseRequest(w.db, w.scope, id))!.detail;
+
+  test("the statement the approver signs carries the lane's version at the time of the challenge", async () => {
+    w = await world({ approve: false });
+    const v = w.attest.configVersion();
+    expect(v).toBeGreaterThan(0);
+    // a challenge issued now names the version now; after a change it names the new one
+    const opTok = (await mintToken(w.db, { orgId: w.orgId }, "operator")).secret;
+    const issue = async (): Promise<number> => {
+      const r = await dispatch(
+        { registry, db: w.db, releaseConfig: laneVersionOf(w.attest) },
+        { kind: "bearer", token: opTok },
+        "release_approval_challenge",
+        {
+          run_id: w.runId,
+          approver: (await anApprover(w)).id,
+          project: "web",
+        },
+      );
+      if (!r.ok) throw new Error(r.error.message);
+      return (r.output as { statement: { lane_config_version: number } }).statement
+        .lane_config_version;
+    };
+    expect(await issue()).toBe(v);
+    bump();
+    expect(await issue()).toBe(v + 1);
+  });
+
+  test("a statement without the field is not a v2 statement and is never accepted", async () => {
+    const { lane_config_version: _drop, ...rest } = {
+      type: RELEASE_STATEMENT_TYPE,
+      org: "acme",
+      project: "web",
+      run_id: "r1",
+      head_sha: "a".repeat(40),
+      workflow_hash: "ab".repeat(32),
+      environment: "release",
+      manifest_sha256: "c".repeat(64),
+      lane_config_version: 1,
+      approver: "ap",
+      expires_at: 1,
+      nonce: "n".repeat(20),
+    };
+    expect(releaseStatementSchema.safeParse(rest).success).toBe(false);
+    expect(releaseStatementSchema.safeParse({ ...rest, lane_config_version: 1 }).success).toBe(
+      true,
+    );
+    expect(releaseStatementSchema.safeParse({ ...rest, lane_config_version: -1 }).success).toBe(
+      false,
+    );
+  });
+
+  test("approve, change the config, then SIGNING is refused with the exact reason; nothing is published", async () => {
+    w = await world();
+    bump();
+    const id = await w.request();
+    expect(await w.lane.processNext()).toBe(true);
+    expect(await w.state(id)).toMatchObject({ status: "refused", reason: "signer:config_changed" });
+    expect(await detailOf(id)).toBe(CONFIG_CHANGED);
+    expect(await w.signAudits()).toContain("denied:config_changed");
+    expect(w.net.npm.size).toBe(0);
+    expect(w.net.release).toBeUndefined();
+  });
+
+  test("approving again under the new version signs and publishes", async () => {
+    w = await world();
+    bump();
+    const first = await w.request();
+    await w.lane.processNext();
+    expect(await w.state(first)).toMatchObject({ reason: "signer:config_changed" });
+    await w.reapprove();
+    const second = await w.request();
+    await w.lane.processNext();
+    expect(await w.state(second)).toMatchObject({ status: "signed" });
+    expect(w.net.npm.size).toBe(1);
+  });
+
+  test("approve, sign, change the config, then PUBLISH is refused; approving again publishes", async () => {
+    w = await world();
+    // sign with no targets declared (a signature is not a publish), then declare them again
+    const targets = w.attest.publishTargets(w.scope.orgId, w.scope.projectId);
+    for (const key of Object.keys(targets)) {
+      w.attest.removePublishTarget(w.scope.orgId, w.scope.projectId, key);
+    }
+    // the approval was given under the version before these removals: refresh it, as an approver
+    // would, so the signature below is under the current version
+    await w.reapprove();
+    const id = await w.request();
+    await w.lane.processNext();
+    expect(await w.state(id)).toMatchObject({ status: "signed" });
+    for (const [key, t] of Object.entries(targets)) {
+      w.attest.setPublishTarget(w.scope.orgId, w.scope.projectId, key, t, Date.now());
+    }
+    const refused = await w.lane.finalize({ ...w.scope, runId: w.runId });
+    expect(refused.map((r) => [r.target, r.state, r.reason])).toEqual([
+      ["release", "refused", CONFIG_CHANGED],
+      ["npm", "refused", CONFIG_CHANGED],
+    ]);
+    expect(w.net.npm.size).toBe(0);
+    expect(w.net.release).toBeUndefined();
+    // approve again (the release job waits again), sign again: published
+    await w.reapprove();
+    const again = await w.request();
+    await w.lane.processNext();
+    expect(await w.state(again)).toMatchObject({ status: "signed" });
+    expect(w.net.npm.size).toBe(1);
+  });
+});
+
+describe("get_release_request serves the lane's provenance, and it verifies against release_public_key", () => {
+  async function signedWorld() {
+    w = await world();
+    const id = await w.request();
+    await w.lane.processNext();
+    expect(await w.state(id)).toMatchObject({ status: "signed" });
+    const h = await opsHarness({ db: w.db, attest: w.attest, orgId: w.orgId, keys: w.keys });
+    const reader = (await mintToken(w.db, { orgId: w.orgId }, "reader")).secret;
+    const ask = (tok: string, op: string, input: Record<string, unknown>, transport = "rest") =>
+      dispatch(
+        { ...h.env, allowInstance: false, transport: transport as "rest" | "mcp" },
+        { kind: "bearer", token: tok },
+        op,
+        input,
+      );
+    const pub = await ask(reader, "release_public_key", { name: "release" });
+    if (!pub.ok) throw new Error(`public key: ${pub.error.message}`);
+    const d = mkdtempSync(join(tmp, "prov-"));
+    writeFileSync(join(d, "cli-linux"), w.binary);
+    writeFileSync(
+      join(d, "release.pub"),
+      (pub.output as { public_key_pem: string }).public_key_pem,
+    );
+    return { id, h, pub, d, ask };
+  }
+
+  test("the envelope verifies with `turntable verify` against the PEM release_public_key returns", async () => {
+    const { id, h, pub, d } = await signedWorld();
+    try {
+      expect((pub.output as { public_key_pem: string }).public_key_pem).toBe(w.publicKeyPem);
+      const got = await dispatch(
+        { registry, db: w.db },
+        { kind: "bearer", token: w.releaseTok },
+        "get_release_request",
+        { id, project: "web" },
+      );
+      expect(got.ok).toBe(true);
+      const out = got.ok
+        ? (got.output as { status: string; provenance: string | null })
+        : undefined;
+      expect(out!.status).toBe("signed");
+      expect(typeof out!.provenance).toBe("string");
+      writeFileSync(join(d, "provenance.json"), out!.provenance!);
+      const ok = await verify(
+        join(d, "cli-linux"),
+        join(d, "provenance.json"),
+        join(d, "release.pub"),
+      );
+      expect(ok.code).toBe(0);
+      expect(ok.out).toContain("cli-linux");
+    } finally {
+      h.dispose();
+    }
+  });
+
+  test("a tampered envelope in the row fails verification; an unsigned request has none", async () => {
+    const { id, h, d } = await signedWorld();
+    try {
+      // someone with write access to the main database edits the stored envelope's payload
+      await w.db.run(async (x) => {
+        const [row] = await x.orm
+          .select()
+          .from(schema.releaseRequests)
+          .where(eq(schema.releaseRequests.id, id));
+        const result = JSON.parse(row!.result!) as { envelope: { payload: string } };
+        const payload = JSON.parse(Buffer.from(result.envelope.payload, "base64").toString("utf8"));
+        payload.subject[0].digest.sha256 = "0".repeat(64);
+        result.envelope.payload = Buffer.from(JSON.stringify(payload)).toString("base64");
+        await x.orm
+          .update(schema.releaseRequests)
+          .set({ result: JSON.stringify(result) })
+          .where(eq(schema.releaseRequests.id, id));
+      });
+      const got = await dispatch(
+        { registry, db: w.db },
+        { kind: "bearer", token: w.releaseTok },
+        "get_release_request",
+        { id, project: "web" },
+      );
+      const prov = got.ok ? (got.output as { provenance: string }).provenance : "";
+      writeFileSync(join(d, "provenance.json"), prov);
+      const bad = await verify(
+        join(d, "cli-linux"),
+        join(d, "provenance.json"),
+        join(d, "release.pub"),
+      );
+      expect(bad.code).toBe(1);
+      expect(bad.out).toContain("NOT VERIFIED");
+    } finally {
+      h.dispose();
+    }
+  });
+
+  test("a pending or refused request has provenance null", async () => {
+    w = await world({ tamperBytes: true });
+    const id = await w.request();
+    const pending = await dispatch(
+      { registry, db: w.db },
+      { kind: "bearer", token: w.releaseTok },
+      "get_release_request",
+      { id, project: "web" },
+    );
+    expect(pending.ok && (pending.output as { provenance: unknown }).provenance).toBeNull();
+    await w.lane.processNext();
+    const refused = await dispatch(
+      { registry, db: w.db },
+      { kind: "bearer", token: w.releaseTok },
+      "get_release_request",
+      { id, project: "web" },
+    );
+    expect(refused.ok && (refused.output as { status: string }).status).toBe("refused");
+    expect(refused.ok && (refused.output as { provenance: unknown }).provenance).toBeNull();
   });
 });

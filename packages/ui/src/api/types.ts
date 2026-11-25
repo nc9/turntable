@@ -200,6 +200,8 @@ export type Whoami = {
   role: "reader" | "operator" | "release_operator" | "owner" | "admin" | "member" | "viewer";
   org: string;
   project: string | null;
+  /** True for the operator org, whose owners configure the release lane. */
+  operatorOrg: boolean;
 };
 
 /** What `approve_run` reports back. */
@@ -311,6 +313,8 @@ export type ReleaseStatement = Omit<ApprovalStatement, "type"> & {
   type: "turntable.approve_release.v2";
   /** sha256 hex of the canonical manifest of the artifacts the release lane will sign. */
   manifest_sha256: string;
+  /** The release lane's configuration version the approver signs over (the pin, targets, secrets). */
+  lane_config_version: number;
 };
 
 export type ReleaseApprovalChallenge = ApprovalChallenge<ReleaseStatement> & {
@@ -648,3 +652,46 @@ export type NotificationPrefs = {
   prefs: NotificationPref[];
   defaults: { kind: NotificationKind; enabled: boolean; operatorOnly: boolean }[];
 };
+
+/** The release lane config writes: each needs a passkey step-up for exactly its input. */
+export type LaneAction =
+  | "release_pin_repo"
+  | "release_init_key"
+  | "release_publish_target_set"
+  | "release_publish_target_delete"
+  | "release_set_project_signing"
+  | "release_secret_set"
+  | "release_cosign_key_set"
+  | "release_cosign_key_remove";
+
+/** A publish target as the lane's file holds it: never a secret value. */
+export type LaneTarget = {
+  key: string;
+  kind: string;
+  mode: string;
+  hasCredential: boolean;
+  settings: Record<string, unknown>;
+};
+
+export type LaneConfig = {
+  pinnedRepo: string | null;
+  configVersion: number;
+  targets: LaneTarget[];
+};
+
+/** A project's co-signing key as the lane reports it: fingerprints only, never key material. */
+export type LaneCosignKey = {
+  name: string;
+  keyId: string;
+  spkiSha256: string;
+  signs: string;
+  outputName: string;
+  format: string;
+  manifest: boolean;
+};
+
+/** The public half of a release signing key. */
+export type LaneKey = { keyid: string; publicKeyPem: string; createdAt: string };
+
+/** Whether a lane secret was set, when and by whom. Never the value. */
+export type LaneSecretStatus = { set: boolean; setAt: string | null; setBy: string | null };

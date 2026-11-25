@@ -35,6 +35,11 @@ export type ApprovalSubject = {
    * `turntable.approve_environment.v1` approval counts for nothing. Set it for every signature.
    */
   manifestSha256?: string;
+  /**
+   * The release lane's current configuration version, for a release signature: a release approval
+   * whose statement names another version does not count (the config moved since it was given).
+   */
+  laneConfigVersion?: number;
 };
 
 export type VerifiedApproval = {
@@ -66,7 +71,9 @@ export type ApprovalVerdict =
         /** Approvals exist for this run and environment, but for another artifact set. */
         | "manifest_mismatch"
         /** An approval of exactly this manifest exists, and a signature already spent it. */
-        | "approval_spent";
+        | "approval_spent"
+        /** A release approval of these bytes exists, but under another lane configuration version. */
+        | "config_changed";
     };
 
 export interface ApprovalVerifier {
@@ -154,6 +161,7 @@ export function createApprovalVerifier(
       const keys = o.keys ?? dbKeyStore(db, subject.orgId);
       const good: VerifiedApproval[] = [];
       let selfApproved = false;
+      let staleConfig = false;
       for (const r of live) {
         let parsed;
         let sig;
@@ -164,6 +172,15 @@ export function createApprovalVerifier(
               : releaseStatementSchema.parse(JSON.parse(r.statement));
           sig = signatureSchema.parse(JSON.parse(r.signature));
         } catch {
+          continue;
+        }
+        if (
+          manifest !== undefined &&
+          subject.laneConfigVersion !== undefined &&
+          (parsed as { lane_config_version?: number }).lane_config_version !==
+            subject.laneConfigVersion
+        ) {
+          staleConfig = true;
           continue;
         }
         const key = await keys.lookup(r.approverId);
@@ -203,6 +220,7 @@ export function createApprovalVerifier(
           required,
           approvals: [...distinct.values()],
         };
+      if (staleConfig) return denied("config_changed", distinct.size);
       if (selfApproved && distinct.size < required) return denied("self_approval", distinct.size);
       if (manifest !== undefined) {
         // Say WHY a release approval does not count, when it is one of these (not an expiry).

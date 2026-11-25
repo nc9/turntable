@@ -45,7 +45,12 @@ async function git(dir: string, ...args: string[]): Promise<void> {
   if ((await p.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`);
 }
 
-async function runExample(workflow: string, jobId: string, egress: "open" | "none" = "none") {
+async function runExample(
+  workflow: string,
+  jobId: string,
+  egress: "open" | "none" = "none",
+  vars?: Record<string, string>,
+) {
   const repo = join(tmp, `${jobId}-${egress}-repo`);
   cpSync(join(import.meta.dir, "../../../examples/hello"), repo, { recursive: true });
   await git(repo, "init", "-q", "-b", "main");
@@ -55,6 +60,7 @@ async function runExample(workflow: string, jobId: string, egress: "open" | "non
   const yaml = await Bun.file(join(repo, ".github/workflows", workflow)).text();
   const planned = planJob(yaml, jobId, {
     workflowPath: `.github/workflows/${workflow}`,
+    ...(vars ? { vars } : {}),
     readFile: (f) => (existsSync(join(repo, f)) ? readFileSync(join(repo, f), "utf8") : undefined),
   });
   // Everything in the example is already sha-pinned, so the resolver is never consulted.
@@ -121,6 +127,16 @@ describe.skipIf(!enabled)("act runner end to end (docker provider)", () => {
     expect(log).toContain("count=1");
     expect(log).toContain("missing-outcome=failure");
     expect(log).toContain("is not in the delivered repository");
+  }, 600_000);
+
+  // Issue #613: the run's vars reach act, so step `if:`, `with:` and `env:` see them.
+  test("vars.* reach act in step if, with and env", async () => {
+    const vars = { TURNTABLE_CI: "true", X: "y", TRICKY: 'a "q" $HOME b\\c' };
+    const { result, log } = await runExample("vars.yml", "vars", "none", vars);
+    if (result.state !== "success") console.log(JSON.stringify(result), "\n" + log);
+    expect(result.state).toBe("success");
+    expect(log).toContain("if-check=ran");
+    expect(log).toContain("env-check=y");
   }, 600_000);
 
   test("failing job is a failure, not infra_error", async () => {

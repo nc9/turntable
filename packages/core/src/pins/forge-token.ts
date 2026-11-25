@@ -2,7 +2,10 @@
 // those calls are unauthenticated and share GitHub's 60-per-hour limit, which a busy server
 // spends in minutes. The order follows how the run was ingested:
 //   1. the poll config's token file, for a repo the poller watches;
-//   2. an App installation token minted read-only for that one repo (contents: read);
+//   2. an App installation token for the repo's installation, read-only (metadata and contents:
+//      read) and NOT limited to one repository, so it can also read public action repos at the
+//      installation's 5000-per-hour limit instead of the anonymous 60 (#621). The resolver sends
+//      it to a repo other than the run's own only after a fail-closed public check;
 //   3. TURNTABLE_GITHUB_TOKEN, only when neither exists.
 // Nothing here is logged, and no token is returned by any operation.
 import type { Run } from "../db/repos";
@@ -38,14 +41,29 @@ export interface ForgeTokenOptions {
   log?: (message: string) => void;
 }
 
+/**
+ * A credential and what it may be used for. `publicActions` is set for an installation token: it
+ * is sent for any action repo that a fail-closed check proves public, not only for the run's own
+ * repo and the org's allowlisted owners.
+ */
+export type ForgeCredential = { token: string; publicActions?: boolean };
+
 export type ForgeToken = (ctx: {
-  run: Pick<Run, "repo" | "local">;
+  run: Pick<Run, "repo" | "local"> & { id?: string };
   scope: Required<Scope>;
-}) => Promise<string | undefined>;
+}) => Promise<string | ForgeCredential | undefined>;
+
+/** A bare token (poll, env) or a credential, as one credential. */
+export function normalizeForgeToken(
+  v: string | ForgeCredential | undefined,
+): ForgeCredential | undefined {
+  return typeof v === "string" ? { token: v } : v;
+}
 
 export function createForgeToken(o: ForgeTokenOptions): ForgeToken {
   const log = o.log ?? (() => {});
   let warnedUnauthenticated = false;
+  const logged = new Set<string>();
   const unauthenticated = (): undefined => {
     if (!warnedUnauthenticated) {
       warnedUnauthenticated = true;
@@ -88,12 +106,18 @@ export function createForgeToken(o: ForgeTokenOptions): ForgeToken {
         );
         if (bound?.installationId) {
           try {
-            // Read-only, one repository: enough to resolve refs and compare commits.
+            // Read-only and not limited to one repository: enough to resolve refs and compare
+            // commits in the run's repo and in any public action repo. Minted (and cached) by
+            // the App auth; it stays in the control plane and is never logged or sent to a job.
             const { token } = await o.auth.mint(bound.installationId, {
-              repositories: [name],
-              permissions: { contents: "read" },
+              permissions: { metadata: "read", contents: "read" },
             });
-            return token;
+            const seen = `${run.id ?? repo}`;
+            if (!logged.has(seen)) {
+              logged.add(seen);
+              log(`resolving actions for ${repo} with its App installation token`);
+            }
+            return { token, publicActions: true };
           } catch (err) {
             log(
               `could not mint an installation token for ${repo}: ${err instanceof Error ? err.message : String(err)}`,

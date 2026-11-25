@@ -99,7 +99,11 @@ import { createTokenFromCli, listTokensFromCli, revokeTokenFromCli } from "./ops
 import { dropForCommand } from "./command-privileges";
 import { enforceRootPolicy } from "./privileges";
 import { mainRuntime, releaseLaneConfigured, resolveRoles, takeReleaseKeys } from "./roles";
-import { createChannelClient, withReleaseChannel } from "./release/channel-client";
+import {
+  createChannelClient,
+  laneConfigClientFromEnv,
+  withReleaseChannel,
+} from "./release/channel-client";
 import { DEFAULT_DRAIN_TIMEOUT_SECONDS, drainTimeoutSecondsSetting } from "./settings/definitions";
 import { resolveSetting } from "./settings/resolve";
 import { cachedDoctor } from "./doctor/cache";
@@ -805,6 +809,7 @@ async function serve(args: string[]): Promise<void> {
   // The artifact store for jobs: what upload-artifact and download-artifact talk to, and what the
   // release lane signs from. Off unless a URL the sandboxes can reach is given.
   let artifacts: ArtifactService | undefined;
+  let artifactStore: FsArtifactStore | undefined;
   const artifactsUrl = process.env.TURNTABLE_ARTIFACTS_URL?.trim();
   if (artifactsUrl) {
     const num = (name: string, dflt: number): number => {
@@ -812,9 +817,10 @@ async function serve(args: string[]): Promise<void> {
       if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid ${name}`);
       return n;
     };
+    artifactStore = new FsArtifactStore(join(dataDir, "artifacts"));
     artifacts = createArtifactService({
       db,
-      store: new FsArtifactStore(join(dataDir, "artifacts")),
+      store: artifactStore,
       grants: new ArtifactGrants(),
       maxArtifactBytes: Math.floor(num("TURNTABLE_ARTIFACT_MAX_GIB", 2) * 1024 ** 3),
       retentionMs: Math.floor(num("TURNTABLE_ARTIFACT_RETENTION_DAYS", 90) * 86_400_000),
@@ -1039,6 +1045,8 @@ async function serve(args: string[]): Promise<void> {
     sinks.push(webhookSink(exportUrl, auditWebhookSecret ? { secret: auditWebhookSecret } : {}));
   }
   if (sinks.length > 0) auditStops.push(startExporter(db, sinks));
+  // The release lane's config channel (#541), when this process is set up for it.
+  const releaseConfig = laneConfigClientFromEnv(process.env);
   const webauthn = relyingPartyFromEnv(
     values["public-url"] ?? process.env.TURNTABLE_PUBLIC_URL?.trim(),
   );
@@ -1084,6 +1092,9 @@ async function serve(args: string[]): Promise<void> {
         ...(webhooks ? { webhooks } : {}),
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
+        ...(releaseConfig ? { releaseConfig } : {}),
+        ...(artifactStore ? { artifactBlobs: artifactStore } : {}),
+        operatorOrgSlug: process.env.TURNTABLE_BOOTSTRAP_ORG?.trim() || "local",
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),
@@ -1140,6 +1151,7 @@ async function serve(args: string[]): Promise<void> {
         // no org token reaches either, so a hosted instance serves it too.
         doctor: doctorRun,
         auditStore,
+        ...(appAuth ? { appAuth } : {}),
         forwarded,
       })
     : undefined;

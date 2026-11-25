@@ -12,6 +12,7 @@ import { ApproversPage } from "@/features/runs/approvers-page";
 import { QuotasPage } from "@/features/runs/quotas-page";
 import { UsagePage } from "@/features/runs/usage-page";
 import { OrgSettingsPage } from "@/features/settings/org-settings-page";
+import { ReleaseLanePage } from "@/features/settings/release-lane-page";
 import { InstanceSettingsPage } from "@/features/instance/settings-page";
 import { InstanceQuotasPage } from "@/features/instance/quotas-page";
 import { InstanceProjectsPage } from "@/features/instance/projects-page";
@@ -160,6 +161,12 @@ const orgSettingsRoute = createRoute({
   component: OrgSettingsPage,
 });
 
+const releaseLaneRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/$org/-/release-lane",
+  component: ReleaseLanePage,
+});
+
 // The instance-administrator area. The shell renders it with its own sign-in instead of the org
 // shell (see Shell). "-" is not a valid org slug, so these never collide with an org.
 const instanceIndexRoute = createRoute({
@@ -200,6 +207,7 @@ export const routeTree = rootRoute.addChildren([
   quotasRoute,
   usageRoute,
   orgSettingsRoute,
+  releaseLaneRoute,
   settingsRoute,
   notificationsRoute,
   notificationPrefsRoute,

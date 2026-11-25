@@ -484,7 +484,13 @@ describe("token kind", () => {
     expect(mcpNames).not.toContain("create_api_token");
     expect(mcpNames).not.toContain("create_org_token");
     expect(registry.ops.find((o) => o.name === "create_org_token")!.mcp).toBe(false);
-    const withKind = registry.ops.filter((o) => "kind" in o.input.shape).map((o) => o.name);
+    // release_publish_target_set's `kind` is the publish target type (npm, github-release,
+    // oci-image), not a token's kind; it neither mints a token nor changes one. The same holds
+    // for set_notification_prefs, whose `kind` is a notification kind (#611).
+    const notTokenKind = new Set(["release_publish_target_set", "set_notification_prefs"]);
+    const withKind = registry.ops
+      .filter((o) => "kind" in o.input.shape && !notTokenKind.has(o.name))
+      .map((o) => o.name);
     // create_org_token: instance-admin only, REST only, first token of an org only.
     expect(withKind).toEqual(["create_api_token", "create_org_token"]);
   });

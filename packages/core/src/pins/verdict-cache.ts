@@ -10,15 +10,13 @@ import type { ReachabilityChecker } from "./reachability";
 export interface VerdictTtl {
   /** A tag or branch resolved to a sha. Refs move, so this is short. Default 5 minutes. */
   resolveMs: number;
-  /** A sha reachable from its repo. A commit stays reachable. Default 24 hours. */
-  reachYesMs: number;
+  /** A sha reachable from its repo has no TTL: a verified commit is immutable (#621). */
   /** A sha NOT reachable (a possible impostor). Short, so a fixed situation is noticed. Default 10 minutes. */
   reachNoMs: number;
 }
 
 export const DEFAULT_VERDICT_TTL: VerdictTtl = {
   resolveMs: 5 * 60_000,
-  reachYesMs: 24 * 3_600_000,
   reachNoMs: 10 * 60_000,
 };
 
@@ -73,12 +71,12 @@ export function cachedReachability(
       o.db,
       o.scope,
       { kind, repo: full, sha },
-      Math.max(ttl.reachYesMs, ttl.reachNoMs),
+      Number.POSITIVE_INFINITY,
       now(),
     );
-    if (hit && now() - hit.checkedAt < (hit.verdict ? ttl.reachYesMs : ttl.reachNoMs)) {
-      return hit.verdict;
-    }
+    // A sha that was verified reachable is immutable: the yes verdict has no expiry (#621).
+    // A "not reachable" verdict is short-lived, so a fixed situation is noticed.
+    if (hit && (hit.verdict || now() - hit.checkedAt < ttl.reachNoMs)) return hit.verdict;
     const verdict = await o.base(owner, repo, sha);
     await putVerdict(o.db, o.scope, { kind, repo: full, sha, verdict }, { now: now() });
     return verdict;

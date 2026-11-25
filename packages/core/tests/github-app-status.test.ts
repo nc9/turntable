@@ -14,6 +14,7 @@ import {
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { mcpTools } from "../src/ops/mcp";
+import { APP_PERMISSIONS } from "../src/github/manifest";
 import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../src/github/app-auth";
 import { mintToken, seedWorld, type Tenant } from "./ops-helpers";
 
@@ -106,6 +107,36 @@ describe("instance_github_app_status", () => {
       installations: { active: 0, suspended: 0, deleted: 0 },
       unclaimed_installation_ids: [],
     });
+  });
+
+  test("per installation: current, pending acceptance (with what is missing), or unknown", async () => {
+    await seedApp();
+    await upsertInstallation(
+      db,
+      { orgId: a.orgId },
+      {
+        ...inst("1", "active", "a-acct"),
+        permissions: { ...APP_PERMISSIONS },
+      },
+    );
+    await upsertInstallation(
+      db,
+      { orgId: b.orgId },
+      {
+        ...inst("3", "active", "b-acct"),
+        permissions: { checks: "write", contents: "read", metadata: "read", pull_requests: "read" },
+      },
+    );
+    const r = await asInstance();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const p = (r.output as { permissions: any }).permissions;
+    // 1 current, 3 pending, 2 (suspended, never read) unknown.
+    expect(p).toMatchObject({ current: 1, pending_acceptance: 1, unknown: 1 });
+    expect(p.pending).toHaveLength(1);
+    expect(p.pending[0].installation_id).toBe("3");
+    expect(p.pending[0].missing).toContain("issues:write");
+    expect(p.pending[0].missing).not.toContain("checks:write");
   });
 
   test("the full view: app, owner org, sealed flag, counts, unclaimed ids", async () => {

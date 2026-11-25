@@ -267,6 +267,80 @@ export async function unpackZip(
   return out.toSorted((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
 }
 
+/**
+ * The files of a zip, by path and declared size, after the same checks `unpackZip` makes of the
+ * directory (names, links, duplicates, counts, declared sizes). Nothing is inflated.
+ */
+export function listZipFiles(
+  zip: Uint8Array,
+  limits: UnpackLimits = {},
+): { name: string; size: number }[] {
+  const lim = {
+    maxFiles: limits.maxFiles ?? MAX_FILES,
+    maxTotalBytes: limits.maxTotalBytes ?? MAX_TOTAL_BYTES,
+  };
+  const b = Buffer.from(zip.buffer, zip.byteOffset, zip.byteLength);
+  if (b.length < 22) return bad("corrupt", "too short to be a zip");
+  const entries = readDirectory(b, lim);
+  checkNames(entries);
+  let declared = 0;
+  const files = entries.filter((e) => !e.dir);
+  for (const e of files) {
+    declared += e.usize;
+    if (declared > lim.maxTotalBytes) return bad("too_large", `over ${lim.maxTotalBytes} bytes`);
+  }
+  return files
+    .map((e) => ({ name: e.name, size: e.usize }))
+    .toSorted((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+}
+
+/**
+ * The bytes of ONE file of a zip, read in memory with every check `unpackZip` makes: the whole
+ * directory is validated first, then only this entry is inflated (never past the size it declared),
+ * its local header must agree with the directory and its CRC must hold. Undefined when the zip has
+ * no such file; throws UnpackError for anything unsafe. Nothing is written to disk.
+ */
+export function readZipFile(
+  zip: Uint8Array,
+  name: string,
+  limits: UnpackLimits & { maxFileBytes?: number } = {},
+): Uint8Array | undefined {
+  const files = listZipFiles(zip, limits);
+  if (!files.some((f) => f.name === name)) return undefined;
+  const b = Buffer.from(zip.buffer, zip.byteOffset, zip.byteLength);
+  const e = readDirectory(b, {
+    maxFiles: limits.maxFiles ?? MAX_FILES,
+    maxTotalBytes: limits.maxTotalBytes ?? MAX_TOTAL_BYTES,
+  }).find((x) => !x.dir && x.name === name)!;
+  if (e.usize > (limits.maxFileBytes ?? MAX_TOTAL_BYTES))
+    return bad("too_large", `${e.name} is over the size a file may be read at`);
+  if (e.offset + 30 > b.length || b.readUInt32LE(e.offset) !== 0x04034b50)
+    return bad("corrupt", `local header of ${e.name}`);
+  const nameLen = b.readUInt16LE(e.offset + 26);
+  const extraLen = b.readUInt16LE(e.offset + 28);
+  if (b.readUInt16LE(e.offset + 6) & 0x41) return bad("unsupported", "encrypted entry");
+  if (b.subarray(e.offset + 30, e.offset + 30 + nameLen).toString("utf8") !== e.name)
+    return bad("corrupt", `local header of ${e.name} names another file`);
+  const start = e.offset + 30 + nameLen + extraLen;
+  const end = start + e.csize;
+  if (end > b.length) return bad("corrupt", `data of ${e.name} runs past the archive`);
+  const data = b.subarray(start, end);
+  let bytes: Buffer;
+  if (e.method === 0) {
+    if (e.csize !== e.usize) return bad("corrupt", `${e.name} is stored with two sizes`);
+    bytes = data;
+  } else {
+    try {
+      bytes = inflateRawSync(data, { maxOutputLength: Math.max(1, e.usize) });
+    } catch {
+      return bad("corrupt", `${e.name} does not inflate to its declared size`);
+    }
+  }
+  if (bytes.length !== e.usize) return bad("corrupt", `${e.name} has the wrong size`);
+  if (crc32(bytes) !== e.crc) return bad("corrupt", `${e.name} fails its CRC`);
+  return new Uint8Array(bytes);
+}
+
 /** A fresh, private directory under `root` for one unpack. */
 export async function freshUnpackDir(root: string, label: string): Promise<string> {
   await mkdir(root, { recursive: true, mode: 0o700 });

@@ -25,6 +25,7 @@ import {
 } from "../db/repos";
 import { manifestSha256 } from "../release/manifest";
 import type { ReleaseApprovalVerifier, ApprovalSubject } from "./approvals";
+import { CONFIG_CHANGED_REASON } from "../release/attest";
 import { decideSigning, type SigningDenial } from "./policy";
 
 export type Backend = "builtin" | "aws-kms" | "gcp-kms";
@@ -66,6 +67,11 @@ export interface SignRequest {
         ref: string;
         subjects: readonly Artifact[];
         archives?: readonly Artifact[] | undefined;
+        /**
+         * The lane's configuration version now: a release approval given under another version
+         * does not count (the pin, targets or secrets changed since the approver looked).
+         */
+        configVersion?: number | undefined;
       }
     | undefined;
 }
@@ -111,6 +117,26 @@ export class SigningService {
     this.#o = o;
   }
 
+  /**
+   * A dry run's question: is the project's signing key there to sign with? Reads the key's public
+   * half only; signs nothing, reads and spends no approval.
+   */
+  async checkKey(scope: Required<Scope>): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const project = await getProjectSigning(this.#o.db, scope);
+    if (!project.signingKey) return { ok: false, reason: "no signing key is set for the project" };
+    const key = parseKeyRef(project.signingKey);
+    const signer = key ? this.#o.signers[key.backend] : undefined;
+    if (!key || !signer)
+      return { ok: false, reason: "the lane has no backend for the signing key" };
+    const keyRef = key.backend === "builtin" ? builtinKeyRef(scope.orgId, key.keyRef) : key.keyRef;
+    try {
+      await signer.publicKey(keyRef);
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "the lane does not hold the project's signing key" };
+    }
+  }
+
   async signRelease(scope: Required<Scope>, req: SignRequest): Promise<SignOutcome> {
     const { db } = this.#o;
     const deny = async (
@@ -151,6 +177,9 @@ export class SigningService {
             headSha: run.sha,
             workflowHash,
             manifestSha256: manifest,
+            ...(req.verified?.configVersion !== undefined
+              ? { laneConfigVersion: req.verified.configVersion }
+              : {}),
           };
     const approval =
       subject === undefined ? undefined : await this.#o.approvals.verify(subject, environment);
@@ -167,6 +196,13 @@ export class SigningService {
     });
     if (!decision.ok) {
       // A classified reason for a release approval that exists but does not cover these bytes.
+      if (
+        decision.reason === "no_approval" &&
+        approval?.approved === false &&
+        approval.reason === "config_changed"
+      ) {
+        return deny("config_changed", CONFIG_CHANGED_REASON, { manifest_sha256: manifest });
+      }
       if (
         decision.reason === "no_approval" &&
         approval?.approved === false &&

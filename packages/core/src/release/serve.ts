@@ -11,6 +11,7 @@ import { releaseConfigFromEnv, releaseMasterKey } from "../roles";
 import { systemOrgId } from "../audit/failures";
 import { rewrapReleaseKey } from "./rewrap";
 import { AttestationStore } from "./attest";
+import { LaneConfig } from "./config";
 import { dirArtifacts } from "./artifacts";
 import { githubForge } from "./forge";
 import type { PublishWiring } from "./publish/types";
@@ -48,7 +49,10 @@ export const signingWiring: WiringFactory = ({ db, masterKey, dataDir, builderId
     builderId,
   });
   return {
-    signer: { signRelease: (scope, req) => service.signRelease(scope, req) },
+    signer: {
+      signRelease: (scope, req) => service.signRelease(scope, req),
+      checkKey: (scope) => service.checkKey(scope),
+    },
     records: {
       async recorded(scope, runId, names) {
         const rows = await getRunArtifactsByName(db, scope, runId, names);
@@ -153,6 +157,20 @@ export async function serveRelease(
           db,
           proxy,
           key: readFileSync(cfg.channel.keyFile, "utf8").trim(),
+          ...(cfg.channel.configKeyFile
+            ? {
+                config: {
+                  key: readFileSync(cfg.channel.configKeyFile, "utf8").trim(),
+                  lane: new LaneConfig({
+                    attest,
+                    vault,
+                    db,
+                    githubCredential: cfg.githubPublishToken !== undefined,
+                    keys: fileKeyVault(keysDir(resolve(cfg.dataDir)), masterKey),
+                  }),
+                },
+              }
+            : {}),
           listen: cfg.channel.tcp
             ? {
                 tcp: {

@@ -1,6 +1,7 @@
 import { createVerify } from "node:crypto";
 import { describe, expect, test } from "bun:test";
-import { getGithubApp, getInstallation, openDatabase } from "../src/db";
+import { type Db, getGithubApp, getInstallation, openDatabase } from "../src/db";
+import type { SecretStore } from "../src/secrets/store";
 import { githubFacts } from "../src/github/api";
 import {
   AppAuth,
@@ -49,6 +50,8 @@ describe("installation tokens (the single mint function)", () => {
     let n = 0;
     let expiresIn = 3_600_000;
     const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      // The accepted-permissions read (GET installation): no grant listed, so nothing is checked.
+      if (init?.method !== "POST") return Response.json({});
       calls.push({
         url: String(url),
         body: init?.body ? JSON.parse(String(init.body)) : undefined,
@@ -169,12 +172,43 @@ describe("manifest", () => {
     };
     expect(m.hook_attributes.url).toBe(`https://ci.example.com${WEBHOOK_PATH}`);
     expect(m.default_permissions).toEqual({
+      actions: "read",
+      actions_variables: "read",
+      administration: "read",
+      attestations: "write",
       checks: "write",
-      contents: "read",
+      contents: "write",
+      deployments: "write",
+      emails: "read",
+      environments: "read",
+      issues: "write",
+      members: "read",
+      merge_queues: "read",
       metadata: "read",
-      pull_requests: "read",
+      organization_actions_variables: "read",
+      packages: "write",
+      pages: "write",
+      pull_requests: "write",
+      security_events: "write",
+      statuses: "write",
     });
-    expect(m.default_events).toEqual(["push", "pull_request", "check_run"]);
+    expect(m.default_events).toEqual([
+      "check_run",
+      "check_suite",
+      "create",
+      "delete",
+      "issue_comment",
+      "membership",
+      "merge_group",
+      "organization",
+      "pull_request",
+      "pull_request_review",
+      "push",
+      "repository",
+      "repository_ruleset",
+      "workflow_dispatch",
+      "workflow_run",
+    ]);
     expect(m.public).toBe(false);
   });
 
@@ -281,6 +315,28 @@ describe("manifest", () => {
   });
 });
 
+/** The store with its transactional twin wrapped, so a test can fail a write inside the transaction. */
+function wrapTx(
+  store: SecretStore,
+  wrap: (tx: SecretStore, prop: string | symbol) => unknown,
+): SecretStore {
+  const bound = (t: object, prop: string | symbol) => {
+    const v = Reflect.get(t, prop, t);
+    return typeof v === "function" ? v.bind(t) : v;
+  };
+  return new Proxy(store, {
+    get(t, prop) {
+      if (prop !== "withDb") return bound(t, prop);
+      return (tx: Db) => {
+        const inner = t.withDb(tx);
+        return new Proxy(inner, {
+          get: (it, ip) => wrap(it, ip) ?? bound(it, ip),
+        });
+      };
+    },
+  });
+}
+
 describe("webhook secret rotation", () => {
   test("old becomes previous with an overlap window, new is pushed to GitHub", async () => {
     const { db, org, store } = await setup();
@@ -315,5 +371,71 @@ describe("webhook secret rotation", () => {
     expect(await store.get(org.id, SECRET_WEBHOOK)).toBe(before);
     expect((await getGithubApp(db))?.previousSecretExpiresAt).toBeNull();
     expect(await getInstallation(db, "x")).toBeUndefined();
+    expect(await store.has(org.id, SECRET_WEBHOOK_PREVIOUS)).toBe(false);
+  });
+
+  test("a failure after the first local write leaves the old secret current, no previous", async () => {
+    const { db, org, store } = await setup();
+    const before = (await store.get(org.id, SECRET_WEBHOOK)) as string;
+    let calls = 0;
+    const crashing = wrapTx(store, (t, prop) =>
+      prop === "set"
+        ? async (...a: Parameters<typeof t.set>) => {
+            await t.set(...a);
+            if (++calls === 1) throw new Error("injected crash");
+          }
+        : undefined,
+    );
+    const sent: string[] = [];
+    const impl = (async (url: string | URL | Request) => {
+      sent.push(String(url));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await expect(
+      rotateWebhookSecret(db, crashing, new AppAuth({ db, store }), { fetch: impl }),
+    ).rejects.toThrow(/injected crash/);
+    expect(calls).toBe(1);
+    expect(sent).toEqual([]);
+    expect(await store.get(org.id, SECRET_WEBHOOK)).toBe(before);
+    expect(await store.has(org.id, SECRET_WEBHOOK_PREVIOUS)).toBe(false);
+    expect((await getGithubApp(db))?.previousSecretExpiresAt).toBeNull();
+  });
+
+  test("a GitHub refusal restores the old secret and clears previous and expiry together", async () => {
+    const { db, org, store } = await setup();
+    const before = (await store.get(org.id, SECRET_WEBHOOK)) as string;
+    // A restore that fails midway must roll back whole: the new secret then stays current
+    // together with its previous and expiry (a consistent, verifying pair), not a mix.
+    let sets = 0;
+    const crashOnRestore = wrapTx(store, (t, prop) => {
+      if (prop === "delete") {
+        return async () => {
+          throw new Error("restore crash");
+        };
+      }
+      if (prop !== "set") return undefined;
+      return async (...a: Parameters<typeof t.set>) => {
+        sets++;
+        await t.set(...a);
+      };
+    });
+    const refuse = (async () => new Response("no", { status: 422 })) as unknown as typeof fetch;
+    await expect(
+      rotateWebhookSecret(db, crashOnRestore, new AppAuth({ db, store }), {
+        fetch: refuse,
+        now: () => 1000,
+        overlapMs: 5000,
+      }),
+    ).rejects.toThrow(/restore crash/);
+    expect(sets).toBe(3);
+    expect(await store.get(org.id, SECRET_WEBHOOK_PREVIOUS)).toBe(before);
+    expect(await store.get(org.id, SECRET_WEBHOOK)).not.toBe(before);
+    expect((await getGithubApp(db))?.previousSecretExpiresAt).toBe(6000);
+    // And a plain refusal restores everything.
+    await expect(
+      rotateWebhookSecret(db, store, new AppAuth({ db, store }), { fetch: refuse }),
+    ).rejects.toThrow(/HTTP 422/);
+    expect(await store.has(org.id, SECRET_WEBHOOK_PREVIOUS)).toBe(false);
+    expect((await getGithubApp(db))?.previousSecretExpiresAt).toBeNull();
   });
 });

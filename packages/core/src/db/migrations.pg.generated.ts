@@ -308,24 +308,33 @@ export const migrations: Migration[] = [
     ]
   },
   {
-    "tag": "0022_notifications",
-    "when": 1795603293497,
+    "tag": "0022_installation_permissions",
+    "when": 1795603696893,
+    "statements": [
+      "ALTER TABLE \"github_installations\" ADD COLUMN \"permissions\" text;"
+    ]
+  },
+  {
+    "tag": "0024_release_request_cosignatures",
+    "when": 1795611794978,
+    "statements": [
+      "ALTER TABLE \"release_requests\" ADD COLUMN \"cosignatures\" text;",
+      "ALTER TABLE \"release_requests\" ADD COLUMN \"dry_run\" boolean DEFAULT false NOT NULL;"
+    ]
+  },
+  {
+    "tag": "0025_notifications",
+    "when": 1795625046129,
     "statements": [
       "CREATE TABLE \"notification_cursors\" (\n\t\"name\" text PRIMARY KEY NOT NULL,\n\t\"last_event_id\" bigint DEFAULT 0 NOT NULL\n);",
       "CREATE TABLE \"notification_prefs\" (\n\t\"user_id\" text NOT NULL,\n\t\"org_id\" text DEFAULT '' NOT NULL,\n\t\"project_id\" text DEFAULT '' NOT NULL,\n\t\"kind\" text NOT NULL,\n\t\"enabled\" boolean NOT NULL,\n\t\"updated_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\tCONSTRAINT \"notification_prefs_user_id_org_id_project_id_kind_pk\" PRIMARY KEY(\"user_id\",\"org_id\",\"project_id\",\"kind\"),\n\tCONSTRAINT \"notification_prefs_kind_check\" CHECK (kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",
       "CREATE TABLE \"notifications\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"user_id\" text NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"project_id\" text,\n\t\"kind\" text NOT NULL,\n\t\"dedupe_key\" text NOT NULL,\n\t\"run_id\" text,\n\t\"count\" bigint DEFAULT 1 NOT NULL,\n\t\"title\" text DEFAULT '' NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"read_at\" bigint,\n\tCONSTRAINT \"notifications_dedupe_unique\" UNIQUE(\"user_id\",\"kind\",\"dedupe_key\"),\n\tCONSTRAINT \"notifications_kind_check\" CHECK (kind IN ('run_failed', 'infra_errors', 'work_held', 'approval_waiting', 'checkout_auth_failed', 'dogfood_red', 'deploy_failed'))\n);",
+      "ALTER TABLE \"outbound_webhook_endpoints\" ADD COLUMN \"format\" text DEFAULT 'json' NOT NULL;",
       "ALTER TABLE \"notification_prefs\" ADD CONSTRAINT \"notification_prefs_user_id_users_id_fk\" FOREIGN KEY (\"user_id\") REFERENCES \"users\"(\"id\") ON DELETE no action ON UPDATE no action;",
       "ALTER TABLE \"notifications\" ADD CONSTRAINT \"notifications_user_id_users_id_fk\" FOREIGN KEY (\"user_id\") REFERENCES \"users\"(\"id\") ON DELETE no action ON UPDATE no action;",
       "ALTER TABLE \"notifications\" ADD CONSTRAINT \"notifications_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
       "ALTER TABLE \"notifications\" ADD CONSTRAINT \"notifications_project_id_org_id_projects_id_org_id_fk\" FOREIGN KEY (\"project_id\",\"org_id\") REFERENCES \"projects\"(\"id\",\"org_id\") ON DELETE no action ON UPDATE no action;",
-      "CREATE INDEX \"notifications_user_idx\" ON \"notifications\" USING btree (\"user_id\",\"id\");"
-    ]
-  },
-  {
-    "tag": "0023_webhook_slack_format",
-    "when": 1795603776678,
-    "statements": [
-      "ALTER TABLE \"outbound_webhook_endpoints\" ADD COLUMN \"format\" text DEFAULT 'json' NOT NULL;",
+      "CREATE INDEX \"notifications_user_idx\" ON \"notifications\" USING btree (\"user_id\",\"id\");",
       "ALTER TABLE \"outbound_webhook_endpoints\" ADD CONSTRAINT \"outbound_webhook_endpoints_format_check\" CHECK (format IN ('json', 'slack'));"
     ]
   }

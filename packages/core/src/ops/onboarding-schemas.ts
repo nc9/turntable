@@ -200,6 +200,7 @@ export const previewWorkflowsInput = z.object({ project: projectSlug });
 export const previewWorkflowsOutput = z.object({
   sha: z.string().describe("Commit the preview read."),
   truncated: z.boolean().describe("True when the file or byte cap cut the list short."),
+  default_branch: z.string().describe("The branch the preview read (the project's default)."),
   workflows: z.array(
     z.object({
       path: z.string().describe("Workflow file path."),
@@ -207,6 +208,21 @@ export const previewWorkflowsOutput = z.object({
       triggers: z.array(z.string()).describe("Events that start the workflow."),
       ingested: z.boolean().describe("Whether Turntable would ingest this file."),
       too_large: z.boolean().describe("True when the file is over the byte cap."),
+      dispatch_inputs: z
+        .array(
+          z.object({
+            name: z.string(),
+            type: z.enum(["string", "boolean", "number", "choice", "environment"]),
+            required: z.boolean(),
+            default: z.string().nullable(),
+            options: z.array(z.string()),
+            description: z.string().nullable(),
+          }),
+        )
+        .nullable()
+        .describe(
+          "The inputs declared under on.workflow_dispatch, or null when the workflow has no workflow_dispatch trigger.",
+        ),
       jobs: z.array(
         z.object({
           job_id: z.string().describe("Job key in the workflow."),

@@ -20,6 +20,8 @@ export type FixtureOptions = {
   seed?: string;
   /** Role the fixture session holds; decides whether approval is allowed. */
   role?: Whoami["role"];
+  /** Whether the fixture org is the operator org (default true). */
+  operatorOrg?: boolean;
 };
 
 export type Fixture = {
@@ -190,6 +192,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         role: options.role ?? "owner",
         org: world.orgs[0]?.slug ?? "org",
         project: null,
+        operatorOrg: options.operatorOrg ?? true,
       })),
     approveRun: ({ runId, headSha, workflowHash }) =>
       delay(() => world.approve(runId, headSha, workflowHash)),
@@ -218,6 +221,13 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     listSettings: (a) => delay(() => settings.list(a?.project)),
     setSetting: (a) => delay(() => settings.set(a)),
     stepUpChallenge: () => Promise.reject(new Error("The demo has no passkeys to confirm with.")),
+    laneWrite: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    laneConfig: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    laneKey: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    laneCosignKeys: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    laneSecretStatus: () => Promise.reject(new Error("The demo has no release lane to configure.")),
+    rotateWebhookSecret: () => Promise.reject(new Error("The demo has no GitHub App.")),
+    replaceAppPrivateKey: () => Promise.reject(new Error("The demo has no GitHub App.")),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
     // The fixture world has no release environment (its approval is "production").
@@ -233,6 +243,20 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         rpId: "localhost",
         expiresAt: Date.now() + 600_000,
         attestation: "none" as const,
+      })),
+    firstApproverChallenge: () =>
+      delay(() => ({
+        challenge: "Zmlyc3QtYXBwcm92ZXItY2hhbGxlbmdl",
+        rpId: "localhost",
+        expiresAt: Date.now() + 600_000,
+        attestation: "none" as const,
+      })),
+    enrolFirstApprover: ({ person }) =>
+      delay(() => ({
+        approverId: "ap_first",
+        person: person ?? "you",
+        keyFingerprint: "c1".repeat(32),
+        warnings: [],
       })),
     keyPolicyChallenge: (args) => delay(() => world.keyPolicyChallenge(args)),
     approveKeyPolicy: ({ statement }) => delay(() => world.approveKeyPolicy(statement)),

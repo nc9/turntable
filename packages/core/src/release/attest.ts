@@ -7,8 +7,12 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { BUSY_TIMEOUT_MS, enableWal } from "../db/sqlite-wal";
+import { checkCosignSet, parseCosignKey, type CosignKey } from "./cosign";
 import { parseTarget } from "./publish/config";
 import type { PublishTarget } from "./publish/types";
+
+/** The reason a publish is refused when the lane's configuration moved after the approval. */
+export const CONFIG_CHANGED_REASON = "release lane config changed since approval; re-approve";
 
 /** How long an approval can be registered with the proxy: a publish job starts soon after, or not at all. */
 export const APPROVAL_TTL_MS = 6 * 3_600_000;
@@ -61,6 +65,31 @@ export class AttestationStore {
       this.#db.run("ALTER TABLE approved_releases ADD COLUMN expires_at INTEGER");
     if (!cols.includes("finalized_at"))
       this.#db.run("ALTER TABLE approved_releases ADD COLUMN finalized_at INTEGER");
+    // The lane config version the approval was given under (#541); an older file has none, and
+    // a row without one is read as version 0.
+    if (!cols.includes("config_version"))
+      this.#db.run("ALTER TABLE approved_releases ADD COLUMN config_version INTEGER");
+    // One row: a counter that every change to the lane's configuration bumps (pin, targets, secrets).
+    this.#db.run(
+      "CREATE TABLE IF NOT EXISTS lane_config (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)",
+    );
+    this.#db.run("INSERT OR IGNORE INTO lane_config VALUES (1, 0)");
+    // Co-signing keys (#544): public material only, set by the operator in this file. Neither a
+    // pull request nor the main process can touch it, and the main process never reads it.
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS cosign_keys (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT NOT NULL,
+         config TEXT NOT NULL, set_at INTEGER NOT NULL, PRIMARY KEY (org_id, project_id, name))`,
+    );
+    // The co-signatures the lane verified for a run, kept so a later publish (finalize) attaches
+    // exactly those. Written only after verification.
+    this.#db.run(
+      `CREATE TABLE IF NOT EXISTS verified_cosignatures (
+         org_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL, name TEXT NOT NULL,
+         output_name TEXT NOT NULL, key_id TEXT NOT NULL, signs TEXT NOT NULL,
+         signature_b64 TEXT NOT NULL, verified_at INTEGER NOT NULL,
+         PRIMARY KEY (org_id, project_id, run_id, name))`,
+    );
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS pinned_repos (
          org_id TEXT NOT NULL, project_id TEXT NOT NULL, repo TEXT NOT NULL,
@@ -84,14 +113,30 @@ export class AttestationStore {
         "INSERT INTO publish_targets VALUES (?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, key) DO UPDATE SET config = excluded.config, set_at = excluded.set_at",
       )
       .run(orgId, projectId, key, JSON.stringify(target), now);
+    this.bumpConfigVersion();
+  }
+
+  /** The lane's configuration version: it moves on every change, so an approval can name the one it was given under. */
+  configVersion(): number {
+    return (
+      this.#db.query<{ version: number }, []>("SELECT version FROM lane_config WHERE id = 1").get()
+        ?.version ?? 0
+    );
+  }
+
+  /** Called by every writer of lane configuration; the vault's secret writes call it directly. */
+  bumpConfigVersion(): number {
+    this.#db.run("UPDATE lane_config SET version = version + 1 WHERE id = 1");
+    return this.configVersion();
   }
 
   removePublishTarget(orgId: string, projectId: string, key: string): boolean {
-    return (
+    const gone =
       this.#db
         .query("DELETE FROM publish_targets WHERE org_id = ? AND project_id = ? AND key = ?")
-        .run(orgId, projectId, key).changes > 0
-    );
+        .run(orgId, projectId, key).changes > 0;
+    if (gone) this.bumpConfigVersion();
+    return gone;
   }
 
   /** The declared targets by key, validated again as they are read. A bad row is skipped, not trusted. */
@@ -190,6 +235,8 @@ export class AttestationStore {
       artifacts: readonly string[];
       /** The signed provenance, as JSON text, kept so a later publish attaches the lane's own. */
       envelope?: string;
+      /** The config version the approval was judged under; default: the version now. */
+      configVersion?: number;
     },
     now: number,
     ttlMs: number = APPROVAL_TTL_MS,
@@ -197,18 +244,25 @@ export class AttestationStore {
     const existing = this.approvedRelease(id);
     if (existing) {
       if (existing.finalizedAt !== undefined || !this.isNewestApproved(id)) return false;
+      // A fresh approval is given under the configuration as it stands now.
       this.#db
         .query(
-          "UPDATE approved_releases SET expires_at = ? WHERE org_id = ? AND project_id = ? AND run_id = ?",
+          "UPDATE approved_releases SET expires_at = ?, config_version = ? WHERE org_id = ? AND project_id = ? AND run_id = ?",
         )
-        .run(now + ttlMs, id.orgId, id.projectId, id.runId);
+        .run(
+          now + ttlMs,
+          r.configVersion ?? this.configVersion(),
+          id.orgId,
+          id.projectId,
+          id.runId,
+        );
       return true;
     }
     this.#db
       .query(
         `INSERT INTO approved_releases
-           (org_id, project_id, run_id, repo, tag, sha, artifacts, approved_at, envelope, expires_at, finalized_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+           (org_id, project_id, run_id, repo, tag, sha, artifacts, approved_at, envelope, expires_at, finalized_at, config_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         id.orgId,
@@ -221,6 +275,7 @@ export class AttestationStore {
         now,
         r.envelope ?? null,
         now + ttlMs,
+        r.configVersion ?? this.configVersion(),
       );
     return true;
   }
@@ -265,6 +320,8 @@ export class AttestationStore {
         approvedAt: number;
         expiresAt: number;
         finalizedAt: number | undefined;
+        /** The lane config version the approval was given under. */
+        configVersion: number;
       }
     | undefined {
     const row = this.#db
@@ -278,10 +335,11 @@ export class AttestationStore {
           approved_at: number;
           expires_at: number | null;
           finalized_at: number | null;
+          config_version: number | null;
         },
         [string, string, string]
       >(
-        "SELECT repo, tag, sha, artifacts, envelope, approved_at, expires_at, finalized_at FROM approved_releases WHERE org_id = ? AND project_id = ? AND run_id = ?",
+        "SELECT repo, tag, sha, artifacts, envelope, approved_at, expires_at, finalized_at, config_version FROM approved_releases WHERE org_id = ? AND project_id = ? AND run_id = ?",
       )
       .get(id.orgId, id.projectId, id.runId);
     return row
@@ -294,6 +352,7 @@ export class AttestationStore {
           approvedAt: row.approved_at,
           expiresAt: row.expires_at ?? row.approved_at + APPROVAL_TTL_MS,
           finalizedAt: row.finalized_at ?? undefined,
+          configVersion: row.config_version ?? 0,
         }
       : undefined;
   }
@@ -336,6 +395,7 @@ export class AttestationStore {
         "INSERT INTO pinned_repos VALUES (?, ?, ?, ?) ON CONFLICT (org_id, project_id) DO UPDATE SET repo = excluded.repo, pinned_at = excluded.pinned_at",
       )
       .run(orgId, projectId, repo.toLowerCase(), now);
+    this.bumpConfigVersion();
   }
 
   pinnedRepo(orgId: string, projectId: string): string | undefined {
@@ -344,6 +404,107 @@ export class AttestationStore {
         "SELECT repo FROM pinned_repos WHERE org_id = ? AND project_id = ?",
       )
       .get(orgId, projectId)?.repo;
+  }
+
+  /**
+   * True when the release's approval was given under an older lane configuration than the one in
+   * force: nothing is published or registered for it until it is approved again.
+   */
+  configChangedSince(id: { orgId: string; projectId: string; runId: string }): boolean {
+    const a = this.approvedRelease(id);
+    return a !== undefined && a.configVersion !== this.configVersion();
+  }
+
+  /** Sets (or replaces) one co-signing key. Validated here; a set that repeats a name, signed file or output name is refused. */
+  setCosignKey(orgId: string, projectId: string, raw: unknown, now: number): CosignKey {
+    const key = parseCosignKey(raw);
+    checkCosignSet([...this.cosignKeys(orgId, projectId).filter((k) => k.name !== key.name), key]);
+    this.#db
+      .query(
+        "INSERT INTO cosign_keys VALUES (?, ?, ?, ?, ?) ON CONFLICT (org_id, project_id, name) DO UPDATE SET config = excluded.config, set_at = excluded.set_at",
+      )
+      .run(orgId, projectId, key.name, JSON.stringify(key), now);
+    // A change of the co-signing requirement is a change of the lane's configuration: an approval
+    // given before it must be given again (#544).
+    this.bumpConfigVersion();
+    return key;
+  }
+
+  removeCosignKey(orgId: string, projectId: string, name: string): boolean {
+    const gone =
+      this.#db
+        .query("DELETE FROM cosign_keys WHERE org_id = ? AND project_id = ? AND name = ?")
+        .run(orgId, projectId, name).changes > 0;
+    if (gone) this.bumpConfigVersion();
+    return gone;
+  }
+
+  /**
+   * The configured co-signing keys, validated again as read. An unreadable row throws: a release
+   * that needs a co-signature must never go through because its requirement could not be read.
+   */
+  cosignKeys(orgId: string, projectId: string): CosignKey[] {
+    return this.#db
+      .query<{ config: string }, [string, string]>(
+        "SELECT config FROM cosign_keys WHERE org_id = ? AND project_id = ? ORDER BY name",
+      )
+      .all(orgId, projectId)
+      .map((r) => parseCosignKey(JSON.parse(r.config)));
+  }
+
+  saveVerifiedCosignatures(
+    id: { orgId: string; projectId: string; runId: string },
+    rows: readonly {
+      name: string;
+      outputName: string;
+      keyId: string;
+      signs: string;
+      signature: Uint8Array;
+    }[],
+    now: number,
+  ): void {
+    this.#db
+      .query("DELETE FROM verified_cosignatures WHERE org_id = ? AND project_id = ? AND run_id = ?")
+      .run(id.orgId, id.projectId, id.runId);
+    for (const r of rows) {
+      this.#db
+        .query("INSERT INTO verified_cosignatures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(
+          id.orgId,
+          id.projectId,
+          id.runId,
+          r.name,
+          r.outputName,
+          r.keyId,
+          r.signs,
+          Buffer.from(r.signature).toString("base64"),
+          now,
+        );
+    }
+  }
+
+  verifiedCosignatures(id: { orgId: string; projectId: string; runId: string }): {
+    name: string;
+    outputName: string;
+    keyId: string;
+    signs: string;
+    signature: Uint8Array;
+  }[] {
+    return this.#db
+      .query<
+        { name: string; output_name: string; key_id: string; signs: string; signature_b64: string },
+        [string, string, string]
+      >(
+        "SELECT name, output_name, key_id, signs, signature_b64 FROM verified_cosignatures WHERE org_id = ? AND project_id = ? AND run_id = ? ORDER BY name",
+      )
+      .all(id.orgId, id.projectId, id.runId)
+      .map((r) => ({
+        name: r.name,
+        outputName: r.output_name,
+        keyId: r.key_id,
+        signs: r.signs,
+        signature: new Uint8Array(Buffer.from(r.signature_b64, "base64")),
+      }));
   }
 
   close(): void {

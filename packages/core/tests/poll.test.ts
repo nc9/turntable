@@ -8,6 +8,7 @@ import {
   ensureLocalTenant,
   getJob,
   listAttempts,
+  listAudit,
   listJobs,
   listRepos,
   listRuns,
@@ -28,6 +29,7 @@ import {
   pollRepo,
   RateLimited,
 } from "../src/poll";
+import type { PollAuthMode } from "../src/poll/status";
 
 let db: Db;
 let scope: Required<Scope>;
@@ -66,6 +68,8 @@ function makeGithub(repo = "acme/web") {
   const state = {
     head: { sha: SHA("a"), message: "feat: first", login: "octocat" as string | null },
     pulls: [] as PullStub[],
+    /** Numbers of pull requests GitHub reports as closed or merged (`GET /pulls/{n}`). */
+    closed: new Set<number>(),
     files: new Map<string, string>(),
     calls: [] as { path: string; headers: Record<string, string> }[],
     fail: undefined as undefined | { status: number; headers?: Record<string, string> },
@@ -110,6 +114,8 @@ function makeGithub(repo = "acme/web") {
         "application/json",
       );
     }
+    const one = new RegExp(`^/repos/${repo}/pulls/(\\d+)$`).exec(u.pathname);
+    if (one) return Response.json({ state: state.closed.has(Number(one[1])) ? "closed" : "open" });
     if (u.pathname === `/repos/${repo}/pulls`) {
       const body = state.pulls.map((p) => ({
         number: p.number,
@@ -628,6 +634,7 @@ test("the GitHub client only ever sends GET, never puts the token in a URL, and 
     "listDir",
     "openPulls",
     "peelTag",
+    "pullState",
     "pushEvents",
     "queueBranches",
     "queueCommit",
@@ -1015,4 +1022,59 @@ test("changedFiles lists a rename by its old and new path and a deletion by its 
     "src/old.ts",
     "src/gone.ts",
   ]);
+});
+
+test("a closed PR's queued runs are cancelled with an audit entry; push runs and open PRs are untouched (#600)", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = [
+    { number: 3, user: "octocat", headSha: SHA("b"), headRepo: "acme/web" },
+    { number: 4, user: "octocat", headSha: SHA("c"), headRepo: "acme/web" },
+  ];
+  await poll(gh);
+  const byEvent = async (event: string, pr?: number) =>
+    (await listRuns(db, scope)).filter(
+      (r) => r.event === event && (pr === undefined || r.prNumber === pr),
+    );
+  expect((await byEvent("pull_request", 3))[0]!.status).toBe("queued");
+  expect((await byEvent("push"))[0]!.status).toBe("queued");
+  // PR 3 merges: gone from the open list and reported closed. PR 4 drops off the (one-page) list
+  // but is still open, so it must not be cancelled.
+  gh.state.closed.add(3);
+  gh.state.pulls = [];
+  await poll(gh);
+  expect((await byEvent("pull_request", 3))[0]!.status).toBe("cancelled");
+  expect((await byEvent("pull_request", 4))[0]!.status).toBe("queued");
+  expect((await byEvent("push"))[0]!.status).toBe("queued");
+  const audit = (await listAudit(db, { orgId: scope.orgId })).filter((a) => a.op === "cancel");
+  expect(audit).toHaveLength(1);
+  expect(audit[0]!.principalKind).toBe("system");
+  expect(JSON.stringify(audit[0])).toContain("PR closed");
+  // idempotent: a further poll changes nothing and writes no second entry
+  await poll(gh);
+  expect(
+    (await listAudit(db, { orgId: scope.orgId })).filter((a) => a.op === "cancel"),
+  ).toHaveLength(1);
+});
+
+test("an anonymous poll makes no pulls/{n} calls and cancels nothing; an installation poll cancels (#600)", async () => {
+  const gh = makeGithub();
+  gh.state.pulls = [{ number: 3, user: "octocat", headSha: SHA("b"), headRepo: "acme/web" }];
+  await poll(gh);
+  gh.state.closed.add(3);
+  gh.state.pulls = [];
+  gh.state.calls.length = 0;
+  const cfg = config().repos[0]!;
+  const run = (authMode: PollAuthMode) =>
+    pollRepo(
+      { db, github: clientFor(gh), provider: "docker", now: () => 1_800_000_000_000, authMode },
+      cfg,
+    );
+  const prRuns = async () =>
+    (await listRuns(db, scope)).filter((r) => r.event === "pull_request" && r.prNumber === 3);
+  await run("anonymous");
+  expect(gh.state.calls.filter((c) => /\/pulls\/\d+$/.test(c.path))).toHaveLength(0);
+  expect((await prRuns())[0]!.status).toBe("queued");
+  await run("installation");
+  expect(gh.state.calls.filter((c) => /\/pulls\/\d+$/.test(c.path))).toHaveLength(1);
+  expect((await prRuns())[0]!.status).toBe("cancelled");
 });

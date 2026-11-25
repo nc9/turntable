@@ -14,6 +14,7 @@ import {
   saveSetting,
   valueOfDraft,
 } from "../src/lib/settings";
+import { RotatedNotice } from "../src/features/settings/app-secrets-section";
 import { ApiError } from "../src/api/http-adapter";
 
 const json = (body: unknown, status = 200) =>
@@ -445,5 +446,22 @@ describe("saving against the fixture", () => {
     } finally {
       fx.stop();
     }
+  });
+});
+
+describe("app secrets rotation notice", () => {
+  test("says GitHub was updated, shows the fingerprint and overlap, and no copy box", () => {
+    const html = renderToStaticMarkup(
+      <RotatedNotice
+        fingerprint="SHA256:abc"
+        until="2026-11-25T10:00:00.000Z"
+        onDismiss={() => {}}
+      />,
+    );
+    expect(html).toContain("Rotated; GitHub&#x27;s webhook secret was updated.");
+    expect(html).toContain("SHA256:abc");
+    expect(html).toContain("2026-11-25T10:00:00.000Z");
+    expect(html).not.toContain("<code");
+    expect(html).not.toContain("Copy this now");
   });
 });

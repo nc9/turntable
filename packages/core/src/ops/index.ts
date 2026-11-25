@@ -8,6 +8,8 @@ import {
   enrolmentChallenge,
   approversOverview,
   registerChallenge,
+  firstApproverChallenge,
+  enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
   requestEnrolment,
@@ -19,7 +21,13 @@ import { cancel } from "./definitions/cancel";
 import { doctor } from "./definitions/doctor";
 import { checksForSha } from "./definitions/checks-for-sha";
 import { acceptActionMoveOp, listActionPinsOp } from "./definitions/action-pins";
-import { checkArtifactConsumption, listArtifacts } from "./definitions/artifacts";
+import {
+  checkArtifactConsumption,
+  getArtifact,
+  getArtifactFile,
+  getArtifactFiles,
+  listArtifacts,
+} from "./definitions/artifacts";
 import {
   instanceDoctorOp,
   instanceDrainOp,
@@ -39,6 +47,10 @@ import {
   setQuotas,
   bootstrapApprover,
 } from "./definitions/instance";
+import {
+  instanceReplaceAppPrivateKeyOp,
+  instanceRotateWebhookSecretOp,
+} from "./definitions/instance-app-secrets";
 import { instanceRevokeOrgTokenOp } from "./definitions/instance-revoke-org-token";
 import { githubAppStatus, instanceGithubAppStatus } from "./definitions/github-app-status";
 import { getQuotas } from "./definitions/quotas";
@@ -64,7 +76,11 @@ import {
   runDefaultBranch,
 } from "./definitions/onboarding-repos";
 import { signRelease } from "./definitions/sign-release";
-import { getReleaseRequestOp, requestReleaseOp } from "./definitions/release-requests";
+import {
+  getReleaseApprovalOp,
+  getReleaseRequestOp,
+  requestReleaseOp,
+} from "./definitions/release-requests";
 import { getInstallationClaimOp, startInstallationClaim } from "./definitions/installation-claim";
 import {
   bindInstallationOp,
@@ -82,6 +98,22 @@ import {
 import { myPendingApprovalsOp } from "./definitions/my-pending-approvals";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import { sessionStepUpChallenge } from "./definitions/session-step-up";
+import {
+  releaseKeyShow,
+  releaseSecretStatus,
+  releaseCosignKeySet,
+  releaseCosignKeyRemove,
+  releaseCosignKeyList,
+  releasePinRepo,
+  releasePublishTargetDelete,
+  releasePublishTargetList,
+  releasePublishTargetSet,
+  releaseSecretSet,
+  releaseInitKey,
+  releasePublicKey,
+  releaseSetProjectSigning,
+  releaseProjectSigning,
+} from "./definitions/release-config";
 import {
   addPassthroughHostOp,
   deletePassthroughHostOp,
@@ -161,6 +193,9 @@ export const registry = createRegistry([
   listActionPinsOp,
   listArtifacts,
   checkArtifactConsumption,
+  getArtifact,
+  getArtifactFile,
+  getArtifactFiles,
   githubAppStatus,
   instanceGithubAppStatus,
   getQuotas,
@@ -172,6 +207,8 @@ export const registry = createRegistry([
   moveRepoBindingOp,
   instanceStartInstallationClaimOp,
   instanceBindInstallationOp,
+  instanceRotateWebhookSecretOp,
+  instanceReplaceAppPrivateKeyOp,
   instanceListOrgs,
   instanceDoctorOp,
   instanceDrainOp,
@@ -206,6 +243,8 @@ export const registry = createRegistry([
   releaseApprovalChallenge,
   enrolmentChallenge,
   registerChallenge,
+  firstApproverChallenge,
+  enrolFirstApprover,
   keyPolicyChallenge,
   approveKeyPolicy,
   requestEnrolment,
@@ -220,6 +259,7 @@ export const registry = createRegistry([
   sandboxUsageOp,
   requestReleaseOp,
   getReleaseRequestOp,
+  getReleaseApprovalOp,
   startInstallationClaim,
   getInstallationClaimOp,
   bindInstallationOp,
@@ -228,6 +268,20 @@ export const registry = createRegistry([
   listUserInstallationsOp,
   inviteMemberOp,
   sessionStepUpChallenge,
+  releaseKeyShow,
+  releaseSecretStatus,
+  releaseCosignKeySet,
+  releaseCosignKeyRemove,
+  releaseCosignKeyList,
+  releasePinRepo,
+  releasePublishTargetSet,
+  releasePublishTargetList,
+  releasePublishTargetDelete,
+  releaseSecretSet,
+  releaseInitKey,
+  releasePublicKey,
+  releaseSetProjectSigning,
+  releaseProjectSigning,
   instanceBindGithubLoginOp,
   resyncInstallation,
   setOidcAudiencesOp,

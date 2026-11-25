@@ -9,16 +9,51 @@ import {
   getOrgById,
   getSecretRecord,
   listInstallationBindings,
+  listInstallationPermissions,
   listInstallations,
   listUnclaimedInstallationIds,
 } from "../../db/repos";
-import { SECRET_APP_ID, SECRET_PRIVATE_KEY, SECRET_WEBHOOK } from "../../github/app-auth";
+import {
+  missingPermissions,
+  SECRET_APP_ID,
+  SECRET_PRIVATE_KEY,
+  SECRET_WEBHOOK,
+} from "../../github/app-auth";
+import { APP_PERMISSIONS } from "../../github/manifest";
 import { iso } from "../common";
 import { defineOp } from "../define";
 import { OpError } from "../errors";
 
 /** The most unclaimed installation ids the instance view lists. */
 const UNCLAIMED_CAP = 100;
+/** The most installations whose permission state is checked in one call. */
+const PERMISSION_CAP = 5000;
+
+/**
+ * Whether each installation has accepted the App's current permission set, from the set stored at
+ * the last sync (refreshed by the `new_permissions_accepted` webhook). `pending` lists those that
+ * have not, with the missing permissions; `unknown` counts installations not read since this
+ * was added.
+ */
+async function permissionState(db: Parameters<typeof listInstallationPermissions>[0]) {
+  const rows = await listInstallationPermissions(db, PERMISSION_CAP);
+  let current = 0;
+  let unknown = 0;
+  const pending: { installation_id: string; account_login: string; missing: string[] }[] = [];
+  for (const r of rows) {
+    if (r.permissions === null) {
+      unknown += 1;
+      continue;
+    }
+    const missing = missingPermissions(r.permissions, APP_PERMISSIONS);
+    if (missing.length === 0) current += 1;
+    else if (pending.length < UNCLAIMED_CAP) {
+      pending.push({ installation_id: r.installationId, account_login: r.accountLogin, missing });
+    }
+  }
+  const pendingTotal = rows.length - current - unknown;
+  return { current, pending_acceptance: pendingTotal, unknown, pending };
+}
 
 export const instanceGithubAppStatus = defineOp({
   name: "instance_github_app_status",
@@ -27,7 +62,8 @@ export const instanceGithubAppStatus = defineOp({
     "Reports whether a GitHub App is configured and, if so, its id, slug, owner login, the org " +
     "that owns it, when it was created, whether its credentials (private key, webhook secret) are " +
     "sealed in the store (a boolean: the material is never returned), installation counts by " +
-    "status, and the ids of installations a webhook named that no org has claimed (up to 100, " +
+    "status, per installation whether it has accepted the App's current permission set or is pending " +
+    "acceptance (and which permissions it lacks; an owner accepts on GitHub), and the ids of installations a webhook named that no org has claimed (up to 100, " +
     "newest first). Use it after the manifest flow to confirm the result without a shell. Only " +
     "the instance administrator can call it. Not an MCP tool. Read-only.",
   input: z.object({}),
@@ -44,6 +80,20 @@ export const instanceGithubAppStatus = defineOp({
       })
       .nullable(),
     installations: z.object({ active: z.int(), suspended: z.int(), deleted: z.int() }),
+    permissions: z.object({
+      current: z.int().describe("Installations on the App's current permission set."),
+      pending_acceptance: z.int().describe("Installations whose owner has not accepted it yet."),
+      unknown: z.int().describe("Installations whose accepted set has not been read yet."),
+      pending: z
+        .array(
+          z.object({
+            installation_id: z.string(),
+            account_login: z.string(),
+            missing: z.array(z.string()).describe("Permission:level the installation lacks."),
+          }),
+        )
+        .describe("Up to 100 installations pending acceptance."),
+    }),
     unclaimed_installation_ids: z.array(z.string()),
   }),
   effect: "read",
@@ -57,7 +107,13 @@ export const instanceGithubAppStatus = defineOp({
     const installations = await countInstallationsByStatus(ctx.db);
     const unclaimed = await listUnclaimedInstallationIds(ctx.db, UNCLAIMED_CAP);
     if (!app) {
-      return { configured: false, app: null, installations, unclaimed_installation_ids: unclaimed };
+      return {
+        configured: false,
+        app: null,
+        installations,
+        permissions: await permissionState(ctx.db),
+        unclaimed_installation_ids: unclaimed,
+      };
     }
     const scope = { orgId: app.orgId };
     const sealed = await Promise.all(
@@ -77,6 +133,7 @@ export const instanceGithubAppStatus = defineOp({
         sealed: sealed.every((r) => r !== undefined),
       },
       installations,
+      permissions: await permissionState(ctx.db),
       unclaimed_installation_ids: unclaimed,
     };
   },

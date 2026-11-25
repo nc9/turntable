@@ -21,7 +21,9 @@ import {
 } from "../src/auth/web-sessions";
 import {
   createOrg,
+  createJob,
   createProject,
+  createRun,
   type Db,
   listAudit,
   listEvents,
@@ -33,6 +35,7 @@ import { testDb } from "../src/db/dialect";
 import { openPostgres } from "../src/db/pg";
 import { dispatch, type DispatchEnv, registry } from "../src/ops";
 import { SESSION_WRITE_OPS } from "../src/ops/dispatch";
+import { LANE_CONFIG_READ_OPS, LANE_CONFIG_WRITE_OPS } from "../src/ops/step-up";
 import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
 import { createRestApi } from "../src/ops/rest";
 import { buildManifest } from "../src/github/manifest";
@@ -777,7 +780,11 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     const writes = registry
       .tokenOps()
       .filter(
-        (o) => o.auth.type === "token" && o.effect !== "read" && !SESSION_WRITE_OPS.has(o.name),
+        (o) =>
+          o.auth.type === "token" &&
+          o.effect !== "read" &&
+          !SESSION_WRITE_OPS.has(o.name) &&
+          !LANE_CONFIG_WRITE_OPS.has(o.name),
       );
     const names = writes.map((o) => o.name);
     // the step-up actions of #430 are among them
@@ -792,6 +799,17 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
         expect(r.error.message, op.name).toContain("step-up");
       }
     }
+    // the release lane config ops (#541) take a session of an operator org owner plus a step-up;
+    // this session is not one, so each is refused for its own reason, before any step-up check
+    expect(LANE_CONFIG_WRITE_OPS.size).toBeGreaterThan(0);
+    for (const op of [...LANE_CONFIG_WRITE_OPS, ...LANE_CONFIG_READ_OPS]) {
+      const r = await h.as(cookie, op, { org: "tenant" });
+      expect(r.ok, op).toBe(false);
+      if (!r.ok) {
+        expect(r.error.code, op).toBe("forbidden");
+        expect(r.error.details, op).toEqual({ reason: "lane_operator_owner_only" });
+      }
+    }
     // nothing was minted
     const tokens = await h.as(cookie, "list_api_tokens", { org: "tenant" });
     expect(tokens.ok && JSON.stringify(tokens.output)).not.toContain("b-minted");
@@ -801,14 +819,20 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
     expect([...SESSION_WRITE_OPS]).toEqual([
       "invite_member", // a viewer or member invite needs no step-up (admin and owner invites do)
       "session_step_up_challenge", // the challenge is how a session obtains a step-up at all
+      "first_approver_challenge", // an owner session under 10 minutes from GitHub sign-in (#587)
+      "enrol_first_approver", // the same gate, enforced again in one transaction
       "onboarding_create_org",
       "start_installation_claim",
       "bind_installation",
       "onboard_repos", // owner or admin onboarding of repos; the op's own `admin` role gates it
       "run_default_branch", // owner or admin starts a default-branch run; same `admin` gate
+      "run_dispatch", // owner or admin starts a workflow_dispatch run; the op's release_operator role gates it (#617)
       "set_setting", // each setting's own role; loosening a trust setting also needs a step-up
       "notifications_ack", // a person's own notification rows (#611)
       "set_notification_prefs", // a person's own preferences (#611)
+
+      "cancel", // operator role, as for a token; no step-up
+      "rerun", // same
     ]);
   });
 
@@ -828,6 +852,52 @@ describe.each(dialects)("web sign-in (%s)", (_name, open) => {
       const input =
         op === "run_default_branch" ? { org: "tenant", project: "web" } : { org: "tenant" };
       const r = await h.as(session!, op, input);
+      expect(r.ok, op).toBe(false);
+      if (!r.ok) expect(r.error.code, op).toBe("forbidden");
+    }
+  });
+
+  test("cancel and rerun work for an admin session, with an audit entry; a viewer session is refused by role (#600)", async () => {
+    const { h, cookie } = await aliceAdmin();
+    const project = await createProject(h.db, { orgId: h.tenant.id }, { slug: "web", name: "web" });
+    const scope = { orgId: h.tenant.id, projectId: project.id };
+    const mk = async (event: string) => {
+      const run = await createRun(h.db, scope, {
+        workflowPath: ".github/workflows/ci.yml",
+        event,
+        ref: "refs/heads/main",
+        repo: "acme/web",
+      });
+      await createJob(h.db, scope, { runId: run.id, jobKey: "j", name: "j" });
+      return run;
+    };
+    const run = await mk("push");
+    const done = await h.as(cookie, "cancel", {
+      org: "tenant",
+      run_id: run.id,
+      reason: "from the web",
+    });
+    expect(done.ok && done.output).toMatchObject({ state: "cancelled", cancelled_jobs: 1 });
+    const audit = (await listAudit(h.db, { orgId: h.tenant.id })).filter((a) => a.op === "cancel");
+    expect(audit.some((a) => a.outcome === "ok")).toBe(true);
+    // rerun is open to the session too: the role gate passes, and the op itself answers (here a
+    // conflict, since a job that never ran has nothing to rerun), never forbidden
+    const re = await h.as(cookie, "rerun", {
+      org: "tenant",
+      run_id: run.id,
+      reason: "try again",
+    });
+    expect(re.ok ? "ok" : re.error.code).not.toBe("forbidden");
+    // a viewer session may do neither
+    expect((await h.bind({ github_login: "bob", role: "viewer" })).ok).toBe(true);
+    h.users.set("code-bob", { id: "2002", login: "bob" });
+    const viewer = (await h.signIn("code-bob")).session!;
+    const other = await mk("push");
+    for (const [op, input] of [
+      ["cancel", { run_id: other.id }],
+      ["rerun", { run_id: other.id, reason: "no" }],
+    ] as const) {
+      const r = await h.as(viewer, op, { org: "tenant", ...input });
       expect(r.ok, op).toBe(false);
       if (!r.ok) expect(r.error.code, op).toBe("forbidden");
     }

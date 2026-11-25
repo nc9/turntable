@@ -83,21 +83,76 @@ When the lane runs in the same process as the main service, give that process bo
 
 Keep the new key in your secrets manager as well as in the platform variable. Losing it loses every stored secret.
 
+## Running the release lane on one hosted service
+
+Today a single hosted service cannot run the web app and the release lane together. This section says what is true now, why, and what would have to change. It is not a recipe that works; do not plan a release on a one-service host until the blockers below are closed.
+
+**What works today.** `TURNTABLE_ROLES=release` selects the lane from the environment (every `serve` flag has a variable, so the entrypoint `serve --data-dir /data` needs no change). The lane runs alone: the role list `web,worker,release` is refused at boot, and a process with the release role starts no web server, API or UI. A service started that way serves nothing a person can reach, so nobody can call `request_release`. A main process (no `--roles`, or `web`, `worker`, `poller`) ignores every `TURNTABLE_RELEASE_*` variable and warns that they were ignored.
+
+**Why two services do not work on Railway yet.** The lane needs three things from the main service, and none is shared between two Railway services:
+
+| The lane needs | Why a second service cannot have it today |
+| --- | --- |
+| The request queue and run records | With SQLite this is one file on one volume, and a Railway volume attaches to one service. It works with a shared Postgres (`TURNTABLE_DATABASE_URL` on both services). |
+| Artifact bytes | The artifact store is the local directory `<data dir>/artifacts`, and the lane reads `TURNTABLE_RELEASE_ARTIFACT_DIR` from a local path. There is no remote artifact backend, so a lane on another volume sees no bytes and refuses with `artifact_bytes_missing`. |
+| The config channel (the `release_*` operations and `release_approval_challenge`) | It is a unix socket, or TCP with mutual TLS through certificate files (`TURNTABLE_RELEASE_CHANNEL_TCP`, `_TLS_CERT_FILE`, `_TLS_KEY_FILE`, `_TLS_CA_FILE`) plus key files. These are files, not variables, and a shell-less host has no way to create them. |
+
+**What the lane needs when it does run** (so you can prepare). On its own service, all variables on the lane's side only:
+
+| Variable | Required | Secret | Value |
+| --- | --- | --- | --- |
+| `TURNTABLE_ROLES` | yes | no | `release` |
+| `TURNTABLE_RELEASE_MASTER_KEY` | yes (or `_FILE`, not both) | yes | 32 bytes as base64 or hex; see [the release lane's key](#the-release-lanes-key) |
+| `TURNTABLE_RELEASE_DATA_DIR` | yes | no | A directory on the lane's own volume, for example `/data/release` |
+| `TURNTABLE_RELEASE_GITHUB_TOKEN` | yes | yes | A read-only token for contents and refs of the release repository |
+| `TURNTABLE_RELEASE_ARTIFACT_DIR` | yes | no | The directory holding the artifact store's bytes, laid out `<run id>/<name>` (the main service's `<data dir>/artifacts`) |
+| `TURNTABLE_RELEASE_BUILDER_ID` | yes | no | The instance's public URL |
+| `TURNTABLE_RELEASE_GITHUB_PUBLISH_TOKEN` | only to publish a GitHub release | yes | A token that may write releases to the release repository |
+| `TURNTABLE_RELEASE_POLL_MS` | no | no | Default 5000 |
+
+Each missing required variable stops the lane at boot with `the release role needs <NAME>`. On the main service set `TURNTABLE_ARTIFACTS_URL` (this turns the artifact store on). The lane's GitHub credentials are static tokens today. A GitHub App installation token would be minted by the existing App code (`AppAuth`), and the lane's publish path already asks a function for the token on each use; the forge client that re-checks tags still takes one fixed token, so using an installation token means giving the lane the App's private key or a minting step and changing that client. That is a security decision: the App key would then be in a process that signs releases.
+
+**Four ways to run the lane on hosted.** None except A exists today. Nothing below is implemented.
+
+| | A. Not on single-service hosted (today) | B. One process | C. Two services and shared object storage | D. Two processes in one container |
+| --- | --- | --- | --- | --- |
+| Shape | Release is not available | `web,worker,release` in one process, in-process channel | Lane service plus main service, artifact bytes in an object store | `serve` starts the release role as a child of the same binary, unix socket in the container |
+| Process boundary | n/a | None: one address space | Strong: separate hosts | Kept: separate processes and memory; same container and volume |
+| Key and credentials | n/a | Lane key and tokens in the web process's memory | Only on the lane service | Only in the child, with a different key from main |
+| What the compromise of web or worker code reaches | n/a | The signing key | The main database only | The child's key only if the attacker also gets same-user process access (see below) |
+| Code size | 0 | Small: allow the role combination, call the lane in process, read the store directly | Large: a remote artifact backend for both the store and the lane's reader, a channel over TCP with mTLS without files, a shared database | Medium: spawn in `serve`, pass only the `TURNTABLE_RELEASE_*` variables to the child, socket and per-boot channel keys, same-volume artifact directory |
+| Needs from Railway | One service | One service | Two services, a shared Postgres, an object store, private networking | One service and one volume |
+
+**D in detail.** The parent starts first, takes every `TURNTABLE_RELEASE_*` variable out of its own environment before anything else loads, and starts the same binary with `--roles release` and only those variables (plus the data directory). The child keeps its own master key, data directory and signing keys, reads the main database for requests, reads the artifact directory on the same volume (`<data dir>/artifacts`, read-only through the existing path checks), and listens on a unix socket in the container for the channel. The parent can reach the lane only over that socket, with a config key that is not the worker's. The lane still re-checks tags at the forge with its own credential, still compares digests against the bytes itself, and never trusts main's rows for what it signs. The main roles never sign.
+
+**The honest weakness of D.** The parent saw the lane's variables at boot, so a compromise of the parent before it removed them would see them. After that, the child's memory and environment are separate, but a process running as the same user can read `/proc/<pid>/environ` and may attach with ptrace unless the platform forbids it. To make the boundary real, the child should run as a different user than the parent (the image starts as root and drops, so the parent can start the child under another user before it drops itself) and the lane's directory and key must belong to that user. Without that, D is better than B only against bugs that do not give code execution as the same user. The release key also stays in the platform's variable store, so Railway's own access to it does not change.
+
+**Recommendation.** Use A until D exists. D is the lead candidate for the maintainers to approve, because it keeps the separate-process rule with one service. B is cheapest but removes that rule. C is the strongest but needs infrastructure the project does not have.
+
+**The GitHub credential plan (for any option).** Keep static read and publish tokens first. Later, an App installation token for the release repository can replace them: the lane's publish path already asks a function for the token on each use, and the tag re-check client would have to take a function too (about 60 to 100 lines). The cost is that the App private key must reach the lane.
+
 ## Instance administrator access on a host with no shell
 
 To call the [instance operations](/instance-admin) on a hosted instance, generate a `tti_` token on your own machine with `turntable token generate --instance` and set only its hash as `TURNTABLE_INSTANCE_BOOTSTRAP_TOKEN_SHA256`. On boot it becomes an instance token if none is active, expiring in 30 days at most. Call `POST /api/v1/instance/tokens/rotate` once to swap it for a token only you have seen, then **remove the variable**. The steps and the rules are in [Instance administrator](/instance-admin#bootstrapping-with-no-shell).
 
 ## The first approver on a host with no shell
 
-`turntable approvals bootstrap` needs a shell on the server, which a hosted instance does not have. Instead, the instance administrator calls `POST /api/v1/instance/approvers/bootstrap` (the `bootstrap_approver` op) with a `tti_` token, once per org. Generate the key pair on the approver's own machine with `turntable approvals keygen --out alice.key`, which prints the public key, and send only that:
+On a hosted instance the first approver of an org is the org's own owner, with a passkey, in the web UI. Nobody needs a shell or an instance token.
 
-```bash
-curl -sS -X POST "$TURNTABLE_URL/api/v1/instance/approvers/bootstrap" \
-  -H "Authorization: Bearer $TURNTABLE_INSTANCE_TOKEN" -H "content-type: application/json" \
-  -d '{"target_org":"acme","person":"Alice","forge_login":"alice-gh","public_key":"<alice.pub text>"}'
-```
+1. Sign in with GitHub as an **owner** of the org. Turntable's own membership row decides the role, never GitHub.
+2. Open the org's **Approvers** page. While the org has no active approver, an owner sees **Enrol as first approver** (the onboarding wizard links to it as an optional last step after the first CI run).
+3. The browser creates a passkey for the instance's relying party id. It is bound to your own GitHub login and numeric id, so it can also step up your session.
 
-It works only while the org has no active approver, and it never adds to an existing set. If every approver of an org was revoked, it is refused until a delay has passed since the last revocation (24 hours by default, the `approver_rebootstrap_delay_hours` setting, at least 1; see [Settings registry](/configuration#settings-registry)), so a stolen instance token cannot revoke all approvers and enrol its own key at once. The refusal says when it becomes possible. An org that never had an approver has no delay, and the host's CLI is not delayed. The setting is an org setting whose default is the instance-wide 24 hours; only the instance administrator changes it (`instance_set_setting` with `target_org`), never over MCP, and `TURNTABLE_APPROVER_REBOOTSTRAP_DELAY_HOURS` or `turntable.toml` locks it. Revoking an org's last approver emits an `approvers.depleted` event and each bootstrap an `approver.bootstrapped` event; both reach the org's outbound webhooks (subscribe by type), and both are audited in the org's chain and the system chain. Enrol a passkey next as a second key, signed by the bootstrap key as usual. The op is REST only: an org token of any role is refused, and instance tokens are not MCP credentials. See [Human approvals](/security#human-approvals).
+The server checks all of these, in one transaction, and refuses the call if any fails:
+
+- the org has no active approver: it never had one, or more than the `approver_rebootstrap_delay_hours` setting (24 hours by default, at least 1; see [Settings registry](/configuration#settings-registry)) has passed since the last revocation. Two concurrent enrolments, or one racing a CLI or instance bootstrap, cannot both win;
+- your role in the org is `owner`;
+- your web session was authenticated by a GitHub sign-in in the last 10 minutes. If it was not, the page sends you through GitHub sign-in again and you come back to the page;
+- the passkey satisfies the org's key policy (`hardware` needs a verified attestation).
+
+It is a web-session action. Every token, org or instance, and every MCP call is refused (`first_approver_challenge` and `enrol_first_approver` are not MCP tools). The enrolment is audited in the org's chain without the passkey data, and emits an `approver.bootstrapped` event that reaches the org's outbound webhooks and the browser's notifications. Revoking an org's last approver emits `approvers.depleted`. After the first approver exists, every further key needs a quorum of existing approvers, as described in [Human approvals](/security#human-approvals).
+
+Self-hosted instances can still enrol the first approver with an offline ed25519 key, from the host's CLI or through the instance administrator's `bootstrap_approver` op; see [Human approvals](/security#human-approvals).
 
 ## Webhooks wake the poller
 

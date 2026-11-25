@@ -1,13 +1,16 @@
-// Sandbox usage, counted exactly: from when the provider's create returned to when its destroy was
-// confirmed (`job_attempts.sandbox_created_at` and `sandbox_destroyed_at`). An attempt's own
-// duration also covers waiting for provider capacity, so it is not used. Quotas read the same
-// numbers, so what is shown and what is limited cannot differ.
-import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+// Sandbox usage: the one definition behind the Usage page, quotas and `instance_run_summary`, so
+// what is shown and what is limited cannot differ (#598). Only an attempt with a recorded
+// `sandbox_created_at` counts (one that never made a sandbox counts 0). It runs from there to
+// `sandbox_destroyed_at`, else to the attempt's `finished_at`, and only a still-running attempt
+// runs to now. An estimated end (no confirmed destroy) never exceeds the attempt's recorded
+// sandbox TTL. The interval is clipped to the window. An attempt's own duration also covers
+// waiting for provider capacity, so it is not used.
+import { and, eq, gt, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { PREEMPTED } from "./lease";
 import { yieldProjects } from "./project-settings";
-import { type Scope, scoped } from "./scope";
+import type { Scope } from "./scope";
 
 const DAY_MS = 86_400_000;
 
@@ -19,7 +22,7 @@ export interface SandboxDay {
   minutes: number;
   /** Attempts whose sandbox was alive at some point of this day. */
   attempts: number;
-  /** Of those, how many had no confirmed destroy: their end is the attempt's finish, or now while it runs. */
+  /** Of those, how many are still running: their end is now, so the figure is an estimate. */
   estimated: number;
 }
 
@@ -30,25 +33,15 @@ export interface SandboxUsageWindow {
   to: number;
   /** The clock: where a sandbox still alive ends. */
   now: number;
-  /**
-   * For a limit, where an attempt that finished with no confirmed destroy ends: its finish plus
-   * this long, never past `now`. A sandbox the provider never confirmed destroying may still be
-   * alive (and billing) until its TTL, so a quota counts to there. The attempt's own recorded
-   * sandbox TTL is the grace; this is the fallback for one with none (a legacy row, a provider
-   * that reports no TTL). Absent (the Usage page): the attempt's finish.
-   */
-  graceMs?: number;
 }
-
-/** The grace for an unconfirmed destroy when the attempt recorded no TTL: Daytona's longest. */
-export const DEFAULT_SANDBOX_GRACE_MS = 30 * 60_000;
 
 /** The start of the UTC day containing `ms`. */
 export const utcDayStart = (ms: number): number => Math.floor(ms / DAY_MS) * DAY_MS;
 const dayName = (start: number): string => new Date(start).toISOString().slice(0, 10);
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
-interface Span {
+export interface Span {
+  orgId: string;
   projectId: string;
   jobId: string;
   /** The attempt was preempted (#355): its time is reported apart from useful time. */
@@ -58,68 +51,69 @@ interface Span {
   confirmed: boolean;
 }
 
-/** The sandbox lives of an org's (or project's) attempts that overlap the window. */
-async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[]> {
-  // A NULL create time (an attempt that never recorded it, a row from before the column existed,
-  // a crash between create and record) falls back to when the attempt started: it holds or held
-  // a sandbox, and counting it from the start over-counts rather than counting nothing.
-  const start = sql<number>`coalesce(${s.jobAttempts.sandboxCreatedAt}, ${s.jobAttempts.startedAt})`;
-  const fallback = w.graceMs ?? 0;
-  // Where an unconfirmed attempt's sandbox may last to: its finish plus its own recorded TTL, or
-  // the fallback when it has none. Without a limit's grace it is the finish alone.
-  const graceExpr = sql<number>`case when ${s.jobAttempts.sandboxTtlSeconds} is null then ${fallback} when ${s.jobAttempts.sandboxTtlSeconds} > 0 then ${s.jobAttempts.sandboxTtlSeconds} * 1000 else 0 end`;
+/**
+ * The sandbox lives of attempts that overlap the window, for an org, a project or (no org) the
+ * whole instance. Only attempts with a recorded sandbox create time have one.
+ */
+export async function sandboxSpans(
+  db: Db,
+  scope: Partial<Scope>,
+  w: SandboxUsageWindow,
+): Promise<Span[]> {
   const rows = await db.run((h) =>
     h.orm
       .select({
         created: s.jobAttempts.sandboxCreatedAt,
-        started: s.jobAttempts.startedAt,
         destroyed: s.jobAttempts.sandboxDestroyedAt,
         finished: s.jobAttempts.finishedAt,
+        state: s.jobAttempts.state,
         ttl: s.jobAttempts.sandboxTtlSeconds,
+        orgId: s.jobAttempts.orgId,
         projectId: s.jobAttempts.projectId,
         jobId: s.jobAttempts.jobId,
         errorClass: s.jobAttempts.errorClass,
       })
       .from(s.jobAttempts)
       .where(
-        scoped(
-          scope,
-          { orgId: s.jobAttempts.orgId, projectId: s.jobAttempts.projectId },
-          or(isNotNull(s.jobAttempts.sandboxCreatedAt), isNotNull(s.jobAttempts.startedAt)),
-          lt(start, w.to),
-          // Alive during the window: a destroy after its start; or no confirmed destroy and a
-          // finish (plus the grace) after it; or neither (still running, or lost).
+        and(
+          scope.orgId === undefined ? undefined : eq(s.jobAttempts.orgId, scope.orgId),
+          scope.projectId === undefined ? undefined : eq(s.jobAttempts.projectId, scope.projectId),
+          isNotNull(s.jobAttempts.sandboxCreatedAt),
+          lt(s.jobAttempts.sandboxCreatedAt, w.to),
+          // Alive during the window: a destroy after its start; or no destroy and a finish after
+          // it; or neither (still running, or lost).
           or(
             gt(s.jobAttempts.sandboxDestroyedAt, w.from),
             and(
               isNull(s.jobAttempts.sandboxDestroyedAt),
-              isNotNull(s.jobAttempts.finishedAt),
-              fallback > 0
-                ? gt(sql`${s.jobAttempts.finishedAt} + ${graceExpr}`, w.from)
-                : gt(s.jobAttempts.finishedAt, w.from),
+              or(isNull(s.jobAttempts.finishedAt), gt(s.jobAttempts.finishedAt, w.from)),
             ),
-            and(isNull(s.jobAttempts.sandboxDestroyedAt), isNull(s.jobAttempts.finishedAt)),
           ),
         ),
       ),
   );
   return rows.flatMap((r) => {
-    const begin = (r.created ?? r.started) as number;
-    // Confirmed destroy; else the attempt's finish (plus the grace for a limit, never past now);
-    // else (still running) now. Never before the start.
-    const grace = fallback > 0 ? Math.max(0, r.ttl === null ? fallback : r.ttl * 1000) : 0;
-    const unconfirmedEnd =
-      r.finished === null ? w.now : grace > 0 ? Math.min(w.now, r.finished + grace) : r.finished;
-    const end = Math.max(begin, r.destroyed ?? unconfirmedEnd);
-    // Estimated: no confirmed destroy, or no recorded create time.
+    const begin = r.created as number;
+    let end: number;
+    let live = false;
+    if (r.destroyed !== null) end = r.destroyed;
+    else {
+      live = r.finished === null && r.state === "running";
+      // A finished attempt ends at its finish; a running one at now; one that is neither (lost,
+      // never finished) has no known end and counts 0. An estimate never outlives the TTL.
+      end = r.finished ?? (live ? w.now : begin);
+      if (r.ttl !== null && r.ttl > 0) end = Math.min(end, begin + r.ttl * 1000);
+    }
+    end = Math.max(begin, end);
     return [
       {
+        orgId: r.orgId,
         projectId: r.projectId,
         jobId: r.jobId,
         preempted: r.errorClass === PREEMPTED,
         start: begin,
         end,
-        confirmed: r.destroyed !== null && r.created !== null,
+        confirmed: !live,
       },
     ];
   });
@@ -127,6 +121,10 @@ async function spans(db: Db, scope: Scope, w: SandboxUsageWindow): Promise<Span[
 
 const overlap = (a: Span, from: number, to: number): number =>
   Math.max(0, Math.min(a.end, to) - Math.max(a.start, from));
+
+/** Sandbox ms inside [from, to) over a set of spans. */
+export const spanMs = (all: Span[], from: number, to: number): number =>
+  all.reduce((n, sp) => n + overlap(sp, from, to), 0);
 
 /** Per-day figures for a set of spans. Days with no usage are still listed. */
 function dayRows(all: Span[], w: SandboxUsageWindow): SandboxDay[] {
@@ -156,7 +154,7 @@ export async function sandboxUsage(
   scope: Scope,
   w: SandboxUsageWindow,
 ): Promise<SandboxDay[]> {
-  return dayRows(await spans(db, scope, w), w);
+  return dayRows(await sandboxSpans(db, scope, w), w);
 }
 
 export interface ProjectSandboxUsage {
@@ -186,7 +184,7 @@ export async function sandboxUsageByProject(
   scope: Scope,
   w: SandboxUsageWindow,
 ): Promise<ProjectSandboxUsage[]> {
-  const all = await spans(db, scope, w);
+  const all = await sandboxSpans(db, scope, w);
   const byProject = new Map<string, Span[]>();
   for (const sp of all) {
     const list = byProject.get(sp.projectId);
@@ -247,7 +245,7 @@ export async function sandboxSeconds(
   scope: Scope,
   w: SandboxUsageWindow,
 ): Promise<{ seconds: number; estimated: number }> {
-  const all = await spans(db, scope, w);
+  const all = await sandboxSpans(db, scope, w);
   let ms = 0;
   let estimated = 0;
   for (const sp of all) {

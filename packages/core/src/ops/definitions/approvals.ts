@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
   approvalWarnings,
+  assertFirstApproverAllowed,
+  bootstrapFirstPasskey,
   applyEnrolmentApproval,
   applyEnvironmentApproval,
   applyReleaseApproval,
@@ -46,6 +48,7 @@ import {
   getEnvPolicy,
   getKeyPolicy,
   getOrgById,
+  getSessionSignedInAt,
   getProject,
   getProjectSigning,
   getRun,
@@ -62,6 +65,8 @@ import {
   PROTECTED_ENVIRONMENTS,
 } from "../../db/repos";
 import { APPROVER_KINDS } from "../../db/schema";
+import { createSettingsRuntime, resolveSetting } from "../../settings/resolve";
+import { settingsRegistry } from "../../settings/definitions";
 import { iso } from "../common";
 import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
@@ -460,7 +465,11 @@ export const releaseApprovalChallenge = defineOp({
     "run (the run's release-class artifacts, or the names given), as name, sha256 and size. The " +
     "release lane signs only an artifact set with exactly that digest, once. Refused when no " +
     "artifact is recorded yet. A passkey signs `challenge` in the browser; an offline ed25519 key " +
-    "signs `canonical`. Issuing a statement approves nothing. Not available over MCP.",
+    "signs `canonical`. The statement also binds `lane_config_version`, read from the release lane " +
+    "when it is issued: the lane refuses to sign or publish if its configuration (pin, targets, " +
+    "secrets) changed since, with `release lane config changed since approval; re-approve`. " +
+    "Refused when the lane's config channel is not configured or cannot be reached. " +
+    "Issuing a statement approves nothing. Not available over MCP.",
   input: z.object({
     run_id: z.string().min(1).max(64),
     approver: z.string().min(1).max(64).describe("The approver key id that will sign."),
@@ -530,6 +539,32 @@ export const releaseApprovalChallenge = defineOp({
         throw new OpError("conflict", `release_manifest_unknown: ${e.message}`);
       throw e;
     }
+    // The lane's configuration version, read from the lane now: the approver signs over the pin,
+    // targets and secrets as they stand, and the lane refuses to sign or publish if they move.
+    if (!ctx.releaseConfig) {
+      throw new OpError(
+        "unavailable",
+        "release_lane_unreachable: the release lane's config channel is not configured here, so the lane's configuration version cannot be bound into the approval",
+        { reason: "lane_not_configured" },
+      );
+    }
+    const laneVersion = await ctx.releaseConfig.call("version", {
+      orgId: ctx.scope.orgId,
+      projectId: ctx.scope.projectId,
+    });
+    if (!laneVersion.ok) {
+      throw new OpError(
+        "unavailable",
+        `release_lane_unreachable: could not read the release lane's configuration version (${laneVersion.reason})`,
+        { reason: "lane_unreachable" },
+      );
+    }
+    const laneConfigVersion = Number(
+      (laneVersion.result as { config_version?: unknown }).config_version,
+    );
+    if (!Number.isInteger(laneConfigVersion) || laneConfigVersion < 0) {
+      throw new OpError("unavailable", "release_lane_unreachable: the lane returned no version");
+    }
     const { org, project } = await slugs(ctx);
     const statement = releaseStatementSchema.parse({
       type: RELEASE_STATEMENT_TYPE,
@@ -540,6 +575,7 @@ export const releaseApprovalChallenge = defineOp({
       workflow_hash: trust.workflowHash,
       environment,
       manifest_sha256: manifest,
+      lane_config_version: laneConfigVersion,
       approver: input.approver,
       expires_at: now + input.ttl_minutes * 60_000,
       nonce: nonce(),
@@ -742,6 +778,213 @@ export const registerChallenge = defineOp({
   },
 });
 
+// ---- the first approver, self-serve (#587) ----
+
+/** How recently the owner must have signed in with GitHub to enrol the org's first approver. */
+export const FIRST_APPROVER_SIGN_IN_MS = 10 * 60_000;
+
+/**
+ * The gate shared by the challenge and the enrolment: a web session of an org owner whose GitHub
+ * sign-in is at most ten minutes old. A token of any role, the instance administrator and MCP never
+ * pass (the dispatcher already refuses them; this refuses again). Returns the person's GitHub
+ * identity, which the enrolled passkey is bound to.
+ */
+async function firstApproverCaller(
+  ctx: OpContext,
+): Promise<{ login: string; githubUserId: string }> {
+  const p = ctx.principal;
+  if (ctx.viaMcp === true || ctx.transport === "mcp")
+    throw new OpError("forbidden", "the first approver is enrolled in the web UI, not over MCP");
+  if (p.kind !== "session")
+    throw new OpError("forbidden", "the first approver is enrolled by a signed-in org owner");
+  if (p.role !== "owner")
+    throw new OpError("forbidden", "only an org owner can enrol the org's first approver");
+  const signedInAt = p.sessionHash ? await getSessionSignedInAt(ctx.db, p.sessionHash) : null;
+  if (signedInAt === null || ctx.now() - signedInAt > FIRST_APPROVER_SIGN_IN_MS)
+    throw new OpError(
+      "forbidden",
+      "sign in with GitHub again (fresh_sign_in_required): enrolling the first approver needs a sign-in from the last 10 minutes",
+      { reason: "fresh_sign_in_required" },
+    );
+  const identity = await getIdentityByUserId(ctx.db, p.id);
+  if (!identity) throw new OpError("forbidden", "this session has no GitHub identity");
+  return { login: identity.login, githubUserId: identity.githubUserId };
+}
+
+async function rebootstrapDelayMs(ctx: OpContext): Promise<number> {
+  const org = await getOrgById(ctx.db, ctx.scope.orgId);
+  const rt = ctx.settings ?? createSettingsRuntime(settingsRegistry);
+  const hours = (
+    await resolveSetting(rt, ctx.db, "approver_rebootstrap_delay_hours", {
+      orgId: ctx.scope.orgId,
+      orgSlug: org?.slug ?? "",
+    })
+  ).value as number;
+  return hours * 3_600_000;
+}
+
+export const firstApproverChallenge = defineOp({
+  name: "first_approver_challenge",
+  summary: "Issue a challenge for the org's first approver passkey (owner web session only).",
+  description:
+    "Returns a single-use challenge for `navigator.credentials.create`, for an org that has no " +
+    "active approver. Only a signed-in org owner whose GitHub sign-in is at most 10 minutes old " +
+    "can call it, from the web UI: no token of any role, no instance token and no MCP call can. " +
+    "Refused while the org has an approver or inside the `approver_rebootstrap_delay_hours` " +
+    "window after its last revocation.",
+  input: z.object({}),
+  output: z.object({
+    challenge: z.string(),
+    rp_id: z.string(),
+    expires_at: z.string(),
+    attestation: z.enum(["none", "direct"]),
+  }),
+  effect: "write",
+  auth: { type: "token", minRole: "owner" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/approvers/first/challenge" },
+  mcp: false,
+  async handler(ctx) {
+    await firstApproverCaller(ctx);
+    const rpv = rp(ctx);
+    const now = ctx.now();
+    try {
+      await assertFirstApproverAllowed(ctx.db, ctx.scope.orgId, now, await rebootstrapDelayMs(ctx));
+    } catch (e) {
+      if (e instanceof ApprovalConflict) throw new OpError("conflict", e.message);
+      throw e;
+    }
+    const id = nonce();
+    await storeChallenge(ctx, "register", id, "");
+    const kp = await getKeyPolicy(ctx.db, ctx.scope.orgId);
+    return {
+      challenge: id,
+      rp_id: rpv.rpId,
+      expires_at: iso(now + CHALLENGE_TTL_MS)!,
+      attestation: kp.mode === "hardware" ? ("direct" as const) : ("none" as const),
+    };
+  },
+});
+
+export const enrolFirstApprover = defineOp({
+  name: "enrol_first_approver",
+  summary: "Enrol the org's first approver with a passkey (owner web session only).",
+  description:
+    "Self-serve first approver for an org with none. The caller must be a signed-in org owner " +
+    "(a web session; Turntable's own membership decides the role) whose GitHub sign-in is at most " +
+    "10 minutes old, and the passkey must satisfy the org's key policy. The passkey is bound to the " +
+    "owner's own GitHub login and numeric id, so it can also step up their session. In one " +
+    "transaction the call re-checks that the org has no active approver and that the " +
+    "`approver_rebootstrap_delay_hours` delay since the last revocation has passed, so two " +
+    "concurrent enrolments, or one racing a CLI or instance bootstrap, cannot both win. Audited, " +
+    "and emits `approver.bootstrapped`. Never available to a token (org or instance) or over MCP. " +
+    "After this, further approvers need a quorum (request_enrolment, approve_enrolment).",
+  input: z.object({
+    person: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("A name for the human who holds the passkey. Defaults to their GitHub login."),
+    webauthn: z.strictObject({
+      challenge: z.string().min(16).max(128),
+      client_data_json: z.string().max(8192),
+      attestation_object: z.string().max(16384),
+    }),
+  }),
+  output: z.object({
+    approver_id: z.string(),
+    person: z.string(),
+    key_fingerprint: z.string(),
+    warnings: z.array(z.string()),
+  }),
+  effect: "write",
+  auth: { type: "token", minRole: "owner" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/approvers/first" },
+  mcp: false,
+  logOmitFields: ["webauthn"],
+  auditDetail: (o) => ({ approver_id: o.approver_id, key_fingerprint: o.key_fingerprint }),
+  async handler(ctx, input) {
+    const who = await firstApproverCaller(ctx);
+    const orgId = ctx.scope.orgId;
+    const now = ctx.now();
+    const delayMs = await rebootstrapDelayMs(ctx);
+    // Cheap refusal first; the authoritative re-check is in bootstrapFirstPasskey, same transaction.
+    try {
+      await assertFirstApproverAllowed(ctx.db, orgId, now, delayMs);
+    } catch (e) {
+      if (e instanceof ApprovalConflict) throw new OpError("conflict", e.message);
+      throw e;
+    }
+    const w = input.webauthn;
+    const ok = await consumeChallenge(ctx.db, orgId, {
+      id: w.challenge,
+      kind: "register",
+      statementHash: "",
+      now,
+    });
+    if (!ok) throw new OpError("conflict", "the challenge is unknown, already used or expired");
+    let key;
+    try {
+      const r = verifyRegistration(
+        { clientDataJSON: w.client_data_json, attestationObject: w.attestation_object },
+        {
+          challenge: w.challenge,
+          rp: rp(ctx),
+          ...(ctx.attestationAnchors ? { anchors: ctx.attestationAnchors } : {}),
+          now,
+        },
+      );
+      key = {
+        credentialId: r.credentialId,
+        publicKey: r.publicKey,
+        alg: r.alg,
+        signCount: r.signCount,
+        aaguid: r.attestation.verified ? r.attestation.aaguid : null,
+        attested: r.attestation.verified,
+      };
+      const violation = keyPolicyViolation(await getKeyPolicy(ctx.db, orgId), {
+        kind: "webauthn",
+        ...key,
+      });
+      if (violation !== null)
+        throw new OpError("invalid_input", `registration refused by the key policy: ${violation}`);
+    } catch (e) {
+      if (e instanceof WebAuthnError)
+        throw new OpError("invalid_input", `registration refused: ${e.message}`);
+      throw e;
+    }
+    try {
+      const made = await bootstrapFirstPasskey(
+        ctx.db,
+        orgId,
+        {
+          person: input.person ?? who.login,
+          forgeLogin: who.login,
+          githubUserId: who.githubUserId,
+          createdBy: principalLabel(ctx.principal),
+          key,
+        },
+        now,
+        { delayMs },
+      );
+      return {
+        approver_id: made.id,
+        person: made.person,
+        key_fingerprint: made.fingerprint,
+        warnings: await approvalWarnings(ctx.db, orgId, ["production", "release"]),
+      };
+    } catch (e) {
+      if (e instanceof ApprovalConflict) throw new OpError("conflict", e.message);
+      throw e;
+    }
+  },
+});
+
 export const requestEnrolment = defineOp({
   name: "request_enrolment",
   summary: "Ask to enrol a passkey or an ed25519 public key as an approver, pending a quorum.",
@@ -794,7 +1037,7 @@ export const requestEnrolment = defineOp({
     if ((await listApprovers(ctx.db, orgId)).length === 0) {
       throw new OpError(
         "conflict",
-        "no approver is enrolled yet: the first approver is enrolled from the server CLI (turntable approvals bootstrap)",
+        "no approver is enrolled yet: the org's owner enrols the first approver with a passkey on the Approvers page (self-hosted: the server CLI, turntable approvals bootstrap)",
       );
     }
     const keyPolicy = await getKeyPolicy(ctx.db, orgId);

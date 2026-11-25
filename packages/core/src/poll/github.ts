@@ -515,6 +515,16 @@ export class GithubClient {
     };
   }
 
+  /**
+   * One pull request's state, fetched on its own (the open list is a single page, so a PR missing
+   * from it is not proof that it closed). `closed` covers merged too; `unknown` for anything else.
+   */
+  async pullState(repo: string, number: number): Promise<"open" | "closed" | "unknown"> {
+    if (!Number.isSafeInteger(number) || number < 1) return "unknown";
+    const body = (await this.#get(`/repos/${repo}/pulls/${number}`)) as { state?: unknown };
+    return body.state === "open" || body.state === "closed" ? body.state : "unknown";
+  }
+
   async openPulls(repo: string): Promise<PullRequest[]> {
     const body = (await this.#get(
       `/repos/${repo}/pulls?state=open&per_page=100&sort=updated&direction=desc`,

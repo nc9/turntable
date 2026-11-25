@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PlanError, tarDirectory } from "@turntable/act-runner";
+import { INFRA_KINDS, isRetryableInfra, PlanError, tarDirectory } from "@turntable/act-runner";
 import { createBackoff, type SafeFetch } from "@turntable/net";
 import { FakeWorld } from "@turntable/provider-sdk/testing";
 import { InfraError } from "@turntable/provider-sdk";
@@ -61,10 +61,13 @@ describe("which credential the worker uses", () => {
     // Watched by the poller (any case): its token, no mint.
     expect(await get(ctx(run("acme/web")))).toBe("poll-token-value");
     expect(minted).toHaveLength(0);
-    // Not watched, bound through the App: an installation token for that one repo, read only.
-    expect(await get(ctx(run("acme/app")))).toBe("app-token-for-checks");
+    // Not watched, bound through the App: an installation token, read only, no repo limit.
+    expect(await get(ctx(run("acme/app")))).toEqual({
+      token: "app-token-for-checks",
+      publicActions: true,
+    });
     expect(minted).toEqual([
-      { installationId: "55", scope: { repositories: ["app"], permissions: { contents: "read" } } },
+      { installationId: "55", scope: { permissions: { metadata: "read", contents: "read" } } },
     ]);
     // Neither: the env token. A local run uses it too and never a poll or App token.
     expect(await get(ctx(run("other/thing")))).toBe("env-token-value");
@@ -159,7 +162,7 @@ describe("verdicts kept in the database", () => {
     ).toBeUndefined();
   });
 
-  test("reachability: yes lasts a day, no only ten minutes, and it survives a restart", async () => {
+  test("reachability: yes is immutable, no lasts only ten minutes, and it survives a restart", async () => {
     let now = 5_000_000;
     let calls = 0;
     let answer = true;
@@ -168,21 +171,24 @@ describe("verdicts kept in the database", () => {
     expect(await make()("acme", "tool", SHA("1"))).toBe(true);
     expect(await make()("acme", "tool", SHA("1"))).toBe(true);
     expect(calls).toBe(1);
-    now += 23 * 3_600_000;
+    // A verified sha is never re-verified, however old (#621), and pruning keeps it.
+    now += 30 * 86_400_000;
     await make()("acme", "tool", SHA("1"));
     expect(calls).toBe(1);
-    now += 2 * 3_600_000;
-    await make()("acme", "tool", SHA("1"));
-    expect(calls).toBe(2);
 
     answer = false;
     expect(await make()("acme", "tool", SHA("f"))).toBe(false);
     expect(await make()("acme", "tool", SHA("f"))).toBe(false);
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);
     // Ten minutes on, a negative verdict is checked again, so a fixed situation is noticed.
     now += 11 * 60_000;
     answer = true;
     expect(await make()("acme", "tool", SHA("f"))).toBe(true);
+    expect(calls).toBe(3);
+    // Pruning (a write 30 days on) keeps the verified yes verdict.
+    now += 30 * 86_400_000;
+    await make()("acme", "tool", SHA("2"));
+    expect(await make()("acme", "tool", SHA("1"))).toBe(true);
     expect(calls).toBe(4);
   });
 
@@ -280,7 +286,11 @@ jobs:
   /** Plans the job with the given runner options; the sandbox is made to fail right after. */
   async function plan(
     opts: Partial<Parameters<typeof createActRunner>[0]>,
-    extra: { workflow?: string; run?: Record<string, unknown> } = {},
+    extra: {
+      workflow?: string;
+      run?: Record<string, unknown>;
+      store?: Record<string, unknown>;
+    } = {},
   ) {
     // The worker needs the project bound to the repo it fetches.
     if (!(await listRepos(db, a.scope)).some((r) => r.owner === "acme" && r.repo === "web")) {
@@ -333,6 +343,7 @@ jobs:
         appendLog: noop,
         recordStep: noop,
         addCut: noop,
+        ...extra.store,
       },
     } as unknown as AttemptContext);
   }
@@ -408,18 +419,18 @@ jobs:
         headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 3600) },
       },
     });
-    const err = await plan({
+    const limited = await plan({
       fetch: long.impl,
       // The first run's verdicts are not reused here: this one must ask GitHub.
-      verdictTtl: { resolveMs: 0, reachYesMs: 0, reachNoMs: 0 },
+      verdictTtl: { resolveMs: 0, reachNoMs: 0 },
       now: () => now,
       backoff: { now: () => now, sleep: async () => {}, budgetMs: 120_000 },
-    }).catch((e) => e);
-    expect(err).toBeInstanceOf(InfraError);
-    expect(String(err.message)).toContain("rate limited");
-    expect(String(err.message)).toContain("wait budget");
-    // A PlanError would have been a deterministic failure; a rate limit is not one.
-    expect(err).not.toBeInstanceOf(PlanError);
+    });
+    // Not a failure: a transient infra kind that requeues the attempt after the reset (#621).
+    expect(limited).toMatchObject({ state: "infra_error", infraKind: "github_rate_limited" });
+    expect(limited.reason).toContain("rate limited");
+    expect(limited.reason).toContain("wait budget");
+    expect(limited.retryAfterMs).toBe(3_600_000 + 1000);
   });
 
   const wf = (uses: string) => `name: ci
@@ -509,6 +520,159 @@ jobs:
     expect(authedPaths(other.calls)).toEqual([]);
   });
 
+  describe("an App installation token (#621)", () => {
+    // Built at runtime, so no token-shaped literal sits in the repository.
+    const MARKER = `ghs_${"Z9".repeat(12)}`;
+    const mintLog: { installationId: string; scope: unknown }[] = [];
+    const auth = {
+      async mint(installationId: string, scope: unknown) {
+        mintLog.push({ installationId, scope });
+        return { token: MARKER };
+      },
+    };
+    const bound = async () => {
+      if (!(await listRepos(db, a.scope)).some((r) => r.owner === "acme" && r.repo === "web")) {
+        await bindRepo(db, a.scope, {
+          forge: "github",
+          owner: "acme",
+          repo: "web",
+          installationId: "55",
+        });
+      }
+    };
+    const forgeOf = () => createForgeToken({ db, auth });
+    beforeEach(() => {
+      mintLog.length = 0;
+    });
+
+    test("a bound repo resolves and verifies a public third-party action with the installation token", async () => {
+      await bound();
+      const gh = github();
+      const out = await plan(
+        { fetch: gh.impl, forgeToken: forgeOf() },
+        { workflow: wf("stranger/tool@v1") },
+      );
+      expect(out.reason).toContain("stop after planning");
+      // The visibility check, the tag resolution and the reachability check: all authenticated.
+      expect(gh.calls.length).toBeGreaterThanOrEqual(3);
+      for (const c of gh.calls) expect(c.auth).toBe(`Bearer ${MARKER}`);
+      expect(gh.calls.some((c) => c.path === "/repos/stranger/tool")).toBe(true);
+      // Least privilege, and not limited to one repository.
+      expect(mintLog[0]).toEqual({
+        installationId: "55",
+        scope: { permissions: { metadata: "read", contents: "read" } },
+      });
+    });
+
+    test("a private repo is still refused with the installation token (fails closed)", async () => {
+      await bound();
+      const gh = github({ priv: ["stranger/hidden"] });
+      tarballs.length = 0;
+      const out = await plan(
+        { fetch: gh.impl, forgeToken: forgeOf(), fetchAction: spyTarball },
+        { workflow: wf("stranger/hidden@v1") },
+      );
+      expect(out).toMatchObject({ state: "failure" });
+      expect(out.reason).toContain("action not available: stranger/hidden");
+      expect(tarballs).toHaveLength(0);
+    });
+
+    test("a second run of the same pinned sha makes zero GitHub calls", async () => {
+      await bound();
+      const first = github();
+      const pinned = wf(`stranger/tool@${SHA("c")}`);
+      await plan({ fetch: first.impl, forgeToken: forgeOf() }, { workflow: pinned });
+      expect(first.calls.length).toBeGreaterThanOrEqual(2);
+      // A new runner (a restart), the same database: nothing is asked of GitHub.
+      const second = github();
+      const out = await plan({ fetch: second.impl, forgeToken: forgeOf() }, { workflow: pinned });
+      expect(out.reason).toContain("stop after planning");
+      expect(second.calls).toHaveLength(0);
+    });
+
+    test("a rate limit past the budget requeues (not a failure) and the retry after the reset passes", async () => {
+      await bound();
+      const now = 2_000_000_000_000;
+      const long = github({
+        limit: {
+          path: /\/commits\/v1$/,
+          times: 99,
+          headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 1100) },
+        },
+      });
+      const limited = await plan(
+        {
+          fetch: long.impl,
+          forgeToken: forgeOf(),
+          now: () => now,
+          backoff: { now: () => now, sleep: async () => {}, budgetMs: 120_000 },
+        },
+        { workflow: wf("stranger/tool@v1") },
+      );
+      expect(limited).toMatchObject({ state: "infra_error", infraKind: "github_rate_limited" });
+      expect(limited.retryAfterMs).toBeGreaterThanOrEqual(1_100_000);
+      expect(isRetryableInfra("github_rate_limited", "protected")).toBe(true);
+      expect(INFRA_KINDS.github_rate_limited).toMatchObject({ transient: true, beforeSteps: true });
+      // After the reset the limit is gone: the retry plans.
+      const retry = github();
+      const out = await plan(
+        { fetch: retry.impl, forgeToken: forgeOf() },
+        { workflow: wf("stranger/tool@v1") },
+      );
+      expect(out.reason).toContain("stop after planning");
+    });
+
+    test("an unbound public repo still resolves anonymously", async () => {
+      // No installation for this repo: the App is configured, but nothing is minted.
+      const gh = github();
+      const out = await plan(
+        { fetch: gh.impl, forgeToken: forgeOf() },
+        { workflow: wf("stranger/tool@v1") },
+      );
+      expect(out.reason).toContain("stop after planning");
+      expect(mintLog).toHaveLength(0);
+      for (const c of gh.calls) expect(c.auth).toBeNull();
+    });
+
+    test("an untrusted run never uses it", async () => {
+      await bound();
+      const gh = github();
+      await plan(
+        { fetch: gh.impl, forgeToken: forgeOf() },
+        {
+          workflow: wf("stranger/tool@v1"),
+          run: { event: "pull_request", ref: "refs/pull/1/head" },
+        },
+      );
+      for (const c of gh.calls) expect(c.auth).toBeNull();
+    });
+
+    test("the token reaches neither the stored plan, the job log nor the output", async () => {
+      await bound();
+      const gh = github();
+      const seen: string[] = [];
+      const outLog: string[] = [];
+      const out = await plan(
+        {
+          fetch: gh.impl,
+          forgeToken: forgeOf(),
+          out: (_k: string, t: string) => void outLog.push(t),
+        },
+        {
+          workflow: wf("stranger/tool@v1"),
+          store: {
+            setPlan: async (p: string) => void seen.push(p),
+            appendLog: async (_o: number, b: Uint8Array) =>
+              void seen.push(new TextDecoder().decode(b)),
+          },
+        },
+      );
+      expect(gh.calls.some((c) => c.auth === `Bearer ${MARKER}`)).toBe(true);
+      expect(seen.length).toBeGreaterThan(0);
+      for (const s of [...seen, ...outLog, JSON.stringify(out)]) expect(s).not.toContain(MARKER);
+    });
+  });
+
   test("an unauthenticated run still resolves public actions of any owner", async () => {
     const gh = github();
     const out = await plan({ fetch: gh.impl }, { workflow: wf("stranger/tool@v1") });
@@ -540,8 +704,9 @@ jobs:
     // The repo is made private. The same trusted run again: the cache is warm, and it is
     // still refused, because the privacy check sits outside the cache.
     priv.push("trusted-org/tool");
+    // (Past the short window in which "public" is remembered; see PUBLIC_TTL_MS.)
     const second = await plan(
-      { fetch: gh.impl, ...withToken("poll-token-value") },
+      { fetch: gh.impl, ...withToken("poll-token-value"), now: () => Date.now() + 3_600_000 },
       { workflow: wf("trusted-org/tool@v1") },
     );
     expect(second).toMatchObject({ state: "failure" });

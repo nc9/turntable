@@ -28,6 +28,11 @@ import type {
   JobDigest,
   RerunResult,
   Setting,
+  LaneAction,
+  LaneConfig,
+  LaneKey,
+  LaneCosignKey,
+  LaneSecretStatus,
   StepUpChallenge,
   Whoami,
   JobAttempt,
@@ -265,6 +270,17 @@ function quotasOf(w: WireQuotas): OrgQuotas {
     usage: w.usage,
   };
 }
+
+const LANE_PATHS: Record<LaneAction, string> = {
+  release_pin_repo: "/release-lane/pin-repo",
+  release_init_key: "/release-lane/keys",
+  release_publish_target_set: "/release-lane/publish-targets",
+  release_publish_target_delete: "/release-lane/publish-targets/delete",
+  release_set_project_signing: "/release-lane/project-signing",
+  release_secret_set: "/release-lane/secrets",
+  release_cosign_key_set: "/release-lane/cosign-keys",
+  release_cosign_key_remove: "/release-lane/cosign-keys/delete",
+};
 
 export function createHttpApi(options: HttpApiOptions): TurntableApi {
   const doFetch = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -558,7 +574,15 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         "/whoami",
         options.token() === null && options.session?.() ? { org: org() } : {},
       );
-      return { kind: w.kind, id: w.id, name: w.name, role: w.role, org: w.org, project: w.project };
+      return {
+        kind: w.kind,
+        id: w.id,
+        name: w.name,
+        role: w.role,
+        org: w.org,
+        project: w.project,
+        operatorOrg: w.operator_org === true,
+      };
     },
 
     async approveRun({ runId, headSha, workflowHash }): Promise<ApproveResult> {
@@ -661,6 +685,111 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         rpId: w.rp_id,
         passkeys: w.passkeys.map((k) => ({ approver: k.approver, passkeyId: k.passkey_id })),
       };
+    },
+
+    async laneWrite({ action, input, stepUp }) {
+      return call<Record<string, unknown>>(
+        "POST",
+        LANE_PATHS[action],
+        {},
+        { org: org(), ...input, step_up: stepUp },
+      );
+    },
+
+    async laneConfig({ targetOrg, targetProject }): Promise<LaneConfig> {
+      const w = await call<{
+        pinned_repo: string | null;
+        config_version: number;
+        targets: {
+          key: string;
+          kind: string;
+          mode: string;
+          has_credential: boolean;
+          settings: Record<string, unknown>;
+        }[];
+      }>("GET", "/release-lane/publish-targets", {
+        org: org(),
+        target_org: targetOrg,
+        target_project: targetProject,
+      });
+      return {
+        pinnedRepo: w.pinned_repo,
+        configVersion: w.config_version,
+        targets: w.targets.map((t) => ({
+          key: t.key,
+          kind: t.kind,
+          mode: t.mode,
+          hasCredential: t.has_credential,
+          settings: t.settings,
+        })),
+      };
+    },
+
+    async laneKey({ targetOrg, name }): Promise<LaneKey> {
+      const w = await call<{ keyid: string; public_key_pem: string; created_at: string }>(
+        "GET",
+        `/release-lane/keys/${encodeURIComponent(name)}`,
+        { org: org(), target_org: targetOrg },
+      );
+      return { keyid: w.keyid, publicKeyPem: w.public_key_pem, createdAt: w.created_at };
+    },
+
+    async laneCosignKeys({ targetOrg, targetProject }) {
+      const w = await call<{
+        keys: {
+          name: string;
+          key_id: string;
+          spki_sha256: string;
+          signs: string;
+          output_name: string;
+          format: string;
+          manifest: boolean;
+        }[];
+        config_version: number;
+      }>("GET", "/release-lane/cosign-keys", {
+        org: org(),
+        target_org: targetOrg,
+        target_project: targetProject,
+      });
+      const keys: LaneCosignKey[] = w.keys.map((k) => ({
+        name: k.name,
+        keyId: k.key_id,
+        spkiSha256: k.spki_sha256,
+        signs: k.signs,
+        outputName: k.output_name,
+        format: k.format,
+        manifest: k.manifest,
+      }));
+      return { keys, configVersion: w.config_version };
+    },
+
+    async laneSecretStatus({ targetOrg, targetProject, name }): Promise<LaneSecretStatus> {
+      const w = await call<{ set: boolean; set_at: string | null; set_by: string | null }>(
+        "GET",
+        "/release-lane/secrets",
+        { org: org(), target_org: targetOrg, target_project: targetProject, name },
+      );
+      return { set: w.set, setAt: w.set_at, setBy: w.set_by };
+    },
+
+    async rotateWebhookSecret({ overlapMinutes, stepUp }) {
+      const w = await call<{ fingerprint: string; overlap_until: string }>(
+        "POST",
+        "/app-secrets/webhook-secret/rotate",
+        {},
+        { org: org(), overlap_minutes: overlapMinutes, step_up: stepUp },
+      );
+      return { fingerprint: w.fingerprint, overlapUntil: w.overlap_until };
+    },
+
+    async replaceAppPrivateKey({ privateKey, stepUp }) {
+      const w = await call<{ fingerprint: string; app_id: string }>(
+        "POST",
+        "/app-secrets/private-key",
+        {},
+        { org: org(), private_key: privateKey, step_up: stepUp },
+      );
+      return { fingerprint: w.fingerprint, appId: w.app_id };
     },
 
     async setSetting({ key, value, unset, project, stepUp }): Promise<Setting> {
@@ -1008,6 +1137,49 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         rpId: w.rp_id,
         expiresAt: ms(w.expires_at) ?? 0,
         attestation: w.attestation,
+      };
+    },
+
+    async firstApproverChallenge() {
+      const w = await call<WireRegisterChallenge>(
+        "POST",
+        "/approvers/first/challenge",
+        {},
+        { org: org() },
+      );
+      return {
+        challenge: w.challenge,
+        rpId: w.rp_id,
+        expiresAt: ms(w.expires_at) ?? 0,
+        attestation: w.attestation,
+      };
+    },
+
+    async enrolFirstApprover({ person, webauthn }) {
+      const w = await call<{
+        approver_id: string;
+        person: string;
+        key_fingerprint: string;
+        warnings: string[];
+      }>(
+        "POST",
+        "/approvers/first",
+        {},
+        {
+          ...(person ? { person } : {}),
+          webauthn: {
+            challenge: webauthn.challenge,
+            client_data_json: webauthn.clientDataJson,
+            attestation_object: webauthn.attestationObject,
+          },
+          org: org(),
+        },
+      );
+      return {
+        approverId: w.approver_id,
+        person: w.person,
+        keyFingerprint: w.key_fingerprint,
+        warnings: w.warnings,
       };
     },
 

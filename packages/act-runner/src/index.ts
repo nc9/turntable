@@ -14,6 +14,7 @@ export * from "./triggers";
 export * from "./workflow-plan";
 export * from "./split";
 export * from "./readiness";
+export * from "./history-need";
 export * from "./taint";
 export * from "./nested-actions";
 export * from "./action-runtime";

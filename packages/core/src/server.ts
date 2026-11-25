@@ -1,9 +1,11 @@
+import type { AppAuth } from "./github/app-auth";
 import type { ArtifactService } from "./artifacts/service";
 import type { CacheService } from "./cache/service";
 import type { Db } from "./db";
 import type { BackupConfig } from "./db/backup";
 import type { SettingsRuntime } from "./settings/resolve";
 import { registry } from "./ops";
+import type { ArtifactBlobs } from "./ops/define";
 import { buildOpenApi } from "./ops/openapi";
 import { createMcpHttp } from "./mcp/http";
 import {
@@ -16,6 +18,7 @@ import {
 } from "./transport";
 import { createRestApi } from "./ops/rest";
 import type { RelyingParty } from "./approvals/webauthn";
+import type { LaneConfigClient } from "./release/channel-client";
 import type { GithubFacts, GithubUserLookup } from "./github/api";
 import type { ClaimHandler, InstallationClaims } from "./github/claim";
 import type { AuthHandler } from "./auth/github-login";
@@ -161,6 +164,12 @@ export type ServeOptions = {
   settings?: SettingsRuntime;
   /** WebAuthn relying party for human approvals. Absent: only offline ed25519 approvals work. */
   webauthn?: RelyingParty;
+  /** The release lane's config channel, when configured (the instance's `release_*` ops). */
+  releaseConfig?: LaneConfigClient;
+  /** The artifact store's reads (the artifact download ops); absent when artifacts are off. */
+  artifactBlobs?: ArtifactBlobs;
+  /** The operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
+  operatorOrgSlug?: string;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
   /** The artifact service for jobs (the twirp API and `/_artifacts/...`), when a URL is configured. */
@@ -171,6 +180,8 @@ export type ServeOptions = {
   trustForwardedProto?: boolean;
   /** The secret store, for `instance_audit_verify`'s public keys. */
   auditStore?: SecretStore | undefined;
+  /** The App credential minter, for the instance App-secret ops. */
+  appAuth?: AppAuth | undefined;
   /** The readiness checks, served by the `doctor` operation. */
   doctor?: () => Promise<DoctorReport>;
   /** Counts the forwarded headers requests carry, for doctor to compare with the settings. */
@@ -192,10 +203,14 @@ export function startServer(options: ServeOptions) {
     defaultBranchRunner: options.defaultBranchRunner,
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
+    releaseConfig: options.releaseConfig,
+    artifactBlobs: options.artifactBlobs,
+    operatorOrgSlug: options.operatorOrgSlug,
     instanceOrgCap: options.instanceOrgCap,
     staticPollProjects: options.staticPollProjects,
     doctor: options.doctor,
     auditStore: options.auditStore,
+    appAuth: options.appAuth,
     backup: options.backup,
     settings: options.settings,
   };

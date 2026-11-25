@@ -194,7 +194,16 @@ const ENVELOPE = {
 
 const audits = async () =>
   (await chainedAudit(db, a.orgId, 0, 500)).filter((r) => r.op === "release_lane");
-const finalize = () => lane.finalize({ ...a.scope, runId: a.runId });
+const finalize = () => {
+  // These tests declare targets after the lane signed: the release is approved again under the
+  // configuration now in force, as a re-approval would (a config change voids the old one, #541).
+  attest.approveRelease(
+    { ...a.scope, runId: a.runId },
+    { repo: "acme/web", tag: "v1.0.0", sha: SHA, artifacts: ["manifest.json"] },
+    1_800_000_000_000,
+  );
+  return lane.finalize({ ...a.scope, runId: a.runId });
+};
 
 beforeEach(async () => {
   ({ db, a } = await seedWorld());

@@ -54,10 +54,19 @@ export function parseTarget(raw: unknown): PublishTarget {
   }
   if (o.kind === "github-release") {
     const assets = Array.isArray(o.assets) ? o.assets.map(String) : [];
-    need(assets.length > 0 && assets.length <= 50, "assets must list 1 to 50 recorded artifacts");
+    const assetArtifacts = Array.isArray(o.assetArtifacts) ? o.assetArtifacts.map(String) : [];
+    need(
+      assets.length + assetArtifacts.length > 0 &&
+        assets.length <= 50 &&
+        assetArtifacts.length <= 20,
+      "list 1 to 50 assets (files) and/or 1 to 20 asset_artifacts (artifacts whose every file is attached)",
+    );
     for (const a of assets)
       need(ARTIFACT_NAME.test(a) && !a.split("/").includes(".."), `bad asset name ${a}`);
     need(new Set(assets).size === assets.length, "assets must not repeat");
+    for (const a of assetArtifacts)
+      need(ARTIFACT_NAME.test(a) && !a.split("/").includes(".."), `bad asset artifact name ${a}`);
+    need(new Set(assetArtifacts).size === assetArtifacts.length, "asset_artifacts must not repeat");
     const prov = o.provenanceAsset === undefined ? "provenance.intoto.json" : o.provenanceAsset;
     need(
       prov === null ||
@@ -68,6 +77,7 @@ export function parseTarget(raw: unknown): PublishTarget {
       kind: "github-release",
       mode: modeOf(o),
       assets,
+      ...(assetArtifacts.length > 0 ? { assetArtifacts } : {}),
       provenanceAsset: prov as string | null,
     };
     return t;

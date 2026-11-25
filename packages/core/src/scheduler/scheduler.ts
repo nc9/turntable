@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isRetryableInfra } from "@turntable/act-runner";
+import { isRetryableInfra, retryableAfterSteps } from "@turntable/act-runner";
 import { type Db, onAttemptsCancelled } from "../db";
 import {
   addCut,
@@ -16,6 +16,7 @@ import {
   recordExec,
   recordPlan,
   recordTrustClass,
+  DRAIN_CUT_NOT_RETRIED,
   requeueInfraFailureOnce,
   requeueLostAttemptOnce,
   resetAttemptOutput,
@@ -65,6 +66,9 @@ export type SchedulerOptions = {
   now?: () => number;
   log?: (message: string) => void;
 };
+
+/** The longest an infra retry waits for a forge's rate limit to reset (#621). */
+export const MAX_RETRY_AFTER_MS = 3_600_000;
 
 /** The fixed wait before an infra retry (#517). */
 export const INFRA_RETRY_BACKOFF_MS = 10_000;
@@ -404,8 +408,12 @@ export class Scheduler {
         !this.#cutting.has(attempt.id);
       try {
         if (retryable) {
+          const waitMs = Math.max(
+            this.#o.infraRetryBackoffMs,
+            Math.min(outcome.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
+          );
           await new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, this.#o.infraRetryBackoffMs);
+            const t = setTimeout(resolve, waitMs);
             controller.signal.addEventListener(
               "abort",
               () => {
@@ -433,14 +441,18 @@ export class Scheduler {
           errorClass: `${CONTROLLER_LOST} (drain cancel)`,
           now: this.#o.now(),
           requireExpired: false,
+          retryableAfterSteps,
         }).catch((err) => {
           this.#o.log(`could not requeue ${attempt.id} after the drain cut: ${String(err)}`);
-          return false;
+          return "no" as const;
         });
-        if (requeued) return;
-        // The one infra retry is spent (or the requeue failed): the stop must not read as a human
-        // cancel. The job ends infra_error, like a drain-timeout cut with no retry left.
-        outcome = infra(`${CONTROLLER_LOST} (drain cancel)`);
+        if (requeued === "requeued") return;
+        // The one infra retry is spent (or the requeue failed, or steps ran for a protected or
+        // release job): the stop must not read as a human cancel. The job ends infra_error, like a
+        // drain-timeout cut with no retry left.
+        outcome = infra(
+          requeued === "not_retried" ? DRAIN_CUT_NOT_RETRIED : `${CONTROLLER_LOST} (drain cancel)`,
+        );
       }
       // Retry a transient infra failure once, on a fresh sandbox: a NEW attempt for the same job.
       // Every run-step check and refusal applies again, since the new attempt is claimed and run

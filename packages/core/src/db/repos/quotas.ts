@@ -5,7 +5,7 @@ import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
 import { appendEvent } from "./events";
-import { DEFAULT_SANDBOX_GRACE_MS, sandboxSeconds } from "./usage";
+import { sandboxSeconds } from "./usage";
 
 export type OrgQuotas = {
   maxConcurrent: number | null;
@@ -84,9 +84,9 @@ export type QuotaUsage = {
   concurrent: number;
   /** Distinct runs with an attempt started in the last hour. */
   runsLastHour: number;
-  /** Sandbox time in the last 24 hours, in whole minutes: create to confirmed destroy, a live or unconfirmed sandbox counted to the attempt's end or now. */
+  /** Sandbox time in the last 24 hours, in whole minutes: create to destroy, else to the attempt's finish, a running one to now (usage.ts). */
   sandboxMinutesLastDay: number;
-  /** Attempts in that figure with no confirmed destroy or no recorded create time (an estimate). */
+  /** Running attempts in that figure, counted to now (an estimate). */
   sandboxEstimated: number;
   logBytes: number;
   storedBytes: number;
@@ -124,12 +124,8 @@ async function storedBytesIn(
 }
 
 export async function quotaUsage(db: Db, orgId: string, now: number): Promise<QuotaUsage> {
-  // The same exact figure the Usage page shows: provider create to confirmed destroy.
-  const sandbox = await sandboxSeconds(
-    db,
-    { orgId },
-    { from: now - DAY_MS, to: now, now, graceMs: DEFAULT_SANDBOX_GRACE_MS },
-  );
+  // The same exact figure the Usage page shows: provider create to destroy, finish or now (see usage.ts).
+  const sandbox = await sandboxSeconds(db, { orgId }, { from: now - DAY_MS, to: now, now });
   return db.run(async (h) => {
     const [conc] = await h.orm
       .select({ n: sql<number>`count(*)`.mapWith(Number) })
@@ -173,9 +169,8 @@ export type QuotaStatus = {
   /** Set when a new claim is held because of this limit. */
   held: string | null;
   /**
-   * The figure includes an estimate (sandbox minutes only): an attempt with no confirmed destroy
-   * counts to its finish plus the provider TTL, and one with no recorded create time counts from
-   * its start. It can over-count; it never under-counts.
+   * The figure includes an estimate (sandbox minutes only): an attempt still running counts to
+   * now, never past its sandbox TTL.
    */
   estimated: boolean;
 };
