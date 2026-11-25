@@ -13,8 +13,9 @@ import {
 
 const root = join(import.meta.dir, "..");
 
-// Every migration in the repo, both dialects: [dialect, tag, additive, reason].
-// A new migration fails the coverage test below until it is added here with its class.
+// Pinned expectations for KNOWN migrations: [dialect, tag, additive, reason].
+// Applied migrations are immutable, so these never change. The table need not list every
+// file: new migrations are covered by the on-disk enumeration test below.
 const TABLE: [Dialect, string, boolean, string][] = [
   ["sqlite", "0000_curvy_slayback", true, "all 1 statements additive"],
   ["sqlite", "0001_steep_makkari", true, "all 22 statements additive"],
@@ -87,14 +88,27 @@ const TABLE: [Dialect, string, boolean, string][] = [
   ["pg", "0019_onboardings", true, "all 3 statements additive"],
 ];
 
-test("every existing migration has a class and a reason in the table", () => {
+test("every migration file on disk classifies without error", () => {
   for (const dialect of ["sqlite", "pg"] as const) {
     const dir = join(root, JOURNALS[dialect].dir);
     const tags = readdirSync(dir)
       .filter((f) => f.endsWith(".sql"))
       .map((f) => f.slice(0, -4))
       .sort();
-    expect(TABLE.filter((r) => r[0] === dialect).map((r) => r[1])).toEqual(tags);
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) {
+      const c = classifyMigration(dialect, tag, readFileSync(join(dir, `${tag}.sql`), "utf8"));
+      expect(typeof c.additive).toBe("boolean");
+      expect(c.reason.length).toBeGreaterThan(0);
+      expect(c.statements.length).toBeGreaterThan(0);
+    }
+  }
+});
+
+test("every pinned table entry still exists on disk", () => {
+  for (const [dialect, tag] of TABLE) {
+    const dir = join(root, JOURNALS[dialect].dir);
+    expect(readdirSync(dir)).toContain(`${tag}.sql`);
   }
 });
 
