@@ -99,6 +99,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `instance_revoke_org_token` | none | no |  | destructive | admin | instance | Break-glass: revoke an org's token and everything it minted (instance administrator only). |
 | `move_repo_binding` | none | no |  | write | admin | instance | Move a repo's binding to a project in another org (instance administrator only). |
 | `instance_start_installation_claim` | none | no |  | write | admin | instance | Start a GitHub installation claim for an org that cannot (instance administrator only). |
+| `instance_bind_installation` | none | no |  | write | admin | instance | Bind a GitHub App installation to an org when its owner cannot claim it (instance administrator only). |
 | `instance_list_orgs` | none | no |  | read | admin | instance | Every org on the instance, for the instance administrator. |
 | `instance_doctor` | none | no |  | read | admin | instance | The instance's readiness report, for the instance administrator. |
 | `instance_drain` | none | no |  | write | admin | instance | Stop starting new attempts so a deploy does not cut running jobs (instance administrator). |

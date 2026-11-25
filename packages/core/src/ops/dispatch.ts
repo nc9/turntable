@@ -624,7 +624,10 @@ export async function dispatch(
         output = validateOutput(target, await target.handler(ctx(env.db), input));
       } catch (err) {
         const code = err instanceof OpError ? err.code : "internal";
-        await audit(`error:${code}`, input);
+        await audit(
+          `error:${code}`,
+          err instanceof OpError && err.auditDetail ? { ...input, ...err.auditDetail } : input,
+        );
         throw err;
       }
       const detail = target.auditDetail?.(output) ?? {};

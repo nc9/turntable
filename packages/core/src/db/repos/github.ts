@@ -233,6 +233,58 @@ export function getInstallation(
   });
 }
 
+// ---- who installed the App (#573) ----
+
+export type InstallationInstaller = typeof s.githubInstallationInstallers.$inferSelect;
+
+/** Records (or replaces) who installed an installation. Only a verified webhook calls this. */
+export function recordInstallationInstaller(
+  db: Db,
+  input: { installationId: string; githubId: string; login: string; recordedAt: number },
+): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .insert(s.githubInstallationInstallers)
+      .values({
+        installationId: input.installationId,
+        installerGithubId: input.githubId,
+        installerLogin: input.login,
+        recordedAt: input.recordedAt,
+      })
+      .onConflictDoUpdate({
+        target: s.githubInstallationInstallers.installationId,
+        set: {
+          installerGithubId: input.githubId,
+          installerLogin: input.login,
+          recordedAt: input.recordedAt,
+        },
+      });
+  });
+}
+
+/** The recorded installer of an installation, if a verified webhook named one. */
+export function getInstallationInstaller(
+  db: Db,
+  installationId: string,
+): Promise<InstallationInstaller | undefined> {
+  return db.run(async (h) => {
+    const [row] = await h.orm
+      .select()
+      .from(s.githubInstallationInstallers)
+      .where(eq(s.githubInstallationInstallers.installationId, installationId))
+      .limit(1);
+    return row;
+  });
+}
+
+export function deleteInstallationInstaller(db: Db, installationId: string): Promise<void> {
+  return db.run(async (h) => {
+    await h.orm
+      .delete(s.githubInstallationInstallers)
+      .where(eq(s.githubInstallationInstallers.installationId, installationId));
+  });
+}
+
 export function listInstallations(db: Db, scope: Scope): Promise<GithubInstallation[]> {
   return db.run((h) =>
     h.orm

@@ -53,6 +53,7 @@ import { ingestStatus } from "../../poll/status";
 import { ORG_SLUG } from "../bootstrap";
 import { defineOp } from "../define";
 import { ClaimError } from "../../github/claim";
+import { syncInstallation } from "../../github/installations";
 import { resolveGithubUserId } from "../../approvals/github-id";
 import { OpError } from "../errors";
 import { rotateInstanceToken } from "../instance-token-cli";
@@ -642,6 +643,124 @@ export const instanceStartInstallationClaimOp = defineOp({
       },
     );
     return { url: r.url, expires_at: r.expiresAt };
+  },
+});
+
+const INSTALLATION_HELD = "that installation is already connected to an org";
+
+export const instanceBindInstallationOp = defineOp({
+  name: "instance_bind_installation",
+  summary:
+    "Bind a GitHub App installation to an org when its owner cannot claim it (instance administrator only).",
+  description:
+    "Binds the installation `installation_id` to `target_org` exactly as a successful claim " +
+    "does, including the repo sync, without the owner's GitHub sign-in. It is the operator " +
+    "fallback when a claim cannot prove ownership (the App cannot read org membership and no " +
+    "installer was recorded). The installation is looked up through the App: it must exist and " +
+    "not be suspended, and its GitHub account login must equal `expected_account` " +
+    "(case-insensitive), so a mistyped id binds nothing. Refused, with one message that names no " +
+    "other org, when another org holds it. `reason` is required and kept in the audit. Audited " +
+    "in the system org's chain and in the target org's own with the installation id, the " +
+    "account login and the reason, and the org's feed gets an " +
+    "`org.installation_bound_by_instance` event. The system org is never a target. Only the " +
+    "instance administrator can call it. Not an MCP tool.",
+  input: z.object({
+    installation_id: z.string().regex(/^\d{1,20}$/),
+    target_org: z.string().min(1).max(64).describe("Slug of the target org."),
+    expected_account: z
+      .string()
+      .regex(/^[A-Za-z0-9-]{1,39}$/)
+      .describe("The GitHub account login the installation must be on."),
+    reason: z.string().min(1).max(500).describe("Why the operator binds it. Kept in the audit."),
+  }),
+  output: z.object({
+    installation_id: z.string(),
+    account_login: z.string(),
+    target_org: z.string(),
+    bound: z.array(z.string()).describe("The repos bound by the sync, as owner/name."),
+  }),
+  effect: "write",
+  auth: { type: "instance", minRole: "admin" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "POST", path: "/instance/installation-bindings" },
+  mcp: false,
+  // It calls GitHub: it must not hold the database's write lock meanwhile.
+  outsideTransaction: true,
+  async handler(ctx, i) {
+    const org = await getOrgBySlug(ctx.db, i.target_org);
+    if (!org || org.slug === SYSTEM_ORG_SLUG) throw new OpError("not_found", "no such org");
+    if (!ctx.githubFacts) {
+      throw new OpError("unavailable", "installations are not configured on this instance");
+    }
+    let facts;
+    try {
+      facts = await ctx.githubFacts.getInstallation(i.installation_id);
+    } catch (e) {
+      throw new OpError(
+        "unavailable",
+        e instanceof Error ? e.message : "could not read the installation",
+      );
+    }
+    if (!facts) throw new OpError("not_found", "GitHub does not know that installation");
+    if (facts.suspended) throw new OpError("conflict", "that installation is suspended");
+    if (facts.account.login.toLowerCase() !== i.expected_account.toLowerCase()) {
+      throw new OpError("conflict", "that installation is not on the expected GitHub account");
+    }
+    const held = await getInstallation(ctx.db, i.installation_id);
+    if (held && held.orgId !== org.id) throw new OpError("conflict", INSTALLATION_HELD);
+    let r;
+    try {
+      r = await syncInstallation(ctx.db, ctx.githubFacts, i.installation_id, {
+        claimedBy: org.id,
+        newProjectMaxConcurrent: 0,
+      });
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("already claimed by another org")) {
+        throw new OpError("conflict", INSTALLATION_HELD);
+      }
+      throw new OpError(
+        "unavailable",
+        e instanceof Error ? e.message : "could not bind the installation",
+      );
+    }
+    if (r.outcome === "unknown" || r.outcome === "deleted") {
+      throw new OpError("not_found", "GitHub does not know that installation");
+    }
+    // The system chain gets the dispatcher's entry; the org's own chain and feed say it too.
+    await ctx.db.transaction(async (tx) => {
+      await appendAudit(
+        tx,
+        { orgId: org.id },
+        {
+          principalKind: "instance",
+          principalId: ctx.principal.id,
+          op: "instance_bind_installation",
+          effect: "write",
+          outcome: "ok",
+          input: {
+            target_org: org.slug,
+            installation_id: i.installation_id,
+            account_login: facts.account.login,
+            reason: i.reason,
+          },
+        },
+      );
+      await appendEvent(
+        tx,
+        { orgId: org.id },
+        {
+          type: "org.installation_bound_by_instance",
+          payload: { installation_id: i.installation_id, account_login: facts.account.login },
+        },
+      );
+    });
+    return {
+      installation_id: i.installation_id,
+      account_login: facts.account.login,
+      target_org: org.slug,
+      bound: r.bound,
+    };
   },
 });
 

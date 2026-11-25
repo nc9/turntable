@@ -1750,7 +1750,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 24,
+              "maxItems": 25,
               "type": "array",
               "items": {
                 "type": "string",
@@ -1776,6 +1776,7 @@
                   "org.tokens_exhausted",
                   "org.token_revoked",
                   "org.installation_claim_started_by_instance",
+                  "org.installation_bound_by_instance",
                   "org.member_invited",
                   "org.member_joined",
                   "installation_claim.updated"
@@ -1893,6 +1894,7 @@
                               "org.tokens_exhausted",
                               "org.token_revoked",
                               "org.installation_claim_started_by_instance",
+                              "org.installation_bound_by_instance",
                               "org.member_invited",
                               "org.member_joined",
                               "installation_claim.updated"
@@ -12281,6 +12283,101 @@
                     }
                   },
                   "required": ["url", "expires_at"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "write",
+        "x-turntable-instance-only": true,
+        "x-turntable-untrusted-output": false
+      }
+    },
+    "/instance/installation-bindings": {
+      "post": {
+        "operationId": "instance_bind_installation",
+        "summary": "Bind a GitHub App installation to an org when its owner cannot claim it (instance administrator only).",
+        "description": "Binds the installation `installation_id` to `target_org` exactly as a successful claim does, including the repo sync, without the owner's GitHub sign-in. It is the operator fallback when a claim cannot prove ownership (the App cannot read org membership and no installer was recorded). The installation is looked up through the App: it must exist and not be suspended, and its GitHub account login must equal `expected_account` (case-insensitive), so a mistyped id binds nothing. Refused, with one message that names no other org, when another org holds it. `reason` is required and kept in the audit. Audited in the system org's chain and in the target org's own with the installation id, the account login and the reason, and the org's feed gets an `org.installation_bound_by_instance` event. The system org is never a target. Only the instance administrator can call it. Not an MCP tool.\n\nInstance administrator only: a `tti_` token minted on the host with `turntable token create --instance`. No org token of any role can call it. Not an MCP tool. Side effects: write; audited.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "installation_id": {
+                    "type": "string",
+                    "pattern": "^\\d{1,20}$"
+                  },
+                  "target_org": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Slug of the target org."
+                  },
+                  "expected_account": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]{1,39}$",
+                    "description": "The GitHub account login the installation must be on."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "Why the operator binds it. Kept in the audit."
+                  }
+                },
+                "required": ["installation_id", "target_org", "expected_account", "reason"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "installation_id": {
+                      "type": "string"
+                    },
+                    "account_login": {
+                      "type": "string"
+                    },
+                    "target_org": {
+                      "type": "string"
+                    },
+                    "bound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The repos bound by the sync, as owner/name."
+                    }
+                  },
+                  "required": ["installation_id", "account_login", "target_org", "bound"],
                   "additionalProperties": false
                 }
               }

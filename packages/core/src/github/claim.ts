@@ -54,11 +54,13 @@ import type { SecretStore } from "../secrets/store";
 import type { GithubFacts } from "./api";
 import { SECRET_CLIENT } from "./app-auth";
 import { syncInstallation } from "./installations";
+import {
+  notInstallationOwnerMessage,
+  ownershipUnverifiableMessage,
+  proveInstallationOwnership,
+} from "./ownership";
 
-/** The refusal shown when the signed-in user does not own the installation's GitHub account. */
-export function notInstallationOwnerMessage(accountLogin: string): string {
-  return `you must be an owner of ${accountLogin} on GitHub`;
-}
+export { notInstallationOwnerMessage } from "./ownership";
 
 export const CLAIM_PATH = "/api/v1/github/setup";
 /** Where `start` points: the confirmation page (GET) and its form (POST). */
@@ -442,22 +444,27 @@ export class InstallationClaims {
     const inst = gh.installations.find((i) => i.id === q.installationId);
     if (!inst) return refuse(403, "you do not have access to that installation", who);
     // Access is not ownership: an org's installation is visible to every member.
-    let owns = false;
-    if (inst.accountType === "Organization") {
-      try {
-        owns = await gh.isOrgAdmin(inst.accountLogin);
-      } catch {
-        owns = false;
-      }
-    } else if (inst.accountType === "User") {
-      owns = inst.accountId === gh.id;
-    }
-    if (!owns) {
-      return refuse(403, notInstallationOwnerMessage(inst.accountLogin), {
-        ...who,
-        account: inst.accountLogin,
-        account_type: inst.accountType,
-      });
+    const verdict = await proveInstallationOwnership(this.#o.db, {
+      installationId: q.installationId,
+      accountType: inst.accountType,
+      accountId: inst.accountId,
+      claimantGithubId: gh.id,
+      isOrgAdmin: () => gh.isOrgAdmin(inst.accountLogin),
+    });
+    if (!verdict.owns) {
+      const unverifiable = verdict.reason === "ownership_unverifiable";
+      return refuse(
+        403,
+        unverifiable
+          ? ownershipUnverifiableMessage(inst.accountLogin)
+          : notInstallationOwnerMessage(inst.accountLogin),
+        {
+          ...who,
+          account: inst.accountLogin,
+          account_type: inst.accountType,
+          refusal: verdict.reason,
+        },
+      );
     }
     // An installation held by another org is never moved.
     const held = await getInstallation(this.#o.db, q.installationId);
@@ -620,7 +627,8 @@ export function githubUserVerifier(o: {
             timeoutMs: 15_000,
             maxBytes: 64 * 1024,
           });
-          if (!res.ok) return false;
+          // A failed call is not "not an admin": the caller tells the two apart (#573).
+          if (!res.ok) throw new Error(`org membership: HTTP ${res.status}`);
           const j = (await res.json()) as { role?: string; state?: string };
           return j.role === "admin" && j.state === "active";
         },

@@ -148,6 +148,13 @@
       "when": 1795584729860,
       "tag": "0020_avatars",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795594474176,
+      "tag": "0021_installation_installer",
+      "breakpoints": true
     }
   ]
 }

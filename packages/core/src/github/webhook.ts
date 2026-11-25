@@ -24,6 +24,7 @@ import type { SecretStore } from "../secrets/store";
 import type { GithubFacts } from "./api";
 import { SECRET_WEBHOOK, SECRET_WEBHOOK_PREVIOUS } from "./app-auth";
 import { syncInstallation } from "./installations";
+import { noteInstaller } from "./installer-record";
 import { clientAddress, parseTrustedProxies, type TrustedProxies } from "./trusted-proxies";
 
 export const WEBHOOK_PATH = "/api/v1/webhooks/github";
@@ -137,6 +138,9 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
         await finishDelivery(o.db, id, "failed", "payload names no installation");
         return;
       }
+      if (d.event === "installation") {
+        await noteInstaller(o.db, now(), installationId, d.action ?? undefined, payload);
+      }
       // The payload only says WHICH installation to look at; everything else is re-fetched.
       const r = await syncInstallation(o.db, o.facts, installationId, {
         claimMode: o.claimMode === true,
@@ -242,7 +246,23 @@ export function createWebhookHandler(o: WebhookOptions): WebhookHandler {
         payload: handled ? new TextDecoder().decode(raw) : undefined,
         status: handled ? "received" : "ignored",
       });
-      if (stored === "duplicate") return json(202, { status: "duplicate" });
+      if (stored === "duplicate") {
+        // GitHub's "redeliver" reuses the GUID. The body is verified, so an `installation` event
+        // still records its installer (idempotent); nothing else runs again.
+        if (
+          event === "installation" &&
+          (typeof instId === "number" || typeof instId === "string")
+        ) {
+          try {
+            await noteInstaller(o.db, now(), String(instId), action, payload);
+          } catch (e) {
+            log(
+              `github webhook ${delivery}: installer: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+        return json(202, { status: "duplicate" });
+      }
 
       sinceLastPurge += 1;
       if (sinceLastPurge >= 100) {
