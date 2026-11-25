@@ -216,6 +216,10 @@
     {
       "tag": "0054_project_added_at",
       "sha256": "5c49838f05c7173fd45254b5b0020800053316689a56c9d7dd2d754e35542756"
+    },
+    {
+      "tag": "0055_notifications",
+      "sha256": "6d1b065b70c11178168e9cf54283aec1e2841c6a1db0a2d1641977a5723748fd"
     }
   ],
   "pg": [
@@ -318,6 +322,10 @@
     {
       "tag": "0025_project_added_at",
       "sha256": "c719bac33ff18cafd0f3a1631074280e6da90beb620102368f417af369785c68"
+    },
+    {
+      "tag": "0026_notifications",
+      "sha256": "956d3e0f8cd52a0f6dd798300070f711d35ca5eda9ac2de3bddffd5bad492a24"
     }
   ]
 }

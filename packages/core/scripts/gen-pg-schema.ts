@@ -73,6 +73,17 @@ pg = pg.replaceAll(/integer\("([a-z_]+)"\)/g, (m, name: string) =>
 must(!/integer\("[a-z_]+", \{/.test(pg), "an integer column mode is not mapped");
 must(!pg.includes("blob("), "a blob column is not mapped");
 
+// The sqlite table has no CHECK on `format` (the column was added with a plain ALTER); postgres
+// keeps it.
+const stateCheck =
+  '    check("outbound_webhook_endpoints_state_check", inList("state", WEBHOOK_STATES)),\n';
+must(pg.includes(stateCheck), "no outbound endpoint state check to add the format check after");
+pg = pg.replace(
+  stateCheck,
+  stateCheck +
+    '    check("outbound_webhook_endpoints_format_check", inList("format", WEBHOOK_FORMATS)),\n',
+);
+
 // Helpers for the two types pg-core has no equivalent of: a ms timestamp surfaced as a Date, and
 // a byte string surfaced as a Buffer (what bun:sqlite returns).
 pg = pg.replace(

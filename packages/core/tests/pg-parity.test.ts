@@ -16,6 +16,11 @@ import * as sqliteSchema from "../src/db/schema.sqlite";
 const tablesOf = <T>(mod: Record<string, unknown>, cls: abstract new (...a: never[]) => T): T[] =>
   Object.values(mod).filter((v): v is T => v instanceof cls);
 
+// Checks only Postgres has, each for a stated reason. SQLite cannot add a CHECK with ALTER TABLE,
+// and a table rebuild to add one is what broke 0055 (#611): the column was added with a plain
+// ALTER and the write path validates it instead. Nothing else may differ.
+const PG_ONLY_CHECKS = new Set(["outbound_webhook_endpoints_format_check"]);
+
 test("the generated schema has the same tables, columns, keys, indexes and checks", () => {
   const a = tablesOf(sqliteSchema, SQLiteTable).map((t) => sqliteConfig(t as SQLiteTable));
   const b = tablesOf(pgSchema, PgTable).map((t) => pgConfig(t as PgTable));
@@ -38,7 +43,17 @@ test("the generated schema has the same tables, columns, keys, indexes and check
     expect(p.indexes.map((i) => i.config.name).toSorted()).toEqual(
       t.indexes.map((i) => i.config.name).toSorted(),
     );
-    expect(p.checks.map((c) => c.name).toSorted()).toEqual(t.checks.map((c) => c.name).toSorted());
+    expect(
+      p.checks
+        .map((c) => c.name)
+        .filter((n) => !PG_ONLY_CHECKS.has(n))
+        .toSorted(),
+    ).toEqual(t.checks.map((c) => c.name).toSorted());
+  }
+  // The exception list stays honest: each entry exists on Postgres and not on SQLite.
+  for (const name of PG_ONLY_CHECKS) {
+    expect(b.some((t) => t.checks.some((c) => c.name === name))).toBe(true);
+    expect(a.some((t) => t.checks.some((c) => c.name === name))).toBe(false);
   }
 });
 

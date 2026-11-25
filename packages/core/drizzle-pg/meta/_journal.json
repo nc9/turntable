@@ -176,6 +176,13 @@
       "when": 1795625039066,
       "tag": "0025_project_added_at",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795632438628,
+      "tag": "0026_notifications",
+      "breakpoints": true
     }
   ]
 }

@@ -90,6 +90,12 @@ import {
   onboardingCreateOrgOp,
 } from "./definitions/onboarding";
 import { whoami } from "./definitions/whoami";
+import {
+  getNotificationPrefsOp,
+  myNotificationsOp,
+  notificationsAckOp,
+  setNotificationPrefsOp,
+} from "./definitions/notifications";
 import { myPendingApprovalsOp } from "./definitions/my-pending-approvals";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import { sessionStepUpChallenge } from "./definitions/session-step-up";
@@ -234,6 +240,10 @@ export const registry = createRegistry([
   approvalStatus,
   approversOverview,
   myPendingApprovalsOp,
+  myNotificationsOp,
+  notificationsAckOp,
+  getNotificationPrefsOp,
+  setNotificationPrefsOp,
   approvalChallenge,
   releaseApprovalChallenge,
   enrolmentChallenge,

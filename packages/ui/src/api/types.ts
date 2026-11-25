@@ -614,6 +614,47 @@ export type ActivityFilter = {
   limit?: number | undefined;
 };
 
+/** Kinds of per-person notification (#611). */
+export type NotificationKind =
+  | "run_failed"
+  | "infra_errors"
+  | "work_held"
+  | "approval_waiting"
+  | "checkout_auth_failed"
+  | "dogfood_red"
+  | "deploy_failed";
+
+/** One notification of the signed-in person: ids, slugs and an escaped, truncated title. */
+export type AppNotification = {
+  id: string;
+  kind: NotificationKind;
+  org: string;
+  project: string | null;
+  runId: string | null;
+  /** Coalesced events behind it (infra_errors). */
+  count: number;
+  /** Escaped, truncated forge text. Shown as text, never as markup. */
+  title: string;
+  createdAt: number;
+  readAt: number | null;
+  link: string;
+};
+export type NotificationPage = {
+  notifications: AppNotification[];
+  unreadCount: number;
+  nextCursor: string | null;
+};
+export type NotificationPref = {
+  kind: NotificationKind;
+  org: string | null;
+  project: string | null;
+  enabled: boolean;
+};
+export type NotificationPrefs = {
+  prefs: NotificationPref[];
+  defaults: { kind: NotificationKind; enabled: boolean; operatorOnly: boolean }[];
+};
+
 /** The release lane config writes: each needs a passkey step-up for exactly its input. */
 export type LaneAction =
   | "release_pin_repo"

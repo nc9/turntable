@@ -10,3 +10,4 @@ packages/core/tests/migration-concurrent.test.ts
 packages/core/tests/untrusted-run-approval-migration.test.ts
 packages/core/tests/approval-policy-migration.test.ts
 packages/core/tests/deploy-gate.test.ts
+packages/core/tests/webhook-format-migration.test.ts

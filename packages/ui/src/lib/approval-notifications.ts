@@ -121,6 +121,8 @@ export type Notifier = {
   onLoad(items: readonly PendingApproval[], now: number): void;
   /** Any later answer: a notice per item not notified before, and expiry notices. */
   onChange(items: readonly PendingApproval[], now: number): void;
+  /** A browser notice with fixed text (#611); shown only when notifications are on here. */
+  notice(title: string, tag: string, link: string): void;
   /** Ms until the next expiry notice is due, or null when none is pending. */
   nextExpiryDelay(items: readonly PendingApproval[], now: number): number | null;
 };
@@ -198,6 +200,9 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   };
 
   return {
+    notice(title, tag, link) {
+      if (active()) show(title, tag, link);
+    },
     supported: () => !!N,
     permission: () => (N ? N.permission : "unsupported"),
     pref: () => {

@@ -632,6 +632,27 @@
     }
   },
   {
+    "name": "get_notification_prefs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "get_project_settings",
     "inputSchema": {
       "type": "object",
@@ -1383,10 +1404,94 @@
     }
   },
   {
+    "name": "my_notifications",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kinds": {
+          "description": "Only these kinds.",
+          "maxItems": 10,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "run_failed",
+              "infra_errors",
+              "work_held",
+              "approval_waiting",
+              "checkout_auth_failed",
+              "dogfood_red",
+              "deploy_failed"
+            ]
+          }
+        },
+        "unread": {
+          "default": false,
+          "description": "Only unread notifications.",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Page size, 1 to 100.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "my_pending_approvals",
     "inputSchema": {
       "type": "object",
       "properties": {
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "notifications_ack",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 40
+          }
+        },
         "org": {
           "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
           "type": "string",
@@ -1714,6 +1819,52 @@
         }
       },
       "required": ["name", "since"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_notification_prefs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "run_failed",
+            "infra_errors",
+            "work_held",
+            "approval_waiting",
+            "checkout_auth_failed",
+            "dogfood_red",
+            "deploy_failed"
+          ]
+        },
+        "enabled": {
+          "description": "Omit to remove the preference (back to the default).",
+          "type": "boolean"
+        },
+        "scope_org": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "scope_project": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "org": {
+          "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "project": {
+          "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["kind"],
       "additionalProperties": false
     }
   },

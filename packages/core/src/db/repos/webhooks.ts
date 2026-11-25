@@ -26,6 +26,7 @@ export async function createOutboundEndpoint(
     url: string;
     description: string;
     eventTypes: readonly EventType[] | null;
+    format?: s.WebhookFormat | undefined;
     createdBy: string;
     /** Start at the beginning of the feed instead of its tip. */
     fromStart: boolean;
@@ -34,6 +35,10 @@ export async function createOutboundEndpoint(
     settleMs?: number;
   },
 ): Promise<OutboundEndpoint> {
+  const format = input.format ?? "json";
+  // sqlite has no CHECK on the column (a plain ALTER added it), so the write path enforces it.
+  if (!(s.WEBHOOK_FORMATS as readonly string[]).includes(format))
+    throw new Error(`unknown webhook format: ${String(format)}`);
   const cursor = input.fromStart
     ? 0
     : await latestSettledEventId(
@@ -52,6 +57,7 @@ export async function createOutboundEndpoint(
         description: input.description,
         eventTypes:
           input.eventTypes && input.eventTypes.length > 0 ? JSON.stringify(input.eventTypes) : null,
+        format,
         cursor,
         createdBy: input.createdBy,
         createdAt: input.now,

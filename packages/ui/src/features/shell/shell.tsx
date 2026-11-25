@@ -23,6 +23,7 @@ import { IncidentBanner } from "./incident-banner";
 import { useWhoami } from "@/lib/directory";
 import { canConfigureLane } from "@/lib/release-lane";
 import { ApprovalNotifyBanner, useApprovalNotifications } from "./approval-notifications";
+import { NotificationBell } from "./notification-bell";
 import {
   Dialog,
   DialogClose,
@@ -522,6 +523,7 @@ function ShellInner() {
               {dark ? <Sun /> : <Moon />}
             </Button>
           </Tooltip>
+          <NotificationBell />
           <AccountMenu />
         </div>
       </header>
