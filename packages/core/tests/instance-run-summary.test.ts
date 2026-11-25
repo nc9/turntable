@@ -86,8 +86,9 @@ async function seed(
   }))!;
   const attempt = (await createAttempt(db, scope, { jobId: job.id, provider: "fake" }))!;
   const at = NOW - (o.ageMs ?? 1000);
-  const start = at;
-  const end = at + (o.sandboxMs ?? 0);
+  // The sandbox ends when the attempt is recorded, so it lies in the past.
+  const start = at - (o.sandboxMs ?? 0);
+  const end = at;
   await db.run(async (h) => {
     await rawExec(
       h.orm,

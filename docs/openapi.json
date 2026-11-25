@@ -5620,7 +5620,7 @@
                           },
                           "estimated": {
                             "type": "boolean",
-                            "description": "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count."
+                            "description": "Sandbox minutes only: the figure includes an attempt still running, counted to now (never past its sandbox TTL)."
                           }
                         },
                         "required": ["metric", "used", "limit", "percent", "held", "estimated"],
@@ -8891,7 +8891,7 @@
       "get": {
         "operationId": "sandbox_usage",
         "summary": "Exact sandbox time per UTC day: from the provider's create to its confirmed destroy.",
-        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those have no confirmed destroy (their end is the attempt's finish, or now while it runs, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart). Each project and class also carries `preemptions` (attempts preempted in the window), the sandbox time of those attempts as `preempted_seconds` and `preempted_minutes` (wasted work, still part of the totals and the quotas) against `useful_seconds` and `useful_minutes`, and a project the jobs preempted most under `preempted_jobs`; each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
+        "description": "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, and how many of those are still running (their end is now, so the figure is an estimate for them). Counted from the provider's create to its confirmed destroy, else the attempt's finish, so time spent waiting for provider capacity is not included, unlike an attempt's duration. Scoped to the org, or to one project when a project is given. This is the number quotas limit. With `group_by: \"project\"` the answer also carries `projects`: the same per-day figures for each project that had a sandbox alive in the window (a project with no usage is left out), with its `scheduling_class`, and `classes` totals them per class (yield usage, preempted attempts included, is reported apart). Each project and class also carries `preemptions` (attempts preempted in the window), the sandbox time of those attempts as `preempted_seconds` and `preempted_minutes` (wasted work, still part of the totals and the quotas) against `useful_seconds` and `useful_minutes`, and a project the jobs preempted most under `preempted_jobs`; each day's project rows add up to that day's org row. A project-scoped token sees only its own project. Read-only.\n\nRequired role: reader. Read-only.",
         "parameters": [
           {
             "name": "days",
@@ -14523,7 +14523,7 @@
                           },
                           "estimated": {
                             "type": "boolean",
-                            "description": "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count."
+                            "description": "Sandbox minutes only: the figure includes an attempt still running, counted to now (never past its sandbox TTL)."
                           }
                         },
                         "required": ["metric", "used", "limit", "percent", "held", "estimated"],

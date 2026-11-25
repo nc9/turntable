@@ -172,23 +172,24 @@ describe("quota enforcement at claim", () => {
       return [u.sandboxMinutesLastDay, u.sandboxEstimated] as const;
     };
 
-    test("no confirmed destroy: counted to the finish plus the provider TTL, and marked estimated", async () => {
+    test("no confirmed destroy: counted to the attempt's finish, not estimated", async () => {
       await setup("unconfirmed", {
         startedAt: NOW - 70 * MIN,
         finishedAt: NOW - 50 * MIN,
         sandboxCreatedAt: NOW - 60 * MIN,
       });
-      // 60 minutes ago to (50 minutes ago + 30) = 20 minutes ago: 40 minutes.
-      expect(await used()).toEqual([40, 1]);
+      // 60 minutes ago to 50 minutes ago: 10 minutes, no grace past the finish (#598).
+      expect(await used()).toEqual([10, 0]);
     });
 
-    test("the TTL grace never runs past now", async () => {
-      await setup("recent", {
-        startedAt: NOW - 20 * MIN,
-        finishedAt: NOW - 5 * MIN,
-        sandboxCreatedAt: NOW - 15 * MIN,
+    test("an estimate never exceeds the attempt's TTL", async () => {
+      await setup("ttl", {
+        startedAt: NOW - 200 * MIN,
+        finishedAt: NOW - 50 * MIN,
+        sandboxCreatedAt: NOW - 190 * MIN,
+        sandboxTtlSeconds: 600,
       });
-      expect(await used()).toEqual([15, 1]);
+      expect(await used()).toEqual([10, 0]);
     });
 
     test("a confirmed destroy is exact and not estimated", async () => {
@@ -201,16 +202,14 @@ describe("quota enforcement at claim", () => {
       expect(await used()).toEqual([10, 0]);
     });
 
-    test("no recorded create time: counted from when the attempt started, marked estimated", async () => {
-      // A row from before the column existed, or a crash between create and record.
+    test("no recorded create time: counts nothing, finished or running (#598)", async () => {
       await setup("legacy", {
         startedAt: NOW - 50 * MIN,
         finishedAt: NOW - 40 * MIN,
         sandboxCreatedAt: null,
         sandboxDestroyedAt: null,
       });
-      expect(await used()).toEqual([40, 1]);
-      // Still running with no create time: to now.
+      expect(await used()).toEqual([0, 0]);
       const x = await queued(a, "live-legacy");
       await db.run(async (h) => {
         await h.orm
@@ -218,7 +217,7 @@ describe("quota enforcement at claim", () => {
           .set({ state: "running", startedAt: NOW - 12 * MIN })
           .where(eq(s.jobAttempts.id, x.attempt.id));
       });
-      expect((await quotaUsage(db, a.orgId, NOW)).sandboxMinutesLastDay).toBe(52);
+      expect(await used()).toEqual([0, 0]);
     });
 
     test("an attempt that never started and has no sandbox counts nothing", async () => {
@@ -236,14 +235,13 @@ describe("quota enforcement at claim", () => {
       expect(await used()).toEqual([60, 0]);
     });
 
-    test("an unconfirmed attempt whose grace reaches into the window still counts", async () => {
-      // Finished 24h10m ago: its sandbox may have lived to 23h40m ago, 20 minutes inside.
+    test("an unconfirmed attempt finished before the window counts nothing", async () => {
       await setup("grace-edge", {
         startedAt: NOW - (24 * 60 + 40) * MIN,
         finishedAt: NOW - (24 * 60 + 10) * MIN,
         sandboxCreatedAt: NOW - (24 * 60 + 30) * MIN,
       });
-      expect(await used()).toEqual([20, 1]);
+      expect(await used()).toEqual([0, 0]);
     });
 
     test("the status says the figure is an estimate only when it includes one", async () => {
@@ -254,6 +252,8 @@ describe("quota enforcement at claim", () => {
         finishedAt: NOW - 10 * MIN,
         sandboxCreatedAt: NOW - 20 * MIN,
       });
+      expect((await st()).estimated).toBe(false);
+      await setup("live", { state: "running", sandboxCreatedAt: NOW - 5 * MIN });
       expect((await st()).estimated).toBe(true);
     });
   });

@@ -33,9 +33,9 @@ export const sandboxUsageOp = defineOp({
   description:
     "Returns, for the last `days` UTC days (today included, default 7, at most 92), how long " +
     "sandboxes were alive: seconds and minutes per day, how many attempts had a sandbox that day, " +
-    "and how many of those have no confirmed destroy (their end is the attempt's finish, or now " +
-    "while it runs, so the figure is an estimate for them). Counted from the provider's create to " +
-    "its confirmed destroy, so time spent waiting for provider capacity is not included, unlike an " +
+    "and how many of those are still running (their end is now, so the figure is an estimate for " +
+    "them). Counted from the provider's create to its confirmed destroy, else the attempt's finish," +
+    " so time spent waiting for provider capacity is not included, unlike an " +
     "attempt's duration. Scoped to the org, or to one project when a project is given. This is " +
     'the number quotas limit. With `group_by: "project"` the answer also carries `projects`: the same ' +
     "per-day figures for each project that had a sandbox alive in the window (a project with no " +
