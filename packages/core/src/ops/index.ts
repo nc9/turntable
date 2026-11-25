@@ -70,6 +70,7 @@ import {
   onboardingCreateOrgOp,
 } from "./definitions/onboarding";
 import { whoami } from "./definitions/whoami";
+import { myPendingApprovalsOp } from "./definitions/my-pending-approvals";
 import { instanceBindGithubLoginOp, inviteMemberOp } from "./definitions/members";
 import { sessionStepUpChallenge } from "./definitions/session-step-up";
 import {
@@ -184,6 +185,7 @@ export const registry = createRegistry([
   listSecretsOp,
   approvalStatus,
   approversOverview,
+  myPendingApprovalsOp,
   approvalChallenge,
   releaseApprovalChallenge,
   enrolmentChallenge,

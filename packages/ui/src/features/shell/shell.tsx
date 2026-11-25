@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { IncidentBanner } from "./incident-banner";
+import { ApprovalNotifyBanner, useApprovalNotifications } from "./approval-notifications";
 import {
   Dialog,
   DialogClose,
@@ -415,6 +416,7 @@ function ShellInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  useApprovalNotifications();
 
   useEffect(() => {
     if (scope.orgSlug) rememberOrg(scope.orgSlug);
@@ -539,6 +541,7 @@ function ShellInner() {
         </aside>
         <main id="main" className="min-w-0 flex-1">
           <IncidentBanner />
+          <ApprovalNotifyBanner />
           <Outlet />
         </main>
       </div>

@@ -6,6 +6,7 @@ import type {
   ReleaseStatement,
   ApprovalStatus,
   ApproversOverview,
+  PendingApproval,
   SandboxUsage,
   PolicyStatement,
   EnrolStatement,
@@ -96,6 +97,8 @@ export interface TurntableApi {
   /** Environments of a run waiting on a human, the policy and who approved so far. */
   approvalStatus(args: { runId: string }): Promise<ApprovalStatus>;
   approversOverview(): Promise<ApproversOverview>;
+  /** Approvals waiting on the signed-in person, across their orgs. A web session only. */
+  myPendingApprovals(): Promise<PendingApproval[]>;
   /** Sandbox minutes per UTC day for the last `days` days, with the quota limit if one is set. */
   sandboxUsage(args: { days: number; byProject?: boolean }): Promise<SandboxUsage>;
   /** The statement to sign for a run and environment, with its single-use challenge. */

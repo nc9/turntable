@@ -20,6 +20,7 @@ import {
   releaseStatementSchema,
   enrolStatementSchema,
   policyStatementSchema,
+  policyDigest,
   envStatementSchema,
   keyFingerprint,
   MAX_STATEMENT_TTL_MS,
@@ -34,6 +35,7 @@ import { signatureSchema, verifySignature, VerifyError } from "../../approvals/v
 import { verifyRegistration, WebAuthnError } from "../../approvals/webauthn";
 import {
   ApprovalConflict,
+  appendEvent,
   consumeChallenge,
   countOpenChallenges,
   purgeExpiredChallenges,
@@ -79,6 +81,24 @@ const rp = (ctx: OpContext) => {
     );
   return ctx.webauthn;
 };
+
+/**
+ * Tells the org's live feed that an approval item changed: its id and kind only, never text, so
+ * a browser can refetch `my_pending_approvals` (#545). Run and environment approvals already ride
+ * `job.state_changed` and `approval.required`; enrolments and key policy changes had no event.
+ */
+async function itemChanged(
+  ctx: OpContext,
+  kind: "enrolment_approval" | "key_policy_approval",
+  itemId: string,
+  change: "pending" | "approved" | "resolved",
+): Promise<void> {
+  await appendEvent(
+    ctx.db,
+    { orgId: ctx.scope.orgId },
+    { type: "approval.changed", payload: { kind, item_id: itemId, change } },
+  );
+}
 
 async function slugs(ctx: OpContext): Promise<{ org: string; project: string }> {
   const org = await getOrgById(ctx.db, ctx.scope.orgId);
@@ -666,11 +686,18 @@ export const approveKeyPolicy = defineOp({
   scope: "org",
   http: { method: "POST", path: "/approvers/key-policy" },
   async handler(ctx, input) {
-    return applyKeyPolicyApproval(
+    const r = await applyKeyPolicyApproval(
       { db: ctx.db, scope: ctx.scope, now: ctx.now(), rp: ctx.webauthn },
       input.statement,
       input.signature,
     );
+    await itemChanged(
+      ctx,
+      "key_policy_approval",
+      policyDigest(input.statement),
+      r.applied ? "resolved" : "approved",
+    );
+    return r;
   },
 });
 
@@ -863,6 +890,7 @@ export const requestEnrolment = defineOp({
         },
         now,
       );
+      await itemChanged(ctx, "enrolment_approval", e.id, "pending");
       return {
         enrolment_id: e.id,
         kind: key.kind,
@@ -1012,10 +1040,17 @@ export const approveEnrolment = defineOp({
   scope: "org",
   http: { method: "POST", path: "/approvers/approve" },
   async handler(ctx, input) {
-    return applyEnrolmentApproval(
+    const r = await applyEnrolmentApproval(
       { db: ctx.db, scope: ctx.scope, now: ctx.now(), rp: ctx.webauthn },
       input.statement,
       input.signature,
     );
+    await itemChanged(
+      ctx,
+      "enrolment_approval",
+      r.enrolment_id,
+      r.activated ? "resolved" : "approved",
+    );
+    return r;
   },
 });

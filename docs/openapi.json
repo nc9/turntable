@@ -1763,6 +1763,7 @@
                   "attempt.cut",
                   "attempt.infra_retry",
                   "approval.required",
+                  "approval.changed",
                   "infra.error",
                   "quota.warning",
                   "quota.reached",
@@ -1879,6 +1880,7 @@
                               "attempt.cut",
                               "attempt.infra_retry",
                               "approval.required",
+                              "approval.changed",
                               "infra.error",
                               "quota.warning",
                               "quota.reached",
@@ -6959,6 +6961,121 @@
         "x-turntable-effect": "read",
         "x-turntable-min-role": "reader",
         "x-turntable-untrusted-output": true
+      }
+    },
+    "/my/pending-approvals": {
+      "get": {
+        "operationId": "my_pending_approvals",
+        "summary": "Approvals waiting on the signed-in person, across every org they belong to.",
+        "description": "The inbox of one person: only the items they can act on right now. Release and environment approvals, runs held for an untrusted author under the `human` policy, key enrolments and key policy changes, each only where the person has a live approver key bound to their GitHub account id and the same checks the approving code applies let that key sign (key policy, the author rule, the self-approval rule, a quorum not yet met, not yet expired). Each item has its id, kind, org and project slugs, the environment name, when it was created, when it expires (if it does) and `link`: the UI route of its approval screen. Nothing from the repository is returned (no titles, branch names, workflow or job names). A web session only: it is a person's inbox, so every token, agent or not, is refused. It approves nothing. Read-only.\n\nRequired role: reader. Read-only.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "description": "Org slug. Defaults to the caller's org; a token can only name its own.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "description": "Project slug to narrow to. A project-scoped token is always narrowed to its project.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "release_approval",
+                              "environment_approval",
+                              "untrusted_run_approval",
+                              "enrolment_approval",
+                              "key_policy_approval",
+                              "release_request"
+                            ]
+                          },
+                          "org": {
+                            "type": "string",
+                            "description": "Org slug."
+                          },
+                          "project": {
+                            "type": "string",
+                            "description": "Project slug; `-` for an org-level item."
+                          },
+                          "environment": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          },
+                          "expires_at": {
+                            "description": "Epoch milliseconds.",
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "link": {
+                            "type": "string",
+                            "description": "The UI route of the item's approval screen."
+                          }
+                        },
+                        "required": ["id", "kind", "org", "project", "created_at", "link"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["items"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-turntable-effect": "read",
+        "x-turntable-min-role": "reader",
+        "x-turntable-untrusted-output": false
       }
     },
     "/approvals/challenge": {

@@ -43,6 +43,8 @@ export * from "./readiness";
 export * from "./usage";
 export * from "./rerun";
 export * from "./web-auth";
+export * from "./pending-approvals";
+export * from "./pending-approvals";
 
 export type Project = typeof s.projects.$inferSelect;
 export type ProjectRepo = typeof s.projectRepos.$inferSelect;

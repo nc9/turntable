@@ -43,6 +43,7 @@ export const EVENT_TYPES = [
   "attempt.cut",
   "attempt.infra_retry",
   "approval.required",
+  "approval.changed",
   "infra.error",
   "quota.warning",
   "quota.reached",

@@ -354,6 +354,18 @@ Attestation is only trusted when the device certificate carries the FIDO AAGUID 
 
 **Solo orgs.** One person can run the org: enrol your key with `bootstrap`, set the production and release policies to one approver with `turntable approvals policy --required 1 --allow-author-approval`, and accept that the single key is the whole guarantee. That is the case to use `hardware` for: enrol a security key as a second key (the bootstrap key signs for it while the policy is `any`), then sign the switch to `hardware` with the counted approvers (with one counted person the quorum is one) so a stolen laptop or a copied offline key cannot approve. An offline-key path for hardware keys (FIDO `sk` keys with attestation captured at enrolment) is a follow-up.
 
+### Approval notifications
+
+The web UI can show a browser notification when an approval is waiting on you. It is off until you click "Turn on notifications" in the banner "Get notified when something needs your approval", or switch it on under Org settings; the browser prompt is never opened on page load, and the choice is kept per browser.
+
+What notifies: only items you can act on now, from the `my_pending_approvals` op (a web session only; every token is refused, because it is a person's inbox). That is a release or environment approval, a run held for an untrusted author under the `human` policy, a key enrolment, or a key policy change, in each case only where you have a live approver key bound to your numeric GitHub id and the same checks the approving code applies (key policy, the author rule, no approving your own enrolment, a quorum not yet met, not expired) let that key sign. The op reuses those checks and decides nothing new about who may approve. It covers every org you belong to. You get one summary ("N approvals waiting") when the page loads, one notice per new item, and one more when an item is within 10 minutes of its expiry; each item notifies once per browser. The tab title shows the count, for example `(2) Turntable`.
+
+What a notification says: a fixed plain-text template over org and project slugs and the environment name, such as "Release approval waiting: acme/web release". It never carries a workflow, job, pull request title or tag message, and the op returns none.
+
+What a click does: focuses the tab and opens that item's approval screen. A notification never approves anything; the approval still needs your passkey there.
+
+To turn it off, clear the checkbox under Org settings, or block notifications for the site in the browser. Notifications need an open tab. Web Push for closed tabs is not built. A session's page learns of changes by polling the org's runs (the realtime socket takes bearer tokens only) and when the tab regains focus, so a hidden tab can be slow to notice.
+
 ### For the signing service
 
 `ApprovalVerifier.verify(subject, environment)` (in `approvals/verifier.ts`) is what the signing service calls before it acts. It never trusts a stored flag: it re-verifies each stored statement against the approver keys (the org's, or the caller's own key store), checks the statement binds exactly this run, sha, workflow, environment and, for a release, the manifest digest (`subject.manifestSha256`), drops expired, revoked and self-approved ones, and requires the policy's number of distinct people.

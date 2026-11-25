@@ -677,6 +677,8 @@ const UNREACHABLE: Record<string, string> = {
     "needs a GitHub App lookup of the login (a fake is wired in web-sign-in.test.ts, where who may invite, the role cap and replacement are covered); org B is probed and refused alike",
   session_step_up_challenge:
     "web sessions only: no token reaches it (the handler refuses a token principal alike); the binding, org scoping and single use are in session-step-up.test.ts",
+  my_pending_approvals:
+    "web sessions only: a token of any kind, A's or B's, is refused by the handler (a person's inbox). What a session sees, per org and per person, is in my-pending-approvals.test.ts",
   accept_action_move:
     "needs a recorded action pin and verdict; covered by action-pins.test.ts, re-probed below by repo",
 };

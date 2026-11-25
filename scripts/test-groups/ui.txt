@@ -15,3 +15,4 @@ packages/core/tests/ui-assets.test.ts
 packages/ui/tests/sign-in.test.tsx
 packages/ui/tests/release-approval.test.tsx
 packages/ui/tests/onboarding.test.tsx
+packages/ui/tests/approval-notifications.test.ts

@@ -385,6 +385,27 @@ export type PolicyStatement = {
 
 export type KeyPolicy = { mode: "any" | "hardware"; presets: string[]; aaguids: string[] };
 
+/** One approval waiting on the signed-in person (`my_pending_approvals`): no repository text. */
+export type PendingApprovalKind =
+  | "release_approval"
+  | "environment_approval"
+  | "untrusted_run_approval"
+  | "enrolment_approval"
+  | "key_policy_approval"
+  | "release_request";
+export type PendingApproval = {
+  id: string;
+  kind: PendingApprovalKind;
+  org: string;
+  project: string;
+  environment?: string;
+  createdAt: number;
+  /** Epoch milliseconds, when the item expires. */
+  expiresAt?: number;
+  /** The UI route of the item's approval screen. */
+  link: string;
+};
+
 export type ApproversOverview = {
   approvers: Approver[];
   keyPolicy: KeyPolicy;
