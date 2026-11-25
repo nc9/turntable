@@ -12,7 +12,7 @@ import {
   settingsRegistry,
   untrustedRunApprovalSetting,
 } from "../settings/definitions";
-import type { SettingDef } from "../settings/define";
+import { loosens, type SettingDef } from "../settings/define";
 import { type Resolved, resolveSetting, type SettingSubject } from "../settings/resolve";
 import { createSettingsRuntime, type SettingsRuntime } from "../settings/resolve";
 import { OpError } from "./errors";
@@ -23,6 +23,8 @@ export type SettingCaller = {
   /** Absent for a person at the host (the CLI), who is the operator. */
   principal?: Principal | undefined;
   viaMcp?: boolean | undefined;
+  /** A web session's fresh passkey step-up, verified by the dispatcher for exactly this input. */
+  stepUpVerified?: boolean | undefined;
 };
 
 /**
@@ -51,7 +53,9 @@ export async function guardSettingChange(
   const p = caller.principal;
   // An org principal on a setting with a strictness order may still tighten it: the value check
   // below refuses loosening, after the role and MCP refusals.
-  const oneWay = def.instanceAdminOnly === true && def.strictness !== undefined;
+  const oneWay =
+    (def.instanceAdminOnly === true && def.strictness !== undefined) ||
+    def.trust === "tighten_only";
   if (p?.kind === "account")
     throw new OpError("forbidden", "an account session cannot change settings");
   if (p && p.kind !== "instance") {
@@ -73,7 +77,7 @@ export async function guardSettingChange(
     throw new OpError("invalid_input", "give either a value to set or unset: true, not both");
   }
   if (unset) {
-    if (oneWay && p && p.kind !== "instance") refuseLoosening(def, before, def.default);
+    if (oneWay && p) refuseLoosening(def, before, def.default, caller);
     return { before, next: undefined };
   }
   const parsed = def.type.safeParse(i.value);
@@ -87,7 +91,7 @@ export async function guardSettingChange(
     subject.orgSlug ?? (subject.orgId ? (await getOrgById(db, subject.orgId))?.slug : undefined);
   const refused = def.refuse?.(parsed.data, orgSlug !== undefined ? { orgSlug } : {});
   if (refused) throw new OpError("invalid_input", refused);
-  if (oneWay && p && p.kind !== "instance") refuseLoosening(def, before, parsed.data);
+  if (oneWay && p) refuseLoosening(def, before, parsed.data, caller);
   if (def.key === untrustedRunApprovalSetting.key && parsed.data === "human") {
     await requireApprover(db, subject.orgId);
   }
@@ -119,19 +123,48 @@ async function requireApprover(db: Db, orgId: string | undefined): Promise<void>
 /**
  * Refuses a value less strict than the effective one. `before` is read in the caller's write
  * transaction. A current value the order does not list ranks as the strictest, so it fails closed.
+ * Who may loosen a trust setting: the instance administrator never (the org's owner does), an org
+ * session only with a verified step-up, an org token never.
  */
-function refuseLoosening(def: SettingDef, before: Resolved, next: unknown): void {
-  const order = def.strictness!;
+function refuseLoosening(
+  def: SettingDef,
+  before: Resolved,
+  next: unknown,
+  caller: SettingCaller,
+): void {
+  const order = def.strictness;
   const rank = (v: unknown): number => {
-    const i = order.indexOf(v as string);
-    return i < 0 ? order.length : i;
+    const i = order!.indexOf(v as string);
+    return i < 0 ? order!.length : i;
   };
-  if (rank(next) < rank(before.value)) {
+  const loose = order ? rank(next) < rank(before.value) : loosens(def, before.value, next);
+  if (!loose) return;
+  const p = caller.principal!;
+  if (p.kind === "instance") {
+    if (def.trust !== "tighten_only") return;
+    throw new OpError("forbidden", `only the org's owner can loosen ${def.key}`, {
+      reason: "trust_loosening_needs_owner",
+    });
+  }
+  if (p.kind === "session" && def.trust === "tighten_only") {
+    if (caller.stepUpVerified) return;
     throw new OpError(
       "forbidden",
-      `only the instance administrator can loosen ${def.key} (current: ${String(before.value)})`,
+      `loosening ${def.key} needs a fresh passkey step-up (step_up_required): call session_step_up_challenge`,
+      { reason: "step_up_required" },
     );
   }
+  if (def.trust === "tighten_only") {
+    throw new OpError(
+      "forbidden",
+      `only the org's owner can loosen ${def.key}, from a signed-in session with a passkey step-up`,
+      { reason: "trust_loosening_needs_owner" },
+    );
+  }
+  throw new OpError(
+    "forbidden",
+    `only the instance administrator can loosen ${def.key} (current: ${String(before.value)})`,
+  );
 }
 
 /** The slugs a project's `turntable.toml` section is keyed by, from its ids. */

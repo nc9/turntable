@@ -1,6 +1,7 @@
 // Presentation helpers for the settings pages. The server owns every rule (lock, role, type), so
 // nothing here validates a value: it only turns what a person typed into what the op is sent.
-import type { Setting, SettingSource } from "@/api/types";
+import { ApiError } from "@/api/http-adapter";
+import type { Setting, SettingSource, StepUpProof } from "@/api/types";
 import { meetsRole, roleLabel, type Role } from "@/lib/roles";
 
 export const SOURCE_LABEL: Record<SettingSource, string> = {
@@ -28,6 +29,9 @@ export function editability(
   const lock = lockNote(s);
   if (lock) return { editable: false, reason: `${lock}. Change it there.` };
   if (role === null) return { editable: false, reason: "Checking your role." };
+  // The registry's `instance_admin` role is no org role: nobody signed in to an org holds it.
+  if ((s.role as string) === "instance_admin")
+    return { editable: false, reason: "Only the instance administrator can change this setting." };
   const need = meetsRole(s.role, SET_MIN_ROLE) ? s.role : SET_MIN_ROLE;
   if (!meetsRole(role, need))
     return {
@@ -44,9 +48,23 @@ function strictRank(s: Setting, v: unknown): number {
   return i < 0 ? order.length : i;
 }
 
-/** Whether an org user may pick `value`: never one looser than the effective value. */
+/** Whether `value` is looser than the effective value, for a setting with a strictness order. */
 export function loosens(s: Setting, value: unknown): boolean {
   return s.strictness !== undefined && strictRank(s, value) < strictRank(s, s.value);
+}
+
+/**
+ * Whether an org user may pick `value`. A trust setting may be loosened with a passkey
+ * confirmation (the page asks for it); any other setting with an order never loosens here.
+ */
+export function pickable(s: Setting, value: unknown): boolean {
+  return s.trust === "tighten_only" || !loosens(s, value);
+}
+
+/** Whether saving needs a passkey confirmation first: loosening a trust setting. */
+export function needsStepUp(s: Setting, change: { draft: string } | { unset: true }): boolean {
+  if (s.trust !== "tighten_only") return false;
+  return loosens(s, "unset" in change ? s.default : valueOfDraft(s, change.draft));
 }
 
 export type SettingKind = "boolean" | "number" | "text" | "json";
@@ -101,18 +119,31 @@ export async function saveSetting(
     value?: unknown;
     unset?: boolean;
     project?: string;
+    stepUp?: StepUpProof;
   }) => Promise<Setting>,
   s: Setting,
   change: { draft: string } | { unset: true },
   project?: string,
+  /** Confirms with a passkey for exactly these arguments; absent where there are no passkeys. */
+  confirm?: (args: Record<string, unknown>) => Promise<StepUpProof>,
 ): Promise<SaveResult> {
+  const args = {
+    key: s.key,
+    ...("unset" in change ? { unset: true as const } : { value: valueOfDraft(s, change.draft) }),
+    ...(project !== undefined ? { project } : {}),
+  };
   try {
-    const setting = await save({
-      key: s.key,
-      ...("unset" in change ? { unset: true } : { value: valueOfDraft(s, change.draft) }),
-      ...(project !== undefined ? { project } : {}),
-    });
-    return { ok: true, setting };
+    // A loosening of a trust setting asks for the passkey first; for any other setting the server
+    // says when it wants one (`step_up_required`) and the page asks then.
+    if (confirm && needsStepUp(s, change)) {
+      return { ok: true, setting: await save({ ...args, stepUp: await confirm(args) }) };
+    }
+    try {
+      return { ok: true, setting: await save(args) };
+    } catch (e) {
+      if (!confirm || !(e instanceof ApiError) || e.reason !== "step_up_required") throw e;
+      return { ok: true, setting: await save({ ...args, stepUp: await confirm(args) }) };
+    }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "The change was not accepted." };
   }

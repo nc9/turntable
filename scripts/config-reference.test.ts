@@ -60,7 +60,7 @@ describe("configuration reference", () => {
       expect(row).toContain(`| ${d.scope} |`);
       expect(row).toContain(
         d.strictness
-          ? `| ${d.role} may tighten, instance_admin may loosen (strictness, least to most strict: ${d.strictness.map((v) => `\`${v}\``).join(" < ")}) |`
+          ? `| ${d.role} may tighten, ${d.trust ? "only the org owner (passkey step-up) may loosen" : "instance_admin may loosen"} (strictness, least to most strict: ${d.strictness.map((v) => `\`${v}\``).join(" < ")}) |`
           : d.instanceAdminOnly
             ? "| instance_admin (`instanceAdminOnly`) |"
             : `| ${d.role} |`,

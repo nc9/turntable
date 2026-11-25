@@ -550,6 +550,28 @@ export type Setting = {
   strictness?: string[];
   /** What is at risk in changing it, for a setting whose change can weaken a protection. */
   warning: string | null;
+  /** A trust setting: only tightened without a passkey confirmation. */
+  trust?: "tighten_only";
+};
+
+/** The passkey confirmation a session attaches to a sensitive write (`step_up`). */
+export type StepUpProof = {
+  id: string;
+  approver: string;
+  signature: {
+    credential_id: string;
+    client_data_json: string;
+    authenticator_data: string;
+    signature: string;
+  };
+};
+
+/** A passkey challenge for one exact action (`session_step_up_challenge`). */
+export type StepUpChallenge = {
+  id: string;
+  challenge: string;
+  rpId: string;
+  passkeys: { approver: string; passkeyId: string }[];
 };
 
 /** One row of the cross-org activity feed (`my_activity_feed`). Every text field but the ids is forge text. */

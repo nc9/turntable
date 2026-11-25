@@ -415,6 +415,8 @@ export type WireSetting = {
   strictness: string[] | null;
   /** What is at risk in changing it; null for most settings. */
   warning: string | null;
+  /** `tighten_only` for a trust setting; null otherwise. */
+  trust: "tighten_only" | null;
 };
 
 export type WireSettings = { settings: WireSetting[]; next_cursor: string | null };

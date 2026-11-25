@@ -22,6 +22,7 @@ import {
 } from "../step-up";
 import { createApiToken } from "./create-api-token";
 import { inviteMemberOp } from "./members";
+import { setSettingOp } from "./settings";
 
 const MAX_OPEN_STEP_UPS = 10;
 
@@ -29,14 +30,15 @@ const MAX_OPEN_STEP_UPS = 10;
 const SCHEMAS: Record<string, z.ZodObject> = {
   create_api_token: createApiToken.input,
   invite_member: inviteMemberOp.input,
+  set_setting: setSettingOp.input,
 };
 
 export const sessionStepUpChallenge = defineOp({
   name: "session_step_up_challenge",
   summary: "Start a passkey step-up for one sensitive action from a web session.",
   description:
-    "Web sessions only. Names an action (create_api_token, or invite_member for an admin or " +
-    "owner) and the exact `input` the action will be called with (project scope included), and " +
+    "Web sessions only. Names an action (create_api_token, invite_member for an admin or " +
+    "owner, or set_setting to loosen a trust setting) and the exact `input` the action will be called with (project scope included), and " +
     "returns a single-use WebAuthn challenge. The signed-in person's own enrolled passkey signs " +
     "`challenge`; the sensitive call then carries `step_up: {id, approver, signature}` (the " +
     "assertion's credential_id, client_data_json, authenticator_data and signature). The step-up " +
@@ -45,7 +47,7 @@ export const sessionStepUpChallenge = defineOp({
     "this person in the org (an approver key under their GitHub login that satisfies the org's " +
     "key policy). Issuing a challenge changes nothing else. Audited. Not an MCP tool.",
   input: z.object({
-    action: z.string().min(1).max(64).describe("create_api_token or invite_member."),
+    action: z.string().min(1).max(64).describe("create_api_token, invite_member or set_setting."),
     input: z
       .record(z.string(), z.unknown())
       .describe("The exact input the action will be called with, `org` and `project` included."),

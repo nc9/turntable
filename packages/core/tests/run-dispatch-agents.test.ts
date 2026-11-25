@@ -239,7 +239,7 @@ describe("who may change the setting", () => {
     });
   });
 
-  test("an org owner tightens but cannot loosen; the instance administrator loosens", async () => {
+  test("an org owner token tightens but cannot loosen; nor can the instance administrator", async () => {
     const w = await world();
     const owner = {
       kind: "principal" as const,
@@ -254,7 +254,7 @@ describe("who may change the setting", () => {
     expect((await set("none")).ok).toBe(true);
     const loosen = await set("any");
     expect(!loosen.ok && loosen.error.message).toBe(
-      `only the instance administrator can loosen ${KEY} (current: none)`,
+      `only the org's owner can loosen ${KEY}, from a signed-in session with a passkey step-up`,
     );
     const { secret } = await createInstanceTokenFromCli(db, { name: "ops" });
     const admin = await dispatch(
@@ -263,7 +263,11 @@ describe("who may change the setting", () => {
       "instance_set_setting",
       { key: KEY, value: "any", target_org: "acme", target_project: "app" },
     );
-    expect(admin.ok).toBe(true);
+    // trust: the instance administrator tightens but never loosens (#571)
+    expect(!admin.ok && admin.error.message).toBe(`only the org's owner can loosen ${KEY}`);
+    expect(!admin.ok && (admin.error.details as { reason?: string }).reason).toBe(
+      "trust_loosening_needs_owner",
+    );
   });
 
   test("over MCP it is refused, a token below owner is refused", async () => {

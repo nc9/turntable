@@ -213,6 +213,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     getQuotas: () => delay(() => world.getQuotas()),
     listSettings: (a) => delay(() => settings.list(a?.project)),
     setSetting: (a) => delay(() => settings.set(a)),
+    stepUpChallenge: () => Promise.reject(new Error("The demo has no passkeys to confirm with.")),
     approvalChallenge: ({ runId, environment, approver }) =>
       delay(() => world.approvalChallenge(runId, environment, approver)),
     // The fixture world has no release environment (its approval is "production").

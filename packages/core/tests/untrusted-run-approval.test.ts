@@ -302,20 +302,12 @@ describe("changing the setting", () => {
       ...input,
     });
 
-  test("raising to any is the instance administrator's and is audited with old and new", async () => {
+  test("the instance administrator may not raise to any (#571); lowering is audited with old and new", async () => {
     const r = await asInstance({ untrusted_run_approval: "any" });
-    expect(r.ok && (r.output as { untrusted_run_approval: string }).untrusted_run_approval).toBe(
-      "any",
-    );
-    expect((await getProjectSandboxSettings(db, a.scope)).untrustedRunApproval).toBe("any");
-    const own = (await listAudit(db, { orgId: a.orgId }, { limit: 20 })).find(
-      (x) => x.op === "set_project_settings",
-    );
-    expect(JSON.parse(own!.input)).toMatchObject({
-      from: { untrustedRunApproval: "no_agents" },
-      to: { untrustedRunApproval: "any" },
-    });
-    // lowering is audited the same way
+    expect(!r.ok && r.error.message).toBe("only the org's owner can loosen untrusted_run_approval");
+    expect((await getProjectSandboxSettings(db, a.scope)).untrustedRunApproval).toBe("no_agents");
+    // the host CLI is the operator: it may raise, and the instance administrator may lower again
+    await setSandboxPolicy(db, "org-a", "app", { untrustedRunApproval: "any" });
     await asInstance({ untrusted_run_approval: "no_agents" });
     const [latest] = (await listAudit(db, { orgId: a.orgId }, { limit: 5 })).filter(
       (x) => x.op === "set_project_settings",

@@ -1,19 +1,29 @@
 import { useCallback, useState } from "react";
 import { getBackend } from "@/api";
-import type { Setting } from "@/api/types";
+import type { Setting, StepUpProof } from "@/api/types";
 import { EmptyState, ErrorState } from "@/components/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWhoami } from "@/lib/directory";
 import type { Role } from "@/lib/roles";
 import { saveSetting } from "@/lib/settings";
+import { signWithPasskey } from "@/lib/webauthn";
 import { useAsync } from "@/lib/use-async";
 import { SettingsPanel } from "./settings-panel";
 
 type SettingsSource = {
   list: () => Promise<Setting[]>;
-  set: (a: { key: string; value?: unknown; unset?: boolean }) => Promise<Setting>;
+  set: (a: {
+    key: string;
+    value?: unknown;
+    unset?: boolean;
+    stepUp?: StepUpProof;
+  }) => Promise<Setting>;
+  /** Confirms a loosening with a passkey; absent where a person has none (instance settings). */
+  confirm?: (args: Record<string, unknown>) => Promise<StepUpProof>;
   /** The caller's role; null until it is known. The server enforces it either way. */
   role: Role | null;
+  /** The project of a project section: part of what a passkey confirmation is bound to. */
+  project?: string;
   /** What the empty state calls these settings. */
   noun: string;
 };
@@ -34,6 +44,27 @@ export function SettingsSection({ project }: { project?: string }) {
         set: (a) => api.setSetting({ ...a, ...(project !== undefined ? { project } : {}) }),
         role: who.data?.role ?? null,
         noun: project === undefined ? "org" : "project",
+        ...(project !== undefined ? { project } : {}),
+        confirm: async (args) => {
+          const c = await api.stepUpChallenge({ action: "set_setting", input: args });
+          const key = c.passkeys[0];
+          if (!key) throw new Error("No passkey of yours is enrolled to confirm this.");
+          const sig = await signWithPasskey({
+            challenge: c.challenge,
+            rpId: c.rpId,
+            passkeyId: key.passkeyId,
+          });
+          return {
+            id: c.id,
+            approver: key.approver,
+            signature: {
+              credential_id: sig.credential_id,
+              client_data_json: sig.client_data_json,
+              authenticator_data: sig.authenticator_data,
+              signature: sig.signature,
+            },
+          };
+        },
       }}
     />
   );
@@ -57,7 +88,7 @@ export function SettingsList({
     async (s: Setting, change: { draft: string } | { unset: true }) => {
       setBusy(s.key);
       setErrors(({ [s.key]: _gone, ...rest }) => rest);
-      const r = await saveSetting(source.set, s, change);
+      const r = await saveSetting(source.set, s, change, source.project, source.confirm);
       setBusy(null);
       if (!r.ok) {
         setErrors((e) => ({ ...e, [s.key]: r.message }));
