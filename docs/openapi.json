@@ -1750,7 +1750,7 @@
             "required": false,
             "description": "Only these event types. Comma-separated in a query string.",
             "schema": {
-              "maxItems": 25,
+              "maxItems": 26,
               "type": "array",
               "items": {
                 "type": "string",
