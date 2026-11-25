@@ -684,6 +684,24 @@ const UNREACHABLE: Record<string, string> = {
     "needs a configured GitHub App and a repo reader; org B is probed and finds no such project of its own, and the preview itself is in onboarding-repos.test.ts",
   run_default_branch:
     "needs an admin (no token holds that role) and the poller; org B is probed and finds no such project or onboarding of its own, and the run, the onboarding row's org check and the refusals are in onboarding-repos.test.ts",
+  release_pin_repo:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_publish_target_set:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_publish_target_delete:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_secret_set:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_init_key:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_set_project_signing:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_publish_target_list:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_key_show:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
+  release_secret_status:
+    "lane configuration (#541): a signed-in WEB SESSION of an owner of the operator org only; every token principal of A and B is refused alike. Who may call it, per op and per credential, is release-lane-owner.test.ts",
   doctor:
     "instance operators only: no token holds the owner role it needs, so every token principal of A and B is refused alike; it reports instance facts, never an org's rows (doctor.test.ts covers who may call it)",
   get_setting:

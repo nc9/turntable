@@ -56,22 +56,24 @@ const MCP_OFF: Record<string, string> = {
     "instance administrator ops are REST only: cross-tenant poll health is the operator's view, never an agent's",
   instance_audit_verify:
     "instance administrator ops are REST only: audit integrity is the operator's check, never an agent's",
-  instance_step_up_challenge:
-    "instance administrator ops are REST only: a passkey step-up for the release lane's configuration is a human act",
   release_set_project_signing:
-    "instance administrator ops are REST only: choosing which key signs a project's releases is a human-approved act (passkey step-up), and the effective setting is read with release_project_signing",
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
   release_init_key:
-    "instance administrator ops are REST only: creating the release signing key is a human-approved act, and its public half is read with release_public_key",
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
   release_pin_repo:
-    "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
   release_publish_target_set:
-    "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
   release_publish_target_delete:
-    "instance administrator ops are REST only: the release lane's configuration decides where signed bytes go, behind a passkey step-up",
-  release_publish_target_list:
-    "instance administrator ops are REST only: the release lane's configuration is the operator's view, never an agent's",
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
   release_secret_set:
-    "instance administrator ops are REST only: a lane secret's value would sit in an agent's context",
+    "web only: the release lane's configuration decides where signed bytes go, and only a signed-in owner of the operator org, in the browser, with a passkey step-up, may change it",
+  release_publish_target_list:
+    "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
+  release_key_show:
+    "web only: the release lane's configuration is the operator org owner's view in the browser, never an agent's",
+  release_secret_status:
+    "web only: it shows when and by whom a lane secret was set, never the value, to the operator org owner in the browser",
   set_quotas: "instance administrator ops are REST only, and quotas are a limit-raising setter",
   set_project_settings:
     "instance administrator ops are REST only: a project's snapshot and cap are operator controls, never an agent's",

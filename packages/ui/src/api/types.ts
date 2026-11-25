@@ -200,6 +200,8 @@ export type Whoami = {
   role: "reader" | "operator" | "release_operator" | "owner" | "admin" | "member" | "viewer";
   org: string;
   project: string | null;
+  /** True for the operator org, whose owners configure the release lane. */
+  operatorOrg: boolean;
 };
 
 /** What `approve_run` reports back. */
@@ -609,3 +611,33 @@ export type ActivityFilter = {
   cursor?: string | undefined;
   limit?: number | undefined;
 };
+
+/** The release lane config writes: each needs a passkey step-up for exactly its input. */
+export type LaneAction =
+  | "release_pin_repo"
+  | "release_init_key"
+  | "release_publish_target_set"
+  | "release_publish_target_delete"
+  | "release_set_project_signing"
+  | "release_secret_set";
+
+/** A publish target as the lane's file holds it: never a secret value. */
+export type LaneTarget = {
+  key: string;
+  kind: string;
+  mode: string;
+  hasCredential: boolean;
+  settings: Record<string, unknown>;
+};
+
+export type LaneConfig = {
+  pinnedRepo: string | null;
+  configVersion: number;
+  targets: LaneTarget[];
+};
+
+/** The public half of a release signing key. */
+export type LaneKey = { keyid: string; publicKeyPem: string; createdAt: string };
+
+/** Whether a lane secret was set, when and by whom. Never the value. */
+export type LaneSecretStatus = { set: boolean; setAt: string | null; setBy: string | null };

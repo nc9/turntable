@@ -164,6 +164,8 @@ export type ServeOptions = {
   webauthn?: RelyingParty;
   /** The release lane's config channel, when configured (the instance's `release_*` ops). */
   releaseConfig?: LaneConfigClient;
+  /** The operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
+  operatorOrgSlug?: string;
   /** The control-plane cache for jobs (`/_cache/...`), when a cache URL is configured. */
   cache?: CacheService;
   /** The artifact service for jobs (the twirp API and `/_artifacts/...`), when a URL is configured. */
@@ -196,6 +198,7 @@ export function startServer(options: ServeOptions) {
     webhooks: options.outboundWebhooks,
     webauthn: options.webauthn,
     releaseConfig: options.releaseConfig,
+    operatorOrgSlug: options.operatorOrgSlug,
     instanceOrgCap: options.instanceOrgCap,
     staticPollProjects: options.staticPollProjects,
     doctor: options.doctor,

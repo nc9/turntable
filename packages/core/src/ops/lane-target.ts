@@ -1,8 +1,5 @@
-// What an instance step-up binds (#541). The instance administrator is a token, not a person, so
-// a sensitive instance op (release lane configuration) needs a fresh passkey assertion from an
-// approver enrolled in the org the call names, bound to the token, the op and the exact input.
-//
-// The input hash covers every field. A secret value is the one exception: it is bound by its own
+// What a lane configuration step-up binds (#541): the web session of an owner of the operator org,
+// the op and the exact input. The input hash covers every field. A secret value is the one exception: it is bound by its own
 // digest (`<field>_sha256`), so the approver's device, which is shown only the challenge, never
 // sees it, and a step-up for one value cannot authorise another.
 import { createHash } from "node:crypto";
@@ -10,7 +7,6 @@ import { SYSTEM_ORG_SLUG } from "../audit/failures";
 import type { Db } from "../db";
 import { getOrgBySlug, getProjectBySlug } from "../db/repos";
 import { OpError } from "./errors";
-import { inputTarget } from "./step-up";
 
 const NO_SUCH = "org or project not found";
 
@@ -73,26 +69,4 @@ export async function resolveLaneOrg(
   const org = slug === SYSTEM_ORG_SLUG ? undefined : await getOrgBySlug(db, slug);
   if (!org) throw new OpError("not_found", "org not found");
   return { orgId: org.id };
-}
-
-/**
- * The target a step-up for this call binds (see `inputTarget`), and the org that must sign it.
- * An org-level op (a signing key) has no project: its target binds the input alone.
- */
-export async function instanceStepUpTarget(
-  db: Db,
-  input: Record<string, unknown>,
-  secretFields: readonly string[],
-  orgLevel = false,
-): Promise<{ orgId: string; projectId: string | undefined; target: string }> {
-  if (orgLevel) {
-    const { orgId } = await resolveLaneOrg(db, input);
-    return {
-      orgId,
-      projectId: undefined,
-      target: inputTarget(boundInput(input, secretFields), undefined),
-    };
-  }
-  const { orgId, projectId } = await resolveLaneTarget(db, input);
-  return { orgId, projectId, target: inputTarget(boundInput(input, secretFields), projectId) };
 }

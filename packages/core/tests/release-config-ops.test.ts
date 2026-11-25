@@ -126,7 +126,7 @@ describe("each op round-trips through the lane's own file", () => {
     });
     expect(!noTarget.ok && noTarget.error.message).toContain("declare the target first");
     await h.signedCall("release_publish_target_set", NPM(a));
-    const empty = await h.call("release_secret_set", {
+    const empty = await h.signedCall("release_secret_set", {
       target_org: a.slug,
       target_project: a.projectSlug,
       name: "NPM_TOKEN",
@@ -225,8 +225,8 @@ describe("a write needs the step-up, for exactly this op and this input", () => 
     expect(!r.ok && r.error.details).toEqual({ reason: "step_up_required" });
     expect(attest.pinnedRepo(a.orgId, a.projectId)).toBeUndefined();
     expect(attest.configVersion()).toBe(0);
-    // refused and audited in the system chain
-    const audit = await chainedAudit(db, await systemOrgId(db), 0, 100);
+    // refused and audited in the operator org's chain
+    const audit = await chainedAudit(db, a.orgId, 0, 100);
     expect(audit.some((e) => e.op === "release_pin_repo" && e.outcome === "error:forbidden")).toBe(
       true,
     );
@@ -276,10 +276,13 @@ describe("a write needs the step-up, for exactly this op and this input", () => 
     expect(attest.configVersion()).toBe(1);
   });
 
-  test("a step-up is bound to the instance token that asked, and expires", async () => {
-    const other = await h.otherToken();
+  test("a step-up is bound to the person that asked, and expires", async () => {
+    const bob = await h.person({
+      login: "bob",
+      memberships: [{ orgId: a.orgId, role: "owner" }],
+    });
     const su = await h.stepUpFor("release_pin_repo", PIN(a));
-    const stolen = await h.call("release_pin_repo", PIN(a), su, other);
+    const stolen = await h.call("release_pin_repo", PIN(a), su, bob.cookie);
     expect(!stolen.ok && stolen.error.details).toEqual({ reason: "step_up_unknown" });
     h.clock.now += 6 * 60_000;
     const late = await h.call("release_pin_repo", PIN(a), su);
@@ -287,19 +290,26 @@ describe("a write needs the step-up, for exactly this op and this input", () => 
     expect(attest.pinnedRepo(a.orgId, a.projectId)).toBeUndefined();
   });
 
-  test("a passkey of another person's org, or an unenrolled one, cannot sign", async () => {
+  test("a passkey that is not the caller's own cannot sign", async () => {
     const { passkey } = await import("./release-config-helpers");
     const rogue = passkey();
     const su = await h.stepUpFor("release_pin_repo", PIN(a), { device: rogue });
     const r = await h.call("release_pin_repo", PIN(a), su);
     expect(!r.ok && r.error.code).toBe("forbidden");
     expect(!r.ok && r.error.details).toEqual({ reason: "step_up_bad_key" });
-    // org B has no approver at all: no step-up can even be started for it
-    const bChallenge = await h.call("instance_step_up_challenge", {
-      action: "release_pin_repo",
-      input: PIN(b),
+    // an owner with no passkey enrolled cannot even start a step-up
+    const bare = await h.person({
+      login: "carol",
+      memberships: [{ orgId: a.orgId, role: "owner" }],
+      approverIn: [],
     });
-    expect(!bChallenge.ok && bChallenge.error.code).toBe("conflict");
+    const none = await h.call(
+      "session_step_up_challenge",
+      { action: "release_pin_repo", input: PIN(a) },
+      undefined,
+      bare.cookie,
+    );
+    expect(!none.ok && none.error.code).toBe("conflict");
   });
 
   test("an org token of any kind holds none of this", async () => {
@@ -320,21 +330,34 @@ describe("not over MCP, and not without a lane", () => {
     "release_publish_target_list",
     "release_publish_target_delete",
     "release_secret_set",
-    "instance_step_up_challenge",
+    "release_init_key",
+    "release_set_project_signing",
+    "release_key_show",
+    "release_secret_status",
   ];
 
-  test("every one is off MCP, and an instance token is not a credential there", async () => {
+  test("every one is off MCP, and neither an instance token nor a session is a credential there", async () => {
+    const { createInstanceTokenFromCli } = await import("../src/ops/instance-token-cli");
+    const tti = (await createInstanceTokenFromCli(db, { name: "mcp probe" })).secret;
     for (const name of OPS) {
       expect(registry.get(name)!.mcp, name).toBe(false);
       expect(mcpTools(registry).map((t) => t.name)).not.toContain(name);
       // the dispatcher an MCP adapter builds does not let an instance token authenticate
       const r = await dispatch(
         { registry, db, transport: "mcp", viaMcp: true },
-        { kind: "bearer", token: h.token },
+        { kind: "bearer", token: tti },
         name,
         {},
       );
       expect(!r.ok && r.error.code, name).toBe("unauthenticated");
+      // a signed-in owner's session over MCP is refused too
+      const viaMcp = await dispatch(
+        { ...h.env, transport: "mcp", viaMcp: true },
+        { kind: "session", cookie: h.cookie },
+        name,
+        { org: h.operator.slug },
+      );
+      expect(!viaMcp.ok && viaMcp.error.code, name).toBe("forbidden");
     }
   });
 
@@ -420,6 +443,21 @@ describe("a secret value is write-only", () => {
     });
     expect(elsewhere).toMatchObject({ ok: false, reason: "destination_not_allowed" });
 
+    // the write-only form's status read: when and by whom, never the value
+    const status = await h.call("release_secret_status", {
+      target_org: a.slug,
+      target_project: a.projectSlug,
+      name: "NPM_TOKEN",
+    });
+    outputs.push(status);
+    expect(status.ok && status.output).toMatchObject({ set: true, set_by: "alice" });
+    const none = await h.call("release_secret_status", {
+      target_org: a.slug,
+      target_project: a.projectSlug,
+      name: "OTHER_TOKEN",
+    });
+    expect(none.ok && none.output).toEqual({ set: false, set_at: null, set_by: null });
+
     const text = (x: unknown) => JSON.stringify(x);
     expect(text(outputs)).not.toContain(MARKER);
     // the audit of every org involved, the system chain included
@@ -435,7 +473,7 @@ describe("a secret value is write-only", () => {
       target_project: a.projectSlug,
       value: "[redacted]",
     });
-    expect(row!.principalKind).toBe("instance");
+    expect(row!.principalKind).toBe("session");
     // events
     const events = await db.orm.select().from(s.events);
     expect(text(events)).not.toContain(MARKER);
@@ -503,7 +541,7 @@ describe("tenant isolation", () => {
       "release_publish_target_delete",
       "release_secret_set",
       "release_publish_target_list",
-      "instance_step_up_challenge",
+      "session_step_up_challenge",
     ]) {
       const input =
         name === "release_pin_repo"
@@ -514,7 +552,7 @@ describe("tenant isolation", () => {
               ? { ...mismatched, key: "npm" }
               : name === "release_secret_set"
                 ? { ...mismatched, name: "NPM_TOKEN", value: "z".repeat(8) }
-                : name === "instance_step_up_challenge"
+                : name === "session_step_up_challenge"
                   ? { action: "release_pin_repo", input: { ...mismatched, repo: "evil/x" } }
                   : mismatched;
       const r = await h.call(name, input);

@@ -153,6 +153,9 @@ async function build(kind: Kind): Promise<World> {
     db,
     now: () => clock + 1000,
     sessions: { resolve: async (c: string) => cookies[c] } as unknown as WebSessions,
+    // A release challenge binds the lane's config version, read over the config channel (it fails
+    // closed without one): a fixed answer here.
+    releaseConfig: { call: async () => ({ ok: true as const, result: { config_version: 0 } }) },
   };
   const token = (await mintToken(db, { orgId: org.id }, "release_operator")).secret;
   const call = (op: string, input: unknown) => dispatch(env, { kind: "bearer", token }, op, input);

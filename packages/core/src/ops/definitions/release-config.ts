@@ -1,20 +1,20 @@
-// Release lane configuration for instances with no shell (#541): the instance administrator sets
+// Release lane configuration for instances with no shell (#541): the operator org's owner sets
 // the pinned repository, the publish targets and the lane's secrets through REST, for a project of
 // an org. Nothing here writes the main database: each change is a signed message over the release
 // channel to the lane, which writes its own file (and, for a secret, its own vault view). The
 // lane is not configured here: without its config channel every op is refused.
 //
-// A write needs the administrator's `tti_` token AND a fresh passkey step-up from an approver
-// enrolled in the org the call names, bound to the op and the exact input (see
-// ../instance-step-up.ts). None of these is an MCP tool.
-import { randomBytes } from "node:crypto";
+// A write needs a signed-in WEB SESSION of an owner of the operator org (the org that owns the
+// GitHub App) AND a fresh passkey step-up in that org, bound to the op and the exact input (see
+// ../lane-target.ts and ../step-up.ts). A `tti_` instance token, an org token and MCP are refused.
+// None of these is an MCP tool.
 import { z } from "zod";
 import {
+  getIdentityByUserId,
   getProjectSigning,
+  listAuditByOp,
+  listMembershipsOfUser,
   setProjectSigning,
-  countOpenChallenges,
-  insertChallenge,
-  purgeExpiredChallenges,
 } from "../../db/repos";
 import type { ConfigAction } from "../../release/channel";
 import { buildTarget, validateRepo, validateTargetKey } from "../../release/config";
@@ -22,24 +22,11 @@ import { LaneConfigError } from "../../release/config";
 import { SECRET_NAME } from "../../release/publish/types";
 import { iso } from "../common";
 import { validateSigningPatch } from "../policy-cli";
-import { defineOp, type Op, type OpContext } from "../define";
+import { defineOp, type OpContext } from "../define";
 import { OpError } from "../errors";
 import { principalLabel } from "../principal";
 import { releaseKeyReads } from "../read-rate-limit";
-import { resolveLaneOrg, resolveLaneTarget } from "../instance-step-up";
-import {
-  inputTarget,
-  instanceStepUpKeys,
-  INSTANCE_ORG_STEP_UP_OPS,
-  INSTANCE_STEP_UP_OPS,
-  STEP_UP_KIND,
-  STEP_UP_TTL_MS,
-  stepUpChallengeOf,
-  stepUpHash,
-  stepUpHolder,
-} from "../step-up";
-
-const MAX_OPEN_STEP_UPS = 10;
+import { resolveLaneOrg, resolveLaneTarget } from "../lane-target";
 
 const scopeFields = {
   target_org: z.string().min(1).max(64).describe("Slug of the org that owns the project."),
@@ -51,10 +38,11 @@ const scopeFields = {
 };
 
 const stepUpNote =
-  "Needs the instance administrator's token AND a fresh passkey step-up from an approver enrolled " +
-  "in `target_org`: call instance_step_up_challenge for this exact input, sign its challenge with " +
-  "the passkey, and send the assertion as `step_up` beside the input. The step-up is bound to this " +
-  "op and input, single-use, and lasts 5 minutes. ";
+  "Needs a signed-in web session of an OWNER of the operator org (`org`) AND a fresh passkey " +
+  "step-up in that org: call session_step_up_challenge for this exact input, sign its challenge " +
+  "with your passkey, and send the assertion as `step_up` beside the input. The step-up is bound " +
+  "to this op and input, single-use, and lasts 5 minutes. A `tti_` instance token, an org token " +
+  "and MCP are refused. ";
 
 /** Sends one message to the lane, or refuses with the reason. Never echoes an input value. */
 async function toLane(
@@ -85,10 +73,27 @@ async function toLane(
 
 /** Defence in depth: the dispatcher spends the step-up before the handler; the handler insists. */
 function requireStepUp(ctx: OpContext, name: string): void {
-  if (ctx.principal.kind !== "instance" || ctx.stepUp?.action !== name) {
+  if (ctx.principal.kind !== "session" || ctx.stepUp?.action !== name) {
     throw new OpError("forbidden", `${name} needs a fresh passkey step-up`, {
       reason: "step_up_required",
     });
+  }
+}
+
+/** The caller must be an OWNER (by Turntable's own membership row) of the org `orgId`. */
+async function requireOwnerOf(ctx: OpContext, orgId: string): Promise<void> {
+  if (ctx.principal.kind !== "session") {
+    throw new OpError("forbidden", "a web session is required");
+  }
+  const mine = await listMembershipsOfUser(ctx.db, ctx.principal.id);
+  if (!mine.some((m) => m.orgId === orgId && m.role === "owner")) {
+    throw new OpError(
+      "forbidden",
+      "you must be an owner of the project's org to change its policy",
+      {
+        reason: "not_target_org_owner",
+      },
+    );
   }
 }
 
@@ -116,10 +121,10 @@ export const releasePinRepo = defineOp({
   input: z.object({ ...scopeFields, repo: z.string().min(3).max(200).describe("owner/name") }),
   output: z.object({ repo: z.string(), config_version: version }),
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/release/pin-repo" },
+  http: { method: "POST", path: "/release-lane/pin-repo" },
   mcp: false,
   outsideTransaction: true,
   async handler(ctx, i) {
@@ -188,10 +193,10 @@ export const releasePublishTargetSet = defineOp({
   input: z.object({ ...scopeFields, ...targetFields }),
   output: z.object({ key: z.string(), kind: z.string(), config_version: version }),
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/release/publish-targets" },
+  http: { method: "POST", path: "/release-lane/publish-targets" },
   mcp: false,
   outsideTransaction: true,
   async handler(ctx, i) {
@@ -217,10 +222,10 @@ export const releasePublishTargetDelete = defineOp({
   input: z.object({ ...scopeFields, key: z.string().min(1).max(32) }),
   output: z.object({ removed: z.boolean(), config_version: version }),
   effect: "destructive",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/release/publish-targets/delete" },
+  http: { method: "POST", path: "/release-lane/publish-targets/delete" },
   mcp: false,
   outsideTransaction: true,
   async handler(ctx, i) {
@@ -241,7 +246,7 @@ export const releaseSecretSet = defineOp({
     "the project's targets that name it (declare the target first). `value` is write-only: it is " +
     "never returned, never logged and never audited (the audit records the name, the project and " +
     "who), is refused in a URL and over plain http, and is bound in the step-up by its digest " +
-    "(`value_sha256`, see instance_step_up_challenge), so the approver's device never sees it. " +
+    "(`value_sha256`, see session_step_up_challenge), so the approver's device never sees it. " +
     "Setting an existing name adds a version. Bumps the lane's config version. " +
     stepUpNote +
     "Refused when the lane is not configured. Not an MCP tool.",
@@ -252,10 +257,10 @@ export const releaseSecretSet = defineOp({
   }),
   output: z.object({ name: z.string(), created: z.boolean(), config_version: version }),
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/release/secrets" },
+  http: { method: "POST", path: "/release-lane/secrets" },
   mcp: false,
   outsideTransaction: true,
   secretInputFields: ["value"],
@@ -280,7 +285,7 @@ export const releasePublishTargetList = defineOp({
     "as the release lane's file holds them, with `has_credential` true or false for whether the " +
     "lane's vault holds a usable secret for it, and nothing else secret. The project must belong " +
     "to `target_org`. Read-only, no step-up. Refused when the lane is not configured. Not an MCP tool.",
-  input: z.object(scopeFields),
+  input: z.object({ ...scopeFields }),
   output: z.object({
     pinned_repo: z.string().nullable(),
     config_version: version,
@@ -297,10 +302,10 @@ export const releasePublishTargetList = defineOp({
     ),
   }),
   effect: "read",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "GET", path: "/instance/release/publish-targets" },
+  http: { method: "GET", path: "/release-lane/publish-targets" },
   mcp: false,
   async handler(ctx, i) {
     const scope = await resolveLaneTarget(ctx.db, i);
@@ -360,10 +365,10 @@ export const releaseInitKey = defineOp({
   }),
   output: keyOutput,
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/release/keys" },
+  http: { method: "POST", path: "/release-lane/keys" },
   mcp: false,
   outsideTransaction: true,
   auditDetail: (o) => ({ keyid: o.keyid }),
@@ -483,10 +488,10 @@ export const releaseSetProjectSigning = defineOp({
     config_version: version,
   }),
   effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/release/project-signing" },
+  http: { method: "POST", path: "/release-lane/project-signing" },
   mcp: false,
   outsideTransaction: true,
   async handler(ctx, i) {
@@ -501,6 +506,8 @@ export const releaseSetProjectSigning = defineOp({
       throw new OpError("invalid_input", e instanceof Error ? e.message : String(e));
     }
     const scope = await resolveLaneTarget(ctx.db, i);
+    // A project's release policy is its tenant's: the operator org's owner must also own that org.
+    await requireOwnerOf(ctx, scope.orgId);
     if (i.signing_key.startsWith("builtin:")) {
       // The lane is asked first: a name it does not hold is refused, and an unreachable lane is too.
       try {
@@ -587,128 +594,99 @@ export const releaseProjectSigning = defineOp({
   },
 });
 
-/** The ops a step-up may be started for, by name: the schema their input is judged with. */
-const STEP_UP_OPS: Record<string, Op> = {};
-for (const op of [
-  releasePinRepo,
-  releasePublishTargetSet,
-  releasePublishTargetDelete,
-  releaseSecretSet,
-  releaseInitKey,
-  releaseSetProjectSigning,
-]) {
-  STEP_UP_OPS[op.name] = op;
-}
-
-const SHA256 = /^[0-9a-f]{64}$/;
-
-export const instanceStepUpChallenge = defineOp({
-  name: "instance_step_up_challenge",
-  summary: "Start a passkey step-up for one release lane configuration change.",
+export const releaseKeyShow = defineOp({
+  name: "release_key_show",
+  summary: "The public half of an org's release signing key, for the operator org's owner.",
   description:
-    "Names a release lane configuration op (release_pin_repo, release_publish_target_set, " +
-    "release_publish_target_delete, release_secret_set, release_init_key or release_set_project_signing) and the exact `input` it will be called " +
-    "with, and returns a single-use WebAuthn challenge. For release_secret_set send " +
-    "`value_sha256` in place of `value`: sha256 of `turntable.step_up.secret.v1`, a NUL byte, the " +
-    "field name (`value`), a NUL byte and the value, in hex; the value itself never goes here and " +
-    "the approver's device never sees it. A passkey enrolled as an approver in `target_org` signs " +
-    "`challenge`; the configuration call then carries `step_up: {id, approver, signature}` (the " +
-    "assertion's credential_id, client_data_json, authenticator_data and signature) beside its " +
-    "input. The step-up is bound to the instance token, the op and a hash of that exact input, " +
-    "so it authorizes no other op and no other parameters, can be used once, and lasts 5 " +
-    "minutes. Issuing a challenge changes nothing else. Audited. Not an MCP tool.",
-  input: z.object({
-    action: z.string().min(1).max(64).describe("The release_* op the step-up is for."),
-    input: z
-      .record(z.string(), z.unknown())
-      .describe("The exact input that op will be called with (`value_sha256` for a secret value)."),
-  }),
-  output: z.object({
-    step_up_id: z.string(),
-    challenge: z.string().describe("base64url: the WebAuthn challenge to sign."),
-    rp_id: z.string(),
-    passkeys: z.array(z.object({ approver: z.string(), passkey_id: z.string() })),
-    expires_at: z.string(),
-  }),
-  effect: "write",
-  auth: { type: "instance", minRole: "admin" },
+    "Returns `keyid`, `public_key_pem` and `created_at` of the release signing key `name` the lane " +
+    "holds for `target_org`: public material only, never the private key. The caller is a " +
+    "signed-in owner of the operator org (`org`); no step-up, since nothing changes. Compare the " +
+    "key id with the one recorded out of band. Refused when the lane is not configured or holds " +
+    "no such key. Not an MCP tool.",
+  input: z.object({ target_org: scopeFields.target_org, name: keyName }),
+  output: keyOutput,
+  effect: "read",
+  auth: { type: "token", minRole: "owner" },
   untrustedOutput: false,
   scope: "org",
-  http: { method: "POST", path: "/instance/step-up" },
+  http: { method: "GET", path: "/release-lane/keys/{name}" },
   mcp: false,
   async handler(ctx, i) {
-    const p = ctx.principal;
-    if (p.kind !== "instance") throw new OpError("forbidden", "step-up is for the instance token");
-    if (!ctx.webauthn) {
-      throw new OpError("unavailable", "WebAuthn is not configured on this server");
-    }
-    const op = STEP_UP_OPS[i.action];
-    if (!op || !INSTANCE_STEP_UP_OPS.has(i.action)) {
-      throw new OpError("invalid_input", `${i.action} does not take a step-up`);
-    }
-    // Judge the input as the op will: a secret value is not here, so a placeholder stands in for
-    // validation, and its digest (given by the caller) is what gets bound.
-    const given: Record<string, unknown> = { ...i.input };
-    const digests: Record<string, string> = {};
-    for (const f of op.secretInputFields) {
-      const d = given[`${f}_sha256`];
-      if (f in given || typeof d !== "string" || !SHA256.test(d)) {
-        throw new OpError(
-          "invalid_input",
-          `send ${f}_sha256 (sha256 hex of the value) instead of ${f}: the value never goes into a step-up`,
-        );
+    const { orgId } = await resolveLaneOrg(ctx.db, i);
+    let r;
+    try {
+      r = await toLane(ctx, "key_public", { orgId }, { name: i.name });
+    } catch (e) {
+      if (
+        e instanceof OpError &&
+        e.code === "invalid_input" &&
+        e.message === "no such release key"
+      ) {
+        throw new OpError("not_found", "no such release key");
       }
-      digests[`${f}_sha256`] = d;
-      delete given[`${f}_sha256`];
-      given[f] = "x";
+      throw e;
     }
-    const parsed = op.input.safeParse(given);
-    if (!parsed.success) {
-      throw new OpError("invalid_input", "input does not match that op's schema");
-    }
-    const validated = { ...(parsed.data as Record<string, unknown>) };
-    for (const f of op.secretInputFields) delete validated[f];
-    const orgLevel = INSTANCE_ORG_STEP_UP_OPS.has(i.action);
-    const { orgId, projectId } = orgLevel
-      ? { ...(await resolveLaneOrg(ctx.db, validated)), projectId: undefined }
-      : await resolveLaneTarget(ctx.db, validated);
-    const keys = await instanceStepUpKeys(ctx.db, orgId);
-    if (keys.length === 0) {
-      throw new OpError(
-        "conflict",
-        "no passkey is enrolled as an approver in that org (or none satisfies the org's key policy)",
-      );
-    }
-    const now = ctx.now();
-    const holder = stepUpHolder("instance", p.id);
-    await purgeExpiredChallenges(ctx.db, orgId, now);
-    if ((await countOpenChallenges(ctx.db, orgId, holder, now)) >= MAX_OPEN_STEP_UPS) {
-      throw new OpError("conflict", "too many open step-ups: use or wait out the others");
-    }
-    const nonce = randomBytes(24).toString("base64url");
-    const expiresAt = now + STEP_UP_TTL_MS;
-    const hash = stepUpHash({
-      orgId,
-      sessionHash: `instance:${p.id}`,
-      userId: p.id,
-      action: i.action,
-      target: inputTarget({ ...validated, ...digests }, projectId),
-      nonce,
-      expiresAt,
-    });
-    await insertChallenge(ctx.db, orgId, {
-      id: nonce,
-      kind: STEP_UP_KIND,
-      statementHash: hash,
-      principal: holder,
-      expiresAt,
-    });
+    const k = laneKey.safeParse(r);
+    if (!k.success) throw unexpected();
     return {
-      step_up_id: nonce,
-      challenge: stepUpChallengeOf(hash),
-      rp_id: ctx.webauthn.rpId,
-      passkeys: keys.map((k) => ({ approver: k.id, passkey_id: k.credentialId })),
-      expires_at: iso(expiresAt)!,
+      keyid: k.data.keyid,
+      public_key_pem: k.data.public_key_pem,
+      created_at: iso(k.data.created_at)!,
     };
+  },
+});
+
+export const releaseSecretStatus = defineOp({
+  name: "release_secret_status",
+  summary: "Whether a lane secret was set for a project, when and by whom. Never the value.",
+  description:
+    "Returns whether `release_secret_set` has stored the lane secret `name` for the project, and " +
+    "if so when and by whom (from the operator org's audit chain). The value is write-only and " +
+    "is not readable by any operation. The caller is a signed-in owner of the operator org " +
+    "(`org`); no step-up. Not an MCP tool.",
+  input: z.object({
+    ...scopeFields,
+    name: z.string().min(1).max(128).describe("The lane secret's name."),
+  }),
+  output: z.object({
+    set: z.boolean(),
+    set_at: z.string().nullable(),
+    set_by: z.string().nullable().describe("The GitHub login of the person who set it."),
+  }),
+  effect: "read",
+  auth: { type: "token", minRole: "owner" },
+  untrustedOutput: false,
+  scope: "org",
+  http: { method: "GET", path: "/release-lane/secrets" },
+  mcp: false,
+  async handler(ctx, i) {
+    await resolveLaneTarget(ctx.db, i);
+    const rows = await listAuditByOp(
+      ctx.db,
+      { orgId: ctx.scope.orgId },
+      { op: "release_secret_set", outcome: "ok", limit: 200 },
+    );
+    for (const row of rows) {
+      let input: Record<string, unknown>;
+      try {
+        input = JSON.parse(row.input) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (
+        input.name !== i.name ||
+        input.target_org !== i.target_org ||
+        input.target_project !== i.target_project
+      ) {
+        continue;
+      }
+      const who = await getIdentityByUserId(ctx.db, row.principalId);
+      return {
+        set: true,
+        set_at: iso(row.createdAt)!,
+        set_by: who?.login ?? "unknown",
+      };
+    }
+    return { set: false, set_at: null, set_by: null };
   },
 });

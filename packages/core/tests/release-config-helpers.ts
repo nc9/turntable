@@ -1,6 +1,7 @@
 // A real release-lane config channel for tests (#541): the lane's file, its vault view and a
 // listener on a unix socket under its own request key, a client for the main side, and a software
-// passkey enrolled as an approver, so the instance ops run end to end. Only the clock and the
+// passkey enrolled as an approver, so the lane ops run end to end. The caller is a web session of
+// an owner of the operator org (the harness's `orgId`) with that passkey. Only the clock and the
 // authenticator are software; the rows, the channel, the MACs and the dispatcher are real.
 import {
   createHash,
@@ -12,10 +13,11 @@ import {
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { insertApprover, type Db } from "../src/db";
+import { addMember, createUser, getOrgById, insertApprover, type Db } from "../src/db";
+import * as schema from "../src/db/schema";
+import type { WebSessions } from "../src/auth/web-sessions";
 import { dispatch, registry, type DispatchEnv } from "../src/ops";
-import { createInstanceTokenFromCli } from "../src/ops/instance-token-cli";
-import { secretDigest } from "../src/ops/instance-step-up";
+import { secretDigest } from "../src/ops/lane-target";
 import type { AttestationStore } from "../src/release/attest";
 import { startChannel, type RunningChannel } from "../src/release/channel";
 import { createLaneConfigClient } from "../src/release/channel-client";
@@ -24,6 +26,7 @@ import type { FileKeyVault } from "../src/release/key-vault";
 import type { ReleaseProxy } from "../src/release/proxy";
 import { SecretVault } from "../src/secrets/vault";
 
+let nextId = 1001;
 export const RP = { rpId: "ci.example.test", origins: ["https://ci.example.test"] };
 const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest();
 
@@ -109,60 +112,102 @@ export async function opsHarness(o: {
       ? undefined
       : createLaneConfigClient({ target: { unix: sock }, key: configKey });
 
-  const device = passkey();
-  await insertApprover(
-    o.db,
-    o.orgId,
-    {
-      person: "Alice",
-      forgeLogin: "alice",
-      githubUserId: "1001",
-      kind: "webauthn",
-      credentialId: device.credentialId,
-      publicKey: device.spki,
-      alg: "ES256",
-      createdBy: "test",
-    },
-    Date.now(),
-  );
+  const operator = (await getOrgById(o.db, o.orgId))!;
+  const live: Record<string, { userId: string; hash: string }> = {};
+  const devices: Record<string, ReturnType<typeof passkey>> = {};
+  /**
+   * A person with a web session. `memberships` are their orgs and roles; `approverIn` lists the
+   * orgs where they enrol the passkey as an approver (default: every org they are in).
+   */
+  async function person(p: {
+    login: string;
+    memberships: { orgId: string; role: "owner" | "admin" | "member" | "viewer" }[];
+    approverIn?: string[];
+  }) {
+    const user = await createUser(o.db, { displayName: p.login });
+    const githubUserId = String(nextId++);
+    await o.db.run((x) =>
+      x.orm
+        .insert(schema.githubIdentities)
+        .values({ githubUserId, userId: user.id, login: p.login }),
+    );
+    const dev = passkey();
+    for (const m of p.memberships) {
+      await addMember(o.db, { orgId: m.orgId }, { userId: user.id, role: m.role });
+    }
+    for (const orgId of p.approverIn ?? p.memberships.map((m) => m.orgId)) {
+      await insertApprover(
+        o.db,
+        orgId,
+        {
+          person: p.login,
+          forgeLogin: p.login,
+          githubUserId,
+          kind: "webauthn",
+          credentialId: dev.credentialId,
+          publicKey: dev.spki,
+          alg: "ES256",
+          createdBy: "test",
+        },
+        Date.now(),
+      );
+    }
+    const cookie = `cookie-${p.login}-${randomBytes(12).toString("hex")}`;
+    live[cookie] = { userId: user.id, hash: `hash-${p.login}` };
+    devices[cookie] = dev;
+    return { cookie, userId: user.id, device: dev };
+  }
+  const owner = await person({
+    login: "alice",
+    memberships: [{ orgId: o.orgId, role: "owner" }],
+  });
+  const device = owner.device;
 
-  const made = await createInstanceTokenFromCli(o.db, { name: "ops laptop" });
   const clock = { now: Date.now() };
   const env: DispatchEnv = {
     registry,
     db: o.db,
     allowInstance: true,
+    sessions: { resolve: async (c: string) => live[c] } as unknown as WebSessions,
     webauthn: RP,
+    operatorOrgSlug: operator.slug,
     now: () => clock.now,
     ...(client ? { releaseConfig: client } : {}),
   };
+  /** A call as a person (default: the operator org's owner), naming the operator org. */
   const call = (
     name: string,
     input: Record<string, unknown>,
     stepUp?: StepUp,
-    token: string = made.secret,
+    cookie: string = owner.cookie,
   ) =>
-    dispatch(env, { kind: "bearer", token }, name, stepUp ? { ...input, step_up: stepUp } : input);
+    dispatch(
+      env,
+      { kind: "session", cookie },
+      name,
+      stepUp ? { org: operator.slug, ...input, step_up: stepUp } : { org: operator.slug, ...input },
+    );
 
   /**
-   * A step-up for `action` and `input`, signed by `dev`. A secret value never goes into it: its
-   * digest does, which is what a real client sends.
+   * A step-up for `action` and `input`, signed by the caller's own passkey. A secret value never
+   * goes into it: its digest does, which is what a real client sends.
    */
   async function stepUpFor(
     action: string,
     input: Record<string, unknown>,
-    over: { device?: ReturnType<typeof passkey>; token?: string } = {},
+    over: { device?: ReturnType<typeof passkey>; cookie?: string } = {},
   ): Promise<StepUp> {
     const asked: Record<string, unknown> = { ...input };
     for (const f of registry.get(action)!.secretInputFields) {
       asked[`${f}_sha256`] = secretDigest(f, String(asked[f]));
       delete asked[f];
     }
+    const cookie = over.cookie ?? owner.cookie;
     const r = await call(
-      "instance_step_up_challenge",
-      { action, input: asked },
+      "session_step_up_challenge",
+      { action, input: { org: operator.slug, ...asked } },
       undefined,
-      over.token,
+      cookie,
     );
     if (!r.ok) throw new Error(`challenge refused: ${r.error.message}`);
     const out = r.output as {
@@ -173,7 +218,7 @@ export async function opsHarness(o: {
     return {
       id: out.step_up_id,
       approver: out.passkeys[0]!.approver,
-      signature: (over.device ?? device).assert(out.challenge),
+      signature: (over.device ?? devices[cookie] ?? device).assert(out.challenge),
     };
   }
   /** The call with a fresh step-up for exactly this input. */
@@ -191,14 +236,12 @@ export async function opsHarness(o: {
     env,
     clock,
     logs,
-    token: made.secret,
+    cookie: owner.cookie,
+    operator,
+    person,
     call,
     stepUpFor,
     signedCall,
-    /** Another instance administrator token. */
-    async otherToken() {
-      return (await createInstanceTokenFromCli(o.db, { name: "other laptop" })).secret;
-    },
     dispose() {
       channel?.stop();
       rmSync(dir, { recursive: true, force: true });

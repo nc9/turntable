@@ -1078,6 +1078,7 @@ async function serve(args: string[]): Promise<void> {
         ...(vault ? { vault } : {}),
         ...(webauthn ? { webauthn } : {}),
         ...(releaseConfig ? { releaseConfig } : {}),
+        operatorOrgSlug: process.env.TURNTABLE_BOOTSTRAP_ORG?.trim() || "local",
         ...(oidc ? { oidc } : {}),
         ...(outboundWebhooks ? { outboundWebhooks } : {}),
         ...(claims ? { claims } : {}),

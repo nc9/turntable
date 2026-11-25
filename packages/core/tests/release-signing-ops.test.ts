@@ -149,7 +149,7 @@ describe("release_set_project_signing", () => {
   test("it is not an MCP tool, and another org's project is not found", async () => {
     expect(mcpTools(registry).map((t) => t.name)).not.toContain("release_set_project_signing");
     expect(registry.get("release_set_project_signing")!.mcp).toBe(false);
-    const r = await h.call("instance_step_up_challenge", {
+    const r = await h.call("session_step_up_challenge", {
       action: "release_set_project_signing",
       input: { ...SET(a), target_project: "no-such-project" },
     });

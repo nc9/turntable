@@ -101,7 +101,7 @@ describe("release_init_key", () => {
     const rows = await db.run((x) => x.orm.select().from(s.auditLog));
     const row = rows.find((x) => x.op === "release_init_key" && x.outcome === "ok");
     expect(row).toBeDefined();
-    expect(row!.principalKind).toBe("instance");
+    expect(row!.principalKind).toBe("session");
     expect(row!.principalId).toBeTruthy();
     const input = JSON.parse(row!.input) as Record<string, unknown>;
     expect(input).toMatchObject({ name: "prod", keyid });
@@ -152,7 +152,7 @@ describe("release_init_key", () => {
     }
   });
 
-  test("it needs the instance token and a step-up bound to this op and this input", async () => {
+  test("it needs the operator org owner's session and a step-up bound to this op and this input", async () => {
     const bare = await h.call("release_init_key", INIT(a));
     expect(!bare.ok && bare.error.code).toBe("forbidden");
     // a step-up for the name "x" authorises no other name
@@ -179,7 +179,7 @@ describe("release_init_key", () => {
   });
 
   test("an org that does not exist is not found", async () => {
-    const r = await h.call("instance_step_up_challenge", {
+    const r = await h.call("session_step_up_challenge", {
       action: "release_init_key",
       input: { target_org: "no-such-org", name: "k" },
     });

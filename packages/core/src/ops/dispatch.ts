@@ -37,11 +37,11 @@ import { type Credential, orgRole, type Principal, principalId } from "./princip
 import type { OpRegistry } from "./registry";
 import { roleSatisfies } from "./roles";
 import { hashToken, looksLikeInstanceToken, looksLikeToken } from "./tokens";
-import { instanceStepUpTarget } from "./instance-step-up";
+import { boundInput } from "./lane-target";
 import {
   inputTarget,
-  INSTANCE_ORG_STEP_UP_OPS,
-  INSTANCE_STEP_UP_OPS,
+  LANE_CONFIG_READ_OPS,
+  LANE_CONFIG_WRITE_OPS,
   SESSION_STEP_UP_OPS,
   verifyStepUp,
   type VerifiedStepUp,
@@ -87,6 +87,8 @@ export type DispatchEnv = {
   webauthn?: RelyingParty | undefined;
   /** The release lane's config channel; absent when no lane is configured on this instance. */
   releaseConfig?: LaneConfigClient | undefined;
+  /** Slug of the operator org (TURNTABLE_BOOTSTRAP_ORG, default `local`): its owners configure the release lane. */
+  operatorOrgSlug?: string | undefined;
   /** Attestation trust anchors; the pinned vendor roots when absent. */
   attestationAnchors?: TrustAnchors | undefined;
   /** The secret store, for ops that read an org's audit public key; absent without a master key. */
@@ -200,6 +202,51 @@ export const SESSION_WRITE_OPS: ReadonlySet<string> = new Set([
   // SESSION_STEP_UP_OPS for that case only).
   "set_setting",
 ]);
+
+/**
+ * Refuses every caller of a lane configuration op but an OWNER of the operator org on a web
+ * session. A refusal is audited in the caller's own org's chain (a write) and reads the same
+ * whatever the reason.
+ */
+async function laneGate(
+  env: DispatchEnv,
+  credential: Credential,
+  principal: Principal,
+  name: string,
+): Promise<void> {
+  const refuse = async (): Promise<never> => {
+    if (principal.kind === "session" || principal.kind === "token") {
+      await appendAudit(
+        env.db,
+        { orgId: principal.orgId },
+        {
+          principalKind: principal.kind,
+          principalId: principalId(principal),
+          op: name,
+          effect: LANE_CONFIG_WRITE_OPS.has(name) ? "write" : "read",
+          outcome: "error:forbidden",
+          input: { reason: "not_operator_org_owner" },
+        },
+      ).catch(() => {});
+    }
+    throw new OpError(
+      "forbidden",
+      `${name} is for a signed-in owner of the operator org, in the web app`,
+      { reason: "lane_operator_owner_only" },
+    );
+  };
+  if (
+    credential.kind !== "session" ||
+    env.viaMcp === true ||
+    env.transport === "mcp" ||
+    principal.kind !== "session" ||
+    principal.role !== "owner"
+  ) {
+    return refuse();
+  }
+  const operator = await getOrgBySlug(env.db, env.operatorOrgSlug ?? "local");
+  if (!operator || operator.id !== principal.orgId) return refuse();
+}
 
 /** Step 1: turns a credential into a principal, or throws `unauthenticated`. */
 export async function authenticate(
@@ -495,12 +542,10 @@ export async function dispatch(
     }
     // A step-up rides beside the input and is judged by the dispatcher, never by the schema.
     const { step_up: stepUpRaw, ...raw } = rawInput as Record<string, unknown>;
-    // An instance token's step-up (#541): for the few instance ops that name it, bound to the token.
-    const instanceStepUp = principal.kind === "instance" && INSTANCE_STEP_UP_OPS.has(op.name);
-    if (stepUpRaw !== undefined && credential.kind !== "session" && !instanceStepUp) {
+    if (stepUpRaw !== undefined && credential.kind !== "session") {
       throw new OpError("invalid_input", "step_up is only for web sessions");
     }
-    if (stepUpRaw !== undefined && !SESSION_STEP_UP_OPS.has(op.name) && !instanceStepUp) {
+    if (stepUpRaw !== undefined && !SESSION_STEP_UP_OPS.has(op.name)) {
       throw new OpError("invalid_input", `${op.name} does not take a step-up`);
     }
     // Instance ops and org ops never meet: an instance op takes the instance administrator and
@@ -512,6 +557,12 @@ export async function dispatch(
     }
     if (op.auth.type !== "instance" && principal.kind === "instance") {
       throw new OpError("forbidden", "an instance token holds no org grant");
+    }
+    // The release lane's configuration (#541) takes ONE credential: a signed-in web session of an
+    // owner of the operator org. An org token, an in-process principal, MCP and a `tti_` token
+    // (refused above) are not it. This runs before the step-up is looked at and before the scope.
+    if (LANE_CONFIG_WRITE_OPS.has(op.name) || LANE_CONFIG_READ_OPS.has(op.name)) {
+      await laneGate(env, credential, principal, op.name);
     }
     // A web session is default-deny for writes: only the named ones, whatever the member's role.
     // It is judged before the scope (a project-scoped op with no project would fail there first);
@@ -590,42 +641,7 @@ export async function dispatch(
             sessionHash: principal.sessionHash,
             userId: principal.id,
             action: op.name,
-            target: inputTarget(input, scope.projectId),
-          },
-          stepUpRaw,
-        );
-      } catch (err) {
-        await audit(err instanceof OpError ? `error:${err.code}` : "error:internal", input);
-        throw err;
-      }
-    }
-    if (instanceStepUp && principal.kind === "instance") {
-      try {
-        if (stepUpRaw === undefined) {
-          throw new OpError(
-            "forbidden",
-            `${op.name} needs a fresh passkey step-up (step_up_required): call instance_step_up_challenge`,
-            { reason: "step_up_required" },
-          );
-        }
-        // The org that must sign is the one the call names; its enrolled approvers are the factor.
-        const t = await instanceStepUpTarget(
-          env.db,
-          input,
-          op.secretInputFields,
-          INSTANCE_ORG_STEP_UP_OPS.has(op.name),
-        );
-        stepUp = await verifyStepUp(
-          {
-            db: env.db,
-            rp: env.webauthn,
-            now: (env.now ?? Date.now)(),
-            orgId: t.orgId,
-            sessionHash: `instance:${principal.id}`,
-            userId: principal.id,
-            action: op.name,
-            target: t.target,
-            instance: true,
+            target: inputTarget(boundInput(input, op.secretInputFields), scope.projectId),
           },
           stepUpRaw,
         );
@@ -650,6 +666,7 @@ export async function dispatch(
       webhooks: env.webhooks,
       webauthn: env.webauthn,
       releaseConfig: env.releaseConfig,
+      operatorOrgSlug: env.operatorOrgSlug,
       transport: env.transport,
       instanceOrgCap: env.instanceOrgCap,
       staticPollProjects: env.staticPollProjects,
