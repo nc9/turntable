@@ -35,7 +35,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          # Turntable delivers a depth-1 tree until full history lands (#525); with depth 1 the
+          # diff below fails and the run counts as "not docs-only" (the full suite runs).
+          fetch-depth: ${{ vars.TURNTABLE_CI == 'true' && 1 || 0 }}
       - name: Is this a docs-only pull request
         id: diff
         env:
