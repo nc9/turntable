@@ -372,30 +372,40 @@ test("events long-poll: a per-org cap keeps one org from using every slot", asyn
   const saved = { ...waiterLimits };
   waiterLimits.perOrg = 3;
   waiterLimits.global = 5;
+  // Barrier on the long-poll's own slot count, never on a sleep: each call queries the database
+  // before it takes a slot, which can take arbitrarily long under load.
+  const until = async (n: number, orgId?: string) => {
+    const stop = Date.now() + 20_000;
+    while (waitingCount(orgId) !== n) {
+      if (Date.now() > stop) throw new Error(`waiters stuck at ${waitingCount(orgId)}, want ${n}`);
+      await Bun.sleep(5);
+    }
+  };
   try {
     const bTok = (await mintToken(db, { orgId: b.orgId }, "reader")).secret;
-    const poll = (tok: string, wait = 400) => run(tok, "events", { after: 999_999, wait_ms: wait });
+    // Held waiters outlive every step below; an over-cap call that wrongly waited (5000 ms) would
+    // outlast them and the slot counts would drop, so the asserts need no wall-clock bound.
+    const hold = 2500;
+    const poll = (tok: string, wait = hold) =>
+      run(tok, "events", { after: 999_999, wait_ms: wait });
 
     const aWaiters = Array.from({ length: 3 }, () => poll(reader));
-    await Bun.sleep(60);
+    await until(3, a.orgId);
     expect(waitingCount(a.orgId)).toBe(3);
 
-    // org A is at its cap: a fourth call returns at once, without waiting
-    const t0 = Date.now();
+    // org A is at its cap: a fourth call returns at once, without taking a slot
     await poll(reader, 5000);
-    expect(Date.now() - t0).toBeLessThan(1000);
     expect(waitingCount(a.orgId)).toBe(3);
 
     // org B still gets slots while A is saturated
     const bWaiters = Array.from({ length: 2 }, () => poll(bTok));
-    await Bun.sleep(60);
+    await until(2, b.orgId);
     expect(waitingCount(b.orgId)).toBe(2);
     expect(waitingCount()).toBe(5);
 
     // the global cap still binds: a third org waiter in B is over it
-    const t1 = Date.now();
     await poll(bTok, 5000);
-    expect(Date.now() - t1).toBeLessThan(1000);
+    expect(waitingCount()).toBe(5);
 
     await Promise.all([...aWaiters, ...bWaiters]);
     expect(waitingCount()).toBe(0);
@@ -403,9 +413,9 @@ test("events long-poll: a per-org cap keeps one org from using every slot", asyn
     expect(waitingCount(b.orgId)).toBe(0);
     // slots are released: waiting works again
     const again = poll(reader, 100);
-    await Bun.sleep(30);
-    expect(waitingCount(a.orgId)).toBe(1);
+    await until(1, a.orgId);
     await again;
+    expect(waitingCount(a.orgId)).toBe(0);
   } finally {
     Object.assign(waiterLimits, saved);
   }
