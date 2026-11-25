@@ -33,6 +33,7 @@ import { prefixedOut } from "../run/prefixed-out";
 import { buildActEvent } from "../run/act-event";
 import { assertCloneHost, isRepoPart } from "../run/checkout";
 import {
+  CheckoutAuthError,
   type CheckoutConfig,
   DEFAULT_CHECKOUT_CONFIG,
   readChildTarball,
@@ -40,7 +41,8 @@ import {
   Semaphore,
   sweepOldCheckouts,
 } from "../run/checkout-child";
-import { DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { clean, DEFAULT_FETCH_LIMITS } from "../run/git-fetch";
+import { scrubToken } from "../run/scrub-token";
 import { tarballReader } from "../run/tarball-reader";
 import { resolvePlanActions } from "../pins";
 import type { ForgeToken } from "../pins/forge-token";
@@ -83,7 +85,7 @@ export interface RepoSource {
   /** `repo` is undefined for a local run (`turntable run`), which has no bound repo. */
   checkout(
     run: Run,
-    repo: { owner: string; repo: string } | undefined,
+    repo: { owner: string; repo: string; installationId?: string | null | undefined } | undefined,
     opts?: { signal?: AbortSignal | undefined },
   ): Promise<Checkout>;
 }
@@ -132,6 +134,9 @@ export function assertNoCredentials(u: string): void {
  * temporary directory; this process reads workflow files through the safe reader and hands the
  * tarball on.
  */
+/** What a checkout's installation token may do: read one repository's contents, nothing more. */
+export const CHECKOUT_PERMISSIONS = { contents: "read" } as const;
+
 export function gitRepoSource(
   o: {
     cloneUrl?: (owner: string, repo: string) => string;
@@ -140,6 +145,11 @@ export function gitRepoSource(
     config?: Partial<CheckoutConfig>;
     /** The program that runs a checkout, default this binary (a test seam). */
     command?: string[];
+    /**
+     * Mints the token for a repo bound to an App installation: that one repository, `contents:
+     * read` and nothing more (CHECKOUT_PERMISSIONS). Absent: every checkout is anonymous.
+     */
+    installationToken?: (installationId: string, repo: string) => Promise<string>;
   } = {},
 ): RepoSource {
   const url = o.cloneUrl ?? ((owner, repo) => `https://github.com/${owner}/${repo}.git`);
@@ -155,6 +165,7 @@ export function gitRepoSource(
     async checkout(run, bound, opts) {
       if (!bound) throw new Error("run has no repo binding");
       const { owner, repo } = bound;
+      const installationId = bound.installationId ?? undefined;
       if (!isRepoPart(owner) || !isRepoPart(repo) || run.sha === null) {
         throw new Error("run has no sha or the repo binding is not a plain owner/name");
       }
@@ -168,6 +179,7 @@ export function gitRepoSource(
       assertNoCredentials(clone);
       assertCloneHost(clone, o.allowHosts);
       const release = await turns.acquire(opts?.signal);
+      let token: string | undefined;
       const dir = mkdtempSync(join(tmpdir(), "tt-src-"));
       const out = join(tmpdir(), `tt-src-${crypto.randomUUID()}.tgz`);
       // Removed in the background: a recursive delete of a large tree must not hold the event loop.
@@ -178,7 +190,19 @@ export function gitRepoSource(
         ]).catch(() => {});
       };
       try {
+        // Minted here, in the parent, just before the child starts (the App's cache keeps it until
+        // near expiry). It goes to the child on stdin only.
+        if (installationId && o.installationToken) {
+          try {
+            token = await o.installationToken(installationId, repo);
+          } catch (e) {
+            throw new Error(
+              `could not mint an installation token for the checkout: ${clean(e instanceof Error ? e.message : String(e))}`,
+            );
+          }
+        }
         const res = await runCheckoutChild({
+          ...(token ? { token } : {}),
           owner,
           repo,
           sha,
@@ -205,6 +229,7 @@ export function gitRepoSource(
         return { tarball, readFile, dispose: () => {} };
       } catch (err) {
         await cleanup();
+        if (token && err instanceof Error) err.message = scrubToken(err.message, token);
         throw err;
       } finally {
         release();
@@ -543,11 +568,21 @@ export function createActRunner(o: ActRunnerOptions): AttemptRunner {
       if (dbRun.sha === null) return { state: "infra_error", reason: "run has no sha" };
     }
 
-    const checkout = await o.source.checkout(
-      dbRun,
-      repo ? { owner: repo.owner, repo: repo.repo } : undefined,
-      { signal: ctx.signal },
-    );
+    let checkout: Checkout;
+    try {
+      checkout = await o.source.checkout(
+        dbRun,
+        repo
+          ? { owner: repo.owner, repo: repo.repo, installationId: repo.installationId }
+          : undefined,
+        { signal: ctx.signal },
+      );
+    } catch (e) {
+      // A refused credential is not transient: its own kind, so it is never retried.
+      if (e instanceof CheckoutAuthError)
+        return { state: "infra_error", infraKind: "checkout_auth_failed", reason: e.message };
+      throw e;
+    }
     try {
       const workflowYaml = checkout.readFile(dbRun.workflowPath);
       if (workflowYaml === undefined) {

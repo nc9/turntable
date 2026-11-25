@@ -97,6 +97,18 @@ A new secret is generated and set on the App through the GitHub API. The old one
 
 Installation access tokens come from one function. It signs a short-lived App JWT, asks GitHub for a token scoped to the repositories and permissions of the call, and caches it until about five minutes before it expires. Tokens are never logged or returned by an operation.
 
+## Troubleshooting
+
+### `checkout_auth_failed`
+
+A run of a private repository ends `infra_error` with "the checkout was refused by GitHub (HTTP 401): check that the Turntable CI App installation can read this repository". The attempt has the infra kind `checkout_auth_failed` and is not retried, because retrying cannot help. Check that:
+
+- the repository is bound to the App installation (the run's repository shows an installation);
+- the installation has access to this repository (on GitHub: Settings, Applications, the App, Repository access);
+- the App has the `Contents: Read` permission and the installation accepted it.
+
+The checkout asks for a token scoped to that one repository with `contents: read` only. After you fix the access, re-run the job.
+
 ## Other commands
 
 `turntable github-app status` lists the App and its installations (no secrets).

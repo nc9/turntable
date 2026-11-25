@@ -27,6 +27,8 @@ export interface CheckoutRequest {
   allowHosts?: readonly string[];
   /** Called often during the work; it may throw to stop it (the parent is gone, memory is over). */
   checkpoint?: () => void;
+  /** A repo-scoped installation token (private repositories). Never written anywhere. */
+  token?: string;
 }
 
 export interface CheckoutResult {
@@ -78,6 +80,7 @@ export async function performCheckout(r: CheckoutRequest): Promise<CheckoutResul
     fetch: r.fetch ?? createHttpClient({ allowHosts: [...(r.allowHosts ?? [])] }).fetch,
     limits,
     ...(r.checkpoint ? { checkpoint: r.checkpoint } : {}),
+    ...(r.token ? { token: r.token } : {}),
   });
   const dir = r.dir ?? mkdtempSync(join(tmpdir(), "tt-src-"));
   if (r.dir) {
