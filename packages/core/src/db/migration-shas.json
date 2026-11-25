@@ -196,6 +196,10 @@
     {
       "tag": "0048_onboardings",
       "sha256": "f0eaed0782a1ff3febecef9cc752bdeca7a2c77f618b3fdefc4a8fdcfd133d57"
+    },
+    {
+      "tag": "0049_user_tokens",
+      "sha256": "832c20c29ec58d7702a43350d6a1f620868e253dc90e5f13d77f3a95430ae4eb"
     }
   ],
   "pg": [
@@ -278,6 +282,10 @@
     {
       "tag": "0019_onboardings",
       "sha256": "e848adfc061105a5164faa169b04b2334dd50bec7915852b1221385a34d9d8d0"
+    },
+    {
+      "tag": "0020_user_tokens",
+      "sha256": "11e2fb22e920285b7489ddaba03b9b5927f0294f5b3175e4d2659f9dec69612e"
     }
   ]
 }

@@ -289,5 +289,16 @@ export const migrations: Migration[] = [
       "ALTER TABLE \"onboardings\" ADD CONSTRAINT \"onboardings_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
       "CREATE INDEX \"onboardings_org_idx\" ON \"onboardings\" USING btree (\"org_id\",\"created_at\");"
     ]
+  },
+  {
+    "tag": "0020_user_tokens",
+    "when": 1795582447656,
+    "statements": [
+      "CREATE TABLE \"user_token_orgs\" (\n\t\"token_id\" text NOT NULL,\n\t\"org_id\" text NOT NULL,\n\t\"first_used_at\" bigint NOT NULL,\n\tCONSTRAINT \"user_token_orgs_token_id_org_id_pk\" PRIMARY KEY(\"token_id\",\"org_id\")\n);",
+      "CREATE TABLE \"user_tokens\" (\n\t\"id\" text PRIMARY KEY NOT NULL,\n\t\"github_user_id\" text NOT NULL,\n\t\"name\" text NOT NULL,\n\t\"token_hash\" text NOT NULL,\n\t\"created_at\" bigint DEFAULT ((extract(epoch from now()) * 1000)::bigint) NOT NULL,\n\t\"last_used_at\" bigint,\n\t\"expires_at\" bigint NOT NULL,\n\t\"revoked_at\" bigint,\n\tCONSTRAINT \"user_tokens_hash_unique\" UNIQUE(\"token_hash\")\n);",
+      "ALTER TABLE \"user_token_orgs\" ADD CONSTRAINT \"user_token_orgs_token_id_user_tokens_id_fk\" FOREIGN KEY (\"token_id\") REFERENCES \"user_tokens\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "ALTER TABLE \"user_token_orgs\" ADD CONSTRAINT \"user_token_orgs_org_id_orgs_id_fk\" FOREIGN KEY (\"org_id\") REFERENCES \"orgs\"(\"id\") ON DELETE no action ON UPDATE no action;",
+      "CREATE INDEX \"user_tokens_github_user_idx\" ON \"user_tokens\" USING btree (\"github_user_id\");"
+    ]
   }
 ];

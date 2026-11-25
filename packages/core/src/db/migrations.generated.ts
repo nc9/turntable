@@ -550,5 +550,15 @@ export const migrations: Migration[] = [
       "CREATE TABLE `onboardings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`org_id` text NOT NULL,\n\t`installation_id` text,\n\t`first_run_id` text,\n\t`agent_token_id` text,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
       "CREATE INDEX `onboardings_org_idx` ON `onboardings` (`org_id`,`created_at`);"
     ]
+  },
+  {
+    "tag": "0049_user_tokens",
+    "when": 1795582447096,
+    "statements": [
+      "CREATE TABLE `user_token_orgs` (\n\t`token_id` text NOT NULL,\n\t`org_id` text NOT NULL,\n\t`first_used_at` integer NOT NULL,\n\tPRIMARY KEY(`token_id`, `org_id`),\n\tFOREIGN KEY (`token_id`) REFERENCES `user_tokens`(`id`) ON UPDATE no action ON DELETE no action,\n\tFOREIGN KEY (`org_id`) REFERENCES `orgs`(`id`) ON UPDATE no action ON DELETE no action\n);",
+      "CREATE TABLE `user_tokens` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`github_user_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`token_hash` text NOT NULL,\n\t`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,\n\t`last_used_at` integer,\n\t`expires_at` integer NOT NULL,\n\t`revoked_at` integer\n);",
+      "CREATE INDEX `user_tokens_github_user_idx` ON `user_tokens` (`github_user_id`);",
+      "CREATE UNIQUE INDEX `user_tokens_hash_unique` ON `user_tokens` (`token_hash`);"
+    ]
   }
 ];
