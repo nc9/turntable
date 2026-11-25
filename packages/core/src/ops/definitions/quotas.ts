@@ -31,7 +31,7 @@ export const quotaViewSchema = z.object({
       estimated: z
         .boolean()
         .describe(
-          "Sandbox minutes only: the figure includes attempts with no confirmed destroy (counted to the finish plus the provider TTL) or no recorded create time (counted from the start). It can over-count, never under-count.",
+          "Sandbox minutes only: the figure includes an attempt still running, counted to now (never past its sandbox TTL).",
         ),
     }),
   ),

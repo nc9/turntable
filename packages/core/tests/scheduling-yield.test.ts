@@ -459,9 +459,8 @@ test("preemption counts and the minutes split: per project, per job and per clas
   expect(mine.preemptedSeconds).toBeGreaterThanOrEqual(110);
   expect(mine.preemptedSeconds).toBeLessThan(total);
   expect(total - mine.preemptedSeconds).toBeCloseTo(60, 0); // the useful minute
-  const other = rows.find((r) => r.projectId === normal.projectId)!;
-  expect(other.preemptions).toBe(0);
-  expect(other.preemptedSeconds).toBe(0);
+  // The normal project's attempt never recorded a sandbox, so it has no usage and is left out (#598).
+  expect(rows.find((r) => r.projectId === normal.projectId)).toBeUndefined();
 });
 
 test("the scheduler reads the preemption limit from the settings: a locked max of 1 stops the second preemption", async () => {

@@ -6,6 +6,7 @@
 import { type AnyColumn, and, eq, gte, type SQL, sql } from "drizzle-orm";
 import type { Db } from "..";
 import * as s from "../schema";
+import { sandboxSpans, spanMs } from "./usage";
 
 export const RUN_TRIGGERS = [
   "push",
@@ -31,12 +32,21 @@ export type RunSummaryCell = {
 
 export type RunSummaryFilter = { orgId?: string | undefined; projectId?: string | undefined };
 
-export function instanceRunSummary(
+export async function instanceRunSummary(
   db: Db,
   since: number,
   now: number,
   filter: RunSummaryFilter = {},
 ): Promise<RunSummaryCell[]> {
+  // Sandbox time is the quotas' own figure (usage.ts), over [since, now].
+  const spans = await sandboxSpans(
+    db,
+    {
+      ...(filter.orgId === undefined ? {} : { orgId: filter.orgId }),
+      ...(filter.projectId === undefined ? {} : { projectId: filter.projectId }),
+    },
+    { from: since, to: now, now },
+  );
   return db.run(async (h) => {
     const n = sql<number>`count(*)`.mapWith(Number);
     const where = (t: { orgId: AnyColumn; projectId: AnyColumn; createdAt: AnyColumn }) =>
@@ -69,8 +79,6 @@ export function instanceRunSummary(
       .where(where(s.jobs))
       .groupBy(s.jobs.orgId, s.jobs.projectId, s.jobs.state);
     const kind = sql<string>`coalesce(${s.jobAttempts.infraKind}, 'unknown')`;
-    const begin = sql`coalesce(${s.jobAttempts.sandboxCreatedAt}, ${s.jobAttempts.startedAt})`;
-    const end = sql`coalesce(${s.jobAttempts.sandboxDestroyedAt}, ${s.jobAttempts.finishedAt}, ${now})`;
     const attemptRows = await h.orm
       .select({
         orgId: s.jobAttempts.orgId,
@@ -80,9 +88,6 @@ export function instanceRunSummary(
           sql<number>`coalesce(sum(CASE WHEN ${s.jobAttempts.state} = 'infra_error' THEN 1 ELSE 0 END), 0)`.mapWith(
             Number,
           ),
-        ms: sql<number>`coalesce(sum(CASE WHEN ${begin} IS NOT NULL AND ${end} > ${begin} THEN ${end} - ${begin} ELSE 0 END), 0)`.mapWith(
-          Number,
-        ),
       })
       .from(s.jobAttempts)
       .where(where(s.jobAttempts))
@@ -122,8 +127,11 @@ export function instanceRunSummary(
     for (const r of jobRows) add(cell(r.orgId, r.projectId).jobsByState, r.state, r.n);
     for (const r of attemptRows) {
       const c = cell(r.orgId, r.projectId);
-      c.sandboxMs += r.ms;
       if (r.infra > 0) add(c.infraKinds, r.kind, r.infra);
+    }
+    for (const sp of spans) {
+      const c = cell(sp.orgId, sp.projectId);
+      c.sandboxMs += spanMs([sp], since, now);
     }
     return [...out.values()];
   });

@@ -46,6 +46,13 @@ async function life(
       ...(destroyed === null ? {} : { sandboxDestroyedAt: destroyed }),
     });
   }
+  if (finished === undefined && created !== null && destroyed === null) {
+    // No finish and no destroy: the attempt is still running.
+    await db.orm
+      .update(s.jobAttempts)
+      .set({ state: "running" })
+      .where(eq(s.jobAttempts.id, att.id));
+  }
   if (finished !== undefined) {
     await db.orm
       .update(s.jobAttempts)
@@ -99,11 +106,11 @@ describe("what is counted", () => {
     expect(days.map((d) => d.seconds)).toEqual([0, 0, 0]);
   });
 
-  test("without a confirmed destroy the end is the attempt's finish (an estimate); a running one ends now", async () => {
+  test("without a confirmed destroy the end is the attempt's finish; only a running one ends now (an estimate)", async () => {
     await life(a, at(0, 8, 0), null, at(0, 8, 30)); // finished, destroy never confirmed
     await life(a, at(2, 11, 0), null); // still running at NOW (12:00)
     const days = await sandboxUsage(db, a.scope, win(0, 3));
-    expect(days[0]).toMatchObject({ seconds: 1800, attempts: 1, estimated: 1 });
+    expect(days[0]).toMatchObject({ seconds: 1800, attempts: 1, estimated: 0 });
     expect(days[2]).toMatchObject({ seconds: 3600, attempts: 1, estimated: 1 });
   });
 
@@ -231,28 +238,17 @@ describe("the operation", () => {
 });
 
 describe("an attempt with no recorded create time", () => {
-  test("is counted from when it started, per day and for a limit, and marked estimated", async () => {
+  test("counts nothing, even if it started and finished (#598)", async () => {
     const id = await life(a, null, null, at(0, 10, 30));
     await db.orm
       .update(s.jobAttempts)
       .set({ startedAt: at(0, 10, 0) })
       .where(eq(s.jobAttempts.id, id));
     const [d] = await sandboxUsage(db, a.scope, win(0, 1));
-    expect(d).toMatchObject({ seconds: 1800, attempts: 1, estimated: 1 });
-    // The same fallback for a limit, which also adds the provider TTL for the missing destroy.
-    const lim = await sandboxSeconds(db, a.scope, {
-      from: at(0, 0),
-      to: at(1, 0),
-      now: at(1, 0),
-      graceMs: 30 * 60_000,
-    });
-    expect(lim).toEqual({ seconds: 3600, estimated: 1 });
-  });
-
-  test("one that never started and has no sandbox is not counted", async () => {
-    await life(a, null, null);
-    const [d] = await sandboxUsage(db, a.scope, win(0, 1));
     expect(d).toMatchObject({ seconds: 0, attempts: 0, estimated: 0 });
+    expect(
+      await sandboxSeconds(db, a.scope, { from: at(0, 0), to: at(1, 0), now: at(1, 0) }),
+    ).toEqual({ seconds: 0, estimated: 0 });
   });
 });
 
@@ -367,50 +363,33 @@ describe("group_by project", () => {
   });
 });
 
-describe("the grace for an unconfirmed destroy follows the attempt's recorded TTL", () => {
-  const limit = (graceMs: number) => ({
-    from: at(0, 0),
-    to: at(1, 0),
-    now: at(1, 0),
-    graceMs,
-  });
-  const FALLBACK = 30 * 60_000;
+describe("the end of an unconfirmed destroy (#598)", () => {
+  const w = { from: at(0, 0), to: at(1, 0), now: at(1, 0) };
 
-  test("a 600 s TTL counts the finish plus 600 s", async () => {
-    const id = await life(a, at(0, 10), null, at(0, 10, 20));
+  test("a finished attempt ends at its finish, never later", async () => {
+    await life(a, at(0, 10), null, at(0, 10, 20));
+    expect(await sandboxSeconds(db, a.scope, w)).toEqual({ seconds: 20 * 60, estimated: 0 });
+  });
+
+  test("an estimate never exceeds the attempt's TTL", async () => {
+    const id = await life(a, at(0, 10), null, at(0, 12));
     await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
     expect((await getAttempt(db, a.scope, id))!.sandboxTtlSeconds).toBe(600);
-    expect(await sandboxSeconds(db, a.scope, limit(FALLBACK))).toEqual({
-      seconds: 30 * 60,
-      estimated: 1,
-    });
+    expect((await sandboxSeconds(db, a.scope, w)).seconds).toBe(600);
   });
 
-  test("a null TTL uses the fallback constant", async () => {
-    await life(a, at(0, 10), null, at(0, 10, 20));
-    expect((await sandboxSeconds(db, a.scope, limit(FALLBACK))).seconds).toBe(50 * 60);
+  test("a running attempt is capped by its TTL too, and one that is not running and never finished counts 0", async () => {
+    const id = await life(a, at(0, 10), null);
+    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 900 });
+    expect(await sandboxSeconds(db, a.scope, w)).toEqual({ seconds: 900, estimated: 1 });
+    const lost = await life(a, at(0, 11), null); // not running, no finish: lost
+    await db.orm.update(s.jobAttempts).set({ state: "failure" }).where(eq(s.jobAttempts.id, lost));
+    expect((await sandboxSeconds(db, a.scope, w)).seconds).toBe(900);
   });
 
-  test("a confirmed destroy uses the destroy time, whatever the TTL", async () => {
+  test("a confirmed destroy is exact, whatever the TTL", async () => {
     const id = await life(a, at(0, 10), at(0, 10, 25), at(0, 10, 20));
     await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
-    expect(await sandboxSeconds(db, a.scope, limit(FALLBACK))).toEqual({
-      seconds: 25 * 60,
-      estimated: 0,
-    });
-  });
-
-  test("a short TTL also drops the attempt from a window its grace no longer reaches", async () => {
-    const id = await life(a, at(0, 10), null, at(0, 10, 20));
-    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
-    // From 10:35: the finish plus 600 s ended at 10:30, plus the 30 min fallback would still reach.
-    const w = { from: at(0, 10, 35), to: at(1, 0), now: at(1, 0), graceMs: FALLBACK };
-    expect((await sandboxSeconds(db, a.scope, w)).seconds).toBe(0);
-  });
-
-  test("the usage page (no grace) ignores the TTL", async () => {
-    const id = await life(a, at(0, 10), null, at(0, 10, 20));
-    await updateAttempt(db, a.scope, id, { sandboxTtlSeconds: 600 });
-    expect((await sandboxSeconds(db, a.scope, win(0, 1))).seconds).toBe(20 * 60);
+    expect(await sandboxSeconds(db, a.scope, w)).toEqual({ seconds: 25 * 60, estimated: 0 });
   });
 });
