@@ -365,6 +365,8 @@ function validateInput(op: Op, raw: Record<string, unknown>): Record<string, unk
       parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
     );
   }
+  // A cross-org read takes `org` and `project` as filters its handler narrows by.
+  if (op.crossOrg) return parsed.data as Record<string, unknown>;
   const { org: _org, project: _project, ...rest } = parsed.data as Record<string, unknown>;
   return rest;
 }
@@ -409,13 +411,17 @@ export async function dispatch(
         const r = await authenticateSigned(env, signedOp, rawInput as Record<string, unknown>);
         principal = r.principal;
         rawInput = r.raw;
-      } else if (credential.kind === "session" && env.registry.get(name)?.auth.type === "account") {
+      } else if (
+        credential.kind === "session" &&
+        (env.registry.get(name)?.auth.type === "account" || env.registry.get(name)?.crossOrg)
+      ) {
         // The account principal comes from a session cookie alone, and only for an op that
         // declares `account`: every other op with a cookie gets the org `session` principal.
         principal = await authenticateAccount(
           env,
           credential.cookie,
-          rawInput !== null && typeof rawInput === "object"
+          // A cross-org read takes `org` as a filter, never as the session's pick.
+          rawInput !== null && typeof rawInput === "object" && !env.registry.get(name)?.crossOrg
             ? (rawInput as Record<string, unknown>).org
             : undefined,
         );
@@ -450,7 +456,7 @@ export async function dispatch(
     // The account principal and the `account` ops belong together and to nothing else: an op that
     // does not declare it refuses an account, and an account op refuses every other principal
     // and every MCP call. This is the first check, so every refusal reads the same.
-    if (principal.kind === "account" && op.auth.type !== "account") {
+    if (principal.kind === "account" && op.auth.type !== "account" && !op.crossOrg) {
       throw new OpError("forbidden", `${op.name} does not take an account session`);
     }
     if (op.auth.type === "account" && principal.kind !== "account") {
@@ -541,6 +547,7 @@ export async function dispatch(
       op.auth.type !== "signature" &&
       op.auth.type !== "instance" &&
       op.auth.type !== "account" &&
+      !(op.crossOrg && principal.kind === "account") &&
       !roleSatisfies(orgRole(principal), op.auth.minRole)
     ) {
       if (audited) await audit("error:forbidden", raw);

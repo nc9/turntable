@@ -1,8 +1,6 @@
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   Activity,
-  Check,
-  ChevronsUpDown,
   LayoutDashboard,
   Menu,
   Moon,
@@ -34,13 +32,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useTheme } from "@/components/theme";
 import { rememberOrg } from "@/lib/directory";
+import { rememberProject } from "@/lib/last-org";
+import { Avatar } from "@/components/avatar";
 import { modKey, useHotkeys } from "@/lib/hotkeys";
 import { dismiss, useToasts } from "@/lib/toast";
 import { chooseBackend } from "@/api";
@@ -54,6 +53,7 @@ import { useConnectionStatus } from "@/db/sync";
 import { CommandPalette } from "./command-palette";
 import { InstanceShell, isInstancePath } from "@/features/instance/instance-shell";
 import { useScope } from "./scope";
+import { OrgSwitcher, ProjectSwitcher } from "./switchers";
 
 function Logo() {
   return (
@@ -201,87 +201,44 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function Switcher() {
-  const scope = useScope();
+/** The signed-in person's menu: who they are, and sign out (or disconnect from a token). */
+function AccountMenu() {
   const session = useSession();
-  const navigate = useNavigate();
-  const label = scope.project
-    ? `${scope.org?.name ?? scope.orgSlug} / ${scope.project.name}`
-    : (scope.org?.name ?? scope.orgSlug ?? "Select org");
+  if (chooseBackend() !== "http") return null;
+  const signedIn = isSessionActive();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="sm"
-          className="max-w-[60vw] gap-1.5 px-2 text-sm text-foreground"
-          aria-label={`${label}. Switch org or project`}
+          size="icon-sm"
+          aria-label={
+            signedIn ? `Account${session.login ? `: ${session.login}` : ""}` : "Connection"
+          }
         >
-          <span className="truncate">{label}</span>
-          <ChevronsUpDown className="size-3.5 text-faint" />
+          <Avatar src={null} name={session.login ?? "Account"} className="size-6" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
-        <DropdownMenuLabel>Organizations</DropdownMenuLabel>
-        {(scope.orgs ?? []).map((o) => (
-          <DropdownMenuItem
-            key={o.id}
-            onSelect={() => {
-              rememberOrg(o.slug);
-              void navigate({ to: "/$org", params: { org: o.slug } });
-            }}
-          >
-            <span className="flex-1 truncate">{o.name}</span>
-            {o.slug === scope.orgSlug ? <Check className="text-accent" /> : null}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuItem onSelect={() => void navigate({ to: "/onboarding" })}>
-          Connect repositories
-        </DropdownMenuItem>
-        {scope.orgSlug && scope.projects ? (
+      <DropdownMenuContent align="end" className="w-56">
+        {signedIn ? (
           <>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel>Projects in {scope.org?.name}</DropdownMenuLabel>
-            {scope.projects.map((p) => (
-              <DropdownMenuItem
-                key={p.id}
-                onSelect={() =>
-                  void navigate({
-                    to: "/$org/$project",
-                    params: { org: scope.orgSlug as string, project: p.slug },
-                  })
-                }
-              >
-                <span className="flex-1 truncate">{p.name}</span>
-                {p.slug === scope.projectSlug ? <Check className="text-accent" /> : null}
-              </DropdownMenuItem>
-            ))}
+            {session.login ? (
+              <DropdownMenuLabel className="font-normal">
+                Signed in as {session.login}
+              </DropdownMenuLabel>
+            ) : null}
+            <DropdownMenuItem
+              onSelect={() => {
+                resetDirectory();
+                void signOut();
+              }}
+            >
+              Sign out
+            </DropdownMenuItem>
           </>
-        ) : null}
-        {chooseBackend() === "http" ? (
-          <>
-            <DropdownMenuSeparator />
-            {isSessionActive() ? (
-              <>
-                {session.login ? (
-                  <DropdownMenuLabel className="font-normal">
-                    Signed in as {session.login}
-                  </DropdownMenuLabel>
-                ) : null}
-                <DropdownMenuItem
-                  onSelect={() => {
-                    resetDirectory();
-                    void signOut();
-                  }}
-                >
-                  Sign out
-                </DropdownMenuItem>
-              </>
-            ) : (
-              <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
-            )}
-          </>
-        ) : null}
+        ) : (
+          <DropdownMenuItem onSelect={() => disconnect()}>Disconnect</DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -421,6 +378,9 @@ function ShellInner() {
   useEffect(() => {
     if (scope.orgSlug) rememberOrg(scope.orgSlug);
   }, [scope.orgSlug]);
+  useEffect(() => {
+    if (scope.orgSlug && scope.projectSlug) rememberProject(scope.orgSlug, scope.projectSlug);
+  }, [scope.orgSlug, scope.projectSlug]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -498,7 +458,11 @@ function ShellInner() {
         <span className="text-faint" aria-hidden="true">
           /
         </span>
-        <Switcher />
+        <OrgSwitcher />
+        <span className="text-faint" aria-hidden="true">
+          /
+        </span>
+        <ProjectSwitcher />
         <div className="ml-auto flex items-center gap-1">
           <LiveIndicator />
           <Button
@@ -533,12 +497,15 @@ function ShellInner() {
               {dark ? <Sun /> : <Moon />}
             </Button>
           </Tooltip>
+          <AccountMenu />
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
-        <aside className="sticky top-12 hidden h-[calc(100dvh-3rem)] w-56 shrink-0 overflow-y-auto border-r border-line md:block">
-          <SidebarNav />
-        </aside>
+        {scope.orgSlug ? (
+          <aside className="sticky top-12 hidden h-[calc(100dvh-3rem)] w-56 shrink-0 overflow-y-auto border-r border-line md:block">
+            <SidebarNav />
+          </aside>
+        ) : null}
         <main id="main" className="min-w-0 flex-1">
           <IncidentBanner />
           <ApprovalNotifyBanner />

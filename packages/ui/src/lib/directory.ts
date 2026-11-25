@@ -60,6 +60,19 @@ export function useProjects(orgId: string | null): Loaded<Project[]> {
   return useCached(orgId, () => loadProjects(orgId as string));
 }
 
+/**
+ * Whether any of the orgs has a project. `null` while loading; a failed lookup counts as "yes"
+ * so the feed (which reports its own errors) is shown rather than the onboarding prompt.
+ */
+export function useAnyProjects(orgs: Org[] | null): boolean | null {
+  const key = orgs ? `any:${orgs.map((o) => o.id).join(",")}` : null;
+  const { data } = useCached(key, async () => {
+    const lists = await Promise.all((orgs ?? []).map((o) => loadProjects(o.id).catch(() => null)));
+    return lists.some((l) => l === null || l.length > 0);
+  });
+  return data;
+}
+
 export { lastOrg, rememberOrg } from "./last-org";
 
 /** The caller's identity and role. Cached; a failed lookup is retried on the next mount. */

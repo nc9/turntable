@@ -246,7 +246,7 @@ async function buildWorld(): Promise<World> {
         event: hold ? "pull_request" : "push",
         ref: hold ? "refs/pull/9/head" : "refs/heads/main",
         sha,
-        actor: "a-only-actor",
+        actor: t === a ? "a-only-actor" : "b-actor",
         trust: JSON.stringify({ class: klass, workflowHash: WF }),
       },
       jobs: [{ key: "deploy", name: "deploy", needs: [], planned: planned("deploy", environment) }],

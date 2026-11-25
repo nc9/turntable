@@ -2,11 +2,12 @@
 // what a webhook payload claims. Reads only: no GitHub writes yet.
 import { type SafeFetch, safeFetch } from "@turntable/net";
 import type { AppAuth } from "./app-auth";
+import { sanitizeAvatarUrl } from "./avatar";
 
 export interface GithubInstallationFacts {
   id: string;
   appId: string;
-  account: { login: string; id: string; type: string };
+  account: { login: string; id: string; type: string; avatarUrl?: string | undefined };
   repositorySelection: string;
   suspended: boolean;
 }
@@ -51,14 +52,19 @@ export function githubFacts(auth: AppAuth, fetchImpl: SafeFetch = safeFetch): Gi
       const j = (await res.json()) as {
         id: number;
         app_id: number;
-        account: { login: string; id: number; type: string };
+        account: { login: string; id: number; type: string; avatar_url?: unknown };
         repository_selection: string;
         suspended_at: string | null;
       };
       return {
         id: String(j.id),
         appId: String(j.app_id),
-        account: { login: j.account.login, id: String(j.account.id), type: j.account.type },
+        account: {
+          login: j.account.login,
+          id: String(j.account.id),
+          type: j.account.type,
+          avatarUrl: sanitizeAvatarUrl(j.account.avatar_url) ?? undefined,
+        },
         repositorySelection: j.repository_selection,
         suspended: j.suspended_at !== null,
       };

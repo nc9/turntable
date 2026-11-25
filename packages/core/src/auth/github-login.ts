@@ -30,6 +30,7 @@ import type { SettingsRuntime } from "../settings/resolve";
 import { selfServeAllows } from "./self-serve";
 import { parseTokenResponse, type UserTokens, type UserTokenSet } from "./user-tokens";
 import type { SecretStore } from "../secrets/store";
+import { sanitizeAvatarUrl } from "../github/avatar";
 import {
   excessFlowCookies,
   flowCookieName,
@@ -65,6 +66,8 @@ const b64u = (b: Buffer | string): string => Buffer.from(b).toString("base64url"
 export type GithubIdentity = {
   id: string;
   login: string;
+  /** The profile picture, already held to GitHub's avatar origin; absent when GitHub gave none. */
+  avatarUrl?: string | undefined;
   /** The user-to-server token set the exchange gave, to be sealed for the session. */
   tokens?: UserTokenSet | undefined;
 };
@@ -123,10 +126,15 @@ export function githubIdentityVerifier(o: {
         maxBytes: 64 * 1024,
       });
       if (!me.ok) throw new Error(`user: HTTP ${me.status}`);
-      const mj = (await me.json()) as { id?: unknown; login?: unknown };
+      const mj = (await me.json()) as { id?: unknown; login?: unknown; avatar_url?: unknown };
       if (typeof mj.id !== "number" || typeof mj.login !== "string") throw new Error("bad user");
       if (!/^[A-Za-z0-9-]{1,39}$/.test(mj.login)) throw new Error("bad login");
-      return { id: String(mj.id), login: mj.login, tokens };
+      return {
+        id: String(mj.id),
+        login: mj.login,
+        tokens,
+        avatarUrl: sanitizeAvatarUrl(mj.avatar_url) ?? undefined,
+      };
     },
   };
 }
@@ -272,6 +280,7 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
     const result = await completeSignIn(o.db, {
       githubUserId: who.id,
       login: who.login,
+      avatarUrl: who.avatarUrl,
       now: o.sessions.now(),
       sessionHash: sessionHash(id),
       absoluteMs,

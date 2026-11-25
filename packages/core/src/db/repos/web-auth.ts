@@ -228,6 +228,8 @@ export function completeSignIn(
   input: {
     githubUserId: string;
     login: string;
+    /** Validated to the avatar origin by the caller; undefined leaves a stored one. */
+    avatarUrl?: string | undefined;
     now: number;
     sessionHash: string;
     absoluteMs: number;
@@ -267,7 +269,13 @@ export function completeSignIn(
     if (identity) {
       await tx.orm
         .update(s.githubIdentities)
-        .set({ login: input.login, lastSignInAt: input.now })
+        .set({
+          login: input.login,
+          lastSignInAt: input.now,
+          ...(input.avatarUrl === undefined
+            ? {}
+            : { avatarUrl: input.avatarUrl, avatarSyncedAt: input.now }),
+        })
         .where(eq(s.githubIdentities.githubUserId, input.githubUserId));
     } else {
       userId = ulid();
@@ -276,6 +284,8 @@ export function completeSignIn(
         githubUserId: input.githubUserId,
         userId,
         login: input.login,
+        avatarUrl: input.avatarUrl ?? null,
+        avatarSyncedAt: input.avatarUrl === undefined ? null : input.now,
         createdAt: input.now,
         lastSignInAt: input.now,
       });

@@ -80,6 +80,7 @@ Every operation in the registry, as it is wired today. REST is the route under `
 | `whoami` | `GET /api/v1/whoami` | yes |  | read | reader | token | Who this credential is: kind, token name, role, org and project grant. |
 | `doctor` | `GET /api/v1/doctor` | no | `turntable doctor` | read | owner (per org policy) | token | Read-only readiness check of this instance: pass, warn or fail, with a fix for each. |
 | `list_orgs` | `GET /api/v1/orgs` | yes |  | read | reader | token | The orgs this credential can see: just its own. |
+| `my_activity_feed` | `GET /api/v1/activity` | yes |  | read | reader | token | Recent runs across every org the signed-in person belongs to, newest first. |
 | `list_projects` | `GET /api/v1/projects` | yes |  | read | reader | token | Projects in the caller's scope, each with its bound repos. |
 | `ingest_status` | `GET /api/v1/ingest/status` | yes |  | read | reader | token | What the GitHub poller is doing: per repo state and the API rate-limit budget. |
 | `create_api_token` | `POST /api/v1/tokens` | no | `turntable token create` | write | operator | token | Create an agent token, scoped to the org or one project. Shown once. |

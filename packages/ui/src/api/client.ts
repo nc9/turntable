@@ -1,5 +1,7 @@
 import type { ChangeEvent } from "./realtime";
 import type {
+  ActivityFilter,
+  ActivityRun,
   ApprovalChallenge,
   ApprovalStatement,
   ReleaseApprovalChallenge,
@@ -56,6 +58,13 @@ export interface TurntableApi {
   readonly capabilities: ApiCapabilities;
   listOrgs(): Promise<Org[]>;
   listProjects(orgId: string): Promise<Project[]>;
+  /**
+   * Runs across every org the signed-in person belongs to, newest first (`my_activity_feed`).
+   * Takes no org from the session: the server resolves the orgs from memberships on each call.
+   */
+  myActivityFeed(
+    filter?: ActivityFilter,
+  ): Promise<{ runs: ActivityRun[]; nextCursor: string | null }>;
   listRuns(filter: RunFilter): Promise<{ runs: Run[]; nextCursor: string | null }>;
   getRun(runId: string): Promise<RunDetail>;
   /** Read log bytes by offset. Used for the initial window, load-more and raw download. */

@@ -51,6 +51,7 @@ import { revokeApiTokenOp } from "./definitions/revoke-api-token";
 import { events } from "./definitions/events";
 import { failureDigest } from "./definitions/failure-digest";
 import { listOrgs } from "./definitions/list-orgs";
+import { myActivityFeed } from "./definitions/my-activity-feed";
 import { listProjects } from "./definitions/list-projects";
 import { rerun } from "./definitions/rerun";
 import { runDispatch } from "./definitions/run-dispatch";
@@ -143,6 +144,7 @@ export const registry = createRegistry([
   whoami,
   doctor,
   listOrgs,
+  myActivityFeed,
   listProjects,
   ingestStatusOp,
   createApiToken,

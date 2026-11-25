@@ -9,6 +9,7 @@
 // rebuild shows without a restart. A request can only reach regular files inside that directory.
 import { realpathSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { AVATAR_ORIGIN } from "./github/avatar";
 
 /** URL path -> file path (an embedded file in the compiled binary, a real file in tests). */
 export type UiManifest = Readonly<Record<string, string>>;
@@ -91,7 +92,7 @@ const TYPES: Record<string, string> = {
 const extOf = (p: string): string => p.slice(p.lastIndexOf(".") + 1).toLowerCase();
 
 /**
- * No inline script, no remote origins. Styles: React sets style attributes, so only those are
+ * No inline script. The only remote origin is GitHub's avatar host, for images alone. Styles: React sets style attributes, so only those are
  * inline. `connect-src` names the page's own host for WebSocket (`'self'` alone does not cover ws
  * in every browser); `host` is the request's Host header, validated as host[:port].
  */
@@ -105,7 +106,9 @@ export function uiCsp(host: string): string {
     "style-src 'self'",
     "style-src-attr 'unsafe-inline'",
     "font-src 'self' data:",
-    "img-src 'self' data:",
+    // GitHub avatars: exactly one third-party origin, and only for images. The stored URLs are
+    // held to this same origin when they are written (github/avatar.ts).
+    `img-src 'self' data: ${AVATAR_ORIGIN}`,
     `connect-src 'self'${ws}`,
     "manifest-src 'self'",
     "base-uri 'none'",

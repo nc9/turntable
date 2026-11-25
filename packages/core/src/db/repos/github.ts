@@ -173,6 +173,8 @@ export type InstallationInput = {
   accountType: string;
   repositorySelection: string;
   status: InstallationStatus;
+  /** Already validated to the avatar origin; undefined leaves a stored one as it is. */
+  avatarUrl?: string | undefined;
 };
 
 export function upsertInstallation(
@@ -184,7 +186,14 @@ export function upsertInstallation(
     const now = Date.now();
     await h.orm
       .insert(s.githubInstallations)
-      .values({ ...input, orgId: scope.orgId, createdAt: now, updatedAt: now })
+      .values({
+        ...input,
+        avatarUrl: input.avatarUrl ?? null,
+        avatarSyncedAt: input.avatarUrl === undefined ? null : now,
+        orgId: scope.orgId,
+        createdAt: now,
+        updatedAt: now,
+      })
       .onConflictDoUpdate({
         target: s.githubInstallations.installationId,
         // The org of an existing installation never changes here.
@@ -195,6 +204,9 @@ export function upsertInstallation(
           repositorySelection: input.repositorySelection,
           status: input.status,
           updatedAt: now,
+          ...(input.avatarUrl === undefined
+            ? {}
+            : { avatarUrl: input.avatarUrl, avatarSyncedAt: now }),
         },
       });
     const [row] = await h.orm

@@ -254,9 +254,17 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
         .map((o) => o.name)
         .toSorted(),
     ).toEqual(["list_my_orgs", "list_user_installations", "onboarding_create_org"]);
+    // The one other door: a cross-org READ (#559) takes an account and reads only the orgs its
+    // membership rows name. Nothing else may ever be marked crossOrg without this test noticing.
+    expect(
+      registry.ops
+        .filter((o) => o.crossOrg)
+        .map((o) => [o.name, o.effect])
+        .toSorted(),
+    ).toEqual([["my_activity_feed", "read"]]);
     for (const op of registry.ops) {
       const r = await dispatch(h.env, { kind: "principal", principal: account }, op.name, {});
-      if (op.auth.type === "account") continue;
+      if (op.auth.type === "account" || op.crossOrg) continue;
       expect([op.name, r.ok]).toEqual([op.name, false]);
       if (!r.ok) expect([op.name, r.error.code]).toEqual([op.name, "forbidden"]);
     }

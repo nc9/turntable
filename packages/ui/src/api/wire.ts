@@ -417,3 +417,30 @@ export type WireSetting = {
 };
 
 export type WireSettings = { settings: WireSetting[]; next_cursor: string | null };
+
+export type WireActivity = {
+  runs: {
+    run_id: string;
+    org: string;
+    org_name: string;
+    org_avatar_url: string | null;
+    project: string;
+    project_name: string;
+    project_avatar_url: string | null;
+    workflow: string;
+    ref: string;
+    ref_type: "branch" | "tag" | null;
+    sha: string | null;
+    event: string;
+    commit_message: string | null;
+    actor: string | null;
+    actor_avatar_url: string | null;
+    state: "queued" | "running" | "awaiting_approval" | "completed";
+    conclusion: "success" | "failure" | "infra_error" | "cancelled" | "skipped" | null;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    duration_ms: number | null;
+  }[];
+  next_cursor: string | null;
+};

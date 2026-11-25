@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type {
+  WireActivity,
   WireApprovalStatus,
   WireArtifacts,
   WireSandboxUsage,
@@ -233,6 +234,35 @@ test("whoami, list_orgs and list_projects", () => {
   const projects = ok(op("/projects", "get"));
   expectKeys(projects, keysOf<WireProjects>({ projects: true, next_cursor: true }));
   expectKeys(projects.properties!.projects!.items!, ["id", "slug", "name", "repos"]);
+});
+
+test("my_activity_feed", () => {
+  const feed = ok(op("/activity", "get"));
+  expectKeys(feed, keysOf<WireActivity>({ runs: true, next_cursor: true }));
+  expectKeys(feed.properties!.runs!.items!, [
+    "run_id",
+    "org",
+    "org_name",
+    "org_avatar_url",
+    "project",
+    "project_name",
+    "project_avatar_url",
+    "workflow",
+    "ref",
+    "ref_type",
+    "sha",
+    "event",
+    "commit_message",
+    "actor",
+    "actor_avatar_url",
+    "state",
+    "conclusion",
+    "created_at",
+    "started_at",
+    "finished_at",
+  ]);
+  const params = (op("/activity", "get").parameters ?? []).map((p) => p.name);
+  for (const q of ["org", "project", "status", "limit", "cursor"]) expect(params).toContain(q);
 });
 
 test("job_steps and job_cuts", () => {

@@ -15,6 +15,7 @@ import { appendEvent, notifyLogAppended } from "./events";
 import { requireProject, type Scope, scoped } from "./scope";
 
 export type { Scope } from "./scope";
+export * from "./activity";
 export * from "./api";
 export * from "./approve";
 export * from "./artifacts";

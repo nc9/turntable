@@ -38,6 +38,25 @@ test("serves the app shell at / and for client-side routes, with a strict CSP", 
   expect(uiCsp("evil.example:8080/x y")).toContain("connect-src 'self';");
 });
 
+test("the CSP lets images load from GitHub's avatar origin and nothing else remote", async () => {
+  fixture();
+  const header = (await get("/")).headers.get("content-security-policy")!;
+  const directives = Object.fromEntries(
+    header.split("; ").map((d) => [d.split(" ")[0], d.split(" ").slice(1)]),
+  );
+  expect(directives["img-src"]).toEqual([
+    "'self'",
+    "data:",
+    "https://avatars.githubusercontent.com",
+  ]);
+  // No other directive gained an origin: scripts, styles, fonts and connections stay local.
+  for (const d of ["default-src", "script-src", "style-src", "font-src", "manifest-src"]) {
+    expect(JSON.stringify(directives[d])).not.toContain("http");
+  }
+  expect(directives["connect-src"]!.join(" ")).not.toContain("githubusercontent");
+  expect(header).not.toContain("*");
+});
+
 test("assets are typed and immutable; unknown files and API paths stay 404", async () => {
   fixture();
   const js = await get("/assets/app-1.js");

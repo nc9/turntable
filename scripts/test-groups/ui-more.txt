@@ -1,3 +1,4 @@
 packages/ui/tests/artifacts.test.ts
 packages/ui/tests/quotas.test.ts
 packages/ui/tests/sandbox.test.ts
+packages/ui/tests/switchers-feed.test.tsx

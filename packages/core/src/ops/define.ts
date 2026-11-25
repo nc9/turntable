@@ -135,6 +135,14 @@ export type OpSpec<I extends z.ZodObject, O extends z.ZodType> = {
   outsideTransaction?: boolean;
   /** For an `outsideTransaction` op: extra fields recorded in the audit input on success. */
   auditDetail?: (output: z.infer<O>) => Record<string, unknown>;
+  /**
+   * A read op that spans every org a signed-in person belongs to (`my_activity_feed`). A web
+   * session cookie reaches it as the `account` principal even when the person holds several
+   * orgs, and the handler resolves the orgs from their memberships on each call. A token still
+   * gets its own org (a token holds no memberships). Reads only: the dispatcher refuses this on
+   * any op that is not a read, and the handler must never trust an org taken from the input.
+   */
+  crossOrg?: boolean;
   handler(ctx: OpContext, input: z.infer<I>): Promise<z.infer<O>>;
 };
 
@@ -157,6 +165,7 @@ export type Op = {
   logOmitFields: readonly string[];
   mcp: boolean;
   outsideTransaction: boolean;
+  crossOrg: boolean;
   auditDetail?: ((output: unknown) => Record<string, unknown>) | undefined;
   handler(ctx: OpContext, input: unknown): Promise<unknown>;
 };
@@ -171,6 +180,9 @@ export function pathParams(path: string): string[] {
 
 export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpec<I, O>): Op {
   if (!NAME.test(spec.name)) throw new Error(`op name must be snake_case: ${spec.name}`);
+  if (spec.crossOrg && (spec.effect !== "read" || spec.auth.type !== "token")) {
+    throw new Error(`${spec.name}: crossOrg is for token-auth read ops only`);
+  }
   if (spec.summary.length === 0 || spec.summary.length > 120) {
     throw new Error(`${spec.name}: summary must be 1 to 120 characters`);
   }
@@ -240,6 +252,7 @@ export function defineOp<I extends z.ZodObject, O extends z.ZodType>(spec: OpSpe
     logOmitFields: spec.logOmitFields ?? [],
     mcp: spec.mcp ?? true,
     outsideTransaction: spec.outsideTransaction ?? false,
+    crossOrg: spec.crossOrg ?? false,
     auditDetail: spec.auditDetail ? (out) => spec.auditDetail!(out as z.infer<O>) : undefined,
     handler: (ctx, raw) => spec.handler(ctx, raw as z.infer<I>),
   };

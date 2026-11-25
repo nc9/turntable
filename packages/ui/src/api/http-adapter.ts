@@ -2,6 +2,7 @@ import type { ApiCapabilities, TurntableApi } from "./client";
 import { refusalMessage } from "./refusal";
 import { stepEvents } from "./step-events";
 import type {
+  ActivityRun,
   ApprovalChallenge,
   ApprovalStatement,
   ReleaseStatement,
@@ -38,6 +39,7 @@ import type {
   OrgQuotas,
 } from "./types";
 import type {
+  WireActivity,
   WireSandboxUsage,
   WireApprovalStatus,
   WireReleaseChallenge,
@@ -343,6 +345,42 @@ export function createHttpApi(options: HttpApiOptions): TurntableApi {
         name: p.name,
         repo: p.repos[0] ? `${p.repos[0].owner}/${p.repos[0].repo}` : "",
       }));
+    },
+
+    async myActivityFeed(f = {}) {
+      // No `org()` here: the feed spans the person's orgs, and `org` is only a filter.
+      const w = await call<WireActivity>("GET", "/activity", {
+        org: f.org,
+        project: f.project,
+        status: f.status,
+        limit: f.limit ? Math.min(100, f.limit) : undefined,
+        cursor: f.cursor,
+      });
+      return {
+        runs: w.runs.map((r): ActivityRun => ({
+          runId: r.run_id,
+          org: r.org,
+          orgName: r.org_name,
+          orgAvatarUrl: r.org_avatar_url,
+          project: r.project,
+          projectName: r.project_name,
+          projectAvatarUrl: r.project_avatar_url,
+          workflow: r.workflow,
+          ref: r.ref,
+          refType: r.ref_type,
+          sha: r.sha,
+          event: r.event,
+          commitMessage: r.commit_message,
+          actor: r.actor,
+          actorAvatarUrl: r.actor_avatar_url,
+          state: r.state,
+          conclusion: r.conclusion,
+          createdAt: ms(r.created_at) ?? 0,
+          startedAt: ms(r.started_at),
+          finishedAt: ms(r.finished_at),
+        })),
+        nextCursor: w.next_cursor,
+      };
     },
 
     async listRuns(f) {

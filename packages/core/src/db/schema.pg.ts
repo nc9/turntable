@@ -856,6 +856,9 @@ export const githubInstallations = pgTable(
     accountLogin: text("account_login").notNull(),
     accountId: text("account_id").notNull(),
     accountType: text("account_type").notNull(),
+    /** The bound GitHub account's avatar (validated to GitHub's avatar origin), and when it was last read. */
+    avatarUrl: text("avatar_url"),
+    avatarSyncedAt: bigint("avatar_synced_at", { mode: "number" }),
     repositorySelection: text("repository_selection").notNull(),
     status: text("status").notNull().default("active"),
     createdAt: createdAt(),
@@ -1572,6 +1575,9 @@ export const githubIdentities = pgTable(
       .notNull()
       .references(() => users.id),
     login: text("login").notNull(),
+    /** The user's GitHub avatar (validated to GitHub's avatar origin), and when it was last read. */
+    avatarUrl: text("avatar_url"),
+    avatarSyncedAt: bigint("avatar_synced_at", { mode: "number" }),
     createdAt: createdAt(),
     lastSignInAt: bigint("last_sign_in_at", { mode: "number" }),
   },
