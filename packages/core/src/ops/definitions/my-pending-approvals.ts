@@ -8,7 +8,8 @@ export const myPendingApprovalsOp = defineOp({
   name: "my_pending_approvals",
   summary: "Approvals waiting on the signed-in person, across every org they belong to.",
   description:
-    "The inbox of one person: only the items they can act on right now. Release and environment " +
+    "The inbox of one person. The call names one org (the dispatcher resolves a session to one), " +
+    "but the result covers every org the person belongs to, not only that one. Only the items they can act on right now. Release and environment " +
     "approvals, runs held for an untrusted author under the `human` policy, key enrolments and " +
     "key policy changes, each only where the person has a live approver key bound to their " +
     "GitHub account id and the same checks the approving code applies let that key sign (key " +

@@ -29,6 +29,8 @@ export function useNotifier(): Notifier {
   return shared;
 }
 
+const POLL_VISIBLE_MS = 30_000;
+const POLL_HIDDEN_MS = 120_000;
 const listeners = new Set<() => void>();
 const changed = () => {
   for (const l of listeners) l();
@@ -96,15 +98,34 @@ export function useApprovalNotifications(): void {
   useEffect(() => {
     if (!isSessionActive()) return;
     void refresh();
+    // A session cannot open the realtime socket, so the inbox is polled: every 30 s while the tab
+    // is visible, every 120 s while it is hidden, and at once when the tab regains focus.
+    let poll: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (poll) clearTimeout(poll);
+      poll = setTimeout(
+        () => {
+          void refresh();
+          schedule();
+        },
+        document.visibilityState === "visible" ? POLL_VISIBLE_MS : POLL_HIDDEN_MS,
+      );
+    };
+    schedule();
+    const now = () => {
+      void refresh();
+      schedule();
+    };
     const later = () => {
       if (debounce.current) clearTimeout(debounce.current);
       debounce.current = setTimeout(() => void refresh(), 800);
     };
     const visible = () => {
-      if (document.visibilityState === "visible") later();
+      if (document.visibilityState === "visible") now();
+      else schedule();
     };
     document.addEventListener("visibilitychange", visible);
-    window.addEventListener("focus", later);
+    window.addEventListener("focus", now);
     // A permission just granted from the banner or the settings toggle: say what is waiting.
     const granted = () => {
       first.current = true;
@@ -113,8 +134,9 @@ export function useApprovalNotifications(): void {
     listeners.add(granted);
     return () => {
       document.removeEventListener("visibilitychange", visible);
-      window.removeEventListener("focus", later);
+      window.removeEventListener("focus", now);
       listeners.delete(granted);
+      if (poll) clearTimeout(poll);
       if (timer.current) clearTimeout(timer.current);
       if (debounce.current) clearTimeout(debounce.current);
     };
@@ -189,7 +211,7 @@ export function ApprovalNotifyToggle() {
   return (
     <section aria-labelledby="notify-h" className="mt-8">
       <h2 id="notify-h" className="text-base font-semibold tracking-tight">
-        Approval notifications
+        This browser: approval notifications
       </h2>
       <p className="mt-0.5 text-sm text-dim">
         This browser shows a notification when an approval is waiting on you. A notification only
@@ -216,7 +238,7 @@ export function ApprovalNotifyToggle() {
               changed();
             }}
           />
-          Notify me about approvals waiting on me
+          Notify me in this browser about approvals waiting on me
         </label>
       )}
     </section>

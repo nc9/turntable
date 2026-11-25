@@ -356,7 +356,7 @@ Attestation is only trusted when the device certificate carries the FIDO AAGUID 
 
 ### Approval notifications
 
-The web UI can show a browser notification when an approval is waiting on you. It is off until you click "Turn on notifications" in the banner "Get notified when something needs your approval", or switch it on under Org settings; the browser prompt is never opened on page load, and the choice is kept per browser.
+The web UI can show a browser notification when an approval is waiting on you. It is off until you click "Turn on notifications" in the banner "Get notified when something needs your approval", or switch it on under Org settings ("This browser: approval notifications", which is per browser, not per org); the browser prompt is never opened on page load, and the choice is kept per browser.
 
 What notifies: only items you can act on now, from the `my_pending_approvals` op (a web session only; every token is refused, because it is a person's inbox). That is a release or environment approval, a run held for an untrusted author under the `human` policy, a key enrolment, or a key policy change, in each case only where you have a live approver key bound to your numeric GitHub id and the same checks the approving code applies (key policy, the author rule, no approving your own enrolment, a quorum not yet met, not expired) let that key sign. The op reuses those checks and decides nothing new about who may approve. It covers every org you belong to. You get one summary ("N approvals waiting") when the page loads, one notice per new item, and one more when an item is within 10 minutes of its expiry; each item notifies once per browser. The tab title shows the count, for example `(2) Turntable`.
 
@@ -364,7 +364,7 @@ What a notification says: a fixed plain-text template over org and project slugs
 
 What a click does: focuses the tab and opens that item's approval screen. A notification never approves anything; the approval still needs your passkey there.
 
-To turn it off, clear the checkbox under Org settings, or block notifications for the site in the browser. Notifications need an open tab. Web Push for closed tabs is not built. A session's page learns of changes by polling the org's runs (the realtime socket takes bearer tokens only) and when the tab regains focus, so a hidden tab can be slow to notice.
+To turn it off, clear the checkbox under Org settings (it only affects this browser), or block notifications for the site in the browser. Notifications need an open tab. Web Push for closed tabs is not built. A web session cannot open the realtime socket (it takes bearer tokens only), so the page polls `my_pending_approvals`: every 30 seconds while the tab is visible, every 120 seconds while it is hidden, and at once when the tab regains focus. A hidden tab can be up to two minutes slow to notice.
 
 ### For the signing service
 

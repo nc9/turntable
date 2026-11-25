@@ -262,8 +262,7 @@ export type WireMyPendingApprovals = {
       | "environment_approval"
       | "untrusted_run_approval"
       | "enrolment_approval"
-      | "key_policy_approval"
-      | "release_request";
+      | "key_policy_approval";
     org: string;
     project: string;
     environment?: string;

@@ -391,8 +391,7 @@ export type PendingApprovalKind =
   | "environment_approval"
   | "untrusted_run_approval"
   | "enrolment_approval"
-  | "key_policy_approval"
-  | "release_request";
+  | "key_policy_approval";
 export type PendingApproval = {
   id: string;
   kind: PendingApprovalKind;

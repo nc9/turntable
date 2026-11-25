@@ -89,8 +89,6 @@ export function titleFor(item: PendingApproval): string {
       return `Key enrolment approval waiting: ${part(item.org)}`;
     case "key_policy_approval":
       return `Key policy approval waiting: ${part(item.org)}`;
-    case "release_request":
-      return `Release request waiting: ${where}`;
   }
 }
 

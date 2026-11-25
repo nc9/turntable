@@ -27,3 +27,4 @@ packages/core/tests/onboarding-account.test.ts
 packages/core/tests/onboarding-repos.test.ts
 packages/core/tests/onboarding-checks-mode.test.ts
 packages/core/tests/my-pending-approvals.test.ts
+packages/core/tests/my-pending-approvals-parity.test.ts

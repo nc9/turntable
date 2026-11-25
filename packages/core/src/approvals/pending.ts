@@ -50,7 +50,6 @@ export const PENDING_KINDS = [
   "untrusted_run_approval",
   "enrolment_approval",
   "key_policy_approval",
-  "release_request",
 ] as const;
 export type PendingKind = (typeof PENDING_KINDS)[number];
 
