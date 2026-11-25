@@ -218,7 +218,9 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     const pass = async (
       klass: "all" | "normal" | "yield",
       probe: boolean,
-    ): Promise<Claim | { blockedOrg: string } | undefined> => {
+    ): Promise<Claim | { blockedOrgs: string[] } | undefined> => {
+      // A probe collects the first claimable-but-for-room attempt of each org, in claim order.
+      const hits: string[] = [];
       const classFilter =
         klass === "all" || yieldIds.size === 0
           ? []
@@ -361,7 +363,11 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
                 if (legsRunning >= planned.maxParallel) continue;
               }
             }
-            if (probe) return { blockedOrg: orgId };
+            if (probe) {
+              hits.push(orgId);
+              open.delete(orgId);
+              break;
+            }
             const claimed = await tx.orm
               .update(s.jobAttempts)
               .set({ leaseOwner: o.owner, leaseExpiresAt: o.now + o.leaseMs, heartbeatAt: o.now })
@@ -387,7 +393,7 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
           }
         }
       }
-      return undefined;
+      return probe && hits.length > 0 ? { blockedOrgs: hits } : undefined;
     };
 
     if (yieldIds.size === 0) return (await pass("all", false)) as Claim | undefined;
@@ -396,22 +402,26 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
     // Nothing normal could be claimed. If a normal attempt waits only for room, free a slot by
     // preempting the newest yield attempt holding one, then claim for the waiting attempt. One
     // victim per call, so a fan-out of waiting normal attempts preempts one yield attempt each.
-    const blocked = await pass("normal", true);
-    const orgFull =
-      blocked !== undefined &&
-      "blockedOrg" in blocked &&
-      (perOrg.get(blocked.blockedOrg) ?? 0) >= capOf(blocked.blockedOrg);
-    // Preempt only when a cap is actually full. Normal work that is claimable with room under
-    // both caps (or that lost a claim race) must take no yield attempt's slot.
-    if (blocked && "blockedOrg" in blocked && (orgFull || total >= o.globalCap)) {
-      const victim = await newestYieldAttempt(tx, yieldIds, {
-        ...(orgFull ? { orgId: blocked.blockedOrg } : {}),
-        ...(o.onlyRun ? { onlyRun: o.onlyRun } : {}),
-        limit: o.preemptLimit ?? DEFAULT_PREEMPT_LIMIT,
-        now: o.now,
-      });
-      if (victim) {
-        await preemptAttempt(tx, victim, blocked.blockedOrg, o.now);
+    const probed = await pass("normal", true);
+    // Each candidate is one that nothing but a full cap holds back (the probe skips project caps,
+    // freezes, quota holds, gates and groups). A preemption is made only for a candidate it lets
+    // start: after the victim leaves, both the global cap and the candidate's org cap have room.
+    // The first candidate with a fitting victim wins, so one that cannot be helped (its org is
+    // full of normal work) never masks another that can.
+    if (probed && "blockedOrgs" in probed) {
+      for (const orgId of probed.blockedOrgs) {
+        const orgFull = (perOrg.get(orgId) ?? 0) >= capOf(orgId);
+        if (!orgFull && total < o.globalCap) continue; // lost a claim race: no cap to relieve
+        const victim = await newestYieldAttempt(tx, yieldIds, {
+          ...(orgFull ? { orgId } : {}),
+          ...(o.onlyRun ? { onlyRun: o.onlyRun } : {}),
+          limit: o.preemptLimit ?? DEFAULT_PREEMPT_LIMIT,
+          now: o.now,
+        });
+        if (!victim) continue;
+        const orgAfter = (perOrg.get(orgId) ?? 0) - (victim.orgId === orgId ? 1 : 0);
+        if (total - 1 >= o.globalCap || orgAfter >= capOf(orgId)) continue; // would not make room
+        await preemptAttempt(tx, victim, orgId, o.now);
         // The slot is free for the claim below: update the counts read at the start.
         total--;
         perOrg.set(victim.orgId, (perOrg.get(victim.orgId) ?? 1) - 1);
