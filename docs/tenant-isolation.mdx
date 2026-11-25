@@ -31,7 +31,7 @@ Adding a store: seed it in `buildWorld`, add a marker, and the registry-driven c
 | OIDC signing keys | Yes. A key pair per org, a per-org issuer URL | Sealed under the org's `oidc` key. |
 | Attempt credentials | No. HMAC under the `attempt` domain key | The org id is inside the signed body. |
 | Audit chain and checkpoint signing key | Yes. A chain per org and a signing key and anchor state per org | The anchor file is sealed with the master key, org id in the AAD. |
-| Release signing keys (`builtin:<name>`) | Yes. Stored under the org's id and name | The org comes from the run's scope, never from the setting, so a project cannot name another org's key. A KMS key reference may belong to one org only. |
+| Release signing keys (`builtin:<name>`) | Yes. Stored under the org's id and name | The org comes from the run's scope, never from the setting, so a project cannot name another org's key. A KMS key reference (backends planned, not available yet) will belong to one org only. |
 | Cache blobs | Namespaced per org, project and class in the database; one flat blob directory by numeric id | Not encrypted at rest. |
 | Artifacts | Rows are per org and project; bytes live in the lane's artifact directory | Not encrypted at rest. |
 
