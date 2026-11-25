@@ -16,6 +16,7 @@ import {
   notInArray,
   sql,
 } from "drizzle-orm";
+import { retryableAfterSteps } from "@turntable/act-runner";
 import type { Db } from "..";
 import { announceCancelled } from "../abort-bus";
 import { aggregateRunStatus } from "../job-state";
@@ -421,6 +422,11 @@ export function claimNextAttempt(db: Db, o: ClaimOptions): Promise<Claim | undef
   });
 }
 
+/** Trust classes that pass `retryableAfterSteps`, as a list for the victim query. */
+const RETRYABLE_CLASSES: string[] = ["trusted_pr", "untrusted_pr", "protected", "release"].filter(
+  retryableAfterSteps,
+);
+
 /** The attempt error class of a preempted attempt: requeued, never a failure. */
 export const PREEMPTED = "preempted";
 
@@ -464,6 +470,8 @@ async function newestYieldAttempt(
       and(
         eq(s.jobAttempts.state, "running"),
         inArray(s.jobAttempts.projectId, [...yieldIds]),
+        // Only a class that is safe to rerun (#565); an unrecorded class is never a victim.
+        inArray(s.jobAttempts.trustClass, RETRYABLE_CLASSES),
         within.orgId ? eq(s.jobAttempts.orgId, within.orgId) : undefined,
         within.onlyRun ? eq(s.jobs.runId, within.onlyRun) : eq(s.runs.local, false),
         spent.length > 0
