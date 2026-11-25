@@ -234,7 +234,12 @@ export function githubContext(
 ): Record<string, Value> {
   const ref = event.ref ?? "";
   const refName = ref.replace(/^refs\/(heads|tags)\//, "");
+  // `github.repository` and `github.repository_owner`, as act derives them, from the event's own
+  // repository so a job-level `if: github.repository == 'owner/name'` agrees with act.
+  const evRepo = (extra.event as { repository?: { full_name?: unknown } } | undefined)?.repository;
+  const fullName = typeof evRepo?.full_name === "string" ? evRepo.full_name : "";
   return {
+    ...(fullName ? { repository: fullName, repository_owner: fullName.split("/")[0] ?? "" } : {}),
     event_name: event.name,
     ref,
     ref_name: refName,
