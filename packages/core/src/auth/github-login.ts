@@ -292,7 +292,7 @@ export function createAuthHandler(o: AuthHandlerOptions): AuthHandler {
       // Best effort: without the sealed token the person is asked to sign in again when an
       // onboarding step needs GitHub, which is safe.
       try {
-        if (who.tokens) await o.userTokens.save(sessionHash(id), who.tokens);
+        if (who.tokens) await o.userTokens.save(sessionHash(id), who.tokens, String(who.id));
         await o.userTokens.sweep();
       } catch (e) {
         o.log?.(

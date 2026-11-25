@@ -233,10 +233,7 @@ export const bindInstallationOp = defineOp({
       owns = who !== undefined && inst.accountId === who.githubUserId;
     }
     if (!owns) {
-      throw new OpError(
-        "forbidden",
-        "only an owner of the GitHub account can connect its installation",
-      );
+      throw new OpError("forbidden", `you must be an owner of ${inst.accountLogin} on GitHub`);
     }
     const held = await getInstallation(ctx.db, i.installation_id);
     if (held && held.orgId !== ctx.scope.orgId) {

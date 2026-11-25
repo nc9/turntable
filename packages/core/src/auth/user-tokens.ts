@@ -12,7 +12,7 @@
 //    and no error message here carries a value from GitHub's response.
 import { type SafeFetch, safeFetch } from "@turntable/net";
 import type { Db } from "../db";
-import { getGithubApp } from "../db/repos";
+import { appendAudit, getGithubApp } from "../db/repos";
 import { OpError } from "../ops/errors";
 import { SECRET_CLIENT } from "../github/app-auth";
 import type { SecretStore } from "../secrets/store";
@@ -26,6 +26,8 @@ export type UserTokenSet = {
   expiresAt?: number | undefined;
   /** Epoch ms the refresh token stops working. */
   refreshExpiresAt?: number | undefined;
+  /** The GitHub user id the token belongs to, kept for the audit rows only. */
+  githubUserId?: string | undefined;
 };
 
 const PREFIX = "web-session/";
@@ -74,17 +76,51 @@ export class UserTokens {
     return (await getGithubApp(this.#o.db))?.orgId;
   }
 
+  /**
+   * The sealed token's own audit row, in the App org's chain: the session id hash and the GitHub
+   * user id only. Never the token, nor a hash of it. Not a tenant-secret event, so no `secret_set`.
+   */
+  #audit(
+    org: string,
+    op: "github_user_token.sealed" | "github_user_token.deleted",
+    hash: string,
+    ghUser?: string,
+  ): Promise<void> {
+    return appendAudit(
+      this.#o.db,
+      { orgId: org },
+      {
+        principalKind: "system",
+        principalId: "github-user-tokens",
+        op,
+        effect: "write",
+        outcome: "ok",
+        input: { session: hash, ...(ghUser ? { github_user_id: ghUser } : {}) },
+      },
+    );
+  }
+
   /** Seals the token set for a session. */
-  async save(hash: string, set: UserTokenSet): Promise<void> {
+  async save(hash: string, set: UserTokenSet, githubUserId?: string): Promise<void> {
     const org = await this.#appOrg();
     if (!org) return;
-    await this.#o.store.set(org, nameOf(hash), JSON.stringify(set));
+    const kept = githubUserId ?? set.githubUserId;
+    const full = kept ? { ...set, githubUserId: kept } : set;
+    await this.#o.store.set(org, nameOf(hash), JSON.stringify(full), { audit: false });
+    await this.#audit(org, "github_user_token.sealed", hash, kept);
   }
 
   /** Deletes the session's token (sign-out). True when there was one. */
   async remove(hash: string): Promise<boolean> {
     const org = await this.#appOrg();
-    return org ? this.#o.store.delete(org, nameOf(hash)) : false;
+    return org ? this.#drop(org, hash) : false;
+  }
+
+  async #drop(org: string, hash: string): Promise<boolean> {
+    const ghUser = (await this.#load(org, hash).catch(() => undefined))?.githubUserId;
+    const removed = await this.#o.store.delete(org, nameOf(hash), { audit: false });
+    if (removed) await this.#audit(org, "github_user_token.deleted", hash, ghUser);
+    return removed;
   }
 
   async #load(org: string, hash: string): Promise<UserTokenSet | undefined> {
@@ -126,7 +162,7 @@ export class UserTokens {
       await this.remove(hash);
       return undefined;
     }
-    await this.#o.store.set(org, nameOf(hash), JSON.stringify(next));
+    await this.save(hash, next, set.githubUserId);
     return next.access;
   }
 
@@ -168,7 +204,7 @@ export class UserTokens {
       if (!name.startsWith(PREFIX) || !name.endsWith(SUFFIX)) continue;
       const hash = name.slice(PREFIX.length, name.length - SUFFIX.length);
       if (await this.#o.sessions.isLive(hash)) continue;
-      if (await this.#o.store.delete(org, name)) n += 1;
+      if (await this.#drop(org, hash)) n += 1;
     }
     return n;
   }

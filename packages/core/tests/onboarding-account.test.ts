@@ -571,6 +571,23 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       }
     });
 
+    test("sealing audits github_user_token.sealed (session hash and GitHub user id only), never secret_set", async () => {
+      const { h } = await aliceHarness();
+      const si = await h.signIn("c-alice");
+      const hash = sessionHash(si.cookie!);
+      const chain = await listAudit(h.db, { orgId: h.org.id }, { limit: 500 });
+      const sealed = chain.filter((e) => e.op === "github_user_token.sealed");
+      expect(sealed.length).toBe(1);
+      const body = JSON.stringify(sealed[0]);
+      expect(body).toContain(hash);
+      expect(body).toContain("1001");
+      expect(body).not.toContain("gho_marker");
+      expect(body).not.toContain("ghr_marker");
+      expect(chain.some((e) => e.op === "secret_set" && JSON.stringify(e).includes(hash))).toBe(
+        false,
+      );
+    });
+
     test("deleted on sign-out, and the session cannot reach GitHub afterwards", async () => {
       const { h } = await aliceHarness();
       const si = await h.signIn("c-alice");
@@ -590,6 +607,15 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       ))!;
       expect(out.status).toBe(303);
       expect(await h.store.has(h.org.id, name)).toBe(false);
+      const chain = await listAudit(h.db, { orgId: h.org.id }, { limit: 500 });
+      const gone = chain.filter((e) => e.op === "github_user_token.deleted");
+      expect(gone.length).toBe(1);
+      expect(JSON.stringify(gone[0])).toContain(sessionHash(cookie));
+      expect(JSON.stringify(gone[0])).toContain("1001");
+      expect(JSON.stringify(gone[0])).not.toContain("gho_marker");
+      expect(chain.some((e) => e.op === "secret_delete" && JSON.stringify(e).includes(name))).toBe(
+        false,
+      );
       expect((await h.as(cookie, "list_user_installations")).ok).toBe(false);
     });
 
@@ -861,7 +887,10 @@ describe.each(dialects)("onboarding account (%s)", (_n, open) => {
       alice.adminOf = []; // alice sees the installation but is only a member of acme
       const member = await bind();
       expect(member.ok).toBe(false);
-      if (!member.ok) expect(member.error.code).toBe("forbidden");
+      if (!member.ok) {
+        expect(member.error.code).toBe("forbidden");
+        expect(member.error.message).toBe("you must be an owner of acme on GitHub");
+      }
       expect(await getInstallationRow(h, "100")).toBeUndefined();
       // a personal-account installation of someone else, visible to alice, is not hers
       h.facts.installations.set(
