@@ -34,6 +34,7 @@ const NUMERIC_LIMITS = [
   "maxEntries",
   "maxTreeBytes",
   "maxTarballBytes",
+  "maxRefs",
   "timeoutMs",
 ] as const;
 
@@ -99,6 +100,7 @@ export async function fetchSourceCommand(
       "allow-host": { type: "string", multiple: true },
       "max-memory-mib": { type: "string" },
       "token-stdin": { type: "boolean", default: false },
+      "full-history": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -153,6 +155,7 @@ export async function fetchSourceCommand(
         allowHosts,
         checkpoint: stop,
         ...(token ? { token } : {}),
+        ...(values["full-history"] ? { fullHistory: true } : {}),
       });
       clearInterval(watchdog);
       out(`ok ${r.sha} files=${r.files} tarball=${r.tarballBytes}`);

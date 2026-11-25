@@ -29,6 +29,8 @@ export interface CheckoutRequest {
   checkpoint?: () => void;
   /** A repo-scoped installation token (private repositories). Never written anywhere. */
   token?: string;
+  /** Deliver the whole history, the tags and the default branch (see FetchOptions.fullHistory). */
+  fullHistory?: boolean;
 }
 
 export interface CheckoutResult {
@@ -81,6 +83,7 @@ export async function performCheckout(r: CheckoutRequest): Promise<CheckoutResul
     limits,
     ...(r.checkpoint ? { checkpoint: r.checkpoint } : {}),
     ...(r.token ? { token: r.token } : {}),
+    ...(r.fullHistory ? { fullHistory: true } : {}),
   });
   const dir = r.dir ?? mkdtempSync(join(tmpdir(), "tt-src-"));
   if (r.dir) {
