@@ -68,3 +68,42 @@ test("a never-healthy instance times out", async () => {
   expect(r.ok).toBe(false);
   if (!r.ok) expect(r.reason).toContain("502");
 });
+
+const failing = () => fake([health({ ok: true, version: "x", build_sha: "c".repeat(40) })]);
+
+test("a failed verification returns a rollback plan with the note", async () => {
+  const f = failing();
+  const r = await verifyDeploy(f.deps, {
+    baseUrl: "https://t",
+    targetSha: SHA,
+    timeoutMs: 100,
+    pollMs: 50,
+    previousSha: "a".repeat(40),
+  });
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.rollback.action).toBe("redeploy");
+  if (r.rollback.action !== "redeploy") return;
+  expect(r.rollback.previousSha).toBe("a".repeat(40));
+  expect(r.rollback.note).toStartWith("rolled back `dddddddddddd` to `aaaaaaaaaaaa`: timed out");
+});
+
+test("a failed verification stops, with no redeploy, after a migration or with no previous commit", async () => {
+  const a = await verifyDeploy(failing().deps, {
+    baseUrl: "https://t",
+    targetSha: SHA,
+    timeoutMs: 1,
+    previousSha: "a".repeat(40),
+    migrationRan: true,
+  });
+  const b = await verifyDeploy(failing().deps, {
+    baseUrl: "https://t",
+    targetSha: SHA,
+    timeoutMs: 1,
+    previousSha: null,
+  });
+  for (const r of [a, b]) {
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.rollback.action).toBe("stop");
+  }
+});

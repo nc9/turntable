@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { classifyMigration } from "./cd/migrations";
-import { buildNotes, escapeMarkdown } from "./cd/notes";
+import { buildNotes, buildRollbackNote, escapeMarkdown } from "./cd/notes";
 
 test("escapes markdown control characters, newlines and mentions", () => {
   const e = escapeMarkdown("fix `x` *bold* [l](http://u) <b>\n# h @octocat | a_b ~~s~~ & more");
@@ -43,4 +43,36 @@ test("empty lists and a first deploy", () => {
   expect(text.match(/None\./g)?.length).toBe(2);
   expect(text).toContain("Backup: none");
   expect(text).toContain("backup n/a");
+});
+
+const base = {
+  deployedSha: "a".repeat(40),
+  targetSha: "b".repeat(40),
+  prs: [],
+  migrations: [],
+  backupId: null,
+  timings: {},
+};
+
+test("the deploy note reports only a count of cut attempts, never names", () => {
+  expect(buildNotes({ ...base, cutAttempts: 3 })).toContain(
+    "3 running attempts were cut and requeued",
+  );
+  expect(buildNotes({ ...base, cutAttempts: 1 })).toContain(
+    "1 running attempt was cut and requeued",
+  );
+  expect(buildNotes({ ...base, cutAttempts: 0 })).not.toContain("cut and requeued");
+  expect(buildNotes(base)).not.toContain("cut and requeued");
+  expect(Object.keys(base)).not.toContain("cutNames");
+});
+
+test("the rollback note names the target, the previous commit and the escaped reason", () => {
+  const t = buildRollbackNote({
+    targetSha: "b".repeat(40),
+    previousSha: "a".repeat(40),
+    reason: "timed out: healthz reports x @octocat\n# h",
+  });
+  expect(t).toBe(
+    "rolled back `bbbbbbbbbbbb` to `aaaaaaaaaaaa`: timed out\\: healthz reports x &#64;octocat \\# h\n",
+  );
 });

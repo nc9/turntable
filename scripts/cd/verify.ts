@@ -1,4 +1,6 @@
 // Post-deploy verification: poll /healthz until it is ok and reports the target sha.
+import { buildRollbackNote } from "./notes";
+
 export interface VerifyDeps {
   fetch(url: string): Promise<Response>;
   now(): number;
@@ -10,10 +12,44 @@ export interface VerifyOptions {
   targetSha: string;
   timeoutMs?: number;
   pollMs?: number;
+  /** The commit deployed before the target: what a failed verification rolls back to. */
+  previousSha?: string | null;
+  /** Whether a migration ran in this deploy; the database is never restored automatically. */
+  migrationRan?: boolean;
 }
 
+/** What the workflow does after a failed verification, and the note to publish for it. */
+export type RollbackPlan =
+  | { action: "redeploy"; targetSha: string; previousSha: string; reason: string; note: string }
+  | { action: "stop"; targetSha: string; previousSha: string | null; reason: string; why: string };
+
 export type VerifyResult =
-  { ok: true; elapsedMs: number } | { ok: false; reason: string; elapsedMs: number };
+  | { ok: true; elapsedMs: number }
+  | { ok: false; reason: string; elapsedMs: number; rollback: RollbackPlan };
+
+function planRollback(opts: VerifyOptions, reason: string): RollbackPlan {
+  const previousSha = opts.previousSha ?? null;
+  if (opts.migrationRan) {
+    return {
+      action: "stop",
+      targetSha: opts.targetSha,
+      previousSha,
+      reason,
+      why: "a migration ran: the database is not restored automatically",
+    };
+  }
+  if (previousSha === null) {
+    return {
+      action: "stop",
+      targetSha: opts.targetSha,
+      previousSha,
+      reason,
+      why: "there is no previous deployment to roll back to",
+    };
+  }
+  const note = buildRollbackNote({ targetSha: opts.targetSha, previousSha, reason });
+  return { action: "redeploy", targetSha: opts.targetSha, previousSha, reason, note };
+}
 
 export async function verifyDeploy(deps: VerifyDeps, opts: VerifyOptions): Promise<VerifyResult> {
   const started = deps.now();
@@ -36,7 +72,13 @@ export async function verifyDeploy(deps: VerifyDeps, opts: VerifyOptions): Promi
       last = `healthz unreachable: ${e instanceof Error ? e.message : String(e)}`;
     }
     if (deps.now() >= deadline) {
-      return { ok: false, reason: `timed out: ${last}`, elapsedMs: deps.now() - started };
+      const reason = `timed out: ${last}`;
+      return {
+        ok: false,
+        reason,
+        elapsedMs: deps.now() - started,
+        rollback: planRollback(opts, reason),
+      };
     }
     await deps.sleep(opts.pollMs ?? 5_000);
   }

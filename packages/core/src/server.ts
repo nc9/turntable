@@ -23,6 +23,8 @@ import type { UserGithub } from "./auth/user-tokens";
 import type { WebSessions } from "./auth/web-sessions";
 import type { HostedManifestHandler } from "./github/hosted-manifest";
 import { processDrain } from "./scheduler/drain";
+import { createDeployGate } from "./deploy-gate";
+import type { TrustedProxies } from "./github/trusted-proxies";
 import type { DoctorReport } from "./doctor/types";
 import type { ForwardedObserver } from "./doctor/observe";
 import type { SecretStore } from "./secrets/store";
@@ -147,6 +149,8 @@ export type ServeOptions = {
   githubUsers?: GithubUserLookup;
   /** Creating the GitHub App from this instance (hosted, no shell): github/hosted-manifest.ts. */
   appManifest?: HostedManifestHandler;
+  /** Proxies whose forwarded address the deploy gate's rate limit believes. */
+  trustedProxies?: TrustedProxies;
   /** The instance's per-org concurrency cap, the ceiling `set_quotas` clamps to. */
   instanceOrgCap?: number | undefined;
   /** `org-slug/project-slug` pairs the poll config names statically, for `list_projects`. */
@@ -199,6 +203,10 @@ export function startServer(options: ServeOptions) {
     trustForwardedProto:
       options.trustForwardedProto ?? options.transport?.trustForwardedProto === true,
   });
+  const deployGate = createDeployGate({
+    db: options.db,
+    ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
+  });
   const mcp = createMcpHttp(env);
   const realtime = createRealtime({
     env,
@@ -223,6 +231,8 @@ export function startServer(options: ServeOptions) {
     websocket: realtime.websocket,
   });
   async function route(req: Request, srv: Bun.Server<WsData>): Promise<Response | undefined> {
+    const gate = await deployGate.handle(req, srv.requestIP(req)?.address);
+    if (gate) return gate;
     const hook = await options.webhooks?.handle(req, srv.requestIP(req)?.address);
     if (hook) return hook;
     const manifest = await options.appManifest?.handle(req, srv.requestIP(req)?.address);

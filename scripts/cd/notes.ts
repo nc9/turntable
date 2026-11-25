@@ -8,6 +8,12 @@ export interface NotesInput {
   migrations: MigrationClass[];
   backupId: string | null;
   timings: { backupMs?: number; deployMs?: number; verifyMs?: number };
+  /**
+   * How many running attempts the drain cut and requeued, when it cut any. A COUNT only: this note
+   * is public, so it never names an org, project, run or job. The named list belongs in the
+   * private rollout log.
+   */
+  cutAttempts?: number;
 }
 
 /** Renders text as text: markdown control characters escaped, one line, mentions defused. */
@@ -41,5 +47,18 @@ export function buildNotes(n: NotesInput): string {
   lines.push(
     `Timings: backup ${secs(n.timings.backupMs)}, deploy ${secs(n.timings.deployMs)}, verify ${secs(n.timings.verifyMs)}`,
   );
+  if (n.cutAttempts !== undefined && n.cutAttempts > 0) {
+    const c = Math.floor(n.cutAttempts);
+    lines.push("", `${c} running ${c === 1 ? "attempt was" : "attempts were"} cut and requeued`);
+  }
   return `${lines.join("\n")}\n`;
+}
+
+/** The note for an automatic rollback: `rolled back <target> to <previous>: <reason>`. */
+export function buildRollbackNote(r: {
+  targetSha: string;
+  previousSha: string;
+  reason: string;
+}): string {
+  return `rolled back \`${short(r.targetSha)}\` to \`${short(r.previousSha)}\`: ${escapeMarkdown(r.reason)}\n`;
 }
